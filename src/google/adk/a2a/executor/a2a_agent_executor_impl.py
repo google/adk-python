@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Awaitable
@@ -29,9 +30,9 @@ from a2a.types import TaskStatusUpdateEvent
 from typing_extensions import override
 
 from .. import _compat
+from ...events.event import Event
 from ...runners import Runner
 from ...sessions import base_session_service
-from ...utils.context_utils import Aclosing
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.from_adk_event import create_error_status_event
 from ..converters.long_running_functions import handle_user_input
@@ -41,7 +42,9 @@ from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
-from .utils import _enqueue_canceled_task_event
+from .utils import _ActiveTaskRegistry
+from .utils import _consume_runner_with_abort
+from .utils import _is_abort_adk_event
 from .utils import _require_request_context
 from .utils import _require_user_id
 from .utils import execute_after_agent_interceptors
@@ -63,17 +66,21 @@ class _A2aAgentExecutor(AgentExecutor):
       *,
       runner: Runner | Callable[..., Runner | Awaitable[Runner]],
       config: A2aAgentExecutorConfig | None = None,
+      active_tasks: _ActiveTaskRegistry | None = None,
   ):
     super().__init__()
     self._runner = runner
     self._config = config or A2aAgentExecutorConfig()
+    self._active_tasks = (
+        active_tasks if active_tasks is not None else _ActiveTaskRegistry()
+    )
 
   @override
   async def cancel(
       self, context: RequestContext, event_queue: EventQueue
   ) -> None:
     """Cancel the execution."""
-    await _enqueue_canceled_task_event(context, event_queue)
+    await self._active_tasks.cancel(context, event_queue)
 
   @override
   async def execute(
@@ -98,6 +105,7 @@ class _A2aAgentExecutor(AgentExecutor):
     message, task_id, context_id = _require_request_context(context)
 
     runner = await self._resolve_runner()
+    active_run = self._active_tasks.start(task_id, event_queue)
     try:
       run_request = self._config.request_converter(
           context,
@@ -176,6 +184,8 @@ class _A2aAgentExecutor(AgentExecutor):
         logger.error(
             'Failed to publish failure event: %s', enqueue_error, exc_info=True
         )
+    finally:
+      self._active_tasks.finish(active_run)
 
   async def _handle_request(
       self,
@@ -186,44 +196,65 @@ class _A2aAgentExecutor(AgentExecutor):
       run_request: AgentRunRequest,
   ) -> None:
     _, task_id, context_id = _require_request_context(context)
+    active_run = self._active_tasks.get(task_id)
     agents_artifact: dict[str, str] = {}
+    canceled_event: TaskStatusUpdateEvent | None = None
     error_event: TaskStatusUpdateEvent | None = None
     long_running_functions = LongRunningFunctions(
         self._config.gen_ai_part_converter
     )
-    async with Aclosing(runner.run_async(**vars(run_request))) as agen:
-      async for adk_event in agen:
-        # Handle error scenarios
-        if adk_event and (adk_event.error_code or adk_event.error_message):
-          error_event = create_error_status_event(
-              adk_event,
-              task_id,
-              context_id,
-          )
+    abort_signal = (
+        active_run.abort_signal if active_run is not None else asyncio.Event()
+    )
 
-        # Handle long running function calls
-        adk_event = long_running_functions.process_event(adk_event)
+    async def _on_event(adk_event: Event) -> None:
+      nonlocal canceled_event, error_event
+      if adk_event and _is_abort_adk_event(adk_event):
+        canceled_event = create_error_status_event(
+            adk_event, task_id, context_id
+        )
+        canceled_event.status.state = _compat.TS_CANCELED
+        return
+      # Handle error scenarios
+      if adk_event and (adk_event.error_code or adk_event.error_message):
+        error_event = create_error_status_event(adk_event, task_id, context_id)
 
-        for a2a_event in self._config.adk_event_converter(
+      # Handle long running function calls
+      adk_event = long_running_functions.process_event(adk_event)
+
+      for a2a_event in self._config.adk_event_converter(
+          adk_event,
+          agents_artifact,
+          task_id,
+          context_id,
+          self._config.gen_ai_part_converter,
+      ):
+        _compat.set_event_metadata(
+            a2a_event, self._get_invocation_metadata(executor_context)
+        )
+        a2a_events = await execute_after_event_interceptors(
+            a2a_event,
+            executor_context,
             adk_event,
-            agents_artifact,
-            task_id,
-            context_id,
-            self._config.gen_ai_part_converter,
-        ):
-          _compat.set_event_metadata(
-              a2a_event, self._get_invocation_metadata(executor_context)
-          )
-          a2a_events = await execute_after_event_interceptors(
-              a2a_event,
-              executor_context,
-              adk_event,
-              self._config.execute_interceptors,
-          )
-          for e in a2a_events:
-            await event_queue.enqueue_event(e)
+            self._config.execute_interceptors,
+        )
+        for e in a2a_events:
+          await event_queue.enqueue_event(e)
 
-    if error_event:
+    await _consume_runner_with_abort(
+        runner.run_async, run_request, abort_signal, _on_event
+    )
+
+    if canceled_event is not None:
+      final_event = canceled_event
+    elif abort_signal.is_set():
+      final_event = _compat.make_task_status_update_event(
+          task_id=task_id,
+          context_id=context_id,
+          status=_compat.make_task_status(_compat.TS_CANCELED),
+          final=True,
+      )
+    elif error_event:
       final_event = error_event
     elif long_running_functions.has_long_running_function_calls():
       long_running_event = (
@@ -251,6 +282,8 @@ class _A2aAgentExecutor(AgentExecutor):
         executor_context, final_event, self._config.execute_interceptors
     )
     await event_queue.enqueue_event(final_event)
+    if active_run and final_event.status.state == _compat.TS_CANCELED:
+      active_run.terminal_cancel_emitted = True
 
   async def _resolve_runner(self) -> Runner:
     """Resolve the runner, handling cases where it's a callable that returns a Runner."""

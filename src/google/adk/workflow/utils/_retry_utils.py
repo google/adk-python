@@ -19,6 +19,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...platform import _random as platform_random
+from .._errors import WorkflowConfigurationError
+from .._errors import WorkflowInvariantError
 from .._node_state import NodeState
 from .._retry_config import RetryConfig
 
@@ -31,8 +33,15 @@ def _should_retry_node(
     retry_config: RetryConfig | None,
     node_state: NodeState,
 ) -> bool:
-  """Checks if a failed node should be retried based on its retry_config."""
-  if not retry_config:
+  """Checks if a failed node should be retried.
+
+  ``WorkflowConfigurationError`` and ``WorkflowInvariantError`` are never
+  retried regardless of ``retry_config``.
+  """
+  # Deterministic errors: retrying cannot fix them.
+  if not retry_config or isinstance(
+      exception, (WorkflowConfigurationError, WorkflowInvariantError)
+  ):
     return False
 
   attempt_count = node_state.attempt_count
@@ -82,6 +91,71 @@ def _delegates_item_retry(node: BaseNode) -> bool:
   return isinstance(node, _ParallelWorker) or (
       isinstance(node, Node) and node.parallel_worker
   )
+
+
+def _node_retry_config(node: BaseNode) -> RetryConfig | None:
+  """Returns the retry policy configured on ``node``.
+
+  A ``_ParallelWorker`` moves its ``retry_config`` onto the wrapped item node
+  and leaves its own ``retry_config`` as ``None``, so its wrapped node's policy
+  is returned when ``node.retry_config`` is ``None``.
+
+  Args:
+    node: The node to inspect.
+
+  Returns:
+    The ``RetryConfig`` on ``node`` (or on its wrapped item node for a
+    ``_ParallelWorker``), or ``None`` if none is configured.
+  """
+  from .._parallel_worker import _ParallelWorker
+
+  if isinstance(node, _ParallelWorker) and node.retry_config is None:
+    return _node_retry_config(node._node)
+  return node.retry_config
+
+
+def _has_own_retry_config(node: BaseNode) -> bool:
+  """Returns whether a node defines its own retry policy.
+
+  A ``_ParallelWorker`` moves its ``retry_config`` onto the wrapped item node
+  and leaves its own ``retry_config`` as ``None``, so its wrapped node is
+  checked as well.
+
+  Args:
+    node: The node to check.
+
+  Returns:
+    True if ``node`` (or, for a ``_ParallelWorker``, its wrapped item node)
+    has a ``retry_config``.
+  """
+  return _node_retry_config(node) is not None
+
+
+def _with_retry_config(
+    node: BaseNode, retry_config: RetryConfig | None
+) -> BaseNode:
+  """Returns a copy of ``node`` that uses ``retry_config``.
+
+  Args:
+    node: The node to copy. It is left unchanged.
+    retry_config: The retry policy for the copy, replacing the node's own, or
+      ``None`` to clear it.
+
+  Returns:
+    The copy, of the same class as ``node``.
+  """
+  from ...agents.base_agent import BaseAgent
+
+  copied: BaseNode
+  # An agent is cloned rather than copied, so that it gets its own sub-agents
+  # and its callbacks are rebound to the copy instead of the original.
+  if isinstance(node, BaseAgent):
+    copied = node.clone(update={"retry_config": retry_config})
+    # BaseAgent.clone() resets parent_agent to None; restore it.
+    copied.parent_agent = node.parent_agent
+  else:
+    copied = node.model_copy(update={"retry_config": retry_config})
+  return copied
 
 
 def _get_retry_delay(

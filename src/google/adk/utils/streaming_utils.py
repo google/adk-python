@@ -39,6 +39,8 @@ _JSON_PATH_TOKEN_RE = re.compile(
     re.VERBOSE,
 )
 
+_JSON_HIGH_SURROGATE_ESCAPE_RE = re.compile(r'\\u[dD][89aAbB][0-9a-fA-F]{2}')
+
 
 def _unescape_json_path_string(s: str) -> str:
   def replace(match: re.Match[str]) -> str:
@@ -782,10 +784,24 @@ class _JsonPathTracker:
     if self._in_string:
       if self._escaped:
         return ''
+      prefix = ''.join(self.accumulated_parts)
+      # A high surrogate needs the following low surrogate before json.loads
+      # can decode the pair into a character that can be serialized as UTF-8.
+      # Escaped backslashes are literal text and must not delay streaming.
+      # Only the tail is inspected so long strings are not rescanned per chunk.
+      escape_start = len(prefix) - 6
+      if escape_start >= 0 and _JSON_HIGH_SURROGATE_ESCAPE_RE.fullmatch(
+          prefix, escape_start
+      ):
+        i = escape_start - 1
+        while i >= 0 and prefix[i] == '\\':
+          i -= 1
+        if (escape_start - 1 - i) % 2 == 0:
+          return ''
       suffix = '"' + ''.join(
           '}' if op == '{' else ']' for op in reversed(self._stack)
       )
-      return ''.join(self.accumulated_parts) + suffix
+      return prefix + suffix
 
     last_non_ws = ''
     last_part_idx = -1

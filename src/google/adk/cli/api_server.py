@@ -107,7 +107,6 @@ from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from ..version import __version__
 from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
@@ -411,6 +410,45 @@ def _is_request_origin_allowed(
   return origin == request_origin
 
 
+_request_from_foreign_origin: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("request_from_foreign_origin", default=False)
+)
+
+
+def _is_foreign_origin(
+    scope: Mapping[str, Any], allowed_literal_origins: list[str]
+) -> bool:
+  """Returns True if Origin is neither the request's own nor listed literally."""
+  origin = _get_scope_header(scope, b"origin")
+  if origin is None or origin in allowed_literal_origins:
+    return False
+  # Only the real Host header: a cross-origin fetch may set X-Forwarded-Host.
+  host = _get_scope_header(scope, b"host")
+  scheme = _normalize_origin_scheme(scope.get("scheme", "http"))
+  return origin != f"{scheme}://{host}"
+
+
+def _reject_foreign_origin() -> None:
+  """Refuses a code-writing request a browser sent from a foreign origin.
+
+  ``*`` and ``regex:`` entries in ``allow_origins`` open the API to other
+  sites, but not the mutating ``/dev`` endpoints or the internal agents, which
+  write agent files.
+
+  Raises:
+    HTTPException: 403, if the current request is from a foreign origin.
+  """
+  if _request_from_foreign_origin.get():
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "This endpoint writes agent files or starts runs, so it accepts"
+            " browser requests only from this server's own origin or an"
+            " origin listed literally in allow_origins."
+        ),
+    )
+
+
 async def _send_forbidden(send: Any, reason: str) -> None:
   """Sends a plain-text 403 over the ASGI send channel."""
   response_body = f"Forbidden: {reason}".encode()
@@ -542,6 +580,10 @@ class _OriginCheckMiddleware:
       receive: Any,
       send: Any,
   ) -> None:
+    _request_from_foreign_origin.set(
+        ("*" in self._allowed_origins or self._allowed_origin_regex is not None)
+        and _is_foreign_origin(scope, self._allowed_origins)
+    )
     if scope["type"] != "http":
       await self._app(scope, receive, send)
       return
@@ -1181,6 +1223,8 @@ class ApiServer:
               " loopback address."
           ),
       )
+    if app_name.startswith("__"):
+      _reject_foreign_origin()
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -1783,7 +1827,6 @@ class ApiServer:
       return self.agent_loader.list_agents()
 
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
-    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
@@ -1795,6 +1838,8 @@ class ApiServer:
                 " loopback address."
             ),
         )
+      if app_name.startswith("__"):
+        _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):

@@ -21,6 +21,7 @@ from pathlib import Path
 import sqlite3
 import threading
 
+from google.adk.telemetry.sqlite_span_exporter import _apply_migrations
 from google.adk.telemetry.sqlite_span_exporter import SqliteSpanExporter
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
@@ -28,6 +29,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import Link
 from opentelemetry.trace import SpanContext
+from opentelemetry.trace import SpanKind
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 import pytest
@@ -40,9 +42,10 @@ def _create_span(
     parent_span_id: int | None = None,
     name: str = "test_span",
     attributes: dict | None = None,
+    kind: SpanKind = SpanKind.INTERNAL,
+    links: list[Link] | None = None,
     start_time: int = 1000,
     end_time: int = 2000,
-    links: list[Link] | None = None,
 ) -> ReadableSpan:
   """Helper to create ReadableSpan instances for testing."""
   context = SpanContext(
@@ -67,10 +70,11 @@ def _create_span(
       name=name,
       context=context,
       parent=parent,
+      kind=kind,
+      links=links or [],
       attributes=attributes or {},
       start_time=start_time,
       end_time=end_time,
-      links=links or [],
   )
 
 
@@ -235,6 +239,185 @@ def test_round_trip_preserves_span_attributes(tmp_path):
   assert retrieved.start_time == 1000000
   assert retrieved.end_time == 2000000
   assert retrieved.attributes == original_attributes
+
+
+def test_span_kinds_survive_exporter_restart(tmp_path: Path) -> None:
+  db_path = tmp_path / "test.db"
+  kinds = [
+      SpanKind.CLIENT,
+      SpanKind.SERVER,
+      SpanKind.PRODUCER,
+      SpanKind.CONSUMER,
+  ]
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  spans = [
+      _create_span(
+          span_id=index + 1,
+          kind=kind,
+          attributes={"gen_ai.conversation.id": "session-kind"},
+          start_time=index,
+      )
+      for index, kind in enumerate(kinds)
+  ]
+  assert exporter.export(spans) == SpanExportResult.SUCCESS
+  exporter.shutdown()
+
+  reopened = SqliteSpanExporter(db_path=str(db_path))
+  try:
+    restored = reopened.get_all_spans_for_session("session-kind")
+    assert [(span.context.span_id, span.kind) for span in restored] == [
+        (index + 1, kind) for index, kind in enumerate(kinds)
+    ]
+  finally:
+    reopened.shutdown()
+
+
+def test_legacy_database_retains_spans_and_accepts_new_kinds(
+    tmp_path: Path,
+) -> None:
+  db_path = tmp_path / "legacy.db"
+  with sqlite3.connect(db_path) as conn:
+    conn.execute("""
+        CREATE TABLE spans (
+          span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL,
+          parent_span_id TEXT, name TEXT NOT NULL,
+          start_time_unix_nano INTEGER, end_time_unix_nano INTEGER,
+          session_id TEXT, invocation_id TEXT, attributes_json TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO spans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "0000000000000001",
+            "000000000000000000000000000def45",
+            None,
+            "legacy_operation",
+            1000,
+            2000,
+            "session-legacy",
+            None,
+            '{"gen_ai.conversation.id": "session-legacy"}',
+        ),
+    )
+
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  try:
+    assert (
+        exporter.export([
+            _create_span(
+                span_id=2,
+                name="new_operation",
+                kind=SpanKind.CLIENT,
+                attributes={"gen_ai.conversation.id": "session-legacy"},
+                start_time=3000,
+            )
+        ])
+        == SpanExportResult.SUCCESS
+    )
+    restored = exporter.get_all_spans_for_session("session-legacy")
+    assert [(span.name, span.kind) for span in restored] == [
+        ("legacy_operation", SpanKind.INTERNAL),
+        ("new_operation", SpanKind.CLIENT),
+    ]
+  finally:
+    exporter.shutdown()
+
+
+def test_database_from_newer_schema_version_is_not_downgraded(
+    tmp_path: Path,
+) -> None:
+  db_path = tmp_path / "newer.db"
+  SqliteSpanExporter(db_path=str(db_path)).shutdown()
+  with sqlite3.connect(db_path) as conn:
+    conn.execute("PRAGMA user_version = 99")
+
+  SqliteSpanExporter(db_path=str(db_path)).shutdown()
+
+  with sqlite3.connect(db_path) as conn:
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 99
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> list[str]:
+  return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def test_failing_migration_rolls_back_and_can_be_retried(
+    tmp_path: Path,
+) -> None:
+  conn = sqlite3.connect(tmp_path / "migrations.db")
+  try:
+    create = ("CREATE TABLE t (a TEXT)",)
+    _apply_migrations(conn, [create])
+
+    with pytest.raises(sqlite3.OperationalError):
+      _apply_migrations(
+          conn,
+          [
+              create,
+              ("ALTER TABLE t ADD COLUMN b TEXT", "SELECT * FROM missing"),
+          ],
+      )
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert _column_names(conn, "t") == ["a"]
+
+    _apply_migrations(conn, [create, ("ALTER TABLE t ADD COLUMN b TEXT",)])
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert _column_names(conn, "t") == ["a", "b"]
+  finally:
+    conn.close()
+
+
+def test_apply_migrations_skips_entries_already_applied(tmp_path: Path) -> None:
+  conn = sqlite3.connect(tmp_path / "migrations.db")
+  try:
+    conn.execute("CREATE TABLE t (a TEXT)")
+    conn.execute("PRAGMA user_version = 1")
+
+    # Entry 0 would fail if re-run because the table already exists.
+    _apply_migrations(
+        conn,
+        [("CREATE TABLE t (a TEXT)",), ("ALTER TABLE t ADD COLUMN b TEXT",)],
+    )
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert _column_names(conn, "t") == ["a", "b"]
+  finally:
+    conn.close()
+
+
+def test_current_database_opens_while_another_writer_holds_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  db_path = tmp_path / "locked.db"
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  assert (
+      exporter.export(
+          [_create_span(attributes={"gen_ai.conversation.id": "session-lock"})]
+      )
+      == SpanExportResult.SUCCESS
+  )
+  exporter.shutdown()
+  monkeypatch.setattr(
+      "google.adk.telemetry.sqlite_span_exporter._DEFAULT_TIMEOUT_SECONDS",
+      0.1,
+  )
+
+  writer = sqlite3.connect(db_path, isolation_level=None)
+  try:
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("UPDATE spans SET name = 'uncommitted'")
+
+    reopened = SqliteSpanExporter(db_path=str(db_path))
+    try:
+      restored = reopened.get_all_spans_for_session("session-lock")
+      assert [span.name for span in restored] == ["test_span"]
+    finally:
+      reopened.shutdown()
+  finally:
+    writer.rollback()
+    writer.close()
 
 
 def test_spans_with_parent_context_exported_correctly(tmp_path):
@@ -522,20 +705,13 @@ def test_links_survive_exporter_restart(tmp_path, is_remote, trace_flags):
 
 
 @pytest.mark.parametrize("initializers", [1, 2])
+@pytest.mark.parametrize("schema_version", [0, 1, 2])
 @pytest.mark.parametrize(
     "extra_columns",
-    [
-        "",
-        ", status_code TEXT, status_description TEXT, events_json TEXT",
-        ", kind TEXT NOT NULL DEFAULT 'INTERNAL'",
-        (
-            ", status_code TEXT, status_description TEXT, events_json TEXT,"
-            " kind TEXT NOT NULL DEFAULT 'INTERNAL'"
-        ),
-    ],
+    ["", ", status_code TEXT, status_description TEXT, events_json TEXT"],
 )
 def test_legacy_database_retains_spans_and_accepts_links(
-    tmp_path, initializers, extra_columns
+    tmp_path, initializers, schema_version, extra_columns
 ):
   """Opening an old database preserves its rows, including concurrent opens."""
   db_path = str(tmp_path / "spans.db")
@@ -550,6 +726,15 @@ def test_legacy_database_retains_spans_and_accepts_links(
         "INSERT INTO spans (span_id, trace_id, name, session_id)"
         " VALUES ('111', '222', 'legacy', 'session')"
     )
+    if schema_version >= 1:
+      conn.execute("CREATE INDEX spans_session_id_idx ON spans(session_id)")
+      conn.execute("CREATE INDEX spans_trace_id_idx ON spans(trace_id)")
+    if schema_version >= 2:
+      conn.execute(
+          "ALTER TABLE spans ADD COLUMN kind TEXT NOT NULL DEFAULT 'INTERNAL'"
+      )
+      conn.execute("UPDATE spans SET kind = 'SERVER'")
+    conn.execute(f"PRAGMA user_version = {schema_version}")
   barrier = threading.Barrier(initializers)
 
   def open_database(_: int) -> None:
@@ -573,6 +758,7 @@ def test_legacy_database_retains_spans_and_accepts_links(
     result = exporter.export([
         _create_span(
             name="new",
+            kind=SpanKind.CLIENT,
             attributes={"gcp.vertex.agent.session_id": "session"},
             links=[link],
         )
@@ -591,6 +777,12 @@ def test_legacy_database_retains_spans_and_accepts_links(
   assert set(by_name) == {"legacy", "new", "old-writer"}
   assert not by_name["old-writer"].links
   assert not by_name["legacy"].links
+  assert by_name["legacy"].kind == (
+      SpanKind.SERVER if schema_version >= 2 else SpanKind.INTERNAL
+  )
+  assert by_name["new"].kind == SpanKind.CLIENT
+  with closing(sqlite3.connect(db_path)) as conn:
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
   assert len(by_name["new"].links) == 1
   assert by_name["new"].links[0].context == link.context
 
@@ -680,36 +872,3 @@ def test_current_database_readable_during_wal_write(tmp_path: Path) -> None:
   assert spans[0].name == "saved-span"
   assert len(spans[0].links) == 1
   assert spans[0].links[0].context == link.context
-
-
-@pytest.mark.parametrize(
-    "index_name", ["spans_session_id_idx", "spans_trace_id_idx"]
-)
-def test_reopening_database_restores_missing_index(
-    tmp_path: Path, index_name: str
-) -> None:
-  db_path = str(tmp_path / "spans.db")
-  exporter = SqliteSpanExporter(db_path=db_path)
-  try:
-    assert (
-        exporter.export([
-            _create_span(attributes={"gcp.vertex.agent.session_id": "session"})
-        ])
-        == SpanExportResult.SUCCESS
-    )
-  finally:
-    exporter.shutdown()
-  with closing(sqlite3.connect(db_path)) as conn:
-    conn.execute(f"DROP INDEX {index_name}")
-    conn.commit()
-
-  reopened = SqliteSpanExporter(db_path=db_path)
-  try:
-    spans = reopened.get_all_spans_for_session("session")
-    with closing(sqlite3.connect(db_path)) as conn:
-      indexes = {row[1] for row in conn.execute("PRAGMA index_list(spans)")}
-  finally:
-    reopened.shutdown()
-
-  assert len(spans) == 1
-  assert index_name in indexes

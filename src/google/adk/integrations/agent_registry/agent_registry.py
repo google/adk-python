@@ -111,6 +111,7 @@ class AgentRegistrySingleMcpToolset(McpToolset):
       auth_credential: AuthCredential | None = None,
       binding_registry: AgentRegistry | None = None,
       mcp_server_id: str | None = None,
+      continue_uri: str | None = None,
   ):
     super().__init__(
         connection_params=connection_params,
@@ -122,6 +123,9 @@ class AgentRegistrySingleMcpToolset(McpToolset):
     self.destination_resource_id = destination_resource_id
     self._mcp_server_id = mcp_server_id
     self._binding_registry = binding_registry
+    # The caller's continue URI, kept apart from the scheme's so a rebind
+    # takes the new binding's continue URI rather than the old one's.
+    self._continue_uri = continue_uri
     self._rebind_lock = threading.Lock()
 
   def __getstate__(self) -> Dict[str, Any]:
@@ -132,6 +136,12 @@ class AgentRegistrySingleMcpToolset(McpToolset):
   def __setstate__(self, state: Dict[str, Any]) -> None:
     super().__setstate__(state)  # type: ignore[no-untyped-call]
     self._rebind_lock = threading.Lock()
+    if "_continue_uri" not in state:
+      # Older versions ignored the binding's continue URI, so the scheme's
+      # could only have come from the caller.
+      self._continue_uri = getattr(
+          state.get("_auth_scheme"), "continue_uri", None
+      )
 
   @override
   def get_auth_config(self) -> AuthConfig | None:
@@ -179,14 +189,9 @@ class AgentRegistrySingleMcpToolset(McpToolset):
           resource_id,
       )
       return
-    continue_uri = (
-        self._auth_scheme.continue_uri
-        if isinstance(self._auth_scheme, GcpAuthProviderScheme)
-        else None
-    )
     try:
       auth_scheme = registry._fetch_available_auth_scheme(  # pylint: disable=protected-access
-          resource_id, source_identifier, continue_uri=continue_uri
+          resource_id, source_identifier, continue_uri=self._continue_uri
       )
     except Exception as e:  # pylint: disable=broad-except
       logger.warning(
@@ -295,10 +300,10 @@ def _update_time_key(binding: Dict[str, Any]) -> tuple[str, str]:
   return seconds, fraction.ljust(9, "0")
 
 
-def _select_auth_provider(
+def _select_auth_provider_binding(
     bindings: List[Dict[str, Any]], resource_name: str
-) -> str | None:
-  """Returns the auth provider of the most recently updated binding.
+) -> Dict[str, Any] | None:
+  """Returns the `authProviderBinding` of the most recently updated binding.
 
   Args:
     bindings: Bindings targeting the resource with an auth provider.
@@ -307,7 +312,8 @@ def _select_auth_provider(
   if not bindings:
     return None
   newest = max(bindings, key=_update_time_key)
-  chosen: str = newest["authProviderBinding"]["authProvider"]
+  auth_provider_binding: Dict[str, Any] = newest["authProviderBinding"]
+  chosen = auth_provider_binding["authProvider"]
   auth_providers = sorted(
       {b["authProviderBinding"]["authProvider"] for b in bindings}
   )
@@ -320,7 +326,28 @@ def _select_auth_provider(
         ", ".join(auth_providers),
         chosen,
     )
-  return chosen
+  return auth_provider_binding
+
+
+def _scheme_from_binding(
+    auth_provider_binding: Dict[str, Any] | None, continue_uri: str | None
+) -> GcpAuthProviderScheme | None:
+  """Builds the auth scheme for a binding's auth provider.
+
+  Args:
+    auth_provider_binding: The binding's `authProviderBinding`, or None.
+    continue_uri: The caller's continue URI. It takes precedence over the
+      binding's.
+  """
+  if not auth_provider_binding:
+    return None
+  return GcpAuthProviderScheme(
+      name=auth_provider_binding["authProvider"],
+      scopes=auth_provider_binding.get("scopes") or None,
+      continue_uri=continue_uri
+      or auth_provider_binding.get("continueUri")
+      or None,
+  )
 
 
 class AgentRegistry:
@@ -542,8 +569,8 @@ class AgentRegistry:
       resource_id: The stable identifier of the resource (for example an
         `agentId` or an `mcpServerId`), matched against the binding targets.
       resource_name: The resource name, only used for logging.
-      continue_uri: Optional continue URI to override what is in the auth
-        provider.
+      continue_uri: Optional continue URI to override the binding's and the
+        auth provider's.
 
     Returns:
       The scheme for the bound auth provider, or None if the resource is not
@@ -552,16 +579,14 @@ class AgentRegistry:
     if not resource_id:
       return None
     try:
-      auth_provider = _select_auth_provider(
+      auth_provider_binding = _select_auth_provider_binding(
           self._list_auth_provider_bindings("bindings", resource_id),
           resource_name,
       )
     except Exception as e:  # pylint: disable=broad-except
       logger.warning("Failed to fetch bindings for %s: %s", resource_name, e)
       return None
-    if not auth_provider:
-      return None
-    return GcpAuthProviderScheme(name=auth_provider, continue_uri=continue_uri)
+    return _scheme_from_binding(auth_provider_binding, continue_uri)
 
   def _get_deployed_agent_id(self) -> str | None:
     """Returns the Agent Registry ID of the Agent Engine deployment, if found.
@@ -614,8 +639,8 @@ class AgentRegistry:
     Args:
       resource_id: The stable identifier of the target resource.
       source_identifier: The deployed agent's Agent Registry identifier.
-      continue_uri: Optional continue URI to override what is in the auth
-        provider.
+      continue_uri: Optional continue URI to override the binding's and the
+        auth provider's.
 
     Returns:
       The scheme, or None if no binding is available to the agent.
@@ -637,10 +662,10 @@ class AgentRegistry:
         for b in bindings
         if b.get("source", {}).get("identifier") == source_identifier
     ]
-    auth_provider = _select_auth_provider(own_bindings or bindings, resource_id)
-    if not auth_provider:
-      return None
-    return GcpAuthProviderScheme(name=auth_provider, continue_uri=continue_uri)
+    return _scheme_from_binding(
+        _select_auth_provider_binding(own_bindings or bindings, resource_id),
+        continue_uri,
+    )
 
   def _list_auth_provider_bindings(
       self,
@@ -743,8 +768,8 @@ class AgentRegistry:
       mcp_server_name: Resource name of the MCP Server.
       auth_scheme: Optional auth scheme. Resolved via bindings if omitted.
       auth_credential: Optional auth credential.
-      continue_uri: Optional continue URI to override what is in the auth
-        provider.
+      continue_uri: Optional continue URI. Overrides the one on the binding
+        and on the auth provider; only needed when neither has one.
 
     Returns:
       An McpToolset for the MCP server.
@@ -821,6 +846,7 @@ class AgentRegistry:
         auth_credential=auth_credential,
         binding_registry=binding_registry,
         mcp_server_id=mcp_server_id,
+        continue_uri=continue_uri,
     )
 
   # --- Endpoint Methods ---
@@ -935,8 +961,8 @@ class AgentRegistry:
       auth_scheme: Optional auth scheme. Resolved via bindings if omitted.
       auth_credential: Optional auth credential.
       httpx_client: Optional shared HTTP client.
-      continue_uri: Optional continue URI to override what is in the auth
-        provider.
+      continue_uri: Optional continue URI. Overrides the one on the binding
+        and on the auth provider; only needed when neither has one.
 
     Returns:
       A RemoteA2aAgent for the registered agent.

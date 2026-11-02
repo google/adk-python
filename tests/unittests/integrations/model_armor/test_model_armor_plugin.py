@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from typing import Optional
@@ -692,6 +693,40 @@ async def test_close_only_closes_own_client():
   await plugin.close()
 
   built_client.transport.close.assert_awaited_once()
+
+
+def test_each_event_loop_gets_its_own_client():
+  """Each sync Runner.run call runs a new loop, which needs its own channel."""
+  plugin = ModelArmorPlugin(
+      config=_config(), credentials=AnonymousCredentials()
+  )
+
+  async def read_client():
+    client = plugin.client
+    assert plugin.client is client
+    await client.transport.close()
+    return client
+
+  first_loop_client = asyncio.run(read_client())
+  second_loop_client = asyncio.run(read_client())
+
+  assert first_loop_client is not second_loop_client
+
+
+@pytest.mark.asyncio
+async def test_close_releases_the_running_loops_client():
+  """After close() the next read on the same loop builds a fresh client."""
+  plugin = ModelArmorPlugin(
+      config=_config(), credentials=AnonymousCredentials()
+  )
+  client = plugin.client
+  client.transport.close = mock.AsyncMock()
+
+  await plugin.close()
+
+  client.transport.close.assert_awaited_once()
+  assert plugin.client is not client
+  await plugin.close()
 
 
 # --- Tool output screening --------------------------------------------------

@@ -488,6 +488,132 @@ async def test_join_node_in_loop_clears_prior_output_when_node_returns_none(
 
 
 @pytest.mark.asyncio
+async def test_join_node_in_loop_fires_each_iteration_with_outside_predecessor(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode in a loop fires every iteration when setup runs once."""
+  join_inputs: list[dict[str, str]] = []
+
+  def setup() -> str:
+    return 'config'
+
+  def body() -> str:
+    return f'B{len(join_inputs) + 1}'
+
+  def check(node_input: dict[str, str]) -> Event | None:
+    join_inputs.append(node_input)
+    return Event(route='again') if len(join_inputs) < 3 else None
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, setup, body),
+          ((setup, body), join, check),
+          (check, {'again': body}),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('start')
+
+  assert join_inputs == [
+      {'setup': 'config', 'body': 'B1'},
+      {'setup': 'config', 'body': 'B2'},
+      {'setup': 'config', 'body': 'B3'},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_join_node_in_loop_with_upstream_cycle_predecessor(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode in a loop keeps the arrival of an upstream cyclic step."""
+  producer_runs = 0
+  join_inputs: list[dict[str, str]] = []
+
+  def producer() -> Event:
+    nonlocal producer_runs
+    producer_runs += 1
+    route = 'again' if producer_runs < 2 else 'ready'
+    return Event(output=f'P{producer_runs}', route=route)
+
+  def body() -> str:
+    return f'B{len(join_inputs) + 1}'
+
+  def check(node_input: dict[str, str]) -> Event | None:
+    join_inputs.append(node_input)
+    return Event(route='again') if len(join_inputs) < 3 else None
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, producer),
+          (producer, join),
+          (producer, {'again': producer, 'ready': body}),
+          (body, join),
+          (join, check),
+          (check, {'again': body}),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('start')
+
+  assert join_inputs == [
+      {'producer': 'P2', 'body': 'B1'},
+      {'producer': 'P2', 'body': 'B2'},
+      {'producer': 'P2', 'body': 'B3'},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_join_node_after_loop_fires_once_when_loop_repeats(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode downstream of a loop, not on it, fires once."""
+  b_runs = 0
+
+  def node_a() -> str:
+    return 'A'
+
+  def node_b() -> Event:
+    nonlocal b_runs
+    b_runs += 1
+    return Event(output=f'B{b_runs}', route='again' if b_runs < 3 else 'done')
+
+  def node_c() -> str:
+    return 'C'
+
+  join = join_node.JoinNode(name='join')
+  capture = workflow_testing_utils.InputCapturingNode(name='capture')
+  # The join is downstream of the node_a/node_b loop, not on it. node_b feeds
+  # it on every iteration (B1, B2, B3), so it must fire once and ignore reruns.
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, (node_a, node_c)),
+          (node_a, node_b),
+          (node_b, {'again': node_a}),
+          ((node_b, node_c), join, capture),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('start')
+
+  assert b_runs == 3
+  assert capture.received_inputs == [{'node_b': 'B1', 'node_c': 'C'}]
+
+
+@pytest.mark.asyncio
 async def test_join_node_does_not_fire_when_predecessor_routes_away(
     request: pytest.FixtureRequest,
 ) -> None:

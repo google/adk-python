@@ -896,6 +896,21 @@ def make_client_config(*, httpx_client: Any, **kwargs: Any) -> Any:
     return A2AClientConfig(httpx_client=httpx_client, **kwargs)
 
 
+def a2a_version_headers() -> dict[str, str]:
+  """Returns the A2A version headers for HTTP clients ADK creates.
+
+  1.x:   ``{"A2A-Version": PROTOCOL_VERSION_CURRENT}``; servers treat requests
+         without it as 0.3.
+  0.3.x: ``{}``.
+  """
+  if IS_A2A_V1:
+    from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+    from a2a.utils.constants import VERSION_HEADER
+
+    return {VERSION_HEADER: PROTOCOL_VERSION_CURRENT}
+  return {}
+
+
 def rebind_client_factory_httpx(factory: Any, httpx_client: Any) -> Any:
   """Returns a client factory bound to ``httpx_client``.
 
@@ -925,16 +940,6 @@ def rebind_client_factory_httpx(factory: Any, httpx_client: Any) -> Any:
   new_factory._config = config
   if hasattr(new_factory, "_httpx_client"):
     new_factory._httpx_client = httpx_client
-    if hasattr(httpx_client, "headers"):
-      try:
-        from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
-        from a2a.utils.constants import VERSION_HEADER
-
-        httpx_client.headers.setdefault(
-            VERSION_HEADER, PROTOCOL_VERSION_CURRENT
-        )
-      except ImportError:
-        pass
   if hasattr(new_factory, "_registry") and new_factory._registry is not None:
     new_factory._registry = copy.copy(factory._registry)
   if hasattr(new_factory, "_register_defaults"):

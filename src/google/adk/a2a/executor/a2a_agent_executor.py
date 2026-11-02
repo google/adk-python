@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Awaitable
@@ -31,7 +32,7 @@ from google.adk.sessions.session import Session
 from typing_extensions import override
 
 from .. import _compat
-from ...utils.context_utils import Aclosing
+from ...events.event import Event
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
@@ -40,7 +41,9 @@ from .a2a_agent_executor_impl import _A2aAgentExecutor as ExecutorImpl
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
-from .utils import _enqueue_canceled_task_event
+from .utils import _ActiveTaskRegistry
+from .utils import _consume_runner_with_abort
+from .utils import _is_abort_adk_event
 from .utils import _require_request_context
 from .utils import _require_user_id
 from .utils import execute_after_agent_interceptors
@@ -78,6 +81,7 @@ class A2aAgentExecutor(AgentExecutor):
     self._use_legacy = use_legacy
     self._force_new_version = force_new_version
     self._executor_impl: ExecutorImpl | None = None
+    self._active_tasks = _ActiveTaskRegistry()
 
   async def _resolve_runner(self) -> Runner:
     """Resolve the runner, handling cases where it's a callable that returns a Runner."""
@@ -108,7 +112,7 @@ class A2aAgentExecutor(AgentExecutor):
       self, context: RequestContext, event_queue: EventQueue
   ) -> None:
     """Cancel the execution."""
-    await _enqueue_canceled_task_event(context, event_queue)
+    await self._active_tasks.cancel(context, event_queue)
 
   @override
   async def execute(
@@ -134,6 +138,7 @@ class A2aAgentExecutor(AgentExecutor):
         self._executor_impl = ExecutorImpl(
             runner=self._runner,
             config=self._config,
+            active_tasks=self._active_tasks,
         )
       await self._executor_impl.execute(context, event_queue)
       return
@@ -149,6 +154,7 @@ class A2aAgentExecutor(AgentExecutor):
     # (1.x) vs submitted-event (0.3.x) divergence is handled by ``_compat``.
     await _compat.enqueue_submitted_signal(event_queue, context=context)
 
+    active_run = self._active_tasks.start(context.task_id, event_queue)
     # Handle the request and publish updates to the event queue
     try:
       await self._handle_request(context, event_queue)
@@ -175,6 +181,8 @@ class A2aAgentExecutor(AgentExecutor):
         logger.error(
             'Failed to publish failure event: %s', enqueue_error, exc_info=True
         )
+    finally:
+      self._active_tasks.finish(active_run)
 
   async def _handle_request(
       self,
@@ -182,6 +190,7 @@ class A2aAgentExecutor(AgentExecutor):
       event_queue: EventQueue,
   ) -> None:
     _, task_id, context_id = _require_request_context(context)
+    active_run = self._active_tasks.get(task_id)
     # Resolve the runner instance
     runner = await self._resolve_runner()
 
@@ -227,26 +236,39 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     task_result_aggregator = TaskResultAggregator()
-    last_adk_event = None
-    async with Aclosing(runner.run_async(**vars(run_request))) as agen:
-      async for adk_event in agen:
-        last_adk_event = adk_event
-        for a2a_event in self._config.event_converter(
+    last_adk_event: Event | None = None
+    abort_signal = (
+        active_run.abort_signal if active_run is not None else asyncio.Event()
+    )
+    aborted = False
+
+    async def _on_event(adk_event: Event) -> None:
+      nonlocal aborted, last_adk_event
+      last_adk_event = adk_event
+      if adk_event and _is_abort_adk_event(adk_event):
+        aborted = True
+      for a2a_event in self._config.event_converter(
+          adk_event,
+          invocation_context,
+          task_id,
+          context_id,
+          self._config.gen_ai_part_converter,
+      ):
+        a2a_events = await execute_after_event_interceptors(
+            a2a_event,
+            executor_context,
             adk_event,
-            invocation_context,
-            task_id,
-            context_id,
-            self._config.gen_ai_part_converter,
-        ):
-          a2a_events = await execute_after_event_interceptors(
-              a2a_event,
-              executor_context,
-              adk_event,
-              self._config.execute_interceptors,
-          )
-          for e in a2a_events:
-            task_result_aggregator.process_event(e)
-            await event_queue.enqueue_event(e)
+            self._config.execute_interceptors,
+        )
+        for e in a2a_events:
+          task_result_aggregator.process_event(e)
+          await event_queue.enqueue_event(e)
+
+    await _consume_runner_with_abort(
+        runner.run_async, run_request, abort_signal, _on_event
+    )
+    if abort_signal.is_set():
+      aborted = True
 
     # Build metadata for final event to preserve invocation_id and event_id.
     final_metadata = {
@@ -266,7 +288,8 @@ class A2aAgentExecutor(AgentExecutor):
 
     # publish the task result event - this is final
     if (
-        task_result_aggregator.task_state == _compat.TS_WORKING
+        not aborted
+        and task_result_aggregator.task_state == _compat.TS_WORKING
         and task_result_aggregator.task_status_message is not None
         and task_result_aggregator.task_status_message.parts
     ):
@@ -293,16 +316,21 @@ class A2aAgentExecutor(AgentExecutor):
           metadata=final_metadata,
       )
     else:
-      final_state = task_result_aggregator.task_state
+      final_state = (
+          _compat.TS_CANCELED if aborted else task_result_aggregator.task_state
+      )
       # A run that ends without failing or pausing has completed.
       if final_state == _compat.TS_WORKING:
         final_state = _compat.TS_COMPLETED
+      status_message = task_result_aggregator.task_status_message
+      if aborted and task_result_aggregator.task_state != _compat.TS_CANCELED:
+        status_message = None
       final_event = _compat.make_task_status_update_event(
           task_id=task_id,
           context_id=context_id,
           status=_compat.make_task_status(
               final_state,
-              message=task_result_aggregator.task_status_message,
+              message=status_message,
           ),
           final=True,
           metadata=final_metadata,
@@ -314,6 +342,8 @@ class A2aAgentExecutor(AgentExecutor):
         self._config.execute_interceptors,
     )
     await event_queue.enqueue_event(final_event)
+    if active_run and final_event.status.state == _compat.TS_CANCELED:
+      active_run.terminal_cancel_emitted = True
 
   async def _prepare_session(
       self,

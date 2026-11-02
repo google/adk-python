@@ -26,7 +26,6 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 
 from ..utils import _mtls_utils
-from ..utils.feature_decorator import experimental
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -42,7 +41,6 @@ async def _new_client(url: str) -> httpx.AsyncClient:
   return httpx.AsyncClient(**client_cert_kwargs)
 
 
-@experimental
 class AuthorizationServerMetadata(BaseModel):
   """Represents the OAuth2 authorization server metadata per RFC8414."""
 
@@ -53,7 +51,6 @@ class AuthorizationServerMetadata(BaseModel):
   registration_endpoint: Optional[str] = None
 
 
-@experimental
 class ProtectedResourceMetadata(BaseModel):
   """Represents the OAuth2 protected resource metadata per RFC9728."""
 
@@ -97,7 +94,6 @@ def _plain_resource_metadata(
   )
 
 
-@experimental
 class OAuth2DiscoveryManager:
   """Implements Metadata discovery for OAuth2 following RFC8414 and RFC9728."""
 

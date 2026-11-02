@@ -242,8 +242,6 @@ class SessionCompactionPlugin(BasePlugin):
 
 ## Limitations
 
-*   **Experimental configs**: `EventsCompactionConfig` and `ResumabilityConfig`
-    emit an experimental warning on construction and may change without notice.
 *   **`EventsCompactionConfig` is not re-exported**: `google.adk.apps` exports
     only `App` and `ResumabilityConfig`. Import `EventsCompactionConfig` from
     `google.adk.apps.app`.

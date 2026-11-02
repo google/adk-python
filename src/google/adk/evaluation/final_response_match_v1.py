@@ -18,11 +18,11 @@ from typing import Any
 from typing import Optional
 import unicodedata
 
-from google.genai import types as genai_types
 from typing_extensions import override
 
 from ..dependencies.rouge_scorer import rouge_scorer
 from ..dependencies.rouge_scorer import tokenizers
+from ..utils.content_utils import extract_text_from_content
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import _get_metric_threshold
@@ -63,8 +63,10 @@ class RougeEvaluator(Evaluator):
     for actual, expected in zip(
         actual_invocations, expected_invocations, strict=True
     ):
-      reference = _get_text_from_content(expected.final_response)
-      response = _get_text_from_content(actual.final_response)
+      reference = extract_text_from_content(
+          expected.final_response, splitter="\n"
+      )
+      response = extract_text_from_content(actual.final_response, splitter="\n")
       rouge_1_scores = _calculate_rouge_1_scores(response, reference)
       score = rouge_1_scores.fmeasure
       per_invocation_results.append(
@@ -87,13 +89,6 @@ class RougeEvaluator(Evaluator):
       )
 
     return EvaluationResult()
-
-
-def _get_text_from_content(content: Optional[genai_types.Content]) -> str:
-  if content and content.parts:
-    return "\n".join([part.text for part in content.parts if part.text])
-
-  return ""
 
 
 def _get_eval_status(score: float, threshold: float) -> EvalStatus:

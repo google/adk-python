@@ -224,17 +224,7 @@
                   "role": "assistant",
                   "parts": [
                     {
-                      "content": "text ",
-                      "type": "text"
-                    }
-                  ],
-                  "finish_reason": ""
-                },
-                {
-                  "role": "assistant",
-                  "parts": [
-                    {
-                      "content": "response",
+                      "content": "text response",
                       "type": "text"
                     }
                   ],
@@ -254,13 +244,13 @@
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
                   "gen_ai.provider.name": "gcp.gemini",
+                  "gen_ai.response.finish_reasons": [
+                    "stop"
+                  ],
                   "gen_ai.usage.input_tokens": 150,
                   "gen_ai.usage.output_tokens": 50,
                   "gen_ai.usage.cache_read.input_tokens": 60,
                   "gen_ai.usage.reasoning.output_tokens": 15,
-                  "gen_ai.response.finish_reasons": [
-                    "stop"
-                  ],
                   "gen_ai.tool.definitions": [
                     {
                       "name": "some_tool",
@@ -279,6 +269,108 @@
     "logs": []
   },
   "metric_points": {
+    "gen_ai.client.inference.operation.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash"
+        },
+        "value": 250
+      }
+    ],
+    "gen_ai.client.inference.operation.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash"
+        },
+        "value": 75
+      }
+    ],
+    "gen_ai.client.inference.time_per_output_chunk": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.client.inference.time_to_first_chunk": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.client.inference.usage.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 100
+      }
+    ],
+    "gen_ai.client.inference.usage.cache_write.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.client.inference.usage.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 250
+      }
+    ],
+    "gen_ai.client.inference.usage.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 75
+      }
+    ],
+    "gen_ai.client.inference.usage.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 20
+      }
+    ],
     "gen_ai.client.operation.duration": [
       {
         "attributes": {

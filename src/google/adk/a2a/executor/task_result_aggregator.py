@@ -21,7 +21,23 @@ from a2a.types import Message
 from a2a.types import TaskStatusUpdateEvent
 
 from .. import _compat
+from ...events._abort_events import _INVOCATION_ABORTED
+from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
+
+_ERROR_CODE_KEY = _get_adk_metadata_key("error_code")
+
+
+def _is_canceled_status_event(event: TaskStatusUpdateEvent) -> bool:
+  if event.status.state == _compat.TS_CANCELED:
+    return True
+  if event.status.state != _compat.TS_FAILED:
+    return False
+  msg = _compat.normalize_message(event.status.message)
+  return _INVOCATION_ABORTED in (
+      _compat.metadata_get(event.metadata, _ERROR_CODE_KEY),
+      _compat.metadata_get(msg.metadata, _ERROR_CODE_KEY) if msg else None,
+  )
 
 
 @a2a_experimental
@@ -35,10 +51,18 @@ class TaskResultAggregator:
   def process_event(self, event: Event) -> None:
     """Process an event from the agent run and detect signals about the task status.
 
-    Priority of task state: - failed - auth_required - input_required - working
+    Priority of task state:
+      - canceled - failed - auth_required - input_required - working
     """
     if isinstance(event, TaskStatusUpdateEvent):
-      if event.status.state == _compat.TS_FAILED:
+      if _is_canceled_status_event(event):
+        self._task_state = _compat.TS_CANCELED
+        self._task_status_message = _compat.normalize_message(
+            event.status.message
+        )
+      elif self._task_state == _compat.TS_CANCELED:
+        pass
+      elif event.status.state == _compat.TS_FAILED:
         self._task_state = _compat.TS_FAILED
         self._task_status_message = _compat.normalize_message(
             event.status.message

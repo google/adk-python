@@ -309,47 +309,12 @@ def test_response_attributes_split_between_details_and_common():
   }
 
 
-def test_response_attributes_accumulate_output_messages_across_a_stream():
-  """Keeping only the last chunk truncated the log to it."""
+def test_unaggregated_chunks_are_reported_as_one_message():
+  """Chunks no aggregator assembled extend one message, ending at the last."""
   details: dict = {}
   common: dict = {}
 
-  for text in ('text ', 'response'):
-    set_operation_details_attributes_from_response(
-        LlmResponse(
-            content=types.Content(role='model', parts=[types.Part(text=text)]),
-            finish_reason=types.FinishReason.STOP,
-        ),
-        details,
-        common,
-    )
-
-  assert details == {
-      'gen_ai.output.messages': [
-          {
-              'role': 'assistant',
-              'parts': [{'content': 'text ', 'type': 'text'}],
-              'finish_reason': 'stop',
-          },
-          {
-              'role': 'assistant',
-              'parts': [{'content': 'response', 'type': 'text'}],
-              'finish_reason': 'stop',
-          },
-      ]
-  }
-
-
-def test_streamed_chunks_are_reported_one_message_each():
-  """Each chunk is its own message, as the OTel instrumentor reports a stream."""
-  details: dict = {}
-  common: dict = {}
-
-  # Only the chunk that ends the turn reports why generation stopped.
-  for text, finish_reason in (
-      ('text ', types.FinishReason.FINISH_REASON_UNSPECIFIED),
-      ('response', types.FinishReason.STOP),
-  ):
+  for text, finish_reason in (('text ', None), ('response', 'STOP')):
     set_operation_details_attributes_from_response(
         LlmResponse(
             content=types.Content(role='model', parts=[types.Part(text=text)]),
@@ -359,10 +324,16 @@ def test_streamed_chunks_are_reported_one_message_each():
         common,
     )
 
-  assert [
-      message['parts'][0]['content']
-      for message in details['gen_ai.output.messages']
-  ] == ['text ', 'response']
+  assert details == {
+      'gen_ai.output.messages': [{
+          'role': 'assistant',
+          'parts': [
+              {'content': 'text ', 'type': 'text'},
+              {'content': 'response', 'type': 'text'},
+          ],
+          'finish_reason': 'stop',
+      }]
+  }
   assert common == {'gen_ai.response.finish_reasons': ['stop']}
 
 
