@@ -316,3 +316,40 @@ def validate_path_segment(value: str, field_name: str) -> None:
       raise input_validation_error.InputValidationError(
           f"{field_name} {value!r} must not contain reserved path segments."
       )
+
+def validate_artifact_filename(filename: str) -> None:
+  """Rejects an artifact filename that could alter the storage key.
+
+  A filename may hold a nested path ("images/chart.png"), which the backends
+  support on purpose, so only the forms that escape or corrupt the key are
+  rejected.
+
+  Args:
+    filename: The caller-supplied artifact filename.
+
+  Raises:
+    InputValidationError: If the filename is empty, contains a null byte, is an
+      absolute path / starts with a slash, is drive-qualified, or contains
+      traversal segments.
+  """
+  if not filename or not filename.strip():
+    raise input_validation_error.InputValidationError(
+        "filename must not be empty."
+    )
+  if "\x00" in filename:
+    raise input_validation_error.InputValidationError(
+        "filename must not contain null bytes."
+    )
+  if filename.startswith("/") or filename.startswith("\\"):
+    raise input_validation_error.InputValidationError(
+        f"filename {filename!r} must not be an absolute path or start with a"
+        " slash."
+    )
+  if _is_drive_qualified(filename):
+    raise input_validation_error.InputValidationError(
+        f"filename {filename!r} must not be drive-qualified."
+    )
+  if filename in (".", "..") or ".." in filename.replace("\\", "/").split("/"):
+    raise input_validation_error.InputValidationError(
+        f"filename {filename!r} must not contain traversal segments."
+    )
