@@ -423,7 +423,12 @@ class SqliteMemoryService(BaseMemoryService):
 
     async with self._get_db_connection() as db:
       # self._fts_available is initialized during _ensure_schema within _get_db_connection.
-      if self._fts_available:
+      # FTS5's unicode61 tokenizer indexes a run of Chinese or Japanese text
+      # as one token, so a word inside the run never matches. LIKE matches it
+      # as a substring instead.
+      if self._fts_available and not any(
+          _has_unspaced_script(token) for token in tokens
+      ):
         fts_query = " OR ".join(_escape_fts_token(token) for token in tokens)
         async with db.execute(
             """
@@ -548,6 +553,22 @@ def _is_latin(c: str) -> bool:
   if c.isascii():
     return c.isalnum() or c == "_"
   return unicodedata.name(c, "").startswith("LATIN")
+
+
+# Chinese and Japanese are written without spaces between words.
+_UNSPACED_SCRIPT_NAME_PREFIXES = (
+    "CJK UNIFIED IDEOGRAPH",
+    "CJK COMPATIBILITY IDEOGRAPH",
+    "HIRAGANA",
+    "KATAKANA",
+)
+
+
+def _has_unspaced_script(token: str) -> bool:
+  return any(
+      unicodedata.name(c, "").startswith(_UNSPACED_SCRIPT_NAME_PREFIXES)
+      for c in token
+  )
 
 
 def _split_script_runs(text: str) -> str:

@@ -938,6 +938,34 @@ async def test_search_cjk_mixed_latin_query(tmp_path, fts_mode):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "query"),
+    [
+        ("我想买这辆车，价格是二十万。", "价格"),
+        ("我想买这辆车，价格是二十万。", "二十万"),
+        ("私はPythonを使う", "使う"),
+        ("私はPythonを使う", "Python 使う"),
+    ],
+)
+async def test_search_matches_cjk_word_inside_sentence(
+    tmp_path, fts_mode, text, query
+):
+  """A Chinese or Japanese word inside a stored sentence is found in both modes."""
+  db_path = tmp_path / "memory.db"
+  service = SqliteMemoryService(db_path=db_path, fts=fts_mode)
+  session = _make_session([
+      _make_event("user", text, 1.0),
+      _make_event("user", "今天天气很好", 2.0),
+  ])
+  await service.add_session_to_memory(session)
+  response = await service.search_memory(
+      app_name="app", user_id="user", query=query
+  )
+  assert [m.content.parts[0].text for m in response.memories] == [text]
+  await service.close()
+
+
+@pytest.mark.asyncio
 async def test_search_matches_word_with_capital_dotted_i(tmp_path, fts_mode):
   """A stored word with a capital dotted I is found by searching for it."""
   db_path = tmp_path / "memory.db"
