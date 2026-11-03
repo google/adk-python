@@ -13,9 +13,11 @@
 # limitations under the License.
 
 import asyncio
+import base64
 from dataclasses import dataclass
 from dataclasses import field
 import inspect
+import json
 import pickle
 import socket
 from unittest.mock import AsyncMock
@@ -39,6 +41,34 @@ from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
+
+
+def _assert_no_secret_screenshot(response: object, secret: bytes) -> None:
+  """Check the model-facing response for raw and encoded screenshot content."""
+  assert isinstance(response, dict)
+  assert "image" not in response
+  assert "screenshot" not in response
+  serialized = json.dumps(response)
+  assert secret.decode() not in serialized
+  assert base64.b64encode(secret).decode() not in serialized
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Keep computer state validation independent of real DNS/network access."""
+  monkeypatch.setattr(
+      socket,
+      "getaddrinfo",
+      Mock(
+          return_value=[(
+              socket.AF_INET,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              "",
+              ("93.184.216.34", 0),
+          )]
+      ),
+  )
 
 
 class MockComputer(BaseComputer):
@@ -703,8 +733,9 @@ class TestNavigateUrlSafety:
     # The computer-use model rejects a function response carrying no url, so a
     # refusal reports the page the browser is still on
     assert result["url"] == url_before
-    # Refusal is decided from the url alone, so no case reaches DNS.
-    resolver.assert_not_called()
+    # The unsafe input never reaches DNS; the existing page is checked before
+    # reporting its URL so a previous asynchronous navigation cannot leak it.
+    assert [call.args[0] for call in resolver.call_args_list] == ["example.com"]
 
   @pytest.mark.asyncio
   async def test_navigate_allows_public_url_unmodified(
@@ -717,7 +748,11 @@ class TestNavigateUrlSafety:
 
     assert mock_computer.navigate_calls == ["https://example.com/search?q=adk"]
     assert result.url == "https://example.com/search?q=adk"
-    resolver.assert_called_once()
+    # Validate both the requested URL and the browser's resulting state.
+    assert [call.args[0] for call in resolver.call_args_list] == [
+        "example.com",
+        "example.com",
+    ]
 
   @pytest.mark.asyncio
   async def test_navigate_allows_loopback_with_private_network_access(
@@ -751,7 +786,535 @@ class TestNavigateUrlSafety:
     mock_computer.prepare.assert_awaited_once_with(tool_context)
     assert mock_computer.navigate_calls == ["https://example.com"]
     assert result["url"] == "https://example.com"
-    resolver.assert_called_once()
+    # Validate both the requested URL and the browser's resulting state.
+    assert [call.args[0] for call in resolver.call_args_list] == [
+        "example.com",
+        "example.com",
+    ]
+
+  @pytest.mark.parametrize(
+      "navigation", ["http_redirect", "meta_refresh", "javascript"]
+  )
+  @pytest.mark.parametrize(
+      "destination",
+      [
+          "http://127.0.0.1/secret",
+          "http://10.0.0.1/secret",
+          "http://169.254.1.1/secret",
+          "http://169.254.169.254/latest/meta-data/",
+          "http://[::1]/secret",
+          "http://localhost/secret",
+      ],
+  )
+  async def test_private_navigation_landing_is_refused(
+      self,
+      navigation: str,
+      destination: str,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Never expose a private landing page's screenshot after navigation."""
+    # The backend abstracts HTTP redirects and document-driven navigation into
+    # the same final state. No browser or network is involved in these tests.
+    monkeypatch.setattr(
+        mock_computer,
+        "navigate",
+        AsyncMock(
+            return_value=ComputerState(
+                url=destination, screenshot=b"private secret"
+            )
+        ),
+    )
+    navigate = await self._build_navigate_tool(mock_computer)
+
+    result = await navigate.func(url=f"https://example.com/{navigation}")
+
+    assert isinstance(result, dict)
+    _assert_no_secret_screenshot(result, b"private secret")
+    assert result["error"]
+    assert "image" not in result
+    assert "screenshot" not in result
+    assert mock_computer.close_called
+
+  @pytest.mark.parametrize("allow_private", [False, True])
+  async def test_navigation_landing_allowed_by_policy(
+      self,
+      allow_private: bool,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Public redirects and explicitly permitted private landings work."""
+    destination = (
+        "http://127.0.0.1/" if allow_private else "https://other.example/"
+    )
+    state = ComputerState(url=destination, screenshot=b"allowed")
+    monkeypatch.setattr(
+        mock_computer, "navigate", AsyncMock(return_value=state)
+    )
+    navigate = await self._build_navigate_tool(
+        mock_computer, allow_private_network_access=allow_private
+    )
+
+    result = await navigate.func(url="https://example.com/redirect")
+
+    assert result == state
+    assert not mock_computer.close_called
+
+  async def test_delayed_private_navigation_is_refused(
+      self,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """A JS/meta navigation completed during a later action is also refused."""
+    monkeypatch.setattr(
+        mock_computer,
+        "wait",
+        AsyncMock(
+            return_value=ComputerState(
+                url="http://169.254.169.254/", screenshot=b"private secret"
+            )
+        ),
+    )
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+    await tools["navigate"].func(url="https://example.com/")
+
+    result = await tools["wait"].func(seconds=1)
+
+    assert isinstance(result, dict)
+    _assert_no_secret_screenshot(result, b"private secret")
+    assert result["error"]
+    assert mock_computer.close_called
+
+  async def test_refused_landing_disables_subsequent_actions(
+      self,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """A backend with a no-op close cannot expose the private page later."""
+    private = ComputerState(url="http://127.0.0.1/", screenshot=b"secret")
+    monkeypatch.setattr(
+        mock_computer, "navigate", AsyncMock(return_value=private)
+    )
+    current_state = AsyncMock(return_value=private)
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+    initial_result = await tools["navigate"].func(url="https://example.com/")
+    _assert_no_secret_screenshot(initial_result, b"secret")
+
+    result = await tools["current_state"].func()
+
+    assert isinstance(result, dict)
+    _assert_no_secret_screenshot(result, b"secret")
+    assert result["error"]
+    assert not current_state.called
+
+  async def test_private_dns_landing_is_refused(
+      self,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """A public-looking redirect hostname resolving to private IPs is refused."""
+    resolver.side_effect = [
+        [(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            ("93.184.216.34", 0),
+        )],
+        [(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            ("10.0.0.1", 0),
+        )],
+    ]
+    monkeypatch.setattr(
+        mock_computer,
+        "navigate",
+        AsyncMock(
+            return_value=ComputerState(
+                url="https://attacker.example/", screenshot=b"private secret"
+            )
+        ),
+    )
+    navigate = await self._build_navigate_tool(mock_computer)
+
+    result = await navigate.func(url="https://example.com/")
+
+    _assert_no_secret_screenshot(result, b"private secret")
+    assert result["error"]
+    assert mock_computer.close_called
+
+  async def test_unsafe_current_page_is_not_reported_on_input_refusal(
+      self,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Rejecting an input must also reject an already-private current page."""
+    monkeypatch.setattr(
+        mock_computer,
+        "current_state",
+        AsyncMock(
+            return_value=ComputerState(
+                url="http://127.0.0.1/secret", screenshot=b"secret"
+            )
+        ),
+    )
+    navigate = await self._build_navigate_tool(mock_computer)
+
+    result = await navigate.func(url="file:///etc/passwd")
+
+    _assert_no_secret_screenshot(result, b"secret")
+    assert result["error"]
+    assert result["url"] == "about:blank"
+    assert mock_computer.close_called
+    assert mock_computer.navigate_calls == []
+
+  async def test_cleanup_failure_keeps_computer_disabled(
+      self,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Failing cleanup must not allow subsequent actions to read private data."""
+    monkeypatch.setattr(
+        mock_computer,
+        "navigate",
+        AsyncMock(
+            return_value=ComputerState(
+                url="http://127.0.0.1/secret", screenshot=b"secret"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        mock_computer,
+        "close",
+        AsyncMock(side_effect=RuntimeError("cleanup failed")),
+    )
+    current_state = AsyncMock()
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+      await tools["navigate"].func(url="https://example.com/")
+    result = await tools["current_state"].func()
+
+    _assert_no_secret_screenshot(result, b"secret")
+    assert result["error"]
+    assert not current_state.called
+
+  async def test_private_landing_is_not_serialized_as_an_image(
+      self,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """The public tool runner never encodes a refused screenshot for the LLM."""
+
+    async def navigate_to_private(url: str) -> ComputerState:
+      return ComputerState(url="http://169.254.169.254/", screenshot=b"secret")
+
+    monkeypatch.setattr(mock_computer, "navigate", navigate_to_private)
+    navigate = await self._build_navigate_tool(mock_computer)
+
+    result = await navigate.run_async(
+        args={"url": "https://example.com/"},
+        tool_context=MagicMock(tool_confirmation=None),
+    )
+
+    _assert_no_secret_screenshot(result, b"secret")
+    assert result["error"]
+    assert "image" not in result
+    assert result["url"] == "about:blank"
+
+  @pytest.mark.parametrize("url", [None, "about:blank"])
+  async def test_non_web_computer_state_remains_available(
+      self,
+      url: str | None,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Desktop and blank browser states remain usable without a web URL."""
+    state = ComputerState(url=url, screenshot=b"desktop")
+    monkeypatch.setattr(
+        mock_computer, "current_state", AsyncMock(return_value=state)
+    )
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+
+    result = await tools["current_state"].func()
+
+    assert result == state
+    assert not mock_computer.close_called
+    resolver.assert_not_called()
+
+  @pytest.mark.parametrize(
+      "url",
+      [
+          None,
+          "",
+          "about:blank",
+          "about:blank#anchor",
+          "about:srcdoc",
+          "chrome-error://chromewebdata/",
+          "data:text/html,hello",
+      ],
+  )
+  async def test_benign_landing_remains_usable(
+      self,
+      url: str | None,
+      mock_computer: MockComputer,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Benign browser states expose their image and allow later actions."""
+    state = ComputerState(url=url, screenshot=b"benign pixels")
+
+    async def current_state() -> ComputerState:
+      return state
+
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+
+    result = await tools["current_state"].run_async(
+        args={}, tool_context=MagicMock(tool_confirmation=None)
+    )
+    later = await tools["click_at"].func(x=1, y=1)
+
+    assert (
+        result["image"]["data"] == base64.b64encode(b"benign pixels").decode()
+    )
+    assert isinstance(later, ComputerState)
+    assert not mock_computer.close_called
+
+  @pytest.mark.parametrize(
+      "url",
+      [
+          "http://localhost/",
+          "https://10.0.0.1/",
+          "ws://127.0.0.1/",
+          "wss://169.254.169.254/",
+          "ftp://[::1]/",
+          "gopher://metadata.goog/",
+          "smb://192.168.1.1/",
+          "file:///etc/passwd",
+          "http://0177.0.0.1/",
+          "http://0x7f.1/",
+          "http://2130706433/",
+      ],
+  )
+  async def test_confirmed_private_or_file_landing_latches(
+      self,
+      url: str,
+      mock_computer: MockComputer,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Private network and file pixels never reach the model or later calls."""
+
+    async def current_state() -> ComputerState:
+      return ComputerState(url=url, screenshot=b"secret landing pixels")
+
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+
+    result = await tools["current_state"].run_async(
+        args={}, tool_context=MagicMock(tool_confirmation=None)
+    )
+    later = await tools["click_at"].func(x=1, y=1)
+
+    _assert_no_secret_screenshot(result, b"secret landing pixels")
+    _assert_no_secret_screenshot(later, b"secret landing pixels")
+    assert result["error"]
+    assert later["error"]
+    assert mock_computer.close_called
+
+  @pytest.mark.parametrize(
+      "url",
+      [
+          "chrome://settings/",
+          "chrome-untrusted://new-tab-page/",
+          "unknown://opaque-page/",
+          "devtools://devtools/bundled/inspector.html",
+          "javascript:void(0)",
+          "custom:opaque-page",
+          "about:config",
+      ],
+  )
+  async def test_unknown_non_network_landing_is_withheld_without_latching(
+      self,
+      url: str,
+      mock_computer: MockComputer,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Unsupported internal pages are withheld without disabling later tools."""
+
+    async def current_state() -> ComputerState:
+      return ComputerState(url=url, screenshot=b"withheld pixels")
+
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+
+    result = await tools["current_state"].run_async(
+        args={}, tool_context=MagicMock(tool_confirmation=None)
+    )
+    later = await tools["click_at"].func(x=1, y=1)
+
+    _assert_no_secret_screenshot(result, b"withheld pixels")
+    assert result["error"]
+    assert isinstance(later, ComputerState)
+    assert not mock_computer.close_called
+
+  @pytest.mark.parametrize(
+      "error",
+      [socket.gaierror("temporary DNS failure"), TimeoutError("DNS timeout")],
+  )
+  async def test_landing_dns_failure_is_withheld_without_latching(
+      self,
+      error: OSError,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """A transient resolver failure suppresses pixels but permits recovery."""
+
+    async def current_state() -> ComputerState:
+      return ComputerState(
+          url="https://unavailable.example/", screenshot=b"secret DNS pixels"
+      )
+
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+    resolver.side_effect = error
+
+    result = await tools["current_state"].run_async(
+        args={}, tool_context=MagicMock(tool_confirmation=None)
+    )
+    resolver.side_effect = None
+    later = await tools["click_at"].func(x=1, y=1)
+
+    _assert_no_secret_screenshot(result, b"secret DNS pixels")
+    assert result["error"]
+    assert isinstance(later, ComputerState)
+    assert not mock_computer.close_called
+
+  async def test_private_dns_landing_latches_without_exposing_pixels(
+      self,
+      mock_computer: MockComputer,
+      resolver: Mock,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Positive private DNS resolution disables tools as well as hiding pixels."""
+
+    async def current_state() -> ComputerState:
+      return ComputerState(
+          url="https://private.example/", screenshot=b"secret DNS pixels"
+      )
+
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+    resolver.return_value = [(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        "",
+        ("169.254.169.254", 0),
+    )]
+
+    result = await tools["current_state"].run_async(
+        args={}, tool_context=MagicMock(tool_confirmation=None)
+    )
+    later = await tools["click_at"].func(x=1, y=1)
+
+    _assert_no_secret_screenshot(result, b"secret DNS pixels")
+    _assert_no_secret_screenshot(later, b"secret DNS pixels")
+    assert later["error"]
+    assert mock_computer.close_called
+
+  async def test_private_landing_cleanup_runs_only_once(
+      self,
+      mock_computer: MockComputer,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Normal toolset cleanup does not close an already closed backend again."""
+
+    async def current_state() -> ComputerState:
+      return ComputerState(url="http://127.0.0.1/", screenshot=b"secret pixels")
+
+    close = AsyncMock()
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    monkeypatch.setattr(mock_computer, "close", close)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+
+    result = await tools["current_state"].run_async(
+        args={}, tool_context=MagicMock(tool_confirmation=None)
+    )
+    await toolset.close()
+    await toolset.close()
+
+    _assert_no_secret_screenshot(result, b"secret pixels")
+    close.assert_awaited_once()
+
+  @pytest.mark.parametrize("host", ["0177.0.0.1", "0x7f.1", "2130706433"])
+  async def test_numeric_private_navigation_input_is_refused(
+      self,
+      host: str,
+      mock_computer: MockComputer,
+  ) -> None:
+    """Legacy numeric loopback forms cannot reach the navigation backend."""
+    navigate = await self._build_navigate_tool(mock_computer)
+
+    result = await navigate.run_async(
+        args={"url": f"http://{host}/"},
+        tool_context=MagicMock(tool_confirmation=None),
+    )
+
+    assert result["error"]
+    assert mock_computer.navigate_calls == []
+
+  @pytest.mark.parametrize("scheme", ["ws", "wss", "ftp"])
+  async def test_public_network_landing_is_allowed(
+      self,
+      scheme: str,
+      mock_computer: MockComputer,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """Other network schemes follow the same public-address policy."""
+    state = ComputerState(
+        url=f"{scheme}://8.8.8.8/", screenshot=b"public pixels"
+    )
+
+    async def current_state() -> ComputerState:
+      return state
+
+    monkeypatch.setattr(mock_computer, "current_state", current_state)
+    toolset = ComputerUseToolset(computer=mock_computer)
+    tools = {tool.name: tool for tool in await toolset.get_tools()}
+
+    result = await tools["current_state"].run_async(
+        args={}, tool_context=MagicMock(tool_confirmation=None)
+    )
+
+    assert (
+        result["image"]["data"] == base64.b64encode(b"public pixels").decode()
+    )
+    assert not mock_computer.close_called
 
 
 class _AsyncCountingComputer(MockComputer):
