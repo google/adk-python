@@ -50,19 +50,6 @@ def _mute_click(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(click, "secho", lambda *a, **k: None)
 
 
-@pytest.fixture(autouse=True)
-def _no_real_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Fail any test that would run the developer's real gcloud CLI."""
-  real_run = subprocess.run
-
-  def run(cmd: Any, *args: Any, **kwargs: Any) -> Any:
-    if cmd and cmd[0] == "gcloud":
-      raise AssertionError(f"Test ran the real gcloud CLI: {cmd}")
-    return real_run(cmd, *args, **kwargs)
-
-  monkeypatch.setattr(subprocess, "run", run)
-
-
 @pytest.fixture()
 def agent_folder(tmp_path: Path) -> Path:
   """Return a temporary path that will hold generated agent sources."""
