@@ -43,7 +43,7 @@ def join_node_path(
   Returns:
     The child's node path, such as 'wf@1/node@2'.
   """
-  segment = f'{node_name}@{run_id}' if run_id else node_name
+  segment = _NodePathBuilder.segment(node_name, run_id=run_id)
   return f'{parent_path}/{segment}' if parent_path else segment
 
 
@@ -116,14 +116,18 @@ class _NodePathBuilder:
       return None
     return _NodePathBuilder(self._segments[:-1])
 
+  @staticmethod
+  def segment(node_name: str, *, run_id: str | None = None) -> str:
+    """Returns the path segment for a node run, such as 'node@2'."""
+    return f'{node_name}@{run_id}' if run_id else node_name
+
   def append(
       self, node_name: str, run_id: str | None = None
   ) -> _NodePathBuilder:
     """Returns a new _NodePathBuilder with the child segment appended."""
-    segment = node_name
-    if run_id:
-      segment = f'{node_name}@{run_id}'
-    return _NodePathBuilder(self._segments + [segment])
+    return _NodePathBuilder(
+        self._segments + [self.segment(node_name, run_id=run_id)]
+    )
 
   def is_descendant_of(self, ancestor: _NodePathBuilder) -> bool:  # pylint: disable=protected-access
     """Checks if this path is a descendant of the ancestor path."""

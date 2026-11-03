@@ -870,6 +870,27 @@ async def test_get_session_with_after_timestamp_filter():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_after_timestamp_zero_drops_pre_epoch_events(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """after_timestamp=0 sends a timestamp>=epoch filter instead of no filter."""
+  event = mock_api_client_instance.event_dict['1'][0][0]
+  event['timestamp'] = '1969-12-31T23:59:59Z'
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='1',
+      config=GetSessionConfig(after_timestamp=0),
+  )
+
+  assert session is not None
+  assert not session.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_num_recent_events_and_after_timestamp():
   session_service = mock_vertex_ai_session_service()
   session = await session_service.get_session(

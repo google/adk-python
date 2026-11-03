@@ -988,7 +988,9 @@ class RemoteA2aAgent(BaseAgent):
       # Another caller may have created the client during the await.
       if not self._httpx_client:
         self._httpx_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout=self._timeout), **client_cert_kwargs
+            timeout=httpx.Timeout(timeout=self._timeout),
+            headers=_compat.a2a_version_headers(),
+            **client_cert_kwargs,
         )
         self._httpx_client_needs_cleanup = True
         if self._a2a_client_factory:

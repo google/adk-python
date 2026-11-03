@@ -23,6 +23,7 @@ installed a2a-sdk version.
 from __future__ import annotations
 
 import base64
+from collections.abc import Sequence
 import copy
 import dataclasses
 from datetime import datetime
@@ -143,17 +144,17 @@ else:
 
 if IS_A2A_V1:
   # 1.x: protobuf EnumTypeWrapper — access values as integer constants.
-  ROLE_USER = Role.Value("ROLE_USER")
-  ROLE_AGENT = Role.Value("ROLE_AGENT")
-  TS_UNKNOWN = TaskState.Value("TASK_STATE_UNSPECIFIED")
-  TS_SUBMITTED = TaskState.Value("TASK_STATE_SUBMITTED")
-  TS_WORKING = TaskState.Value("TASK_STATE_WORKING")
-  TS_COMPLETED = TaskState.Value("TASK_STATE_COMPLETED")
-  TS_FAILED = TaskState.Value("TASK_STATE_FAILED")
-  TS_INPUT_REQUIRED = TaskState.Value("TASK_STATE_INPUT_REQUIRED")
-  TS_AUTH_REQUIRED = TaskState.Value("TASK_STATE_AUTH_REQUIRED")
-  TS_CANCELED = TaskState.Value("TASK_STATE_CANCELED")
-  TS_REJECTED = TaskState.Value("TASK_STATE_REJECTED")
+  ROLE_USER = Role.ROLE_USER
+  ROLE_AGENT = Role.ROLE_AGENT
+  TS_UNKNOWN = TaskState.TASK_STATE_UNSPECIFIED
+  TS_SUBMITTED = TaskState.TASK_STATE_SUBMITTED
+  TS_WORKING = TaskState.TASK_STATE_WORKING
+  TS_COMPLETED = TaskState.TASK_STATE_COMPLETED
+  TS_FAILED = TaskState.TASK_STATE_FAILED
+  TS_INPUT_REQUIRED = TaskState.TASK_STATE_INPUT_REQUIRED
+  TS_AUTH_REQUIRED = TaskState.TASK_STATE_AUTH_REQUIRED
+  TS_CANCELED = TaskState.TASK_STATE_CANCELED
+  TS_REJECTED = TaskState.TASK_STATE_REJECTED
 
   TP_JSONRPC = TransportProtocol.JSONRPC
   TP_HTTP_JSON = TransportProtocol.HTTP_JSON
@@ -583,10 +584,10 @@ def build_agent_skill(
     id: str,
     name: str,
     description: str,
-    tags: list[str],
-    examples: list[str] | None = None,
-    input_modes: list[str] | None = None,
-    output_modes: list[str] | None = None,
+    tags: Sequence[str],
+    examples: Sequence[str] | None = None,
+    input_modes: Sequence[str] | None = None,
+    output_modes: Sequence[str] | None = None,
     security: list[dict[str, list[str]]] | None = None,
 ) -> AgentSkill:
   """Builds an ``AgentSkill`` from primitive fields."""
@@ -896,6 +897,21 @@ def make_client_config(*, httpx_client: Any, **kwargs: Any) -> Any:
     return A2AClientConfig(httpx_client=httpx_client, **kwargs)
 
 
+def a2a_version_headers() -> dict[str, str]:
+  """Returns the A2A version headers for HTTP clients ADK creates.
+
+  1.x:   ``{"A2A-Version": PROTOCOL_VERSION_CURRENT}``; servers treat requests
+         without it as 0.3.
+  0.3.x: ``{}``.
+  """
+  if IS_A2A_V1:
+    from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+    from a2a.utils.constants import VERSION_HEADER
+
+    return {VERSION_HEADER: PROTOCOL_VERSION_CURRENT}
+  return {}
+
+
 def rebind_client_factory_httpx(factory: Any, httpx_client: Any) -> Any:
   """Returns a client factory bound to ``httpx_client``.
 
@@ -925,16 +941,6 @@ def rebind_client_factory_httpx(factory: Any, httpx_client: Any) -> Any:
   new_factory._config = config
   if hasattr(new_factory, "_httpx_client"):
     new_factory._httpx_client = httpx_client
-    if hasattr(httpx_client, "headers"):
-      try:
-        from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
-        from a2a.utils.constants import VERSION_HEADER
-
-        httpx_client.headers.setdefault(
-            VERSION_HEADER, PROTOCOL_VERSION_CURRENT
-        )
-      except ImportError:
-        pass
   if hasattr(new_factory, "_registry") and new_factory._registry is not None:
     new_factory._registry = copy.copy(factory._registry)
   if hasattr(new_factory, "_register_defaults"):

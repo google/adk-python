@@ -331,12 +331,17 @@ class AgentTool(BaseTool):
       ) -> None:
         return
 
+    # The sub-agent shares the app's memory; scratch store only if it has none.
+    memory_service = (
+        tool_context._invocation_context.memory_service
+        or InMemoryMemoryService()
+    )
     runner = _NestedRunner(
         app_name=child_app_name,
         agent=self.agent,
         artifact_service=ForwardingArtifactService(tool_context),
         session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
+        memory_service=memory_service,
         credential_service=tool_context._invocation_context.credential_service,
         plugins=plugins,
     )

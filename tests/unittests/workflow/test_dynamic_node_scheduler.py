@@ -43,6 +43,7 @@ from google.adk.workflow._node_state import NodeStatus
 from google.adk.workflow._workflow import _LoopState
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow.utils._rehydration_utils import _reconstruct_node_states
 from google.adk.workflow.utils._workflow_graph_utils import build_node
 from google.genai import types
 from pydantic import BaseModel
@@ -160,6 +161,37 @@ async def test_rehydrate_finds_completed_node():
   run = ls.runs['wf/parent/child@r-1']
   assert run.recovered_state is not None
   assert run.recovered_state.output == 'result'
+
+
+def test_rehydrate_reads_only_the_current_invocation():
+  """Each node's lazy scan skips earlier invocations' events entirely."""
+  earlier = [
+      _make_event(
+          path=f'wf/parent/child@{i}', output=i, invocation_id=f'turn-{t}'
+      )
+      for t in range(20)
+      for i in range(1, 4)
+  ]
+  current = _make_event(path='wf/parent/child@1', output='now')
+  ctx, _ = _make_parent_ctx(events=earlier + [current])
+  ls = _LoopState()
+  scheduler = DynamicNodeScheduler(state=ls)
+  scanned = []
+
+  def _record(*, events, **kwargs):
+    scanned.extend(events)
+    return _reconstruct_node_states(events=events, **kwargs)
+
+  with patch(
+      'google.adk.workflow._dynamic_node_scheduler._reconstruct_node_states',
+      side_effect=_record,
+  ):
+    for i in range(1, 4):
+      scheduler._rehydrate_from_events(ctx, f'wf/parent/child@{i}')
+
+  assert all(e.invocation_id == 'inv-1' for e in scanned)
+  assert ls.runs['wf/parent/child@1'].recovered_state.output == 'now'
+  assert 'wf/parent/child@2' not in ls.runs
 
 
 @pytest.mark.asyncio

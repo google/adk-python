@@ -155,10 +155,10 @@ def build_node(
         # Sub-agents dynamically attached to a parent agent default to 'chat'
         # mode to enable agent transfer.
         # Standalone agents in a workflow graph default to `default_llm_mode`.
-        if agent.parent_agent is not None:
+        if agent.parent_agent is not None or default_llm_mode == AgentMode.CHAT:
           agent.mode = AgentMode.CHAT.value
         else:
-          agent.mode = str(default_llm_mode)
+          agent.mode = AgentMode.SINGLE_TURN.value
 
       if (
           isinstance(agent, LlmAgent)

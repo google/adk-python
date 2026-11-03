@@ -217,6 +217,11 @@ class _AgentConfigMapper:
     resolved_tools = []
     for tool_config in tool_configs:
       if "." not in tool_config.name:
+        if _ENFORCE_DENYLIST and tool_config.name.startswith("_"):
+          raise ValueError(
+              f"Blocked module reference: {tool_config.name!r}. Agent"
+              " configurations cannot reference private ADK symbols."
+          )
         # ADK built-in tools
         module = importlib.import_module("google.adk.tools")
         obj = getattr(module, tool_config.name)
@@ -727,8 +732,7 @@ def from_config(config_path: str) -> BaseNode:
         f"Invalid agent config in {abs_path!r}. Expected a dictionary."
     )
 
-  if _ENFORCE_YAML_KEY_DENYLIST:
-    _check_config_for_blocked_keys(config_data, abs_path)
+  _enforce_yaml_key_denylist(config_data, abs_path)
 
   agent_class_name = config_data.get("agent_class", "LlmAgent")
   agent_class = _resolve_agent_class(agent_class_name)
@@ -820,6 +824,11 @@ _ENFORCE_YAML_KEY_DENYLIST = False
 def _set_enforce_yaml_key_denylist(value: bool) -> None:
   global _ENFORCE_YAML_KEY_DENYLIST
   _ENFORCE_YAML_KEY_DENYLIST = value
+
+
+def _enforce_yaml_key_denylist(data: Any, filename: str) -> None:
+  if _ENFORCE_YAML_KEY_DENYLIST:
+    _check_config_for_blocked_keys(data, filename)
 
 
 def _validate_mcp_toolset_args(args: Any) -> None:
@@ -1016,7 +1025,20 @@ _BLOCKED_MODULES = frozenset({
     # requiring no other preconditions.
     "ruamel",
     "yaml",
+    # Core ADK dependencies with process, import, or file-mutation entry points.
+    "anyio",
+    "click",
+    "dotenv",
+    "graphviz",
+    "uvicorn",
+    "watchdog",
 })
+
+_BLOCKED_MODULE_PREFIXES = (
+    "google.adk.cli",
+    "pydantic._internal",
+    "pydantic.v1",
+)
 
 
 def _validate_module_reference(fully_qualified_name: str) -> None:
@@ -1027,13 +1049,14 @@ def _validate_module_reference(fully_qualified_name: str) -> None:
       ``"my_package.my_module.my_func"``).
 
   Raises:
-    ValueError: If the top-level module is part of the Python standard library
-      or is in ``_BLOCKED_MODULES``.
+    ValueError: If the reference targets the Python standard library, a module
+      in ``_BLOCKED_MODULES``, ``_BLOCKED_MODULE_PREFIXES``, or a private
+      symbol under ``google.adk``.
   """
   if not _ENFORCE_DENYLIST:
     return
-  # Extract the top-level package from the fully-qualified name.
-  top_module = fully_qualified_name.split(".")[0]
+  parts = fully_qualified_name.split(".")
+  top_module = parts[0]
   if top_module in _BLOCKED_MODULES or top_module in _STDLIB_MODULES:
     raise ValueError(
         f"Blocked module reference: {fully_qualified_name!r}. Agent "
@@ -1041,6 +1064,22 @@ def _validate_module_reference(fully_qualified_name: str) -> None:
         "standard library is blocked in full because too much of it can "
         "execute arbitrary code. Reference your own agent package, "
         "'google.adk', or a third-party package instead."
+    )
+  if any(
+      fully_qualified_name == prefix
+      or fully_qualified_name.startswith(f"{prefix}.")
+      for prefix in _BLOCKED_MODULE_PREFIXES
+  ):
+    raise ValueError(
+        f"Blocked module reference: {fully_qualified_name!r}. Agent"
+        " configurations cannot import CLI or library-internal modules."
+    )
+  if parts[:2] == ["google", "adk"] and any(
+      segment.startswith("_") for segment in parts[2:]
+  ):
+    raise ValueError(
+        f"Blocked module reference: {fully_qualified_name!r}. Agent"
+        " configurations cannot reference private ADK modules or symbols."
     )
 
 
