@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+import unicodedata
 from urllib.parse import ParseResult
 
 import requests
@@ -239,6 +240,53 @@ def _fetch_content(url: str) -> bytes:
   )
 
 
+# Scripts written without spaces between words. Each of their letters counts as
+# a word when deciding whether a line is long enough to keep.
+_UNSPACED_SCRIPT_RANGES = (
+    (0x0E00, 0x0EFF),  # Thai and Lao
+    (0x1000, 0x109F),  # Myanmar
+    (0x1780, 0x17FF),  # Khmer
+    (0x3040, 0x30FF),  # Hiragana and Katakana
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+)
+
+
+def _is_unspaced_letter(char: str) -> bool:
+  """Returns whether `char` is a letter of a script written without spaces."""
+  code = ord(char)
+  return any(
+      low <= code <= high for low, high in _UNSPACED_SCRIPT_RANGES
+  ) and unicodedata.category(char).startswith('L')
+
+
+def _count_words(line: str) -> int:
+  """Counts the words in a line of page text.
+
+  Words are separated by whitespace. In a script written without spaces, such
+  as Chinese, Japanese or Thai, each letter counts as a word, and the runs of
+  other characters around those letters count only if they hold a letter or a
+  digit, so that a full stop such as "。" is not counted as a word.
+  """
+  count = 0
+  for token in line.split():
+    if not any(_is_unspaced_letter(char) for char in token):
+      count += 1
+      continue
+    run = ''
+    for char in token + ' ':
+      if _is_unspaced_letter(char) or char == ' ':
+        if any(c.isalnum() for c in run):
+          count += 1
+        run = ''
+        if char != ' ':
+          count += 1
+      else:
+        run += char
+  return count
+
+
 def load_web_page(url: str) -> str:
   """Fetches the content in the url and returns the text in it.
 
@@ -269,4 +317,4 @@ def load_web_page(url: str) -> str:
 
   # Split the text into lines, filtering out very short lines
   # (e.g., single words or short subtitles)
-  return '\n'.join(line for line in text.splitlines() if len(line.split()) > 3)
+  return '\n'.join(line for line in text.splitlines() if _count_words(line) > 3)
