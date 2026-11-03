@@ -1641,6 +1641,21 @@ async def test_create_session_with_blank_id_generates_one():
 
 
 @pytest.mark.asyncio
+async def test_create_session_with_empty_id_generates_one(session_service):
+  """An empty session id is replaced by a generated one, as if omitted."""
+  first = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+  second = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+
+  assert first.id
+  assert second.id
+  assert first.id != second.id
+
+
+@pytest.mark.asyncio
 async def test_get_session_finds_session_by_id_passed_to_create(
     session_service,
 ):
