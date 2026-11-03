@@ -206,7 +206,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       )
     if value in (".", ".."):
       raise ValueError(f"{name} must not be '.' or '..', got {value!r}.")
-    if value.startswith("__") and value.endswith("__"):
+    if len(value) >= 4 and value.startswith("__") and value.endswith("__"):
       raise ValueError(
           f"{name} must not match the Firestore-reserved __.*__ pattern, got"
           f" {value!r}."
@@ -350,7 +350,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       query = events_ref.order_by("timestamp")
 
       if config:
-        if config.after_timestamp:
+        if config.after_timestamp is not None:
           # Stored event timestamps are aware UTC; a naive cursor is read as
           # UTC on the wire and would skew the filter by the host's UTC offset.
           after_dt = datetime.fromtimestamp(

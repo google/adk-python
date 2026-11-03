@@ -340,7 +340,7 @@ class SqliteSessionService(BaseSessionService):
       ]
       params: list[Any] = [app_name, user_id, session_id]
 
-      if config and config.after_timestamp:
+      if config and config.after_timestamp is not None:
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
@@ -470,84 +470,89 @@ class SqliteSessionService(BaseSessionService):
     event_timestamp = event.timestamp
 
     async with self._get_db_connection() as db:
-      # Check for stale session
-      async with db.execute(
-          "SELECT update_time FROM sessions WHERE app_name=? AND user_id=? AND"
-          " id=?",
-          (session.app_name, session.user_id, session.id),
-      ) as cursor:
-        row = await cursor.fetchone()
-        if row is None:
-          raise SessionNotFoundError(f"Session {session.id} not found.")
-        storage_update_time = row["update_time"]
-        if storage_update_time > session.last_update_time:
-          raise StaleSessionError(
-              "The last_update_time provided in the session object is"
-              " earlier than the update_time in storage."
-              " Please check if it is a stale session."
-          )
+      try:
+        # Holds the write lock from the stale check through the commit.
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(
+            "SELECT update_time FROM sessions WHERE app_name=? AND"
+            " user_id=? AND id=?",
+            (session.app_name, session.user_id, session.id),
+        ) as cursor:
+          row = await cursor.fetchone()
+          if row is None:
+            raise SessionNotFoundError(f"Session {session.id} not found.")
+          storage_update_time = row["update_time"]
+          if storage_update_time > session.last_update_time:
+            raise StaleSessionError(
+                "The last_update_time provided in the session object is"
+                " earlier than the update_time in storage."
+                " Please check if it is a stale session."
+            )
 
-      # Apply state delta if present
-      has_session_state_delta = False
-      if event.actions.state_delta:
-        state_deltas = _session_util.extract_json_safe_state_delta(
-            event.actions.state_delta
-        )
-        app_state_delta = state_deltas["app"]
-        user_state_delta = state_deltas["user"]
-        session_state_delta = state_deltas["session"]
+        # Apply state delta if present
+        has_session_state_delta = False
+        if event.actions.state_delta:
+          state_deltas = _session_util.extract_json_safe_state_delta(
+              event.actions.state_delta
+          )
+          app_state_delta = state_deltas["app"]
+          user_state_delta = state_deltas["user"]
+          session_state_delta = state_deltas["session"]
 
-        if app_state_delta:
-          await self._upsert_app_state(
-              db, session.app_name, app_state_delta, event_timestamp
-          )
-        if user_state_delta:
-          await self._upsert_user_state(
-              db,
-              session.app_name,
-              session.user_id,
-              user_state_delta,
-              event_timestamp,
-          )
-        if session_state_delta:
-          await self._update_session_state_in_db(
-              db,
-              session.app_name,
-              session.user_id,
-              session.id,
-              session_state_delta,
-              event_timestamp,
-          )
-          has_session_state_delta = True
-
-      # Insert event and update session timestamp
-      await db.execute(
-          """
-          INSERT INTO events (id, app_name, user_id, session_id, invocation_id, timestamp, event_data)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          """,
-          (
-              event.id,
-              session.app_name,
-              session.user_id,
-              session.id,
-              event.invocation_id,
-              event.timestamp,
-              event.model_dump_json(exclude_none=True),
-          ),
-      )
-      if not has_session_state_delta:
-        await db.execute(
-            "UPDATE sessions SET update_time=? WHERE app_name=? AND user_id=?"
-            " AND id=?",
-            (
+          if app_state_delta:
+            await self._upsert_app_state(
+                db, session.app_name, app_state_delta, event_timestamp
+            )
+          if user_state_delta:
+            await self._upsert_user_state(
+                db,
+                session.app_name,
+                session.user_id,
+                user_state_delta,
                 event_timestamp,
+            )
+          if session_state_delta:
+            await self._update_session_state_in_db(
+                db,
                 session.app_name,
                 session.user_id,
                 session.id,
+                session_state_delta,
+                event_timestamp,
+            )
+            has_session_state_delta = True
+
+        # Insert event and update session timestamp
+        await db.execute(
+            """
+            INSERT INTO events (id, app_name, user_id, session_id, invocation_id, timestamp, event_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                session.app_name,
+                session.user_id,
+                session.id,
+                event.invocation_id,
+                event.timestamp,
+                event.model_dump_json(exclude_none=True),
             ),
         )
-      await db.commit()
+        if not has_session_state_delta:
+          await db.execute(
+              "UPDATE sessions SET update_time=? WHERE app_name=? AND user_id=?"
+              " AND id=?",
+              (
+                  event_timestamp,
+                  session.app_name,
+                  session.user_id,
+                  session.id,
+              ),
+          )
+        await db.commit()
+      except BaseException:
+        await db.rollback()
+        raise
 
       # Update timestamp based on event time
       session.last_update_time = event_timestamp

@@ -20,6 +20,8 @@ and that resume state (prior_output, prior_interrupt_ids) is carried
 forward correctly.
 """
 
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -30,9 +32,12 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import _rewind_events
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.workflow._base_node import BaseNode
+from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
+from google.adk.workflow._dynamic_node_scheduler import DynamicNodeState
 from google.adk.workflow._node_runner import NodeRunner
 from google.genai import types
 import pytest
@@ -273,6 +278,41 @@ async def test_ctx_route_set_directly():
   ).run()
 
   assert child_ctx.route == 'branch_a'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_state', [False, True])
+@pytest.mark.parametrize('with_artifact', [False, True])
+async def test_deferred_route_is_emitted_with_pending_deltas(
+    with_state: bool, with_artifact: bool
+) -> None:
+  """A final event keeps its route alongside state and artifact updates."""
+
+  class _Node(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      ctx.output = 'result'
+      ctx.route = 'branch_a'
+      if with_state:
+        ctx.state['visited'] = True
+      if with_artifact:
+        ctx.actions.artifact_delta['report.txt'] = 1
+      return
+      yield
+
+  parent_ctx, events = _make_ctx()
+  await NodeRunner(node=_Node(name='router'), parent_ctx=parent_ctx).run()
+
+  assert len(events) == 1
+  event = events[0]
+  assert event.output == 'result'
+  assert event.actions.route == 'branch_a'
+  assert event.actions.state_delta == ({'visited': True} if with_state else {})
+  assert event.actions.artifact_delta == (
+      {'report.txt': 1} if with_artifact else {}
+  )
 
 
 # --- ctx.interrupt_ids ---
@@ -577,6 +617,132 @@ async def test_node_with_answered_interrupt_rehydrates_resume_inputs():
 
   apply_rewinds.assert_called_once()
   assert child_ctx.resume_inputs == {'fc-1': {'answer': 'yes'}}
+
+
+class _IterationCountingList(list):
+
+  iterations = 0
+
+  def __iter__(self):
+    self.iterations += 1
+    return super().__iter__()
+
+
+def _interrupt_event(path: str, fc_id: str, invocation_id: str) -> Event:
+  event = _node_event(path, invocation_id=invocation_id)
+  event.content = types.Content(
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(name='ask', args={}, id=fc_id)
+          )
+      ]
+  )
+  event.long_running_tool_ids = {fc_id}
+  return event
+
+
+def _answer_event(fc_id: str, answer: str, invocation_id: str) -> Event:
+  return Event(
+      author='user',
+      invocation_id=invocation_id,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='ask', id=fc_id, response={'answer': answer}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _parent_ctx_with_indexed_history(events: list[Event]) -> Context:
+  """A workflow ctx whose scheduler has indexed `events`, as a run would."""
+  parent_ctx, _ = _make_ctx(node_path='wf@1')
+  parent_ctx.session.events = _IterationCountingList(events)
+  scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+  scheduler._replay_manager._ensure_index(parent_ctx)
+  parent_ctx._workflow_scheduler = scheduler
+  return parent_ctx
+
+
+def test_child_context_does_not_rescan_an_indexed_session():
+  """A node run reads the scheduler's index rather than every session event."""
+  parent_ctx = _parent_ctx_with_indexed_history(
+      [_node_event(f'wf@1/n@{i}', invocation_id=f'turn-{i}') for i in range(50)]
+      + [_node_event('wf@1/other@1')]
+  )
+  parent_ctx.session.events.iterations = 0
+
+  NodeRunner(
+      node=_IdleNode(name='n'), parent_ctx=parent_ctx
+  )._create_child_context(resume_inputs=None)
+
+  assert parent_ctx.session.events.iterations == 0
+
+
+_REWIND_TO_TURN_1 = Event(
+    author='user',
+    invocation_id='inv-test',
+    actions=EventActions(rewind_before_invocation_id='turn-1'),
+)
+
+
+@pytest.mark.parametrize(
+    'history',
+    [
+        [],
+        [_node_event('wf@1/n@1', invocation_id='turn-1')],
+        [
+            _interrupt_event('wf@1/n@1', 'fc-old', 'turn-1'),
+            _answer_event('fc-old', 'old', 'turn-1'),
+            _interrupt_event('wf@1/n@1', 'fc-1', 'inv-test'),
+            _answer_event('fc-1', 'yes', 'inv-test'),
+        ],
+        [
+            _interrupt_event('wf@1/n@1/deep@1', 'fc-1', 'inv-test'),
+            _node_event('wf@1/n@10', invocation_id='inv-test'),
+            _answer_event('fc-1', 'deep', 'inv-test'),
+        ],
+        [
+            _interrupt_event('wf@1/n@1', 'fc-1', 'inv-test'),
+            _answer_event('fc-1', 'first', 'inv-test'),
+            _interrupt_event('wf@1/n@1', 'fc-1', 'inv-test'),
+        ],
+        [
+            _interrupt_event('wf@1/n@1', 'fc-1', 'turn-1'),
+            _answer_event('fc-1', 'rewound', 'inv-test'),
+            _REWIND_TO_TURN_1,
+            _interrupt_event('wf@1/n@1', 'fc-2', 'inv-test'),
+            _answer_event('fc-2', 'kept', 'inv-test'),
+        ],
+    ],
+)
+@pytest.mark.parametrize('prior_interrupt_ids', [None, {'fc-1'}])
+def test_child_context_rehydration_matches_a_session_scan(
+    history, prior_interrupt_ids
+):
+  """Rehydrating from the scheduler's index matches scanning the session."""
+
+  def _resume_inputs(parent_ctx):
+    return (
+        NodeRunner(
+            node=_IdleNode(name='n'),
+            parent_ctx=parent_ctx,
+            prior_interrupt_ids=prior_interrupt_ids,
+        )
+        ._create_child_context(resume_inputs={'given': 1})
+        ._resume_inputs
+    )
+
+  scanned_ctx, _ = _make_ctx(node_path='wf@1')
+  scanned_ctx.session.events.extend(history)
+
+  assert _resume_inputs(
+      _parent_ctx_with_indexed_history(list(history))
+  ) == _resume_inputs(scanned_ctx)
 
 
 # =========================================================================
