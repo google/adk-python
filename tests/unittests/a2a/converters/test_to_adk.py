@@ -817,11 +817,19 @@ class TestToAdk:
     assert event.content is not None
     assert event.content.parts == [mock_image_part]
 
-  def test_convert_a2a_task_to_event_data_part_input_required(self):
+  @pytest.mark.parametrize(
+      "prompt",
+      [
+          {
+              "id": "abc123",
+              "text": "Please confirm this action. Do you want to continue?",
+          },
+          {"data": "abc123", "kind": "confirmation"},
+      ],
+      ids=["plain", "data_key"],
+  )
+  def test_convert_a2a_task_to_event_data_part_input_required(self, prompt):
     """Input-required prompt carried in a data part becomes a function call."""
-    # A real non-text (data) part; converter output is mocked below.
-    part1 = _compat.make_data_part(data={"placeholder": True})
-
     task = _compat.make_task(
         id="task-1",
         context_id="context-1",
@@ -832,32 +840,15 @@ class TestToAdk:
             message=Message(
                 message_id="m1",
                 role=_compat.ROLE_AGENT,
-                parts=[part1],
+                parts=[_compat.make_data_part(data=prompt)],
             ),
         ),
-    )
-
-    prompt = {
-        "id": "abc123",
-        "text": "Please confirm this action. Do you want to continue?",
-    }
-    data_part_json = json.dumps({"data": prompt, "kind": "data"}).encode(
-        "utf-8"
-    )
-    mock_data_blob_part = genai_types.Part(
-        inline_data=genai_types.Blob(
-            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
-            data=A2A_DATA_PART_START_TAG
-            + data_part_json
-            + A2A_DATA_PART_END_TAG,
-        )
     )
 
     event = convert_a2a_task_to_event(
         task,
         author="test-author",
         invocation_context=self.mock_context,
-        part_converter=Mock(return_value=[mock_data_blob_part]),
     )
 
     assert event is not None
