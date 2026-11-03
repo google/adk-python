@@ -850,7 +850,7 @@ async def run_node_internal(
       )
     if child_ctx.interrupt_ids:
       ctx._interrupt_ids.update(child_ctx.interrupt_ids)
-      raise NodeInterruptedError()
+      raise NodeInterruptedError(interrupt_ids=child_ctx.interrupt_ids)
     if raise_on_wait and child_ctx.output is None and not transfer_to_agent:
       executed_node = child_ctx.node
       if isinstance(executed_node, Workflow) or getattr(
