@@ -15,8 +15,10 @@
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.live import LiveContextUpdate
 from google.adk.live import LiveRequest
 from google.adk.live import LiveRequestQueue
+from google.adk.tools.base_tool import BaseTool
 from google.genai import types
 import pytest
 
@@ -81,3 +83,42 @@ def test_send_without_close_request_leaves_queue_open():
   queue.send(LiveRequest(content=types.Content(parts=[])))
 
   assert queue.closed is False
+
+
+def test_send_context_update_queues_a_context_update():
+  queue = LiveRequestQueue()
+  tool = MagicMock(spec=BaseTool)
+
+  with patch.object(queue._queue, "put_nowait") as mock_put_nowait:
+    queue.send_context_update(system_instruction="Be brief.", tools=[tool])
+
+  request = mock_put_nowait.call_args.args[0]
+  assert request == LiveRequest(
+      context_update=LiveContextUpdate(
+          system_instruction="Be brief.", tools=[tool]
+      )
+  )
+
+
+def test_send_context_update_with_empty_tools_clears_tools():
+  """`[]` means "clear all tools" and must survive as distinct from `None`."""
+  queue = LiveRequestQueue()
+
+  queue.send_context_update(tools=[])
+
+  request = queue._queue.get_nowait()
+  assert request.context_update is not None
+  assert request.context_update.tools == []
+  assert request.context_update.system_instruction is None
+
+
+def test_send_context_update_requires_a_field():
+  queue = LiveRequestQueue()
+
+  with pytest.raises(ValueError, match="At least one of"):
+    queue.send_context_update()
+
+
+def test_live_context_update_rejects_unknown_fields():
+  with pytest.raises(ValueError):
+    LiveContextUpdate(system_instruction="x", instruction="typo")

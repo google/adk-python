@@ -28,6 +28,7 @@ from ._gemini_stt import GeminiSTT
 from ._gemini_tts import GeminiTTS
 from ._transforms import LiveEgress
 from ._transforms import LiveIngress
+from .live_request_queue import LiveContextUpdate
 from .live_request_queue import LiveRequest
 from .live_request_queue import LiveRequestQueue
 
@@ -39,6 +40,7 @@ __all__ = [
     'GeminiSTT',
     'GeminiTTS',
     'IngressEvent',
+    'LiveContextUpdate',
     'LiveEgress',
     'LiveIngress',
     'LiveRequest',

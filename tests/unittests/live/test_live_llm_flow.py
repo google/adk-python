@@ -30,11 +30,14 @@ from google.adk.live import _live_llm_flow
 from google.adk.live._active_background_tool import ActiveBackgroundTool
 from google.adk.live._active_streaming_tool import ActiveStreamingTool
 from google.adk.live._visual_frames import unpack_visual_frames
+from google.adk.live.live_request_queue import LiveContextUpdate
+from google.adk.live.live_request_queue import LiveRequest
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.genai import types
 from pydantic import BaseModel
@@ -757,3 +760,111 @@ async def test_postprocess_live_flow_does_not_synthesize_structured_response():
   assert len(events) == 2
   assert events[0].get_function_calls()
   assert events[1].get_function_responses()
+
+
+def _old_tool(x: str) -> str:
+  """An old tool."""
+  return x
+
+
+def _new_tool(y: str) -> str:
+  """A new tool."""
+  return y
+
+
+def _declared_names(llm_request: LlmRequest) -> list[str]:
+  return [
+      declaration.name
+      for tool in llm_request.config.tools or []
+      for declaration in tool.function_declarations or []
+  ]
+
+
+async def test_apply_context_update_replaces_tools_in_request_and_model():
+  """New tools become callable through tools_dict and reach the model."""
+  context = _create_test_context()
+  llm_request = LlmRequest()
+  llm_request.append_tools([FunctionTool(_old_tool)])
+  connection = mock.AsyncMock()
+  update = LiveContextUpdate(tools=[FunctionTool(_new_tool)])
+
+  await _live_llm_flow.apply_context_update(
+      connection, context, llm_request, update
+  )
+
+  assert list(llm_request.tools_dict) == ['_new_tool']
+  assert _declared_names(llm_request) == ['_new_tool']
+  # A reconnect builds its setup from the request, so it must see the same.
+  assert llm_request.live_connect_config.tools == llm_request.config.tools
+  connection.send_context_update.assert_awaited_once_with(
+      system_instruction=None, tools=llm_request.config.tools
+  )
+
+
+async def test_apply_context_update_with_empty_tools_clears_them():
+  context = _create_test_context()
+  llm_request = LlmRequest()
+  llm_request.append_tools([FunctionTool(_old_tool)])
+  connection = mock.AsyncMock()
+
+  await _live_llm_flow.apply_context_update(
+      connection, context, llm_request, LiveContextUpdate(tools=[])
+  )
+
+  assert not llm_request.tools_dict
+  assert not llm_request.live_connect_config.tools
+  connection.send_context_update.assert_awaited_once_with(
+      system_instruction=None, tools=[]
+  )
+
+
+async def test_apply_context_update_replaces_system_instruction():
+  """The instruction is stored where `Gemini.connect` reads it on reconnect."""
+  context = _create_test_context()
+  llm_request = LlmRequest()
+  llm_request.append_instructions(['Old instruction.'])
+  llm_request.append_tools([FunctionTool(_old_tool)])
+  connection = mock.AsyncMock()
+
+  await _live_llm_flow.apply_context_update(
+      connection,
+      context,
+      llm_request,
+      LiveContextUpdate(system_instruction='Be brief.'),
+  )
+
+  assert llm_request.config.system_instruction == 'Be brief.'
+  sent = connection.send_context_update.await_args.kwargs
+  assert sent['tools'] is None
+  assert sent['system_instruction'].role == 'system'
+  assert sent['system_instruction'].parts[0].text == 'Be brief.'
+  assert llm_request.live_connect_config.system_instruction == (
+      sent['system_instruction']
+  )
+  # Tools are untouched by an instruction-only update.
+  assert list(llm_request.tools_dict) == ['_old_tool']
+
+
+async def test_send_to_model_applies_context_update_before_content():
+  """Content in the same request is generated under the new instruction."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  queue.send(
+      LiveRequest(
+          context_update=LiveContextUpdate(system_instruction='Be brief.'),
+          content=types.Content(parts=[types.Part.from_text(text='hi')]),
+      )
+  )
+  queue.close()
+  context = _create_test_context(live_request_queue=queue)
+  await context.session_service.create_session(
+      app_name='test_app', user_id='u1', session_id='s1'
+  )
+  connection = mock.AsyncMock()
+
+  await _live_llm_flow.send_to_model(flow, connection, context, LlmRequest())
+
+  method_names = [name for name, _, _ in connection.mock_calls]
+  assert method_names.index('send_context_update') < method_names.index(
+      '_send_content'
+  )

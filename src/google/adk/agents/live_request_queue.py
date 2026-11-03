@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+from ..live.live_request_queue import LiveContextUpdate as LiveContextUpdate
 from ..live.live_request_queue import LiveRequest as LiveRequest
 from ..live.live_request_queue import LiveRequestQueue as LiveRequestQueue
 
 __all__ = [
+    'LiveContextUpdate',
     'LiveRequest',
     'LiveRequestQueue',
 ]

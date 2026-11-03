@@ -2771,3 +2771,44 @@ async def test_receive_voice_activity(gemini_connection, mock_gemini_session):
 
   assert len(responses) == 1
   assert responses[0].voice_activity == mock_vad
+
+
+@pytest.mark.asyncio
+async def test_send_context_update_forwards_to_sdk(
+    gemini_connection, mock_gemini_session
+):
+  """Both fields go to the SDK as-is; an empty tool list is not dropped."""
+  system_instruction = types.Content(
+      role='system', parts=[types.Part.from_text(text='Be brief.')]
+  )
+
+  await gemini_connection.send_context_update(
+      system_instruction=system_instruction, tools=[]
+  )
+
+  mock_gemini_session.send_context_update.assert_awaited_once_with(
+      system_instruction=system_instruction, tools=[]
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_context_update_leaves_unset_fields_unchanged(
+    gemini_connection, mock_gemini_session
+):
+  tool = types.Tool(function_declarations=[types.FunctionDeclaration(name='f')])
+
+  await gemini_connection.send_context_update(tools=[tool])
+
+  mock_gemini_session.send_context_update.assert_awaited_once_with(
+      system_instruction=None, tools=[tool]
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_context_update_names_the_sdk_floor_when_missing():
+  """An SDK without the method gets an upgrade hint, not an AttributeError."""
+  session = mock.AsyncMock(spec=['send', 'send_realtime_input'])
+  connection = GeminiLlmConnection(session, model_version=MODEL_VERSION)
+
+  with pytest.raises(NotImplementedError, match='google-genai >= 2.32.0'):
+    await connection.send_context_update(system_instruction=None, tools=[])

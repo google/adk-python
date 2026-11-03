@@ -202,6 +202,37 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
+  async def send_context_update(
+      self,
+      *,
+      system_instruction: types.Content | None = None,
+      tools: list[types.Tool] | None = None,
+  ) -> None:
+    """Updates the system instruction and/or tools of the live session.
+
+    Both are part of the model preamble, so the server drops the session's
+    prefix cache and re-prefills it on the next model call.
+
+    Args:
+      system_instruction: The new system instruction, replacing the current
+        one. `None` leaves it unchanged.
+      tools: The new tool list, replacing the current one. An empty list
+        clears all tools; `None` leaves them unchanged.
+    """
+    logger.debug(
+        'Sending LLM context update: system_instruction=%s, tools=%s',
+        system_instruction is not None,
+        None if tools is None else len(tools),
+    )
+    # The SDK method shipped in google-genai 2.32; the dependency floor is
+    # older, so say what to upgrade instead of leaking an AttributeError.
+    send = getattr(self._gemini_session, 'send_context_update', None)
+    if send is None:
+      raise NotImplementedError(
+          'In-session context updates require google-genai >= 2.32.0.'
+      )
+    await send(system_instruction=system_instruction, tools=tools)
+
   @staticmethod
   def _merge_grounding_metadata(
       existing: types.GroundingMetadata | None,
