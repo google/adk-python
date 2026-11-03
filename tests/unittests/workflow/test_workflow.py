@@ -1529,6 +1529,53 @@ async def test_delegated_output_preserves_message_content(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize(
+    'error_fields',
+    [
+        {'error_code': 'UPSTREAM_ERROR'},
+        {'error_message': 'The upstream operation failed.'},
+        {
+            'error_code': 'UPSTREAM_ERROR',
+            'error_message': 'The upstream operation failed.',
+        },
+    ],
+)
+async def test_delegated_output_preserves_error_details(
+    delegate_output: bool, error_fields: dict[str, str]
+):
+  """Errors stay visible and persisted when repeated output is suppressed."""
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, **error_fields)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  errors = [e for e in events if e.error_code or e.error_message]
+  assert len(errors) == 1
+  for field, value in error_fields.items():
+    assert getattr(errors[0], field) == value
+  assert errors[0].output == (None if delegate_output else 'answer')
+  assert _outputs(events).count('answer') == (1 if delegate_output else 2)
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert (
+      sum(bool(e.error_code or e.error_message) for e in persisted.events) == 1
+  )
+
+
+@pytest.mark.asyncio
 async def test_delegated_output_preserves_confirmation_and_resume():
   """A parent can request confirmation after publishing its child's output.
 
