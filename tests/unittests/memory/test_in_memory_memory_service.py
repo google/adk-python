@@ -1126,3 +1126,18 @@ async def test_add_session_to_memory_skips_rewound_events():
   )
   assert not rewound.memories
   assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']
+
+
+def test_search_memory_names_a_query_that_is_not_a_string():
+  memory_service = InMemoryMemoryService()
+  for bad_query in (None, 123):
+    try:
+      asyncio.run(
+          memory_service.search_memory(
+              app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query=bad_query
+          )
+      )
+    except ValueError as error:
+      assert "search_memory query must be a string" in str(error)
+    else:
+      raise AssertionError(f"expected ValueError for {bad_query!r}")
