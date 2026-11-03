@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -8927,6 +8928,16 @@ def test_url_prefix_propagated_to_docs_openapi_url(
   response = client.get("/docs")
   assert response.status_code == 200
   assert "/adk/openapi.json" in response.text
+
+
+def test_api_server_init_eval_manager_annotations() -> None:
+  """ApiServer.__init__ declares type annotations for eval managers."""
+  sig = inspect.signature(api_server_module.ApiServer.__init__)
+  assert sig.parameters["eval_sets_manager"].annotation == "EvalSetsManager"
+  assert (
+      sig.parameters["eval_set_results_manager"].annotation
+      == "EvalSetResultsManager"
+  )
 
 
 if __name__ == "__main__":
