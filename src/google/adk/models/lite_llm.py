@@ -3577,7 +3577,11 @@ def _model_response_to_generate_content_response(
     reasoning_tokens = _extract_reasoning_tokens(usage_dict)
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=usage_dict.get("prompt_tokens", 0),
-        candidates_token_count=usage_dict.get("completion_tokens", 0),
+        # LiteLLM's completion_tokens includes reasoning tokens, while
+        # candidates_token_count excludes thoughts.
+        candidates_token_count=max(
+            (usage_dict.get("completion_tokens", 0) or 0) - reasoning_tokens, 0
+        ),
         total_token_count=usage_dict.get("total_tokens", 0),
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
@@ -5186,7 +5190,11 @@ class LiteLlm(BaseLlm):
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
-                candidates_token_count=chunk.completion_tokens,
+                # LiteLLM's completion_tokens includes reasoning tokens,
+                # while candidates_token_count excludes thoughts.
+                candidates_token_count=max(
+                    chunk.completion_tokens - chunk.reasoning_tokens, 0
+                ),
                 total_token_count=chunk.total_tokens,
                 cached_content_token_count=chunk.cached_prompt_tokens,
                 thoughts_token_count=chunk.reasoning_tokens
