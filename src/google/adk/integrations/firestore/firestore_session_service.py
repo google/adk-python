@@ -350,7 +350,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       query = events_ref.order_by("timestamp")
 
       if config:
-        if config.after_timestamp:
+        if config.after_timestamp is not None:
           # Stored event timestamps are aware UTC; a naive cursor is read as
           # UTC on the wire and would skew the filter by the host's UTC offset.
           after_dt = datetime.fromtimestamp(

@@ -340,7 +340,7 @@ class SqliteSessionService(BaseSessionService):
       ]
       params: list[Any] = [app_name, user_id, session_id]
 
-      if config and config.after_timestamp:
+      if config and config.after_timestamp is not None:
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 

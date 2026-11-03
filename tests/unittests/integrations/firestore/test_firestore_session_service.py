@@ -1155,8 +1155,11 @@ def _wire_epoch(value: datetime) -> float:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "after_timestamp", [1234567890.0, 0.0], ids=["recent", "epoch"]
+)
 async def test_get_session_after_timestamp_cursor_is_utc_aware(
-    mock_firestore_client,
+    mock_firestore_client, after_timestamp
 ):
   """The after_timestamp cursor must be an aware UTC datetime.
 
@@ -1168,7 +1171,6 @@ async def test_get_session_after_timestamp_cursor_is_utc_aware(
   app_name = "test_app"
   user_id = "test_user"
   session_id = "test_session"
-  after_timestamp = 1234567890.0
 
   doc_snapshot = (
       mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.get.return_value
