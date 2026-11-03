@@ -72,6 +72,10 @@ from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
 from google.genai import types
+from opentelemetry import baggage
+from opentelemetry import trace
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import BaseModel
 import pytest
 from starlette.applications import Starlette
@@ -8927,6 +8931,45 @@ def test_url_prefix_propagated_to_docs_openapi_url(
   response = client.get("/docs")
   assert response.status_code == 200
   assert "/adk/openapi.json" in response.text
+
+
+def test_context_propagation_middleware_extracts_w3c_traceparent_and_baggage(
+    test_app,
+):
+  """Requests to get_fast_api_app propagate W3C traceparent and baggage."""
+  exporter = InMemorySpanExporter()
+  trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+  captured: dict[str, str | None] = {}
+
+  @test_app.app.get("/_test_trace_context")
+  async def _probe():
+    with trace.get_tracer(__name__).start_as_current_span("probe"):
+      captured["tenant_id"] = baggage.get_baggage("tenant_id")
+    return {"ok": True}
+
+  try:
+    response = test_app.get(
+        "/_test_trace_context",
+        headers={
+            "traceparent": (
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+            ),
+            "baggage": "tenant_id=acme",
+        },
+    )
+    spans = exporter.get_finished_spans()
+  finally:
+    exporter.shutdown()
+
+  # Exactly one local root, whichever span opens the request (FastAPI's own
+  # server span on FastAPI >= 0.142, else the probe), parented to the caller.
+  roots = [s for s in spans if s.parent is None or s.parent.is_remote]
+  assert response.status_code == 200
+  assert captured == {"tenant_id": "acme"}
+  assert [
+      (f"{s.context.trace_id:032x}", s.parent and f"{s.parent.span_id:016x}")
+      for s in roots
+  ] == [("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")]
 
 
 if __name__ == "__main__":
