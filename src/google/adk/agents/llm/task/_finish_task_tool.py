@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -27,6 +28,7 @@ from typing_extensions import override
 
 from ....events.event import Event
 from ....tools.base_tool import BaseTool
+from ....utils._schema_utils import lowercase_schema_types
 from ....utils._schema_utils import schema_to_json_schema
 from ....utils._schema_utils import SchemaType
 from ._task_models import _DefaultTaskOutput
@@ -67,6 +69,20 @@ def get_output_wrapper_key(
   )
 
 
+def _raw_schema_to_json_schema(
+    schema: dict[str, Any] | types.Schema,
+) -> dict[str, Any]:
+  """Converts a raw dict or ``types.Schema`` output schema to JSON Schema."""
+  if isinstance(schema, types.Schema):
+    raw_schema = schema.model_dump(
+        by_alias=True, exclude_none=True, mode='json'
+    )
+  else:
+    raw_schema = copy.deepcopy(schema)
+  lowercase_schema_types(raw_schema)
+  return raw_schema
+
+
 class FinishTaskTool(BaseTool):
   """Tool for signaling LlmAgent task completion.
 
@@ -92,12 +108,22 @@ class FinishTaskTool(BaseTool):
     self.output_schema: SchemaType = (
         output_schema if output_schema is not None else _DefaultTaskOutput
     )
-    self._adapter: TypeAdapter[Any] = TypeAdapter(self.output_schema)
-    raw_schema = self._adapter.json_schema()
+    # A raw dict or ``types.Schema`` is already a schema, not a Python type.
+    # ``TypeAdapter`` would read a dict as a pydantic core schema and fail,
+    # so these are converted directly and, like ``validate_node_data``,
+    # their values are not validated.
+    self._adapter: TypeAdapter[Any] | None
+    self._raw_schema: dict[str, Any]
+    if isinstance(self.output_schema, (dict, types.Schema)):
+      self._adapter = None
+      self._raw_schema = _raw_schema_to_json_schema(self.output_schema)
+    else:
+      self._adapter = TypeAdapter(self.output_schema)
+      self._raw_schema = self._adapter.json_schema()
     # FunctionDeclaration parameters must be a JSON object schema.
     # If the schema is already an object (e.g. BaseModel), use it directly.
     # Otherwise wrap it in an object with a single key.
-    self._wrapper_key: str | None = get_output_wrapper_key(raw_schema)
+    self._wrapper_key: str | None = get_output_wrapper_key(self._raw_schema)
 
     description = (
         'Signal that this agent has completed its delegated task. Call this'
@@ -114,7 +140,8 @@ class FinishTaskTool(BaseTool):
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Get the function declaration for this tool."""
-    raw_schema = self._adapter.json_schema()
+    # Copy so popping $defs below does not change the stored schema.
+    raw_schema = copy.deepcopy(self._raw_schema)
     if self._wrapper_key:
       # Extract $defs to the root level so $ref pointers remain valid
       # after wrapping the schema inside an object property.
@@ -184,6 +211,9 @@ no accompanying text output."""
     Returns:
       Confirmation message, or error dict if validation fails.
     """
+    if self._adapter is None:
+      return FINISH_TASK_SUCCESS_RESULT
+
     try:
       raw_value = args.get(self._wrapper_key) if self._wrapper_key else args
       validated = self._adapter.validate_python(raw_value)

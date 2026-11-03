@@ -21,6 +21,7 @@ from unittest import mock
 
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
+from google.genai import types
 from pydantic import BaseModel
 import pytest
 
@@ -361,3 +362,91 @@ class TestFinishTaskToolAllSchemaTypes:
     assert 'SampleOutputSchema' in schema['$defs']
     # The nested result schema should not contain $defs
     assert '$defs' not in schema['properties']['result']
+
+  def test_dict_output_schema_object(self):
+    """A raw dict object schema is used as the declaration directly."""
+    schema = {
+        'type': 'object',
+        'properties': {'answer': {'type': 'string'}},
+        'required': ['answer'],
+    }
+    tool = FinishTaskTool(task_agent=_make_task_agent(output_schema=schema))
+
+    declaration = tool._get_declaration()
+
+    assert tool._wrapper_key is None
+    assert declaration.parameters_json_schema == schema
+
+  def test_dict_output_schema_non_object_is_wrapped(self):
+    """A raw dict non-object schema is wrapped under the result key."""
+    schema = {'type': 'array', 'items': {'type': 'string'}}
+    tool = FinishTaskTool(task_agent=_make_task_agent(output_schema=schema))
+
+    declaration = tool._get_declaration()
+
+    assert tool._wrapper_key == 'result'
+    assert declaration.parameters_json_schema == {
+        'type': 'object',
+        'properties': {'result': schema},
+        'required': ['result'],
+    }
+
+  def test_empty_dict_output_schema(self):
+    """An empty dict schema builds and is wrapped under the result key."""
+    tool = FinishTaskTool(task_agent=_make_task_agent(output_schema={}))
+
+    declaration = tool._get_declaration()
+
+    assert tool._wrapper_key == 'result'
+    assert declaration.parameters_json_schema['properties'] == {'result': {}}
+
+  def test_dict_output_schema_is_not_mutated(self):
+    """Building the declaration leaves the caller's schema unchanged."""
+    schema = {
+        'type': 'ARRAY',
+        'items': {'$ref': '#/$defs/Item'},
+        '$defs': {'Item': {'type': 'STRING'}},
+    }
+    original = {
+        'type': 'ARRAY',
+        'items': {'$ref': '#/$defs/Item'},
+        '$defs': {'Item': {'type': 'STRING'}},
+    }
+    tool = FinishTaskTool(task_agent=_make_task_agent(output_schema=schema))
+
+    first = tool._get_declaration().parameters_json_schema
+    second = tool._get_declaration().parameters_json_schema
+
+    assert schema == original
+    assert first == second
+    assert first['$defs'] == {'Item': {'type': 'string'}}
+
+  def test_genai_schema_output_schema(self):
+    """A types.Schema is converted to a lowercase JSON Schema."""
+    schema = types.Schema(
+        type=types.Type.OBJECT,
+        properties={'answer': types.Schema(type=types.Type.STRING)},
+        required=['answer'],
+    )
+    tool = FinishTaskTool(task_agent=_make_task_agent(output_schema=schema))
+
+    declaration = tool._get_declaration()
+
+    assert tool._wrapper_key is None
+    assert declaration.parameters_json_schema == {
+        'type': 'object',
+        'properties': {'answer': {'type': 'string'}},
+        'required': ['answer'],
+    }
+
+  @pytest.mark.asyncio
+  async def test_run_async_with_dict_output_schema(self):
+    """A raw dict schema's finish_task call completes without validation."""
+    schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}}}
+    tool = FinishTaskTool(task_agent=_make_task_agent(output_schema=schema))
+
+    result = await tool.run_async(
+        args={'answer': 'done'}, tool_context=mock.MagicMock()
+    )
+
+    assert result == 'Task completed.'
