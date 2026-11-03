@@ -23,6 +23,7 @@ from unittest import mock
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -32,7 +33,9 @@ from google.adk.events.request_input import RequestInput
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils import _function_call_names
 from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
@@ -2548,3 +2551,77 @@ async def test_parallel_nested_workflows_with_hitl_resume_does_not_deadlock(
   assert workflow_testing_utils.get_request_input_events(events2) == []
   outputs2 = [e.output for e in events2 if e.output is not None]
   assert outputs2
+
+
+@pytest.mark.asyncio
+async def test_confirmation_after_parallel_agent_node_survives_resume(
+    request: pytest.FixtureRequest,
+):
+  """A HITL resume keeps a node after a ParallelAgent node on its branch.
+
+  On resume the ParallelAgent node is replayed from its stored events, which
+  include its sub-agents' relayed events. Its successor must resume on the
+  branch it paused on, not on whichever sub-branch spoke last, or it no
+  longer finds the confirmation it asked for and never runs the tool.
+  """
+  confirmation_name = (
+      _function_call_names.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  booked = []
+
+  def book() -> dict[str, str]:
+    """Books the trip."""
+    booked.append('trip')
+    return {'result': 'booked'}
+
+  research = ParallelAgent(
+      name='research',
+      sub_agents=[
+          LlmAgent(
+              name='researcher_a',
+              model=testing_utils.MockModel.create(responses=['from a']),
+          ),
+          LlmAgent(
+              name='researcher_b',
+              model=testing_utils.MockModel.create(responses=['from b']),
+          ),
+      ],
+  )
+  booker = LlmAgent(
+      name='booker',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='book', args={}),
+              'Booked.',
+          ]
+      ),
+      tools=[FunctionTool(func=book, require_confirmation=True)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='wf', edges=[(START, research, booker)]),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  confirmation_call = next(
+      part.function_call
+      for event in events1
+      for part in (event.content.parts if event.content else None) or []
+      if part.function_call and part.function_call.name == confirmation_name
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation_call.id,
+                  name=confirmation_name,
+                  response={'confirmed': True},
+              )
+          )
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert booked == ['trip']
+  assert {e.branch for e in events1 + events2 if e.author == 'booker'} == {None}

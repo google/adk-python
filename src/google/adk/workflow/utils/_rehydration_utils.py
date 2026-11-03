@@ -414,8 +414,15 @@ def _reconstruct_node_states(
             event.branch, owner_path_builder.node_name, tool_call_ids
         )
     )
+    # Like NodeRunner._is_native_event: only the node's own events move its
+    # branch. A stored native event carries the node's name or one it inherits
+    # from an ancestor; a relayed one keeps its sub-agent's name.
+    is_native = not event.author or event.author in (
+        event_path_builder.static_path.split('/')
+    )
     if (
         is_direct
+        and is_native
         and event.branch
         and not has_claimed_branch
         and not is_tool_branch
@@ -445,7 +452,12 @@ def _reconstruct_node_states(
     if is_direct or is_delegated:
       if event.output is not None:
         child.output = event.output
-        if is_direct and not has_claimed_branch and not is_tool_branch:
+        if (
+            is_direct
+            and is_native
+            and not has_claimed_branch
+            and not is_tool_branch
+        ):
           child.branch = event.branch
       elif use_message_as_output:
         child.output = event.content
