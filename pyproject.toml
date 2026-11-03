@@ -41,8 +41,8 @@ dependencies = [
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "opentelemetry-api>=1.39,<=1.44",
-  "opentelemetry-sdk>=1.39,<=1.44",
+  "opentelemetry-api>=1.39,<=1.45.2",
+  "opentelemetry-sdk>=1.39,<=1.45.2",
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
@@ -486,6 +486,9 @@ namespace_packages = true
 explicit_package_bases = true
 follow_imports = "normal"
 python_version = "3.11"
+# The a2a-sdk 0.3 branches in a2a/_compat.py are typed against the installed
+# 1.x SDK and would always fail; drop this when 0.3 support is removed.
+always_true = [ "IS_A2A_V1" ]
 # These third-party packages define functions without type annotations.
 untyped_calls_exclude = [
   "daytona",
