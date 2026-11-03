@@ -204,10 +204,15 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
   assert captured['session_app_name'] == parent_app_name
 
 
-async def _capture_nested_run_config(
-    monkeypatch, parent_run_config: RunConfig
-) -> RunConfig:
-  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+async def _capture_sub_runner_kwargs(
+    monkeypatch,
+    *,
+    parent_run_config: Optional[RunConfig] = None,
+    memory_service=None,
+) -> dict[str, Any]:
+  """Returns the kwargs an AgentTool hands to the Runner it starts."""
+  if parent_run_config is None:
+    parent_run_config = RunConfig()
   captured: dict[str, Any] = {}
 
   async def _empty_async_generator():
@@ -227,7 +232,8 @@ async def _capture_nested_run_config(
         credential_service,
         plugins,
     ):
-      del app_name, artifact_service, memory_service, credential_service
+      del app_name, artifact_service, credential_service
+      captured['memory_service'] = memory_service
       self.agent = agent
       self.session_service = session_service
       self.plugin_manager = PluginManager(plugins=plugins)
@@ -275,7 +281,7 @@ async def _capture_nested_run_config(
   invocation_context = InvocationContext(
       artifact_service=InMemoryArtifactService(),
       session_service=parent_session_service,
-      memory_service=InMemoryMemoryService(),
+      memory_service=memory_service,
       plugin_manager=PluginManager(),
       invocation_id='invocation-id',
       agent=root_agent,
@@ -288,6 +294,18 @@ async def _capture_nested_run_config(
       tool_context=ToolContext(invocation_context),
   )
 
+  return captured
+
+
+async def _capture_nested_run_config(
+    monkeypatch, parent_run_config: RunConfig
+) -> RunConfig:
+  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+  captured = await _capture_sub_runner_kwargs(
+      monkeypatch,
+      parent_run_config=parent_run_config,
+      memory_service=InMemoryMemoryService(),
+  )
   return captured['run_config']
 
 
@@ -431,6 +449,28 @@ async def test_agent_tool_forwards_parent_abort_signal(monkeypatch):
   )
 
   assert captured['abort_signal'] is parent_signal
+
+
+@mark.asyncio
+async def test_agent_tool_forwards_parent_memory_service(monkeypatch):
+  """The sub-agent must see the memory service the app is configured with."""
+  parent_memory_service = InMemoryMemoryService()
+
+  captured = await _capture_sub_runner_kwargs(
+      monkeypatch, memory_service=parent_memory_service
+  )
+
+  assert captured['memory_service'] is parent_memory_service
+
+
+@mark.asyncio
+async def test_agent_tool_memory_service_defaults_when_parent_has_none(
+    monkeypatch,
+):
+  """Without a parent memory service the sub-agent still gets a usable one."""
+  captured = await _capture_sub_runner_kwargs(monkeypatch, memory_service=None)
+
+  assert isinstance(captured['memory_service'], InMemoryMemoryService)
 
 
 def test_no_schema():

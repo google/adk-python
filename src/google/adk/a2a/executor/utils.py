@@ -13,6 +13,12 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
+from collections.abc import Callable
+import dataclasses
+import inspect
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -23,13 +29,114 @@ from a2a.types import Message
 from a2a.types import TaskStatusUpdateEvent
 
 from .. import _compat
+from ...events._abort_events import _INVOCATION_ABORTED
 from ...events.event import Event
-from ..converters.utils import _get_adk_metadata_key as _get_adk_metadata_key
+from ...utils.context_utils import Aclosing
 from .config import ExecuteInterceptor
 from .executor_context import ExecutorContext
 
 if TYPE_CHECKING:
   from ..converters.request_converter import AgentRunRequest
+
+
+def _is_abort_adk_event(event: Any) -> bool:
+  return getattr(event, 'error_code', None) == _INVOCATION_ABORTED
+
+
+@dataclasses.dataclass
+class _ActiveTaskRun:
+  """Tracks in-flight state for a single A2A task execution."""
+
+  task_id: Optional[str]
+  event_queue: EventQueue
+  abort_signal: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+  done_event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+  terminal_cancel_emitted: bool = False
+
+
+class _ActiveTaskRegistry:
+  """Coordinates active A2A task runs and cancellation signals."""
+
+  def __init__(self) -> None:
+    self._runs: dict[str, _ActiveTaskRun] = {}
+
+  def start(
+      self, task_id: Optional[str], event_queue: EventQueue
+  ) -> _ActiveTaskRun:
+    """Registers an active run for ``task_id`` if present."""
+    run = _ActiveTaskRun(task_id=task_id, event_queue=event_queue)
+    if task_id:
+      self._runs[task_id] = run
+    return run
+
+  def get(self, task_id: Optional[str]) -> _ActiveTaskRun | None:
+    """Returns the active run for ``task_id`` if registered."""
+    return self._runs.get(task_id) if task_id else None
+
+  def finish(self, run: _ActiveTaskRun) -> None:
+    """Marks ``run`` complete and unregisters it."""
+    if run.task_id and self._runs.get(run.task_id) is run:
+      del self._runs[run.task_id]
+    run.done_event.set()
+
+  async def cancel(
+      self, context: RequestContext, event_queue: EventQueue
+  ) -> None:
+    """Signals an active task run to abort, or emits a canceled event."""
+    if not context.task_id:
+      raise ValueError('A2A cancellation must have a task ID')
+    run = self._runs.get(context.task_id)
+    if run is None:
+      await _enqueue_canceled_task_event(context, event_queue)
+      return
+    run.abort_signal.set()
+    await run.done_event.wait()
+    tapped = getattr(run.event_queue, '_children', ())
+    same_queue = event_queue is run.event_queue or event_queue in tapped
+    if not run.terminal_cancel_emitted or not same_queue:
+      await _enqueue_canceled_task_event(context, event_queue)
+
+
+async def _consume_runner_with_abort(
+    run_async_fn: Callable[..., Any],
+    run_request: AgentRunRequest,
+    abort_signal: asyncio.Event,
+    on_event: Callable[[Event], Awaitable[None]],
+) -> None:
+  """Drives ``run_async_fn`` in one task and cancels it on ``abort_signal``."""
+  if abort_signal.is_set():
+    return
+  run_kwargs = dict(vars(run_request))
+  params = inspect.signature(run_async_fn).parameters
+  if 'abort_signal' in params or any(
+      p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+  ):
+    run_kwargs['abort_signal'] = abort_signal
+
+  async def _drive() -> None:
+    async with Aclosing(run_async_fn(**run_kwargs)) as agen:
+      async for adk_event in agen:
+        await on_event(adk_event)
+
+  abort_task = asyncio.create_task(abort_signal.wait())
+  drive_task = asyncio.create_task(_drive())
+  try:
+    await asyncio.wait(
+        {drive_task, abort_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if abort_signal.is_set() and not drive_task.done():
+      drive_task.cancel()
+    await drive_task
+  except asyncio.CancelledError:
+    curr = asyncio.current_task()
+    abort_signal.set()
+    drive_task.cancel()
+    await asyncio.gather(drive_task, return_exceptions=True)
+    if curr is not None and curr.cancelling() > 0:
+      raise
+  finally:
+    abort_task.cancel()
+    await asyncio.gather(abort_task, return_exceptions=True)
 
 
 async def _enqueue_canceled_task_event(

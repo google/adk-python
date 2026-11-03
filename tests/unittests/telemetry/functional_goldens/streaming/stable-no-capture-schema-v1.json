@@ -189,16 +189,6 @@
                     "event_name": "gen_ai.choice",
                     "body": {
                       "content": "<elided>",
-                      "index": 0
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": "<elided>",
                       "index": 0,
                       "finish_reason": "STOP"
                     },

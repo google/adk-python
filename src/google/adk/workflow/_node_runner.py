@@ -45,7 +45,11 @@ logger = logging.getLogger("google_adk." + __name__)
 
 def _has_non_output_content(event: Event) -> bool:
   if event.actions:
-    if event.actions.state_delta or event.actions.artifact_delta:
+    if (
+        event.actions.state_delta
+        or event.actions.artifact_delta
+        or event.actions.route is not None
+    ):
       return True
   return False
 
@@ -271,6 +275,20 @@ class NodeRunner:
     if isinstance(scheduler, DynamicNodeScheduler) and snapshot is not None:
       scheduler._state.reset_for_retry(ctx.node_path, snapshot)
 
+  def _indexed_invocation_events(self, ctx: Context) -> list[Event] | None:
+    """Returns the live events of ctx's invocation from the scheduler's index.
+
+    Returns None when no replaying scheduler has indexed the session yet, so
+    the caller scans the session itself and nothing new starts indexing it.
+    """
+    from ._dynamic_node_scheduler import DynamicNodeScheduler
+
+    invocation_id = ctx._invocation_context.invocation_id
+    scheduler = self._parent_ctx._workflow_scheduler
+    if not invocation_id or not isinstance(scheduler, DynamicNodeScheduler):
+      return None
+    return scheduler._replay_manager.indexed_invocation_events(ctx)
+
   async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""
     from ._node_state import NodeState
@@ -345,30 +363,34 @@ class NodeRunner:
               return True
         return False
 
-      # Fast path: check the raw history first so a node with no event of its
-      # own skips _apply_rewinds entirely. Rewinds only drop events, so no raw
-      # match implies no live match; the second check only matters when a
-      # rewind removed the match.
-      if self._prior_interrupt_ids or _has_node_event(ic.session.events):
-        live_events = _apply_rewinds(ic.session.events)
-        if self._prior_interrupt_ids or _has_node_event(live_events):
-          from .utils._rehydration_utils import _reconstruct_node_states
+      live_events = self._indexed_invocation_events(ctx)
+      if live_events is None:
+        # Nothing has indexed the session, so scan it here. Rewinds only drop
+        # events, so no raw match means no live match either.
+        live_events = (
+            _apply_rewinds(ic.session.events)
+            if self._prior_interrupt_ids or _has_node_event(ic.session.events)
+            else []
+        )
 
-          states = _reconstruct_node_states(
-              events=live_events,
-              base_path=node_path,
-              invocation_id=ic.invocation_id,
+      if self._prior_interrupt_ids or _has_node_event(live_events):
+        from .utils._rehydration_utils import _reconstruct_node_states
+
+        states = _reconstruct_node_states(
+            events=live_events,
+            base_path=node_path,
+            invocation_id=ic.invocation_id,
+        )
+        if node_path in states:
+          rehydrated = dict(states[node_path].resolved_responses)
+          if ctx._resume_inputs:
+            rehydrated.update(ctx._resume_inputs)
+          ctx._resume_inputs = rehydrated
+          logger.debug(
+              "node %s rehydrated resume_inputs: %s",
+              node_path,
+              ctx._resume_inputs,
           )
-          if node_path in states:
-            rehydrated = dict(states[node_path].resolved_responses)
-            if ctx._resume_inputs:
-              rehydrated.update(ctx._resume_inputs)
-            ctx._resume_inputs = rehydrated
-            logger.debug(
-                "node %s rehydrated resume_inputs: %s",
-                node_path,
-                ctx._resume_inputs,
-            )
 
     # override the inherited isolation_scope when explicitly set.
     if self._override_isolation_scope is not None:
@@ -492,7 +514,6 @@ class NodeRunner:
   async def _flush_output_and_deltas(self, ctx: Context) -> None:
     """Emit deferred output and/or unflushed state/artifact deltas."""
     from ..events.event import Event
-    from ..events.event_actions import EventActions
 
     state_delta = ctx.actions.state_delta
     artifact_delta = ctx.actions.artifact_delta
@@ -514,13 +535,7 @@ class NodeRunner:
         output=ctx._output_value if has_deferred_output else None,
         route=ctx._route_value if has_unflushed_route else None,
     )
-    if has_deltas:
-      event.actions = EventActions(
-          state_delta=dict(state_delta),
-          artifact_delta=dict(artifact_delta),
-      )
-      state_delta.clear()
-      artifact_delta.clear()
+    self._flush_deltas(event, ctx)
 
     self._enrich_event(event, ctx)
     await ctx._invocation_context._enqueue_event(event)
