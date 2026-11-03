@@ -605,6 +605,26 @@ async def test_advance_sequence_for_unprepared_path_leaves_other_barriers_alone(
   assert not barrier.events["beta@1"].is_set()
 
 
+@pytest.mark.asyncio
+async def test_release_pending_sequence_releases_only_interrupt_placed_keys():
+  """A rerun releases a place its interrupt took, never one a result took."""
+  ctx = _ctx_over([
+      _node_ev("wf@1/ask@1", "inv-1", interrupt_ids=["fc-1"]),
+      _node_ev("wf@1/done@1", "inv-1", output="done"),
+      _node_ev("wf@1/after@1", "inv-1", output="after"),
+  ])
+  mgr = ReplayManager()
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+  assert barrier.sequence == ["ask@1", "done@1", "after@1"]
+
+  await mgr.release_pending_sequence("wf@1", "ask@1")
+  assert barrier.current_index == 1
+
+  await mgr.release_pending_sequence("wf@1", "done@1")
+  assert barrier.current_index == 1
+  assert not barrier.events["after@1"].is_set()
+
+
 def _ctx_over(events, invocation_id="inv-1"):
   """A Context whose session holds `events`."""
   ctx = MagicMock()

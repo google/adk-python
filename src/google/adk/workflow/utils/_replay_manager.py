@@ -270,8 +270,12 @@ class ReplayManager:
       ctx: Context,
       base_path: str,
       strict_direct_child: bool = False,
-  ) -> list[str]:
-    """Extract chronological child completion sequence under base_path."""
+  ) -> tuple[list[str], set[str]]:
+    """Extract chronological child completion sequence under base_path.
+
+    Returns the sequence and the keys in it placed by a recorded result rather
+    than an interrupt.
+    """
     base_path_builder = _NodePathBuilder.from_string(base_path)
     sequence: list[str] = []
     completed: set[str] = set()
@@ -332,7 +336,7 @@ class ReplayManager:
         if not is_interrupt_event(event) and has_result:
           completed.add(segment)
 
-    return sequence
+    return sequence, completed
 
   def scan_workflow_events(
       self, ctx: Context
@@ -352,11 +356,13 @@ class ReplayManager:
     )
 
     # Use transitive events for sequence (strict_direct_child = False)
-    sequence = self._scan_sequence(
+    sequence, completed = self._scan_sequence(
         transitive_events, ctx, ctx.node_path, strict_direct_child=False
     )
 
-    self._sequence_barrier = ReplaySequenceBarrier(sequence)
+    self._sequence_barrier = ReplaySequenceBarrier(
+        sequence, pending=frozenset(sequence) - completed
+    )
     self._parent_sequence_barriers[ctx.node_path] = self._sequence_barrier
     return raw_results, sequence
 
@@ -370,16 +376,28 @@ class ReplayManager:
       # Dynamic parent path uses strict_direct_child=True.
       # So we use the direct parent index.
       events = self._events_by_parent.get(parent_path, [])
-      seq = self._scan_sequence(
+      seq, completed = self._scan_sequence(
           events, ctx, parent_path, strict_direct_child=True
       )
-      self._parent_sequence_barriers[parent_path] = ReplaySequenceBarrier(seq)
+      self._parent_sequence_barriers[parent_path] = ReplaySequenceBarrier(
+          seq, pending=frozenset(seq) - completed
+      )
     return self._parent_sequence_barriers[parent_path]
 
   async def advance_sequence(self, parent_path: str, key: str) -> None:
     """Advance sequence barrier if initialized for parent_path."""
     if parent_path in self._parent_sequence_barriers:
       self._parent_sequence_barriers[parent_path].check_and_advance(key)
+
+  async def release_pending_sequence(self, parent_path: str, key: str) -> None:
+    """Advance past `key` if its place came from an interrupt, not a result.
+
+    A rerun produces its result live, so a place its interrupt took must not
+    hold back replayed siblings recorded after that interrupt.
+    """
+    barrier = self._parent_sequence_barriers.get(parent_path)
+    if barrier is not None and key in barrier.pending:
+      barrier.check_and_advance(key)
 
   async def wait_sequence(self, parent_path: str, key: str) -> None:
     """Wait for sequence barrier if initialized for parent_path."""

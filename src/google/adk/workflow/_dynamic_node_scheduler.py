@@ -545,6 +545,9 @@ class DynamicNodeScheduler:
         current_run=run,
     )
 
+    parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
+    key = _NodePathBuilder.segment(curr_name, run_id=curr_run_id)
+
     if not result.should_run:
       if result.interrupts:
         logger.debug(
@@ -593,8 +596,6 @@ class DynamicNodeScheduler:
           ),
       )
       # Chronological sequence barrier wait for replayed dynamic nodes
-      parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
-      key = f'{curr_name}@{curr_run_id}'
       await self._replay_manager.wait_sequence(parent_path, key)
 
       # Static graph runs stay RUNNING until Workflow._handle_completion records
@@ -608,6 +609,7 @@ class DynamicNodeScheduler:
       # Rerun!
       run.state.resume_inputs = result.resume_inputs or {}
       logger.debug('node %s schedule: Rerunning execution.', node_path)
+      await self._replay_manager.release_pending_sequence(parent_path, key)
       actual_isolation_scope = (
           run.recovered_state.isolation_scope
           if (run.recovered_state and run.recovered_state.isolation_scope)
