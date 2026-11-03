@@ -545,7 +545,6 @@ class TestServicesAndTools(unittest.IsolatedAsyncioTestCase):
           longitude=-122.084,
           tool_context=ctx,
           genai_client=mock_client,
-          model="gemini-2.5-flash",
           config=self.config,
       )
       self.assertEqual(verdict["verdict_label"], "CONFIRMED_MATCH")

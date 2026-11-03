@@ -99,7 +99,6 @@ from google.adk.integrations.street_view import StreetViewToolset
 
 agent = LlmAgent(
     name="spatial_auditor",
-    model="gemini-2.5-flash",
     instruction="Verify delivery addresses, GPS telemetry, and outdoor imagery.",
     tools=[
         StreetViewToolset(

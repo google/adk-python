@@ -29,7 +29,6 @@ from google.adk.integrations.street_view import default_config
 
 agent = LlmAgent(
     name="spatial_auditor",
-    model="gemini-2.5-flash",
     instruction=(
         "Classify the recipient address, verify GPS telemetry with reverse "
         "geocoding, and capture a Street View baseline when prior imagery is "
@@ -56,7 +55,6 @@ from google.adk.integrations.street_view import street_view_fallback_tool
 
 agent = LlmAgent(
     name="lightweight_auditor",
-    model="gemini-2.5-flash",
     tools=[
         street_view_fallback_tool,
         property_classification_tool,
@@ -117,7 +115,6 @@ async def run_visual_audit(target_jpeg: bytes, tool_context):
         longitude=-122.0840897,
         tool_context=tool_context,
         genai_client=client,
-        model="gemini-2.5-flash",
     )
     return verdict
 ```

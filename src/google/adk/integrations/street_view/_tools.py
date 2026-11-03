@@ -26,6 +26,7 @@ from typing import Any
 
 from google.genai import types
 
+from ...agents.llm_agent import LlmAgent
 from ...tools.tool_context import ToolContext
 from ._config import default_config
 from ._config import GoogleMapsConfig
@@ -334,11 +335,7 @@ async def audit_photo_with_fallback(
     config: GoogleMapsConfig | None = None,
 ) -> dict[str, Any]:
   """Compares a target photo against historical photos or Street View."""
-  resolved_model = model if model is not None else os.getenv("MODEL_NAME")
-  if not resolved_model:
-    raise ValueError(
-        "Model name must be passed via `model` or set in `MODEL_NAME`."
-    )
+  resolved_model = model or os.getenv("MODEL_NAME") or LlmAgent.DEFAULT_MODEL
 
   baseline_parts: list[types.Part] = []
   baseline_source = "NONE"
