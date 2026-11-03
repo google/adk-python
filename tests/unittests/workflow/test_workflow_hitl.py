@@ -297,6 +297,85 @@ async def test_agent_node_that_spoke_before_pausing_reruns_on_resume(
   assert 'Waiting for you to approve.' not in [e.output for e in events2]
 
 
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize(
+    'stored_as_message', [False, True], ids=['output_stored', 'message_only']
+)
+@pytest.mark.parametrize(
+    'reply',
+    [
+        '{"title": "Weekly", "bullets": ["one"]}',
+        '```json\n{"title": "Weekly", "bullets": ["one"]}\n```',
+    ],
+    ids=['unfenced', 'fenced'],
+)
+@pytest.mark.asyncio
+async def test_resume_replays_schema_agent_output_as_parsed_live(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+    stored_as_message: bool,
+    reply: str,
+):
+  """A finished schema agent replays on resume the output it parsed live.
+
+  The live path strips a Markdown fence before validating against
+  output_schema. Sessions saved by ADK 2.10 and earlier hold only the reply
+  text, so a resume rebuilds the output from that message.
+  """
+
+  class Digest(BaseModel):
+    title: str
+    bullets: list[str]
+
+  mock_model = testing_utils.MockModel.create(responses=[reply])
+  summarise = LlmAgent(name='summarise', model=mock_model, output_schema=Digest)
+
+  @node(rerun_on_resume=True)
+  def approve(ctx: Context, node_input: Any):
+    if 'approve' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approve', message='Publish?')
+      return
+    yield Event(output={'digest': node_input, **ctx.resume_inputs['approve']})
+
+  publish = InputCapturingNode(name='publish')
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(
+          name='digest', edges=[(START, summarise, approve, publish)]
+      ),
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  assert workflow_testing_utils.get_request_input_events(events1)
+  if stored_as_message:
+    # How ADK 2.10 and earlier stored a schema agent's reply.
+    stored = runner.runner.session_service.sessions[runner.app_name][
+        'test_user'
+    ][runner.session_id].events
+    [agent_event] = [
+        e for e in stored if e.author == 'summarise' and e.output is not None
+    ]
+    agent_event.output = None
+    agent_event.node_info.message_as_output = True
+
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('approve', {'approved': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  # One model call: the resume replayed the agent instead of rerunning it.
+  assert len(mock_model.requests) == 1
+  assert publish.received_inputs == [
+      {'digest': {'title': 'Weekly', 'bullets': ['one']}, 'approved': True}
+  ]
+
+
 @pytest.mark.asyncio
 async def test_workflow_interrupt_allows_parallel_execution(
     request: pytest.FixtureRequest,
