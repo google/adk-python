@@ -308,3 +308,35 @@ class TestOAuth2CredentialRefresher:
     refresher = OAuth2CredentialRefresher()
     with pytest.raises(ValueError, match="unexpected bug"):
       await refresher.refresh(credential, scheme)
+
+  @patch("google.adk.auth.refresher.oauth2_credential_refresher.logger")
+  @pytest.mark.asyncio
+  async def test_refresh_without_refresh_token_returns_original_and_logs(
+      self, mock_logger
+  ):
+    """An expired token with no refresh token is returned as is, not a crash."""
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="old_token",
+            expires_at=int(time.time()) - 3600,  # Expired
+        ),
+    )
+
+    refresher = OAuth2CredentialRefresher()
+    result = await refresher.refresh(credential, scheme)
+
+    assert result is credential
+    assert result.oauth2.access_token == "old_token"
+    mock_logger.warning.assert_called_once()
