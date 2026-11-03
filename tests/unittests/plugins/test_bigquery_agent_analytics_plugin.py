@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import concurrent.futures
 import contextlib
 import contextvars
@@ -237,7 +238,11 @@ def dummy_arrow_schema():
                       "object_ref",
                       pa.struct([
                           pa.field("uri", pa.string(), nullable=True),
-                          pa.field("authorizer", pa.string(), nullable=True),
+                          pa.field(
+                              "authorizer",
+                              pa.string(),
+                              nullable=True,
+                          ),
                           pa.field("version", pa.string(), nullable=True),
                           pa.field(
                               "details",
@@ -12606,6 +12611,35 @@ class TestAnalyticsViews:
     with pytest.raises(ValueError, match="view_prefix"):
       self._make_plugin(view_prefix="")
 
+  @pytest.mark.parametrize(
+      "field_name",
+      ["project_id", "dataset_id", "table_id", "view_prefix"],
+  )
+  @pytest.mark.parametrize(
+      "bad_value",
+      ["", "bad`val", "bad\\val", "bad\nval", "bad\rval", "bad\x00val"],
+  )
+  def test_init_rejects_empty_or_unquotable_identifiers(
+      self, field_name: str, bad_value: str
+  ) -> None:
+    """project_id, dataset_id, table_id, and view_prefix must be quotable."""
+    kwargs: dict[str, Any] = {
+        "project_id": PROJECT_ID,
+        "dataset_id": DATASET_ID,
+        "table_id": TABLE_ID,
+    }
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    if field_name == "view_prefix":
+      config.view_prefix = bad_value
+    elif field_name == "table_id" and bad_value == "":
+      kwargs["table_id"] = None
+      config.table_id = ""
+    else:
+      kwargs[field_name] = bad_value
+    kwargs["config"] = config
+    with pytest.raises(ValueError, match=field_name):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(**kwargs)
+
 
 class TestSchemaReadinessMemo:
   """Tests that a successful table readiness pass is not repeated."""
@@ -12845,13 +12879,17 @@ class _EvalViewSqlEvaluator:
   GoogleSQL subset that the eval views use is supported:
 
   - A ``WITH`` list of CTEs and a final SELECT, each with ``*`` or
-    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY.
+    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY, and
+    an optional ``;`` at the end.  ``--`` comments are skipped.
   - FROM a table or CTE, joined by ``, UNNEST(...) AS x [WITH OFFSET AS y]``
-    or by ``LEFT JOIN ... USING (...)`` or ``LEFT JOIN ... ON ...``.
-  - Literals, columns, CASE, IF, AND/OR/NOT, comparisons, ``+`` and ``-``,
-    IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``, ``[SAFE_OFFSET(n)]``, CAST,
-    SAFE_CAST, and ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and
-    ``ARRAY(SELECT ...)`` over ``UNNEST``.
+    or ``INNER JOIN UNNEST(...) AS x [WITH OFFSET AS y]``, which both unnest
+    an array of the row they join, or by ``LEFT JOIN ... USING (...)`` or
+    ``LEFT JOIN ... ON ...``.
+  - Literals, columns, CASE with a required ELSE, IF, AND/OR/NOT,
+    comparisons, ``+`` and ``-``, IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``,
+    ``[SAFE_OFFSET(n)]``, CAST to INT64 or JSON, SAFE_CAST, and
+    ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and ``ARRAY(SELECT ...)`` over
+    ``UNNEST``.
   - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``;
     ROW_NUMBER, LAG and LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``;
     and the scalar functions in ``_call``.
@@ -12863,11 +12901,11 @@ class _EvalViewSqlEvaluator:
   """
 
   _TOKEN_RE = re.compile(
-      r"(?P<space>\s+)"
+      r"(?P<space>\s+|--[^\n]*)"
       r"|(?P<string>[rR]?(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"))"
       r"|(?P<number>\d+)"
       r"|(?P<name>`[^`]*`|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
-      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\]])"
+      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\];])"
   )
   _COMPARISONS = {
       "=": lambda a, b: a == b,
@@ -12921,6 +12959,7 @@ class _EvalViewSqlEvaluator:
       if not self._accept(","):
         break
     self._final = self._parse_query()
+    self._accept(";")
     assert self._pos == self._end, f"Unsupported SQL at token {self._pos}"
 
   def run(self, table_rows, cte=None):
@@ -13008,7 +13047,9 @@ class _EvalViewSqlEvaluator:
     if self._accept("FROM"):
       query["from"].append((None, *self._parse_source(), None))
       while True:
-        if self._accept(","):
+        if self._accept(",") or self._accept("INNER", "JOIN"):
+          # Only an UNNEST of the joined row's array is supported here, which
+          # needs no join condition.
           query["from"].append(("cross", *self._parse_source(), None))
         elif self._accept("LEFT", "JOIN"):
           source, alias = self._parse_source()
@@ -13137,9 +13178,8 @@ class _EvalViewSqlEvaluator:
         branches.append((condition, self._parse_expr()))
         if not self._accept("WHEN"):
           break
-      default = ("literal", None)
-      if self._accept("ELSE"):
-        default = self._parse_expr()
+      self._expect("ELSE")  # The SQL lint requires one, so the files have it.
+      default = self._parse_expr()
       self._expect("END")
       return ("case", operand, branches, default)
     if word == "ARRAY" and self._accept("<"):
@@ -13572,13 +13612,19 @@ class TestEvalViews:
 
   @staticmethod
   def _output_columns(sql):
+    """Returns the names of the top-level SELECT's columns, in order."""
     # A long column's alias wraps onto its own line, indented 4 spaces.
     final_select = TestEvalViews._final_select(sql).replace("\n    AS ", " AS ")
-    return [
-        line.rsplit(" AS ", 1)[1].rstrip(",")
-        for line in final_select.splitlines()
-        if not line.startswith("   ") and " AS " in line
-    ]
+    columns = []
+    for line in final_select.splitlines():
+      if line.startswith("   "):
+        continue  # A line inside a column's expression.
+      if " AS " in line:
+        columns.append(line.rsplit(" AS ", 1)[1].rstrip(","))
+      elif not line.endswith("("):
+        # A column without an alias keeps the name of the column it reads.
+        columns.append(line.strip().rstrip(",").rsplit(".", 1)[-1])
+    return columns
 
   @staticmethod
   def _normalized_view_sql():
@@ -13955,9 +14001,9 @@ class TestEvalViews:
     eval_sql = self._queried_sql(plugin.client)
     assert len(eval_sql) == 2
     for sql in eval_sql:
-      # raw_events is the only CTE that reads the table.
+      # RawEvents is the only CTE that reads the table.
       assert sql.count(f"`{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`") == 1
-      raw_events = sql.split("raw_events AS (", 1)[1].split("\n  ),", 1)[0]
+      raw_events = sql.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
       denied_refs = [
           line.strip().rstrip(",")
           for line in raw_events.splitlines()
@@ -13980,7 +14026,7 @@ class TestEvalViews:
     default_sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
         "p.d.t"
     )
-    default_raw_events = default_sql.split("raw_events AS (", 1)[1]
+    default_raw_events = default_sql.split("RawEvents AS (", 1)[1]
     assert (
         "      content_parts,\n      attributes,\n      latency_ms,\n"
         in default_raw_events
@@ -14158,8 +14204,8 @@ class TestEvalViews:
     completed = event("inv-1", 9, "INVOCATION_COMPLETED")
 
     def turn(*events):
-      """Returns the turn_rollup row of a one-turn session."""
-      (row,) = turn_view.run([hello, *events], cte="turn_rollup")
+      """Returns the TurnRollup row of a one-turn session."""
+      (row,) = turn_view.run([hello, *events], cte="TurnRollup")
       return row
 
     def paused_and_complete(*events):
@@ -14257,7 +14303,7 @@ class TestEvalViews:
           content,
           content_parts=list(parts),
       )
-      (typed,) = turn_view.run([row], cte="typed_events")
+      (typed,) = turn_view.run([row], cte="TypedEvents")
       return typed["message_text"], typed["is_function_response"]
 
     # Inline text parts are joined in part order. Other parts are skipped,
@@ -14410,7 +14456,7 @@ class TestEvalViews:
             row["eval_ready"],
             row["session_turn_eval_ready"],
         )
-        for row in turn_view.run(rows, cte="turns")
+        for row in turn_view.run(rows, cte="Turns")
     } == expected_turns
     assert {
         (row["session_id"], row["invocation_id"]): row["eval_ready"]
@@ -14433,7 +14479,8 @@ class TestEvalViews:
     _, turn_view = self._eval_views()
 
     # Guard against drift in _format_content's prefixes or delimiter without
-    # updating response_events in _EVAL_VIEW_CTES_SQL.
+    # updating ResponseEvents in bigquery_agent_analytics_sql/
+    # eval_view_ctes_v1.sql.
     format_content_src = inspect.getsource(
         bigquery_agent_analytics_plugin._format_content
     )
@@ -15201,7 +15248,7 @@ class TestEvalViews:
     )
 
   def test_eval_agent_instruction_fallback_from_session_agent_prompts(self):
-    """agent_configs falls back to earliest session LLM_REQUEST.system_prompt.
+    """AgentConfigs falls back to earliest session LLM_REQUEST.system_prompt.
 
     Covers legacy callable reprs, empty text_summary, and current
     before_agent_callback rows with content=None and
@@ -15327,7 +15374,7 @@ class TestEvalViews:
         ),
         # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt,
         # and sub_agent logs AGENT_STARTING with {"text_summary": ""} (to
-        # exercise NULLIF(instruction, '') in agent_configs) without a new
+        # exercise NULLIF(instruction, '') in AgentConfigs) without a new
         # LLM_REQUEST; both still resolve to their earliest session
         # system_prompt in turn_view and session_view.
         event(
@@ -15455,6 +15502,326 @@ class TestEvalViews:
     assert session_rows["s-conv-only"]["trace"]["turns"][0]["events"][1][
         "content"
     ]["parts"] == [{"text": "Fast-path answer."}]
+
+  def test_eval_view_ctes_end_without_a_newline(self) -> None:
+    """The shared CTEs end at the closing paren, for the view templates."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+    assert ctes.startswith("WITH\n")
+    assert "\n  RawEvents AS (\n" in ctes
+    assert ctes.endswith("\n  )")
+
+  def test_eval_view_ctes_filter_the_table_on_session_and_invocation(
+      self,
+  ) -> None:
+    """The one filter on the events table keeps the rows of a turn."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+    raw_events = ctes.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
+
+    assert raw_events.endswith(
+        "\n    FROM\n      `p.d.t`\n    WHERE\n      session_id IS NOT NULL\n"
+        "      AND invocation_id IS NOT NULL"
+    )
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  def test_eval_builders_substitute_the_ctes_only_once(
+      self, build_sql: Callable[..., str]
+  ) -> None:
+    """Braces in the CTE text reach the statement as written."""
+    ctes = "WITH x AS (SELECT r'\\d{4}', '{\"a\": {}}', '{x}', '{{}}', '{0}')"
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin,
+        "_build_eval_view_ctes",
+        return_value=ctes,
+    ):
+      sql = build_sql("p.d.t")
+
+    assert ctes in sql
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  @pytest.mark.parametrize(
+      "full_table_id",
+      [
+          "p.d.t`x",
+          "p.d.t` AS x; DROP TABLE y; --",
+          "p`.d.t",
+          "p.d.t\\x",
+          "p.d.t\n",
+          "p.d.t\r",
+          "p.d.t\t",
+          "p.d.t\x00",
+          "p.d.t\x7f",
+          "p.d.t\x85",
+          "p.d.t\u2028",
+          "p.d.t\u2029",
+      ],
+  )
+  def test_eval_builders_reject_a_table_id_the_sql_cannot_quote(
+      self, build_sql: Callable[..., str], full_table_id: str
+  ) -> None:
+    """A backtick, backslash, control or line-break character is an error."""
+    with pytest.raises(ValueError, match="backtick, backslash"):
+      build_sql(full_table_id)
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  @pytest.mark.parametrize(
+      "view_prefix",
+      [
+          "",
+          "v`bad",
+          "v\\bad",
+          "v\nbad",
+          "v\rbad",
+          "v\tbad",
+          "v\x00bad",
+          "v\x7fbad",
+          "v\x85bad",
+          "v\u2028bad",
+          "v\u2029bad",
+      ],
+  )
+  def test_eval_builders_reject_a_view_prefix_the_sql_cannot_quote(
+      self, build_sql: Callable[..., str], view_prefix: str
+  ) -> None:
+    """An empty or unquotable view_prefix is rejected."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "view_prefix must be a non-empty string without a backtick,"
+            " backslash"
+        ),
+    ):
+      build_sql("p.d.t", view_prefix=view_prefix)
+
+  @pytest.mark.parametrize(
+      "full_table_id",
+      [
+          "my-project.my_dataset.my_events",
+          "my-project.my_dataset.my events 01",
+          "my-project.my_dataset.my\u00a0events",
+      ],
+  )
+  def test_eval_builders_accept_a_table_id_with_a_dash_or_a_space(
+      self, full_table_id: str
+  ) -> None:
+    """A dash, an underscore or a space can be in the quoted table name."""
+    sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
+        full_table_id
+    )
+
+    assert f"\n      `{full_table_id}`\n" in sql
+
+  @pytest.fixture
+  def eval_sql_dir(self, tmp_path, monkeypatch):
+    """Yields an empty SQL directory beside where the plugin module now is.
+
+    The module's ``__file__`` points into ``tmp_path``, and the loader's cache
+    is cleared before and after the test.
+    """
+    sql_dir = tmp_path / "plugins" / "bigquery_agent_analytics_sql"
+    sql_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        bigquery_agent_analytics_plugin,
+        "__file__",
+        str(sql_dir.parent / "bigquery_agent_analytics_plugin.py"),
+    )
+    bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
+    yield sql_dir
+    bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
+
+  def test_load_eval_sql_template_drops_the_license_header(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """The loader returns the text after the '--' header and its blank line.
+
+    The header may name a placeholder, as the packaged files' headers do.
+    """
+    (eval_sql_dir / "test_header.sql").write_text(
+        "-- License line one.\n-- Names {x}.\n\nSELECT {x}\n\nFROM t\n",
+        encoding="utf-8",
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_header.sql"
+    )
+
+    assert template == "SELECT {x}\n\nFROM t\n"
+
+  def test_load_eval_sql_template_normalizes_crlf_newlines(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """A file with the CRLF line breaks of a Windows checkout loads the same.
+
+    The file is read in text mode, so its CRLF line breaks become newlines
+    before the header and its blank line are found.
+    """
+    (eval_sql_dir / "test_crlf.sql").write_bytes(
+        b"-- License.\r\n\r\nSELECT 1\r\n"
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_crlf.sql"
+    )
+
+    assert template == "SELECT 1\n"
+
+  def test_load_eval_sql_template_reads_each_file_once(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """A template is cached, so a later edit to its file is not read."""
+    path = eval_sql_dir / "test_cache.sql"
+    path.write_text("-- License.\n\nSELECT 1\n", encoding="utf-8")
+    first = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_cache.sql"
+    )
+    path.write_text("-- License.\n\nSELECT 2\n", encoding="utf-8")
+
+    second = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_cache.sql"
+    )
+
+    assert (first, second) == ("SELECT 1\n", "SELECT 1\n")
+
+  @pytest.mark.parametrize(
+      "text",
+      [
+          "",
+          "SELECT 1\n",
+          "-- License\nSELECT 1\n",
+          "\n\nSELECT 1\n",
+          "-- License\nnot a comment\n\nSELECT 1\n",
+      ],
+  )
+  def test_load_eval_sql_template_rejects_a_missing_license_header(
+      self, eval_sql_dir: pathlib.Path, text: str
+  ) -> None:
+    """A file without a '--' header and a blank line is not a template."""
+    (eval_sql_dir / "test_bad.sql").write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must begin with"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template("test_bad.sql")
+
+  @pytest.mark.parametrize(
+      "filename", ["", ".", "..", "../ok.sql", "sub/ok.sql", "/tmp/ok.sql"]
+  )
+  def test_load_eval_sql_template_rejects_a_path(self, filename: str) -> None:
+    """Only a bare file name in the SQL directory can be loaded."""
+    with pytest.raises(ValueError, match="bare file name"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template(filename)
+
+  @pytest.mark.usefixtures("eval_sql_dir")
+  def test_load_eval_sql_template_reports_a_missing_file(self) -> None:
+    """A file that is neither beside the module nor packaged is an error."""
+    with pytest.raises(FileNotFoundError, match="test_missing.sql"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template(
+          "test_missing.sql"
+      )
+
+  def test_load_eval_sql_template_reads_beside_a_linked_module_first(
+      self, eval_sql_dir: pathlib.Path, tmp_path: pathlib.Path
+  ) -> None:
+    """The SQL beside a link to the module is read before its target's.
+
+    A build such as Blaze links the module into a tree of runfiles, and the
+    link's target, in a cache, may have no SQL beside it.
+    """
+    target_sql_dir = tmp_path / "cache" / "bigquery_agent_analytics_sql"
+    target_sql_dir.mkdir(parents=True)
+    target = target_sql_dir.parent / "0123abcd"
+    target.write_text("# The plugin module.\n", encoding="utf-8")
+    (eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py").symlink_to(
+        target
+    )
+    for sql_dir, place in [(eval_sql_dir, "link"), (target_sql_dir, "target")]:
+      (sql_dir / "test_linked.sql").write_text(
+          f"-- License.\n\nSELECT 'beside the {place}'\n", encoding="utf-8"
+      )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_linked.sql"
+    )
+
+    assert template == "SELECT 'beside the link'\n"
+
+  def test_load_eval_sql_template_follows_a_link_to_the_module(
+      self,
+      eval_sql_dir: pathlib.Path,
+      tmp_path: pathlib.Path,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """A link to the module, alone in its directory, finds its target's SQL."""
+    module = eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py"
+    module.write_text("# The plugin module.\n", encoding="utf-8")
+    link = tmp_path / "checkout" / "bigquery_agent_analytics_plugin.py"
+    link.parent.mkdir()
+    link.symlink_to(module)
+    monkeypatch.setattr(bigquery_agent_analytics_plugin, "__file__", str(link))
+    (eval_sql_dir / "test_target.sql").write_text(
+        "-- License.\n\nSELECT 'beside the target'\n", encoding="utf-8"
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_target.sql"
+    )
+
+    assert template == "SELECT 'beside the target'\n"
+
+  @pytest.mark.usefixtures("eval_sql_dir")
+  def test_load_eval_sql_template_falls_back_to_the_package_resources(
+      self,
+  ) -> None:
+    """With no SQL beside the module, the package's resource is read."""
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "eval_turn_view_v1.sql"
+    )
+
+    assert template.startswith(
+        "CREATE OR REPLACE VIEW `{view_ref}` AS\n{ctes}\nSELECT\n"
+    )
+
+  def test_eval_view_evaluator_requires_an_else_in_every_case(self) -> None:
+    """The evaluator rejects a CASE without an ELSE, as the SQL lint does."""
+    with_else = (
+        "WITH x AS (SELECT CASE WHEN a THEN 1 ELSE 2 END AS y FROM t)"
+        " SELECT y FROM x"
+    )
+    without_else = with_else.replace(" ELSE 2", "")
+
+    assert _EvalViewSqlEvaluator(with_else).run(
+        [{"a": True}, {"a": False}]
+    ) == [
+        {"y": 1},
+        {"y": 2},
+    ]
+    with pytest.raises(AssertionError, match="ELSE"):
+      _EvalViewSqlEvaluator(without_else)
 
 
 # ==============================================================================
