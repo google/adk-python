@@ -7489,5 +7489,39 @@ async def test_run_async_base_node_without_message_or_invocation_id_raises_value
       pass
 
 
+async def test_run_async_with_existing_history_and_no_new_message_succeeds():
+  """Runner.run_async must succeed with new_message=None when session has history (#7934)."""
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  user_event = Event(
+      timestamp=1.0,
+      invocation_id="inv1",
+      author="user",
+      content=types.Content(
+          role="user", parts=[types.Part(text="hello previous")]
+      ),
+  )
+  await session_service.append_event(session=session, event=user_event)
+
+  runner = Runner(
+      app_name="test_app",
+      agent=MockLlmAgent("test_agent"),
+      session_service=session_service,
+  )
+
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id="u",
+          session_id="s",
+          new_message=None,
+          invocation_id=None,
+      )
+  ]
+  assert events
+
+
 if __name__ == "__main__":
   pytest.main([__file__])

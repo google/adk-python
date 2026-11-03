@@ -1177,7 +1177,13 @@ class Runner:
     if new_message and new_message.role != 'user':
       new_message = types.Content(role='user', parts=new_message.parts)
 
-    if not invocation_id and new_message is None:
+    session = await self._get_or_create_session(
+        user_id=user_id,
+        session_id=session_id,
+        get_session_config=run_config.get_session_config,
+    )
+
+    if not invocation_id and new_message is None and not session.events:
       raise ValueError(
           'Running an agent requires either a new_message or an '
           'invocation_id to resume a previous invocation. '
@@ -1198,11 +1204,6 @@ class Runner:
       # output field (an A2A server turns that into an artifact; a direct caller
       # reads it off the event stream).
       if effective_mode in (_AgentMode.CHAT, _AgentMode.TASK):
-        session = await self._get_or_create_session(
-            user_id=user_id,
-            session_id=session_id,
-            get_session_config=run_config.get_session_config,
-        )
         agent_to_run: BaseAgent
         if self._uses_legacy_sub_agent_picker():
           agent_to_run = self._find_agent_to_run(
@@ -1250,6 +1251,8 @@ class Runner:
               state_delta=state_delta,
               run_config=run_config,
               yield_user_message=yield_user_message,
+              node=self.agent,
+              session=session,
               abort_signal=abort_signal,
           )
       ) as agen:
@@ -1269,7 +1272,7 @@ class Runner:
           get_session_config=run_config.get_session_config,
       )
 
-      if not invocation_id and new_message is None:
+      if not invocation_id and new_message is None and not session.events:
         raise ValueError(
             'Running an agent requires either a new_message or an '
             'invocation_id to resume a previous invocation. '
