@@ -1491,6 +1491,127 @@ async def test_use_as_output_custom_node():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize('message_kind', ['text', 'image'])
+async def test_delegated_output_preserves_message_content(
+    delegate_output: bool, message_kind: str
+):
+  """Delegating output suppresses duplicates without losing message content."""
+  if message_kind == 'text':
+    part = types.Part(text='Please review the result.')
+  else:
+    part = types.Part.from_bytes(data=b'image-data', mime_type='image/png')
+  content = types.Content(role='model', parts=[part])
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, content=content)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  messages = [e for e in events if e.content == content]
+  assert len(messages) == 1
+  assert messages[0].output == (None if delegate_output else 'answer')
+  assert _outputs(events).count('answer') == (1 if delegate_output else 2)
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert sum(e.content == content for e in persisted.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_preserves_confirmation_and_resume():
+  """A parent can request confirmation after publishing its child's output.
+
+  Setup: a parent delegates output, then yields a combined output/interrupt event.
+  Act: run once, then respond to its approval request.
+  Assert: the request is persisted and visible, and downstream runs only on resume.
+  """
+  downstream_inputs = []
+
+  class _ApprovalNode(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'approval' in ctx.resume_inputs:
+        yield Event(
+            output='approved answer',
+            content=types.Content(parts=[types.Part(text='Approved.')]),
+        )
+        return
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'), use_as_output=True
+      )
+      event = _make_function_call_interrupt('approval')
+      event.output = result
+      yield event
+
+  def downstream(node_input):
+    downstream_inputs.append(node_input)
+    return 'finished'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, _ApprovalNode(name='approval_node'), downstream)],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  first_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(role='user', parts=[types.Part(text='go')]),
+      )
+  ]
+  requests = [
+      e for e in first_events if e.long_running_tool_ids == {'approval'}
+  ]
+  assert len(requests) == 1
+  assert requests[0].get_function_calls()[0].id == 'approval'
+  assert requests[0].output is None
+  assert _outputs(first_events).count('answer') == 1
+  assert downstream_inputs == []
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert any(e.long_running_tool_ids == {'approval'} for e in persisted.events)
+
+  resumed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='approve', id='approval', response={'ok': True}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  assert downstream_inputs == ['approved answer']
+  assert 'finished' in _outputs(resumed_events)
+
+
+@pytest.mark.asyncio
 async def test_use_as_output_nested_delegation():
   """Chained delegation: A → B → C, all use_as_output=True.
 

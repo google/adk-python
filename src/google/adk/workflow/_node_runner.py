@@ -44,6 +44,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 def _has_non_output_content(event: Event) -> bool:
+  if event.content is not None:
+    return True
   if event.actions:
     if (
         event.actions.state_delta
