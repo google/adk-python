@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
@@ -520,12 +522,26 @@ def test_evaluate_first_turn_failure():
     [
         types.Content(role="user", parts=[]),
         types.Content(),
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(
+                        mime_type="audio/pcm;rate=16000", data=b"\x00\x01"
+                    )
+                )
+            ],
+        ),
     ],
 )
 def test_evaluate_first_turn_not_evaluated_when_user_content_has_no_text(
     user_content,
 ):
-  """First turn with empty/None parts is not evaluated instead of crashing."""
+  """A first turn without text is not evaluated instead of failing.
+
+  This covers empty or missing parts, and an audio-only turn, as the audio
+  user simulator sends when include_text_with_audio is False.
+  """
   evaluator = _create_test_evaluator(
       threshold=1.0, stop_signal="test stop signal"
   )
@@ -628,8 +644,9 @@ def test_aggregate_conversation_results_all_failures_produces_failure():
   assert aggregation.overall_eval_status == EvalStatus.FAILED
 
 
-def test_aggregate_conversation_results_skips_not_evaluated_turns():
+def test_aggregate_conversation_results_skips_not_evaluated_turns(caplog):
   """Turns that were not evaluated are left out of the overall score."""
+  caplog.set_level(logging.WARNING)
   evaluator = _create_test_evaluator()
   results = [
       PerInvocationResult(
@@ -649,6 +666,7 @@ def test_aggregate_conversation_results_skips_not_evaluated_turns():
       overall_eval_status=EvalStatus.PASSED,
       per_invocation_results=results,
   )
+  assert "Skipped 1 of 2 user turns" in caplog.text
 
 
 def test_aggregate_conversation_results_none_evaluated_produces_not_evaluated():

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import ClassVar
 from typing import Optional
@@ -42,6 +43,8 @@ from ..llm_as_judge_utils import get_eval_status
 from ..llm_as_judge_utils import get_text_from_content
 from ..llm_as_judge_utils import Label
 from .per_turn_user_simulator_quality_prompts import get_per_turn_user_simulator_quality_prompt
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def _parse_llm_response(response: str) -> Label:
@@ -278,14 +281,24 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     """Computes the fraction of results that resulted in a pass status."""
     num_valid = 0.0
     num_evaluated = 0
+    num_skipped = 0
     for result in per_invocation_results:
       if result.score is None or result.eval_status == EvalStatus.NOT_EVALUATED:
+        num_skipped += 1
         continue
 
       if result.eval_status == EvalStatus.PASSED:
         num_valid += result.score
 
       num_evaluated += 1
+
+    if num_skipped:
+      logger.warning(
+          "Skipped %d of %d user turns that could not be evaluated, for"
+          " example because the judge's reply had no parsable label.",
+          num_skipped,
+          len(per_invocation_results),
+      )
 
     # If no invocation was evaluated, we mark the score as None.
     if num_evaluated == 0:
@@ -314,7 +327,8 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       )
 
     user_text = get_text_from_content(first_invocation.user_content)
-    if user_text is None:
+    # An audio-only turn has parts but no text to compare with the prompt.
+    if not user_text:
       return PerInvocationResult(
           actual_invocation=first_invocation,
           eval_status=EvalStatus.NOT_EVALUATED,
