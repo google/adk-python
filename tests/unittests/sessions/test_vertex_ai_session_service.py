@@ -1156,6 +1156,7 @@ async def test_append_event_sends_json_safe_state_delta(
           state_delta={
               'due': datetime.date(2026, 11, 1),
               'request_id': request_id,
+              'screenshot': b'\x89PNG\r\n\x1a\n',
               'total': decimal.Decimal('19.99'),
           }
       ),
@@ -1170,6 +1171,7 @@ async def test_append_event_sends_json_safe_state_delta(
   assert json.loads(json.dumps(sent_delta)) == {
       'due': '2026-11-01',
       'request_id': str(request_id),
+      'screenshot': 'iVBORw0KGgo=',
       'total': '19.99',
   }
 

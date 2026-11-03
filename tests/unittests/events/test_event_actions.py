@@ -65,6 +65,13 @@ class TestMakeJsonSerializable:
     assert result['ok'] == 2
     assert isinstance(result['cb'], str)
 
+  def test_bytes_are_base64_encoded(self):
+    result = _make_json_serializable(
+        {'png': b'\x89PNG\r\n\x1a\n', 'cb': lambda: 1}
+    )
+    assert result['png'] == 'iVBORw0KGgo='
+    assert isinstance(result['cb'], str)
+
 
 class TestStateDeltaSerialization:
   """Tests for the `state_delta` wrap serializer."""
@@ -106,6 +113,34 @@ class TestStateDeltaSerialization:
     )
     assert dumped['state_delta'] == {'foo': 1}
 
+  def test_binary_bytes_are_base64_encoded_without_warning(self, caplog):
+    """Non-UTF-8 bytes in state_delta dump as base64 and log nothing."""
+    actions = EventActions(state_delta={'png': b'\x89PNG\r\n\x1a\n'})
+
+    with caplog.at_level(logging.WARNING):
+      dumped = actions.model_dump(mode='json')
+
+    assert dumped['state_delta'] == {'png': 'iVBORw0KGgo='}
+    assert not caplog.records
+
+  def test_utf8_bytes_vs_non_utf8_bytes_serialization(self, caplog):
+    """Valid UTF-8 bytes use tier-1 utf8 while non-UTF-8 bytes use base64."""
+    utf8_actions = EventActions(state_delta={'text': b'hi'})
+    mixed_actions = EventActions(
+        state_delta={'text': b'hi', 'png': b'\x89PNG\r\n\x1a\n'}
+    )
+
+    with caplog.at_level(logging.WARNING):
+      assert utf8_actions.model_dump(mode='json')['state_delta'] == {
+          'text': 'hi'
+      }
+      assert mixed_actions.model_dump(mode='json')['state_delta'] == {
+          'text': 'aGk=',
+          'png': 'iVBORw0KGgo=',
+      }
+
+    assert not caplog.records
+
   def test_exclude_is_respected_in_fallback_path(self):
     # Even when sanitization is required (callable present), caller `exclude`
     # directives must still be applied to the fallback output.
@@ -142,6 +177,16 @@ class TestAgentStateSerialization:
     dumped = actions.model_dump(mode='json')
     assert dumped['agent_state']['n'] == 3
     assert isinstance(dumped['agent_state']['cb'], str)
+
+  def test_binary_bytes_are_base64_encoded_without_warning(self, caplog):
+    """Non-UTF-8 bytes in agent_state dump as base64 and log nothing."""
+    actions = EventActions(agent_state={'png': b'\x89PNG\r\n\x1a\n'})
+
+    with caplog.at_level(logging.WARNING):
+      dumped = actions.model_dump(mode='json')
+
+    assert dumped['agent_state'] == {'png': 'iVBORw0KGgo='}
+    assert not caplog.records
 
   def test_non_serializable_agent_state_logs_warning(self, caplog):
     actions = EventActions(agent_state={'cb': lambda: 1})
