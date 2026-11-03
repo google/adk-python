@@ -72,12 +72,14 @@ def make_json_safe_state(state: dict[str, Any]) -> dict[str, Any]:
   """Coerces a state dictionary into a JSON-serializable form.
 
   Rich types such as datetimes and Pydantic models are serialized faithfully.
-  Only when that fails is the dictionary re-serialized with the offending values
-  (e.g. callables) replaced by their string representation, and a warning
-  logged, so that a lossy write is diagnosable rather than silent.
+  Binary `bytes` values are encoded as base64 strings and are not restored to
+  `bytes` on read. Only when serialization fails is the dictionary re-serialized
+  with the offending values (e.g. callables) replaced by their string
+  representation, and a warning logged, so that a lossy write is diagnosable
+  rather than silent.
   """
   try:
-    return cast(dict[str, Any], to_jsonable_python(state))
+    return cast(dict[str, Any], to_jsonable_python(state, bytes_mode="base64"))
   except Exception:  # pylint: disable=broad-except
     logger.warning(
         "Failed to serialize session state; some values are not"

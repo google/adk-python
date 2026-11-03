@@ -47,12 +47,40 @@ def _make_json_serializable(obj: Any) -> Any:
 
   Used as a fallback when the default Pydantic serialization fails. Delegates to
   `pydantic_core.to_jsonable_python` so rich types (e.g. datetimes, Pydantic
-  models) are serialized faithfully instead of being discarded. Values that
-  pydantic-core cannot serialize (e.g. Python callables stored in session state)
-  are replaced with their `repr` via `serialize_unknown=True` so the overall
-  structure can still be persisted without crashing.
+  models) are serialized faithfully instead of being discarded. Binary `bytes`
+  values are encoded as base64 strings and are not restored to `bytes` on read.
+  Values that pydantic-core cannot serialize (e.g. Python callables stored in
+  session state) are replaced with their `repr` via `serialize_unknown=True` so
+  the overall structure can still be persisted without crashing.
   """
-  return to_jsonable_python(obj, serialize_unknown=True)
+  return to_jsonable_python(obj, bytes_mode='base64', serialize_unknown=True)
+
+
+def _serialize_with_fallback(
+    value: dict[str, Any],
+    handler: SerializerFunctionWrapHandler,
+    field_name: str,
+) -> dict[str, Any]:
+  """Serializes a state dict with a three-tier fallback for binary/unknown values."""
+  try:
+    return cast(dict[str, Any], handler(value))
+  except Exception:  # pylint: disable=broad-except
+    try:
+      return cast(
+          dict[str, Any],
+          handler(to_jsonable_python(value, bytes_mode='base64')),
+      )
+    except Exception:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to serialize `%s`; some values are not'
+          ' JSON-serializable (e.g. callables) and will be replaced with a'
+          ' string representation in the persisted event.',
+          field_name,
+          exc_info=True,
+      )
+      # Re-run the handler on the sanitized value so that caller `exclude` /
+      # `include` directives are still applied to the fallback output.
+      return cast(dict[str, Any], handler(_make_json_serializable(value)))
 
 
 class EventCompaction(BaseModel):  # type: ignore[misc]
@@ -100,20 +128,11 @@ class EventActions(BaseModel):  # type: ignore[misc]
   ) -> dict[str, Any]:
     # Use a wrap serializer so the default serialization (which honors callers'
     # `exclude`/`include` directives, e.g. the conformance harness excluding
-    # internal `_adk_*` keys) is preserved. Only fall back to sanitization when
-    # the value contains objects Pydantic cannot serialize (e.g. callables).
-    try:
-      return cast(dict[str, Any], handler(value))
-    except Exception:  # pylint: disable=broad-except
-      logger.warning(
-          'Failed to serialize `state_delta`; some values are not'
-          ' JSON-serializable (e.g. callables) and will be replaced with a'
-          ' string representation in the persisted event.',
-          exc_info=True,
-      )
-      # Re-run the handler on the sanitized value so that caller `exclude` /
-      # `include` directives are still applied to the fallback output.
-      return cast(dict[str, Any], handler(_make_json_serializable(value)))
+    # internal `_adk_*` keys) is preserved. Only fall back when the default
+    # serialization fails: `_serialize_with_fallback` first retries with bytes
+    # pre-encoded as base64 (silent), and only sanitizes (replacing e.g.
+    # callables with their `repr` and logging a warning) if that still fails.
+    return _serialize_with_fallback(value, handler, 'state_delta')
 
   artifact_delta: dict[str, int] = Field(default_factory=dict)
   """Indicates that the event is updating an artifact. key is the filename,
@@ -179,18 +198,7 @@ class EventActions(BaseModel):  # type: ignore[misc]
     if value is None:
       return None
     # See `_serialize_state_delta` for why a wrap serializer is used.
-    try:
-      return cast(Optional[dict[str, Any]], handler(value))
-    except Exception:  # pylint: disable=broad-except
-      logger.warning(
-          'Failed to serialize `agent_state`; some values are not'
-          ' JSON-serializable (e.g. callables) and will be replaced with a'
-          ' string representation in the persisted event.',
-          exc_info=True,
-      )
-      # Re-run the handler on the sanitized value so that caller `exclude` /
-      # `include` directives are still applied to the fallback output.
-      return cast(dict[str, Any], handler(_make_json_serializable(value)))
+    return _serialize_with_fallback(value, handler, 'agent_state')
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""

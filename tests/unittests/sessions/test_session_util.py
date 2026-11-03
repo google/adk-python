@@ -135,6 +135,16 @@ class TestMakeJsonSafeState:
     assert state == {"when": "2026-01-01T00:00:00"}
     assert not caplog.records
 
+  def test_serializes_bytes_as_base64_without_warning(self, caplog):
+    """Bytes are base64 whether or not they are valid UTF-8."""
+    with caplog.at_level(logging.WARNING):
+      state = make_json_safe_state(
+          {"text": b"hi", "blob": b"\x89PNG\r\n\x1a\n"}
+      )
+
+    assert state == {"text": "aGk=", "blob": "iVBORw0KGgo="}
+    assert not caplog.records
+
   def test_degrades_unserializable_values_and_warns(self, caplog):
     """A value pydantic cannot serialize degrades to a repr and is logged."""
     with caplog.at_level(logging.WARNING):
