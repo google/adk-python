@@ -1641,6 +1641,21 @@ async def test_create_session_with_blank_id_generates_one():
 
 
 @pytest.mark.asyncio
+async def test_create_session_with_empty_id_generates_one(session_service):
+  """An empty session id is replaced by a generated one, as if omitted."""
+  first = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+  second = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+
+  assert first.id
+  assert second.id
+  assert first.id != second.id
+
+
+@pytest.mark.asyncio
 async def test_get_session_finds_session_by_id_passed_to_create(
     session_service,
 ):
@@ -2729,17 +2744,21 @@ async def test_partial_events_are_not_persisted(session_service):
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
+  original_last_update_time = session.last_update_time
   event = Event(author='user', partial=True)
   returned = await session_service.append_event(session, event)
 
   assert returned is event
   # Check in-memory session
   assert len(session.events) == 0
+  # Partial events must not advance last_update_time.
+  assert session.last_update_time == original_last_update_time
   # Check persisted session
   session_got = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert len(session_got.events) == 0
+  assert session_got.last_update_time == original_last_update_time
 
 
 @pytest.mark.asyncio
