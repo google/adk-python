@@ -34,6 +34,12 @@ EVAL_CLIENT_LABEL = f"google-adk-eval/{version.__version__}"
 MODEL_CONSULT_CLIENT_LABEL = f"google-adk-model-consult/{version.__version__}"
 """Label used to denote advisor LLM calls made by ModelConsultTool."""
 
+
+def classifier_client_label(kind: str) -> str:
+  """Returns the label for calls made by a classifier, such as "llm"."""
+  return f"google-adk-classifier/{version.__version__}+{kind}"
+
+
 # The ContextVar holds client label collected for the current request.
 _LABEL_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_LABEL_CONTEXT", default=None
