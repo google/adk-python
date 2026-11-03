@@ -24,7 +24,6 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.oauth2_credential_util import create_oauth2_session
 from google.adk.auth.oauth2_credential_util import update_credential_with_tokens
-from google.adk.utils.feature_decorator import experimental
 import requests
 from typing_extensions import override
 
@@ -41,7 +40,6 @@ except ImportError:
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
 class OAuth2CredentialRefresher(BaseCredentialRefresher):
   """Refreshes OAuth2 credentials including Google OAuth2 JSON credentials."""
 

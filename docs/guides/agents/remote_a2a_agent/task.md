@@ -167,8 +167,9 @@ If the remote agent encounters an unrecoverable failure (`TS_FAILED`,
 -   A terminal `finish_task(result=FINISH_TASK_ERROR_RESULT)` event is generated
     with `output=None` to ensure Pydantic output schemas do not fail validation
     on errors.
--   Control is released back to the parent coordinator cleanly with
-    `end_of_agent=True`.
+-   The coordinator's delegating call receives `{"error": <message>}` as its
+    response, without validation against the output schema, and control
+    returns to the coordinator.
 
 ---
 

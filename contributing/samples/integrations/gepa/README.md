@@ -68,7 +68,7 @@ through manual prompt engineering.
 Install the ADK and the packages this sample depends on:
 
 ```bash
-pip install google-adk absl-py gepa jinja2 litellm retry
+pip install "google-adk[extensions]" absl-py gepa jinja2 retry
 ```
 
 The Tau-bench example additionally needs Tau-bench itself:

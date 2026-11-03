@@ -16,8 +16,17 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
+from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
+from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
 from google.adk.tools.environment_simulation.environment_simulation_plugin import EnvironmentSimulationPlugin
+from google.genai import types
 import pytest
+
+from ... import testing_utils
 
 
 @pytest.mark.asyncio
@@ -44,3 +53,46 @@ class TestEnvironmentSimulationPlugin:
     mock_simulator_engine.simulate.assert_awaited_once_with(
         mock_tool, mock_args, mock_context
     )
+
+  @pytest.mark.parametrize("response", [{}, {"status": "ok"}])
+  async def test_injected_response_skips_tool_execution(self, response):
+    """An injected response, even {}, is returned without running the tool."""
+    tool_calls = []
+
+    def fetch_data() -> dict[str, bool]:
+      tool_calls.append(True)
+      return {"live": True}
+
+    config = EnvironmentSimulationConfig(
+        tool_simulation_configs=[
+            ToolSimulationConfig(
+                tool_name="fetch_data",
+                injection_configs=[InjectionConfig(injected_response=response)],
+            )
+        ]
+    )
+    model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(name="fetch_data", args={}),
+            types.Part.from_text(text="done"),
+        ]
+    )
+    agent = LlmAgent(name="test_agent", model=model, tools=[fetch_data])
+    runner = testing_utils.InMemoryRunner(
+        app=App(
+            name="test_app",
+            root_agent=agent,
+            plugins=[
+                EnvironmentSimulationPlugin(EnvironmentSimulationEngine(config))
+            ],
+        )
+    )
+
+    events = await runner.run_async("fetch data")
+
+    tool_responses = [
+        result for event in events for result in event.get_function_responses()
+    ]
+    assert len(tool_responses) == 1
+    assert tool_responses[0].response == response
+    assert not tool_calls

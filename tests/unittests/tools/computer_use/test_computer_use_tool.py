@@ -219,6 +219,20 @@ class TestComputerUseTool:
       tool._normalize_y("invalid")
 
   @pytest.mark.asyncio
+  async def test_run_async_with_state_without_screenshot_raises(
+      self, tool_context
+  ):
+    """A returned state with no screenshot is reported, not base64-encoded."""
+
+    async def take_screenshot():
+      return ComputerState(url="https://example.com")
+
+    tool = ComputerUseTool(func=take_screenshot, screen_size=(1920, 1080))
+
+    with pytest.raises(ValueError, match="no screenshot"):
+      await tool.run_async(args={}, tool_context=tool_context)
+
+  @pytest.mark.asyncio
   async def test_run_async_with_coordinates(
       self, mock_computer_function, tool_context
   ):

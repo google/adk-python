@@ -20,8 +20,6 @@ from typing import Any
 from typing import cast
 from typing import Dict
 
-from google.adk.features import experimental
-from google.adk.features import FeatureName
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.tools.base_tool import BaseTool
@@ -91,7 +89,6 @@ def _find_value_by_key(data: object, target_key: str) -> object | None:
   return None
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class ToolSpecMockStrategy(MockStrategy):
   """Mocks a tool response based on the tool's specification."""
 

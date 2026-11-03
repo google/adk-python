@@ -156,6 +156,7 @@ def _runtime_extra_requirements(
   requirement that extra declares, so a failure can name the extra that ``all``
   drifted away from.
   """
+  project_name = canonicalize_name(pyproject['project']['name'])
   contributors: dict[str, list[tuple[str, Requirement]]] = {}
   for extra, entries in pyproject['project']['optional-dependencies'].items():
     if extra == 'all' or extra in _NON_RUNTIME_EXTRAS:
@@ -163,6 +164,12 @@ def _runtime_extra_requirements(
     for entry in entries:
       requirement = Requirement(entry)
       key = canonicalize_name(requirement.name)
+      # A self-referential alias (e.g. ``otel-gcp = ["google-adk[otel]"]``)
+      # re-exposes another extra's dependencies rather than naming a new
+      # distribution. ``all`` covers those through the aliased extra and never
+      # lists the project itself, so it is not a contributor to mirror.
+      if key == project_name:
+        continue
       contributors.setdefault(key, []).append((extra, requirement))
   return contributors
 

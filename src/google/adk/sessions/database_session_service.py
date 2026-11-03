@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 import copy
 from datetime import datetime
@@ -217,7 +218,8 @@ async def _get_or_create_state(
     return row
   try:
     async with sql_session.begin_nested():
-      row = state_model(**defaults)
+      new_state: Callable[..., _StorageStateT] = state_model
+      row = new_state(**defaults)
       sql_session.add(row)
     return row
   except IntegrityError:
@@ -235,6 +237,12 @@ def _set_sqlite_pragma(
   cursor = dbapi_connection.cursor()
   cursor.execute("PRAGMA foreign_keys=ON")
   cursor.close()
+
+
+def _begin_sqlite_write_transaction(connection: Connection) -> None:
+  """Takes the SQLite write lock before a read-write transaction reads."""
+  if not connection.get_execution_options().get("read_only"):
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def _ensure_schema_indexes_exist(
@@ -399,6 +407,11 @@ class DatabaseSessionService(BaseSessionService):
         if db_engine.dialect.name == _SQLITE_DIALECT:
           # Set sqlite pragma to enable foreign keys constraints
           event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
+          # A StaticPool shares one connection, which cannot nest transactions.
+          if not isinstance(db_engine.pool, StaticPool):
+            event.listen(
+                db_engine.sync_engine, "begin", _begin_sqlite_write_transaction
+            )
 
       except Exception as e:
         redacted_url = _schema_check_utils._redact_db_url(db_url)
@@ -658,12 +671,14 @@ class DatabaseSessionService(BaseSessionService):
       session_id = platform_uuid.new_uuid()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
-      if has_user_provided_id and await sql_session.get(
-          schema.StorageSession, (app_name, user_id, session_id)
-      ):
-        raise AlreadyExistsError(
-            f"Session with id {session_id} already exists."
+      if has_user_provided_id:
+        existing_session = await sql_session.get(
+            schema.StorageSession, (app_name, user_id, session_id)
         )
+        if existing_session:
+          raise AlreadyExistsError(
+              f"Session with id {session_id} already exists."
+          )
       # Get or create state rows, handling concurrent insert races.
       storage_app_state = await _get_or_create_state(
           sql_session=sql_session,
@@ -761,7 +776,7 @@ class DatabaseSessionService(BaseSessionService):
             .filter(schema.StorageEvent.user_id == user_id)
         )
 
-        if config and config.after_timestamp:
+        if config and config.after_timestamp is not None:
           after_dt = datetime.fromtimestamp(
               config.after_timestamp, tz=timezone.utc
           )

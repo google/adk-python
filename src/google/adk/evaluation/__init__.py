@@ -14,9 +14,11 @@
 
 import logging
 
+from ._multi_run_aggregation_methods import RunResult
+
 logger = logging.getLogger('google_adk.' + __name__)
 
-__all__ = []
+__all__ = ['RunResult']
 
 try:
   from .agent_evaluator import AgentEvaluator

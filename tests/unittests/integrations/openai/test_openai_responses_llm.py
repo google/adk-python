@@ -32,7 +32,9 @@ if not hasattr(types, 'AvatarConfig'):
 
 from google.adk.integrations.openai._openai_common import OpenAIGenerateContentConfig
 from google.adk.integrations.openai._openai_responses_llm import _content_to_response_input_items
+from google.adk.integrations.openai._openai_responses_llm import _file_data_part_to_response_content
 from google.adk.integrations.openai._openai_responses_llm import _function_declaration_to_response_tool
+from google.adk.integrations.openai._openai_responses_llm import _inline_data_part_to_response_content
 from google.adk.integrations.openai._openai_responses_llm import _loads_json_object
 from google.adk.integrations.openai._openai_responses_llm import _response_to_llm_response
 from google.adk.integrations.openai._openai_responses_llm import _serialize_system_instruction
@@ -477,6 +479,16 @@ def test_assistant_media_is_filtered(caplog):
   assert (
       'Media data is not supported in Responses assistant turns.' in caplog.text
   )
+
+
+def test_inline_data_conversion_rejects_part_without_inline_data():
+  with pytest.raises(ValueError, match='inline_data'):
+    _inline_data_part_to_response_content(types.Part())
+
+
+def test_file_data_conversion_rejects_part_without_file_data():
+  with pytest.raises(ValueError, match='file_data'):
+    _file_data_part_to_response_content(types.Part())
 
 
 def test_code_parts_are_preserved_as_text():

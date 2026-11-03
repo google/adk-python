@@ -402,6 +402,72 @@ async def test_chat_root_with_nested_task_delegation(
   assert any("Top-level done." in t for t in _get_text_responses(events))
 
 
+@pytest.mark.asyncio
+async def test_task_agent_delegation_in_same_turn_as_finish_task(
+    request: pytest.FixtureRequest,
+) -> None:
+  """A delegation sent alongside finish_task still runs before the task ends."""
+  grandchild_model = testing_utils.MockModel.create(
+      responses=[_finish_part({"result": "leaf"})]
+  )
+  grandchild = LlmAgent(name="grandchild", model=grandchild_model, mode="task")
+
+  child = _make_task_agent(
+      name="child",
+      responses=[
+          [
+              _delegate_part("grandchild", "leaf work"),
+              _finish_part({"result": "too early"}),
+          ],
+          [_finish_part({"result": "middle wraps leaf"})],
+      ],
+      sub_agents=[grandchild],
+  )
+
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("child", "do the thing"),
+              _text_part("Top-level done."),
+          ]
+      ),
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  assert grandchild_model.response_index == 0, "grandchild must be dispatched"
+  finish_responses = [
+      fr.response
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == "finish_task"
+  ]
+  assert finish_responses == [
+      {
+          "error": (
+              "finish_task was ignored because a task delegation was sent in"
+              " the same turn. Call finish_task by itself once the delegated"
+              " result is available."
+          )
+      },
+      {"result": "Task completed."},
+      {"result": "Task completed."},
+  ]
+  child_results = [
+      fr.response
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == "child"
+  ]
+  assert child_results == [{"result": "middle wraps leaf"}]
+  assert any("Top-level done." in t for t in _get_text_responses(events))
+
+
 # ---------------------------------------------------------------------------
 # 4. Workflow with a single task-mode node (no FC delegation)
 # ---------------------------------------------------------------------------

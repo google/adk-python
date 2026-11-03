@@ -19,8 +19,8 @@ internal build resolves the same module path to a sibling file naming the copy
 vendored there, which carries a different distribution name. Every MCP import
 in ADK goes through this module so that difference lives in one place.
 
-The pin admits both 1.x and 2.x, so this module also spans them. Fourteen of
-the seventeen names below sit at the same path in both. The three that moved
+The pin admits both 1.x and 2.x, so this module also spans them. Most names
+below sit at the same path in both. The three that moved
 are resolved here, once, rather than at seventeen call sites:
 
   * `McpError` was renamed `MCPError`
@@ -40,55 +40,69 @@ from __future__ import annotations
 
 from typing import Awaitable
 from typing import Callable
+from typing import TYPE_CHECKING
+from typing import TypeAlias
 
 from mcp import ClientSession as ClientSession
 from mcp import SamplingCapability as SamplingCapability
 from mcp import StdioServerParameters as StdioServerParameters
 from mcp import types as types
 from mcp.client.session import ElicitationFnT as ElicitationFnT
+from mcp.client.session import MessageHandlerFnT as MessageHandlerFnT
 from mcp.client.session import SamplingFnT as SamplingFnT
 from mcp.client.sse import sse_client as sse_client
 from mcp.client.stdio import stdio_client as stdio_client
-from mcp.client.streamable_http import create_mcp_http_client as create_mcp_http_client
 from mcp.client.streamable_http import streamable_http_client as streamable_http_client
 from mcp.server.session import ServerSession as ServerSession
+from mcp.shared._httpx_utils import create_mcp_http_client as create_mcp_http_client
 from mcp.types import ListResourcesResult as ListResourcesResult
 from mcp.types import ListToolsResult as ListToolsResult
 from mcp.types import Tool as Tool
 
-try:
+# A type checker takes the 2.x names only: following the 1.x fallback too would
+# redefine each name from a module path 2.x no longer has.
+if TYPE_CHECKING:
+  # The HTTP types the SDK's transports take, which `_httpx` cannot show a type
+  # checker: it always binds `httpx`, and 2.x is built against `httpx2`.
+  import httpx2
   from mcp.server.mcpserver import Context as Context
   from mcp.server.mcpserver import MCPServer as FastMCP
-  from mcp.shared.exceptions import MCPError as McpError
+  from mcp.shared._httpx_utils import McpHttpClientFactory as McpHttpClientFactory
+  from mcp.shared.exceptions import MCPError as McpError  # type: ignore[attr-defined]  # mcp 2.x only
 
-  # Which major resolved. Three places downstream need it and cannot ask the
-  # SDK themselves: `_httpx` pairs the HTTP library to it, `session_context`
-  # picks the type `read_timeout_seconds` wants (`float` on 2.x, `timedelta`
-  # on 1.x -- neither accepts the other), and `mcp_session_manager` skips the
-  # httpx-1.x OTel instrumentor.
-  IS_MCP_SDK_V2 = True
-except ImportError:
-  from mcp.server.fastmcp import Context as Context
-  from mcp.server.fastmcp import FastMCP as FastMCP
-  from mcp.shared.exceptions import McpError as McpError
+  McpHttpClient: TypeAlias = httpx2.AsyncClient
 
-  IS_MCP_SDK_V2 = False
-
-# Tries `server/discover` and falls back to `initialize`. SDK 2.x only exposes
-# this through its high-level `Client`, so we import the private function.
-# Separate try so that if it moves, we don't misdetect the SDK as 1.x.
-# `None` means connections use the legacy handshake.
-if IS_MCP_SDK_V2:
-  try:
-    from mcp.client._probe import negotiate_auto as _negotiate_auto
-  except ImportError:
-    _negotiate_auto = None
+  IS_MCP_SDK_V2: bool
+  negotiate_auto: Callable[[ClientSession], Awaitable[None]] | None
 else:
-  _negotiate_auto = None
+  try:
+    from mcp.server.mcpserver import Context as Context
+    from mcp.server.mcpserver import MCPServer as FastMCP
+    from mcp.shared.exceptions import MCPError as McpError
 
-negotiate_auto: Callable[[ClientSession], Awaitable[None]] | None = (
-    _negotiate_auto
-)
+    # Which major resolved. Three places downstream need it and cannot ask the
+    # SDK themselves: `_httpx` pairs the HTTP library to it, `session_context`
+    # picks the type `read_timeout_seconds` wants (`float` on 2.x, `timedelta`
+    # on 1.x -- neither accepts the other), and `mcp_session_manager` skips the
+    # httpx-1.x OTel instrumentor.
+    IS_MCP_SDK_V2 = True
+  except ImportError:
+    from mcp.server.fastmcp import Context as Context
+    from mcp.server.fastmcp import FastMCP as FastMCP
+    from mcp.shared.exceptions import McpError as McpError
+
+    IS_MCP_SDK_V2 = False
+
+  # Tries `server/discover` and falls back to `initialize`. SDK 2.x only exposes
+  # this through its high-level `Client`, so we import the private function.
+  # Separate try so that if it moves, we don't misdetect the SDK as 1.x.
+  # `None` means connections use the legacy handshake.
+  negotiate_auto = None
+  if IS_MCP_SDK_V2:
+    try:
+      from mcp.client._probe import negotiate_auto as negotiate_auto
+    except ImportError:
+      pass
 
 __all__ = [
     "IS_MCP_SDK_V2",
@@ -99,6 +113,7 @@ __all__ = [
     "ListResourcesResult",
     "ListToolsResult",
     "McpError",
+    "MessageHandlerFnT",
     "SamplingCapability",
     "SamplingFnT",
     "ServerSession",

@@ -25,6 +25,7 @@ from pydantic import ConfigDict
 
 from ...features import experimental
 from ...features import FeatureName
+from ...models.base_llm import BaseLlm
 
 if TYPE_CHECKING:
   from ._types import ClassifierInput
@@ -48,8 +49,8 @@ class BaseClassifier(BaseModel, abc.ABC):
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
-  model: str
-  """The provider's model name."""
+  model: str | BaseLlm
+  """The provider's model name, or a model instance."""
 
   @abc.abstractmethod
   async def classify(
@@ -68,5 +69,6 @@ class BaseClassifier(BaseModel, abc.ABC):
         the same names.
 
     Returns:
-      One answer per question, keyed by the question's name.
+      One answer per question, keyed by the question's name. A question the
+      model declined to answer gets a :class:`RefusalAnswer`.
     """

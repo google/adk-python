@@ -47,6 +47,8 @@ def convert_examples_to_text(
 ) -> str:
   """Converts a list of examples to a string that can be used in a system instruction."""
   examples_str = ""
+  # Loose match: vendor-hosted ids like "google.gemini-2.5-flash" are Gemini.
+  is_gemini = model is None or "gemini-" in model
   for example_num, example in enumerate(examples):
     output = f"{_EXAMPLE_START.format(example_num + 1)}{_USER_PREFIX}"
     if example.input and example.input.parts:
@@ -55,7 +57,6 @@ def convert_examples_to_text(
           + "\n"
       )
 
-    gemini2 = model is None or "gemini-2" in model
     previous_role = None
     for content in example.output:
       role = _MODEL_PREFIX if content.role == "model" else _USER_PREFIX
@@ -74,13 +75,13 @@ def convert_examples_to_text(
               args.append(f"{k}='{v}'")
             else:
               args.append(f"{k}={v}")
-          prefix = _FUNCTION_PREFIX if gemini2 else _FUNCTION_CALL_PREFIX
+          prefix = _FUNCTION_PREFIX if is_gemini else _FUNCTION_CALL_PREFIX
           output += (
               f"{prefix}{part.function_call.name}({', '.join(args)}){_FUNCTION_CALL_SUFFIX}"
           )
         # Convert function response part to json string
         elif part.function_response:
-          prefix = _FUNCTION_PREFIX if gemini2 else _FUNCTION_RESPONSE_PREFIX
+          prefix = _FUNCTION_PREFIX if is_gemini else _FUNCTION_RESPONSE_PREFIX
           output += f"{prefix}{part.function_response.__dict__}{_FUNCTION_RESPONSE_SUFFIX}"
         elif part.text:
           output += f"{part.text}\n"

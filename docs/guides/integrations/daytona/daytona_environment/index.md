@@ -91,7 +91,7 @@ Daytona instance instead of the default cloud service.
 
 ## Limitations
 
-The DaytonaEnvironment is an experimental feature and requires the daytona
+The DaytonaEnvironment requires the daytona
 Python package, which you can install using the daytona extra. Since the
 sandbox is remote, every operation incurs network latency, and the
 environment requires valid credentials and an active internet connection.

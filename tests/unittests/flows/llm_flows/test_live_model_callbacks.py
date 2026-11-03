@@ -27,6 +27,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import contents as contents_processor
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import _live_llm_flow
 from google.adk.live import LiveRequest
 from google.adk.live import LiveRequestQueue
 from google.adk.live._flow_utils import _ReconnectMode
@@ -45,7 +46,7 @@ class _Flow(BaseLlmFlow):
 
 
 class _StopReceive(Exception):
-  """Breaks the ``_receive_from_model`` outer loop once turns are exhausted."""
+  """Breaks the ``receive_from_model`` outer loop once turns are exhausted."""
 
 
 def _fake_connection(*turns: list[LlmResponse]):
@@ -140,12 +141,14 @@ def _event_texts(events: Iterable[Event]) -> list[str]:
 async def _collect_receive(
     flow, invocation_context, connection, llm_request=None
 ):
-  """Drains ``_receive_from_model``, returning its events and the request."""
+  """Drains ``receive_from_model``, returning its events and the request."""
   llm_request = llm_request if llm_request is not None else LlmRequest()
   events = []
   try:
     async with testing_utils.Aclosing(
-        flow._receive_from_model(connection, invocation_context, llm_request)
+        _live_llm_flow.receive_from_model(
+            flow, connection, invocation_context, llm_request
+        )
     ) as agen:
       async for event in agen:
         events.append(event)
@@ -155,12 +158,12 @@ async def _collect_receive(
 
 
 async def _drive_send(flow, invocation_context, requests, llm_request=None):
-  """Enqueues requests and runs ``_send_to_model`` to the end.
+  """Enqueues requests and runs ``send_to_model`` to the end.
 
   Returns a ``(connection, delivered)`` pair, where ``delivered`` holds the
-  events ``_send_to_model`` put on the invocation's event queue.
+  events ``send_to_model`` put on the invocation's event queue.
 
-  ``_send_to_model`` runs in the send task, which cannot yield events to the
+  ``send_to_model`` runs in the send task, which cannot yield events to the
   caller of ``run_live()``, so it enqueues them instead. This stands in for the
   Runner as the queue's consumer: it appends non-partial events to the session
   and acknowledges them, which ``_enqueue_event`` blocks on.
@@ -185,7 +188,8 @@ async def _drive_send(flow, invocation_context, requests, llm_request=None):
   invocation_context.live_request_queue.close()
   connection = _fake_send_connection()
   try:
-    await flow._send_to_model(
+    await _live_llm_flow.send_to_model(
+        flow,
         connection,
         invocation_context,
         llm_request if llm_request is not None else LlmRequest(),
@@ -419,7 +423,7 @@ async def test_blocked_partial_text_input_is_not_sent_to_the_model():
 async def test_blocked_text_input_is_delivered_to_the_runner():
   """A blocked typed turn reaches the caller of ``run_live()``.
 
-  ``_send_to_model`` runs in the send task, so appending to the session alone
+  ``send_to_model`` runs in the send task, so appending to the session alone
   would persist the event without ever surfacing it. Enqueuing it puts it on
   the stream the Runner merges into what ``run_live()`` yields.
   """

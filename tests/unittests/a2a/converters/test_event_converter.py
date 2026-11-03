@@ -34,6 +34,7 @@ from google.adk.a2a.converters.event_converter import convert_a2a_message_to_eve
 from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from google.adk.a2a.converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import _internal_metadata
@@ -900,6 +901,61 @@ class TestA2AToEventConverters:
     assert result.author == "test-author"
     assert result.branch == "test-branch"
     assert result.invocation_id == "test-invocation-id"
+
+  def test_convert_a2a_task_to_event_failed_status_sets_error(self):
+    """Test failed A2A task status maps to an error Event."""
+    failed_message = _compat.make_message(
+        message_id="msg-failed",
+        role=_compat.ROLE_AGENT,
+        parts=[_compat.make_text_part("Remote agent task failed")],
+    )
+    task = _compat.make_task(
+        id="task-failed",
+        status=_compat.make_task_status(
+            _compat.TS_FAILED, message=failed_message
+        ),
+    )
+
+    result = convert_a2a_task_to_event(
+        task, "test-author", self.mock_invocation_context
+    )
+
+    assert result.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+    assert result.content is not None
+    assert result.content.parts[0].text == "Remote agent task failed"
+
+  def test_convert_a2a_task_to_event_failed_status_preserves_error_code(self):
+    """Test failed A2A task status preserves error_code on event."""
+    from google.adk.a2a.converters.event_converter import _mark_a2a_task_failed
+
+    event = Event(
+        author="test-author",
+        invocation_id="inv-1",
+        error_code="SAFETY",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Blocked")],
+        ),
+    )
+    result = _mark_a2a_task_failed(event)
+    assert result.error_code == "SAFETY"
+    assert result.error_message == "Blocked"
+
+  def test_convert_a2a_task_to_event_failed_status_without_message(self):
+    """Test failed A2A task without a message still emits an error event."""
+    task = _compat.make_task(
+        id="task-failed",
+        status=_compat.make_task_status(_compat.TS_FAILED),
+    )
+
+    result = convert_a2a_task_to_event(
+        task, "test-author", self.mock_invocation_context
+    )
+
+    assert result.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+    assert result.content is None
 
   @patch("google.adk.a2a.converters.event_converter.platform_uuid.new_uuid")
   def test_convert_a2a_task_to_event_default_author(self, mock_uuid):

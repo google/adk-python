@@ -23,6 +23,7 @@ from google.adk.features._feature_registry import _get_feature_config
 from google.adk.features._feature_registry import _register_feature
 from google.adk.features._feature_registry import _WARNED_FEATURES
 from google.adk.features._feature_registry import FeatureConfig
+from google.adk.features._feature_registry import FeatureName
 from google.adk.features._feature_registry import FeatureStage
 from google.adk.features._feature_registry import is_feature_enabled
 from google.adk.features._feature_registry import override_feature_enabled
@@ -292,4 +293,27 @@ class TestOverrideFeatureEnabled:
     override_feature_enabled("STABLE_OVERRIDE", True)
     with warnings.catch_warnings(record=True) as w:
       assert is_feature_enabled("STABLE_OVERRIDE")
+      assert not w
+
+
+class TestRegisteredFeatureNames:
+  """Tests for all FeatureName members in _FEATURE_REGISTRY."""
+
+  def test_all_feature_names_are_registered(self):
+    """Every FeatureName enum member has a config in _FEATURE_REGISTRY."""
+    for feature_name in FeatureName:
+      assert _get_feature_config(feature_name) is not None
+
+  def test_stable_features_are_enabled_without_warnings(self):
+    """All STABLE features are enabled by default and emit no warnings."""
+    stable_features = [
+        name
+        for name in FeatureName
+        if _get_feature_config(name).stage == FeatureStage.STABLE
+    ]
+    assert stable_features
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      for feature_name in stable_features:
+        assert is_feature_enabled(feature_name)
       assert not w

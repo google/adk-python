@@ -48,19 +48,21 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
+from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.context import Context
 from ...agents.invocation_context import InvocationContext
-from ...agents.run_config import StreamingMode
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...utils._agent_mode import AgentMode
 from ...utils._agent_mode import SingleTurnAgentMode
 from ...utils.content_utils import to_user_content
+from ...utils.context_utils import Aclosing
 from ._event_converter import convert_step_to_events
 from ._event_converter import drain_tool_results
 from ._event_converter import final_model_text
 from ._sub_agent_tools import make_sub_agent_tool
+from ._tool_result_capture import extract_subagent_names
 from ._tool_result_capture import SubagentCallCapture
 from ._tool_result_capture import ToolErrorCapture
 from ._tool_result_capture import ToolResultBuffer
@@ -500,6 +502,12 @@ class AntigravityAgent(BaseAgent):
         return matching[0]
     return None
 
+  def _fallback_subagent_author(self) -> str:
+    """Returns the fallback sub-agent author when no specific name is known."""
+    if self.name in ('root_agent', 'root'):
+      return 'subagent'
+    return f'{self.name}_subagent'
+
   def _extract_session_subagent_authors(
       self, ctx: InvocationContext
   ) -> dict[str, str]:
@@ -511,7 +519,14 @@ class AntigravityAgent(BaseAgent):
         else ()
     )
     authors: dict[str, str] = {}
-    excluded_authors = {self.name, 'user', f'{self.name}_subagent'}
+    excluded_authors = {
+        self.name,
+        'user',
+        'subagent',
+        'root_agent_subagent',
+        'root_subagent',
+        f'{self.name}_subagent',
+    }
     for past_event in session_events:
       custom_metadata = past_event.custom_metadata
       author = past_event.author
@@ -532,6 +547,30 @@ class AntigravityAgent(BaseAgent):
         authors[trajectory_id] = author
     return authors
 
+  def _queue_step_subagent_invocations(
+      self,
+      step: Step,
+      pending_invocations: list[str],
+      seen_subagent_calls: set[str] | None = None,
+  ) -> None:
+    """Appends unqueued sub-agent invocations found in ``step.tool_calls``."""
+    tool_calls = (
+        step.tool_calls if isinstance(step.tool_calls, (list, tuple)) else ()
+    )
+    for call in tool_calls:
+      names = extract_subagent_names(call)
+      if not names:
+        continue
+      if (
+          seen_subagent_calls is not None
+          and isinstance(call.id, str)
+          and call.id
+      ):
+        if call.id in seen_subagent_calls:
+          continue
+        seen_subagent_calls.add(call.id)
+      pending_invocations.extend(names)
+
   def _resolve_step_context(
       self,
       step: Step,
@@ -539,6 +578,7 @@ class AntigravityAgent(BaseAgent):
       main_trajectory_id: str,
       subagent_authors: dict[str, str],
       pending_invocations: list[str],
+      seen_subagent_calls: set[str] | None = None,
   ) -> tuple[str, str, dict[str, Any] | None]:
     """Returns ``(author, trajectory_key, custom_metadata)`` for ``step``."""
     # 1. Classify whether the step belongs to a sub-agent trajectory.
@@ -562,11 +602,16 @@ class AntigravityAgent(BaseAgent):
             and matched_by_tool in subagent_authors.values()
         )
     )
+    if not is_subagent:
+      self._queue_step_subagent_invocations(
+          step, pending_invocations, seen_subagent_calls
+      )
 
     # 2. Resolve event author and normalized trajectory hierarchy metadata.
     author = self.name
     trajectory_key = main_trajectory_id or trajectory_id
     if is_subagent:
+      fallback_author = self._fallback_subagent_author()
       sdk_subagents = (
           self.config.subagents
           if isinstance(self.config.subagents, (list, tuple))
@@ -585,9 +630,9 @@ class AntigravityAgent(BaseAgent):
       ):
         author = sdk_subagents[0].name
       else:
-        author = f'{self.name}_subagent'
+        author = fallback_author
       if trajectory_id:
-        if author != f'{self.name}_subagent':
+        if author != fallback_author:
           subagent_authors[trajectory_id] = author
         trajectory_key = trajectory_id
       else:
@@ -632,6 +677,11 @@ class AntigravityAgent(BaseAgent):
         active.tool_results.pending_subagents
         if active.tool_results is not None
         else []
+    )
+    seen_subagent_calls: set[str] = (
+        active.tool_results.seen_subagent_calls
+        if active.tool_results is not None
+        else set()
     )
     main_trajectory_id = ''
     streaming = bool(
@@ -683,6 +733,7 @@ class AntigravityAgent(BaseAgent):
             main_trajectory_id=main_trajectory_id,
             subagent_authors=subagent_authors,
             pending_invocations=pending_invocations,
+            seen_subagent_calls=seen_subagent_calls,
         )
         if (
             not trajectory_id
@@ -793,7 +844,6 @@ class AntigravityAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent as a node, threading node_input in and output out."""
     parent_context = ctx.get_invocation_context()
-    # A None node_input means a classic agent-tree run.
     if node_input is not None:
       parent_context = parent_context.model_copy(
           update={'user_content': to_user_content(node_input)}
@@ -802,15 +852,16 @@ class AntigravityAgent(BaseAgent):
     last_text: str | None = None
     # Keep in sync with BaseAgent._run_impl: super() cannot be delegated to,
     # since it re-derives the invocation context and would drop node_input.
-    async for event in self.run_async(parent_context=parent_context):
-      if event.author:
-        ctx.event_author = event.author
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      text = final_model_text(event, self.name)
-      if text is not None:
-        last_text = text
-      yield event
+    async with Aclosing(self.run_async(parent_context=parent_context)) as agen:
+      async for event in agen:
+        if event.author:
+          ctx.event_author = event.author
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        text = final_model_text(event, self.name)
+        if text is not None:
+          last_text = text
+        yield event
 
     # Both assignments are needed: NodeRunner._enrich_event reads
     # ctx.event_author, and a direct consumer reads author=.

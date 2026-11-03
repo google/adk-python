@@ -48,6 +48,7 @@ class ToolCall(Protocol):
 
   name: str
   args: dict[str, Any]
+  id: str | None
 
 
 class ToolResult(Protocol):
@@ -98,6 +99,47 @@ class _FailedToolResult:
   error: str | None
 
 
+try:
+  _INVOKE_SUBAGENT_TOOL_NAME = BuiltinTools.INVOKE_SUBAGENT
+except AttributeError:
+  _INVOKE_SUBAGENT_TOOL_NAME = 'invoke_subagent'
+
+_SUBAGENT_TOOL_NAMES = frozenset({
+    _INVOKE_SUBAGENT_TOOL_NAME,
+    'invoke_subagent',
+    'start_subagent',
+})
+
+
+def extract_subagent_names(call: ToolCall) -> list[str]:
+  """Extracts target sub-agent names from a sub-agent invocation tool call.
+
+  Args:
+    call: The Antigravity tool call to inspect for sub-agent invocation
+      arguments.
+
+  Returns:
+    Ordered list of invoked sub-agent names extracted from ``Subagents``,
+    ``TypeName``, or ``Role``.
+  """
+  if call.name not in _SUBAGENT_TOOL_NAMES or not isinstance(call.args, dict):
+    return []
+  subagents = call.args.get('Subagents')
+  if isinstance(subagents, list):
+    names: list[str] = []
+    for entry in subagents:
+      if not isinstance(entry, dict):
+        continue
+      name = entry.get('TypeName') or entry.get('Role')
+      if isinstance(name, str) and name:
+        names.append(name)
+    return names
+  subagent_name = call.args.get('TypeName') or call.args.get('Role')
+  if isinstance(subagent_name, str) and subagent_name:
+    return [subagent_name]
+  return []
+
+
 class ToolResultBuffer:
   """One Antigravity conversation's tool outcomes, keyed by ``ToolCall.id``.
 
@@ -119,27 +161,21 @@ class ToolResultBuffer:
     super().__init__()
     self._results: dict[str, ToolResult] = {}
     self.pending_subagents: list[str] = []
+    self.seen_subagent_calls: set[str] = set()
 
   def __len__(self) -> int:
     return len(self._results)
 
   def record_subagent(self, call: ToolCall) -> None:
-    """Queues the sub-agent name from a ``start_subagent`` call."""
-    if call.name != BuiltinTools.START_SUBAGENT or not isinstance(
-        call.args, dict
-    ):
+    """Queues the sub-agent name from a ``start_subagent`` or ``invoke_subagent`` call."""
+    names = extract_subagent_names(call)
+    if not names:
       return
-    subagents = call.args.get('Subagents')
-    if isinstance(subagents, list):
-      for entry in subagents:
-        if isinstance(entry, dict):
-          name = entry.get('TypeName') or entry.get('Role')
-          if isinstance(name, str) and name:
-            self.pending_subagents.append(name)
-      return
-    subagent_name = call.args.get('TypeName') or call.args.get('Role')
-    if isinstance(subagent_name, str) and subagent_name:
-      self.pending_subagents.append(subagent_name)
+    if isinstance(call.id, str) and call.id:
+      if call.id in self.seen_subagent_calls:
+        return
+      self.seen_subagent_calls.add(call.id)
+    self.pending_subagents.extend(names)
 
   def record(self, result: ToolResult) -> None:
     """Buffers one tool result, dropping one that cannot be correlated."""
@@ -195,6 +231,7 @@ class ToolResultBuffer:
     """Forgets everything buffered."""
     self._results.clear()
     self.pending_subagents.clear()
+    self.seen_subagent_calls.clear()
 
 
 class ToolResultCapture(ToolResultBuffer, sdk_hooks.PostToolCallHook):  # type: ignore[misc]
@@ -259,11 +296,12 @@ class ToolErrorCapture(sdk_hooks.OnToolErrorHook):  # type: ignore[misc]
 
 
 class SubagentCallCapture(sdk_hooks.PreToolCallDecideHook):  # type: ignore[misc]
-  """Feeds ``start_subagent`` tool-call arguments into a ``ToolResultBuffer``.
+  """Feeds ``start_subagent`` / ``invoke_subagent`` tool-call arguments into a ``ToolResultBuffer``.
 
-  The harness sends an empty ``ActionInvokeSubagent`` proto on the trajectory
-  step, so the invoked sub-agent's ``TypeName`` / ``Role`` only arrives on the
-  pre-tool-call hook (matching ``utils/otel.py``).
+  When the harness sends an empty ``ActionInvokeSubagent`` proto on the
+  trajectory step, the invoked sub-agent's ``TypeName`` / ``Role`` arrives on
+  the pre-tool-call hook (matching ``utils/otel.py``); step-level tool calls
+  are also inspected when present.
   """
 
   def __init__(self, buffer: ToolResultBuffer) -> None:
@@ -271,7 +309,15 @@ class SubagentCallCapture(sdk_hooks.PreToolCallDecideHook):  # type: ignore[misc
     self._buffer = buffer
 
   async def run(self, context: object, data: ToolCall) -> sdk_hooks.HookResult:
-    """Records a ``start_subagent`` call and allows execution."""
+    """Records a ``start_subagent`` or ``invoke_subagent`` call and allows execution.
+
+    Args:
+      context: Unused Antigravity hook invocation context.
+      data: The intercepted pre-tool-call invocation payload.
+
+    Returns:
+      A ``HookResult`` allowing the tool call to proceed.
+    """
     del context
     self._buffer.record_subagent(data)
     return sdk_hooks.HookResult(allow=True)

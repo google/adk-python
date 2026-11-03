@@ -32,6 +32,7 @@ from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
 from ..telemetry import node_tracing
 from ._errors import DynamicNodeFailError
+from .utils._retry_utils import _delegates_item_retry
 
 if TYPE_CHECKING:
   from ..agents.context import Context
@@ -44,9 +45,44 @@ logger = logging.getLogger("google_adk." + __name__)
 
 def _has_non_output_content(event: Event) -> bool:
   if event.actions:
-    if event.actions.state_delta or event.actions.artifact_delta:
+    if (
+        event.actions.state_delta
+        or event.actions.artifact_delta
+        or event.actions.route is not None
+    ):
       return True
   return False
+
+
+def _explicit_output_claimer(ctx: Context) -> Context | None:
+  """Returns the outermost node that took ``ctx``'s output as its own.
+
+  ``_output_for_ancestors`` is non-empty when the parent claimed this node's
+  output, so the chain is walked while it is set. Only a claim made through
+  ``ctx.run_node(..., use_as_output=True)`` counts as a publication target: a
+  Workflow also schedules its terminal nodes with ``use_as_output`` so their
+  result becomes the workflow's result, but that is graph data flow and must
+  not move a fan-out lane's event off its sub-branch. Trunk static links are
+  walked through (a claimed nested workflow still reaches its caller), whereas
+  a fan-out link inside a Workflow stops the walk so the lane stays isolated.
+
+  Returns None when no node in the chain claimed the output explicitly.
+  """
+  from ._workflow import Workflow
+
+  claimer: Context | None = None
+  while ctx._output_for_ancestors and ctx._parent_ctx is not None:
+    parent = ctx._parent_ctx
+    if isinstance(parent._node, Workflow):
+      if (ctx._invocation_context.branch or None) != (
+          parent._invocation_context.branch or None
+      ):
+        break
+      ctx = parent
+    else:
+      ctx = parent
+      claimer = ctx
+  return claimer
 
 
 class NodeRunner:
@@ -77,17 +113,14 @@ class NodeRunner:
     Args:
       node: The BaseNode to execute.
       parent_ctx: The parent node's Context.
-      run_id: Unique ID for this run. Should be a sequential
-        counter string ("1", "2", …) unique per node path.
-        Falls back to "1" if not provided.
-
+      run_id: Unique ID for this run. Should be a sequential counter string
+        ("1", "2", …) unique per node path. Falls back to "1" if not provided.
       use_as_output: If True, this node's output also represents the parent
         node's output.
-      prior_output: Output from a previous run, carried
-        forward on resume when the node had both output and
-        interrupts.
-      prior_interrupt_ids: Unresolved interrupt IDs (set) from a
-        previous run, carried forward on resume.
+      prior_output: Output from a previous run, carried forward on resume when
+        the node had both output and interrupts.
+      prior_interrupt_ids: Unresolved interrupt IDs (set) from a previous run,
+        carried forward on resume.
       use_sub_branch: Whether the node should use a sub-branch.
       override_branch: Optional branch to use instead of parent's branch.
     """
@@ -154,7 +187,12 @@ class NodeRunner:
         raise
       except Exception as e:
         if isinstance(e, DynamicNodeFailError):
-          if not await self._attempt_retry(e.error, attempt_count):
+          # A parallel worker's item node already applied the retry policy to
+          # the failed item. Retrying the worker would cancel the items still
+          # running and give the failed item a fresh budget.
+          if _delegates_item_retry(self._node) or not await self._attempt_retry(
+              e.error, attempt_count
+          ):
             ctx._error = e.error
             ctx._error_node_path = e.error_node_path
             logger.debug("node %s end.", ctx.node_path)
@@ -188,6 +226,29 @@ class NodeRunner:
           self._node.name,
       )
       attempt_count += 1
+      await self._wait_for_enqueued_events(ctx)
+
+  async def _wait_for_enqueued_events(self, ctx: Context) -> None:
+    """Waits until every event enqueued so far has been appended to the session.
+
+    A retried node rebuilds its state from session events. Sibling tasks that
+    finished around the failure may still have their final events sitting in
+    the runner's event queue: the task blocks in ``_enqueue_event`` until the
+    main loop appends the event, and a task cancelled there leaves its queued
+    event to be appended later. A rescan that reads ``ic.session.events``
+    before those appends complete misses the siblings' outputs and the retry
+    re-executes work that already happened.
+
+    A barrier item ``(None, processed)`` is acknowledged by
+    ``_consume_event_queue`` without calling plugins or yielding an event,
+    after everything queued ahead of it has been processed.
+    """
+    event_queue = ctx._invocation_context._event_queue
+    if event_queue is None:
+      return
+    processed = asyncio.Event()
+    await event_queue.put((None, processed))
+    await processed.wait()
 
   def _snapshot_dynamic_children(
       self, ctx: Context
@@ -213,6 +274,20 @@ class NodeRunner:
     scheduler = ctx._workflow_scheduler
     if isinstance(scheduler, DynamicNodeScheduler) and snapshot is not None:
       scheduler._state.reset_for_retry(ctx.node_path, snapshot)
+
+  def _indexed_invocation_events(self, ctx: Context) -> list[Event] | None:
+    """Returns the live events of ctx's invocation from the scheduler's index.
+
+    Returns None when no replaying scheduler has indexed the session yet, so
+    the caller scans the session itself and nothing new starts indexing it.
+    """
+    from ._dynamic_node_scheduler import DynamicNodeScheduler
+
+    invocation_id = ctx._invocation_context.invocation_id
+    scheduler = self._parent_ctx._workflow_scheduler
+    if not invocation_id or not isinstance(scheduler, DynamicNodeScheduler):
+      return None
+    return scheduler._replay_manager.indexed_invocation_events(ctx)
 
   async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""
@@ -273,12 +348,11 @@ class NodeRunner:
     if ic.session and ic.session.events:
       from ..events._rewind_events import _apply_rewinds
 
-      live_events = _apply_rewinds(ic.session.events)
       node_path = ctx.node_path
       node_path_builder = _NodePathBuilder.from_string(node_path)
-      has_prior_node_events = bool(self._prior_interrupt_ids)
-      if not has_prior_node_events:
-        for ev in live_events:
+
+      def _has_node_event(events: list[Event]) -> bool:
+        for ev in events:
           if ic.invocation_id and ev.invocation_id != ic.invocation_id:
             continue
           if ev.node_info is not None and ev.node_info.path:
@@ -286,9 +360,20 @@ class NodeRunner:
             if ev_path == node_path_builder or ev_path.is_descendant_of(
                 node_path_builder
             ):
-              has_prior_node_events = True
-              break
-      if has_prior_node_events:
+              return True
+        return False
+
+      live_events = self._indexed_invocation_events(ctx)
+      if live_events is None:
+        # Nothing has indexed the session, so scan it here. Rewinds only drop
+        # events, so no raw match means no live match either.
+        live_events = (
+            _apply_rewinds(ic.session.events)
+            if self._prior_interrupt_ids or _has_node_event(ic.session.events)
+            else []
+        )
+
+      if self._prior_interrupt_ids or _has_node_event(live_events):
         from .utils._rehydration_utils import _reconstruct_node_states
 
         states = _reconstruct_node_states(
@@ -429,7 +514,6 @@ class NodeRunner:
   async def _flush_output_and_deltas(self, ctx: Context) -> None:
     """Emit deferred output and/or unflushed state/artifact deltas."""
     from ..events.event import Event
-    from ..events.event_actions import EventActions
 
     state_delta = ctx.actions.state_delta
     artifact_delta = ctx.actions.artifact_delta
@@ -451,13 +535,7 @@ class NodeRunner:
         output=ctx._output_value if has_deferred_output else None,
         route=ctx._route_value if has_unflushed_route else None,
     )
-    if has_deltas:
-      event.actions = EventActions(
-          state_delta=dict(state_delta),
-          artifact_delta=dict(artifact_delta),
-      )
-      state_delta.clear()
-      artifact_delta.clear()
+    self._flush_deltas(event, ctx)
 
     self._enrich_event(event, ctx)
     await ctx._invocation_context._enqueue_event(event)
@@ -498,6 +576,15 @@ class NodeRunner:
       ctx._invocation_context.branch = event.branch
     if event.output is not None:
       event.node_info.output_for = [ctx.node_path] + ctx._output_for_ancestors
+      # An explicitly claimed output is the claimer's output: publish it on
+      # the claimer's branch so later work under the claimer sees the answer,
+      # while the child's tool traffic stays on its sub-branch. Leave
+      # function_response events (such as a task agent's terminal finish_task
+      # response) on the child's branch paired with their call.
+      if ctx._output_for_ancestors and not event.get_function_responses():
+        claimer = _explicit_output_claimer(ctx)
+        if claimer is not None:
+          event.branch = claimer._invocation_context.branch
     # stamp the scope tag.
     if event.isolation_scope is None and ctx.isolation_scope is not None:
       event.isolation_scope = ctx.isolation_scope

@@ -16,10 +16,12 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory.vertex_ai_rag_memory_service import _build_source_display_name
 from google.adk.memory.vertex_ai_rag_memory_service import _MAX_RAG_FILE_PAGES
 from google.adk.memory.vertex_ai_rag_memory_service import _SOURCE_DISPLAY_NAME_PREFIX
@@ -590,3 +592,117 @@ async def test_add_session_leaves_no_temp_file_when_corpus_missing(temp_dir):
     await memory_service.add_session_to_memory(_session())
 
   assert not list(temp_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_thought_parts(
+    mocker: MockerFixture,
+    temp_dir: Path,
+) -> None:
+  """Thought parts are omitted when a session is added to RAG memory."""
+  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
+  uploaded: dict[str, str] = {}
+
+  async def upload_file(
+      *, path: str, display_name: str, **_kwargs: object
+  ) -> None:
+    with open(path, encoding="utf-8") as transcript:
+      uploaded["display_name"] = display_name
+      uploaded["text"] = transcript.read()
+
+  fake_client = _unlistable_client(mocker)
+  fake_client.rag.upload_file.side_effect = upload_file
+  fake_client.rag.retrieve_contexts.side_effect = (
+      lambda **_kwargs: SimpleNamespace(
+          contexts=SimpleNamespace(
+              contexts=[
+                  SimpleNamespace(
+                      source_display_name=uploaded["display_name"],
+                      text=uploaded["text"],
+                  )
+              ]
+          )
+      )
+  )
+  mocker.patch(
+      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
+  )
+  session = Session(
+      app_name="demo",
+      user_id="alice",
+      id="session-1",
+      events=[
+          Event(
+              id="thought-only",
+              author="model",
+              timestamp=1.0,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(text="Internal thought only", thought=True)
+                  ],
+              ),
+          ),
+          Event(
+              id="mixed",
+              author="model",
+              timestamp=2.0,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(text="Consider a zeppelin.", thought=True),
+                      types.Part(text="Take the train to Paris."),
+                  ],
+              ),
+          ),
+      ],
+  )
+
+  await memory_service.add_session_to_memory(session)
+  response = await memory_service.search_memory(
+      app_name="demo", user_id="alice", query="Paris"
+  )
+
+  assert _memory_texts(response) == ["Take the train to Paris."]
+  assert not list(temp_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events(mocker, temp_dir):
+  """Turns a rewind took back are not uploaded to the RAG corpus."""
+  uploaded: list[str] = []
+
+  async def upload_file(*, path: str, **_kwargs: object) -> None:
+    with open(path, encoding="utf-8") as f:
+      uploaded.append(f.read())
+
+  fake_client = _async_client(mocker)
+  fake_client.rag.upload_file.side_effect = upload_file
+  mocker.patch(
+      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
+  )
+  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
+  session = _session()
+  session.events[0].invocation_id = "inv-kept"
+  session.events += [
+      Event(
+          id="event-2",
+          invocation_id="inv-rewound",
+          author="user",
+          timestamp=2,
+          content=types.Content(parts=[types.Part(text="rewound memory")]),
+      ),
+      Event(
+          id="event-3",
+          invocation_id="inv-rewind",
+          author="user",
+          timestamp=3,
+          actions=EventActions(rewind_before_invocation_id="inv-rewound"),
+      ),
+  ]
+
+  await memory_service.add_session_to_memory(session)
+
+  assert len(uploaded) == 1
+  assert "sensitive memory" in uploaded[0]
+  assert "rewound memory" not in uploaded[0]

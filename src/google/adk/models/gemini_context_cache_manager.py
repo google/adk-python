@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING
 from google.genai import types
 
 from ..agents.context_cache_config import ContextCacheConfig
-from ..utils.feature_decorator import experimental
 from .cache_metadata import CacheMetadata
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -80,7 +79,6 @@ def _content_union_character_count(value: types.ContentUnion) -> int:
   return len(str(value))
 
 
-@experimental
 class GeminiContextCacheManager:
   """Manages context cache lifecycle for Gemini models.
 

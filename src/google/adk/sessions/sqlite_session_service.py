@@ -56,6 +56,19 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # json_group_object writes a REAL with 15 significant digits, which rounds
 # floats such as 0.1 + 0.2 for every key in the row. A REAL is written with 17
 # digits when 15 do not read back as the same value, so floats round-trip.
+#
+# SQLite parses an integer outside the signed 64-bit range as a REAL, so its
+# json_each value has already lost digits. The `->` operator (SQLite 3.38+)
+# returns the element's JSON text as stored, which keeps such an integer exact.
+# Each `->` lookup searches the whole object, so it runs only for those values;
+# running it for every key would make the merge quadratic in the key count.
+# Older SQLite has no `->`, and there such an integer still reads back rounded.
+_JSON_TEXT_SQL = (
+    "CASE WHEN type = 'integer' AND typeof(value) = 'real'"
+    " THEN {source} -> fullkey END"
+    if sqlite3.sqlite_version_info >= (3, 38)
+    else "NULL"
+)
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
@@ -68,15 +81,20 @@ _MERGE_STATE_SQL = """
                          THEN printf('%!.15g', value)
                        ELSE printf('%!.17g', value)
                      END)
+                   WHEN type = 'integer' AND typeof(value) = 'real'
+                     AND raw_json IS NOT NULL THEN json(raw_json)
                    ELSE value
                  END)
         FROM (
-          SELECT key, value, type FROM json_each({delta})
+          SELECT key, value, type, {delta_json} AS raw_json
+            FROM json_each({delta})
           UNION ALL
-          SELECT key, value, type FROM json_each({state})
+          SELECT key, value, type, {state_json} FROM json_each({state})
            WHERE key NOT IN (SELECT key FROM json_each({delta}))
         )
-      """
+      """.replace(
+    "{delta_json}", _JSON_TEXT_SQL.format(source="{delta}")
+).replace("{state_json}", _JSON_TEXT_SQL.format(source="{state}"))
 
 APP_STATES_TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_states (
@@ -322,7 +340,7 @@ class SqliteSessionService(BaseSessionService):
       ]
       params: list[Any] = [app_name, user_id, session_id]
 
-      if config and config.after_timestamp:
+      if config and config.after_timestamp is not None:
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
@@ -452,84 +470,89 @@ class SqliteSessionService(BaseSessionService):
     event_timestamp = event.timestamp
 
     async with self._get_db_connection() as db:
-      # Check for stale session
-      async with db.execute(
-          "SELECT update_time FROM sessions WHERE app_name=? AND user_id=? AND"
-          " id=?",
-          (session.app_name, session.user_id, session.id),
-      ) as cursor:
-        row = await cursor.fetchone()
-        if row is None:
-          raise SessionNotFoundError(f"Session {session.id} not found.")
-        storage_update_time = row["update_time"]
-        if storage_update_time > session.last_update_time:
-          raise StaleSessionError(
-              "The last_update_time provided in the session object is"
-              " earlier than the update_time in storage."
-              " Please check if it is a stale session."
-          )
+      try:
+        # Holds the write lock from the stale check through the commit.
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(
+            "SELECT update_time FROM sessions WHERE app_name=? AND"
+            " user_id=? AND id=?",
+            (session.app_name, session.user_id, session.id),
+        ) as cursor:
+          row = await cursor.fetchone()
+          if row is None:
+            raise SessionNotFoundError(f"Session {session.id} not found.")
+          storage_update_time = row["update_time"]
+          if storage_update_time > session.last_update_time:
+            raise StaleSessionError(
+                "The last_update_time provided in the session object is"
+                " earlier than the update_time in storage."
+                " Please check if it is a stale session."
+            )
 
-      # Apply state delta if present
-      has_session_state_delta = False
-      if event.actions.state_delta:
-        state_deltas = _session_util.extract_json_safe_state_delta(
-            event.actions.state_delta
-        )
-        app_state_delta = state_deltas["app"]
-        user_state_delta = state_deltas["user"]
-        session_state_delta = state_deltas["session"]
+        # Apply state delta if present
+        has_session_state_delta = False
+        if event.actions.state_delta:
+          state_deltas = _session_util.extract_json_safe_state_delta(
+              event.actions.state_delta
+          )
+          app_state_delta = state_deltas["app"]
+          user_state_delta = state_deltas["user"]
+          session_state_delta = state_deltas["session"]
 
-        if app_state_delta:
-          await self._upsert_app_state(
-              db, session.app_name, app_state_delta, event_timestamp
-          )
-        if user_state_delta:
-          await self._upsert_user_state(
-              db,
-              session.app_name,
-              session.user_id,
-              user_state_delta,
-              event_timestamp,
-          )
-        if session_state_delta:
-          await self._update_session_state_in_db(
-              db,
-              session.app_name,
-              session.user_id,
-              session.id,
-              session_state_delta,
-              event_timestamp,
-          )
-          has_session_state_delta = True
-
-      # Insert event and update session timestamp
-      await db.execute(
-          """
-          INSERT INTO events (id, app_name, user_id, session_id, invocation_id, timestamp, event_data)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          """,
-          (
-              event.id,
-              session.app_name,
-              session.user_id,
-              session.id,
-              event.invocation_id,
-              event.timestamp,
-              event.model_dump_json(exclude_none=True),
-          ),
-      )
-      if not has_session_state_delta:
-        await db.execute(
-            "UPDATE sessions SET update_time=? WHERE app_name=? AND user_id=?"
-            " AND id=?",
-            (
+          if app_state_delta:
+            await self._upsert_app_state(
+                db, session.app_name, app_state_delta, event_timestamp
+            )
+          if user_state_delta:
+            await self._upsert_user_state(
+                db,
+                session.app_name,
+                session.user_id,
+                user_state_delta,
                 event_timestamp,
+            )
+          if session_state_delta:
+            await self._update_session_state_in_db(
+                db,
                 session.app_name,
                 session.user_id,
                 session.id,
+                session_state_delta,
+                event_timestamp,
+            )
+            has_session_state_delta = True
+
+        # Insert event and update session timestamp
+        await db.execute(
+            """
+            INSERT INTO events (id, app_name, user_id, session_id, invocation_id, timestamp, event_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                session.app_name,
+                session.user_id,
+                session.id,
+                event.invocation_id,
+                event.timestamp,
+                event.model_dump_json(exclude_none=True),
             ),
         )
-      await db.commit()
+        if not has_session_state_delta:
+          await db.execute(
+              "UPDATE sessions SET update_time=? WHERE app_name=? AND user_id=?"
+              " AND id=?",
+              (
+                  event_timestamp,
+                  session.app_name,
+                  session.user_id,
+                  session.id,
+              ),
+          )
+        await db.commit()
+      except BaseException:
+        await db.rollback()
+        raise
 
       # Update timestamp based on event time
       session.last_update_time = event_timestamp
@@ -672,14 +695,14 @@ class SqliteSessionService(BaseSessionService):
       now: float,
   ) -> None:
     """Atomically updates session state with dict.update() semantics."""
-    delta_json = json.dumps(delta)
+    # ?1 binds the delta everywhere the merge reads it; the plain ? that
+    # follow it are numbered 2 onwards.
     await db.execute(
         "UPDATE sessions SET"
-        f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
+        f" state=({_MERGE_STATE_SQL.format(delta='?1', state='state')}),"
         " update_time=? WHERE app_name=? AND user_id=? AND id=?",
         (
-            delta_json,
-            delta_json,
+            json.dumps(delta),
             now,
             app_name,
             user_id,

@@ -73,9 +73,9 @@ class PreloadMemoryTool(BaseTool):
 
     memory_text_lines = []
     for memory in response.memories:
-      if time_str := (f'Time: {memory.timestamp}' if memory.timestamp else ''):
-        memory_text_lines.append(time_str)
       if memory_text := _memory_entry_utils.extract_text(memory):
+        if memory.timestamp:
+          memory_text_lines.append(f'Time: {memory.timestamp}')
         memory_text_lines.append(
             f'{memory.author}: {memory_text}' if memory.author else memory_text
         )

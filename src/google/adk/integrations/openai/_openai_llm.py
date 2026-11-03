@@ -24,6 +24,7 @@ import json
 import logging
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
 from typing import Literal
 
 from google.genai import types
@@ -34,8 +35,9 @@ try:
   from openai.types.chat import ChatCompletion
   from openai.types.chat import ChatCompletionChunk  # noqa: F401
   from openai.types.chat import ChatCompletionContentPartImageParam
+  from openai.types.chat import ChatCompletionContentPartTextParam
   from openai.types.chat import ChatCompletionMessage
-  from openai.types.chat import ChatCompletionMessageParam
+  from openai.types.chat import ChatCompletionMessageFunctionToolCall
   from openai.types.chat import ChatCompletionToolParam
 except ImportError as e:
   raise ImportError(
@@ -115,12 +117,12 @@ def _part_to_openai_content(
 
 def _content_to_openai_messages(
     content: types.Content,
-) -> list[ChatCompletionMessageParam]:
+) -> list[dict[str, object]]:
   """Converts a types.Content to a list of OpenAI messages."""
-  messages = []
+  messages: list[dict[str, object]] = []
   role = _to_openai_role(content.role)
 
-  tool_calls = []
+  tool_calls: list[dict[str, object]] = []
   content_parts = []
 
   for part in content.parts or []:
@@ -150,7 +152,9 @@ def _content_to_openai_messages(
     else:
       content_parts.append(_part_to_openai_content(part))
 
-  processed_parts = []
+  processed_parts: list[
+      ChatCompletionContentPartTextParam | ChatCompletionContentPartImageParam
+  ] = []
   for c in content_parts:
     if isinstance(c, str) and c:
       processed_parts.append({"type": "text", "text": c})
@@ -159,6 +163,13 @@ def _content_to_openai_messages(
 
   has_images = any(p.get("type") == "image_url" for p in processed_parts)
 
+  content_val: (
+      str
+      | list[
+          ChatCompletionContentPartTextParam
+          | ChatCompletionContentPartImageParam
+      ]
+  )
   if not has_images:
     content_val = "\n".join(
         [p["text"] for p in processed_parts if p["type"] == "text"]
@@ -167,7 +178,7 @@ def _content_to_openai_messages(
     content_val = processed_parts
 
   if role == "assistant" and (content_val or tool_calls):
-    msg = {"role": "assistant"}
+    msg: dict[str, object] = {"role": "assistant"}
     if content_val:
       msg["content"] = content_val
     if tool_calls:
@@ -274,18 +285,22 @@ def _usage_metadata(
 def _tool_call_parts(message: ChatCompletionMessage) -> list[types.Part]:
   """Converts OpenAI tool calls on a message to ADK function-call parts."""
   parts: list[types.Part] = []
-  for tool_call in message.tool_calls or []:
+  for message_tool_call in message.tool_calls or []:
+    # Only function tools are sent, so the model returns only function calls.
+    tool_call = cast(ChatCompletionMessageFunctionToolCall, message_tool_call)
     args = {}
     if tool_call.function.arguments:
       try:
         args = json.loads(tool_call.function.arguments)
       except json.JSONDecodeError:
         logger.warning("Failed to parse tool call arguments as JSON.")
-    part = types.Part.from_function_call(
-        name=tool_call.function.name, args=args
+    parts.append(
+        types.Part(
+            function_call=types.FunctionCall(
+                name=tool_call.function.name, args=args, id=tool_call.id
+            )
+        )
     )
-    part.function_call.id = tool_call.id
-    parts.append(part)
   return parts
 
 
@@ -396,7 +411,9 @@ class OpenAILlm(BaseLlm):
 
     tools = []
     if llm_request.config and llm_request.config.tools:
-      for tool in llm_request.config.tools:
+      for configured_tool in llm_request.config.tools:
+        # ADK only places types.Tool in config.tools; agents reject other kinds.
+        tool = cast(types.Tool, configured_tool)
         if not tool.function_declarations:
           logger.warning(
               "Skipping a tool with no function declarations; only function"
@@ -598,9 +615,13 @@ class OpenAILlm(BaseLlm):
               "Failed to parse accumulated tool call arguments as JSON."
           )
 
-      part = types.Part.from_function_call(name=acc["name"], args=args)
-      part.function_call.id = acc["id"]
-      parts.append(part)
+      parts.append(
+          types.Part(
+              function_call=types.FunctionCall(
+                  name=acc["name"], args=args, id=acc["id"]
+              )
+          )
+      )
 
     mapped_finish_reason = _map_finish_reason(finish_reason)
 

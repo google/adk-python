@@ -15,7 +15,8 @@
 """MongoDB Integration (Experimental).
 
 MongoDB tools for vector search and hybrid search against collections on
-MongoDB Atlas or MongoDB 8.0+ deployments.
+MongoDB Atlas or MongoDB 8.0+ deployments, plus MongoDB-backed session
+persistence and a MongoDB-backed memory service.
 """
 
 from __future__ import annotations
@@ -23,11 +24,15 @@ from __future__ import annotations
 import typing
 
 if typing.TYPE_CHECKING:
+  from ._memory_service import MongoDbMemoryService
   from ._mongodb_toolset import MongoDbToolset
+  from ._session_service import MongoDbSessionService
   from ._settings import MongoDbToolSettings
 
 # Map attribute names to relative module paths
 _lazy_imports = {
+    "MongoDbMemoryService": "._memory_service",
+    "MongoDbSessionService": "._session_service",
     "MongoDbToolset": "._mongodb_toolset",
     "MongoDbToolSettings": "._settings",
 }
@@ -49,6 +54,8 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "MongoDbMemoryService",
+    "MongoDbSessionService",
     "MongoDbToolset",
     "MongoDbToolSettings",
 ]
