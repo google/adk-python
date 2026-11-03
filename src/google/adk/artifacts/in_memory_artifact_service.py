@@ -99,6 +99,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     """
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
+    artifact_util.validate_artifact_filename(filename)
     scope = f"{_encode_segment(app_name)}/{_encode_segment(user_id)}"
     if self._file_has_user_namespace(filename):
       return f"{scope}/user/{filename}"
