@@ -15,7 +15,6 @@
 import os
 import sys
 from typing import Any
-from typing import Optional
 from urllib.parse import urljoin
 
 from adk_answering_agent.settings import GITHUB_GRAPHQL_URL
@@ -80,7 +79,7 @@ def _generate_github_url(repo_name: str, relative_path: str) -> str:
   return f"https://github.com/google/{repo_name}/blob/main/{relative_path}"
 
 
-def convert_gcs_to_https(gcs_uri: str) -> Optional[str]:
+def convert_gcs_to_https(gcs_uri: str) -> str | None:
   """Converts a GCS file link into a publicly accessible HTTPS link.
 
   Args:

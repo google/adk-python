@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion
@@ -91,7 +90,7 @@ def extract_model_name(model_string: str) -> str:
   return model_string
 
 
-def is_gemini_model(model_string: Optional[str]) -> bool:
+def is_gemini_model(model_string: str | None) -> bool:
   """Check if the model is a Gemini model using regex patterns.
 
   Args:
@@ -111,7 +110,7 @@ def is_gemini_model(model_string: Optional[str]) -> bool:
     'ADK no longer distinguishes Gemini versions internally, because Gemini'
     ' 1.x is fully deprecated. Use is_gemini_model instead.'
 )
-def is_gemini_1_model(model_string: Optional[str]) -> bool:
+def is_gemini_1_model(model_string: str | None) -> bool:
   """Check if the model is a Gemini 1.x model using regex patterns.
 
   Args:
@@ -131,7 +130,7 @@ def is_gemini_1_model(model_string: Optional[str]) -> bool:
     'ADK no longer distinguishes Gemini versions internally, because Gemini'
     ' 1.x is fully deprecated. Use is_gemini_model instead.'
 )
-def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
+def is_gemini_eap_or_2_or_above(model_string: str | None) -> bool:
   """Check if the model is a Gemini EAP or a Gemini 2.0+ model.
 
   EAP (Early Access Program) Gemini models follow a different naming
@@ -168,7 +167,7 @@ def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
   return parsed_version.major >= 2
 
 
-def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
+def _is_gemini_eap_model(model_string: str | None) -> bool:
   """Check if the model is an Early Access Program (EAP) Gemini model.
 
   Matches names of the form ``gemini-<variant>-early-exp`` optionally
@@ -197,7 +196,7 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
 
 
 def _supports_builtin_tools_with_function_calling(
-    model_string: Optional[str],
+    model_string: str | None,
 ) -> bool:
   """Whether the model accepts built-in tools alongside function declarations.
 
@@ -226,7 +225,7 @@ def _supports_builtin_tools_with_function_calling(
     return False
 
 
-def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
+def _is_gemini_3_x_live(model_string: str | None) -> bool:
   """Check if the model is a Gemini 3.x Live model.
 
   Args:
@@ -245,7 +244,7 @@ def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
   )
 
 
-def is_gemini_3_5_live_translate(model_string: Optional[str]) -> bool:
+def is_gemini_3_5_live_translate(model_string: str | None) -> bool:
   """Check if the model is a Gemini 3.5 Live Translate model.
 
   Args:

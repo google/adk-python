@@ -14,12 +14,11 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.genai.types import Content
 from pydantic import alias_generators
@@ -29,6 +28,7 @@ from pydantic import Field
 from pydantic import field_serializer
 from pydantic import field_validator
 from pydantic import SerializerFunctionWrapHandler
+from pydantic_core import PydanticSerializationError
 from pydantic_core import to_jsonable_python
 
 from ..tools.tool_confirmation import ToolConfirmation
@@ -42,17 +42,49 @@ else:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+def _coerce_non_utf8_bytes(obj: Any) -> Any:
+  """Recursively unwraps BaseModels and base64-encodes non-UTF-8 bytes."""
+  if isinstance(obj, (bytes, bytearray)):
+    raw = bytes(obj)
+    try:
+      return raw.decode('utf-8')
+    except UnicodeDecodeError:
+      return base64.b64encode(raw).decode('ascii')
+  if isinstance(obj, BaseModel):
+    return _coerce_non_utf8_bytes(obj.model_dump(mode='python'))
+  if isinstance(obj, dict):
+    return {
+        _coerce_non_utf8_bytes(k): _coerce_non_utf8_bytes(v)
+        for k, v in obj.items()
+    }
+  if isinstance(obj, list):
+    return [_coerce_non_utf8_bytes(v) for v in obj]
+  if isinstance(obj, tuple):
+    return tuple(_coerce_non_utf8_bytes(v) for v in obj)
+  if isinstance(obj, set):
+    return [_coerce_non_utf8_bytes(v) for v in obj]
+  return obj
+
+
 def _make_json_serializable(obj: Any) -> Any:
   """Converts an object into a JSON-serializable form.
 
   Used as a fallback when the default Pydantic serialization fails. Delegates to
-  `pydantic_core.to_jsonable_python` so rich types (e.g. datetimes, Pydantic
-  models) are serialized faithfully instead of being discarded. Values that
-  pydantic-core cannot serialize (e.g. Python callables stored in session state)
-  are replaced with their `repr` via `serialize_unknown=True` so the overall
-  structure can still be persisted without crashing.
+  `pydantic_core.to_jsonable_python` so rich types (e.g. datetimes, bytes,
+  Pydantic models) are serialized faithfully instead of being discarded.
+  Non-UTF-8 `bytes` values are encoded as base64 strings and are not restored to
+  `bytes` on read. Values that pydantic-core cannot serialize (e.g. Python
+  callables stored in session state) are replaced with their `repr` via
+  `serialize_unknown=True` so the overall structure can still be persisted
+  without crashing.
   """
-  return to_jsonable_python(obj, serialize_unknown=True)
+  try:
+    return to_jsonable_python(obj, serialize_unknown=True)
+  except (PydanticSerializationError, UnicodeDecodeError):
+    return to_jsonable_python(
+        _coerce_non_utf8_bytes(obj),
+        serialize_unknown=True,
+    )
 
 
 class EventCompaction(BaseModel):  # type: ignore[misc]
@@ -85,7 +117,7 @@ class EventActions(BaseModel):  # type: ignore[misc]
   )
   """The pydantic model config."""
 
-  skip_summarization: Optional[bool] = None
+  skip_summarization: bool | None = None
   """If true, it won't call model to summarize function response.
 
   Only used for function_response event.
@@ -103,7 +135,10 @@ class EventActions(BaseModel):  # type: ignore[misc]
     # internal `_adk_*` keys) is preserved. Only fall back to sanitization when
     # the value contains objects Pydantic cannot serialize (e.g. callables).
     try:
-      return cast(dict[str, Any], handler(value))
+      try:
+        return cast(dict[str, Any], handler(value))
+      except (PydanticSerializationError, UnicodeDecodeError):
+        return cast(dict[str, Any], handler(_coerce_non_utf8_bytes(value)))
     except Exception:  # pylint: disable=broad-except
       logger.warning(
           'Failed to serialize `state_delta`; some values are not'
@@ -119,13 +154,13 @@ class EventActions(BaseModel):  # type: ignore[misc]
   """Indicates that the event is updating an artifact. key is the filename,
   value is the version."""
 
-  transfer_to_agent: Optional[str] = None
+  transfer_to_agent: str | None = None
   """If set, the event transfers to the specified agent."""
 
-  transfer_reason: Optional[str] = None
+  transfer_reason: str | None = None
   """The reason for transferring to the target agent."""
 
-  escalate: Optional[bool] = None
+  escalate: bool | None = None
   """The agent is escalating to a higher level agent."""
 
   requested_auth_configs: dict[str, AuthConfig] = Field(default_factory=dict)
@@ -158,29 +193,34 @@ class EventActions(BaseModel):  # type: ignore[misc]
   """A dict of tool confirmation requested by this event, keyed by
   function call id."""
 
-  compaction: Optional[EventCompaction] = None
+  compaction: EventCompaction | None = None
   """The compaction of the events."""
 
-  end_of_agent: Optional[bool] = None
+  end_of_agent: bool | None = None
   """If true, the current agent has finished its current run. Note that there
   can be multiple events with end_of_agent=True for the same agent within one
   invocation when there is a loop. This should only be set by ADK workflow."""
 
-  agent_state: Optional[dict[str, Any]] = None
+  agent_state: dict[str, Any] | None = None
   """The agent state at the current event, used for checkpoint and resume. This
   should only be set by ADK workflow."""
 
   @field_serializer('agent_state', mode='wrap')  # type: ignore[misc, untyped-decorator]
   def _serialize_agent_state(
       self,
-      value: Optional[dict[str, Any]],
+      value: dict[str, Any] | None,
       handler: SerializerFunctionWrapHandler,
-  ) -> Optional[dict[str, Any]]:
+  ) -> dict[str, Any] | None:
     if value is None:
       return None
     # See `_serialize_state_delta` for why a wrap serializer is used.
     try:
-      return cast(Optional[dict[str, Any]], handler(value))
+      try:
+        return cast(dict[str, Any] | None, handler(value))
+      except (PydanticSerializationError, UnicodeDecodeError):
+        return cast(
+            dict[str, Any] | None, handler(_coerce_non_utf8_bytes(value))
+        )
     except Exception:  # pylint: disable=broad-except
       logger.warning(
           'Failed to serialize `agent_state`; some values are not'
@@ -192,14 +232,14 @@ class EventActions(BaseModel):  # type: ignore[misc]
       # `include` directives are still applied to the fallback output.
       return cast(dict[str, Any], handler(_make_json_serializable(value)))
 
-  rewind_before_invocation_id: Optional[str] = None
+  rewind_before_invocation_id: str | None = None
   """The invocation id to rewind to. This is only set for rewind event."""
 
-  route: Optional[Union[bool, int, str, list[Union[bool, int, str]]]] = None
+  route: bool | int | str | list[bool | int | str] | None = None
   """Route or list of routes for workflow graph edge matching."""
 
-  render_ui_widgets: Optional[list[UiWidget]] = None
+  render_ui_widgets: list[UiWidget] | None = None
   """List of UI widgets to be rendered by the UI."""
 
-  set_model_response: Optional[Any] = None
+  set_model_response: Any | None = None
   """The model response structured output."""

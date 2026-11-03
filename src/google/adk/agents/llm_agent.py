@@ -26,10 +26,7 @@ from typing import Awaitable
 from typing import Callable
 from typing import ClassVar
 from typing import Literal
-from typing import Optional
-from typing import Type
 from typing import TYPE_CHECKING
-from typing import Union
 import warnings
 
 from google.genai import types
@@ -92,65 +89,59 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _SingleBeforeModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmRequest],
-    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+    Awaitable[LlmResponse | None] | LlmResponse | None,
 ]
 
-BeforeModelCallback: TypeAlias = Union[
-    _SingleBeforeModelCallback,
-    list[_SingleBeforeModelCallback],
-]
+BeforeModelCallback: TypeAlias = (
+    _SingleBeforeModelCallback | list[_SingleBeforeModelCallback]
+)
 
 _SingleAfterModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmResponse],
-    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+    Awaitable[LlmResponse | None] | LlmResponse | None,
 ]
 
-AfterModelCallback: TypeAlias = Union[
-    _SingleAfterModelCallback,
-    list[_SingleAfterModelCallback],
-]
+AfterModelCallback: TypeAlias = (
+    _SingleAfterModelCallback | list[_SingleAfterModelCallback]
+)
 
 _SingleOnModelErrorCallback: TypeAlias = Callable[
     [CallbackContext, LlmRequest, Exception],
-    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+    Awaitable[LlmResponse | None] | LlmResponse | None,
 ]
 
-OnModelErrorCallback: TypeAlias = Union[
-    _SingleOnModelErrorCallback,
-    list[_SingleOnModelErrorCallback],
-]
+OnModelErrorCallback: TypeAlias = (
+    _SingleOnModelErrorCallback | list[_SingleOnModelErrorCallback]
+)
 
 _SingleBeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
-    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
 ]
 
-BeforeToolCallback: TypeAlias = Union[
-    _SingleBeforeToolCallback,
-    list[_SingleBeforeToolCallback],
-]
+BeforeToolCallback: TypeAlias = (
+    _SingleBeforeToolCallback | list[_SingleBeforeToolCallback]
+)
 
 _SingleAfterToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, dict[str, Any]],
-    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
 ]
 
-AfterToolCallback: TypeAlias = Union[
-    _SingleAfterToolCallback,
-    list[_SingleAfterToolCallback],
-]
+AfterToolCallback: TypeAlias = (
+    _SingleAfterToolCallback | list[_SingleAfterToolCallback]
+)
 
 _SingleOnToolErrorCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, Exception],
-    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
 ]
 
-OnToolErrorCallback: TypeAlias = Union[
-    _SingleOnToolErrorCallback,
-    list[_SingleOnToolErrorCallback],
-]
+OnToolErrorCallback: TypeAlias = (
+    _SingleOnToolErrorCallback | list[_SingleOnToolErrorCallback]
+)
 
-ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
+ToolUnion: TypeAlias = Callable | BaseTool | BaseToolset  # type: ignore[type-arg]
 
 
 def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
@@ -170,8 +161,8 @@ def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
 
 async def _convert_tool_union_to_tools(
     tool_union: ToolUnion,
-    ctx: Optional[ReadonlyContext],
-    model: Union[str, BaseLlm],
+    ctx: ReadonlyContext | None,
+    model: str | BaseLlm,
     multiple_tools: bool = False,
 ) -> list[BaseTool]:
   from ..tools.google_search_tool import GoogleSearchTool
@@ -292,13 +283,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   DEFAULT_LIVE_MODEL: ClassVar[str] = 'gemini-live-2.5-flash-native-audio'
   """System default model used for live mode when no model is set on an agent."""
 
-  _default_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_MODEL
+  _default_model: ClassVar[str | BaseLlm] = DEFAULT_MODEL
   """Current default model used when an agent has no model set."""
 
-  _default_live_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_LIVE_MODEL
+  _default_live_model: ClassVar[str | BaseLlm] = DEFAULT_LIVE_MODEL
   """Current default model used for live mode when an agent has no model set."""
 
-  model: Union[str, BaseLlm] = ''
+  model: str | BaseLlm = ''
   """The model to use for the agent.
 
   When not set, the agent will inherit the model from its ancestor. If no
@@ -309,14 +300,14 @@ class LlmAgent(BaseAgent, abc.ABC):
   _model_cache: _ModelCache = PrivateAttr(default_factory=_ModelCache)
   """Models built from model names, shared with copies of this agent."""
 
-  config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
+  config_type: ClassVar[type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent.
 
   DEPRECATED: This attribute is deprecated and will be removed in a future
   version, along with the AgentConfig YAML loader.
   """
 
-  instruction: Union[str, InstructionProvider] = ''
+  instruction: str | InstructionProvider = ''
   """Dynamic instructions for the LLM model, guiding the agent's behavior.
 
   These instructions can contain placeholders like {variable_name} that will be
@@ -330,7 +321,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   comes first in the prompt, followed by dynamic content (instruction).
   """
 
-  global_instruction: Union[str, InstructionProvider] = ''
+  global_instruction: str | InstructionProvider = ''
   """Instructions for all the agents in the entire agent tree.
 
   DEPRECATED: This field is deprecated and will be removed in a future version.
@@ -343,7 +334,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   or personality.
   """
 
-  static_instruction: Optional[types.ContentUnion] = None
+  static_instruction: types.ContentUnion | None = None
   """Static instruction content sent literally as system instruction at the beginning.
 
   This field is for content that never changes and doesn't contain placeholders.
@@ -397,7 +388,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   tools: list[ToolUnion] = Field(default_factory=list)
   """Tools available to this agent."""
 
-  generate_content_config: Optional[types.GenerateContentConfig] = None
+  generate_content_config: types.GenerateContentConfig | None = None
   """The additional content generation configurations.
 
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
@@ -444,9 +435,9 @@ class LlmAgent(BaseAgent, abc.ABC):
   """
 
   # Controlled input/output configurations - Start
-  input_schema: Optional[type[BaseModel]] = None
+  input_schema: type[BaseModel] | None = None
   """The input schema when agent is used as a tool."""
-  output_schema: Optional[SchemaType] = None
+  output_schema: SchemaType | None = None
   """The output schema when agent replies.
 
   Supports all schema types that the underlying Google GenAI API supports:
@@ -461,7 +452,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     exposing tools during the thought loop and enforcing structure only on the
     final output.
   """
-  output_key: Optional[str] = None
+  output_key: str | None = None
   """The key in session state to store the output of the agent.
 
   Typically use cases:
@@ -471,7 +462,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   # Controlled input/output configurations - End
 
   # Advance features - Start
-  planner: Optional[BasePlanner] = None
+  planner: BasePlanner | None = None
   """Instructs the agent to make a plan and execute it step by step.
 
   NOTE:
@@ -479,7 +470,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     field in `google.adk.planners.built_in_planner`.
   """
 
-  code_executor: Optional[BaseCodeExecutor] = None
+  code_executor: BaseCodeExecutor | None = None
   """Allow agent to execute code blocks from model responses using the provided
   CodeExecutor.
 
@@ -491,7 +482,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   # Advance features - End
 
   # Callbacks - Start
-  before_model_callback: Optional[BeforeModelCallback] = None
+  before_model_callback: BeforeModelCallback | None = None
   """Callback or list of callbacks to be called before calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -506,7 +497,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     Optional[LlmResponse]: A response to use instead of calling the model.
       A truthy response skips the model call. Return None to continue.
   """
-  after_model_callback: Optional[AfterModelCallback] = None
+  after_model_callback: AfterModelCallback | None = None
   """Callback or list of callbacks to be called after calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -521,7 +512,7 @@ class LlmAgent(BaseAgent, abc.ABC):
       response. A truthy response replaces the model response. Return None
       to keep the original response.
   """
-  on_model_error_callback: Optional[OnModelErrorCallback] = None
+  on_model_error_callback: OnModelErrorCallback | None = None
   """Callback or list of callbacks to be called when a model call encounters an error.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -537,7 +528,7 @@ class LlmAgent(BaseAgent, abc.ABC):
       the model error. Any non-None response stops the callback chain. Return
       None to allow subsequent callbacks to handle the error.
   """
-  before_tool_callback: Optional[BeforeToolCallback] = None
+  before_tool_callback: BeforeToolCallback | None = None
   """Callback or list of callbacks to be called before calling the tool.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -553,7 +544,7 @@ class LlmAgent(BaseAgent, abc.ABC):
       Any non-None response, including an empty dict, stops the callback chain
       and skips the tool call. Return None to continue.
   """
-  after_tool_callback: Optional[AfterToolCallback] = None
+  after_tool_callback: AfterToolCallback | None = None
   """Callback or list of callbacks to be called after calling the tool.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -571,7 +562,7 @@ class LlmAgent(BaseAgent, abc.ABC):
       and replaces the tool result. Return None to keep the current result
       and allow subsequent callbacks to run.
   """
-  on_tool_error_callback: Optional[OnToolErrorCallback] = None
+  on_tool_error_callback: OnToolErrorCallback | None = None
   """Callback or list of callbacks to be called when a tool call encounters an error.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -603,7 +594,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   @override
   async def _handle_before_agent_callback(
       self, ctx: InvocationContext
-  ) -> Optional[Event]:
+  ) -> Event | None:
     event = await super()._handle_before_agent_callback(ctx)
     if event is not None:
       self.__maybe_save_output_to_state(event)
@@ -783,7 +774,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     return self.canonical_live_model
 
   @classmethod
-  def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
+  def set_default_model(cls, model: str | BaseLlm) -> None:
     """Overrides the default model used when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
       raise TypeError(
@@ -806,7 +797,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     return LLMRegistry.new_llm(default_model)
 
   @classmethod
-  def set_default_live_model(cls, model: Union[str, BaseLlm]) -> None:
+  def set_default_live_model(cls, model: str | BaseLlm) -> None:
     """Overrides the default model used for live mode when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
       raise TypeError(
@@ -876,7 +867,7 @@ class LlmAgent(BaseAgent, abc.ABC):
       return global_instruction, True
 
   async def canonical_tools(
-      self, ctx: Optional[ReadonlyContext] = None
+      self, ctx: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     """The resolved self.tools field as a list of BaseTool based on the context.
 
@@ -982,9 +973,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     else:
       return _flow_class('AutoFlow')()
 
-  def _get_subagent_to_resume(
-      self, ctx: InvocationContext
-  ) -> Optional[BaseAgent]:
+  def _get_subagent_to_resume(self, ctx: InvocationContext) -> BaseAgent | None:
     """Returns the sub-agent in the llm tree to resume if it exists.
 
     There are 2 cases where we need to transfer to and resume a sub-agent:
@@ -1082,7 +1071,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   def __get_transfer_to_agent_or_none(
       self, event: Event, from_agent: str
-  ) -> Optional[BaseAgent]:
+  ) -> BaseAgent | None:
     """Returns the agent to run if the event is a transfer to agent response."""
     function_responses = event.get_function_responses()
     if not function_responses:
@@ -1290,7 +1279,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def validate_generate_content_config(
-      cls, generate_content_config: Optional[types.GenerateContentConfig]
+      cls, generate_content_config: types.GenerateContentConfig | None
   ) -> types.GenerateContentConfig:
     if not generate_content_config:
       return types.GenerateContentConfig()

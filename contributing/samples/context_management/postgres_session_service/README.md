@@ -35,7 +35,7 @@ pip install google-adk asyncpg greenlet
 | app_name    | VARCHAR(128) | Application identifier (PK) |
 | user_id     | VARCHAR(128) | User identifier (PK)        |
 | id          | VARCHAR(128) | Session UUID (PK)           |
-| state       | JSONB        | Session state as JSON       |
+| state       | JSON         | Session state as JSON       |
 | create_time | TIMESTAMP    | Creation timestamp          |
 | update_time | TIMESTAMP    | Last update timestamp       |
 
@@ -49,14 +49,14 @@ pip install google-adk asyncpg greenlet
 | session_id    | VARCHAR(128) | Session reference (PK, FK)  |
 | invocation_id | VARCHAR(256) | Invocation identifier       |
 | timestamp     | TIMESTAMP    | Event timestamp             |
-| event_data    | JSONB        | Event content as JSON       |
+| event_data    | JSON         | Event content as JSON       |
 
 ### app_states
 
 | Column      | Type         | Description                 |
 | ----------- | ------------ | --------------------------- |
 | app_name    | VARCHAR(128) | Application identifier (PK) |
-| state       | JSONB        | Application-level state     |
+| state       | JSON         | Application-level state     |
 | update_time | TIMESTAMP    | Last update timestamp       |
 
 ### user_states
@@ -65,7 +65,7 @@ pip install google-adk asyncpg greenlet
 | ----------- | ------------ | --------------------------- |
 | app_name    | VARCHAR(128) | Application identifier (PK) |
 | user_id     | VARCHAR(128) | User identifier (PK)        |
-| state       | JSONB        | User-level state            |
+| state       | JSON         | User-level state            |
 | update_time | TIMESTAMP    | Last update timestamp       |
 
 ### adk_internal_metadata
@@ -182,11 +182,25 @@ session = await session_service.get_session(
 
 ## State Management
 
-PostgreSQL's JSONB type provides efficient storage for state data:
+PostgreSQL's JSON type stores state data as written:
 
 - **Session state**: Stored in `sessions.state`
 - **User state**: Stored in `user_states.state`
 - **App state**: Stored in `app_states.state`
+
+Tables created by older ADK versions keep their `jsonb` columns, which still
+reject NUL (`\u0000`) in strings. To switch an existing database to `json`:
+
+```sql
+ALTER TABLE sessions ALTER COLUMN state TYPE json USING state::json;
+ALTER TABLE events ALTER COLUMN event_data TYPE json USING event_data::json;
+ALTER TABLE app_states ALTER COLUMN state TYPE json USING state::json;
+ALTER TABLE user_states ALTER COLUMN state TYPE json USING state::json;
+```
+
+Each statement rewrites the table under an `ACCESS EXCLUSIVE` lock, blocking
+reads and writes until it finishes, so run it during a maintenance window.
+Values already stored keep their `jsonb`-normalized form.
 
 ## Production Considerations
 

@@ -14,7 +14,6 @@
 
 import json
 from typing import Any
-from typing import Optional
 
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
@@ -99,10 +98,10 @@ def test_function_request_euc():
 
   mock_model = testing_utils.MockModel.create(responses=responses)
 
-  def call_external_api1(tool_context: ToolContext) -> Optional[int]:
+  def call_external_api1(tool_context: ToolContext) -> int | None:
     tool_context.request_credential(auth_config1)
 
-  def call_external_api2(tool_context: ToolContext) -> Optional[int]:
+  def call_external_api2(tool_context: ToolContext) -> int | None:
     tool_context.request_credential(auth_config2)
 
   agent = Agent(
@@ -202,7 +201,7 @@ def test_function_request_euc_args_are_json_serializable():
 
   mock_model = testing_utils.MockModel.create(responses=responses)
 
-  def call_external_api(tool_context: ToolContext) -> Optional[int]:
+  def call_external_api(tool_context: ToolContext) -> int | None:
     tool_context.request_credential(auth_config)
 
   agent = Agent(
@@ -662,7 +661,7 @@ def test_function_request_euc_omits_client_secret_from_session():
       ),
   )
 
-  def call_external_api(tool_context: ToolContext) -> Optional[int]:
+  def call_external_api(tool_context: ToolContext) -> int | None:
     tool_context.request_credential(auth_config)
 
   agent = Agent(
@@ -732,7 +731,7 @@ def test_function_get_auth_response_ignores_client_supplied_oauth_client(
   )
   seen_tokens = []
 
-  def call_external_api(tool_context: ToolContext) -> Optional[int]:
+  def call_external_api(tool_context: ToolContext) -> int | None:
     auth_response = tool_context.get_auth_response(auth_config)
     if not auth_response:
       tool_context.request_credential(auth_config)

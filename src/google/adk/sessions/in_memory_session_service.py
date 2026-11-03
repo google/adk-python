@@ -16,7 +16,6 @@ from __future__ import annotations
 import copy
 import logging
 from typing import Any
-from typing import Optional
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
@@ -93,8 +92,8 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     return self._create_session_impl(
         app_name=app_name,
@@ -108,8 +107,8 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._create_session_impl(
@@ -124,8 +123,8 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     session_id = session_id.strip() if session_id else None
     if session_id and session_id in self.sessions.get(app_name, {}).get(
@@ -168,8 +167,8 @@ class InMemorySessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     return self._get_session_impl(
         app_name=app_name,
         user_id=user_id,
@@ -183,8 +182,8 @@ class InMemorySessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._get_session_impl(
         app_name=app_name,
@@ -199,8 +198,8 @@ class InMemorySessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     session_id = session_id.strip() if session_id else session_id
     if app_name not in self.sessions:
       return None
@@ -255,18 +254,18 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def list_sessions_sync(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def _list_sessions_impl(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     empty_response = ListSessionsResponse()
     if app_name not in self.sessions:

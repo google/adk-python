@@ -19,7 +19,6 @@ from collections.abc import Iterator
 import logging
 from typing import AsyncGenerator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
@@ -579,7 +578,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
       model_response_event: Event,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     return await handle_before_model_callback(
         invocation_context, llm_request, model_response_event
     )
@@ -589,7 +588,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       llm_response: LlmResponse,
       model_response_event: Event,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     return await handle_after_model_callback(
         invocation_context, llm_response, model_response_event
     )
@@ -600,7 +599,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
       model_response_event: Event,
-      call_llm_span: Optional[trace.Span] = None,
+      call_llm_span: trace.Span | None = None,
   ) -> AsyncGenerator[LlmResponse, None]:
     async with Aclosing(
         run_and_handle_error(
