@@ -244,6 +244,133 @@ contradicting_excerpt: null
     score, _ = await metric._evaluate_nl_response("nl", "ctx")
     assert score is None
 
+  async def _score_validator_reply(self, metric, mocker, validator_text):
+    """Scores a two-sentence response against a scripted validator reply."""
+    seg_response = self._create_genai_response(
+        "<sentence>S1.</sentence><sentence>S2.</sentence>", mocker
+    )
+    val_response = self._create_genai_response(validator_text, mocker)
+
+    async def seg_gen():
+      yield seg_response
+
+    async def val_gen():
+      yield val_response
+
+    metric._judge_model.generate_content_async = mocker.MagicMock(
+        side_effect=[seg_gen(), val_gen()]
+    )
+    score, _ = await metric._evaluate_nl_response("nl", "ctx")
+    return score
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_scores_every_labelled_sentence(
+      self, hallucinations_metric, mocker
+  ):
+    """A complete reply is averaged over all sentences."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: contradictory
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score == 0.5
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_accepts_backticked_labels(
+      self, hallucinations_metric, mocker
+  ):
+    """Labels echoed in backticks, as the prompt lists them, are counted."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: `supported`
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: `contradictory`
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score == 0.5
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_sentence_omitted(
+      self, hallucinations_metric, mocker
+  ):
+    """A sentence the validator leaves out does not drop out of the score."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_a_label_is_unusable(
+      self, hallucinations_metric, mocker
+  ):
+    """One unusable label makes the response unscored, not a 1.0."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: false
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_blocks_merge(
+      self, hallucinations_metric, mocker
+  ):
+    """A block missing its last line must not swallow the next block."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+
+sentence: S2.
+label: contradictory
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score is None
+
 
 @pytest.fixture
 def create_context_data():
