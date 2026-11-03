@@ -23,7 +23,6 @@ import threading
 from typing import cast
 from typing import Iterable
 from typing import Mapping
-from typing import Optional
 from typing import Sequence
 
 from opentelemetry.sdk.trace import ReadableSpan
@@ -122,7 +121,7 @@ class SqliteSpanExporter(SpanExporter):
   def __init__(self, *, db_path: str):
     self._db_path = db_path
     self._lock = threading.Lock()
-    self._conn: Optional[sqlite3.Connection] = None
+    self._conn: sqlite3.Connection | None = None
     self._ensure_schema()
 
   def _get_connection(self) -> sqlite3.Connection:

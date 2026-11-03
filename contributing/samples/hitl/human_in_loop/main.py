@@ -15,7 +15,6 @@
 import asyncio
 import os
 from typing import Any
-from typing import Union
 
 import agent
 from dotenv import load_dotenv
@@ -59,9 +58,9 @@ async def main():
         session_id=session.id, user_id=USER_ID, new_message=content
     )
 
-    long_running_function_call: Union[types.FunctionCall, None] = None
-    initial_tool_response: Union[types.FunctionResponse, None] = None
-    ticket_id: Union[str, None] = None
+    long_running_function_call: types.FunctionCall | None = None
+    initial_tool_response: types.FunctionResponse | None = None
+    ticket_id: str | None = None
 
     async for event in events_async:
       if event.content and event.content.parts:

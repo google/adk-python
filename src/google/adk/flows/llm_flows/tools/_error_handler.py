@@ -21,7 +21,6 @@ import inspect
 import logging
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from ....agents._callback_metadata import _callback_scope
@@ -43,7 +42,7 @@ def detect_error_type_for_telemetry(
     tool: BaseTool,
     tool_context: ToolContext,
     function_response: Any,
-) -> Optional[str]:
+) -> str | None:
   """Detects an error type from a tool response for telemetry purposes.
 
   This does not modify the response. `_detect_error_in_response` is an optional
@@ -109,7 +108,7 @@ async def run_on_tool_error_callbacks(
     tool_args: dict[str, Any],
     tool_context: ToolContext,
     error: Exception,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
   """Runs the on_tool_error_callbacks for the given tool."""
   error_response = (
       await invocation_context.plugin_manager.run_on_tool_error_callback(
@@ -136,7 +135,7 @@ async def run_on_tool_error_callbacks(
 async def notify_tool_cancelled(
     *,
     invocation_context: InvocationContext,
-    agent: Optional[LlmAgent] = None,
+    agent: LlmAgent | None = None,
     tool: BaseTool,
     tool_args: dict[str, Any],
     tool_context: ToolContext,

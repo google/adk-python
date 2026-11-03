@@ -19,7 +19,6 @@ from contextlib import contextmanager
 import contextvars
 import os
 import sys
-from typing import List
 
 from .. import version
 
@@ -41,7 +40,7 @@ _LABEL_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def _get_default_labels(framework_label: str | None = None) -> List[str]:
+def _get_default_labels(framework_label: str | None = None) -> list[str]:
   """Returns a list of labels that are always added.
 
   Args:
@@ -80,7 +79,7 @@ def client_label_context(client_label: str) -> Iterator[None]:
     _LABEL_CONTEXT.reset(token)
 
 
-def get_client_labels(framework_label: str | None = None) -> List[str]:
+def get_client_labels(framework_label: str | None = None) -> list[str]:
   """Returns the current list of client labels that can be added to HTTP Headers.
 
   Args:

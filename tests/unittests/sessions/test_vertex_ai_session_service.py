@@ -19,9 +19,6 @@ import json
 import re
 import types
 from typing import Any
-from typing import List
-from typing import Optional
-from typing import Tuple
 from unittest import mock
 import uuid
 
@@ -373,7 +370,7 @@ class MockAsyncClient:
   def __init__(self) -> None:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
-    self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
+    self.event_dict: dict[str, tuple[list[Any], str | None]] = {}
     self.sessions = mock.AsyncMock()
     self.sessions.get.side_effect = self._get_session
     self.sessions.list.side_effect = self._list_sessions
@@ -610,10 +607,10 @@ async def test_get_session_pagination_keeps_client_open():
 
 
 def mock_vertex_ai_session_service(
-    project: Optional[str] = 'test-project',
-    location: Optional[str] = 'test-location',
-    agent_engine_id: Optional[str] = None,
-    express_mode_api_key: Optional[str] = None,
+    project: str | None = 'test-project',
+    location: str | None = 'test-location',
+    agent_engine_id: str | None = None,
+    express_mode_api_key: str | None = None,
 ):
   """Creates a mock Vertex AI Session service for testing."""
   return VertexAiSessionService(

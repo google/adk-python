@@ -19,9 +19,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.genai import types
 from google.genai.interactions import CreateAgentInteractionAgentConfigParam
@@ -72,7 +70,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _MANAGED_AGENT_LOCATION = 'global'
 
 
-def _resolve_client_location(api_client: Client) -> Optional[str]:
+def _resolve_client_location(api_client: Client) -> str | None:
   """Return the client's resolved location, or ``None`` if unavailable.
 
   google-genai 2.9.0 exposes no public accessor for a ``Client``'s location, so
@@ -139,14 +137,14 @@ class ManagedAgent(BaseAgent):
   agent_id: str
   """The Managed Agent id (e.g. 'antigravity-preview-09-2026' or 'agents/ID')."""
 
-  environment: Optional[CreateAgentInteractionEnvironmentParam] = None
+  environment: CreateAgentInteractionEnvironmentParam | None = None
   """A sandbox environment spec (e.g. ``{'type': 'remote'}``) or an existing
   environment id string to reuse across turns."""
 
-  agent_config: Optional[CreateAgentInteractionAgentConfigParam] = None
+  agent_config: CreateAgentInteractionAgentConfigParam | None = None
   """Runtime configuration passed to interactions.create."""
 
-  instruction: Union[str, InstructionProvider] = ''
+  instruction: str | InstructionProvider = ''
   """The system instruction sent to the Managed Agent.
 
   A plain string may embed ``{var}``, ``{artifact.name}``, or ``{var?}``
@@ -156,9 +154,9 @@ class ManagedAgent(BaseAgent):
   state itself). Empty by default, in which case no system instruction is sent.
   """
 
-  tools: list[
-      Union[types.Tool, BaseTool, Callable[..., Any], RemoteMcpServer]
-  ] = Field(default_factory=list)
+  tools: list[types.Tool | BaseTool | Callable[..., Any] | RemoteMcpServer] = (
+      Field(default_factory=list)
+  )
   """Server-side tools: ADK built-in tools, raw types.Tool configs, or
   RemoteMcpServer specs for server-side remote MCP."""
 
@@ -171,10 +169,10 @@ class ManagedAgent(BaseAgent):
   leaves the agent usable as an LLM-transfer target.
   """
 
-  _api_client: Optional[Client] = PrivateAttr(default=None)
+  _api_client: Client | None = PrivateAttr(default=None)
 
   def __init__(
-      self, *, api_client: Optional[Client] = None, **kwargs: Any
+      self, *, api_client: Client | None = None, **kwargs: Any
   ) -> None:
     super().__init__(**kwargs)
     if api_client is not None:

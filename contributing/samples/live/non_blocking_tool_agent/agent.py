@@ -14,14 +14,13 @@
 
 import asyncio
 from typing import Any
-from typing import Dict
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
 
-async def slow_background_task(task_description: str) -> Dict[str, Any]:
+async def slow_background_task(task_description: str) -> dict[str, Any]:
   """Performs a long-running background computation or data retrieval.
 
   Args:

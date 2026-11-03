@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import sys
 from typing import Any
-from typing import Dict
 from typing import TextIO
 
 from ..dependencies._mcp import types
@@ -73,7 +72,7 @@ class McpInstructionProvider(InstructionProvider):  # type: ignore[misc]
       )
 
       # Fetch arguments from context state if the prompt requires them
-      prompt_args: Dict[str, Any] = {}
+      prompt_args: dict[str, Any] = {}
       if prompt_definition and prompt_definition.arguments:
         arg_names = {arg.name for arg in prompt_definition.arguments}
         prompt_args = {

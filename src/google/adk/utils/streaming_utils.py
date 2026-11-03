@@ -18,7 +18,6 @@ import json
 import re
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.genai import types
 
@@ -161,12 +160,12 @@ class _ActiveFunctionCall:
   """State tracker for an in-flight streaming function call."""
 
   def __init__(self) -> None:
-    self.name: Optional[str] = None
+    self.name: str | None = None
     self.args: dict[str, Any] = {}
     self.arg_chunks: dict[str, list[str]] = {}
-    self.id: Optional[str] = None
-    self.thought_signature: Optional[bytes] = None
-    self.sequence_index: Optional[int] = None
+    self.id: str | None = None
+    self.thought_signature: bytes | None = None
+    self.sequence_index: int | None = None
 
 
 class StreamingResponseAggregator:
@@ -179,22 +178,22 @@ class StreamingResponseAggregator:
   def __init__(self) -> None:
     self._text: list[str] = []
     self._thought_text: list[str] = []
-    self._usage_metadata: Optional[
-        types.GenerateContentResponseUsageMetadata
-    ] = None
-    self._grounding_metadata: Optional[types.GroundingMetadata] = None
-    self._citation_metadata: Optional[types.CitationMetadata] = None
-    self._response: Optional[types.GenerateContentResponse] = None
+    self._usage_metadata: types.GenerateContentResponseUsageMetadata | None = (
+        None
+    )
+    self._grounding_metadata: types.GroundingMetadata | None = None
+    self._citation_metadata: types.CitationMetadata | None = None
+    self._response: types.GenerateContentResponse | None = None
 
     # For progressive SSE streaming mode: accumulate parts in order
-    self._parts_sequence: list[Optional[types.Part]] = []
+    self._parts_sequence: list[types.Part | None] = []
     self._current_text_buffer: list[str] = []
-    self._current_text_is_thought: Optional[bool] = None
-    self._current_text_thought_signature: Optional[bytes] = None
-    self._finish_reason: Optional[types.FinishReason] = None
+    self._current_text_is_thought: bool | None = None
+    self._current_text_thought_signature: bytes | None = None
+    self._finish_reason: types.FinishReason | None = None
 
     # For streaming function call arguments
-    self._active_function_call: Optional[_ActiveFunctionCall] = None
+    self._active_function_call: _ActiveFunctionCall | None = None
 
   def _flush_text_buffer_to_sequence(self) -> None:
     """Flush current text buffer to parts sequence.
@@ -555,7 +554,7 @@ class StreamingResponseAggregator:
       deduped_parts.append(part)
     return deduped_parts
 
-  def close(self) -> Optional[LlmResponse]:
+  def close(self) -> LlmResponse | None:
     """Generate an aggregated response at the end, if needed.
 
     This should be called after all the model responses are processed.
@@ -574,7 +573,7 @@ class StreamingResponseAggregator:
     if not finish_reason and candidate:
       finish_reason = candidate.finish_reason
 
-    error_code: Optional[str] = None
+    error_code: str | None = None
     error_message = None
     if finish_reason and finish_reason != types.FinishReason.STOP:
       error_code = finish_reason

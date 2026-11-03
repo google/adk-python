@@ -18,8 +18,6 @@ import dataclasses
 import logging
 from typing import Any
 from typing import cast
-from typing import Optional
-from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -84,7 +82,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
+      session_id: str | None,
   ) -> str:
     """Constructs the artifact path.
 
@@ -117,9 +115,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      artifact: types.Part | dict[str, Any],
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     if not self._file_has_user_namespace(filename):
       if session_id is None:
@@ -180,9 +178,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[types.Part]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> types.Part | None:
     return await self._load_artifact(
         app_name=app_name,
         user_id=user_id,
@@ -198,10 +196,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
-      version: Optional[int],
+      session_id: str | None,
+      version: int | None,
       remaining_depth: int,
-  ) -> Optional[types.Part]:
+  ) -> types.Part | None:
     """Loads an artifact, following at most `remaining_depth` references."""
     path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
@@ -246,7 +244,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
+      self, *, app_name: str, user_id: str, session_id: str | None = None
   ) -> list[str]:
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
@@ -274,7 +272,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> None:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if not self.artifacts.get(path):
@@ -288,7 +286,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[int]:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
@@ -303,7 +301,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[ArtifactVersion]:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     entries = self.artifacts.get(path)
@@ -318,9 +316,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     entries = self.artifacts.get(path)
     if not entries:

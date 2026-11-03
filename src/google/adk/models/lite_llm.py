@@ -29,18 +29,13 @@ import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
-from typing import Dict
 from typing import Generator
 from typing import Iterable
-from typing import List
 from typing import Literal
-from typing import Optional
 from typing import Sequence
-from typing import Tuple
 from typing import TYPE_CHECKING
 from typing import TypeAlias
 from typing import TypedDict
-from typing import Union
 from urllib.parse import urlparse
 import uuid
 import warnings
@@ -505,8 +500,8 @@ def _normalize_endpoint_value(key: str, value: Any) -> Any:
 
 
 def _get_upload_params(
-    model: str, completion_args: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
+    model: str, completion_args: dict[str, Any]
+) -> dict[str, Any] | None:
   """Endpoint overrides to forward to `litellm.acreate_file`.
 
   File uploads resolve their endpoint independently of the completion call, so
@@ -533,7 +528,7 @@ def _get_upload_params(
     The subset of endpoint overrides to forward, or None when no overrides
     exist.
   """
-  upload_params: Dict[str, Any] = {}
+  upload_params: dict[str, Any] = {}
   for key in _UPLOAD_ENDPOINT_KEYS:
     if key in completion_args and completion_args[key] is not None:
       val = _normalize_endpoint_value(key, completion_args[key])
@@ -577,7 +572,7 @@ def _get_upload_params(
 
 
 def _is_proxied_model(
-    model: str, completion_args: Optional[Dict[str, Any]] = None
+    model: str, completion_args: dict[str, Any] | None = None
 ) -> bool:
   """Returns True if the model is served through a LiteLLM Proxy.
 
@@ -676,7 +671,7 @@ def _is_anthropic_route(provider: str, model: str) -> bool:
   return True
 
 
-def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
+def _infer_mime_type_from_uri(uri: str) -> str | None:
   """Attempts to infer MIME type from a URI's path extension.
 
   Args:
@@ -859,7 +854,7 @@ def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
   return isinstance(first, dict) and "signature" in first
 
 
-def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
+def _convert_reasoning_value_to_parts(reasoning_value: Any) -> list[types.Part]:
   """Converts provider reasoning payloads into Gemini thought parts.
 
   Handles two formats:
@@ -868,7 +863,7 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
     _iter_reasoning_texts.
   """
   if isinstance(reasoning_value, list):
-    parts: List[types.Part] = []
+    parts: list[types.Part] = []
     for block in reasoning_value:
       if isinstance(block, dict):
         block_type = block.get("type", "")
@@ -902,7 +897,7 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 
 def _aggregate_streaming_thought_parts(
     thought_parts: Iterable[types.Part],
-) -> List[types.Part]:
+) -> list[types.Part]:
   """Aggregates fragmented streaming thought parts into clean individual parts.
 
   During streaming, Anthropic splits a thinking block across many deltas:
@@ -913,8 +908,8 @@ def _aggregate_streaming_thought_parts(
   parts_list = list(thought_parts)
   if not parts_list:
     return []
-  aggregated: List[types.Part] = []
-  current_texts: List[str] = []
+  aggregated: list[types.Part] = []
+  current_texts: list[str] = []
   for part in parts_list:
     if part.text:
       current_texts.append(part.text)
@@ -967,7 +962,7 @@ def _is_gemma4_model(
     model: str,
     *,
     provider: str = "",
-    custom_llm_provider: Optional[str] = None,
+    custom_llm_provider: str | None = None,
 ) -> bool:
   """Detects Gemma 4 models across naming conventions.
 
@@ -1047,14 +1042,14 @@ class _FileContentObject(TypedDict):
   file: ChatCompletionFileUrlObject
 
 
-_ContentObject: TypeAlias = Union[
-    _TextContentObject,
-    _AudioContentObject,
-    _ImageContentObject,
-    _VideoContentObject,
-    _FileContentObject,
-]
-_MessageContent: TypeAlias = Union[str, list[_ContentObject]]
+_ContentObject: TypeAlias = (
+    _TextContentObject
+    | _AudioContentObject
+    | _ImageContentObject
+    | _VideoContentObject
+    | _FileContentObject
+)
+_MessageContent: TypeAlias = str | list[_ContentObject]
 
 
 class _ThinkingBlock(TypedDict):
@@ -1063,10 +1058,8 @@ class _ThinkingBlock(TypedDict):
   signature: NotRequired[str]
 
 
-_AssistantContentObject: TypeAlias = Union[_ContentObject, _ThinkingBlock]
-_AssistantContent: TypeAlias = Union[
-    str, Iterable[_AssistantContentObject], None
-]
+_AssistantContentObject: TypeAlias = _ContentObject | _ThinkingBlock
+_AssistantContent: TypeAlias = str | Iterable[_AssistantContentObject] | None
 
 
 class _OutboundToolCallFunction(TypedDict):
@@ -1138,10 +1131,10 @@ def _tool_message(
 
 
 class FunctionChunk(BaseModel):
-  id: Optional[str]
-  name: Optional[str]
-  args: Optional[str]
-  index: Optional[int] = 0
+  id: str | None
+  name: str | None
+  args: str | None
+  index: int | None = 0
   # Gemini signs only some calls (the first of a parallel batch), so most
   # chunks carry none.
   thought_signature: bytes | None = None
@@ -1152,7 +1145,7 @@ class TextChunk(BaseModel):
 
 
 class ReasoningChunk(BaseModel):
-  parts: List[types.Part]
+  parts: list[types.Part]
 
 
 class UsageMetadataChunk(BaseModel):
@@ -1161,7 +1154,7 @@ class UsageMetadataChunk(BaseModel):
   total_tokens: int
   cached_prompt_tokens: int = 0
   reasoning_tokens: int = 0
-  cache_creation_tokens: Optional[int] = None
+  cache_creation_tokens: int | None = None
 
 
 class LiteLLMClient:
@@ -1173,7 +1166,7 @@ class LiteLLMClient:
       messages: Any,
       tools: Any,
       **kwargs: Any,
-  ) -> Union[ModelResponse, CustomStreamWrapper]:
+  ) -> ModelResponse | CustomStreamWrapper:
     """Asynchronously calls acompletion.
 
     Args:
@@ -1201,7 +1194,7 @@ class LiteLLMClient:
       tools: Any,
       stream: bool = False,
       **kwargs: Any,
-  ) -> Union[ModelResponse, CustomStreamWrapper]:
+  ) -> ModelResponse | CustomStreamWrapper:
     """Synchronously calls completion. This is used for streaming only.
 
     Args:
@@ -1347,7 +1340,7 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
-def _extract_cache_creation_tokens(usage: Any) -> Optional[int]:
+def _extract_cache_creation_tokens(usage: Any) -> int | None:
   """Extracts cache creation (write) tokens from LiteLLM usage.
 
   Args:
@@ -1382,7 +1375,7 @@ def _extract_cache_creation_tokens(usage: Any) -> Optional[int]:
 
 def _cache_control_injection_points(
     cache_config: ContextCacheConfig,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
   """Describes the prefix LiteLLM should mark as cacheable.
 
   LiteLLM applies these itself and then lets each provider decide what to do
@@ -1403,7 +1396,7 @@ def _cache_control_injection_points(
   Returns:
     Injection points to hand to LiteLLM.
   """
-  control: Dict[str, Any] = {"type": "ephemeral"}
+  control: dict[str, Any] = {"type": "ephemeral"}
   if _prompt_cache.use_one_hour_ttl(cache_config):
     control["ttl"] = "1h"
   return [
@@ -1412,7 +1405,7 @@ def _cache_control_injection_points(
   ]
 
 
-def _decode_thought_signature(value: Any) -> Optional[bytes]:
+def _decode_thought_signature(value: Any) -> bytes | None:
   """Safely decodes a thought_signature value to bytes.
 
   Args:
@@ -1433,7 +1426,7 @@ def _decode_thought_signature(value: Any) -> Optional[bytes]:
     return None
 
 
-def _decode_tool_call_id_signature(suffix: str) -> Optional[bytes]:
+def _decode_tool_call_id_signature(suffix: str) -> bytes | None:
   """Decodes a signature embedded in a tool call id, urlsafe or unpadded."""
   standard = suffix.replace("-", "+").replace("_", "/")
   return _decode_thought_signature(standard + "=" * (-len(standard) % 4))
@@ -1499,7 +1492,7 @@ def _merge_reasoning_texts(reasoning_parts: Iterable[types.Part]) -> str:
 
 def _extract_thought_signature_from_tool_call(
     tool_call: ChatCompletionMessageToolCall,
-) -> Optional[bytes]:
+) -> bytes | None:
   """Extracts thought_signature from a litellm tool call if present.
 
   Gemini thinking models attach a thought_signature to function call parts.
@@ -1577,10 +1570,10 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
-    upload_params: Optional[Dict[str, Any]] = None,
+    upload_params: dict[str, Any] | None = None,
     is_proxied: bool = False,
-    custom_llm_provider: Optional[str] = None,
-) -> Union[Message, list[Message]] | None:
+    custom_llm_provider: str | None = None,
+) -> Message | list[Message] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
   Handles multipart function responses by returning a list of
@@ -1800,11 +1793,11 @@ async def _content_to_message_param(
 
 
 def _ensure_tool_results(
-    messages: List[Message],
+    messages: list[Message],
     model: str,
     *,
-    custom_llm_provider: Optional[str] = None,
-) -> List[Message]:
+    custom_llm_provider: str | None = None,
+) -> list[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
@@ -1820,8 +1813,8 @@ def _ensure_tool_results(
 
   _ensure_litellm_imported()
 
-  healed_messages: List[Message] = []
-  pending_tool_call_ids: List[str] = []
+  healed_messages: list[Message] = []
+  pending_tool_call_ids: list[str] = []
   expected_tool_role: Literal["tool", "tool_responses"] = (
       "tool_responses"
       if _is_gemma4_model(model, custom_llm_provider=custom_llm_provider)
@@ -1881,7 +1874,7 @@ async def _get_content(
     *,
     provider: str = "",
     model: str = "",
-    upload_params: Optional[Dict[str, Any]] = None,
+    upload_params: dict[str, Any] | None = None,
     is_proxied: bool = False,
 ) -> _MessageContent:
   """Converts a list of parts to litellm content.
@@ -2095,7 +2088,7 @@ async def _get_content(
 
 
 def _is_ollama_chat_provider(
-    model: Optional[str], custom_llm_provider: Optional[str]
+    model: str | None, custom_llm_provider: str | None
 ) -> bool:
   """Returns True when requests should be normalized for ollama_chat."""
   if (
@@ -2163,8 +2156,8 @@ def _flatten_ollama_content(
 def _normalize_ollama_chat_messages(
     messages: list[Message],
     *,
-    model: Optional[str] = None,
-    custom_llm_provider: Optional[str] = None,
+    model: str | None = None,
+    custom_llm_provider: str | None = None,
 ) -> list[Message]:
   """Normalizes message payloads for ollama_chat provider.
 
@@ -2208,7 +2201,7 @@ def _normalize_ollama_chat_messages(
 
 def _build_tool_call_from_json_dict(
     candidate: Any, *, index: int
-) -> Optional[ChatCompletionMessageToolCall]:
+) -> ChatCompletionMessageToolCall | None:
   """Creates a tool call object from JSON content embedded in text."""
   _ensure_litellm_imported()
 
@@ -2270,7 +2263,7 @@ _DS_TOOL_CALL_RE = re.compile(
 )
 
 
-def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
+def _extract_json_from_deepseek_args(args_text: str) -> str | None:
   """Extracts a JSON string from DeepSeek arguments text.
 
   Args:
@@ -2304,7 +2297,7 @@ def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
 
 def _parse_deepseek_tool_calls_from_text(
     text_block: str, *, start_index: int = 0
-) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
+) -> tuple[list[ChatCompletionMessageToolCall], str | None]:
   """Parses DeepSeek proprietary inline tool-call tokens from text.
 
   When LiteLLM does not translate DeepSeek's special tokens into
@@ -2922,7 +2915,7 @@ def _parse_tool_calls_from_text(
     text_block: str,
     *,
     allow_bare_json: bool = True,
-) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
+) -> tuple[list[ChatCompletionMessageToolCall], str | None]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
   tool_calls: list[ChatCompletionMessageToolCall] = []
   if not text_block:
@@ -3038,7 +3031,7 @@ def _split_message_content_and_tool_calls(
     *,
     parse_inline_tool_calls: bool = True,
     allow_bare_json: bool = True,
-) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
+) -> tuple[OpenAIMessageContent | None, list[ChatCompletionMessageToolCall]]:
   """Returns message content and tool calls, parsing inline JSON when needed."""
   existing_tool_calls = message.get("tool_calls") or []
   normalized_tool_calls = (
@@ -3064,7 +3057,7 @@ def _split_message_content_and_tool_calls(
   return content, []
 
 
-def _to_litellm_role(role: Optional[str]) -> Literal["user", "assistant"]:
+def _to_litellm_role(role: str | None) -> Literal["user", "assistant"]:
   """Converts a types.Content role to a litellm role.
 
   Args:
@@ -3246,7 +3239,7 @@ def _append_response_schema_to_description(
     The description, with the rendered output schema appended when one exists
     and fits within length limits.
   """
-  response_schema: Optional[dict[str, Any]] = None
+  response_schema: dict[str, Any] | None = None
   if function_declaration.response_json_schema:
     if isinstance(function_declaration.response_json_schema, types.Schema):
       response_schema = _schema_to_dict(
@@ -3351,16 +3344,9 @@ def _model_response_to_chunk(
     parse_inline_tool_calls: bool = True,
     allow_bare_json: bool = True,
 ) -> Generator[
-    Tuple[
-        Optional[
-            Union[
-                TextChunk,
-                FunctionChunk,
-                UsageMetadataChunk,
-                ReasoningChunk,
-            ]
-        ],
-        Optional[str],
+    tuple[
+        TextChunk | FunctionChunk | UsageMetadataChunk | ReasoningChunk | None,
+        str | None,
     ],
     None,
     None,
@@ -3415,9 +3401,9 @@ def _model_response_to_chunk(
     if message is not None and not _has_meaningful_signal(message):
       message = None
 
-    message_content: Optional[OpenAIMessageContent] = None
+    message_content: OpenAIMessageContent | None = None
     tool_calls: list[ChatCompletionMessageToolCall] = []
-    reasoning_parts: List[types.Part] = []
+    reasoning_parts: list[types.Part] = []
 
     if message is not None:
       # Both Delta and Message support dict-like .get() access.
@@ -3602,8 +3588,8 @@ def _message_to_generate_content_response(
     message: Message,
     *,
     is_partial: bool = False,
-    model_version: Optional[str] = None,
-    thought_parts: Optional[List[types.Part]] = None,
+    model_version: str | None = None,
+    thought_parts: list[types.Part] | None = None,
 ) -> LlmResponse:
   """Converts a litellm message to LlmResponse.
 
@@ -3618,7 +3604,7 @@ def _message_to_generate_content_response(
   """
   _ensure_litellm_imported()
 
-  parts: List[types.Part] = []
+  parts: list[types.Part] = []
   if not thought_parts:
     thought_parts = _convert_reasoning_value_to_parts(
         _extract_reasoning_value(message)
@@ -3727,7 +3713,7 @@ def _finish_reason_to_error_message(
 
 def _apply_provider_finish_reason(
     llm_response: LlmResponse,
-    provider_finish_reason: Optional[types.FinishReason],
+    provider_finish_reason: types.FinishReason | None,
 ) -> None:
   """Stamps the provider's finish reason onto an already built response.
 
@@ -3942,17 +3928,17 @@ def _drop_params_rejected_by_anthropic_thinking(params: dict[str, Any]) -> None:
 async def _get_completion_inputs(
     llm_request: LlmRequest,
     model: str,
-    upload_params: Optional[Dict[str, Any]] = None,
+    upload_params: dict[str, Any] | None = None,
     *,
     is_proxied: bool = False,
-    custom_llm_provider: Optional[str] = None,
-    max_tokens: Optional[int] = None,
+    custom_llm_provider: str | None = None,
+    max_tokens: int | None = None,
     has_constructor_reasoning: bool = False,
-) -> Tuple[
-    List[Message],
-    Optional[List[Dict[str, Any]]],
-    Optional[Dict[str, Any]],
-    Optional[Dict[str, Any]],
+) -> tuple[
+    list[Message],
+    list[dict[str, Any]] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
     str | None,
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
@@ -3977,7 +3963,7 @@ async def _get_completion_inputs(
   provider = _get_provider_from_model(model)
 
   # 1. Construct messages
-  messages: List[Message] = []
+  messages: list[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
         content,
@@ -4008,7 +3994,7 @@ async def _get_completion_inputs(
   )
 
   # 2. Convert tool declarations
-  tools: Optional[List[Dict[str, Any]]] = None
+  tools: list[dict[str, Any]] | None = None
   if llm_request.config and llm_request.config.tools:
     tools = []
     for tool in llm_request.config.tools:
@@ -4245,7 +4231,7 @@ async def _get_completion_inputs(
       generation_params = None
 
   # 5. Extract tool_choice from tool_config
-  tool_choice: Optional[str] = None
+  tool_choice: str | None = None
   if (
       llm_request.config
       and llm_request.config.tool_config
@@ -4415,7 +4401,7 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
 
 
 def _warn_gemini_via_litellm(
-    model_string: str, completion_args: Optional[Dict[str, Any]] = None
+    model_string: str, completion_args: dict[str, Any] | None = None
 ) -> None:
   """Warn if Gemini is being used via LiteLLM.
 
@@ -4544,7 +4530,7 @@ class LiteLlm(BaseLlm):
   llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient, exclude=True)
   """The LLM client to use for the model."""
 
-  _additional_args: Dict[str, Any] = PrivateAttr(default_factory=dict)
+  _additional_args: dict[str, Any] = PrivateAttr(default_factory=dict)
   _cached_capabilities: tuple[tuple[str, Any], LlmCapabilities] | None = (
       PrivateAttr(default=None)
   )
@@ -4810,14 +4796,14 @@ class LiteLlm(BaseLlm):
       raw_text_parts: list[str] = []
       text_tracker = _StreamTextTracker()
       saw_structured_tool_calls = False
-      reasoning_parts: List[types.Part] = []
+      reasoning_parts: list[types.Part] = []
       # Track function calls by index
       function_calls: dict[int, dict[str, Any]] = (
           {}
       )  # index -> {name, args_parts, id, thought_signature}
       # Signatures that arrived before any chunk naming their call.
       pending_signatures: dict[int, bytes] = {}
-      tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
+      tool_call_trackers: dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None

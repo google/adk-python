@@ -17,9 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.genai.types import Content
 from pydantic import alias_generators
@@ -113,7 +111,7 @@ class EventActions(BaseModel):  # type: ignore[misc]
   )
   """The pydantic model config."""
 
-  skip_summarization: Optional[bool] = None
+  skip_summarization: bool | None = None
   """If true, it won't call model to summarize function response.
 
   Only used for function_response event.
@@ -138,13 +136,13 @@ class EventActions(BaseModel):  # type: ignore[misc]
   """Indicates that the event is updating an artifact. key is the filename,
   value is the version."""
 
-  transfer_to_agent: Optional[str] = None
+  transfer_to_agent: str | None = None
   """If set, the event transfers to the specified agent."""
 
-  transfer_reason: Optional[str] = None
+  transfer_reason: str | None = None
   """The reason for transferring to the target agent."""
 
-  escalate: Optional[bool] = None
+  escalate: bool | None = None
   """The agent is escalating to a higher level agent."""
 
   requested_auth_configs: dict[str, AuthConfig] = Field(default_factory=dict)
@@ -177,37 +175,37 @@ class EventActions(BaseModel):  # type: ignore[misc]
   """A dict of tool confirmation requested by this event, keyed by
   function call id."""
 
-  compaction: Optional[EventCompaction] = None
+  compaction: EventCompaction | None = None
   """The compaction of the events."""
 
-  end_of_agent: Optional[bool] = None
+  end_of_agent: bool | None = None
   """If true, the current agent has finished its current run. Note that there
   can be multiple events with end_of_agent=True for the same agent within one
   invocation when there is a loop. This should only be set by ADK workflow."""
 
-  agent_state: Optional[dict[str, Any]] = None
+  agent_state: dict[str, Any] | None = None
   """The agent state at the current event, used for checkpoint and resume. This
   should only be set by ADK workflow."""
 
   @field_serializer('agent_state', mode='wrap')  # type: ignore[misc, untyped-decorator]
   def _serialize_agent_state(
       self,
-      value: Optional[dict[str, Any]],
+      value: dict[str, Any] | None,
       handler: SerializerFunctionWrapHandler,
-  ) -> Optional[dict[str, Any]]:
+  ) -> dict[str, Any] | None:
     if value is None:
       return None
     # See `_serialize_state_delta` for why a wrap serializer is used.
     return _serialize_with_fallback(value, handler, 'agent_state')
 
-  rewind_before_invocation_id: Optional[str] = None
+  rewind_before_invocation_id: str | None = None
   """The invocation id to rewind to. This is only set for rewind event."""
 
-  route: Optional[Union[bool, int, str, list[Union[bool, int, str]]]] = None
+  route: bool | int | str | list[bool | int | str] | None = None
   """Route or list of routes for workflow graph edge matching."""
 
-  render_ui_widgets: Optional[list[UiWidget]] = None
+  render_ui_widgets: list[UiWidget] | None = None
   """List of UI widgets to be rendered by the UI."""
 
-  set_model_response: Optional[Any] = None
+  set_model_response: Any | None = None
   """The model response structured output."""

@@ -22,7 +22,6 @@ import contextlib
 from typing import Any
 from typing import AsyncGenerator
 from typing import Iterator
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
@@ -143,7 +142,7 @@ def finalize_model_response_event(
   return finalized_event
 
 
-def has_meaningful_content(llm_response: Optional[LlmResponse]) -> bool:
+def has_meaningful_content(llm_response: LlmResponse | None) -> bool:
   """Returns whether the LLM response contains meaningful, actionable content.
 
   A response is considered to have meaningful content if it contains at least
@@ -193,7 +192,7 @@ async def handle_before_model_callback(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
     model_response_event: Event,
-) -> Optional[LlmResponse]:
+) -> LlmResponse | None:
   """Runs before-model callbacks (plugins then agent callbacks).
 
   Args:
@@ -234,8 +233,8 @@ async def handle_before_model_callback(
 
 
 def _inherit_unset_model_fields(
-    original: LlmResponse, replacement: Optional[LlmResponse]
-) -> Optional[LlmResponse]:
+    original: LlmResponse, replacement: LlmResponse | None
+) -> LlmResponse | None:
   """Carries model-owned fields from a replaced response.
 
   A callback replacement that leaves ``partial``/``turn_complete`` unset must
@@ -287,7 +286,7 @@ async def handle_after_model_callback(
     invocation_context: InvocationContext,
     llm_response: LlmResponse,
     model_response_event: Event,
-) -> Optional[LlmResponse]:
+) -> LlmResponse | None:
   """Runs after-model callbacks (plugins then agent callbacks).
 
   Also handles grounding metadata injection when a tool sets
@@ -307,8 +306,8 @@ async def handle_after_model_callback(
   # Add grounding metadata to the response if needed.
   # TODO: Remove this function once the workaround is no longer needed.
   async def _maybe_add_grounding_metadata(
-      response: Optional[LlmResponse] = None,
-  ) -> Optional[LlmResponse]:
+      response: LlmResponse | None = None,
+  ) -> LlmResponse | None:
     readonly_context = ReadonlyContext(invocation_context)
     if (tools := invocation_context.canonical_tools_cache) is None:
       tools = await agent.canonical_tools(readonly_context)
@@ -367,7 +366,7 @@ async def run_and_handle_error(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
     model_response_event: Event,
-    call_llm_span: Optional[trace.Span] = None,
+    call_llm_span: trace.Span | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Wraps an LLM response generator with error callback handling.
 
@@ -404,7 +403,7 @@ async def run_and_handle_error(
       callback_context: CallbackContext,
       llm_request: LlmRequest,
       error: Exception,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     error_response = (
         await invocation_context.plugin_manager.run_on_model_error_callback(
             callback_context=callback_context,

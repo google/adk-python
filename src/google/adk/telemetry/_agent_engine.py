@@ -35,7 +35,6 @@ if TYPE_CHECKING:
   from collections.abc import AsyncGenerator
   from collections.abc import AsyncIterator
   from typing import Mapping
-  from typing import Optional
 
   import fastapi
   from starlette.middleware.base import DispatchFunction
@@ -88,7 +87,7 @@ class TopSpanProcessor(trace.SpanProcessor):
   """Top span processor."""
 
   def on_start(
-      self, span: trace.Span, parent_context: Optional[context.Context] = None
+      self, span: trace.Span, parent_context: context.Context | None = None
   ) -> None:
     """Adds support ID to the top span."""
     baggage_items = baggage.get_all(context=parent_context)

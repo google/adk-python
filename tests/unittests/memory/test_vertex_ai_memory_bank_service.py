@@ -18,7 +18,6 @@ import logging
 from types import SimpleNamespace
 from typing import Any
 from typing import Iterable
-from typing import Optional
 from unittest import mock
 
 import agentplatform
@@ -180,11 +179,11 @@ MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
 
 
 def mock_vertex_ai_memory_bank_service(
-    project: Optional[str] = 'test-project',
-    location: Optional[str] = 'test-location',
-    agent_engine_id: Optional[str] = '123',
-    express_mode_api_key: Optional[str] = None,
-    credentials: Optional[Credentials] = None,
+    project: str | None = 'test-project',
+    location: str | None = 'test-location',
+    agent_engine_id: str | None = '123',
+    express_mode_api_key: str | None = None,
+    credentials: Credentials | None = None,
 ):
   """Creates a mock Vertex AI Memory Bank service for testing."""
   return VertexAiMemoryBankService(
