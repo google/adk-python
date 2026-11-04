@@ -63,6 +63,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.adk.workflow import BaseNode
 from google.adk.workflow import node
 from google.adk.workflow import RetryConfig
@@ -7034,6 +7035,77 @@ async def test_run_async_tool_error_on_abort_leaves_calls_to_abort_sealing():
 
   aborted = {"error": "Invocation was aborted by client."}
   assert await _persisted_responses(runner) == [aborted, aborted]
+
+
+def _record_then_hang_tools():
+  """Returns a tool that finishes with a side effect, one that hangs, and a gate.
+
+  The gate is set once record_tool has finished, so an abort lands while
+  hang_tool is still running.
+  """
+  record_done = asyncio.Event()
+
+  async def record_tool(tool_context: ToolContext) -> dict[str, str]:
+    tool_context.state["recorded"] = "r1"
+    return {"record_id": "r1"}
+
+  async def hang_tool() -> dict[str, str]:
+    await asyncio.Event().wait()
+    return {}
+
+  def after_tool(tool, args, tool_context, tool_response):
+    if tool.name == "record_tool":
+      record_done.set()
+
+  return record_tool, hang_tool, after_tool, record_done
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow", [False, True], ids=["llm", "workflow"])
+@pytest.mark.parametrize("how", ["abort_signal", "task_cancel"])
+async def test_run_async_abort_keeps_results_of_finished_parallel_calls(
+    how, workflow
+):
+  """An abort seals only the calls still running, not the finished ones."""
+  record_tool, hang_tool, after_tool, record_done = _record_then_hang_tools()
+  agent = _parallel_calls_agent([record_tool, hang_tool], after_tool)
+  runner = _abort_runner(
+      Workflow(name="wf", edges=[(START, agent)]) if workflow else agent
+  )
+  abort_signal = asyncio.Event()
+
+  async def _consume():
+    async for _ in _run_async(runner, abort_signal=abort_signal):
+      pass
+
+  task = asyncio.create_task(_consume())
+  await record_done.wait()
+  # Let the finished call's task complete before the abort lands.
+  await asyncio.sleep(0.02)
+  if how == "abort_signal":
+    abort_signal.set()
+    await task
+  else:
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+
+  assert await _persisted_responses(runner) == [
+      {"record_id": "r1"},
+      {"error": "Invocation was aborted by client."},
+  ]
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  assert session.state["recorded"] == "r1"
+
+  if not workflow:
+    # A workflow's agent node runs single-turn without the session history.
+    await _run_turn(runner, "s", "Next question")
+    assert _function_responses(agent.model.requests[-1].contents) == [
+        {"record_id": "r1"},
+        {"error": "Invocation was aborted by client."},
+    ]
 
 
 @pytest.mark.asyncio
