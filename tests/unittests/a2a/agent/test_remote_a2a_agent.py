@@ -66,6 +66,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
@@ -9243,3 +9244,105 @@ async def test_after_request_metadata_overrides_are_preserved():
     assert turn[-1].custom_metadata["a2a:task_id"] == "caller-task"
     assert turn[-1].custom_metadata["a2a:context_id"] == "caller-context"
     assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
+
+
+class TestRemoteA2aAgentClonesShareResolution:
+  """The agent tree is cloned per invocation, so clones share resolution."""
+
+  _CARD_URL = "https://example.com/.well-known/agent-card.json"
+
+  @pytest.mark.asyncio
+  async def test_card_is_fetched_once_across_turns(self):
+    from tests.unittests import testing_utils
+
+    remote = RemoteA2aAgent(name="remote", agent_card=self._CARD_URL)
+    root = LlmAgent(
+        name="root",
+        model=testing_utils.MockModel.create(responses=["ok", "ok", "ok"]),
+        sub_agents=[remote],
+    )
+    runner = testing_utils.InMemoryRunner(root_agent=root)
+    resolve = AsyncMock(return_value=create_test_agent_card())
+
+    with patch.object(RemoteA2aAgent, "_resolve_agent_card", resolve):
+      for _ in range(3):
+        await runner.run_async(testing_utils.get_user_content("hi"))
+
+    assert resolve.await_count == 1
+    assert remote._agent_card is not None
+    await remote.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_clones_reuse_one_card_and_client(self):
+    agent = RemoteA2aAgent(name="remote", agent_card=self._CARD_URL)
+    resolve = AsyncMock(return_value=create_test_agent_card())
+
+    with patch.object(RemoteA2aAgent, "_resolve_agent_card", resolve):
+      first = await agent.clone()._ensure_resolved()
+      second = await agent.clone()._ensure_resolved()
+
+    try:
+      assert first is second
+      assert resolve.await_count == 1
+      assert agent._agent_card is not None
+      assert agent._httpx_client is not None
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_cleanup_closes_client_created_by_clone(self):
+    agent = RemoteA2aAgent(name="remote", agent_card=self._CARD_URL)
+    clone = agent.clone()
+    with patch.object(
+        RemoteA2aAgent,
+        "_resolve_agent_card",
+        AsyncMock(return_value=create_test_agent_card()),
+    ):
+      await clone._ensure_resolved()
+    client = clone._httpx_client
+
+    await agent.cleanup()
+
+    assert client.is_closed
+    assert clone._httpx_client is None
+
+  @pytest.mark.asyncio
+  async def test_resolve_after_cleanup_builds_a_new_client(self):
+    agent = RemoteA2aAgent(name="remote", agent_card=self._CARD_URL)
+    clone = agent.clone()
+    with patch.object(
+        RemoteA2aAgent,
+        "_resolve_agent_card",
+        AsyncMock(return_value=create_test_agent_card()),
+    ):
+      before = await clone._ensure_resolved()
+      closed_client = clone._httpx_client
+      await agent.cleanup()
+      after = await clone._ensure_resolved()
+
+    try:
+      assert after is not before
+      assert clone._httpx_client is not closed_client
+      assert not clone._httpx_client.is_closed
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_concurrent_first_resolution_fetches_the_card_once(self):
+    agent = RemoteA2aAgent(name="remote", agent_card=self._CARD_URL)
+
+    async def slow_resolve(*args, **kwargs):
+      await asyncio.sleep(0.01)
+      return create_test_agent_card()
+
+    resolve = AsyncMock(side_effect=slow_resolve)
+    with patch.object(RemoteA2aAgent, "_resolve_agent_card", resolve):
+      clients = await asyncio.gather(
+          *(agent.clone()._ensure_resolved() for _ in range(5))
+      )
+
+    try:
+      assert resolve.await_count == 1
+      assert all(client is clients[0] for client in clients)
+    finally:
+      await agent.cleanup()
