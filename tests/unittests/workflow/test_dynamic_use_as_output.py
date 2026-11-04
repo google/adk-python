@@ -50,6 +50,36 @@ def _make_app(name: str, agent: Workflow, resumable: bool) -> App:
   )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['next', False, 0, []])
+async def test_delegated_output_preserves_parent_route(
+    request: pytest.FixtureRequest, route: bool | int | str | list[str]
+) -> None:
+  """Suppressing a duplicate output keeps its parent's route event."""
+
+  def child() -> str:
+    return 'from_child'
+
+  child_node = FunctionNode(func=child)
+
+  async def parent(ctx: Context) -> Event:
+    output = await ctx.run_node(child_node, use_as_output=True)
+    return Event(output=output, route=route)
+
+  parent_node = FunctionNode(func=parent, rerun_on_resume=True)
+  wf = Workflow(name='delegated_route', edges=[(START, parent_node)])
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=wf)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert _get_outputs(events) == ['from_child']
+  assert [
+      event.actions.route for event in events if event.actions.route is not None
+  ] == [route]
+
+
 # ---------------------------------------------------------------------------
 
 # FunctionNode delegates to FunctionNode

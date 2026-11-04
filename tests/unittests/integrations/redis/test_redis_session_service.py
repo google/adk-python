@@ -261,6 +261,27 @@ async def test_partial_event_preserves_filtered_history(session_service):
 
 
 @pytest.mark.asyncio
+async def test_partial_event_writes_nothing(session_service, fake_redis):
+  """A partial event leaves session, app state and user state untouched."""
+  session = await session_service.create_session(app_name="app1", user_id="u1")
+  stored_before = dict(fake_redis._store)
+  last_update_time_before = session.last_update_time
+  partial = Event(
+      author="agent",
+      partial=True,
+      timestamp=last_update_time_before + 100,
+      actions=EventActions(
+          state_delta={"count": 1, "user:score": 100, "app:status": "active"}
+      ),
+  )
+
+  assert await session_service.append_event(session, partial) is partial
+
+  assert session.last_update_time == last_update_time_before
+  assert fake_redis._store == stored_before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["append", "delete", "expire"])
 async def test_append_event_retries_storage_changes(
     session_service, fake_redis, monkeypatch, change

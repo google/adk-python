@@ -1665,7 +1665,7 @@ async def test_record_inference_telemetry_times_each_streamed_chunk(
       (500_000_000, unfinished_chunk),
       (750_000_000, unfinished_chunk),
       (1_250_000_000, _llm_response(partial=True)),
-      (10_000_000_000, _llm_response()),
+      (10_000_000_000, _llm_response(partial=False)),
   ]
 
   async with _instrumentation.record_inference_telemetry(

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from typing import Optional
 from unittest import mock
 
 from google.adk.telemetry import _agent_engine
@@ -50,7 +49,7 @@ import pytest
 def mock_fetch_project():
   """Keeps the Resource Manager lookup off the network in every test."""
 
-  def fake_fetch_project(project: Optional[str], credentials=None) -> _Project:
+  def fake_fetch_project(project: str | None, credentials=None) -> _Project:
     """Mirrors the real contract: what went in comes back, the rest is faked."""
     del credentials  # The real lookup keys its memo on the project alone.
     if not project:
@@ -156,8 +155,8 @@ def test_get_gcp_logs_exporter_none_when_otlp_unavailable():
 @pytest.mark.parametrize("project_id_in_arg", ["project_id_in_arg", None])
 @pytest.mark.parametrize("project_id_on_env", ["project_id_on_env", None])
 def test_get_gcp_resource(
-    project_id_in_arg: Optional[str],
-    project_id_on_env: Optional[str],
+    project_id_in_arg: str | None,
+    project_id_on_env: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ):
   # Arrange.
@@ -694,8 +693,8 @@ def _emit_record(processor, record: ReadWriteLogRecord) -> ReadWriteLogRecord:
     ],
 )
 def test_logs_exporter_falls_back_to_default_log_name(
-    agent_engine_id: Optional[str],
-    log_name_env: Optional[str],
+    agent_engine_id: str | None,
+    log_name_env: str | None,
     expected_default: str,
     monkeypatch: pytest.MonkeyPatch,
 ):

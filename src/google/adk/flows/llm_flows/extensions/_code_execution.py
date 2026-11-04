@@ -26,7 +26,6 @@ import os
 import re
 from typing import AsyncGenerator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
@@ -145,7 +144,7 @@ Total columns: {df.shape[1]}
 
 def _resolve_code_executor(
     invocation_context: InvocationContext, agent: object
-) -> Optional[BaseCodeExecutor]:
+) -> BaseCodeExecutor | None:
   """Resolves the active code executor for an invocation without mutating the agent."""
   if not hasattr(agent, 'code_executor'):
     return None
@@ -530,7 +529,7 @@ def _extract_and_replace_inline_files(
 def _get_or_set_execution_id(
     invocation_context: InvocationContext,
     code_executor_context: CodeExecutorContext,
-) -> Optional[str]:
+) -> str | None:
   """Returns the ID for stateful code execution or None if not stateful."""
   code_executor = cast(
       BaseCodeExecutor, as_llm_agent(invocation_context).code_executor
@@ -538,7 +537,7 @@ def _get_or_set_execution_id(
   if not code_executor.stateful:
     return None
 
-  execution_id: Optional[str] = code_executor_context.get_execution_id()
+  execution_id: str | None = code_executor_context.get_execution_id()
   if not execution_id:
     execution_id = invocation_context.session.id
     code_executor_context.set_execution_id(execution_id)
@@ -616,7 +615,7 @@ def get_content_as_bytes(output_content: str | bytes) -> bytes:
   return base64.b64decode(output_content)
 
 
-def _get_data_file_preprocessing_code(file: File) -> Optional[str]:
+def _get_data_file_preprocessing_code(file: File) -> str | None:
   """Returns the code to explore the data file."""
 
   def _get_normalized_file_name(file_name: str) -> str:

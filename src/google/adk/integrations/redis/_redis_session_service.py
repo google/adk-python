@@ -166,7 +166,7 @@ class RedisSessionService(BaseSessionService):
     key = self._session_key(app_name, user_id, sid)
 
     initial_state = state or {}
-    state_deltas = _session_util.extract_state_delta(initial_state)
+    state_deltas = _session_util.extract_json_safe_state_delta(initial_state)
     app_state_delta = state_deltas.get("app", {})
     user_state_delta = state_deltas.get("user", {})
     session_state = state_deltas.get("session", {})
@@ -354,6 +354,10 @@ class RedisSessionService(BaseSessionService):
     if not await client.exists(key):
       raise SessionNotFoundError(f"Session {session.id} not found.")
     event = await super().append_event(session, event)
+    # Partial events are not persisted: they neither advance last_update_time
+    # nor touch storage, matching every other session service backend.
+    if event.partial:
+      return event
     # Stamp the session with the event's own timestamp, matching
     # InMemorySessionService, SqliteSessionService and DatabaseSessionService.
     # The wall clock is wrong here: an event records when it was produced, which
@@ -364,7 +368,9 @@ class RedisSessionService(BaseSessionService):
     # Sync app and user state deltas to their respective keys
     session_delta: dict[str, Any] = {}
     if event.actions and event.actions.state_delta:
-      deltas = _session_util.extract_state_delta(event.actions.state_delta)
+      deltas = _session_util.extract_json_safe_state_delta(
+          event.actions.state_delta
+      )
       app_delta = deltas.get("app", {})
       user_delta = deltas.get("user", {})
       session_delta = deltas.get("session", {})
@@ -392,7 +398,9 @@ class RedisSessionService(BaseSessionService):
         )
 
     # Prepare storage copy with ONLY session-scoped state (excluding app:, user:, temp:)
-    session_only_state = self._extract_session_only_state(session.state)
+    session_only_state = _session_util.make_json_safe_state(
+        self._extract_session_only_state(session.state)
+    )
     storage_session = Session(
         id=session.id,
         app_name=session.app_name,
@@ -410,10 +418,9 @@ class RedisSessionService(BaseSessionService):
         stored_session = Session.model_validate_json(raw)
         storage_session.events = stored_session.events
         storage_session.state = stored_session.state
-        if not event.partial:
-          storage_session.events.append(event)
-          if session_delta:
-            storage_session.state.update(session_delta)
+        storage_session.events.append(event)
+        if session_delta:
+          storage_session.state.update(session_delta)
       else:
         storage_session.events = list(session.events)
         storage_session.state = dict(session_only_state)

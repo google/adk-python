@@ -17,10 +17,6 @@ from datetime import timezone
 import logging
 import os
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
 
 from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
 from adk_stale_agent.settings import GITHUB_BASE_URL
@@ -54,10 +50,10 @@ BOT_ALERT_SIGNATURE = (
 BOT_NAME = "adk-bot"
 
 # --- Global Cache ---
-_MAINTAINERS_CACHE: Optional[List[str]] = None
+_MAINTAINERS_CACHE: list[str] | None = None
 
 
-def _get_cached_maintainers() -> List[str]:
+def _get_cached_maintainers() -> list[str]:
   """
   Fetches the list of repository maintainers.
 
@@ -123,7 +119,7 @@ def load_prompt_template(filename: str) -> str:
 PROMPT_TEMPLATE = load_prompt_template("PROMPT_INSTRUCTION.txt")
 
 
-def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
+def _fetch_graphql_data(item_number: int) -> dict[str, Any]:
   """
   Executes the GraphQL query to fetch raw issue data, including comments,
   edits, and timeline events.
@@ -208,8 +204,8 @@ def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
 
 
 def _build_history_timeline(
-    data: Dict[str, Any],
-) -> Tuple[List[Dict[str, Any]], List[datetime], Optional[datetime]]:
+    data: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[datetime], datetime | None]:
   """
   Parses raw GraphQL data into a unified, chronologically sorted history list.
   Also extracts specific event times needed for logic checks.
@@ -306,8 +302,8 @@ def _build_history_timeline(
 
 
 def _replay_history_to_find_state(
-    history: List[Dict[str, Any]], maintainers: List[str], issue_author: str
-) -> Dict[str, Any]:
+    history: list[dict[str, Any]], maintainers: list[str], issue_author: str
+) -> dict[str, Any]:
   """
   Replays the unified event history to determine the absolute last actor and their role.
 
@@ -360,7 +356,7 @@ def _replay_history_to_find_state(
   }
 
 
-def get_issue_state(item_number: int) -> Dict[str, Any]:
+def get_issue_state(item_number: int) -> dict[str, Any]:
   """
   Retrieves the comprehensive state of a GitHub issue using GraphQL.
 

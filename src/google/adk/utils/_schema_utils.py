@@ -31,7 +31,6 @@ from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Literal
-from typing import Optional
 from typing import Union
 
 from google.genai import types
@@ -109,7 +108,7 @@ def is_list_of_basemodel(schema: SchemaType) -> bool:
   return isinstance(inner_type, type) and issubclass(inner_type, BaseModel)
 
 
-def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
+def get_list_inner_type(schema: SchemaType) -> type[BaseModel] | None:
   """Get the inner BaseModel type from a list[BaseModel] schema.
 
   Args:
@@ -352,7 +351,7 @@ def _unwrap_content_payload(
 
 
 def validate_node_data(
-    schema: Optional[SchemaType],
+    schema: SchemaType | None,
     data: Any,
     *,
     preserve_content: bool = False,

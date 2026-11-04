@@ -109,6 +109,7 @@ if TYPE_CHECKING:
   from google.genai.interactions import FunctionResultStepResultUnionParam
   from google.genai.interactions import ImageContentMimeType
   from google.genai.interactions import InteractionSseEventInteraction
+  from google.genai.interactions import ThinkingLevel
   from google.genai.interactions import VideoContentMimeType
 
   from ..tools._remote_mcp_server import RemoteMcpServer
@@ -829,18 +830,15 @@ def convert_interaction_to_llm_response(
   """
   from .llm_response import LlmResponse
 
-  # Check for errors. Lifecycle SSE events carry a partial interaction
-  # (InteractionSseEventInteraction) that has no 'error' attribute.
   if interaction.status == 'failed':
-    error_msg = 'Unknown error'
-    error_code = 'UNKNOWN_ERROR'
-    error = getattr(interaction, 'error', None)
-    if error:
-      error_msg = error.message or error_msg
-      error_code = error.code or error_code
+    # InteractionSseEventInteraction has no errors field.
+    errors = (
+        interaction.errors if isinstance(interaction, Interaction) else None
+    ) or []
     return LlmResponse(
-        error_code=error_code,
-        error_message=error_msg,
+        error_code=next((e.code for e in errors if e.code), 'UNKNOWN_ERROR'),
+        error_message='; '.join(e.message for e in errors if e.message)
+        or 'Unknown error',
         interaction_id=interaction.id,
     )
 
@@ -1403,6 +1401,10 @@ def build_generation_config(
       # Not a literal key: which of these the TypedDict declares depends on
       # the installed google-genai.
       generation_config[name] = value  # type: ignore[literal-required]
+  thinking = config.thinking_config
+  level = thinking.thinking_level if thinking else None
+  if level and level != types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED:
+    generation_config['thinking_level'] = cast('ThinkingLevel', level.lower())
 
   undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
   if undeclared:
@@ -1597,13 +1599,12 @@ def build_interactions_response_log(interaction: Interaction) -> str:
     output_tokens = getattr(usage, 'total_output_tokens', 0) or 0
     usage_str = f'input_tokens: {input_tokens}, output_tokens: {output_tokens}'
 
-  # Extract error if present
   error_str = '(none)'
-  if hasattr(interaction, 'error') and interaction.error:
-    error = interaction.error
-    error_code = getattr(error, 'code', 'unknown')
-    error_message = getattr(error, 'message', 'unknown')
-    error_str = f'{error_code}: {error_message}'
+  if interaction.errors:
+    error_str = _NEW_LINE.join(
+        f'{error.code or "unknown"}: {error.message or "unknown"}'
+        for error in interaction.errors
+    )
 
   return f"""
 Interactions API Response:
