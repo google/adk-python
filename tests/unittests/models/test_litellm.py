@@ -14090,3 +14090,68 @@ def test_strict_nullable_object_type_list_requires_all_properties():
   assert validator.is_valid({"name": None})
   assert not validator.is_valid({})
   assert not validator.is_valid({"name": "Paris", "extra": 1})
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini/gemini-2.5-flash",
+        "vertex_ai/gemini-2.5-flash",
+        "litellm_proxy/vertex_ai/gemini-2.5-flash",
+        "openai/gpt-4o-mini",
+    ],
+)
+@pytest.mark.asyncio
+async def test_nullable_provider_payload(model, mock_client):
+  """Gemini preserves nullable enums through LiteLLM's own transformation."""
+  from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexGeminiConfig
+
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "city": types.Schema(type=types.Type.STRING, nullable=True),
+          "choice": types.Schema(
+              type=types.Type.STRING, nullable=True, enum=["x", "y"]
+          ),
+      },
+  )
+  request = LlmRequest(
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="lookup",
+                          parameters=schema,
+                      )
+                  ]
+              )
+          ],
+          response_schema=schema,
+      )
+  )
+  client = LiteLlm(model=model, llm_client=mock_client)
+
+  async for _ in client.generate_content_async(request):
+    pass
+
+  payload = mock_client.acompletion_mock.call_args.kwargs
+  parameters = payload["tools"][0]["function"]["parameters"]
+  if model.startswith("openai/"):
+    response = payload["response_format"]["json_schema"]["schema"]
+    for result in (parameters, response):
+      assert result["properties"]["city"]["type"] == ["string", "null"]
+      assert result["properties"]["choice"]["enum"] == ["x", "y", None]
+  else:
+    config = VertexGeminiConfig()
+    tools = config._map_function(payload["tools"], {})
+    response = config._map_response_schema(
+        payload["response_format"]["response_schema"]
+    )
+    for result in (
+        tools[0]["function_declarations"][0]["parameters"],
+        response,
+    ):
+      assert result["properties"]["city"]["nullable"] is True
+      assert result["properties"]["choice"]["nullable"] is True
+      assert result["properties"]["choice"]["enum"] == ["x", "y"]

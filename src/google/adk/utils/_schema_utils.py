@@ -168,7 +168,9 @@ def _json_schema_equal(left: object, right: object) -> bool:
   return left == right
 
 
-def lowercase_schema_types(value: object) -> None:
+def lowercase_schema_types(
+    value: object, *, convert_nullable: bool = True
+) -> None:
   """Normalizes GenAI type names and nullability for JSON Schema, in place.
 
   Only schema keywords are traversed; default and example values remain data.
@@ -177,10 +179,12 @@ def lowercase_schema_types(value: object) -> None:
 
   Args:
     value: A JSON Schema dict, or a list of them. Mutated in place.
+    convert_nullable: Whether to convert nullable to JSON Schema unions. Set to
+      False for Gemini schemas, which natively support nullable.
   """
   if isinstance(value, list):
     for item in value:
-      lowercase_schema_types(item)
+      lowercase_schema_types(item, convert_nullable=convert_nullable)
     return
   if not isinstance(value, dict):
     return
@@ -196,7 +200,7 @@ def lowercase_schema_types(value: object) -> None:
     children = value.get(key)
     if isinstance(children, dict):
       for child in children.values():
-        lowercase_schema_types(child)
+        lowercase_schema_types(child, convert_nullable=convert_nullable)
   for key in (
       "additionalItems",
       "additionalProperties",
@@ -218,7 +222,7 @@ def lowercase_schema_types(value: object) -> None:
       "one_of",
       "prefixItems",
   ):
-    lowercase_schema_types(value.get(key))
+    lowercase_schema_types(value.get(key), convert_nullable=convert_nullable)
 
   schema_type = value.get("type")
   if isinstance(schema_type, str):
@@ -228,7 +232,7 @@ def lowercase_schema_types(value: object) -> None:
         item.lower() if isinstance(item, str) else item for item in schema_type
     ]
 
-  if value.pop("nullable", False) is not True:
+  if not convert_nullable or value.pop("nullable", False) is not True:
     return
 
   # Conservatively wrap applicators/references: widening type alone cannot
