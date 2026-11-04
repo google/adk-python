@@ -803,6 +803,8 @@ class TestNavigateUrlSafety:
           "http://169.254.1.1/secret",
           "http://169.254.169.254/latest/meta-data/",
           "http://[::1]/secret",
+          "http://[::ffff:127.0.0.1]/secret",
+          "http://127.1/secret",
           "http://localhost/secret",
       ],
   )
