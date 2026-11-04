@@ -54,9 +54,9 @@
           "section": "Miscellaneous Chores",
           "hidden": true
         }
-      ],
-      "release-as": "2.14.0"
+      ]
     }
   },
   "last-release-sha": "a221ccd806cea0d0af6b09ce6f9d27658c75a969"
 }
+
