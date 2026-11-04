@@ -5,15 +5,17 @@
 
 ### Highlights
 
-This release stabilizes core A2A integrations, evaluation tools, and runtime modules while adding MongoDB persistence services and performance enhancements for multi-turn workflows.
+This release graduates A2A, evaluation and dozens of runtime modules out of experimental, adds MongoDB-backed sessions and memory plus Microsoft Teams and OpenAI Decisions integrations, and makes long multi-turn workflows faster.
 
-* **Features**: Build on stable production APIs as core modules, evaluation frameworks, toolsets, and A2A integration graduate out of experimental status. ([c54b253](https://github.com/google/adk-python/commit/c54b253eba3359264a5f86805051aeb6cd93034d))
-* **Integrations**: Persist session states and enable vector search retrieval over long-term agent memories using new MongoDB-backed services. ([cbca417](https://github.com/google/adk-python/commit/cbca417c40e1aa052446391d2d7b36ae92978da9))
-* **CLI**: Instantly see local agent updates without restarting the CLI by passing the new `--reload_agents` flag to `adk run`. ([4f8e4ae](https://github.com/google/adk-python/commit/4f8e4aeef9a1a40fdd4b864818167b93a23d5ef0))
-* **Performance**: Run complex multi-turn workflows up to 23% faster with reduced memory consumption. ([532580c](https://github.com/google/adk-python/commit/532580c8e0511c659eac39cd9305a02ecb796064))
+* **A2A**: The A2A integration is now stable, and `adk` can generate an A2A agent card for your agent from the CLI. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/a2a/utils/agent_to_a2a/index.md) for more details. ([95d4a56](https://github.com/google/adk-python/commit/95d4a5660f5ab4707b251c0b7c86053e5c6f311e), [875e2ae](https://github.com/google/adk-python/commit/875e2aef7e800ca307fcff85b68e54d6101ba63c))
+* **Stable APIs**: 26 auth, environment, app, CLI and cache modules, 16 toolset and integration features, and the mature evaluation and user simulation classes graduate from experimental, so you can build on them without experimental warnings. ([c54b253](https://github.com/google/adk-python/commit/c54b253eba3359264a5f86805051aeb6cd93034d), [799fc94](https://github.com/google/adk-python/commit/799fc9459eb9443a63db11a179d6422b7e1dc1c0), [1112606](https://github.com/google/adk-python/commit/1112606c22856d4633a8c80d178386b168b2f632))
+* **MongoDbSessionService and MongoDbMemoryService**: Persist sessions and long-term memory in MongoDB, with vector search retrieval over memories. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/integrations/mongodb/session_service/index.md) for more details. ([9833835](https://github.com/google/adk-python/commit/9833835193016a559578800743ac87fe318bd48f), [cbca417](https://github.com/google/adk-python/commit/cbca417c40e1aa052446391d2d7b36ae92978da9), [1c84bb9](https://github.com/google/adk-python/commit/1c84bb955b9dd5b118594ccb9e219ac393ee31f9))
+* **TeamsRunner and OpenAIDecisionsClassifier**: Serve an ADK agent in Microsoft Teams, and classify requests with the OpenAI Decisions API. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/integrations/teams/teams_runner/index.md) for more details. ([c4376a6](https://github.com/google/adk-python/commit/c4376a65764bfd7abd016b81cde1e5165318b604), [aa98d18](https://github.com/google/adk-python/commit/aa98d180b6abf1966dbe378094a69aa488c2123e))
+* **Workflow performance**: Long multi-turn workflows run faster and use less memory; a 30-node workflow's 200-turn run is 23% faster with 9% lower peak memory. ([532580c](https://github.com/google/adk-python/commit/532580c8e0511c659eac39cd9305a02ecb796064), [1f21370](https://github.com/google/adk-python/commit/1f2137094d0453a31411b4338e70c7c0e8e01289))
 
 #### Breaking changes
-* Ensure live WebSocket clients handle disconnects and re-establish connections gracefully, as malformed WebSockets will now close immediately instead of remaining stuck.
+
+* **Live WebSockets (`/run_live`) now close instead of hanging**: the server closes the socket with code 1007 on a malformed frame and 1000 when the run ends, so reconnect for each new live run instead of reusing an idle socket. ([3b227d6](https://github.com/google/adk-python/commit/3b227d6ec82490dae6473f681dcc825b1ac31679))
 
 <details>
 <summary>All changes</summary>
@@ -92,11 +94,6 @@ This release stabilizes core A2A integrations, evaluation tools, and runtime mod
 * cap litellm below 1.106.3 ([55a6fe5](https://github.com/google/adk-python/commit/55a6fe5f3d40734bab219d5a5032e19c3d0f5326))
 * classify compaction failures with error.type ([8038bd7](https://github.com/google/adk-python/commit/8038bd7f43657d7bf5330cbc9cae0b8da95ee6f4))
 * classify stream-level non-retryable BigQuery write errors as non_retryable ([bd38535](https://github.com/google/adk-python/commit/bd38535817a9639408a5f863c0f044aaa65d74cb))
-* clear strict mypy errors in auth, workflow and runtime helpers ([1b118f4](https://github.com/google/adk-python/commit/1b118f43a492fdc684d2ae8a73f9a68a46d40948))
-* clear strict mypy errors in the a2a package ([ee87201](https://github.com/google/adk-python/commit/ee8720162db4fcbf9b144d2f5c8e2fdf8bf85ef0))
-* clear strict mypy errors in the agent runtime and config ([b094693](https://github.com/google/adk-python/commit/b094693407f07765fc6f69d101bb969d8189d86a))
-* clear strict mypy errors in the MCP SDK seam ([2717d54](https://github.com/google/adk-python/commit/2717d54bb66ac9d8597c9ac4b3c4dbb884654e45))
-* clear strict mypy errors in tools and integrations ([fbd5ca0](https://github.com/google/adk-python/commit/fbd5ca0f6ad8671adefedaff937610024c4a7989))
 * **cli:** monitor ASGI receive channel for client disconnect in /run_sse ([1fbe9e0](https://github.com/google/adk-python/commit/1fbe9e034506a0a9a03039a68e822fb1b787a165))
 * close inner async generators across node `_run_impl` and skip compaction on early close ([facd7dd](https://github.com/google/adk-python/commit/facd7ddafe0e23715e079e50971ad27b251e2e98))
 * compact AgentTool nested history at caller token threshold ([ae8323b](https://github.com/google/adk-python/commit/ae8323b6d3de2fa75181e80f510ca91b0a0da336)), closes [#7397](https://github.com/google/adk-python/issues/7397)
@@ -160,7 +157,6 @@ This release stabilizes core A2A integrations, evaluation tools, and runtime mod
 * normalize array-tail schema types ([3a5bbd2](https://github.com/google/adk-python/commit/3a5bbd2f593c3785eff9b9855054744df0b64db8))
 * only reject Firestore ids fully matching __.*__ ([e533f55](https://github.com/google/adk-python/commit/e533f55581f7f49f79daee2d250e1950678c25a0)), closes [#7855](https://github.com/google/adk-python/issues/7855)
 * pass the caller's temp: state to an AgentTool's wrapped agent ([12c7bed](https://github.com/google/adk-python/commit/12c7bed7661ccf942f0f6d3b62bed22a23ea0a85)), closes [#7595](https://github.com/google/adk-python/issues/7595)
-* pin certifi 2026.10.19 in the constraints files ([466648b](https://github.com/google/adk-python/commit/466648bb4e26c3f5cd1c1903c66a82c800703e68))
 * **plugins:** prevent BQAA offload data loss and preserve binary MIME ([14236ff](https://github.com/google/adk-python/commit/14236ffe522d10699d9090f9188cfa7af5a8a66c)), closes [#7868](https://github.com/google/adk-python/issues/7868)
 * point litellm install hints at google-adk[extensions] ([47e613d](https://github.com/google/adk-python/commit/47e613d84769d2e4f84bf5f4be7ecb81fe1996a7))
 * present the mTLS client certificate from RemoteA2aAgent's default client ([d2ae901](https://github.com/google/adk-python/commit/d2ae9016a6a63e073dea129e647553c04cf09864))
@@ -194,7 +190,6 @@ This release stabilizes core A2A integrations, evaluation tools, and runtime mod
 * **runner:** seal tool calls on task cancel and unify runner teardown ([abd8f0f](https://github.com/google/adk-python/commit/abd8f0f69bab8d5ee9b3e0e5a88d42b57e69b3d6))
 * **runner:** skip abort seal when a newer turn has updated the session ([7414308](https://github.com/google/adk-python/commit/74143085e9ec53f179f613f8f5fc01a14a8acf77))
 * scope cached Eventarc publisher clients per running event loop ([c77b5b4](https://github.com/google/adk-python/commit/c77b5b4134d8ba0f81a6564ef33c17046995b78e))
-* **scripts:** accept a shared guide page documenting a module's exports ([db60432](https://github.com/google/adk-python/commit/db60432275b8db9e41e0935d87d1b40b4c623675))
 * send a JSON-safe state_delta from VertexAiSessionService ([f6325bc](https://github.com/google/adk-python/commit/f6325bc2251302db26f3e5aa6dd8e4d439ea5d75)), closes [#7826](https://github.com/google/adk-python/issues/7826)
 * send the request's headers when loading MCP resources ([28d4975](https://github.com/google/adk-python/commit/28d49753845ad0ed0d024cdeb7f738b6ff1446e0)), closes [#7822](https://github.com/google/adk-python/issues/7822)
 * send the thinking level on the interactions API ([c20b90a](https://github.com/google/adk-python/commit/c20b90afb524571b4070a9d961dfe31b946df908)), closes [#7924](https://github.com/google/adk-python/issues/7924)
@@ -219,7 +214,6 @@ This release stabilizes core A2A integrations, evaluation tools, and runtime mod
 * store DatabaseSessionService JSON columns as json on PostgreSQL ([d487c53](https://github.com/google/adk-python/commit/d487c537774278a98d5970b67c03a10049af2786))
 * store non-ASCII session JSON unescaped on SQLite ([bdb1ced](https://github.com/google/adk-python/commit/bdb1cedf3a33d87c43f16da44a16dbde7f38008e))
 * strip the JSON code fence when replaying schema output on resume ([f4fa73e](https://github.com/google/adk-python/commit/f4fa73e80894c4c1d532c8dfa8c19962dd8927c2))
-* stub ADC in modules that imported google.auth.default by name ([92dfe41](https://github.com/google/adk-python/commit/92dfe41e8db5ce248d7141498662787990f8e508))
 * support deepcopy and pickling in AgentEngineSandboxCodeExecutor ([d60c870](https://github.com/google/adk-python/commit/d60c870ad512fb19d596caea31f647bdb36a50a8))
 * take final input and cache counts from Anthropic message_delta ([329933f](https://github.com/google/adk-python/commit/329933f755d5f987d7e25d8348548dc718b21a0a))
 * **telemetry:** give every gen_ai duration and token histogram bucket bounds ([ba45671](https://github.com/google/adk-python/commit/ba456715ce8a25c99218db992d4b96ab30f2d5c5))
@@ -255,7 +249,6 @@ This release stabilizes core A2A integrations, evaluation tools, and runtime mod
 * add unit guides for writing tools and toolsets ([09ab726](https://github.com/google/adk-python/commit/09ab726c66f95960620d011f70c4f41c992f9ea2))
 * **agents:** update ManagedAgent examples and tests to antigravity-preview-09-2026 ([3fbf2b5](https://github.com/google/adk-python/commit/3fbf2b5c226c5935c17fe5678715ca70876abc9a))
 * disable all content paths in the telemetry admin lock recipe ([34750dc](https://github.com/google/adk-python/commit/34750dcb85f4cdefefe002f8c3f156c471d29b52))
-* fix Google Cloud Run typo in adk_knowledge_agent README ([95d8610](https://github.com/google/adk-python/commit/95d8610ea3445ce9c6d0cf70aed1a0071ddc1e2f))
 * **guides:** add LlmClassifier unit guide ([6c20444](https://github.com/google/adk-python/commit/6c2044453982af250c54d8f668fc47bb82643e16))
 * **guides:** add TypesafeClassifier unit guide ([48d18a6](https://github.com/google/adk-python/commit/48d18a6aea65ed399bf036f29e383219ec167b3b))
 * **samples:** add an AgentEngineEnvironment sample agent ([d3a199d](https://github.com/google/adk-python/commit/d3a199d4c47d4c01bab91aee3cd36af1277fd510))
