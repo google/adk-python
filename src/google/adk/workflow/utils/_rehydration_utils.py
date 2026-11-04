@@ -37,6 +37,7 @@ from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...flows.llm_flows.tools._functions import _collect_function_call_ids
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils._schema_utils import _strip_json_code_fence
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
@@ -194,6 +195,8 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   if node.output_schema:
     if node.output_schema is str:
       return text
+    # The live path strips the fence in validate_schema; replay must match.
+    text = _strip_json_code_fence(text)
     try:
       validated: Any = TypeAdapter[Any](node.output_schema).validate_json(text)
       return node._to_serializable(validated)
