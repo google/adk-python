@@ -21,6 +21,9 @@ from unittest import mock
 
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
+from google.adk.agents.llm.task._finish_task_tool import without_nested_finish_task
+from google.adk.events.event import Event
+from google.genai import types
 from pydantic import BaseModel
 import pytest
 
@@ -361,3 +364,48 @@ class TestFinishTaskToolAllSchemaTypes:
     assert 'SampleOutputSchema' in schema['$defs']
     # The nested result schema should not contain $defs
     assert '$defs' not in schema['properties']['result']
+
+
+def test_without_nested_finish_task_keeps_sibling_parts():
+  text = types.Part(text='kept')
+  call = types.Part(
+      function_call=types.FunctionCall(
+          id='fc', name='finish_task', args={'result': 'x'}
+      )
+  )
+  done = types.Part(
+      function_response=types.FunctionResponse(
+          id='fc',
+          name='finish_task',
+          response={'result': 'Task completed.'},
+      )
+  )
+  retry = types.Part(
+      function_response=types.FunctionResponse(
+          id='fc',
+          name='finish_task',
+          response={'error': 'missing result'},
+      )
+  )
+
+  def ev(branch, parts):
+    return Event(
+        author='a',
+        invocation_id='i',
+        branch=branch,
+        content=types.Content(role='model', parts=parts),
+    )
+
+  root = without_nested_finish_task(ev(None, [done]))
+  parallel = without_nested_finish_task(ev('par.c', [done]))
+  plain = without_nested_finish_task(ev('inner@fc', [text]))
+  mixed_event = ev('inner@fc', [text, call])
+  mixed = without_nested_finish_task(mixed_event)
+  assert root is not None and root.content.parts == [done]
+  assert parallel is not None and parallel.content.parts == [done]
+  assert plain is not None and plain.content.parts == [text]
+  retry_event = without_nested_finish_task(ev('inner@fc', [retry]))
+  assert without_nested_finish_task(ev('inner@fc', [done])) is None
+  assert retry_event is not None and retry_event.content.parts == [retry]
+  assert mixed is not None and mixed.content.parts == [text]
+  assert mixed_event.get_function_calls()

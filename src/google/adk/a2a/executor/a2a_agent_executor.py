@@ -32,6 +32,7 @@ from google.adk.sessions.session import Session
 from typing_extensions import override
 
 from .. import _compat
+from ...agents.llm.task._finish_task_tool import without_nested_finish_task
 from ...events.event import Event
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
@@ -244,11 +245,15 @@ class A2aAgentExecutor(AgentExecutor):
 
     async def _on_event(adk_event: Event) -> None:
       nonlocal aborted, last_adk_event
-      last_adk_event = adk_event
-      if adk_event and _is_abort_adk_event(adk_event):
+      # Before last_adk_event: a nested finish_task is not this task.
+      forwarded = without_nested_finish_task(adk_event)
+      if forwarded is None:
+        return
+      last_adk_event = forwarded
+      if _is_abort_adk_event(forwarded):
         aborted = True
       for a2a_event in self._config.event_converter(
-          adk_event,
+          forwarded,
           invocation_context,
           task_id,
           context_id,
@@ -257,7 +262,7 @@ class A2aAgentExecutor(AgentExecutor):
         a2a_events = await execute_after_event_interceptors(
             a2a_event,
             executor_context,
-            adk_event,
+            forwarded,
             self._config.execute_interceptors,
         )
         for e in a2a_events:
