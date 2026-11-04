@@ -560,6 +560,7 @@ class NodeRunner:
     nothing in the session that shows it ran, so resume would run it (and its
     side effects) again. The marker lets the scan replay it instead.
     """
+    from ..agents.base_agent import BaseAgent
     from ..events.event import Event
     from ._workflow import Workflow
 
@@ -574,9 +575,14 @@ class NodeRunner:
         or ctx._output_delegated
         or ctx.route is not None
         or ctx.actions.transfer_to_agent is not None
-        # Finishing without output means a wait_for_output node is still
-        # waiting for more input, not that it is done.
-        or self._node.wait_for_output
+        # A waiting agent (task or chat mode) or rerun_on_resume node reruns on
+        # resume to take new input, so its run must not be recorded as ended.
+        or (
+            self._node.wait_for_output
+            and (
+                self._node.rerun_on_resume or isinstance(self._node, BaseAgent)
+            )
+        )
         # Tests wrap Context around invocation-context stubs that lack
         # is_aborted or return a truthy Mock; neither means aborted.
         or getattr(ctx._invocation_context, "is_aborted", False) is True
