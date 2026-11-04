@@ -21,6 +21,7 @@ root. A plugin that reads ``trace.get_current_span()`` to stamp what it records
 relies on both.
 """
 
+import asyncio
 import collections
 from typing import Any
 from typing import AsyncGenerator
@@ -31,6 +32,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
@@ -208,6 +210,60 @@ def test_before_and_error_callbacks_share_same_span():
   assert plugin.before_capture.span_id == plugin.error_capture.span_id, (
       'before_model_callback and on_model_error_callback saw different'
       f' spans: before={plugin.before_capture.span_id:#x},'
+      f' error={plugin.error_capture.span_id:#x}'
+  )
+
+
+class _BlockingLlm(BaseLlm):
+  """Test model that signals once entered and blocks until cancelled."""
+
+  started: asyncio.Event
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    del llm_request, stream
+    self.started.set()
+    await asyncio.Event().wait()
+    for response in ():
+      yield response
+
+
+@pytest.mark.asyncio
+async def test_before_and_cancelled_error_callbacks_share_same_span():
+  """Cancelled model calls run on_model_error_callback under call_llm span."""
+  plugin = SpanCapturingPlugin()
+  model_started = asyncio.Event()
+  model = _BlockingLlm(model='blocking-test-model', started=model_started)
+  agent = Agent(name='root_agent', model=model)
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+
+  async def _consume() -> None:
+    async with Aclosing(
+        runner.runner.run_async(
+            user_id=runner.session.user_id,
+            session_id=runner.session.id,
+            new_message=testing_utils.get_user_content('test'),
+        )
+    ) as agen:
+      async for _ in agen:
+        pass
+
+  run = asyncio.create_task(_consume())
+  await model_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+
+  assert (
+      plugin.before_capture.span_id != _SPAN_ID_INVALID
+  ), 'before_model_callback did not observe a valid span'
+  assert (
+      plugin.error_capture.span_id != _SPAN_ID_INVALID
+  ), 'on_model_error_callback did not observe a valid span on cancellation'
+  assert plugin.before_capture.span_id == plugin.error_capture.span_id, (
+      'before_model_callback and on_model_error_callback saw different'
+      f' spans on cancellation: before={plugin.before_capture.span_id:#x},'
       f' error={plugin.error_capture.span_id:#x}'
   )
 
