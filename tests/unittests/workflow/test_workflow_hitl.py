@@ -3194,3 +3194,99 @@ async def test_dynamic_child_returning_none_is_not_rerun_on_resume(
 
   assert emails_sent == ['email']
   assert {'ok': True} in [e.output for e in events2 if e.output is not None]
+
+
+class _QuietWaitingNode(BaseNode):
+  """A wait_for_output node that never emits, so it always ends WAITING."""
+
+  wait_for_output: bool = True
+  calls: list[Any] = Field(default_factory=list)
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.calls.append(node_input)
+    return
+    yield  # pylint: disable=unreachable
+
+
+@pytest.mark.parametrize(
+    ('rerun_on_resume', 'expect_marker'), [(False, True), (True, False)]
+)
+@pytest.mark.asyncio
+async def test_waiting_node_run_is_recorded_unless_it_reruns(
+    rerun_on_resume: bool, expect_marker: bool
+):
+  """A waiting run gets the marker, except on a node that reruns on resume."""
+
+  def ask():
+    return RequestInput(message='Approve?')
+
+  waiting = _QuietWaitingNode(name='waiting', rerun_on_resume=rerun_on_resume)
+  wf = Workflow(name='wf', edges=[(START, waiting), (START, ask)])
+  runner = testing_utils.InMemoryRunner(app=_app('waiting_marker', wf, False))
+
+  await runner.run_async('start')
+
+  markers = [
+      e
+      for e in runner.session.events
+      if e.node_info.name == 'waiting' and e.node_info.completed
+  ]
+  assert bool(markers) == expect_marker
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_waiting_dynamic_child_keeps_parent_waiting_on_resume(
+    resumable: bool,
+):
+  """A ctx.run_node child that ended WAITING is not handed back as a result.
+
+  With raise_on_wait=True the parent stays WAITING in the first turn, and it
+  must still be WAITING after another branch's request is answered, rather
+  than continuing as if the child had finished with None.
+  """
+  child = _QuietWaitingNode(name='child')
+  after_child = []
+
+  @node(rerun_on_resume=True)
+  async def parent(*, ctx: Context, node_input: Any):
+    await ctx.run_node(child, raise_on_wait=True)
+    after_child.append('ran')
+    yield 'parent done'
+
+  def ask():
+    return RequestInput(message='Approve?')
+
+  wf = Workflow(name='wf', edges=[(START, parent), (START, ask)])
+  runner = testing_utils.InMemoryRunner(
+      app=_app('waiting_dynamic_child', wf, resumable)
+  )
+
+  events2 = await _run_and_answer_first_request(runner)
+
+  assert after_child == []
+  assert 'parent done' not in [e.output for e in events2]
+  # The child's waiting run is replayed, not run again.
+  assert child.calls == [None]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_quiet_waiting_node_is_not_rerun_on_resume(resumable: bool):
+  """A waiting run that emitted no event is replayed, not run again."""
+  waiting = _QuietWaitingNode(name='waiting')
+
+  def ask():
+    return RequestInput(message='Approve?')
+
+  wf = Workflow(name='wf', edges=[(START, waiting), (START, ask)])
+  runner = testing_utils.InMemoryRunner(
+      app=_app('quiet_waiting_not_rerun', wf, resumable)
+  )
+
+  await _run_and_answer_first_request(runner)
+
+  assert len(waiting.calls) == 1
