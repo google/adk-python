@@ -365,3 +365,47 @@ class TestExecuteBashTool:
         mock_setrlimit.assert_any_call(
             resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024)
         )
+
+  @pytest.mark.asyncio
+  async def test_zero_resource_limits_are_enforced(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(
+        max_memory_bytes=0,
+        max_file_size_bytes=0,
+        max_child_processes=0,
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    mock_process = mock.AsyncMock()
+    mock_process.pid = None  # Ensure finally block doesn't try to kill it
+    mock_process.communicate.return_value = (b"", b"")
+    mock_exec = mock.AsyncMock(return_value=mock_process)
+
+    with mock.patch("asyncio.create_subprocess_exec", mock_exec):
+      await tool.run_async(
+          args={"command": "ls"},
+          tool_context=tool_context_confirmed,
+      )
+      preexec_fn = mock_exec.call_args.kwargs["preexec_fn"]
+
+      mock_setrlimit = mock.create_autospec(resource.setrlimit, instance=True)
+      with mock.patch("resource.setrlimit", mock_setrlimit):
+        preexec_fn()
+        mock_setrlimit.assert_any_call(resource.RLIMIT_AS, (0, 0))
+        mock_setrlimit.assert_any_call(resource.RLIMIT_FSIZE, (0, 0))
+        mock_setrlimit.assert_any_call(resource.RLIMIT_NPROC, (0, 0))
+
+  @pytest.mark.asyncio
+  async def test_zero_file_size_limit_blocks_file_writes(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_file_size_bytes=0)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+
+    result = await tool.run_async(
+        args={"command": "dd if=/dev/zero of=out.bin bs=1024 count=4"},
+        tool_context=tool_context_confirmed,
+    )
+
+    assert result["returncode"] != 0
+    assert (workspace / "out.bin").stat().st_size == 0
