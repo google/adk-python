@@ -37,7 +37,6 @@ from ...events.event import Event
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
-from ..experimental import a2a_experimental
 from .a2a_agent_executor_impl import _A2aAgentExecutor as ExecutorImpl
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
@@ -56,7 +55,6 @@ from .utils import execute_before_agent_interceptors
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
 

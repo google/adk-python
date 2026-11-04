@@ -39,7 +39,6 @@ from ..converters.long_running_functions import handle_user_input
 from ..converters.long_running_functions import LongRunningFunctions
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
-from ..experimental import a2a_experimental
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .utils import _ActiveTaskRegistry
@@ -55,7 +54,6 @@ from .utils import execute_before_agent_interceptors
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@a2a_experimental
 class _A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
 

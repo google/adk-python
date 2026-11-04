@@ -23,7 +23,6 @@ from a2a.types import TaskStatusUpdateEvent
 from .. import _compat
 from ...events._abort_events import _INVOCATION_ABORTED
 from ..converters.utils import _get_adk_metadata_key
-from ..experimental import a2a_experimental
 
 _ERROR_CODE_KEY = _get_adk_metadata_key("error_code")
 
@@ -40,7 +39,6 @@ def _is_canceled_status_event(event: TaskStatusUpdateEvent) -> bool:
   )
 
 
-@a2a_experimental
 class TaskResultAggregator:
   """Aggregates the task status updates and provides the final task state."""
 
