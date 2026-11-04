@@ -71,8 +71,9 @@ WITH
       AND invocation_id IS NOT NULL
   ),
   -- Each event with the fields that later steps read parsed out of its JSON
-  -- payload: its author, the tool name and args, the user text, the model
-  -- response before it is unwrapped, and the token and latency numbers.
+  -- payload: its author, the tool name and args, whether the tool is a
+  -- framework tool, the user text, the model response before it is unwrapped,
+  -- and the token and latency numbers.
   TypedEvents AS (
     SELECT
       *,
@@ -80,6 +81,16 @@ WITH
         agent, JSON_VALUE(attributes, '$.root_agent_name'), 'root_agent'
       ) AS author,
       JSON_VALUE(content, '$.tool') AS tool_name,
+      -- The framework tools are the transfer and the tools that pause the turn
+      -- for a credential, a confirmation or input from the user.  The trace
+      -- shows their AGENT_TRANSFER and HITL rows instead of their tool rows.
+      -- A row that names no tool is not a framework tool.
+      COALESCE(JSON_VALUE(content, '$.tool'), '') IN (
+        'transfer_to_agent',
+        'adk_request_credential',
+        'adk_request_confirmation',
+        'adk_request_input'
+      ) AS is_framework_tool,
       TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json,
       CASE
         WHEN event_type != 'USER_MESSAGE_RECEIVED' THEN NULL
@@ -167,15 +178,34 @@ WITH
     FROM
       RawEvents
   ),
-  -- Marks the real tool calls and unwraps the text of each model response.
-  -- A transfer is not a tool call.
+  -- Marks the real tool calls, the calls of tools other than the framework
+  -- tools, and unwraps the text of each model response.  It also counts the
+  -- HITL requests so far in each turn.
   ResponseEvents AS (
     SELECT
       *,
+      -- A TOOL_STARTING row that names no tool, as when a custom
+      -- content_formatter fails, is not a tool call, since the trace could not
+      -- pair it with its response.
       (
         event_type = 'TOOL_STARTING'
-        AND COALESCE(tool_name, '') != 'transfer_to_agent'
+        AND NULLIF(tool_name, '') IS NOT NULL
+        AND NOT is_framework_tool
       ) AS is_tool_call,
+      -- The number of HITL requests so far in the turn.  A turn that resumes
+      -- after one keeps its invocation_id, so the count tells the calls before
+      -- a pause from the calls after it.
+      COUNTIF(
+        event_type IN (
+          'HITL_CREDENTIAL_REQUEST',
+          'HITL_CONFIRMATION_REQUEST',
+          'HITL_INPUT_REQUEST'
+        )
+      ) OVER (
+        PARTITION BY session_id, invocation_id
+        ORDER BY timestamp, event_id
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS hitl_request_count,
       -- The text parts that _format_content renders become plain text, and a
       -- response with any other part has no text.
       CASE
@@ -210,7 +240,9 @@ WITH
   ),
   -- Adds two marks to each event: whether its turn has a final model
   -- response, which picks the rows that count tokens, and the island number
-  -- that a run of consecutive identical tool calls shares.
+  -- that a run of consecutive identical tool calls shares.  The second
+  -- ROW_NUMBER restarts after each HITL request, so the request ends a run,
+  -- as a different call does.
   AnnotatedEvents AS (
     SELECT
       *,
@@ -222,7 +254,12 @@ WITH
         ORDER BY timestamp, event_id
       ) - ROW_NUMBER() OVER (
         PARTITION BY
-          session_id, invocation_id, is_tool_call, tool_name, tool_args_json
+          session_id,
+          invocation_id,
+          is_tool_call,
+          tool_name,
+          tool_args_json,
+          hitl_request_count
         ORDER BY timestamp, event_id
       ) AS tool_call_island
     FROM
@@ -248,7 +285,8 @@ WITH
       response_text,
       is_function_response,
       is_tool_call,
-      IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name,
+      is_framework_tool,
+      IF(is_tool_call, tool_name, NULL) AS invoked_tool_name,
       IF(
         is_tool_call,
         COUNT(*) OVER (
@@ -286,6 +324,7 @@ WITH
         WHEN
           event_type IN (
             'TOOL_COMPLETED',
+            'TOOL_ERROR',
             'HITL_CREDENTIAL_REQUEST_COMPLETED',
             'HITL_CONFIRMATION_REQUEST_COMPLETED',
             'HITL_INPUT_REQUEST_COMPLETED'
@@ -306,14 +345,7 @@ WITH
             'parts', JSON_ARRAY(JSON_OBJECT('text', message_text))
           )
         WHEN
-          (
-            is_tool_call
-            AND COALESCE(tool_name, '') NOT IN (
-              'adk_request_credential',
-              'adk_request_confirmation',
-              'adk_request_input'
-            )
-          )
+          is_tool_call
           OR event_type IN (
             'HITL_CREDENTIAL_REQUEST',
             'HITL_CONFIRMATION_REQUEST',
@@ -352,12 +384,8 @@ WITH
         WHEN
           (
             event_type = 'TOOL_COMPLETED'
-            AND COALESCE(tool_name, '') NOT IN (
-              'transfer_to_agent',
-              'adk_request_credential',
-              'adk_request_confirmation',
-              'adk_request_input'
-            )
+            AND NULLIF(tool_name, '') IS NOT NULL
+            AND NOT is_framework_tool
           )
           OR event_type IN (
             'HITL_CREDENTIAL_REQUEST_COMPLETED',
@@ -374,6 +402,24 @@ WITH
                     JSON_TYPE(JSON_QUERY(content, '$.result')) = 'object',
                     JSON_QUERY(content, '$.result'),
                     JSON_OBJECT('result', JSON_QUERY(content, '$.result'))
+                  )
+                )
+              )
+            )
+          )
+        WHEN
+          event_type = 'TOOL_ERROR'
+          AND NULLIF(tool_name, '') IS NOT NULL
+          AND NOT is_framework_tool
+          THEN JSON_OBJECT(
+            'role', 'user',
+            'parts', JSON_ARRAY(
+              JSON_OBJECT(
+                'function_response', JSON_OBJECT(
+                  'name', tool_name,
+                  'response', JSON_OBJECT(
+                    'error',
+                    COALESCE(NULLIF(error_message, ''), 'Tool execution failed')
                   )
                 )
               )
@@ -408,7 +454,8 @@ WITH
       MIN(timestamp) AS turn_start_timestamp,
       MAX(timestamp) AS turn_end_timestamp,
       COUNTIF(is_tool_call) AS tool_call_count,
-      COUNTIF(event_type = 'TOOL_ERROR') AS tool_error_count,
+      COUNTIF(event_type = 'TOOL_ERROR' AND NOT is_framework_tool)
+        AS tool_error_count,
       COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count,
       COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count,
       COALESCE(

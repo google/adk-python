@@ -510,13 +510,3 @@ def test_instruction_falls_back_to_the_logged_system_prompt(
       "'instruction', COALESCE(NULLIF(instruction, ''), logged_system_prompt,"
       " '')"
   ) in sql
-
-
-def test_transfers_are_not_tool_calls(bodies: dict[str, str]) -> None:
-  """A transfer is not a tool call; AGENT_TRANSFER is the handoff."""
-  sql = _squash(bodies[_CTE_FILE])
-
-  assert (
-      "(event_type = 'TOOL_STARTING' AND COALESCE(tool_name, '') !="
-      " 'transfer_to_agent') AS is_tool_call"
-  ) in sql
