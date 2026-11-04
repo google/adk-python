@@ -31,10 +31,8 @@ from typing import cast
 from typing import get_args
 from typing import Iterable
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeAlias
-from typing import Union
 import warnings
 
 from anthropic import AsyncAnthropic
@@ -76,22 +74,22 @@ _ImageMediaType: TypeAlias = Literal[
 ]
 _ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset[str](get_args(_ImageMediaType))
 
-_MessageBlockParam: TypeAlias = Union[
-    anthropic_types.TextBlockParam,
-    anthropic_types.ThinkingBlockParam,
-    anthropic_types.RedactedThinkingBlockParam,
-    anthropic_types.ImageBlockParam,
-    anthropic_types.DocumentBlockParam,
-    anthropic_types.ToolUseBlockParam,
-    anthropic_types.ToolResultBlockParam,
-]
+_MessageBlockParam: TypeAlias = (
+    anthropic_types.TextBlockParam
+    | anthropic_types.ThinkingBlockParam
+    | anthropic_types.RedactedThinkingBlockParam
+    | anthropic_types.ImageBlockParam
+    | anthropic_types.DocumentBlockParam
+    | anthropic_types.ToolUseBlockParam
+    | anthropic_types.ToolResultBlockParam
+)
 
 # The subset of block types Claude accepts inside a tool result.
-_ToolResultContentBlockParam: TypeAlias = Union[
-    anthropic_types.TextBlockParam,
-    anthropic_types.ImageBlockParam,
-    anthropic_types.DocumentBlockParam,
-]
+_ToolResultContentBlockParam: TypeAlias = (
+    anthropic_types.TextBlockParam
+    | anthropic_types.ImageBlockParam
+    | anthropic_types.DocumentBlockParam
+)
 
 # Attributes an Anthropic client exposes once it has resolved a credential,
 # whichever source it came from: a static API key, a static bearer token, or a
@@ -154,13 +152,13 @@ class _ThinkingAccumulator:
 
 
 def _build_anthropic_thinking_param(
-    config: Optional[types.GenerateContentConfig],
-) -> Union[
-    anthropic_types.ThinkingConfigEnabledParam,
-    anthropic_types.ThinkingConfigDisabledParam,
-    anthropic_types.ThinkingConfigAdaptiveParam,
-    NotGiven,
-]:
+    config: types.GenerateContentConfig | None,
+) -> (
+    anthropic_types.ThinkingConfigEnabledParam
+    | anthropic_types.ThinkingConfigDisabledParam
+    | anthropic_types.ThinkingConfigAdaptiveParam
+    | NotGiven
+):
   """Maps genai ThinkingConfig to Anthropic's thinking parameter.
 
   Per ``google.genai.types.ThinkingConfig``, ``thinking_budget`` semantics are:
@@ -225,12 +223,12 @@ def _build_anthropic_thinking_param(
 
 
 def _thinking_is_enabled(
-    thinking: Union[
-        anthropic_types.ThinkingConfigEnabledParam,
-        anthropic_types.ThinkingConfigDisabledParam,
-        anthropic_types.ThinkingConfigAdaptiveParam,
-        NotGiven,
-    ],
+    thinking: (
+        anthropic_types.ThinkingConfigEnabledParam
+        | anthropic_types.ThinkingConfigDisabledParam
+        | anthropic_types.ThinkingConfigAdaptiveParam
+        | NotGiven
+    ),
 ) -> bool:
   """Whether the mapped thinking parameter asks Claude to reason."""
   if not isinstance(thinking, dict):
@@ -239,7 +237,7 @@ def _thinking_is_enabled(
 
 
 def _build_tool_choice(
-    config: Optional[types.GenerateContentConfig],
+    config: types.GenerateContentConfig | None,
     *,
     forced_tool_use_blocked: bool,
 ) -> anthropic_types.ToolChoiceParam:
@@ -290,7 +288,7 @@ class AnthropicGenerateContentConfig(types.GenerateContentConfig):
       `thinking_budget` on newer Claude models.
   """
 
-  effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = Field(
+  effort: Literal["low", "medium", "high", "xhigh", "max"] | None = Field(
       default=None,
       description=(
           "Configures the Claude-specific reasoning effort level for adaptive"
@@ -300,7 +298,7 @@ class AnthropicGenerateContentConfig(types.GenerateContentConfig):
   )
 
   @model_validator(mode="after")
-  def validate_no_thinking_level(self) -> "AnthropicGenerateContentConfig":
+  def validate_no_thinking_level(self) -> AnthropicGenerateContentConfig:
     """Ensures thinking_level is not configured on Anthropic-specific config."""
 
     if self.thinking_config and self.thinking_config.thinking_level is not None:
@@ -312,8 +310,8 @@ class AnthropicGenerateContentConfig(types.GenerateContentConfig):
 
 
 def _build_effort_param(
-    config: Optional[types.GenerateContentConfig],
-) -> Optional[str]:
+    config: types.GenerateContentConfig | None,
+) -> str | None:
   """Extracts Anthropic's effort parameter from the configuration.
 
   To configure a specific reasoning effort level for Anthropic models,
@@ -362,7 +360,7 @@ class ClaudeRequest(BaseModel):
   tools: list[anthropic_types.ToolParam]
 
 
-def to_claude_role(role: Optional[str]) -> Literal["user", "assistant"]:
+def to_claude_role(role: str | None) -> Literal["user", "assistant"]:
   if role in ["model", "assistant"]:
     return "assistant"
   return "user"
@@ -390,7 +388,7 @@ _TRUNCATING_STOP_REASONS = frozenset(
 
 
 def to_google_genai_finish_reason(
-    anthropic_stop_reason: Optional[anthropic_types.StopReason],
+    anthropic_stop_reason: anthropic_types.StopReason | None,
 ) -> types.FinishReason | None:
   """Maps Anthropic stop_reason to Google GenAI FinishReason."""
   if anthropic_stop_reason is None:
@@ -680,7 +678,7 @@ def _part_to_message_block(
     # It travels in a dedicated field, so it has to be mapped over explicitly
     # or the model never sees it.
     media_blocks = _function_response_media_blocks(function_response)
-    tool_result_content: Union[str, list[_ToolResultContentBlockParam]]
+    tool_result_content: str | list[_ToolResultContentBlockParam]
     if media_blocks:
       leading_text: list[_ToolResultContentBlockParam] = (
           [anthropic_types.TextBlockParam(type="text", text=content)]
@@ -1211,7 +1209,7 @@ class AnthropicLlm(BaseLlm):
   model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
 
-  client: Optional[Union[AsyncAnthropic, AsyncAnthropicVertex]] = Field(
+  client: AsyncAnthropic | AsyncAnthropicVertex | None = Field(
       default=None, exclude=True
   )
   """An optional pre-configured Anthropic client."""
@@ -1226,7 +1224,7 @@ class AnthropicLlm(BaseLlm):
   def supported_models(cls) -> list[str]:
     return [r"claude-.*"]
 
-  def _resolve_model_name(self, model: Optional[str]) -> str:
+  def _resolve_model_name(self, model: str | None) -> str:
     if not model:
       return self.model
     if model.startswith("projects/"):
@@ -1242,14 +1240,14 @@ class AnthropicLlm(BaseLlm):
       self,
       llm_request: LlmRequest,
       messages: list[anthropic_types.MessageParam],
-      tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
-      tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
-      thinking: Union[
-          anthropic_types.ThinkingConfigEnabledParam,
-          anthropic_types.ThinkingConfigDisabledParam,
-          anthropic_types.ThinkingConfigAdaptiveParam,
-          NotGiven,
-      ],
+      tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven,
+      tool_choice: anthropic_types.ToolChoiceParam | NotGiven,
+      thinking: (
+          anthropic_types.ThinkingConfigEnabledParam
+          | anthropic_types.ThinkingConfigDisabledParam
+          | anthropic_types.ThinkingConfigAdaptiveParam
+          | NotGiven
+      ),
   ) -> dict[str, Any]:
     system: str | NotGiven = NOT_GIVEN
     if llm_request.config:
@@ -1349,7 +1347,7 @@ class AnthropicLlm(BaseLlm):
           for tool in function_declarations
       ]
     thinking = _build_anthropic_thinking_param(llm_request.config)
-    tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven] = (
+    tool_choice: anthropic_types.ToolChoiceParam | NotGiven = (
         _build_tool_choice(
             llm_request.config,
             forced_tool_use_blocked=(
@@ -1361,7 +1359,7 @@ class AnthropicLlm(BaseLlm):
     )
     # A requested schema rides along as a tool, since forcing a call on a
     # request that already declares tools would cut that turn short.
-    output_schema_tool: Optional[_OutputSchemaTool] = None
+    output_schema_tool: _OutputSchemaTool | None = None
     if (
         llm_request.config
         and llm_request.config.response_schema
@@ -1403,16 +1401,16 @@ class AnthropicLlm(BaseLlm):
       self,
       llm_request: LlmRequest,
       messages: list[anthropic_types.MessageParam],
-      tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
-      tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
-      thinking: Union[
-          anthropic_types.ThinkingConfigEnabledParam,
-          anthropic_types.ThinkingConfigDisabledParam,
-          anthropic_types.ThinkingConfigAdaptiveParam,
-          NotGiven,
-      ] = NOT_GIVEN,
+      tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven,
+      tool_choice: anthropic_types.ToolChoiceParam | NotGiven,
+      thinking: (
+          anthropic_types.ThinkingConfigEnabledParam
+          | anthropic_types.ThinkingConfigDisabledParam
+          | anthropic_types.ThinkingConfigAdaptiveParam
+          | NotGiven
+      ) = NOT_GIVEN,
       *,
-      output_schema_tool: Optional[_OutputSchemaTool] = None,
+      output_schema_tool: _OutputSchemaTool | None = None,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -1449,8 +1447,8 @@ class AnthropicLlm(BaseLlm):
     thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
-    stop_reason: Optional[anthropic_types.StopReason] = None
-    model_version: Optional[str] = None
+    stop_reason: anthropic_types.StopReason | None = None
+    model_version: str | None = None
 
     async for event in raw_stream:
       if event.type == "message_start":

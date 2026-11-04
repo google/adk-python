@@ -21,9 +21,7 @@ import json
 import logging
 import re
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.genai import types
 from google.genai.errors import ClientError
@@ -158,11 +156,11 @@ class VertexAiSessionService(BaseSessionService):
 
   def __init__(
       self,
-      project: Optional[str] = None,
-      location: Optional[str] = None,
-      agent_engine_id: Optional[str] = None,
+      project: str | None = None,
+      location: str | None = None,
+      agent_engine_id: str | None = None,
       *,
-      express_mode_api_key: Optional[str] = None,
+      express_mode_api_key: str | None = None,
   ):
     """Initializes the VertexAiSessionService.
 
@@ -196,8 +194,8 @@ class VertexAiSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
       **kwargs: Any,
   ) -> Session:
     """Creates a new session.
@@ -282,8 +280,8 @@ class VertexAiSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     session_id = _extract_short_session_id(
         session_id, expected_engine_id=reasoning_engine_id
@@ -362,7 +360,7 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
@@ -604,7 +602,7 @@ class VertexAiSessionService(BaseSessionService):
 
   def _api_client_http_options_override(
       self,
-  ) -> Optional[Union[types.HttpOptions, types.HttpOptionsDict]]:
+  ) -> types.HttpOptions | types.HttpOptionsDict | None:
     return None
 
   def _get_api_client(self) -> agentplatform.AsyncClient:

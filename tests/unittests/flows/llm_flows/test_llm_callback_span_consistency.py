@@ -24,7 +24,6 @@ relies on both.
 import collections
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
@@ -66,7 +65,7 @@ class _SpanCapture:
   def __init__(self):
     self.span_id: int = _SPAN_ID_INVALID
     self.trace_id: int = 0
-    self.span: Optional[trace.Span] = None
+    self.span: trace.Span | None = None
 
   def capture(self):
     span = trace.get_current_span()
@@ -87,14 +86,14 @@ class SpanCapturingPlugin(BasePlugin):
     self.error_capture = _SpanCapture()
 
     self._short_circuit_before = False
-    self._short_circuit_response: Optional[LlmResponse] = None
+    self._short_circuit_response: LlmResponse | None = None
 
   async def before_model_callback(
       self,
       *,
       callback_context: CallbackContext,
       llm_request: LlmRequest,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     self.before_capture.capture()
     if self._short_circuit_before:
       return self._short_circuit_response
@@ -105,7 +104,7 @@ class SpanCapturingPlugin(BasePlugin):
       *,
       callback_context: CallbackContext,
       llm_response: LlmResponse,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     self.after_capture.capture()
     return None
 
@@ -115,7 +114,7 @@ class SpanCapturingPlugin(BasePlugin):
       callback_context: CallbackContext,
       llm_request: LlmRequest,
       error: Exception,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     self.error_capture.capture()
     # Return a response so the error doesn't propagate.
     return LlmResponse(

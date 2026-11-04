@@ -23,9 +23,7 @@ import sys
 from types import UnionType
 import typing
 from typing import Any
-from typing import List
 from typing import NoReturn
-from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
@@ -256,7 +254,7 @@ class _AgentConfigMapper:
     """Resolve edges to support agent references and graph chains."""
     from ..workflow._graph import Edge
 
-    processed_edges: List[Any] = []
+    processed_edges: list[Any] = []
     for edge_item in value:
       if isinstance(edge_item, list):
         # A chain of elements in YAML: [START, node1, node2, ...] -> tuple(...)
@@ -450,7 +448,7 @@ class _AgentConfigMapper:
   def map(
       self,
       data: dict[str, Any],
-      agent_class: Optional[type[Any]] = None,
+      agent_class: type[Any] | None = None,
   ) -> dict[str, Any]:
     """Map configuration dictionary to constructor keyword arguments."""
     # Reset first: `deferred_fields` is per-call state kept on the mapper, and
@@ -1221,7 +1219,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     raise ValueError(f"Invalid fully qualified name: {code_config.name}") from e
 
 
-def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
+def resolve_callbacks(callbacks_config: list[CodeConfig]) -> Any:
   """Resolve callbacks from configuration.
 
   Args:

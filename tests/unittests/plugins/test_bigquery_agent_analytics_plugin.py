@@ -14320,6 +14320,19 @@ class TestEvalViews:
     assert user_message(
         {"text_summary": ""}, part(0, "[BINARY DATA]", "image/png")
     ) == (None, False)
+    # Rows logged before placeholders kept the blob's MIME type have
+    # text/plain placeholders, which are not user text either.
+    assert user_message(
+        {"text_summary": ""}, part(0, "[BINARY DATA]", "text/plain")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": ""}, part(0, "[UPLOAD FAILED]", "text/plain")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": "Hello | [BINARY DATA]"},
+        part(0, "Hello"),
+        part(1, "[BINARY DATA]", "text/plain"),
+    ) == ("Hello", False)
     assert user_message(
         {"text_summary": ""},
         part(0, "Long text... [OFFLOADED]", storage_mode="GCS_REFERENCE"),
@@ -17810,6 +17823,173 @@ class TestOffloadUnitSeparation:
     assert is_truncated
     assert parts[0]["storage_mode"] == "INLINE"
     assert "TRUNCATED" in parts[0]["text"]
+
+  @pytest.mark.asyncio
+  async def test_parser_parse_offload_false_skips_offloader_for_text_and_binary(
+      self,
+  ):
+    """parse(offload=False) keeps text and binary parts inline.
+
+    Each parse() entry point that parses content objects passes it on: the
+    LlmRequest contents, a non-str LlmRequest system_instruction, and a
+    types.Content or types.Part.
+    """
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/unexpected"
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=100,
+    )
+    # Each text part is longer than both offload thresholds, inline_text_limit
+    # (bytes) and max_length (characters), yet offload=False keeps it inline,
+    # truncated at max_length.
+    text_len = parser.inline_text_limit + 1
+    request = llm_request_lib.LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(text="P" * text_len),
+                    types.Part.from_bytes(
+                        data=b"\x89PNG", mime_type="image/png"
+                    ),
+                ],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            system_instruction=types.Content(
+                parts=[types.Part(text="S" * text_len)]
+            )
+        ),
+    )
+    content = types.Content(
+        parts=[
+            types.Part(text="C" * text_len),
+            types.Part.from_bytes(data=b"RIFF", mime_type="audio/wav"),
+        ]
+    )
+
+    request_payload, request_parts, request_truncated = await parser.parse(
+        request, offload=False
+    )
+    content_payload, content_parts, content_truncated = await parser.parse(
+        content, offload=False
+    )
+    part_payload, part_parts, part_truncated = await parser.parse(
+        types.Part(text="T" * text_len), offload=False
+    )
+
+    mock_offloader.upload_content.assert_not_called()
+    assert request_payload == {
+        "prompt": [{"role": "user", "content": "P" * 100 + "...[TRUNCATED]"}],
+        "system_prompt": "S" * 100 + "...[TRUNCATED]",
+    }
+    assert content_payload == {"text_summary": "C" * 100 + "...[TRUNCATED]"}
+    assert part_payload == {"text_summary": "T" * 100 + "...[TRUNCATED]"}
+    assert request_truncated and content_truncated and part_truncated
+    assert [
+        (part["mime_type"], part["text"], part["storage_mode"])
+        for part in request_parts + content_parts + part_parts
+    ] == [
+        ("text/plain", "P" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("image/png", "[BINARY DATA]", "INLINE"),
+        ("text/plain", "S" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("text/plain", "C" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("audio/wav", "[BINARY DATA]", "INLINE"),
+        ("text/plain", "T" * 100 + "...[TRUNCATED]", "INLINE"),
+    ]
+
+  @pytest.mark.parametrize(
+      ("mime_type", "expected_mime_type"),
+      [
+          ("image/png", "image/png"),
+          ("application/pdf", "application/pdf"),
+          (None, "application/octet-stream"),
+          ("", "application/octet-stream"),
+      ],
+      ids=["png", "pdf", "none", "empty"],
+  )
+  @pytest.mark.parametrize(
+      (
+          "upload_outcome",
+          "offload",
+          "expected_text",
+          "expected_storage_mode",
+          "expected_uri",
+      ),
+      [
+          pytest.param(
+              None, True, "[BINARY DATA]", "INLINE", None, id="no_offloader"
+          ),
+          pytest.param(
+              "gs://bucket/blob",
+              False,
+              "[BINARY DATA]",
+              "INLINE",
+              None,
+              id="offload_false",
+          ),
+          pytest.param(
+              RuntimeError("boom"),
+              True,
+              "[UPLOAD FAILED]",
+              "INLINE",
+              None,
+              id="upload_failed",
+          ),
+          pytest.param(
+              "gs://bucket/blob",
+              True,
+              "[MEDIA OFFLOADED]",
+              "GCS_REFERENCE",
+              "gs://bucket/blob",
+              id="uploaded",
+          ),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_inline_data_preserves_mime_type_without_offloader_and_on_upload_failure(
+      self,
+      mime_type,
+      expected_mime_type,
+      upload_outcome,
+      offload,
+      expected_text,
+      expected_storage_mode,
+      expected_uri,
+  ):
+    """An inline_data part keeps its mime_type whether or not it is uploaded.
+
+    The part is labeled with the blob's mime_type, or
+    application/octet-stream when the blob has none, never text/plain:
+    without an offloader, with offload=False, after a failed upload and after
+    a successful one. upload_outcome is what the offloader's upload returns
+    or raises; None means there is no offloader.
+    """
+    offloader = None
+    if upload_outcome is not None:
+      offloader = mock.AsyncMock()
+      offloader.upload_content.side_effect = [upload_outcome]
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader, trace_id="t", span_id="s"
+    )
+    content = types.Content(
+        parts=[
+            types.Part(
+                inline_data=types.Blob(data=b"\x00\x01", mime_type=mime_type)
+            )
+        ]
+    )
+
+    _, parts, _ = await parser.parse(content, offload=offload)
+
+    (part,) = parts
+    assert part["mime_type"] == expected_mime_type
+    assert part["text"] == expected_text
+    assert part["storage_mode"] == expected_storage_mode
+    assert part["uri"] == expected_uri
 
   @pytest.mark.asyncio
   async def test_raw_prompt_text_is_sanitized_inline(self):
@@ -22424,6 +22604,7 @@ async def test_content_parts_denied_disables_gcs_offload(
     mock_to_arrow_schema,
     dummy_arrow_schema,
     mock_storage_client,
+    caplog,
 ):
   # denying content_parts (which holds the offload object reference)
   # must disable GCS offload, otherwise the payload is uploaded with no
@@ -22435,9 +22616,16 @@ async def test_content_parts_denied_disables_gcs_offload(
   async with managed_plugin(
       PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
   ) as plugin:
-    await plugin._ensure_started(
-        storage_client=mock_storage_client.return_value
-    )
+    with caplog.at_level(logging.WARNING):
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+      # close() clears the parser, so the next start re-runs the offload
+      # setup; the warning is still logged once per plugin instance.
+      await plugin.close()
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
     assert plugin.offloader is None
     mock_blob = (
         mock_storage_client.return_value.bucket.return_value.blob.return_value
@@ -22452,6 +22640,345 @@ async def test_content_parts_denied_disables_gcs_offload(
     )
     await plugin.flush()
     mock_blob.upload_from_string.assert_not_called()
+
+  setup_warnings = [
+      record.getMessage()
+      for record in caplog.records
+      if "GCS offload disabled" in record.getMessage()
+  ]
+  assert len(setup_warnings) == 1
+  assert "payload_column_denylist drops 'content_parts'" in setup_warnings[0]
+  assert (
+      "large text is kept inline (truncated) in 'content' and binary parts"
+      " are not stored"
+      in setup_warnings[0]
+  )
+
+
+async def _log_large_user_message_and_llm_request(
+    plugin, invocation_context, callback_context
+):
+  """Logs a user message and an LLM request that both carry large payloads.
+
+  The USER_MESSAGE_RECEIVED row parses a types.Content with a "U" text part
+  over 32 KiB and an inline image/png part. The LLM_REQUEST row parses a
+  prompt with a "P" text part over 32 KiB and an inline image/png part, plus
+  a non-str system instruction with an "S" text part over 32 KiB.
+  """
+  large = 32 * 1024 + 1
+  image = types.Part.from_bytes(data=b"\x89PNG", mime_type="image/png")
+  await plugin.on_user_message_callback(
+      invocation_context=invocation_context,
+      user_message=types.Content(
+          role="user", parts=[types.Part(text="U" * large), image]
+      ),
+  )
+  await plugin.before_model_callback(
+      callback_context=callback_context,
+      llm_request=llm_request_lib.LlmRequest(
+          model="gemini-pro",
+          contents=[
+              types.Content(
+                  role="user", parts=[types.Part(text="P" * large), image]
+              )
+          ],
+          config=types.GenerateContentConfig(
+              system_instruction=types.Content(
+                  parts=[types.Part(text="S" * large)]
+              )
+          ),
+      ),
+  )
+  await plugin.flush()
+
+
+@pytest.mark.asyncio
+async def test_log_multi_modal_false_disables_gcs_offload_and_keeps_large_text_inline(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+    caplog,
+):
+  """log_multi_modal_content=False keeps large text inline instead of in GCS.
+
+  log_multi_modal_content=False writes content_parts as [], and content_parts
+  is the only column that holds an offloaded object's reference, so an upload
+  would leave the payload in GCS with no reference and the text missing from
+  content. The setup warning is logged once per plugin instance.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=False,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    with caplog.at_level(logging.WARNING):
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+      # close() clears the parser, so the next start re-runs the offload
+      # setup; the warning is still logged once per plugin instance.
+      await plugin.close()
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+    assert plugin.offloader is None
+    mock_storage_client.assert_not_called()
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  setup_warnings = [
+      record.getMessage()
+      for record in caplog.records
+      if "GCS offload disabled" in record.getMessage()
+  ]
+  assert len(setup_warnings) == 1
+  assert "log_multi_modal_content" in setup_warnings[0]
+  assert (
+      "large text is kept inline (truncated) in 'content' and binary parts"
+      " are not stored"
+      in setup_warnings[0]
+  )
+  assert "test-bucket" in setup_warnings[0]
+  mock_blob = (
+      mock_storage_client.return_value.bucket.return_value.blob.return_value
+  )
+  mock_blob.upload_from_string.assert_not_called()
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert user_row["content_parts"] == []
+  assert request_row["content_parts"] == []
+  assert user_row["is_truncated"] is True
+  assert request_row["is_truncated"] is True
+  assert json.loads(user_row["content"]) == {
+      "text_summary": "U" * 500 + "...[TRUNCATED]"
+  }
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
+
+
+@pytest.mark.parametrize("log_multi_modal_content", [True, False])
+@pytest.mark.parametrize("gcs_bucket_name", [None, "test-bucket"])
+@pytest.mark.asyncio
+async def test_large_content_stays_inline_unless_offloaded_with_a_row_reference(
+    gcs_bucket_name,
+    log_multi_modal_content,
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Large content is kept inline unless the row keeps its GCS reference.
+
+  Setup: every gcs_bucket_name x log_multi_modal_content combination.
+  Act: log a user message and an LLM request whose text parts are over
+    32 KiB and that each carry an inline image/png part.
+  Assert:
+    - Content is uploaded only when a bucket is set and content_parts is
+      persisted, and each upload is a GCS_REFERENCE part in content_parts.
+    - Otherwise the large text stays inline, truncated, in content.
+    - Persisted image parts keep their image/png mime_type.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name=gcs_bucket_name,
+      log_multi_modal_content=log_multi_modal_content,
+      max_content_length=500,
+  )
+  offloaded = gcs_bucket_name is not None and log_multi_modal_content
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  def summary(char):
+    """Returns the content summary of a large text part made of ``char``."""
+    return "" if offloaded else char * 500 + "...[TRUNCATED]"
+
+  def describe(parts):
+    """Returns the (mime_type, storage_mode, has_uri) of each part."""
+    return [
+        (part["mime_type"], part["storage_mode"], part["uri"] is not None)
+        for part in parts
+    ]
+
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  upload = mock_bucket.blob.return_value.upload_from_string
+  assert upload.call_count == (5 if offloaded else 0)
+  assert user_row["is_truncated"] is (not offloaded)
+  assert request_row["is_truncated"] is (not offloaded)
+  assert json.loads(user_row["content"]) == {"text_summary": summary("U")}
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": summary("P")}],
+      "system_prompt": summary("S"),
+  }
+  if log_multi_modal_content:
+    storage_mode = "GCS_REFERENCE" if offloaded else "INLINE"
+    text_part = ("text/plain", storage_mode, offloaded)
+    image_part = ("image/png", storage_mode, offloaded)
+    assert describe(user_row["content_parts"]) == [text_part, image_part]
+    assert describe(request_row["content_parts"]) == [
+        text_part,
+        image_part,
+        text_part,
+    ]
+  else:
+    assert user_row["content_parts"] == []
+    assert request_row["content_parts"] == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_flip_log_multi_modal_false_skips_offload_per_row(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Rows logged after log_multi_modal_content is turned off stay inline.
+
+  Setup built the offloader while log_multi_modal_content was True. The flag
+  is read again for each row, so a row logged after it is set to False keeps
+  its large text inline and writes content_parts as [].
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=True,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is not None
+    plugin.config.log_multi_modal_content = False
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  mock_blob = (
+      mock_storage_client.return_value.bucket.return_value.blob.return_value
+  )
+  mock_blob.upload_from_string.assert_not_called()
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert user_row["content_parts"] == []
+  assert request_row["content_parts"] == []
+  assert json.loads(user_row["content"]) == {
+      "text_summary": "U" * 500 + "...[TRUNCATED]"
+  }
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
+
+
+@pytest.mark.asyncio
+async def test_mid_parse_flip_log_multi_modal_false_keeps_row_consistent(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Turning off log_multi_modal_content mid-parse never orphans an upload.
+
+  Setup: log_multi_modal_content=True with a GCS bucket; the mocked GCS
+    upload turns log_multi_modal_content off.
+  Act: log a user message, then an LLM request, each with a text part over
+    32 KiB and an inline image/png part; the first upload turns the flag off
+    while the user message row is still being parsed.
+  Assert:
+    - The user message row writes a GCS_REFERENCE part in content_parts for
+      each object it uploaded, so none of its uploads loses its reference.
+    - The LLM request row uploads nothing, keeps its large text inline,
+      truncated, in content, and writes content_parts as [].
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=True,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is not None
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+
+    def turn_off_multi_modal_logging(*args, **kwargs):
+      """Stands in for the GCS upload and turns log_multi_modal_content off."""
+      del args, kwargs
+      plugin.config.log_multi_modal_content = False
+
+    upload = mock_bucket.blob.return_value.upload_from_string
+    upload.side_effect = turn_off_multi_modal_logging
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  uploaded_uris = [
+      f"gs://test-bucket/{blob_call.args[0]}"
+      for blob_call in mock_bucket.blob.call_args_list
+  ]
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert upload.call_count == 2
+  assert [
+      (part["mime_type"], part["storage_mode"], part["uri"])
+      for part in user_row["content_parts"]
+  ] == [
+      ("text/plain", "GCS_REFERENCE", uploaded_uris[0]),
+      ("image/png", "GCS_REFERENCE", uploaded_uris[1]),
+  ]
+  assert user_row["is_truncated"] is False
+  assert json.loads(user_row["content"]) == {"text_summary": ""}
+  assert request_row["content_parts"] == []
+  assert request_row["is_truncated"] is True
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
 
 
 @pytest.mark.asyncio
@@ -23726,6 +24253,110 @@ async def test_both_payload_columns_denied_skips_parse_and_offload(
     mock_blob.upload_from_string.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_content_denied_and_log_multi_modal_false_skips_parse_and_offload(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Content is not parsed when no payload column keeps the parser output.
+
+  content is projected out and log_multi_modal_content=False writes
+  content_parts as [], so parsing and GCS upload work would be discarded.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content"],
+      log_multi_modal_content=False,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_blob = (
+        mock_storage_client.return_value.bucket.return_value.blob.return_value
+    )
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * (32 * 1024 + 1))])
+        ],
+    )
+    with mock.patch.object(
+        plugin.parser, "parse", wraps=plugin.parser.parse
+    ) as parse_spy:
+      await plugin.before_model_callback(
+          callback_context=callback_context, llm_request=llm_request
+      )
+      await plugin.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+  parse_spy.assert_not_called()
+  mock_blob.upload_from_string.assert_not_called()
+  assert row["event_type"] == "LLM_REQUEST"
+  assert row["content"] is None
+  assert row["content_parts"] == []
+
+
+@pytest.mark.asyncio
+async def test_content_denied_and_log_multi_modal_true_parses_and_offloads(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Denying only content still parses and offloads into content_parts.
+
+  content is projected out, but log_multi_modal_content=True keeps
+  content_parts, so the large text is uploaded and the row keeps its GCS
+  reference.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content"],
+      log_multi_modal_content=True,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * (32 * 1024 + 1))])
+        ],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await plugin.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+  mock_bucket.blob.return_value.upload_from_string.assert_called_once()
+  assert row["event_type"] == "LLM_REQUEST"
+  assert row["content"] is None
+  assert len(row["content_parts"]) == 1
+  assert row["content_parts"][0]["storage_mode"] == "GCS_REFERENCE"
+  assert row["content_parts"][0]["uri"].startswith("gs://test-bucket/")
+
+
 class TestSafetyLifecycleHardening:
   """Safety and lifecycle invariants."""
 
@@ -24165,7 +24796,12 @@ class TestSafetyLifecycleHardening:
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID
     )
     legacy_state = plugin.__getstate__()
-    for key in ("_local_drop_counts", "_setup_failures", "_setup_retry_at"):
+    for key in (
+        "_local_drop_counts",
+        "_setup_failures",
+        "_setup_retry_at",
+        "_offload_disabled_warned",
+    ):
       legacy_state.pop(key, None)
     restored = (
         bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
@@ -24173,6 +24809,7 @@ class TestSafetyLifecycleHardening:
         )
     )
     restored.__setstate__(legacy_state)
+    assert restored._offload_disabled_warned is False
     assert restored.get_drop_stats() == {}
     assert restored._setup_failures == 0
     assert restored._setup_retry_at == 0.0

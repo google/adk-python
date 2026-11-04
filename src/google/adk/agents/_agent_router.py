@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from ..events._abort_events import _is_abort_event
@@ -48,7 +47,7 @@ def _resolve_resumed_agent(
     root_agent: BaseAgent,
     call_event: Event,
     events: list[Event],
-) -> Optional[BaseAgent]:
+) -> BaseAgent | None:
   """Resolves the agent in `root_agent`'s hierarchy that owns `call_event`.
 
   Consults `index_open_interrupts(events[:-1])` first when the trailing
@@ -147,7 +146,7 @@ def _resolve_task_delegator(
 def find_agent_to_run(
     session: Session,
     root_agent: BaseAgent,
-    resumability_config: Optional[ResumabilityConfig] = None,
+    resumability_config: ResumabilityConfig | None = None,
 ) -> BaseAgent:
   """Finds the agent to run to continue the session.
 
@@ -271,7 +270,7 @@ def restore_branch_from_history(
     node: BaseNode,
     *,
     root: BaseNode,
-    invocation_id: Optional[str] = None,
+    invocation_id: str | None = None,
 ) -> None:
   """Restores a non-root node's branch from its latest matching event.
 

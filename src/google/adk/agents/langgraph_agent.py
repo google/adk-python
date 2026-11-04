@@ -17,7 +17,6 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 from typing import AsyncGenerator
-from typing import Union
 
 from google.genai import types
 from langchain_core.messages import AIMessage
@@ -63,7 +62,7 @@ def _get_thread_id(app_name: str, user_id: str, session_id: str) -> str:
 
 def _get_last_human_messages(
     events: list[Event],
-) -> list[Union[HumanMessage, AIMessage]]:
+) -> list[HumanMessage | AIMessage]:
   """Extracts last human messages from given list of events.
 
   Args:
@@ -72,7 +71,7 @@ def _get_last_human_messages(
   Returns:
     list of last human messages
   """
-  messages: list[Union[HumanMessage, AIMessage]] = []
+  messages: list[HumanMessage | AIMessage] = []
   for event in reversed(events):
     if messages and event.author != 'user':
       break
@@ -156,7 +155,7 @@ class LangGraphAgent(BaseAgent):
 
   def _get_messages(
       self, events: list[Event]
-  ) -> list[Union[HumanMessage, AIMessage]]:
+  ) -> list[HumanMessage | AIMessage]:
     """Extracts messages from given list of events.
 
     If the developer provides their own memory within langgraph, we return the
@@ -176,7 +175,7 @@ class LangGraphAgent(BaseAgent):
 
   def _get_conversation_with_agent(
       self, events: list[Event]
-  ) -> list[Union[HumanMessage, AIMessage]]:
+  ) -> list[HumanMessage | AIMessage]:
     """Extracts messages from given list of events.
 
     Args:
@@ -186,7 +185,7 @@ class LangGraphAgent(BaseAgent):
       list of messages
     """
 
-    messages: list[Union[HumanMessage, AIMessage]] = []
+    messages: list[HumanMessage | AIMessage] = []
     for event in events:
       if not event.content or not event.content.parts:
         continue

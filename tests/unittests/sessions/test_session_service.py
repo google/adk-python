@@ -1641,6 +1641,21 @@ async def test_create_session_with_blank_id_generates_one():
 
 
 @pytest.mark.asyncio
+async def test_create_session_with_empty_id_generates_one(session_service):
+  """An empty session id is replaced by a generated one, as if omitted."""
+  first = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+  second = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+
+  assert first.id
+  assert second.id
+  assert first.id != second.id
+
+
+@pytest.mark.asyncio
 async def test_get_session_finds_session_by_id_passed_to_create(
     session_service,
 ):
@@ -2020,15 +2035,8 @@ async def test_append_event_with_requested_tool_confirmations(session_service):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'service_type',
-    [SessionServiceType.DATABASE, SessionServiceType.SQLITE],
-)
-async def test_append_event_with_non_serializable_state_delta(
-    service_type, tmp_path
-):
+async def test_append_event_with_non_serializable_state_delta(session_service):
   """A value the JSON encoder rejects must not destroy the whole event."""
-  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -2038,9 +2046,24 @@ async def test_append_event_with_non_serializable_state_delta(
   event = Event(
       invocation_id='invocation',
       author='user',
-      actions=EventActions(state_delta={'callback': lambda: 1, 'ok': 2}),
+      actions=EventActions(
+          state_delta={
+              'callback': lambda: 1,
+              'screenshot': b'\x89PNG\r\n\x1a\n',
+              'ok': 2,
+          }
+      ),
   )
   await session_service.append_event(session=session, event=event)
+  assert (
+      '"screenshot":"iVBORw0KGgo="'
+      in Session(
+          id='s',
+          app_name=app_name,
+          user_id=user_id,
+          state={'screenshot': b'\x89PNG\r\n\x1a\n'},
+      ).model_dump_json()
+  )
 
   refreshed_session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
@@ -2048,10 +2071,12 @@ async def test_append_event_with_non_serializable_state_delta(
   assert refreshed_session is not None
   assert len(refreshed_session.events) == 1
   assert refreshed_session.state['ok'] == 2
-  assert isinstance(refreshed_session.state['callback'], str)
-
-  if isinstance(session_service, DatabaseSessionService):
-    await session_service.close()
+  if isinstance(session_service, InMemorySessionService):
+    assert refreshed_session.state['screenshot'] == b'\x89PNG\r\n\x1a\n'
+    assert callable(refreshed_session.state['callback'])
+  else:
+    assert refreshed_session.state['screenshot'] == 'iVBORw0KGgo='
+    assert isinstance(refreshed_session.state['callback'], str)
 
 
 @pytest.mark.asyncio
@@ -2729,17 +2754,21 @@ async def test_partial_events_are_not_persisted(session_service):
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
+  original_last_update_time = session.last_update_time
   event = Event(author='user', partial=True)
   returned = await session_service.append_event(session, event)
 
   assert returned is event
   # Check in-memory session
   assert len(session.events) == 0
+  # Partial events must not advance last_update_time.
+  assert session.last_update_time == original_last_update_time
   # Check persisted session
   session_got = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert len(session_got.events) == 0
+  assert session_got.last_update_time == original_last_update_time
 
 
 @pytest.mark.asyncio

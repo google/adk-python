@@ -16,9 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from pydantic import BaseModel
 import yaml
@@ -27,7 +25,7 @@ if TYPE_CHECKING:
   from pydantic.main import IncEx
 
 
-def load_yaml_file(file_path: Union[str, Path]) -> Any:
+def load_yaml_file(file_path: str | Path) -> Any:
   """Loads a YAML file and returns its content.
 
   Args:
@@ -48,13 +46,13 @@ def load_yaml_file(file_path: Union[str, Path]) -> Any:
 
 def dump_pydantic_to_yaml(
     model: BaseModel,
-    file_path: Union[str, Path],
+    file_path: str | Path,
     *,
     indent: int = 2,
     sort_keys: bool = True,
     exclude_none: bool = True,
     exclude_defaults: bool = True,
-    exclude: Optional[IncEx] = None,
+    exclude: IncEx | None = None,
 ) -> None:
   """Dump a Pydantic model to a YAML file with multiline strings using | style.
 
