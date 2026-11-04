@@ -6802,6 +6802,126 @@ async def test_generate_content_async_stream_sets_finish_reason(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field, thought",
+    [
+        pytest.param("content", None, id="text"),
+        pytest.param("reasoning_content", True, id="reasoning"),
+    ],
+)
+async def test_generate_content_async_stream_without_finish_reports_truncation(
+    mock_completion, lite_llm_instance, field, thought
+):
+  """A text or reasoning stream ending without a finish chunk is not a stop.
+
+  Reachable through custom ``llm_client`` implementations streaming raw
+  chunks (litellm itself substitutes a synthetic stop); the buffered text
+  is kept but finalized with an error so callers and telemetry can tell the
+  answer was cut off.
+  """
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", **{field: "Oslo is "}),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None, delta=Delta(**{field: "4C and"})
+              )
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+      if not response.partial
+  ]
+
+  assert len(responses) == 1
+  assert [(part.text, part.thought) for part in responses[0].content.parts] == [
+      ("Oslo is 4C and", thought)
+  ]
+  assert responses[0].finish_reason == types.FinishReason.OTHER
+  assert responses[0].error_code == types.FinishReason.OTHER
+  assert responses[0].error_message == (
+      "The stream ended without a finish reason; the response may be truncated."
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_trailing_usage_chunk_keeps_stop(
+    mock_completion, lite_llm_instance
+):
+  """A finish chunk followed by a usage-only chunk keeps its clean stop.
+
+  The finish reason belongs to the segment it ended; a later chunk without
+  one must not demote the finalized reason to a truncation report.
+  """
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello world"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason=None, delta=Delta())],
+          usage={
+              "prompt_tokens": 5,
+              "completion_tokens": 2,
+              "total_tokens": 7,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].finish_reason == types.FinishReason.STOP
+  assert responses[-1].error_code is None
+  assert responses[-1].content.parts[0].text == "Hello world"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_reports_content_filter(
     mock_completion, lite_llm_instance
 ):
