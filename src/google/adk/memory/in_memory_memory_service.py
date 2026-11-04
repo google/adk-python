@@ -147,6 +147,14 @@ class InMemoryMemoryService(BaseMemoryService):
   async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
+    if not isinstance(query, str):
+      # A query that is not a string would otherwise fail inside the keyword
+      # matcher as a bare TypeError from unicodedata.normalize.
+      raise ValueError(
+          "search_memory query must be a string, got"
+          f" {type(query).__name__}: {query!r}"
+      )
+
     user_key = _user_key(app_name, user_id)
 
     with self._lock:
