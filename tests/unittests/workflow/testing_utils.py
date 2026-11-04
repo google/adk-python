@@ -18,7 +18,6 @@ import copy
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
-from typing import Optional
 
 from google.adk.agents.context import Context as WorkflowContext
 from google.adk.agents.invocation_context import InvocationContext as BaseInvocationContext
@@ -261,10 +260,10 @@ class InMemoryRunner:
 
   def __init__(
       self,
-      root_agent: Optional[Agent | LlmAgent] = None,
+      root_agent: Agent | LlmAgent | None = None,
       response_modalities: list[str] = None,
       plugins: list[BasePlugin] = [],
-      app: Optional[App] = None,
+      app: App | None = None,
       node: Any = None,
       check_invariants: bool = True,
   ):
@@ -345,8 +344,8 @@ class InMemoryRunner:
 
   async def run_async(
       self,
-      new_message: Optional[types.ContentUnion] = None,
-      invocation_id: Optional[str] = None,
+      new_message: types.ContentUnion | None = None,
+      invocation_id: str | None = None,
   ) -> list[Event]:
     # For non-resumable apps, don't reuse invocation_id on resume.
     # State reconstruction relies on scanning events from *previous*

@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
-from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -33,7 +31,7 @@ from .cache_metadata import CacheMetadata
 
 def _find_tool_with_function_declarations(
     llm_request: LlmRequest,
-) -> Optional[types.Tool]:
+) -> types.Tool | None:
   """Find an existing Tool with function_declarations in the LlmRequest."""
   # TODO: add individual tool with declaration and merge in google_llm.py
   if not llm_request.config or not llm_request.config.tools:
@@ -66,7 +64,7 @@ class LlmRequest(BaseModel):
   model_config = ConfigDict(arbitrary_types_allowed=True)
   """The pydantic model config."""
 
-  model: Optional[str] = None
+  model: str | None = None
   """The model name."""
 
   contents: list[types.Content] = Field(default_factory=list)
@@ -85,16 +83,16 @@ class LlmRequest(BaseModel):
   tools_dict: dict[str, BaseTool] = Field(default_factory=dict, exclude=True)
   """The tools dictionary."""
 
-  cache_config: Optional[ContextCacheConfig] = None
+  cache_config: ContextCacheConfig | None = None
   """Context cache configuration for this request."""
 
-  cache_metadata: Optional[CacheMetadata] = None
+  cache_metadata: CacheMetadata | None = None
   """Cache metadata from previous requests, used for cache management."""
 
-  cacheable_contents_token_count: Optional[int] = None
+  cacheable_contents_token_count: int | None = None
   """Token count from previous request's prompt, used for cache size validation."""
 
-  previous_interaction_id: Optional[str] = None
+  previous_interaction_id: str | None = None
   """The ID of the previous interaction for stateful conversations.
 
   When using the interactions API, this ID is used to chain interactions
@@ -102,7 +100,7 @@ class LlmRequest(BaseModel):
   the full history.
   """
 
-  service_tier: Optional[ServiceTier | str] = None
+  service_tier: ServiceTier | str | None = None
   """Serving tier for this request, copied from `RunConfig.service_tier`.
 
   Set only for models on the interactions API, which is the only path with a
@@ -147,7 +145,7 @@ class LlmRequest(BaseModel):
     self._dynamic_instructions.extend(instructions)
 
   def append_instructions(
-      self, instructions: Union[list[str], types.Content]
+      self, instructions: list[str] | types.Content
   ) -> list[types.Content]:
     """Appends instructions to the system instruction.
 
@@ -382,9 +380,9 @@ class LlmRequest(BaseModel):
 
   def set_output_schema(
       self,
-      output_schema: Optional[SchemaType] = None,
+      output_schema: SchemaType | None = None,
       *,
-      base_model: Optional[SchemaType] = None,
+      base_model: SchemaType | None = None,
   ) -> None:
     """Sets the output schema for the request.
 

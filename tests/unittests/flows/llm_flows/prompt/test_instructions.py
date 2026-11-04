@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
@@ -37,7 +36,7 @@ from .... import testing_utils
 
 
 async def _create_invocation_context(
-    agent: LlmAgent, state: Optional[dict[str, Any]] = None
+    agent: LlmAgent, state: dict[str, Any] | None = None
 ) -> InvocationContext:
   """Helper to create InvocationContext with session."""
   session_service = InMemorySessionService()

@@ -1742,6 +1742,191 @@ class TestRestApiTool:
         "empty_param": "",
     }
 
+  @pytest.mark.parametrize(
+      "schema_type, style, explode, value, expected",
+      [
+          # style=form, explode=true is the default for query parameters.
+          (
+              "object",
+              None,
+              None,
+              {"status": "open", "priority": "P1"},
+              {"status": "open", "priority": "P1"},
+          ),
+          (
+              "object",
+              None,
+              None,
+              {"status": "open", "priority": "P1", "undeclared": "dropped"},
+              {"status": "open", "priority": "P1"},
+          ),
+          (
+              "object",
+              "form",
+              False,
+              {"status": "open", "priority": None, "active": True},
+              {"match": "status,open,active,true"},
+          ),
+          (
+              "object",
+              "form",
+              False,
+              {"priority": None},
+              {},
+          ),
+          (
+              "object",
+              "deepObject",
+              True,
+              {"status": "open", "priority": "P1"},
+              {"match[status]": "open", "match[priority]": "P1"},
+          ),
+          ("array", None, None, ["a", None, "b"], {"match": ["a", "b"]}),
+          ("array", "form", False, ["a", None, "b"], {"match": "a,b"}),
+          ("array", "form", False, [None], {}),
+          ("array", "spaceDelimited", False, ["a", "b"], {"match": "a b"}),
+          ("array", "pipeDelimited", False, ["a", "b"], {"match": "a|b"}),
+          ("string", "form", False, "plain", {"match": "plain"}),
+      ],
+  )
+  def test_prepare_request_params_query_style_and_explode(
+      self,
+      sample_endpoint,
+      schema_type,
+      style,
+      explode,
+      value,
+      expected,
+  ):
+    """httpx sends a dict query value as its Python repr, never per the spec."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=Operation(operationId="test_op"),
+    )
+    properties = (
+        {
+            "status": OpenAPISchema(type="string"),
+            "priority": OpenAPISchema(type="string"),
+            "active": OpenAPISchema(type="boolean"),
+        }
+        if schema_type == "object"
+        else None
+    )
+    params = [
+        ApiParameter(
+            original_name="match",
+            py_name="match",
+            param_location="query",
+            param_schema=OpenAPISchema(type=schema_type, properties=properties),
+            style=style,
+            explode=explode,
+        )
+    ]
+
+    request_params = tool._prepare_request_params(params, {"match": value})
+
+    assert request_params["params"] == expected
+
+  @pytest.mark.parametrize(
+      "schema",
+      [
+          OpenAPISchema(type="object"),
+          OpenAPISchema(
+              type="object", additionalProperties=OpenAPISchema(type="string")
+          ),
+      ],
+  )
+  def test_prepare_request_params_query_object_without_properties(
+      self,
+      sample_endpoint,
+      schema,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=Operation(operationId="test_op"),
+    )
+    params = [
+        ApiParameter(
+            original_name="filter",
+            py_name="filter",
+            param_location="query",
+            param_schema=schema,
+        )
+    ]
+
+    request_params = tool._prepare_request_params(
+        params, {"filter": {"status": "open", "priority": "P1"}}
+    )
+
+    assert request_params["params"] == {"status": "open", "priority": "P1"}
+
+  def test_prepare_request_params_exploded_object_preserves_other_query_params(
+      self,
+  ):
+    endpoint = OperationEndpoint(
+        base_url="https://example.com",
+        path="/items?api-version=2024-01-01",
+        method="GET",
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=endpoint,
+        operation=Operation(operationId="test_op"),
+    )
+    params = [
+        ApiParameter(
+            original_name="api_key",
+            py_name="api_key",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+        ApiParameter(
+            original_name="limit",
+            py_name="limit",
+            param_location="query",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="page",
+            py_name="page",
+            param_location="query",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="filter",
+            py_name="filter",
+            param_location="query",
+            param_schema=OpenAPISchema(type="object"),
+        ),
+    ]
+
+    request_params = tool._prepare_request_params(
+        params,
+        {
+            "api_key": "secret",
+            "limit": 10,
+            "filter": {
+                "status": "open",
+                "api_key": "spoofed",
+                "limit": 999,
+                "page": 2,
+                "api-version": "spoofed",
+            },
+        },
+    )
+
+    assert request_params["params"] == {
+        "api_key": "secret",
+        "limit": 10,
+        "status": "open",
+        "api-version": "2024-01-01",
+    }
+
   def test_prepare_request_params_array(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
@@ -3593,6 +3778,27 @@ class TestRestApiToolFromParsedOperation:
     tool = RestApiTool.from_parsed_operation(parsed)
 
     assert tool.name == "list_pets_by_status"
+
+  def test_from_parsed_operation_str_preserves_style_and_explode(self):
+    parsed = _build_parsed_operation(
+        Operation(operationId="ListTickets", description="List tickets."),
+        parameters=[
+            ApiParameter(
+                original_name="filter",
+                py_name="filter",
+                param_location="query",
+                param_schema=OpenAPISchema(type="object"),
+                style="deepObject",
+                explode=True,
+            )
+        ],
+    )
+
+    tool = RestApiTool.from_parsed_operation_str(parsed.model_dump_json())
+
+    param = tool._operation_parser.get_parameters()[0]
+    assert param.style == "deepObject"
+    assert param.explode is True
 
   def test_from_parsed_operation_truncates_long_name_to_60_chars(self):
     # Gemini rejects function names of 64 characters or more.

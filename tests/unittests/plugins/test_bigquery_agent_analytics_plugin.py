@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import concurrent.futures
 import contextlib
 import contextvars
@@ -237,7 +238,11 @@ def dummy_arrow_schema():
                       "object_ref",
                       pa.struct([
                           pa.field("uri", pa.string(), nullable=True),
-                          pa.field("authorizer", pa.string(), nullable=True),
+                          pa.field(
+                              "authorizer",
+                              pa.string(),
+                              nullable=True,
+                          ),
                           pa.field("version", pa.string(), nullable=True),
                           pa.field(
                               "details",
@@ -802,6 +807,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       )
       # If the formatter returns a string, it's stored directly.
       assert log_entry["content"] == "[REDACTED]"
+      assert log_entry["is_truncated"] is False
 
   @pytest.mark.asyncio
   async def test_content_formatter_error(
@@ -4487,11 +4493,13 @@ def _return_exact_pydantic_model(content, event_type):
 class TestContentFormatterFailureDiagnostics:
   """A failing content_formatter is diagnosable without leaking content.
 
-  The row's error_message names the failure by a trusted class label. The
-  formatter's input, the exception's message, and any class name taken from
-  the class itself never reach the row. Diagnosing the failure never drops
-  the row, and the traceback reaches the local log only when
-  debug_content_formatter_errors is enabled.
+  By default, the row's error_message names the failure only by a trusted
+  class label, so the formatter's input, the exception's message, and any
+  class name taken from the class itself never reach the row (unless
+  log_content_formatter_error_details is explicitly enabled to append
+  sanitized exception details truncated to 256 characters plus a truncation
+  marker). Diagnosing the failure never drops the row, and the traceback
+  reaches the local log only when debug_content_formatter_errors is enabled.
   """
 
   SECRET = "TOPSECRET-4111-1111-1111-1111"
@@ -5595,6 +5603,7 @@ class TestContentFormatterFailureDiagnostics:
           pytest.param("label", True, id="label-raised"),
           pytest.param("label", False, id="label-returned"),
           pytest.param("render", True, id="render-raised"),
+          pytest.param("sanitize", True, id="sanitize-raised"),
           pytest.param("log_handler", True, id="log_handler-raised"),
           pytest.param("log_handler", False, id="log_handler-returned"),
           pytest.param("log_filter", True, id="log_filter-raised"),
@@ -5616,11 +5625,11 @@ class TestContentFormatterFailureDiagnostics:
     """An Exception raised by any step after the formatter call keeps the row.
 
     Judging the result, closing a rejected generator, naming the failed
-    class, rendering the debug traceback, and emitting the warning through
-    the logger's filters and handlers all run behind one boundary. Each step
-    here raises each kind of exception. An Exception is contained, and the
-    sentinel row, its drop count, and a payload-free error_message still
-    come out.
+    class, sanitizing the exception detail, rendering the debug traceback,
+    and emitting the warning through the logger's filters and handlers all
+    run behind one boundary. Each step here raises each kind of exception.
+    An Exception is contained, and the sentinel row, its drop count, and a
+    payload-free error_message still come out.
 
     Closing runs the rejected generator's own code, so whatever it raises,
     BaseException included, is contained. Every other step runs only plugin
@@ -5662,7 +5671,9 @@ class TestContentFormatterFailureDiagnostics:
     else:
       formatter = _return_tuple
     config = plugin_module.BigQueryLoggerConfig(
-        content_formatter=formatter, debug_content_formatter_errors=True
+        content_formatter=formatter,
+        debug_content_formatter_errors=(step != "sanitize"),
+        log_content_formatter_error_details=(step == "sanitize"),
     )
     handler = _RaisingHandler()
     injections = {
@@ -5671,6 +5682,9 @@ class TestContentFormatterFailureDiagnostics:
         ),
         "render": mock.patch.object(
             plugin_module, "_render_formatter_traceback", raise_injected
+        ),
+        "sanitize": mock.patch.object(
+            plugin_module, "_sanitize_sensitive_text", raise_injected
         ),
         "log_handler": contextlib.nullcontext(),
         "log_filter": contextlib.nullcontext(),
@@ -5722,6 +5736,10 @@ class TestContentFormatterFailureDiagnostics:
       expected_error_message = (
           "content_formatter returned unsupported type generator"
       )
+    elif step == "sanitize":
+      expected_error_message = (
+          "content_formatter raised ImportError: [REDACTED_SENSITIVE_TEXT]"
+      )
     elif raised:
       expected_error_message = "content_formatter raised ImportError"
     else:
@@ -5729,9 +5747,109 @@ class TestContentFormatterFailureDiagnostics:
           "content_formatter returned unsupported type tuple"
       )
     assert row["error_message"] == expected_error_message
+    assert row["is_truncated"] is (step == "sanitize")
     assert row["content"] == plugin_module._FORMATTER_FAILED_SENTINEL
     assert drop_stats.get("formatter_failed") == 1
     assert self.SECRET not in json.dumps(row, default=str)
+
+  async def test_log_content_formatter_error_details_writes_sanitized_details(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Sanitized formatter error details reach BigQuery when opted in."""
+
+    def formatter(content, event_type):
+      raise ValueError(
+          "unexpected field format with Authorization: Bearer SECRET-TOKEN-999"
+      )
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter,
+        log_content_formatter_error_details=True,
+    )
+
+    row, drop_stats = await self._log_user_message(
+        config, mock_write_client, invocation_context, dummy_arrow_schema
+    )
+
+    assert (
+        row["content"]
+        == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert row["error_message"] == (
+        "content_formatter raised ValueError: unexpected field format with"
+        " Authorization: [REDACTED]"
+    )
+    assert row["is_truncated"] is True
+    assert "SECRET-TOKEN-999" not in json.dumps(row, default=str)
+    assert drop_stats.get("formatter_failed") == 1
+
+  async def test_log_content_formatter_error_details_truncates_long_details(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Oversized formatter error details are truncated to 256 chars + marker."""
+    long_msg = "e" * 400
+
+    def raise_long_error(content, event_type):
+      raise RuntimeError(long_msg)
+
+    config_long = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=raise_long_error,
+        log_content_formatter_error_details=True,
+    )
+
+    row_long, _ = await self._log_user_message(
+        config_long, mock_write_client, invocation_context, dummy_arrow_schema
+    )
+
+    expected_prefix = "content_formatter raised RuntimeError: " + ("e" * 256)
+    assert row_long["error_message"] == expected_prefix + "...[TRUNCATED]"
+    assert row_long["is_truncated"] is True
+
+  async def test_log_content_formatter_error_details_contains_hostile_str(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """A __str__ raising KeyboardInterrupt is contained."""
+
+    class _HostileStrError(ValueError):
+
+      def __str__(self):
+        raise KeyboardInterrupt("hostile __str__")
+
+    def raise_hostile_error(content, event_type):
+      raise _HostileStrError()
+
+    config_hostile = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=raise_hostile_error,
+        log_content_formatter_error_details=True,
+    )
+
+    row_hostile, _ = await self._log_user_message_contained(
+        config_hostile,
+        mock_write_client,
+        invocation_context,
+        dummy_arrow_schema,
+    )
+
+    assert row_hostile["error_message"] == (
+        "content_formatter raised <subclass of ValueError>: [error message"
+        " could not be rendered]"
+    )
+    assert row_hostile["is_truncated"] is False
+
+  def test_log_content_formatter_error_details_rejects_non_bool(self):
+    """Non-boolean log_content_formatter_error_details is rejected at init."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        log_content_formatter_error_details="yes"  # type: ignore[arg-type]
+    )
+    with pytest.raises(
+        ValueError, match="log_content_formatter_error_details must be a bool"
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
 
 
 class TestSafeCallbackDecorator:
@@ -12493,6 +12611,35 @@ class TestAnalyticsViews:
     with pytest.raises(ValueError, match="view_prefix"):
       self._make_plugin(view_prefix="")
 
+  @pytest.mark.parametrize(
+      "field_name",
+      ["project_id", "dataset_id", "table_id", "view_prefix"],
+  )
+  @pytest.mark.parametrize(
+      "bad_value",
+      ["", "bad`val", "bad\\val", "bad\nval", "bad\rval", "bad\x00val"],
+  )
+  def test_init_rejects_empty_or_unquotable_identifiers(
+      self, field_name: str, bad_value: str
+  ) -> None:
+    """project_id, dataset_id, table_id, and view_prefix must be quotable."""
+    kwargs: dict[str, Any] = {
+        "project_id": PROJECT_ID,
+        "dataset_id": DATASET_ID,
+        "table_id": TABLE_ID,
+    }
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    if field_name == "view_prefix":
+      config.view_prefix = bad_value
+    elif field_name == "table_id" and bad_value == "":
+      kwargs["table_id"] = None
+      config.table_id = ""
+    else:
+      kwargs[field_name] = bad_value
+    kwargs["config"] = config
+    with pytest.raises(ValueError, match=field_name):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(**kwargs)
+
 
 class TestSchemaReadinessMemo:
   """Tests that a successful table readiness pass is not repeated."""
@@ -12732,13 +12879,17 @@ class _EvalViewSqlEvaluator:
   GoogleSQL subset that the eval views use is supported:
 
   - A ``WITH`` list of CTEs and a final SELECT, each with ``*`` or
-    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY.
+    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY, and
+    an optional ``;`` at the end.  ``--`` comments are skipped.
   - FROM a table or CTE, joined by ``, UNNEST(...) AS x [WITH OFFSET AS y]``
-    or by ``LEFT JOIN ... USING (...)`` or ``LEFT JOIN ... ON ...``.
-  - Literals, columns, CASE, IF, AND/OR/NOT, comparisons, ``+`` and ``-``,
-    IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``, ``[SAFE_OFFSET(n)]``, CAST,
-    SAFE_CAST, and ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and
-    ``ARRAY(SELECT ...)`` over ``UNNEST``.
+    or ``INNER JOIN UNNEST(...) AS x [WITH OFFSET AS y]``, which both unnest
+    an array of the row they join, or by ``LEFT JOIN ... USING (...)`` or
+    ``LEFT JOIN ... ON ...``.
+  - Literals, columns, CASE with a required ELSE, IF, AND/OR/NOT,
+    comparisons, ``+`` and ``-``, IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``,
+    ``[SAFE_OFFSET(n)]``, CAST to INT64 or JSON, SAFE_CAST, and
+    ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and ``ARRAY(SELECT ...)`` over
+    ``UNNEST``.
   - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``;
     ROW_NUMBER, LAG and LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``;
     and the scalar functions in ``_call``.
@@ -12750,11 +12901,11 @@ class _EvalViewSqlEvaluator:
   """
 
   _TOKEN_RE = re.compile(
-      r"(?P<space>\s+)"
+      r"(?P<space>\s+|--[^\n]*)"
       r"|(?P<string>[rR]?(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"))"
       r"|(?P<number>\d+)"
       r"|(?P<name>`[^`]*`|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
-      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\]])"
+      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\];])"
   )
   _COMPARISONS = {
       "=": lambda a, b: a == b,
@@ -12808,6 +12959,7 @@ class _EvalViewSqlEvaluator:
       if not self._accept(","):
         break
     self._final = self._parse_query()
+    self._accept(";")
     assert self._pos == self._end, f"Unsupported SQL at token {self._pos}"
 
   def run(self, table_rows, cte=None):
@@ -12895,7 +13047,9 @@ class _EvalViewSqlEvaluator:
     if self._accept("FROM"):
       query["from"].append((None, *self._parse_source(), None))
       while True:
-        if self._accept(","):
+        if self._accept(",") or self._accept("INNER", "JOIN"):
+          # Only an UNNEST of the joined row's array is supported here, which
+          # needs no join condition.
           query["from"].append(("cross", *self._parse_source(), None))
         elif self._accept("LEFT", "JOIN"):
           source, alias = self._parse_source()
@@ -13024,9 +13178,8 @@ class _EvalViewSqlEvaluator:
         branches.append((condition, self._parse_expr()))
         if not self._accept("WHEN"):
           break
-      default = ("literal", None)
-      if self._accept("ELSE"):
-        default = self._parse_expr()
+      self._expect("ELSE")  # The SQL lint requires one, so the files have it.
+      default = self._parse_expr()
       self._expect("END")
       return ("case", operand, branches, default)
     if word == "ARRAY" and self._accept("<"):
@@ -13459,13 +13612,19 @@ class TestEvalViews:
 
   @staticmethod
   def _output_columns(sql):
+    """Returns the names of the top-level SELECT's columns, in order."""
     # A long column's alias wraps onto its own line, indented 4 spaces.
     final_select = TestEvalViews._final_select(sql).replace("\n    AS ", " AS ")
-    return [
-        line.rsplit(" AS ", 1)[1].rstrip(",")
-        for line in final_select.splitlines()
-        if not line.startswith("   ") and " AS " in line
-    ]
+    columns = []
+    for line in final_select.splitlines():
+      if line.startswith("   "):
+        continue  # A line inside a column's expression.
+      if " AS " in line:
+        columns.append(line.rsplit(" AS ", 1)[1].rstrip(","))
+      elif not line.endswith("("):
+        # A column without an alias keeps the name of the column it reads.
+        columns.append(line.strip().rstrip(",").rsplit(".", 1)[-1])
+    return columns
 
   @staticmethod
   def _normalized_view_sql():
@@ -13842,9 +14001,9 @@ class TestEvalViews:
     eval_sql = self._queried_sql(plugin.client)
     assert len(eval_sql) == 2
     for sql in eval_sql:
-      # raw_events is the only CTE that reads the table.
+      # RawEvents is the only CTE that reads the table.
       assert sql.count(f"`{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`") == 1
-      raw_events = sql.split("raw_events AS (", 1)[1].split("\n  ),", 1)[0]
+      raw_events = sql.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
       denied_refs = [
           line.strip().rstrip(",")
           for line in raw_events.splitlines()
@@ -13867,7 +14026,7 @@ class TestEvalViews:
     default_sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
         "p.d.t"
     )
-    default_raw_events = default_sql.split("raw_events AS (", 1)[1]
+    default_raw_events = default_sql.split("RawEvents AS (", 1)[1]
     assert (
         "      content_parts,\n      attributes,\n      latency_ms,\n"
         in default_raw_events
@@ -14045,8 +14204,8 @@ class TestEvalViews:
     completed = event("inv-1", 9, "INVOCATION_COMPLETED")
 
     def turn(*events):
-      """Returns the turn_rollup row of a one-turn session."""
-      (row,) = turn_view.run([hello, *events], cte="turn_rollup")
+      """Returns the TurnRollup row of a one-turn session."""
+      (row,) = turn_view.run([hello, *events], cte="TurnRollup")
       return row
 
     def paused_and_complete(*events):
@@ -14144,7 +14303,7 @@ class TestEvalViews:
           content,
           content_parts=list(parts),
       )
-      (typed,) = turn_view.run([row], cte="typed_events")
+      (typed,) = turn_view.run([row], cte="TypedEvents")
       return typed["message_text"], typed["is_function_response"]
 
     # Inline text parts are joined in part order. Other parts are skipped,
@@ -14161,6 +14320,19 @@ class TestEvalViews:
     assert user_message(
         {"text_summary": ""}, part(0, "[BINARY DATA]", "image/png")
     ) == (None, False)
+    # Rows logged before placeholders kept the blob's MIME type have
+    # text/plain placeholders, which are not user text either.
+    assert user_message(
+        {"text_summary": ""}, part(0, "[BINARY DATA]", "text/plain")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": ""}, part(0, "[UPLOAD FAILED]", "text/plain")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": "Hello | [BINARY DATA]"},
+        part(0, "Hello"),
+        part(1, "[BINARY DATA]", "text/plain"),
+    ) == ("Hello", False)
     assert user_message(
         {"text_summary": ""},
         part(0, "Long text... [OFFLOADED]", storage_mode="GCS_REFERENCE"),
@@ -14297,7 +14469,7 @@ class TestEvalViews:
             row["eval_ready"],
             row["session_turn_eval_ready"],
         )
-        for row in turn_view.run(rows, cte="turns")
+        for row in turn_view.run(rows, cte="Turns")
     } == expected_turns
     assert {
         (row["session_id"], row["invocation_id"]): row["eval_ready"]
@@ -14320,7 +14492,8 @@ class TestEvalViews:
     _, turn_view = self._eval_views()
 
     # Guard against drift in _format_content's prefixes or delimiter without
-    # updating response_events in _EVAL_VIEW_CTES_SQL.
+    # updating ResponseEvents in bigquery_agent_analytics_sql/
+    # eval_view_ctes_v1.sql.
     format_content_src = inspect.getsource(
         bigquery_agent_analytics_plugin._format_content
     )
@@ -15088,7 +15261,7 @@ class TestEvalViews:
     )
 
   def test_eval_agent_instruction_fallback_from_session_agent_prompts(self):
-    """agent_configs falls back to earliest session LLM_REQUEST.system_prompt.
+    """AgentConfigs falls back to earliest session LLM_REQUEST.system_prompt.
 
     Covers legacy callable reprs, empty text_summary, and current
     before_agent_callback rows with content=None and
@@ -15214,7 +15387,7 @@ class TestEvalViews:
         ),
         # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt,
         # and sub_agent logs AGENT_STARTING with {"text_summary": ""} (to
-        # exercise NULLIF(instruction, '') in agent_configs) without a new
+        # exercise NULLIF(instruction, '') in AgentConfigs) without a new
         # LLM_REQUEST; both still resolve to their earliest session
         # system_prompt in turn_view and session_view.
         event(
@@ -15342,6 +15515,326 @@ class TestEvalViews:
     assert session_rows["s-conv-only"]["trace"]["turns"][0]["events"][1][
         "content"
     ]["parts"] == [{"text": "Fast-path answer."}]
+
+  def test_eval_view_ctes_end_without_a_newline(self) -> None:
+    """The shared CTEs end at the closing paren, for the view templates."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+    assert ctes.startswith("WITH\n")
+    assert "\n  RawEvents AS (\n" in ctes
+    assert ctes.endswith("\n  )")
+
+  def test_eval_view_ctes_filter_the_table_on_session_and_invocation(
+      self,
+  ) -> None:
+    """The one filter on the events table keeps the rows of a turn."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+    raw_events = ctes.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
+
+    assert raw_events.endswith(
+        "\n    FROM\n      `p.d.t`\n    WHERE\n      session_id IS NOT NULL\n"
+        "      AND invocation_id IS NOT NULL"
+    )
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  def test_eval_builders_substitute_the_ctes_only_once(
+      self, build_sql: Callable[..., str]
+  ) -> None:
+    """Braces in the CTE text reach the statement as written."""
+    ctes = "WITH x AS (SELECT r'\\d{4}', '{\"a\": {}}', '{x}', '{{}}', '{0}')"
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin,
+        "_build_eval_view_ctes",
+        return_value=ctes,
+    ):
+      sql = build_sql("p.d.t")
+
+    assert ctes in sql
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  @pytest.mark.parametrize(
+      "full_table_id",
+      [
+          "p.d.t`x",
+          "p.d.t` AS x; DROP TABLE y; --",
+          "p`.d.t",
+          "p.d.t\\x",
+          "p.d.t\n",
+          "p.d.t\r",
+          "p.d.t\t",
+          "p.d.t\x00",
+          "p.d.t\x7f",
+          "p.d.t\x85",
+          "p.d.t\u2028",
+          "p.d.t\u2029",
+      ],
+  )
+  def test_eval_builders_reject_a_table_id_the_sql_cannot_quote(
+      self, build_sql: Callable[..., str], full_table_id: str
+  ) -> None:
+    """A backtick, backslash, control or line-break character is an error."""
+    with pytest.raises(ValueError, match="backtick, backslash"):
+      build_sql(full_table_id)
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  @pytest.mark.parametrize(
+      "view_prefix",
+      [
+          "",
+          "v`bad",
+          "v\\bad",
+          "v\nbad",
+          "v\rbad",
+          "v\tbad",
+          "v\x00bad",
+          "v\x7fbad",
+          "v\x85bad",
+          "v\u2028bad",
+          "v\u2029bad",
+      ],
+  )
+  def test_eval_builders_reject_a_view_prefix_the_sql_cannot_quote(
+      self, build_sql: Callable[..., str], view_prefix: str
+  ) -> None:
+    """An empty or unquotable view_prefix is rejected."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "view_prefix must be a non-empty string without a backtick,"
+            " backslash"
+        ),
+    ):
+      build_sql("p.d.t", view_prefix=view_prefix)
+
+  @pytest.mark.parametrize(
+      "full_table_id",
+      [
+          "my-project.my_dataset.my_events",
+          "my-project.my_dataset.my events 01",
+          "my-project.my_dataset.my\u00a0events",
+      ],
+  )
+  def test_eval_builders_accept_a_table_id_with_a_dash_or_a_space(
+      self, full_table_id: str
+  ) -> None:
+    """A dash, an underscore or a space can be in the quoted table name."""
+    sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
+        full_table_id
+    )
+
+    assert f"\n      `{full_table_id}`\n" in sql
+
+  @pytest.fixture
+  def eval_sql_dir(self, tmp_path, monkeypatch):
+    """Yields an empty SQL directory beside where the plugin module now is.
+
+    The module's ``__file__`` points into ``tmp_path``, and the loader's cache
+    is cleared before and after the test.
+    """
+    sql_dir = tmp_path / "plugins" / "bigquery_agent_analytics_sql"
+    sql_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        bigquery_agent_analytics_plugin,
+        "__file__",
+        str(sql_dir.parent / "bigquery_agent_analytics_plugin.py"),
+    )
+    bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
+    yield sql_dir
+    bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
+
+  def test_load_eval_sql_template_drops_the_license_header(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """The loader returns the text after the '--' header and its blank line.
+
+    The header may name a placeholder, as the packaged files' headers do.
+    """
+    (eval_sql_dir / "test_header.sql").write_text(
+        "-- License line one.\n-- Names {x}.\n\nSELECT {x}\n\nFROM t\n",
+        encoding="utf-8",
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_header.sql"
+    )
+
+    assert template == "SELECT {x}\n\nFROM t\n"
+
+  def test_load_eval_sql_template_normalizes_crlf_newlines(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """A file with the CRLF line breaks of a Windows checkout loads the same.
+
+    The file is read in text mode, so its CRLF line breaks become newlines
+    before the header and its blank line are found.
+    """
+    (eval_sql_dir / "test_crlf.sql").write_bytes(
+        b"-- License.\r\n\r\nSELECT 1\r\n"
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_crlf.sql"
+    )
+
+    assert template == "SELECT 1\n"
+
+  def test_load_eval_sql_template_reads_each_file_once(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """A template is cached, so a later edit to its file is not read."""
+    path = eval_sql_dir / "test_cache.sql"
+    path.write_text("-- License.\n\nSELECT 1\n", encoding="utf-8")
+    first = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_cache.sql"
+    )
+    path.write_text("-- License.\n\nSELECT 2\n", encoding="utf-8")
+
+    second = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_cache.sql"
+    )
+
+    assert (first, second) == ("SELECT 1\n", "SELECT 1\n")
+
+  @pytest.mark.parametrize(
+      "text",
+      [
+          "",
+          "SELECT 1\n",
+          "-- License\nSELECT 1\n",
+          "\n\nSELECT 1\n",
+          "-- License\nnot a comment\n\nSELECT 1\n",
+      ],
+  )
+  def test_load_eval_sql_template_rejects_a_missing_license_header(
+      self, eval_sql_dir: pathlib.Path, text: str
+  ) -> None:
+    """A file without a '--' header and a blank line is not a template."""
+    (eval_sql_dir / "test_bad.sql").write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must begin with"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template("test_bad.sql")
+
+  @pytest.mark.parametrize(
+      "filename", ["", ".", "..", "../ok.sql", "sub/ok.sql", "/tmp/ok.sql"]
+  )
+  def test_load_eval_sql_template_rejects_a_path(self, filename: str) -> None:
+    """Only a bare file name in the SQL directory can be loaded."""
+    with pytest.raises(ValueError, match="bare file name"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template(filename)
+
+  @pytest.mark.usefixtures("eval_sql_dir")
+  def test_load_eval_sql_template_reports_a_missing_file(self) -> None:
+    """A file that is neither beside the module nor packaged is an error."""
+    with pytest.raises(FileNotFoundError, match="test_missing.sql"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template(
+          "test_missing.sql"
+      )
+
+  def test_load_eval_sql_template_reads_beside_a_linked_module_first(
+      self, eval_sql_dir: pathlib.Path, tmp_path: pathlib.Path
+  ) -> None:
+    """The SQL beside a link to the module is read before its target's.
+
+    A build such as Blaze links the module into a tree of runfiles, and the
+    link's target, in a cache, may have no SQL beside it.
+    """
+    target_sql_dir = tmp_path / "cache" / "bigquery_agent_analytics_sql"
+    target_sql_dir.mkdir(parents=True)
+    target = target_sql_dir.parent / "0123abcd"
+    target.write_text("# The plugin module.\n", encoding="utf-8")
+    (eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py").symlink_to(
+        target
+    )
+    for sql_dir, place in [(eval_sql_dir, "link"), (target_sql_dir, "target")]:
+      (sql_dir / "test_linked.sql").write_text(
+          f"-- License.\n\nSELECT 'beside the {place}'\n", encoding="utf-8"
+      )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_linked.sql"
+    )
+
+    assert template == "SELECT 'beside the link'\n"
+
+  def test_load_eval_sql_template_follows_a_link_to_the_module(
+      self,
+      eval_sql_dir: pathlib.Path,
+      tmp_path: pathlib.Path,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """A link to the module, alone in its directory, finds its target's SQL."""
+    module = eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py"
+    module.write_text("# The plugin module.\n", encoding="utf-8")
+    link = tmp_path / "checkout" / "bigquery_agent_analytics_plugin.py"
+    link.parent.mkdir()
+    link.symlink_to(module)
+    monkeypatch.setattr(bigquery_agent_analytics_plugin, "__file__", str(link))
+    (eval_sql_dir / "test_target.sql").write_text(
+        "-- License.\n\nSELECT 'beside the target'\n", encoding="utf-8"
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_target.sql"
+    )
+
+    assert template == "SELECT 'beside the target'\n"
+
+  @pytest.mark.usefixtures("eval_sql_dir")
+  def test_load_eval_sql_template_falls_back_to_the_package_resources(
+      self,
+  ) -> None:
+    """With no SQL beside the module, the package's resource is read."""
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "eval_turn_view_v1.sql"
+    )
+
+    assert template.startswith(
+        "CREATE OR REPLACE VIEW `{view_ref}` AS\n{ctes}\nSELECT\n"
+    )
+
+  def test_eval_view_evaluator_requires_an_else_in_every_case(self) -> None:
+    """The evaluator rejects a CASE without an ELSE, as the SQL lint does."""
+    with_else = (
+        "WITH x AS (SELECT CASE WHEN a THEN 1 ELSE 2 END AS y FROM t)"
+        " SELECT y FROM x"
+    )
+    without_else = with_else.replace(" ELSE 2", "")
+
+    assert _EvalViewSqlEvaluator(with_else).run(
+        [{"a": True}, {"a": False}]
+    ) == [
+        {"y": 1},
+        {"y": 2},
+    ]
+    with pytest.raises(AssertionError, match="ELSE"):
+      _EvalViewSqlEvaluator(without_else)
 
 
 # ==============================================================================
@@ -17330,6 +17823,173 @@ class TestOffloadUnitSeparation:
     assert is_truncated
     assert parts[0]["storage_mode"] == "INLINE"
     assert "TRUNCATED" in parts[0]["text"]
+
+  @pytest.mark.asyncio
+  async def test_parser_parse_offload_false_skips_offloader_for_text_and_binary(
+      self,
+  ):
+    """parse(offload=False) keeps text and binary parts inline.
+
+    Each parse() entry point that parses content objects passes it on: the
+    LlmRequest contents, a non-str LlmRequest system_instruction, and a
+    types.Content or types.Part.
+    """
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/unexpected"
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=100,
+    )
+    # Each text part is longer than both offload thresholds, inline_text_limit
+    # (bytes) and max_length (characters), yet offload=False keeps it inline,
+    # truncated at max_length.
+    text_len = parser.inline_text_limit + 1
+    request = llm_request_lib.LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(text="P" * text_len),
+                    types.Part.from_bytes(
+                        data=b"\x89PNG", mime_type="image/png"
+                    ),
+                ],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            system_instruction=types.Content(
+                parts=[types.Part(text="S" * text_len)]
+            )
+        ),
+    )
+    content = types.Content(
+        parts=[
+            types.Part(text="C" * text_len),
+            types.Part.from_bytes(data=b"RIFF", mime_type="audio/wav"),
+        ]
+    )
+
+    request_payload, request_parts, request_truncated = await parser.parse(
+        request, offload=False
+    )
+    content_payload, content_parts, content_truncated = await parser.parse(
+        content, offload=False
+    )
+    part_payload, part_parts, part_truncated = await parser.parse(
+        types.Part(text="T" * text_len), offload=False
+    )
+
+    mock_offloader.upload_content.assert_not_called()
+    assert request_payload == {
+        "prompt": [{"role": "user", "content": "P" * 100 + "...[TRUNCATED]"}],
+        "system_prompt": "S" * 100 + "...[TRUNCATED]",
+    }
+    assert content_payload == {"text_summary": "C" * 100 + "...[TRUNCATED]"}
+    assert part_payload == {"text_summary": "T" * 100 + "...[TRUNCATED]"}
+    assert request_truncated and content_truncated and part_truncated
+    assert [
+        (part["mime_type"], part["text"], part["storage_mode"])
+        for part in request_parts + content_parts + part_parts
+    ] == [
+        ("text/plain", "P" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("image/png", "[BINARY DATA]", "INLINE"),
+        ("text/plain", "S" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("text/plain", "C" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("audio/wav", "[BINARY DATA]", "INLINE"),
+        ("text/plain", "T" * 100 + "...[TRUNCATED]", "INLINE"),
+    ]
+
+  @pytest.mark.parametrize(
+      ("mime_type", "expected_mime_type"),
+      [
+          ("image/png", "image/png"),
+          ("application/pdf", "application/pdf"),
+          (None, "application/octet-stream"),
+          ("", "application/octet-stream"),
+      ],
+      ids=["png", "pdf", "none", "empty"],
+  )
+  @pytest.mark.parametrize(
+      (
+          "upload_outcome",
+          "offload",
+          "expected_text",
+          "expected_storage_mode",
+          "expected_uri",
+      ),
+      [
+          pytest.param(
+              None, True, "[BINARY DATA]", "INLINE", None, id="no_offloader"
+          ),
+          pytest.param(
+              "gs://bucket/blob",
+              False,
+              "[BINARY DATA]",
+              "INLINE",
+              None,
+              id="offload_false",
+          ),
+          pytest.param(
+              RuntimeError("boom"),
+              True,
+              "[UPLOAD FAILED]",
+              "INLINE",
+              None,
+              id="upload_failed",
+          ),
+          pytest.param(
+              "gs://bucket/blob",
+              True,
+              "[MEDIA OFFLOADED]",
+              "GCS_REFERENCE",
+              "gs://bucket/blob",
+              id="uploaded",
+          ),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_inline_data_preserves_mime_type_without_offloader_and_on_upload_failure(
+      self,
+      mime_type,
+      expected_mime_type,
+      upload_outcome,
+      offload,
+      expected_text,
+      expected_storage_mode,
+      expected_uri,
+  ):
+    """An inline_data part keeps its mime_type whether or not it is uploaded.
+
+    The part is labeled with the blob's mime_type, or
+    application/octet-stream when the blob has none, never text/plain:
+    without an offloader, with offload=False, after a failed upload and after
+    a successful one. upload_outcome is what the offloader's upload returns
+    or raises; None means there is no offloader.
+    """
+    offloader = None
+    if upload_outcome is not None:
+      offloader = mock.AsyncMock()
+      offloader.upload_content.side_effect = [upload_outcome]
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader, trace_id="t", span_id="s"
+    )
+    content = types.Content(
+        parts=[
+            types.Part(
+                inline_data=types.Blob(data=b"\x00\x01", mime_type=mime_type)
+            )
+        ]
+    )
+
+    _, parts, _ = await parser.parse(content, offload=offload)
+
+    (part,) = parts
+    assert part["mime_type"] == expected_mime_type
+    assert part["text"] == expected_text
+    assert part["storage_mode"] == expected_storage_mode
+    assert part["uri"] == expected_uri
 
   @pytest.mark.asyncio
   async def test_raw_prompt_text_is_sanitized_inline(self):
@@ -21944,6 +22604,7 @@ async def test_content_parts_denied_disables_gcs_offload(
     mock_to_arrow_schema,
     dummy_arrow_schema,
     mock_storage_client,
+    caplog,
 ):
   # denying content_parts (which holds the offload object reference)
   # must disable GCS offload, otherwise the payload is uploaded with no
@@ -21955,9 +22616,16 @@ async def test_content_parts_denied_disables_gcs_offload(
   async with managed_plugin(
       PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
   ) as plugin:
-    await plugin._ensure_started(
-        storage_client=mock_storage_client.return_value
-    )
+    with caplog.at_level(logging.WARNING):
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+      # close() clears the parser, so the next start re-runs the offload
+      # setup; the warning is still logged once per plugin instance.
+      await plugin.close()
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
     assert plugin.offloader is None
     mock_blob = (
         mock_storage_client.return_value.bucket.return_value.blob.return_value
@@ -21972,6 +22640,345 @@ async def test_content_parts_denied_disables_gcs_offload(
     )
     await plugin.flush()
     mock_blob.upload_from_string.assert_not_called()
+
+  setup_warnings = [
+      record.getMessage()
+      for record in caplog.records
+      if "GCS offload disabled" in record.getMessage()
+  ]
+  assert len(setup_warnings) == 1
+  assert "payload_column_denylist drops 'content_parts'" in setup_warnings[0]
+  assert (
+      "large text is kept inline (truncated) in 'content' and binary parts"
+      " are not stored"
+      in setup_warnings[0]
+  )
+
+
+async def _log_large_user_message_and_llm_request(
+    plugin, invocation_context, callback_context
+):
+  """Logs a user message and an LLM request that both carry large payloads.
+
+  The USER_MESSAGE_RECEIVED row parses a types.Content with a "U" text part
+  over 32 KiB and an inline image/png part. The LLM_REQUEST row parses a
+  prompt with a "P" text part over 32 KiB and an inline image/png part, plus
+  a non-str system instruction with an "S" text part over 32 KiB.
+  """
+  large = 32 * 1024 + 1
+  image = types.Part.from_bytes(data=b"\x89PNG", mime_type="image/png")
+  await plugin.on_user_message_callback(
+      invocation_context=invocation_context,
+      user_message=types.Content(
+          role="user", parts=[types.Part(text="U" * large), image]
+      ),
+  )
+  await plugin.before_model_callback(
+      callback_context=callback_context,
+      llm_request=llm_request_lib.LlmRequest(
+          model="gemini-pro",
+          contents=[
+              types.Content(
+                  role="user", parts=[types.Part(text="P" * large), image]
+              )
+          ],
+          config=types.GenerateContentConfig(
+              system_instruction=types.Content(
+                  parts=[types.Part(text="S" * large)]
+              )
+          ),
+      ),
+  )
+  await plugin.flush()
+
+
+@pytest.mark.asyncio
+async def test_log_multi_modal_false_disables_gcs_offload_and_keeps_large_text_inline(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+    caplog,
+):
+  """log_multi_modal_content=False keeps large text inline instead of in GCS.
+
+  log_multi_modal_content=False writes content_parts as [], and content_parts
+  is the only column that holds an offloaded object's reference, so an upload
+  would leave the payload in GCS with no reference and the text missing from
+  content. The setup warning is logged once per plugin instance.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=False,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    with caplog.at_level(logging.WARNING):
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+      # close() clears the parser, so the next start re-runs the offload
+      # setup; the warning is still logged once per plugin instance.
+      await plugin.close()
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+    assert plugin.offloader is None
+    mock_storage_client.assert_not_called()
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  setup_warnings = [
+      record.getMessage()
+      for record in caplog.records
+      if "GCS offload disabled" in record.getMessage()
+  ]
+  assert len(setup_warnings) == 1
+  assert "log_multi_modal_content" in setup_warnings[0]
+  assert (
+      "large text is kept inline (truncated) in 'content' and binary parts"
+      " are not stored"
+      in setup_warnings[0]
+  )
+  assert "test-bucket" in setup_warnings[0]
+  mock_blob = (
+      mock_storage_client.return_value.bucket.return_value.blob.return_value
+  )
+  mock_blob.upload_from_string.assert_not_called()
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert user_row["content_parts"] == []
+  assert request_row["content_parts"] == []
+  assert user_row["is_truncated"] is True
+  assert request_row["is_truncated"] is True
+  assert json.loads(user_row["content"]) == {
+      "text_summary": "U" * 500 + "...[TRUNCATED]"
+  }
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
+
+
+@pytest.mark.parametrize("log_multi_modal_content", [True, False])
+@pytest.mark.parametrize("gcs_bucket_name", [None, "test-bucket"])
+@pytest.mark.asyncio
+async def test_large_content_stays_inline_unless_offloaded_with_a_row_reference(
+    gcs_bucket_name,
+    log_multi_modal_content,
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Large content is kept inline unless the row keeps its GCS reference.
+
+  Setup: every gcs_bucket_name x log_multi_modal_content combination.
+  Act: log a user message and an LLM request whose text parts are over
+    32 KiB and that each carry an inline image/png part.
+  Assert:
+    - Content is uploaded only when a bucket is set and content_parts is
+      persisted, and each upload is a GCS_REFERENCE part in content_parts.
+    - Otherwise the large text stays inline, truncated, in content.
+    - Persisted image parts keep their image/png mime_type.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name=gcs_bucket_name,
+      log_multi_modal_content=log_multi_modal_content,
+      max_content_length=500,
+  )
+  offloaded = gcs_bucket_name is not None and log_multi_modal_content
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  def summary(char):
+    """Returns the content summary of a large text part made of ``char``."""
+    return "" if offloaded else char * 500 + "...[TRUNCATED]"
+
+  def describe(parts):
+    """Returns the (mime_type, storage_mode, has_uri) of each part."""
+    return [
+        (part["mime_type"], part["storage_mode"], part["uri"] is not None)
+        for part in parts
+    ]
+
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  upload = mock_bucket.blob.return_value.upload_from_string
+  assert upload.call_count == (5 if offloaded else 0)
+  assert user_row["is_truncated"] is (not offloaded)
+  assert request_row["is_truncated"] is (not offloaded)
+  assert json.loads(user_row["content"]) == {"text_summary": summary("U")}
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": summary("P")}],
+      "system_prompt": summary("S"),
+  }
+  if log_multi_modal_content:
+    storage_mode = "GCS_REFERENCE" if offloaded else "INLINE"
+    text_part = ("text/plain", storage_mode, offloaded)
+    image_part = ("image/png", storage_mode, offloaded)
+    assert describe(user_row["content_parts"]) == [text_part, image_part]
+    assert describe(request_row["content_parts"]) == [
+        text_part,
+        image_part,
+        text_part,
+    ]
+  else:
+    assert user_row["content_parts"] == []
+    assert request_row["content_parts"] == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_flip_log_multi_modal_false_skips_offload_per_row(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Rows logged after log_multi_modal_content is turned off stay inline.
+
+  Setup built the offloader while log_multi_modal_content was True. The flag
+  is read again for each row, so a row logged after it is set to False keeps
+  its large text inline and writes content_parts as [].
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=True,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is not None
+    plugin.config.log_multi_modal_content = False
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  mock_blob = (
+      mock_storage_client.return_value.bucket.return_value.blob.return_value
+  )
+  mock_blob.upload_from_string.assert_not_called()
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert user_row["content_parts"] == []
+  assert request_row["content_parts"] == []
+  assert json.loads(user_row["content"]) == {
+      "text_summary": "U" * 500 + "...[TRUNCATED]"
+  }
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
+
+
+@pytest.mark.asyncio
+async def test_mid_parse_flip_log_multi_modal_false_keeps_row_consistent(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Turning off log_multi_modal_content mid-parse never orphans an upload.
+
+  Setup: log_multi_modal_content=True with a GCS bucket; the mocked GCS
+    upload turns log_multi_modal_content off.
+  Act: log a user message, then an LLM request, each with a text part over
+    32 KiB and an inline image/png part; the first upload turns the flag off
+    while the user message row is still being parsed.
+  Assert:
+    - The user message row writes a GCS_REFERENCE part in content_parts for
+      each object it uploaded, so none of its uploads loses its reference.
+    - The LLM request row uploads nothing, keeps its large text inline,
+      truncated, in content, and writes content_parts as [].
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=True,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is not None
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+
+    def turn_off_multi_modal_logging(*args, **kwargs):
+      """Stands in for the GCS upload and turns log_multi_modal_content off."""
+      del args, kwargs
+      plugin.config.log_multi_modal_content = False
+
+    upload = mock_bucket.blob.return_value.upload_from_string
+    upload.side_effect = turn_off_multi_modal_logging
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  uploaded_uris = [
+      f"gs://test-bucket/{blob_call.args[0]}"
+      for blob_call in mock_bucket.blob.call_args_list
+  ]
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert upload.call_count == 2
+  assert [
+      (part["mime_type"], part["storage_mode"], part["uri"])
+      for part in user_row["content_parts"]
+  ] == [
+      ("text/plain", "GCS_REFERENCE", uploaded_uris[0]),
+      ("image/png", "GCS_REFERENCE", uploaded_uris[1]),
+  ]
+  assert user_row["is_truncated"] is False
+  assert json.loads(user_row["content"]) == {"text_summary": ""}
+  assert request_row["content_parts"] == []
+  assert request_row["is_truncated"] is True
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
 
 
 @pytest.mark.asyncio
@@ -23246,6 +24253,110 @@ async def test_both_payload_columns_denied_skips_parse_and_offload(
     mock_blob.upload_from_string.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_content_denied_and_log_multi_modal_false_skips_parse_and_offload(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Content is not parsed when no payload column keeps the parser output.
+
+  content is projected out and log_multi_modal_content=False writes
+  content_parts as [], so parsing and GCS upload work would be discarded.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content"],
+      log_multi_modal_content=False,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_blob = (
+        mock_storage_client.return_value.bucket.return_value.blob.return_value
+    )
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * (32 * 1024 + 1))])
+        ],
+    )
+    with mock.patch.object(
+        plugin.parser, "parse", wraps=plugin.parser.parse
+    ) as parse_spy:
+      await plugin.before_model_callback(
+          callback_context=callback_context, llm_request=llm_request
+      )
+      await plugin.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+  parse_spy.assert_not_called()
+  mock_blob.upload_from_string.assert_not_called()
+  assert row["event_type"] == "LLM_REQUEST"
+  assert row["content"] is None
+  assert row["content_parts"] == []
+
+
+@pytest.mark.asyncio
+async def test_content_denied_and_log_multi_modal_true_parses_and_offloads(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Denying only content still parses and offloads into content_parts.
+
+  content is projected out, but log_multi_modal_content=True keeps
+  content_parts, so the large text is uploaded and the row keeps its GCS
+  reference.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content"],
+      log_multi_modal_content=True,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * (32 * 1024 + 1))])
+        ],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await plugin.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+  mock_bucket.blob.return_value.upload_from_string.assert_called_once()
+  assert row["event_type"] == "LLM_REQUEST"
+  assert row["content"] is None
+  assert len(row["content_parts"]) == 1
+  assert row["content_parts"][0]["storage_mode"] == "GCS_REFERENCE"
+  assert row["content_parts"][0]["uri"].startswith("gs://test-bucket/")
+
+
 class TestSafetyLifecycleHardening:
   """Safety and lifecycle invariants."""
 
@@ -23685,7 +24796,12 @@ class TestSafetyLifecycleHardening:
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID
     )
     legacy_state = plugin.__getstate__()
-    for key in ("_local_drop_counts", "_setup_failures", "_setup_retry_at"):
+    for key in (
+        "_local_drop_counts",
+        "_setup_failures",
+        "_setup_retry_at",
+        "_offload_disabled_warned",
+    ):
       legacy_state.pop(key, None)
     restored = (
         bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
@@ -23693,6 +24809,7 @@ class TestSafetyLifecycleHardening:
         )
     )
     restored.__setstate__(legacy_state)
+    assert restored._offload_disabled_warned is False
     assert restored.get_drop_stats() == {}
     assert restored._setup_failures == 0
     assert restored._setup_retry_at == 0.0

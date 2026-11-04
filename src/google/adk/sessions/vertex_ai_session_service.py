@@ -21,9 +21,7 @@ import json
 import logging
 import re
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.genai import types
 from google.genai.errors import ClientError
@@ -43,6 +41,7 @@ from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
 from .session import Session
+from .state import State
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -72,6 +71,14 @@ _FIELD_BY_FIELD_EVENT_FIELDS = frozenset({
 })
 
 _SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+_ALLOWED_CREATE_SESSION_CONFIG_KEYS = frozenset({
+    'display_name',
+    'displayName',
+    'ttl',
+    'expire_time',
+    'expireTime',
+    'labels',
+})
 
 
 def _extract_short_session_id(
@@ -149,11 +156,11 @@ class VertexAiSessionService(BaseSessionService):
 
   def __init__(
       self,
-      project: Optional[str] = None,
-      location: Optional[str] = None,
-      agent_engine_id: Optional[str] = None,
+      project: str | None = None,
+      location: str | None = None,
+      agent_engine_id: str | None = None,
       *,
-      express_mode_api_key: Optional[str] = None,
+      express_mode_api_key: str | None = None,
   ):
     """Initializes the VertexAiSessionService.
 
@@ -187,8 +194,8 @@ class VertexAiSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
       **kwargs: Any,
   ) -> Session:
     """Creates a new session.
@@ -198,21 +205,47 @@ class VertexAiSessionService(BaseSessionService):
       user_id: The ID of the user.
       state: The initial state of the session.
       session_id: The ID of the session.
-      **kwargs: Additional arguments to pass to the session creation. E.g. set
-        ttl='7200s' to set the session time-to-live or
-        expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
-        See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
-        for more details.
+      **kwargs: Optional session configuration fields forwarded to the Sessions
+        API. Only ``display_name``, ``ttl``, ``expire_time``, and ``labels``
+        (and the camelCase aliases ``displayName`` and ``expireTime``) are
+        accepted, e.g. ``ttl='7200s'`` or
+        ``expire_time='2025-10-01T00:00:00Z'``.
 
     Returns:
       The created session.
+
+    Raises:
+      ValueError: If an unsupported keyword argument is passed, or if both
+        ``ttl`` and ``expire_time`` (or ``expireTime``) are specified.
     """
-    if kwargs.get('ttl') is not None and kwargs.get('expire_time') is not None:
+    unexpected_keys = sorted(set(kwargs) - _ALLOWED_CREATE_SESSION_CONFIG_KEYS)
+    if unexpected_keys:
+      allowed = ', '.join(
+          repr(key) for key in sorted(_ALLOWED_CREATE_SESSION_CONFIG_KEYS)
+      )
+      raise ValueError(
+          'Unsupported create_session option(s): '
+          f'{", ".join(repr(key) for key in unexpected_keys)}. '
+          f'Supported options are: {allowed}.'
+      )
+    has_expire_time = (
+        kwargs.get('expire_time') is not None
+        or kwargs.get('expireTime') is not None
+    )
+    if kwargs.get('ttl') is not None and has_expire_time:
       raise ValueError(
           "Cannot specify both 'ttl' and 'expire_time' simultaneously."
       )
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
+    # temp: keys live for one invocation and are never stored, so they are
+    # dropped here just as append_event trims them from every state delta.
+    if state:
+      state = {
+          key: value
+          for key, value in state.items()
+          if not key.startswith(State.TEMP_PREFIX)
+      }
     config: dict[str, Any] = {'session_state': state} if state else {}
     if session_id:
       session_id = _extract_short_session_id(
@@ -247,8 +280,8 @@ class VertexAiSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     session_id = _extract_short_session_id(
         session_id, expected_engine_id=reasoning_engine_id
@@ -260,7 +293,7 @@ class VertexAiSessionService(BaseSessionService):
     api_client = self._get_api_client()
     # Get session resource and events in parallel.
     list_events_kwargs = {}
-    if config and config.after_timestamp:
+    if config and config.after_timestamp is not None:
       # Filter events based on timestamp.
       list_events_kwargs['config'] = {
           'filter': 'timestamp>="{}"'.format(
@@ -327,7 +360,7 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
@@ -411,14 +444,17 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    if not event.partial:
-      # Apply temp-scoped state to the in-memory session and strip it from
-      # the event before the remote append succeeds. Normal state and the
-      # event itself are only applied to the session once the remote append
-      # succeeds, so a failed append leaves the session unchanged and a
-      # retry does not re-apply state or duplicate the event.
-      self._apply_temp_state(session, event)
-      event = self._trim_temp_delta_state(event)
+    # Partial events are streaming chunks: like every other backend, return
+    # them untouched instead of storing them in Agent Engine.
+    if event.partial:
+      return event
+    # Apply temp-scoped state to the in-memory session and strip it from the
+    # event before the remote append succeeds. Normal state and the event
+    # itself are only applied to the session once the remote append succeeds,
+    # so a failed append leaves the session unchanged and a retry does not
+    # re-apply state or duplicate the event.
+    self._apply_temp_state(session, event)
+    event = self._trim_temp_delta_state(event)
 
     _validate_session_id(session.id)
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
@@ -432,10 +468,12 @@ class VertexAiSessionService(BaseSessionService):
     if event.actions:
       config['actions'] = {
           'skip_summarization': event.actions.skip_summarization,
-          # TODO: coerce the delta to a JSON-safe form the way the database,
-          # sqlite and firestore backends do. Sent raw, a value the JSON
-          # encoder rejects fails the whole append and the event is lost.
-          'state_delta': event.actions.state_delta,
+          # Coerced like the database, sqlite and firestore backends do. Sent
+          # raw, a value the JSON encoder rejects fails the whole append and
+          # the event is lost.
+          'state_delta': _session_util.make_json_safe_state(
+              event.actions.state_delta
+          ),
           'artifact_delta': event.actions.artifact_delta,
           'transfer_agent': event.actions.transfer_to_agent,
           'escalate': event.actions.escalate,
@@ -540,9 +578,8 @@ class VertexAiSessionService(BaseSessionService):
         del config['raw_event']
       await _do_append(config)
 
-    if not event.partial:
-      session.last_update_time = event.timestamp
-      self._commit_event_to_session(session, event)
+    session.last_update_time = event.timestamp
+    self._commit_event_to_session(session, event)
     return event
 
   def _get_reasoning_engine_id(self, app_name: str) -> str:
@@ -565,7 +602,7 @@ class VertexAiSessionService(BaseSessionService):
 
   def _api_client_http_options_override(
       self,
-  ) -> Optional[Union[types.HttpOptions, types.HttpOptionsDict]]:
+  ) -> types.HttpOptions | types.HttpOptionsDict | None:
     return None
 
   def _get_api_client(self) -> agentplatform.AsyncClient:

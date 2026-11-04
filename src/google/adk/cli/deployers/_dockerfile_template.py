@@ -31,6 +31,12 @@ _APP_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$'
 )
 
+_DEFAULT_PYTHON_VERSION: Final[str] = '3.11'
+
+_PYTHON_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'^3\.(1[1-9]|[2-9][0-9])(\.[0-9]+)?$'
+)
+
 
 def _validate_app_name(app_name: str) -> str:
   """Validates the deploy app name before it is written into a Dockerfile.
@@ -53,6 +59,27 @@ def _validate_app_name(app_name: str) -> str:
         ' digit, hyphen, or underscore).'
     )
   return app_name
+
+
+def _validate_python_version(python_version: str) -> str:
+  """Validates the Python version before it is written into a Dockerfile.
+
+  Args:
+    python_version: The Python version (e.g. '3.11', '3.12', '3.12.1').
+
+  Returns:
+    The validated Python version, unchanged.
+
+  Raises:
+    click.ClickException: If the Python version is not a valid 3.11+ version
+      string.
+  """
+  if not _PYTHON_VERSION_PATTERN.fullmatch(python_version):
+    raise click.ClickException(
+        f'Invalid python_version {python_version!r}. Expected a Python 3.11+'
+        ' version string such as "3.11", "3.12", or "3.12.1".'
+    )
+  return python_version
 
 
 def _validate_dockerfile_literal(name: str, value: Any) -> str:
@@ -98,7 +125,7 @@ def _to_exec_form(instruction: str, args: list[str]) -> str:
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
-FROM python:3.11-slim
+FROM python:{python_version}-slim
 WORKDIR /app
 
 # Create a non-root user
@@ -191,6 +218,7 @@ def _render_dockerfile(
     express_mode_option: str = '',
     extra_packages_copy: str = '',
     extra_env_vars: str = '',
+    python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> str:
   """Renders the Dockerfile used by every `adk deploy` target.
 
@@ -222,6 +250,7 @@ def _render_dockerfile(
     express_mode_option: `--express_mode` or an empty string.
     extra_packages_copy: Extra `COPY`/`ENV` instructions, or an empty string.
     extra_env_vars: Extra `ENV` lines, or an empty string.
+    python_version: The Python version for the base image (default: '3.11').
 
   Returns:
     The Dockerfile contents.
@@ -263,6 +292,7 @@ def _render_dockerfile(
   )
 
   return _DOCKERFILE_TEMPLATE.format(
+      python_version=_validate_python_version(python_version),
       app_name=app_name,
       port=port,
       install_adk=install_adk,

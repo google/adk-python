@@ -1686,12 +1686,154 @@ async def test_sdk_subagent_steps_preserve_author_and_hierarchy():
   assert author_fallback == 'threat_intelligence_orchestrator_subagent'
   assert 'traj-fallback' not in subagent_authors
 
+  root_agent_multi = AntigravityAgent(
+      name='root_agent',
+      config=_make_config(subagents=[sub_1, sub_2]),
+      mode='single_turn',
+  )
+  root_subagent_authors: dict[str, str] = {}
+  root_pending: list[str] = []
+  root_seen_calls: set[str] = set()
+  root_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-root',
+          depth=0,
+          step_index=1,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'reverse_engineering_agent'},
+                  id='call_sub_step_1',
+              )
+          ],
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert root_author == 'root_agent'
+  assert root_pending == ['reverse_engineering_agent']
+  root_author_second, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-root',
+          depth=0,
+          step_index=2,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'reverse_engineering_agent'},
+                  id='call_sub_step_1',
+              ),
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'code_insights_agent'},
+                  id='call_sub_step_2',
+              ),
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'reverse_engineering_agent'},
+                  id='call_sub_step_3',
+              ),
+          ],
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert root_author_second == 'root_agent'
+  assert root_pending == [
+      'reverse_engineering_agent',
+      'code_insights_agent',
+      'reverse_engineering_agent',
+  ]
+  step_queued_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-sub-step-queued-1',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='from step args 1',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert step_queued_author == 'reverse_engineering_agent'
+  step_queued_second_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-sub-step-queued-2',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='from step args 2',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert step_queued_second_author == 'code_insights_agent'
+  step_queued_third_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-sub-step-queued-3',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='from step args 3',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert step_queued_third_author == 'reverse_engineering_agent'
+  assert not root_pending
+  root_fallback_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-root-fallback',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='root fallback',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+  )
+  assert root_fallback_author == 'subagent'
+  assert 'traj-root-fallback' not in root_subagent_authors
+
   ctx_with_prior = _mock_run_ctx()
   ctx_with_prior.session.events = [
       Event(
           author='re_sub',
           custom_metadata={
               'trajectory_id': 'traj-sub-turn1',
+              'parent_trajectory_id': 'traj-root',
+              'depth': 1,
+          },
+      ),
+      Event(
+          author='root_agent_subagent',
+          custom_metadata={
+              'trajectory_id': 'traj-sub-generic',
               'parent_trajectory_id': 'traj-root',
               'depth': 1,
           },

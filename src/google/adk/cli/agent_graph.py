@@ -203,12 +203,12 @@ async def build_graph(
         await build_graph(child, sub_agent, highlight_pairs)
         if parent_agent:
           draw_edge(parent_agent.name, sub_agent.name)
-    elif isinstance(agent, Workflow) and agent._graph is not None:
-      for wf_node in agent._graph.nodes:
+    elif isinstance(agent, Workflow) and agent.graph is not None:
+      for wf_node in agent.graph.nodes:
         if wf_node.name == START.name:
           continue
         await build_graph(child, wf_node, highlight_pairs)
-      for edge in agent._graph.edges:
+      for edge in agent.graph.edges:
         if edge.from_node.name == START.name:
           continue
         label = str(edge.route) if edge.route is not None else ''

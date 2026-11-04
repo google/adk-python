@@ -16,10 +16,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
+import contextlib
 import logging
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+from typing import cast
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
@@ -29,6 +34,19 @@ from ...environment._base_environment import ExecutionResult
 
 if TYPE_CHECKING:
   from e2b import AsyncSandbox
+
+
+class _ClosableBytesStream(Protocol):
+
+  def __aiter__(self) -> AsyncIterator[bytes]:
+    ...
+
+  async def __anext__(self) -> bytes:
+    ...
+
+  async def aclose(self) -> object:
+    ...
+
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -140,6 +158,26 @@ class E2BEnvironment(BaseEnvironment):
     except FileNotFoundException as e:
       raise FileNotFoundError(resolved) from e
     return bytes(content)
+
+  @override
+  async def read_file_stream(
+      self, path: str | os.PathLike[str]
+  ) -> AsyncGenerator[bytes, None]:
+    from e2b import FileNotFoundException
+
+    sandbox = await self._ensure_sandbox()
+    resolved = self._resolve_path(path)
+    try:
+      # SDK stub types the stream as AsyncIterator, omitting aclose().
+      chunks = cast(
+          _ClosableBytesStream,
+          await sandbox.files.read(resolved, format="stream"),
+      )
+      async with contextlib.aclosing(chunks):
+        async for chunk in chunks:
+          yield bytes(chunk)
+    except FileNotFoundException as e:
+      raise FileNotFoundError(resolved) from e
 
   @override
   async def write_file(

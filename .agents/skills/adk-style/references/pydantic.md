@@ -32,7 +32,7 @@ Declare bounds on the field rather than writing a validator for them — it
 keeps the rule next to the data and shows up in the generated JSON schema.
 
 ```python
-compaction_interval: Optional[int] = Field(default=None, gt=0)
+compaction_interval: int | None = Field(default=None, gt=0)
 injected_latency_seconds: float = Field(default=0.0, le=120.0)
 ```
 
@@ -42,7 +42,7 @@ The house style is an attribute docstring directly under the field, which
 Sphinx picks up:
 
 ```python
-model: Union[str, BaseLlm] = ''
+model: str | BaseLlm = ''
 """The model to use for the agent.
 
 When not set, the agent inherits the model from its ancestor.
