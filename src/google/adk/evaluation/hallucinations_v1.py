@@ -782,8 +782,17 @@ class HallucinationsV1Evaluator(Evaluator):
         fs_score, _ = await self._evaluate_nl_response(
             step.nl_response, step.context
         )
-        if fs_score is not None:
-          scores_per_step.append(fs_score)
+        if fs_score is None:
+          # A step that could not be scored would drop out of the average and
+          # let the remaining steps decide the result, so the invocation is
+          # not scored, and its remaining steps are not sent to the judge.
+          logger.warning(
+              "A response in this invocation could not be scored; the"
+              " invocation will not be scored."
+          )
+          scores_per_step = []
+          break
+        scores_per_step.append(fs_score)
 
       invocation_score = (
           statistics.mean(scores_per_step) if scores_per_step else None

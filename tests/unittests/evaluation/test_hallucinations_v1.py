@@ -1788,10 +1788,69 @@ async def test_evaluate_invocations_partial_failure(
       [actual_invocation], [expected_invocation]
   )
 
-  assert result.overall_score == 0.8
+  # The unscored final response must not drop out of the average and leave
+  # the intermediate response to decide the result.
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert len(result.per_invocation_results) == 1
   per_invocation_result = result.per_invocation_results[0]
-  assert per_invocation_result.score == 0.8
+  assert per_invocation_result.score is None
+  assert per_invocation_result.eval_status == EvalStatus.NOT_EVALUATED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_stops_at_first_unscored_step(
+    hallucinations_metric, mocker
+):
+  """Steps after an unscored one are not sent to the judge."""
+  metric = hallucinations_metric
+  app_details = AppDetails(
+      agent_details={
+          "root": AgentDetails(
+              name="root",
+              instructions="Root agent instructions.",
+              tool_declarations=[],
+          ),
+      },
+  )
+  user_content = genai_types.Content(
+      parts=[genai_types.Part(text="User query.")]
+  )
+  actual_invocation = Invocation(
+      app_details=app_details,
+      user_content=user_content,
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(text="Intermediate NL response."),
+                      ]
+                  ),
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final response.")]
+      ),
+  )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    if nl_response == "Intermediate NL response.":
+      return None, "Sentence validator returned no text."
+    return 1.0, "[]"
+
+  mock = mocker.patch(
+      "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
+      side_effect=mock_evaluate_nl_response,
+  )
+  result = await metric.evaluate_invocations([actual_invocation])
+
+  assert mock.call_count == 1
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+  assert result.per_invocation_results[0].score is None
 
 
 @pytest.mark.asyncio
