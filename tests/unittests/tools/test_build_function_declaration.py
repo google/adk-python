@@ -17,6 +17,8 @@ from enum import Enum
 from enum import IntEnum
 from typing import Annotated
 from typing import Any
+from typing import List
+from typing import Union
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -1275,3 +1277,51 @@ class TestBuildFunctionDeclarationFromSchemaDict:
     )
 
     assert decl.parameters.required == ['name']
+
+  def test_for_langchain_collapses_a_union_to_its_first_non_null_member(self):
+    # A heterogeneous (non-Optional) union must collapse to its first non-null
+    # member, per _remove_any_of's "Take the first non-null type" contract,
+    # without leaking keywords from the other members (which would otherwise
+    # produce an invalid schema such as an INTEGER carrying array `items`).
+    class TagArgs(BaseModel):
+      tags: Union[List[str], int]
+
+    def tool_func(tags) -> str:
+      return str(tags)
+
+    decl = _automatic_function_calling_util.build_function_declaration_for_langchain(
+        False,
+        'tag',
+        'Tag something.',
+        tool_func,
+        TagArgs.model_json_schema()['properties'],
+    )
+
+    schema = decl.parameters.properties['tags']
+    # The first non-null member (list[str]) wins.
+    assert schema.type == 'ARRAY'
+    assert schema.items is not None
+    assert schema.items.type == 'STRING'
+    # No keywords from the other (integer) member leak through, and the union
+    # keyword itself is gone.
+    assert schema.any_of is None
+
+  def test_for_crewai_collapses_a_union_to_its_first_non_null_member(self):
+    class TagArgs(BaseModel):
+      count: Union[int, str]
+
+    def tool_func(count) -> str:
+      return str(count)
+
+    decl = _automatic_function_calling_util.build_function_declaration_for_params_for_crewai(
+        False,
+        'tag',
+        'Tag something.',
+        tool_func,
+        TagArgs.model_json_schema(),
+    )
+
+    schema = decl.parameters.properties['count']
+    # The first non-null member (int) wins, not the last.
+    assert schema.type == 'INTEGER'
+    assert schema.any_of is None
