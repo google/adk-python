@@ -34,6 +34,15 @@
 --     that ends after its last CTE, with no trailing comma, which this
 --     template continues.  That file lists its placeholders.
 --
+-- Truncated content: a row that puts an event in the trace and has
+-- is_truncated set lacks part of its payload, so has_truncated_content is
+-- TRUE for its session, and eval_ready is FALSE.  No other row counts, such
+-- as an LLM_REQUEST row, which repeats the conversation so far.
+-- has_truncated_content tells a caller that truncation keeps a session from
+-- being ready, but not whether it is the only reason: no column of the view
+-- holds the other conditions of eval_ready, so a truncated session may also
+-- have a turn that is unfinished or lacks user text.
+--
 -- Versioning: the _v1 in the file name is the version of this contract.  A
 -- backward-compatible fix, which keeps the placeholders and the output
 -- columns, edits the file in place; a change to either needs a new _v2 file.
