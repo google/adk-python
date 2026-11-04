@@ -81,7 +81,8 @@ class NodeInfo(BaseModel):
 
   Such a run leaves no other trace in the session, so this event records that
   it finished. On resume the run is replayed from history instead of running
-  again.
+  again. For a ``wait_for_output`` node this means the run ended ``WAITING``;
+  agents and ``rerun_on_resume`` nodes, which rerun on resume, get no marker.
   """
 
   @property
