@@ -35,6 +35,7 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 from pydantic import PrivateAttr
+from pydantic import ValidationInfo
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
@@ -411,6 +412,12 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   parallel_worker: bool | None = None
   """Whether to run the agent in parallel worker mode."""
+
+  max_parallel_workers: int | None = Field(default=None, ge=1)
+  """Maximum number of input items to run concurrently in parallel worker mode.
+
+  Requires parallel_worker=True. None means no limit on concurrency.
+  """
 
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
@@ -1185,6 +1192,21 @@ class LlmAgent(BaseAgent, abc.ABC):
     accumulator += text
     event.actions.state_delta[self.output_key] = accumulator
     return accumulator
+
+  # A field validator, unlike a model 'after' validator, does not run on an
+  # LlmAgent instance passed as a field value, such as an autospec mock.
+  @field_validator('max_parallel_workers', mode='after')
+  @classmethod
+  def _validate_parallel_worker_config(
+      cls, max_parallel_workers: int | None, info: ValidationInfo
+  ) -> int | None:
+    if max_parallel_workers is not None and not info.data.get(
+        'parallel_worker'
+    ):
+      raise ValueError(
+          'max_parallel_workers can only be set when parallel_worker is True.'
+      )
+    return max_parallel_workers
 
   @model_validator(mode='before')
   @classmethod
