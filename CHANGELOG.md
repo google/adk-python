@@ -3,6 +3,21 @@
 ## [2.14.0](https://github.com/google/adk-python/compare/v2.13.0...v2.14.0) (2026-11-04)
 
 
+### Highlights
+
+This release stabilizes core A2A integrations, evaluation tools, and runtime modules while adding MongoDB persistence services and performance enhancements for multi-turn workflows.
+
+* **Features**: Build on stable production APIs as core modules, evaluation frameworks, toolsets, and A2A integration graduate out of experimental status. ([c54b253](https://github.com/google/adk-python/commit/c54b253eba3359264a5f86805051aeb6cd93034d))
+* **Integrations**: Persist session states and enable vector search retrieval over long-term agent memories using new MongoDB-backed services. ([cbca417](https://github.com/google/adk-python/commit/cbca417c40e1aa052446391d2d7b36ae92978da9))
+* **CLI**: Instantly see local agent updates without restarting the CLI by passing the new `--reload_agents` flag to `adk run`. ([4f8e4ae](https://github.com/google/adk-python/commit/4f8e4aeef9a1a40fdd4b864818167b93a23d5ef0))
+* **Performance**: Run complex multi-turn workflows up to 23% faster with reduced memory consumption. ([532580c](https://github.com/google/adk-python/commit/532580c8e0511c659eac39cd9305a02ecb796064))
+
+#### Breaking changes
+* Ensure live WebSocket clients handle disconnects and re-establish connections gracefully, as malformed WebSockets will now close immediately instead of remaining stuck.
+
+<details>
+<summary>All changes</summary>
+
 ### ⚠ BREAKING CHANGES
 
 * close malformed live WebSockets instead of wedging them
@@ -84,7 +99,6 @@
 * clear strict mypy errors in tools and integrations ([fbd5ca0](https://github.com/google/adk-python/commit/fbd5ca0f6ad8671adefedaff937610024c4a7989))
 * **cli:** monitor ASGI receive channel for client disconnect in /run_sse ([1fbe9e0](https://github.com/google/adk-python/commit/1fbe9e034506a0a9a03039a68e822fb1b787a165))
 * close inner async generators across node `_run_impl` and skip compaction on early close ([facd7dd](https://github.com/google/adk-python/commit/facd7ddafe0e23715e079e50971ad27b251e2e98))
-* close malformed live WebSockets instead of wedging them ([3b227d6](https://github.com/google/adk-python/commit/3b227d6ec82490dae6473f681dcc825b1ac31679))
 * compact AgentTool nested history at caller token threshold ([ae8323b](https://github.com/google/adk-python/commit/ae8323b6d3de2fa75181e80f510ca91b0a0da336)), closes [#7397](https://github.com/google/adk-python/issues/7397)
 * **compaction:** cancel in-flight summarization when invocation aborts ([87d9dcd](https://github.com/google/adk-python/commit/87d9dcdf5273b54f61ee9d9cba95c30e5c0a5e0e))
 * complete A2A task when the run recovers from an error ([512d56b](https://github.com/google/adk-python/commit/512d56b2220b08feda559787045a7d8c9f8ebe0f))
@@ -209,7 +223,7 @@
 * support deepcopy and pickling in AgentEngineSandboxCodeExecutor ([d60c870](https://github.com/google/adk-python/commit/d60c870ad512fb19d596caea31f647bdb36a50a8))
 * take final input and cache counts from Anthropic message_delta ([329933f](https://github.com/google/adk-python/commit/329933f755d5f987d7e25d8348548dc718b21a0a))
 * **telemetry:** give every gen_ai duration and token histogram bucket bounds ([ba45671](https://github.com/google/adk-python/commit/ba456715ce8a25c99218db992d4b96ab30f2d5c5))
-* **telemetry:** Record the aggregated answer of a streamed inference, not its chunks ([80a4411](https://github.com/google/adk-python/commit/80a44111c7a4fe8b739249f6e4ffc649b72ce257))
+* **telemetry:** record the aggregated answer of a streamed inference, not its chunks ([80a4411](https://github.com/google/adk-python/commit/80a44111c7a4fe8b739249f6e4ffc649b72ce257))
 * **tracing:** extract standard W3C traceparent and baggage headers on FastAPI requests ([f27b8f1](https://github.com/google/adk-python/commit/f27b8f1055f78005c651bdebaae1f510cbb3b476)), closes [#7844](https://github.com/google/adk-python/issues/7844)
 * treat after_timestamp=0 as a filter in session services ([6b182d8](https://github.com/google/adk-python/commit/6b182d8a0ee1ee5e13467290ee1bfff5842a9a89))
 * treat an empty session id as absent in DatabaseSessionService ([1a337ca](https://github.com/google/adk-python/commit/1a337ca6a58045304d86450b0f6b65e82efc4a15))
@@ -246,6 +260,8 @@
 * **guides:** add TypesafeClassifier unit guide ([48d18a6](https://github.com/google/adk-python/commit/48d18a6aea65ed399bf036f29e383219ec167b3b))
 * **samples:** add an AgentEngineEnvironment sample agent ([d3a199d](https://github.com/google/adk-python/commit/d3a199d4c47d4c01bab91aee3cd36af1277fd510))
 * say ContainerCodeExecutor runs as the image's user, not non-root ([7a64c7c](https://github.com/google/adk-python/commit/7a64c7c552d369a03c644317df7eb1a133acc75d)), closes [#7712](https://github.com/google/adk-python/issues/7712)
+
+</details>
 
 ## [2.13.0](https://github.com/google/adk-python/compare/v2.12.0...v2.13.0) (2026-10-22)
 
