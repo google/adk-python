@@ -36,6 +36,7 @@ from ..models.base_llm_connection import BaseLlmConnection
 from ..models.base_llm_connection import RealtimeInput
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
+from ..utils.content_utils import _filter_media_history
 from ..utils.context_utils import Aclosing
 from ._cascade_live_events import AgentSpokenOutput
 from ._cascade_live_events import AudioChunk
@@ -133,8 +134,11 @@ class CascadeLiveConnection(BaseLlmConnection):
     # Replayed to the LLM on every turn. One rule governs what lands
     # here: only *completed* content, and assistant text only as the egress
     # reported it (`AgentSpokenOutput`), never as the LLM generated it. See
-    # `_run_turn`.
-    self._contents: list[types.Content] = list(llm_request.contents or [])
+    # `_run_turn`. Seeded history drops audio and saved live blobs, as in
+    # `send_history`.
+    self._contents: list[types.Content] = _filter_media_history(
+        llm_request.contents or []
+    )
 
     # Client audio frames consumed by the STT transform; `None` ends the
     # current audio segment.
@@ -181,8 +185,23 @@ class CascadeLiveConnection(BaseLlmConnection):
   # ------------------------------------------------------------------
 
   async def send_history(self, history: list[types.Content]) -> None:
-    """Seeds the conversation. Does not itself trigger reasoning."""
-    self._contents = list(history)
+    """Seeds the conversation, and replies if it ends with a user turn.
+
+    As `BaseLlmConnection.send_history` requires: a history ending in a user
+    turn, such as a workflow node's input or an agent transfer, gets a reply
+    without waiting for new input.
+
+    Audio and saved live blobs are dropped, as `GeminiLlmConnection` drops
+    them: the audio was already transcribed into the history's text turns, and
+    the `artifact://` references that `save_live_blob` leaves cannot be
+    resolved by the model, so a Gemini request carrying one fails.
+
+    Args:
+      history: The conversation so far, replacing any seeded contents.
+    """
+    self._contents = _filter_media_history(history)
+    if self._contents and self._contents[-1].role == 'user':
+      self._start_reasoning()
 
   async def send_content(self, content: types.Content) -> None:
     """Appends a turn-completing content and starts reasoning.

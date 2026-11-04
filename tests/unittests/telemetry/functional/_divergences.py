@@ -40,7 +40,6 @@ from difflib import SequenceMatcher
 import os
 from typing import Annotated
 from typing import Literal
-from typing import Union
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -79,17 +78,17 @@ OwnerKind = Literal["span", "log", "metric"]
 # The scalars of a recording. ``Strict``, so that reading an example value
 # back gives the one that was written: a lax ``bool`` accepts the integer 1,
 # and one instrumentation's ``1`` would come back as the other's ``True``.
-Scalar: TypeAlias = Union[
-    None,
-    Annotated[bool, Strict()],
-    Annotated[int, Strict()],
-    Annotated[float, Strict()],
-    Annotated[str, Strict()],
-]
+Scalar: TypeAlias = (
+    None
+    | Annotated[bool, Strict()]
+    | Annotated[int, Strict()]
+    | Annotated[float, Strict()]
+    | Annotated[str, Strict()]
+)
 
 # A recording, as JSON. ``TypeAliasType`` rather than a plain alias: pydantic
 # needs a named type to tie the recursion off.
-Json = TypeAliasType("Json", Union[Scalar, list["Json"], dict[str, "Json"]])
+Json = TypeAliasType("Json", Scalar | list["Json"] | dict[str, "Json"])
 
 
 class Missing(BaseModel):
@@ -109,7 +108,7 @@ class Missing(BaseModel):
 MISSING = Missing(missing_on_this_side=True)
 
 # One instrumentation's side of a slot: what it recorded there, or nothing.
-Recorded: TypeAlias = Union[Missing, Json]
+Recorded: TypeAlias = Missing | Json
 
 
 @dataclass(frozen=True)
@@ -133,7 +132,7 @@ class Divergent:
 # Two recordings overlaid: the same JSON, with a ``Divergent`` wherever they
 # disagreed. Built to be walked, never stored -- the goldens hold the native
 # recording, and the divergences their own file.
-Merged: TypeAlias = Union[Divergent, dict, list, Scalar]
+Merged: TypeAlias = Divergent | dict | list | Scalar
 
 
 @dataclass(frozen=True)
@@ -181,8 +180,8 @@ class Divergence(BaseModel):
   example_otel_instrumentation_value: Recorded = Field(
       union_mode="left_to_right"
   )
-  kind: Union[DivergenceKind, None] = None
-  reason: Union[str, None] = None
+  kind: DivergenceKind | None = None
+  reason: str | None = None
 
   @property
   def explained(self) -> bool:
@@ -233,7 +232,7 @@ class _Owns:
   kind: OwnerKind
   # The field that names the owner. ``None`` where the owner is named by the
   # key that reaches it, rather than by anything on it.
-  named_by: Union[str, None]
+  named_by: str | None
 
 
 # The fields at which a new owner begins. Everything below one is named after
@@ -279,7 +278,7 @@ def divergences(
 
 def collate(
     found: Mapping[str, Mapping[DivergenceId, Divergent]],
-    explained: Union[Mapping[DivergenceId, Divergence], None] = None,
+    explained: Mapping[DivergenceId, Divergence] | None = None,
 ) -> list[DivergenceGroup]:
   """Groups what every case found into what ``functional_divergences.json`` holds.
 
@@ -408,7 +407,7 @@ def _descend(at: DivergenceId, key: str) -> DivergenceId:
   return at.at(key)
 
 
-def _owner(at: DivergenceId, node: Union[Merged, Missing]) -> DivergenceId:
+def _owner(at: DivergenceId, node: Merged | Missing) -> DivergenceId:
   """Renames the location after ``node``, where ``node`` names a new owner."""
   owns = _owns(at)
   if owns is None or owns.named_by is None or not isinstance(node, dict):
@@ -419,5 +418,5 @@ def _owner(at: DivergenceId, node: Union[Merged, Missing]) -> DivergenceId:
   )
 
 
-def _owns(at: DivergenceId) -> Union[_Owns, None]:
+def _owns(at: DivergenceId) -> _Owns | None:
   return _OWNERS.get(at.path[-1]) if at.path else None

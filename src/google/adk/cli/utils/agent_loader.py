@@ -251,7 +251,8 @@ class AgentLoader(BaseAgentLoader):
       ) + e.args[1:]
       raise e
 
-  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+  # `\Z` rather than `$`, which also matches just before a trailing newline.
+  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+\Z")
 
   def _validate_agent_name(self, agent_name: str) -> None:
     """Validate agent name to prevent arbitrary module imports."""

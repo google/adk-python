@@ -17,6 +17,7 @@ import threading
 import unicodedata
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory.base_memory_service import BaseMemoryService
 from google.adk.memory.base_memory_service import SearchMemoryResponse
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -1087,3 +1088,41 @@ async def test_search_results_are_detached_from_stored_memory(
   assert len(repeated.memories) == 1
   assert repeated.memories[0].content == original_content
   assert event.content == original_content
+
+
+def _rewind_event(rewind_before_invocation_id: str) -> Event:
+  return Event(
+      invocation_id='inv-rewind',
+      author='user',
+      actions=EventActions(
+          rewind_before_invocation_id=rewind_before_invocation_id
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events():
+  """Turns a rewind took back are not stored, also when added before it."""
+  memory_service = InMemoryMemoryService()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-rewound',
+      events=[
+          _text_event('kept', 'trip to paris'),
+          _text_event('rewound', 'address is baker street'),
+      ],
+  )
+  await memory_service.add_session_to_memory(session)
+
+  session.events.append(_rewind_event('inv-rewound'))
+  await memory_service.add_session_to_memory(session)
+
+  rewound = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='baker'
+  )
+  kept = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paris'
+  )
+  assert not rewound.memories
+  assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']

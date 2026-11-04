@@ -206,15 +206,20 @@ async def _collect_eval_results(
     inference_results: list[InferenceResult],
     eval_service: BaseEvalService,
     eval_metrics: list[EvalMetric],
+    *,
+    parallelism: int | None = None,
 ) -> list[EvalCaseResult]:
   """Simple utility methods to collect eval results from an eval service.
 
   The method is intentionally kept private to prevent general usage.
   """
   eval_results = []
+  evaluate_config = EvaluateConfig(eval_metrics=eval_metrics)
+  if parallelism is not None:
+    evaluate_config.parallelism = parallelism
   evaluate_request = EvaluateRequest(
       inference_results=inference_results,
-      evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
+      evaluate_config=evaluate_config,
   )
   async with Aclosing(
       eval_service.evaluate(evaluate_request=evaluate_request)
@@ -603,15 +608,12 @@ def get_eval_sets_manager(
 ) -> EvalSetsManager:
   """Returns an instance of EvalSetsManager."""
   try:
-    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-    from .utils import evals
+    from .utils import _eval_storage
+
+    eval_sets_manager, _ = _eval_storage.create_eval_managers(
+        eval_storage_uri, agents_dir
+    )
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  if eval_storage_uri:
-    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
-    )
-    return gcs_eval_managers.eval_sets_manager
-  else:
-    return LocalEvalSetsManager(agents_dir=agents_dir)
+  return eval_sets_manager

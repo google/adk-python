@@ -14,13 +14,13 @@
 import asyncio
 import copy
 import datetime
+import decimal
+import json
 import re
 import types
 from typing import Any
-from typing import List
-from typing import Optional
-from typing import Tuple
 from unittest import mock
+import uuid
 
 from dateutil.parser import isoparse
 from fastapi.openapi import models as openapi_models
@@ -370,7 +370,7 @@ class MockAsyncClient:
   def __init__(self) -> None:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
-    self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
+    self.event_dict: dict[str, tuple[list[Any], str | None]] = {}
     self.sessions = mock.AsyncMock()
     self.sessions.get.side_effect = self._get_session
     self.sessions.list.side_effect = self._list_sessions
@@ -607,10 +607,10 @@ async def test_get_session_pagination_keeps_client_open():
 
 
 def mock_vertex_ai_session_service(
-    project: Optional[str] = 'test-project',
-    location: Optional[str] = 'test-location',
-    agent_engine_id: Optional[str] = None,
-    express_mode_api_key: Optional[str] = None,
+    project: str | None = 'test-project',
+    location: str | None = 'test-location',
+    agent_engine_id: str | None = None,
+    express_mode_api_key: str | None = None,
 ):
   """Creates a mock Vertex AI Session service for testing."""
   return VertexAiSessionService(
@@ -867,6 +867,27 @@ async def test_get_session_with_after_timestamp_filter():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_after_timestamp_zero_drops_pre_epoch_events(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """after_timestamp=0 sends a timestamp>=epoch filter instead of no filter."""
+  event = mock_api_client_instance.event_dict['1'][0][0]
+  event['timestamp'] = '1969-12-31T23:59:59Z'
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='1',
+      config=GetSessionConfig(after_timestamp=0),
+  )
+
+  assert session is not None
+  assert not session.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_num_recent_events_and_after_timestamp():
   session_service = mock_vertex_ai_session_service()
   session = await session_service.get_session(
@@ -1119,6 +1140,87 @@ async def test_create_session_with_custom_session_id(
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_sends_json_safe_state_delta(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.create_session(app_name='123', user_id='user')
+  request_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+  png_bytes = b'\x89PNG\r\n\x1a\n'
+  event = Event(
+      invocation_id='inv',
+      author='agent',
+      actions=EventActions(
+          state_delta={
+              'due': datetime.date(2026, 11, 1),
+              'request_id': request_id,
+              'screenshot': png_bytes,
+              'total': decimal.Decimal('19.99'),
+          }
+      ),
+  )
+
+  appended = await session_service.append_event(session, event)
+
+  # The SDK JSON-encodes the request body, so rich values and non-UTF-8 binary
+  # bytes must be coerced to JSON-safe forms on the wire while in-memory session
+  # state and the returned event retain the original Python values.
+  sent_events, _ = mock_api_client_instance.event_dict[session.id]
+  sent_delta = sent_events[-1]['actions']['state_delta']
+  assert json.loads(json.dumps(sent_delta)) == {
+      'due': '2026-11-01',
+      'request_id': str(request_id),
+      'screenshot': 'iVBORw0KGgo=',
+      'total': '19.99',
+  }
+  assert session.state['screenshot'] == png_bytes
+  assert appended.actions.state_delta['screenshot'] == png_bytes
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_drops_temp_state(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.create_session(
+      app_name='123',
+      user_id='user',
+      state={'key': 'value', 'temp:scratch': 'ephemeral'},
+  )
+
+  # temp: keys are invocation-scoped and never stored, so they are not sent
+  # to Agent Engine and do not appear on the created or reloaded session.
+  assert mock_api_client_instance.last_create_session_config[
+      'session_state'
+  ] == {'key': 'value'}
+  assert session.state == {'key': 'value'}
+  reloaded = await session_service.get_session(
+      app_name='123', user_id='user', session_id=session.id
+  )
+  assert reloaded.state == {'key': 'value'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_only_temp_state_sends_no_state(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', state={'temp:scratch': 'ephemeral'}
+  )
+
+  assert 'session_state' not in (
+      mock_api_client_instance.last_create_session_config
+  )
+  assert session.state == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_create_session_with_custom_config(mock_api_client_instance):
   session_service = mock_vertex_ai_session_service()
 
@@ -1170,6 +1272,86 @@ async def test_create_session_with_ttl_none_and_expire_time_none_does_not_raise(
   await session_service.create_session(
       app_name='123', user_id='user', ttl=None, expire_time=None
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'allowed_kwargs',
+    [
+        {
+            'display_name': 'Demo session',
+            'labels': {'env': 'dev'},
+            'ttl': '3600s',
+        },
+        {
+            'displayName': 'Camel session',
+            'expireTime': '2025-12-12T12:12:12.123456Z',
+        },
+    ],
+)
+async def test_create_session_with_allowed_options(allowed_kwargs):
+  """Allowed create_session options forward cleanly to the Sessions API."""
+  mock_client = MockAsyncClient()
+  session_service = mock_vertex_ai_session_service()
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=mock_client
+  ):
+    await session_service.create_session(
+        app_name='123', user_id='user', **allowed_kwargs
+    )
+    assert mock_client.last_create_session_config == allowed_kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl_and_camel_case_expire_time_raises():
+  """Setting both ttl and expireTime is rejected."""
+  session_service = mock_vertex_ai_session_service()
+  with pytest.raises(
+      ValueError,
+      match="Cannot specify both 'ttl' and 'expire_time' simultaneously.",
+  ):
+    await session_service.create_session(
+        app_name='123',
+        user_id='user',
+        ttl='7200s',
+        expireTime='2025-12-12T12:12:12.123456Z',
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'disallowed_kwargs',
+    [
+        {'http_options': {'base_url': 'https://attacker.example.com'}},
+        {'httpOptions': {'baseUrl': 'https://attacker.example.com'}},
+        {'sessionId': '../other'},
+        {'session_state': {'app:role': 'admin'}},
+        {'sessionState': {'app:role': 'admin'}},
+        {'wait_for_completion': False},
+        {'waitForCompletion': False},
+    ],
+)
+async def test_create_session_rejects_disallowed_config_options(
+    disallowed_kwargs,
+):
+  """Disallowed create_session config keys raise before any API call."""
+  mock_client = MockAsyncClient()
+  session_service = mock_vertex_ai_session_service()
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=mock_client
+  ):
+    with pytest.raises(
+        ValueError,
+        match='Unsupported create_session option.*Supported options are:',
+    ):
+      await session_service.create_session(
+          app_name='123',
+          user_id='user',
+          state={'safe': 'value'},
+          **disallowed_kwargs,
+      )
+  mock_client.sessions.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1295,6 +1477,37 @@ async def test_append_event_partial_does_not_update_session_last_update_time():
 
   assert session.last_update_time == original_update_time
   assert len(session.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_does_not_store_partial_events(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.create_session(app_name='123', user_id='user')
+  partial = Event(
+      invocation_id='inv',
+      author='agent',
+      partial=True,
+      content=genai_types.Content(
+          role='model', parts=[genai_types.Part.from_text(text='Stream')]
+      ),
+      actions=EventActions(state_delta={'key': 'value'}),
+  )
+
+  returned = await session_service.append_event(session, partial)
+
+  # Partial events are streaming chunks: returned untouched and never stored,
+  # here or in any other backend.
+  assert returned is partial
+  assert session.id not in mock_api_client_instance.event_dict
+  assert session.events == []
+  assert 'key' not in session.state
+  reloaded = await session_service.get_session(
+      app_name='123', user_id='user', session_id=session.id
+  )
+  assert reloaded.events == []
 
 
 @pytest.mark.asyncio

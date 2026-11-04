@@ -124,6 +124,20 @@ the inner module yourself, as in `"my_agents.home_automation.agent"`, and that
 works too. If your module exposes an async `get_agent_async()` in place of
 `root_agent`, the loader awaits it and takes its first return value.
 
+`agent_module` also takes an agent or an `App` you built yourself, which is the
+way to evaluate an agent that needs values only known at runtime, such as an
+account id from a request:
+
+```python
+await AgentEvaluator.evaluate_eval_set(
+    agent_module=build_agent(account_id="abc-123"),
+    eval_set=eval_set,
+    eval_config=eval_config,
+)
+```
+
+Nothing is imported in that case.
+
 `eval_dataset_file_path_or_dir` is resolved against the process working
 directory, so what you write is relative to wherever you launched `pytest`, not
 to the test file. If you point it at a directory rather than a single file,
@@ -147,7 +161,8 @@ A call to `evaluate` walks through five stages, in this order.
 3.  **Resolve the agent.** The module is imported and `root_agent` located as
     described above. If the module also exposes an `App` instance named `app`,
     that App is picked up too, so its plugins and context-cache configuration
-    take part in the run.
+    take part in the run. An agent or `App` passed in directly is used as is,
+    with the same App handling.
 4.  **Run the agent, for real.** Phase one is live inference: `LocalEvalService`
     actually executes your agent against every user turn in the eval set,
     `num_runs` times over. A model credential is required even when every
@@ -182,7 +197,7 @@ replaces with `eval_set` and `eval_config`.
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `agent_module` | `str` | required | Dotted module path to the agent package. |
+| `agent_module` | `str \| BaseNode \| App` | required | Dotted module path to the agent package, or an agent, `Workflow`, or `App` built by the caller. |
 | `eval_dataset_file_path_or_dir` | `str` | required | One eval file, or a directory searched recursively for `*.test.json`. |
 | `num_runs` | `int` | `2` | How many times the whole eval set is run before scores are averaged. |
 | `agent_name` | `str \| None` | `None` | Evaluate a named sub-agent instead of the root agent. |
@@ -192,11 +207,17 @@ replaces with `eval_set` and `eval_config`.
 | `output_file` | `str \| None` | `None` | Write per-invocation results to this path as CSV. |
 | `app_name` | `str \| None` | `None` | App name used when persisting results. |
 | `eval_set_results_manager` | `EvalSetResultsManager \| None` | `None` | Persists results as `*.evalset_result.json`. |
+| `parallelism` | `int \| None` | `None` | Maximum number of eval cases run in parallel during inference and scoring. |
 
 `num_runs` exists because a single run of a live model is noisy. Averaging over
 two runs is the default; the ADK integration tests use four for cases known to
 vary. Raising it is the first thing to try when a test is flaky rather than
 wrong, and the cost is linear in model calls.
+
+`parallelism` caps how many eval cases `LocalEvalService` runs concurrently
+during inference and metric scoring. It overrides `parallelism` in the eval
+config when given, and when neither sets one `LocalEvalService` defaults to `4`.
+Passing a value below `1` raises `ValueError`.
 
 `agent_name` selects a sub-agent by name from the loaded root agent's tree, so
 you can score one specialist in isolation. A name that does not match anything

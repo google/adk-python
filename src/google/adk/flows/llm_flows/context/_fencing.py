@@ -53,9 +53,11 @@ OTHER_AGENT_CONTEXT_PREAMBLE = (
 
 
 def elide_quote_markers(text: str) -> str:
-  """Removes literal quote markers from relayed content."""
-  return text.replace(QUOTED_CONTENT_BEGIN, QUOTED_CONTENT_ELIDED).replace(
-      QUOTED_CONTENT_END, QUOTED_CONTENT_ELIDED
+  """Removes quote and system instruction markers from relayed content."""
+  return elide_system_instruction_markers(
+      text.replace(QUOTED_CONTENT_BEGIN, QUOTED_CONTENT_ELIDED).replace(
+          QUOTED_CONTENT_END, QUOTED_CONTENT_ELIDED
+      )
   )
 
 
@@ -221,6 +223,52 @@ def quote_untrusted(text: str) -> str:
   )
 
 
+def _elide_quote_marker_bytes(data: bytes) -> bytes:
+  """Removes relay markers from bytes an adapter decodes as text.
+
+  latin-1 maps every byte to a codepoint and back, so the ASCII markers are
+  rewritten in place and every other byte survives exactly as it arrived,
+  whatever charset the blob is really in.
+  """
+  return elide_quote_markers(data.decode('latin-1')).encode('latin-1')
+
+
+def _decodes_as_text(blob: types.Blob | None) -> bool:
+  """Whether an adapter decodes the blob into the text channel."""
+  if not blob or not blob.data or not blob.mime_type:
+    return False
+  return blob.mime_type.split(';', 1)[0].strip().lower().startswith('text/')
+
+
+def _elide_relayed_part_markers(part: types.Part) -> types.Part:
+  """Returns the part with relay markers gone from what an adapter flattens.
+
+  The part keeps its own type rather than being fenced, but several model
+  adapters flatten code, its output, and a text/* blob back into the text
+  channel, where a marker reads as framing.
+  """
+  is_text_blob = _decodes_as_text(part.inline_data)
+  if (
+      not part.executable_code
+      and not part.code_execution_result
+      and not is_text_blob
+  ):
+    return part
+  elided = part.model_copy(deep=True)
+  if elided.executable_code and elided.executable_code.code:
+    elided.executable_code.code = elide_quote_markers(
+        elided.executable_code.code
+    )
+  if elided.code_execution_result and elided.code_execution_result.output:
+    elided.code_execution_result.output = elide_quote_markers(
+        elided.code_execution_result.output
+    )
+  blob = elided.inline_data
+  if is_text_blob and blob and blob.data:
+    blob.data = _elide_quote_marker_bytes(blob.data)
+  return elided
+
+
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   """Whether the event is a reply from another agent."""
   # In live/bidi mode, all events from any agents, including the current
@@ -335,11 +383,11 @@ def _present_other_agent_message(
     ):
       # Relayed on their own part types rather than fenced. Fencing means
       # flattening a part into the text channel, which is what created the
-      # ambiguity here in the first place; blobs cannot be flattened at all, and
+      # ambiguity here in the first place; it would cost a blob its type, and
       # doing it to code and its output would drop the pairing the model reads
       # them by. They stay attacker-reachable, and the preamble frames the whole
       # message rather than each of them.
-      content.parts.append(part)
+      content.parts.append(_elide_relayed_part_markers(part))
     else:
       continue
 

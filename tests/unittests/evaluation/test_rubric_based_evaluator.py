@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from unittest import mock
 
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
@@ -655,10 +656,9 @@ class TestRubricBasedEvaluator:
         )
     )
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
-    assert auto_rater_score.score == 1.0
-    assert len(auto_rater_score.rubric_scores) == 2
-    assert auto_rater_score.rubric_scores[0].score == 1.0
-    assert auto_rater_score.rubric_scores[1].score is None
+    # Averaging over the one valid verdict would report 1.0.
+    assert auto_rater_score.score is None
+    assert auto_rater_score.rubric_scores == []
 
   def test_convert_auto_rater_response_to_score_with_unknown_property(
       self,
@@ -710,14 +710,17 @@ class TestRubricBasedEvaluator:
                         f"Property: {property_text}\n"
                         "Rationale: It was good.\n"
                         "Verdict: yes\n"
+                        "Property: Is the response bad?\n"
+                        "Rationale: It was not.\n"
+                        "Verdict: no\n"
                     )
                 )
             ]
         )
     )
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
-    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1"]
-    assert auto_rater_score.score == 1.0
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1", "2"]
+    assert auto_rater_score.score == 0.5
 
   def test_convert_auto_rater_response_to_score_keeps_non_ascii_rubric(self):
     """Normalization must not drop accented characters from rubric text."""
@@ -909,6 +912,11 @@ class TestRubricBasedEvaluator:
     Property: Is the reply excellent?
     Rationale: It was good.
     Verdict: yes
+
+    ID: 2
+    Property: Is the reply awful?
+    Rationale: It was not.
+    Verdict: no
     """
     response = LlmResponse(
         content=genai_types.Content(
@@ -916,9 +924,10 @@ class TestRubricBasedEvaluator:
         )
     )
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
-    assert len(auto_rater_score.rubric_scores) == 1
-    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
-    assert auto_rater_score.rubric_scores[0].score == 1.0
+    assert [(s.rubric_id, s.score) for s in auto_rater_score.rubric_scores] == [
+        ("1", 1.0),
+        ("2", 0.0),
+    ]
 
   def test_convert_does_not_misattribute_when_first_id_omitted(
       self,
@@ -935,6 +944,11 @@ class TestRubricBasedEvaluator:
     Property: Is the reply awful?
     Rationale: It was not bad.
     Verdict: no
+
+    ID: 1
+    Property: Is the response good?
+    Rationale: It was good.
+    Verdict: yes
     """
     response = LlmResponse(
         content=genai_types.Content(
@@ -944,9 +958,10 @@ class TestRubricBasedEvaluator:
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
     # The first (paraphrased, id-less) property matches no rubric; the second is
     # matched to rubric "2" by its id and keeps its own "no" verdict.
-    assert len(auto_rater_score.rubric_scores) == 1
-    assert auto_rater_score.rubric_scores[0].rubric_id == "2"
-    assert auto_rater_score.rubric_scores[0].score == 0.0
+    assert [(s.rubric_id, s.score) for s in auto_rater_score.rubric_scores] == [
+        ("2", 0.0),
+        ("1", 1.0),
+    ]
 
   def test_convert_falls_back_to_text_when_id_absent(
       self,
@@ -958,6 +973,9 @@ class TestRubricBasedEvaluator:
     Property: Is the response good?
     Rationale: It was good.
     Verdict: yes
+    Property: Is the response bad?
+    Rationale: It was not.
+    Verdict: no
     """
     response = LlmResponse(
         content=genai_types.Content(
@@ -965,9 +983,153 @@ class TestRubricBasedEvaluator:
         )
     )
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
-    assert len(auto_rater_score.rubric_scores) == 1
-    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
-    assert auto_rater_score.rubric_scores[0].score == 1.0
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1", "2"]
+
+  def test_convert_does_not_score_a_response_missing_a_rubric(
+      self,
+      evaluator: RubricBasedEvaluator,
+      caplog: pytest.LogCaptureFixture,
+  ):
+    """A rubric without a verdict must not drop out of the average."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    Property: Is the response good?
+    Rationale: It was good.
+    Verdict: yes
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+      auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+          response
+      )
+    # Averaging over the one answered rubric would report 1.0.
+    assert auto_rater_score.score is None
+    assert auto_rater_score.rubric_scores == []
+    assert "no verdict for rubric(s) ['2']" in caplog.text
+
+  def test_convert_does_not_score_a_verdict_matching_no_rubric(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """A verdict whose id and text match no rubric leaves that rubric unscored.
+
+    Rubric 1 is still matched by its exact text, but rubric 2's verdict has an
+    unknown id and a reworded property, so rubric 2 has no verdict.
+    """
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    ID: one
+    Property: Is the response good?
+    Rationale: It was good.
+    Verdict: yes
+
+    ID: two
+    Property: Was the response bad?
+    Rationale: It was.
+    Verdict: no
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert auto_rater_score.score is None
+    assert auto_rater_score.rubric_scores == []
+
+  def test_aggregate_lets_scored_sample_decide_over_unscored_one(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """An unscored sample does not vote, so the scored sample decides."""
+    evaluator.create_effective_rubrics_list(None)
+    unscored_text = """
+    Property: Is the response good?
+    Rationale: It was not.
+    Verdict: no
+    """
+    scored_text = """
+    Property: Is the response good?
+    Rationale: It was good.
+    Verdict: yes
+    Property: Is the response bad?
+    Rationale: It was.
+    Verdict: yes
+    """
+    samples = []
+    for text in (unscored_text, scored_text):
+      auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+          LlmResponse(
+              content=genai_types.Content(parts=[genai_types.Part(text=text)])
+          )
+      )
+      samples.append(
+          _create_per_invocation_result(auto_rater_score.rubric_scores)
+      )
+    assert samples[0].rubric_scores == []
+
+    result = evaluator.aggregate_per_invocation_samples(samples)
+
+    assert [(s.rubric_id, s.score) for s in result.rubric_scores] == [
+        ("1", 1.0),
+        ("2", 1.0),
+    ]
+    assert result.score == 1.0
+    assert result.eval_status == EvalStatus.PASSED
+
+  async def test_evaluate_scores_invocations_with_different_rubrics(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """An invocation is scored even when a later one adds other rubrics."""
+
+    def _format_prompt(actual: Invocation, expected: Invocation | None) -> str:
+      evaluator.create_effective_rubrics_list(actual.rubrics)
+      return actual.invocation_id
+
+    def _invocation(invocation_id: str, rubric_id: str) -> Invocation:
+      return Invocation(
+          invocation_id=invocation_id,
+          user_content=genai_types.Content(parts=[genai_types.Part(text="hi")]),
+          rubrics=[
+              Rubric(
+                  rubric_id=rubric_id,
+                  rubric_content=RubricContent(
+                      text_property=f"Rubric {rubric_id}?"
+                  ),
+              )
+          ],
+      )
+
+    async def _generate(llm_request):
+      rubric_id = "3" if llm_request.contents[0].parts[0].text == "a" else "4"
+      yield LlmResponse(
+          content=genai_types.Content(parts=[genai_types.Part(text=f"""
+                      Property: Is the response good?
+                      Rationale: Yes.
+                      Verdict: yes
+                      Property: Is the response bad?
+                      Rationale: Yes.
+                      Verdict: yes
+                      Property: Rubric {rubric_id}?
+                      Rationale: Yes.
+                      Verdict: yes
+                      """)])
+      )
+
+    evaluator.format_auto_rater_prompt = _format_prompt
+    evaluator._judge_model = mock.MagicMock()
+    evaluator._judge_model.generate_content_async = _generate
+
+    result = await evaluator.evaluate_invocations(
+        [_invocation("a", "3"), _invocation("b", "4")]
+    )
+
+    assert [r.score for r in result.per_invocation_results] == [1.0, 1.0]
 
 
 class TestMajorityVoteAggregatorEvalStatus:
@@ -1303,6 +1465,12 @@ class TestRubricBasedEvaluatorCollaborators:
             score=1.0,
         ),
         RubricResponse(
+            rubric_id="2",
+            property_text="another paraphrase",
+            rationale="fine",
+            score=0.0,
+        ),
+        RubricResponse(
             rubric_id="not_a_rubric",
             property_text="also unknown",
             rationale="fine",
@@ -1323,9 +1491,10 @@ class TestRubricBasedEvaluatorCollaborators:
         )
     )
 
-    # Only the response naming a known rubric id survives; the unknown one is
-    # dropped, so the mean is 1.0 rather than 0.5.
+    # Only responses naming a known rubric id survive; the unknown one is
+    # dropped rather than averaged in.
     assert [(s.rubric_id, s.score) for s in auto_rater_score.rubric_scores] == [
-        ("1", 1.0)
+        ("1", 1.0),
+        ("2", 0.0),
     ]
-    assert auto_rater_score.score == 1.0
+    assert auto_rater_score.score == 0.5

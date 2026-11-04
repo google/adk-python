@@ -32,7 +32,6 @@ import logging
 import pickle
 from typing import Any
 from typing import cast
-from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
@@ -71,7 +70,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _TRUNCATION_SUFFIX = "...[truncated]"
 
 
-def _truncate_str(value: Optional[str], max_length: int) -> Optional[str]:
+def _truncate_str(value: str | None, max_length: int) -> str | None:
   """Truncates a string to fit within *max_length* characters.
 
   Old databases may still carry ``VARCHAR(N)`` columns that were never

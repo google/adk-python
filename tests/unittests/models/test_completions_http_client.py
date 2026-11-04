@@ -16,13 +16,16 @@ import asyncio
 import atexit
 import gc
 import json
+from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 import weakref
 
+from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import httpx
 import pytest
@@ -1240,3 +1243,517 @@ async def test_cleanup_client_retains_pending_task():
   await task
   assert task not in apigee_llm._CLEANUP_TASKS
   assert httpx_client.is_closed
+
+
+def _tool_argument_chunk(
+    arguments: str | None, index: int = 0
+) -> dict[str, Any]:
+  function = {'name': 'weather'}
+  if arguments is not None:
+    function['arguments'] = arguments
+  return {
+      'choices': [{
+          'delta': {
+              'role': 'assistant',
+              'tool_calls': [{
+                  'index': index,
+                  'id': f'call_{index}',
+                  'type': 'function',
+                  'function': function,
+              }],
+          }
+      }]
+  }
+
+
+@pytest.mark.parametrize(
+    'arguments',
+    [
+        ['{"city": "Par'],
+        [''],
+        [None],
+        ['   '],
+        ['{"city": "Paris"}', '{"country":'],
+        ['{"country":', '{"city": "Paris"}'],
+        ['[1, 2]'],
+        ['null'],
+    ],
+)
+def test_length_with_incomplete_tool_arguments_reports_error(
+    arguments: list[str | None],
+) -> None:
+  """Token exhaustion never exposes a final call with incomplete arguments."""
+  handler = ChatCompletionsResponseHandler()
+  responses: list[LlmResponse] = []
+  for fragment in arguments:
+    responses.extend(handler.process_chunk(_tool_argument_chunk(fragment)))
+  responses.extend(
+      handler.process_chunk({
+          'choices': [{'delta': {}, 'finish_reason': 'length'}],
+          'usage': {
+              'prompt_tokens': 3,
+              'completion_tokens': 4,
+              'total_tokens': 7,
+          },
+      })
+  )
+
+  assert len(responses) == len(arguments) + 2
+  assert all(r.partial is True for r in responses[:-1])
+  for response in responses[: len(arguments)]:
+    (call,) = response.get_function_calls()
+    assert call.args is None
+    assert call.will_continue is True
+  assert responses[-2].content is not None
+  assert responses[-2].content.parts == []
+  final = responses[-1]
+  assert not final.partial
+  assert final.content is None
+  assert final.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final.error_code == types.FinishReason.MAX_TOKENS
+  assert final.usage_metadata is not None
+  assert final.usage_metadata.total_token_count == 7
+  assert final.error_message is not None
+  assert 'truncated' in final.error_message
+  assert 'max_output_tokens' in final.error_message
+
+
+@pytest.mark.parametrize('incomplete_index', [0, 2])
+def test_length_drops_entire_interleaved_tool_call_batch(
+    incomplete_index: int,
+) -> None:
+  """A good call must not escape when another indexed call is incomplete."""
+  handler = ChatCompletionsResponseHandler()
+  responses: list[LlmResponse] = []
+  for index in (0, 2):
+    responses.extend(
+        handler.process_chunk(_tool_argument_chunk('{"city":', index))
+    )
+  for index in (2, 0):
+    arguments = '"Par' if index == incomplete_index else '"Paris"}'
+    responses.extend(
+        handler.process_chunk(_tool_argument_chunk(arguments, index))
+    )
+  responses.extend(
+      handler.process_chunk(
+          {'choices': [{'delta': {}, 'finish_reason': 'length'}]}
+      )
+  )
+
+  assert [r.get_function_calls()[0].id for r in responses[:4]] == [
+      'call_0',
+      'call_2',
+      'call_2',
+      'call_0',
+  ]
+  assert all(r.partial is True for r in responses[:-1])
+  assert responses[-1].content is None
+  assert responses[-1].error_code == types.FinishReason.MAX_TOKENS
+  assert responses[-1].finish_reason == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.parametrize('finish_reason', ['length', 'tool_calls', 'stop'])
+@pytest.mark.parametrize(
+    ('arguments', 'expected_args'),
+    [
+        (['{}'], {}),
+        (['{"city":', '"Paris"}'], {'city': 'Paris'}),
+        (
+            ['{"city":"Paris"}', '{"country":"FR"}'],
+            {'city': 'Paris', 'country': 'FR'},
+        ),
+    ],
+)
+def test_completed_streaming_tool_arguments_are_preserved(
+    finish_reason: str, arguments: list[str], expected_args: dict[str, str]
+) -> None:
+  """Complete arguments, including complete JSON deltas, stay executable."""
+  handler = ChatCompletionsResponseHandler()
+  responses: list[LlmResponse] = []
+  for fragment in arguments:
+    responses.extend(handler.process_chunk(_tool_argument_chunk(fragment)))
+  responses.extend(
+      handler.process_chunk(
+          {'choices': [{'delta': {}, 'finish_reason': finish_reason}]}
+      )
+  )
+
+  assert len(responses) == len(arguments) + 2
+  assert all(r.partial is True for r in responses[:-1])
+  final = responses[-1]
+  assert not final.partial
+  assert final.error_code is None
+  assert final.error_message is None
+  assert final.finish_reason == (
+      types.FinishReason.MAX_TOKENS
+      if finish_reason == 'length'
+      else types.FinishReason.STOP
+  )
+  assert final.content is not None
+  assert final.content.parts is not None
+  assert len(final.content.parts) == 1
+  (call,) = final.get_function_calls()
+  assert call.args == expected_args
+  assert call.id == 'call_0'
+  assert call.name == 'weather'
+  assert not call.will_continue
+
+
+@pytest.mark.parametrize('finish_reason', ['tool_calls', 'stop', 'unknown'])
+def test_non_length_malformed_tool_arguments_still_raise(
+    finish_reason: str,
+) -> None:
+  """The token-limit guard does not change other termination paths."""
+  handler = ChatCompletionsResponseHandler()
+  list(handler.process_chunk(_tool_argument_chunk('{"city": "Par')))
+  terminal = handler.process_chunk(
+      {'choices': [{'delta': {}, 'finish_reason': finish_reason}]}
+  )
+  assert next(terminal).partial is True
+  with pytest.raises(ValueError, match='Invalid JSON in tool call arguments'):
+    list(terminal)
+
+
+@pytest.mark.parametrize('finish_reason', ['tool_calls', 'stop', 'unknown'])
+def test_non_length_argument_merge_fallback_is_unchanged(
+    finish_reason: str,
+) -> None:
+  """Only length termination rejects a bad delta in the legacy fallback."""
+  handler = ChatCompletionsResponseHandler()
+  for fragment in ['{"city":"Paris"}', '{"country":']:
+    list(handler.process_chunk(_tool_argument_chunk(fragment)))
+  responses = list(
+      handler.process_chunk(
+          {'choices': [{'delta': {}, 'finish_reason': finish_reason}]}
+      )
+  )
+  assert responses[0].partial is True
+  (call,) = responses[-1].get_function_calls()
+  assert call.args == {'city': 'Paris'}
+  assert responses[-1].error_code is None
+
+
+@pytest.mark.parametrize(
+    ('finish_reason', 'expected'),
+    [
+        ('length', types.FinishReason.MAX_TOKENS),
+        ('stop', types.FinishReason.STOP),
+    ],
+)
+def test_text_only_streaming_finish_behavior_is_unchanged(
+    finish_reason: str, expected: types.FinishReason
+) -> None:
+  """Text without tool calls keeps the existing partial and final responses."""
+  handler = ChatCompletionsResponseHandler()
+  chunks: list[dict[str, Any]] = [
+      {'choices': [{'delta': {'content': 'Hello'}}]},
+      {'choices': [{'delta': {}, 'finish_reason': finish_reason}]},
+  ]
+  responses = [r for chunk in chunks for r in handler.process_chunk(chunk)]
+  assert len(responses) == 3
+  assert responses[0].partial is True
+  assert responses[1].partial is True
+  assert not responses[-1].partial
+  assert responses[-1].content is not None
+  assert responses[-1].content.parts == [types.Part.from_text(text='Hello')]
+  assert responses[-1].finish_reason == expected
+  assert responses[-1].error_code is None
+  assert responses[-1].error_message is None
+
+
+@pytest.mark.parametrize(
+    'argument_deltas',
+    [
+        ['{"city": "Par'],
+        [''],
+        ['{"city": "Paris"}', '{"country":'],
+    ],
+)
+@pytest.mark.parametrize('same_chunk', [False, True])
+async def test_apigee_streaming_truncation_with_mocked_sse(
+    same_chunk: bool, argument_deltas: list[str]
+) -> None:
+  """The adapter keeps text and metadata but emits no truncated final call."""
+  chunks = [_tool_argument_chunk(fragment) for fragment in argument_deltas]
+  chunks[0]['choices'][0]['delta']['content'] = 'Checking weather.'
+  if same_chunk:
+    chunks[-1]['choices'][0]['finish_reason'] = 'length'
+  else:
+    chunks.append({'choices': [{'delta': {}, 'finish_reason': 'length'}]})
+  chunks[-1].update(
+      model='gpt-4o',
+      id='completion_1',
+      usage={'prompt_tokens': 3, 'completion_tokens': 4, 'total_tokens': 7},
+  )
+  chunks[-1]['choices'][0]['logprobs'] = {
+      'content': [{'token': 'Checking', 'logprob': -0.1, 'top_logprobs': []}]
+  }
+  requests: list[httpx.Request] = []
+
+  def respond(request: httpx.Request) -> httpx.Response:
+    requests.append(request)
+    body = ''.join(f'data: {json.dumps(c)}\n\n' for c in chunks)
+    return httpx.Response(
+        200,
+        headers={'Content-Type': 'text/event-stream'},
+        content=body + 'data: [DONE]\n\n',
+    )
+
+  llm = ApigeeLlm(
+      model='apigee/openai/gpt-4o', proxy_url='https://apigee.test/v1'
+  )
+  async with httpx.AsyncClient(
+      transport=httpx.MockTransport(respond)
+  ) as client:
+    with mock.patch(
+        'google.adk.models.apigee_llm.httpx.AsyncClient', return_value=client
+    ):
+      responses = [
+          r
+          async for r in llm.generate_content_async(
+              LlmRequest(
+                  model=llm.model,
+                  contents=[
+                      types.Content(
+                          role='user',
+                          parts=[types.Part.from_text(text='Weather?')],
+                      )
+                  ],
+              ),
+              stream=True,
+          )
+      ]
+      await llm._completions_http_client.aclose()
+
+  assert len(requests) == 1
+  assert requests[0].method == 'POST'
+  assert str(requests[0].url) == 'https://apigee.test/v1/chat/completions'
+  assert json.loads(requests[0].content)['stream'] is True
+  assert len(responses) == len(chunks) + 2
+  assert all(r.partial is True for r in responses[:-2])
+  text, error = responses[-2:]
+  assert not text.partial and not error.partial
+  assert text.content is not None
+  assert text.content.parts == [types.Part.from_text(text='Checking weather.')]
+  assert text.error_message == 'Maximum tokens reached'
+  assert error.content is None
+  assert error.error_message is not None
+  assert 'truncated' in error.error_message
+  assert text.usage_metadata is not None
+  assert text.usage_metadata.total_token_count == 7
+  assert error.usage_metadata is None
+  assert (
+      sum(
+          response.usage_metadata.total_token_count or 0
+          for response in responses
+          if not response.partial and response.usage_metadata
+      )
+      == 7
+  )
+  for response in (text, error):
+    assert response.finish_reason == types.FinishReason.MAX_TOKENS
+    assert response.error_code == types.FinishReason.MAX_TOKENS
+    assert response.model_version == 'gpt-4o'
+    assert response.custom_metadata is not None
+    assert response.custom_metadata['id'] == 'completion_1'
+    assert response.logprobs_result is not None
+    assert response.logprobs_result.chosen_candidates is not None
+    assert response.logprobs_result.chosen_candidates[0].token == 'Checking'
+    assert not response.get_function_calls()
+
+
+def _non_streaming_tool_response(
+    arguments: list[str | None],
+    finish_reason: str = 'length',
+    text: str | None = None,
+) -> dict[str, Any]:
+  calls = []
+  for index, args in enumerate(arguments):
+    call = _tool_argument_chunk(args, index)['choices'][0]['delta'][
+        'tool_calls'
+    ][0]
+    calls.append(call)
+  return {
+      'id': 'completion_1',
+      'model': 'gpt-4o',
+      'choices': [{
+          'finish_reason': finish_reason,
+          'message': {
+              'role': 'assistant',
+              'content': text,
+              'tool_calls': calls,
+          },
+          'logprobs': {
+              'content': [
+                  {'token': 'Checking', 'logprob': -0.1, 'top_logprobs': []}
+              ]
+          },
+      }],
+      'usage': {
+          'prompt_tokens': 3,
+          'completion_tokens': 4,
+          'total_tokens': 7,
+          'completion_tokens_details': {'reasoning_tokens': 2},
+      },
+  }
+
+
+@pytest.mark.parametrize(
+    'arguments', ['{"city": "Pa', '', None, '   ', '[1, 2]', 'null']
+)
+def test_non_streaming_length_incomplete_arguments_report_error(
+    arguments: str | None,
+) -> None:
+  """Token-limited complete responses do not expose incomplete calls."""
+  response = ChatCompletionsResponseHandler().process_response(
+      _non_streaming_tool_response([arguments])
+  )
+
+  assert not response.partial
+  assert response.content is None
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.error_message is not None
+  assert 'truncated' in response.error_message
+  assert not response.get_function_calls()
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_non_streaming_length_preserves_text_and_metadata(legacy: bool) -> None:
+  """Dropping modern or legacy calls preserves text, usage, and metadata."""
+  payload = _non_streaming_tool_response(['{"city": "Pa'], text='Checking.')
+  message = payload['choices'][0]['message']
+  if legacy:
+    message['function_call'] = message.pop('tool_calls')[0]['function']
+  response = ChatCompletionsResponseHandler().process_response(payload)
+
+  assert response.content is not None
+  assert response.content.parts == [types.Part.from_text(text='Checking.')]
+  assert response.content.role == 'model'
+  assert not response.get_function_calls()
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.model_version == 'gpt-4o'
+  assert response.custom_metadata is not None
+  assert response.custom_metadata['id'] == 'completion_1'
+  assert response.logprobs_result is not None
+  assert response.logprobs_result.chosen_candidates is not None
+  assert response.logprobs_result.chosen_candidates[0].token == 'Checking'
+  assert response.usage_metadata is not None
+  assert response.usage_metadata.prompt_token_count == 3
+  assert response.usage_metadata.candidates_token_count == 4
+  assert response.usage_metadata.total_token_count == 7
+  assert response.usage_metadata.thoughts_token_count == 2
+  # The provider payload must remain intact for callers that inspect it.
+  assert message.get('tool_calls') or message.get('function_call')
+
+
+@pytest.mark.parametrize('bad_index', [0, 1])
+def test_non_streaming_length_drops_entire_batch(bad_index: int) -> None:
+  """A valid call never escapes alongside an incomplete one."""
+  arguments: list[str | None] = ['{"city":"Paris"}', '{"city":"Paris"}']
+  arguments[bad_index] = '{"city":"Pa'
+  response = ChatCompletionsResponseHandler().process_response(
+      _non_streaming_tool_response(arguments)
+  )
+
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert not response.get_function_calls()
+
+
+@pytest.mark.parametrize('arguments', ['{}', '{"city":"Paris"}'])
+@pytest.mark.parametrize('finish_reason', ['length', 'tool_calls', 'stop'])
+def test_non_streaming_complete_arguments_preserved(
+    arguments: str, finish_reason: str
+) -> None:
+  """Complete arguments stay executable, even when the token limit is hit."""
+  response = ChatCompletionsResponseHandler().process_response(
+      _non_streaming_tool_response([arguments], finish_reason)
+  )
+
+  assert response.error_code is None
+  assert response.finish_reason == (
+      types.FinishReason.MAX_TOKENS
+      if finish_reason == 'length'
+      else types.FinishReason.STOP
+  )
+  assert response.get_function_calls()[0].args == json.loads(arguments)
+  assert response.get_function_calls()[0].name == 'weather'
+  assert response.get_function_calls()[0].id == 'call_0'
+
+
+@pytest.mark.parametrize('finish_reason', ['tool_calls', 'stop', 'unknown'])
+def test_non_streaming_non_length_malformed_arguments_still_raise(
+    finish_reason: str,
+) -> None:
+  """Only explicit token exhaustion changes argument parsing failures."""
+  with pytest.raises(ValueError, match='Invalid JSON in tool call arguments'):
+    ChatCompletionsResponseHandler().process_response(
+        _non_streaming_tool_response(['{"city":"Pa'], finish_reason)
+    )
+
+
+def test_non_streaming_length_unsupported_call_type_still_raises() -> None:
+  """A token limit does not suppress unsupported-type ValueErrors."""
+  payload = _non_streaming_tool_response(['{"city":"Pa'])
+  payload['choices'][0]['message']['tool_calls'][0]['type'] = 'custom'
+  with pytest.raises(ValueError, match='Unsupported tool_call type'):
+    ChatCompletionsResponseHandler().process_response(payload)
+
+
+def test_non_streaming_length_invalid_signature_still_raises() -> None:
+  """Non-JSON ValueErrors remain visible even with a length finish reason."""
+  payload = _non_streaming_tool_response(['{}'])
+  payload['choices'][0]['message']['tool_calls'][0]['extra_content'] = {
+      'google': {'thought_signature': 'a'}
+  }
+  with pytest.raises(ValueError, match='Invalid base64'):
+    ChatCompletionsResponseHandler().process_response(payload)
+
+
+@pytest.mark.asyncio
+async def test_apigee_non_streaming_truncation_with_mocked_transport() -> None:
+  """The public non-streaming adapter emits one complete token-limit error."""
+  payload = _non_streaming_tool_response(['{"city":"Pa'], text='Checking.')
+  requests: list[httpx.Request] = []
+
+  def respond(request: httpx.Request) -> httpx.Response:
+    requests.append(request)
+    return httpx.Response(200, json=payload)
+
+  llm = ApigeeLlm(
+      model='apigee/openai/gpt-4o', proxy_url='https://apigee.test/v1'
+  )
+  async with httpx.AsyncClient(
+      transport=httpx.MockTransport(respond)
+  ) as client:
+    with mock.patch(
+        'google.adk.models.apigee_llm.httpx.AsyncClient', return_value=client
+    ):
+      responses = [
+          response
+          async for response in llm.generate_content_async(
+              LlmRequest(
+                  model=llm.model,
+                  contents=[
+                      types.Content(
+                          role='user',
+                          parts=[types.Part.from_text(text='Weather?')],
+                      )
+                  ],
+              ),
+              stream=False,
+          )
+      ]
+      await llm._completions_http_client.aclose()
+
+  assert len(responses) == 1
+  response = responses[0]
+  assert json.loads(requests[0].content)['stream'] is False
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.content is not None
+  assert response.content.parts == [types.Part.from_text(text='Checking.')]
+  assert not response.get_function_calls()
+  assert response.usage_metadata is not None
+  assert response.usage_metadata.total_token_count == 7
+  assert response.model_version == 'gpt-4o'

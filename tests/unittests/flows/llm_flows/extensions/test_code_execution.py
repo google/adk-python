@@ -19,7 +19,6 @@ import asyncio
 import datetime
 import threading
 from typing import Any
-from typing import Optional
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -54,8 +53,8 @@ class _ExecutionRecord:
   """Captures how the executor ran, for cross-thread inspection in tests."""
 
   def __init__(self):
-    self.thread: Optional[Any] = None
-    self.released: Optional[bool] = None
+    self.thread: Any | None = None
+    self.released: bool | None = None
 
 
 class _RecordingCodeExecutor(BaseCodeExecutor):

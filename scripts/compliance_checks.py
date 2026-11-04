@@ -60,20 +60,6 @@ _EXCLUDED_FROM_MTLS = {
 # code gates features with the decorators in google.adk.features.
 _LEGACY_FEATURE_DECORATOR_USERS = {
     'src/google/adk/a2a/experimental.py',
-    'src/google/adk/evaluation/final_response_match_v2.py',
-    'src/google/adk/evaluation/hallucinations_v1.py',
-    'src/google/adk/evaluation/llm_as_judge.py',
-    'src/google/adk/evaluation/local_eval_service.py',
-    'src/google/adk/evaluation/metric_evaluator_registry.py',
-    'src/google/adk/evaluation/rubric_based_evaluator.py',
-    'src/google/adk/evaluation/rubric_based_final_response_quality_v1.py',
-    'src/google/adk/evaluation/rubric_based_tool_use_quality_v1.py',
-    'src/google/adk/evaluation/simulation/_llm_audio_user_simulator.py',
-    'src/google/adk/evaluation/simulation/llm_backed_user_simulator.py',
-    'src/google/adk/evaluation/simulation/per_turn_user_simulator_quality_v1.py',
-    'src/google/adk/evaluation/simulation/static_user_simulator.py',
-    'src/google/adk/evaluation/simulation/user_simulator.py',
-    'src/google/adk/evaluation/simulation/user_simulator_provider.py',
     'src/google/adk/optimization/gepa_root_agent_optimizer.py',
     'src/google/adk/optimization/gepa_root_agent_prompt_optimizer.py',
 }

@@ -521,11 +521,6 @@ class ComputerUseToolset(BaseToolset):
         if not isinstance(url, str):
           raise ValueError("url is not a string")
         target = _parse_request_target(url)
-        # A browser ends the authority at "\" but urlparse does not: in
-        # `http://169.254.169.254\@example.com/` the host is example.com here
-        # and 169.254.169.254 in Chrome, so refuse instead of checking it.
-        if "\\" in target.parsed_url.netloc:
-          raise ValueError("backslash in hostname")
         if not self._allow_private_network_access:
           if _is_blocked_hostname(target.hostname):
             raise ValueError("hostname is blocked")
