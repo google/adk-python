@@ -13,9 +13,13 @@
 # limitations under the License.
 
 import asyncio
+import gc
 import logging
+import os
+import pathlib
 import signal
 import sys
+import time
 from unittest import mock
 
 import pytest
@@ -90,6 +94,62 @@ def tool_context_rejected():
   ctx.tool_confirmation = confirmation
   ctx.actions = mock.MagicMock()
   return ctx
+
+
+def _pid_is_alive(pid: int) -> bool:
+  """Returns whether pid still exists."""
+  try:
+    os.kill(pid, 0)
+  except ProcessLookupError:
+    return False
+  return True
+
+
+async def _wait_for_pid_exit(pid: int, timeout: float = 2.0) -> bool:
+  """Returns True once pid is gone, or False if it outlives timeout."""
+  deadline = time.monotonic() + timeout
+  while _pid_is_alive(pid):
+    if time.monotonic() >= deadline:
+      return False
+    await asyncio.sleep(0.05)
+  return True
+
+
+def _kill_pidfile(path: pathlib.Path) -> None:
+  """SIGKILLs the pid recorded in path, if that process is still running."""
+  if not path.is_file():
+    return
+  text = path.read_text().strip()
+  if not text:
+    return
+  try:
+    pid = int(text)
+  except ValueError:
+    return
+  try:
+    os.kill(pid, signal.SIGKILL)
+  except ProcessLookupError:
+    return
+
+
+# A setsid grandchild keeps stdout open after its parent leaves the group.
+_SETSID_PIPE_HOLDER = (
+    "import os\n"
+    "import sys\n"
+    "import time\n"
+    "if os.fork() == 0:\n"
+    "    os.setsid()\n"
+    "    with open('writer.pid', 'w') as handle:\n"
+    "        handle.write(str(os.getpid()))\n"
+    "    while True:\n"
+    '        sys.stdout.buffer.write(b"z" * 1024)\n'
+    "        sys.stdout.buffer.flush()\n"
+    "        time.sleep(0.05)\n"
+    "else:\n"
+    "    with open('parent.pid', 'w') as handle:\n"
+    "        handle.write(str(os.getpid()))\n"
+    "    time.sleep(60)\n"
+)
 
 
 # --- _validate_command tests ---
@@ -294,10 +354,29 @@ class TestExecuteBashTool:
 
   @pytest.mark.asyncio
   async def test_timeout(self, workspace, tool_context_confirmed):
-    tool = bash_tool.ExecuteBashTool(workspace=workspace)
+    tool = bash_tool.ExecuteBashTool(
+        workspace=workspace,
+        policy=bash_tool.BashToolPolicy(timeout_seconds=0),
+    )
+    exit_fut = asyncio.get_running_loop().create_future()
     mock_process = mock.AsyncMock()
     mock_process.pid = 12345
-    mock_process.communicate.return_value = (b"", b"")
+    mock_process.stdout = None
+    mock_process.stderr = None
+    mock_process.returncode = None
+
+    async def _wait():
+      if mock_process.returncode is not None:
+        return mock_process.returncode
+      return await exit_fut
+
+    def _killpg(pid, sig):
+      mock_process.returncode = -sig
+      if not exit_fut.done():
+        exit_fut.set_result(-sig)
+
+    mock_process.wait = _wait
+    mock_process._transport = mock.Mock()
     with (
         mock.patch.object(
             asyncio,
@@ -305,10 +384,7 @@ class TestExecuteBashTool:
             autospec=True,
             return_value=mock_process,
         ),
-        mock.patch.object(
-            asyncio, "wait_for", autospec=True, side_effect=asyncio.TimeoutError
-        ),
-        mock.patch("os.killpg") as mock_killpg,
+        mock.patch("os.killpg", side_effect=_killpg) as mock_killpg,
     ):
       result = await tool.run_async(
           args={"command": "python scripts/do_thing.py"},
@@ -317,6 +393,56 @@ class TestExecuteBashTool:
       mock_killpg.assert_called_with(12345, signal.SIGKILL)
     assert "error" in result
     assert "timed out" in result["error"].lower()
+    mock_process._transport.close.assert_called_once()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "close_error",
+      [AttributeError("missing"), OSError(9, "Bad file descriptor")],
+  )
+  async def test_timeout_ignores_transport_close_error(
+      self, workspace, tool_context_confirmed, close_error
+  ):
+    """A transport that is already closed still returns the timeout error."""
+    tool = bash_tool.ExecuteBashTool(
+        workspace=workspace,
+        policy=bash_tool.BashToolPolicy(timeout_seconds=0),
+    )
+    exit_fut = asyncio.get_running_loop().create_future()
+    mock_process = mock.AsyncMock()
+    mock_process.pid = 12345
+    mock_process.stdout = None
+    mock_process.stderr = None
+    mock_process.returncode = None
+
+    async def _wait():
+      if mock_process.returncode is not None:
+        return mock_process.returncode
+      return await exit_fut
+
+    def _killpg(pid, sig):
+      mock_process.returncode = -sig
+      if not exit_fut.done():
+        exit_fut.set_result(-sig)
+
+    mock_process.wait = _wait
+    mock_process._transport = mock.Mock()
+    mock_process._transport.close.side_effect = close_error
+    with (
+        mock.patch.object(
+            asyncio,
+            "create_subprocess_exec",
+            autospec=True,
+            return_value=mock_process,
+        ),
+        mock.patch("os.killpg", side_effect=_killpg),
+    ):
+      result = await tool.run_async(
+          args={"command": "python scripts/do_thing.py"},
+          tool_context=tool_context_confirmed,
+      )
+    assert "timed out" in result["error"].lower()
+    mock_process._transport.close.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_cwd_is_workspace(self, workspace, tool_context_confirmed):
@@ -344,7 +470,8 @@ class TestExecuteBashTool:
     tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
     mock_process = mock.AsyncMock()
     mock_process.pid = None  # Ensure finally block doesn't try to kill it
-    mock_process.communicate.return_value = (b"", b"")
+    mock_process.stdout = None
+    mock_process.stderr = None
     mock_exec = mock.AsyncMock(return_value=mock_process)
 
     with mock.patch("asyncio.create_subprocess_exec", mock_exec):
@@ -365,3 +492,311 @@ class TestExecuteBashTool:
         mock_setrlimit.assert_any_call(
             resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024)
         )
+
+
+class TestOutputLimits:
+
+  def test_default_limit(self):
+    assert bash_tool.BashToolPolicy().max_output_bytes_per_stream == (
+        1024 * 1024
+    )
+
+  @pytest.mark.asyncio
+  async def test_small_output_unchanged(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=1024)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    result = await tool.run_async(
+        args={"command": "python3 -c 'print(\"hello\")'"},
+        tool_context=tool_context_confirmed,
+    )
+    assert result["stdout"] == "hello\n"
+    assert result["returncode"] == 0
+
+  @pytest.mark.asyncio
+  async def test_large_stdout_is_truncated(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=1000)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    total = 2 * 1024 * 1024
+    result = await tool.run_async(
+        args={
+            "command": (
+                "python3 -c 'import sys;"
+                f' sys.stdout.buffer.write(b"x" * {total})\''
+            )
+        },
+        tool_context=tool_context_confirmed,
+    )
+    assert result["returncode"] == 0
+    assert result["stdout"].startswith("x" * 1000 + "\n...[stdout truncated")
+    assert f"{total - 1000} of {total} bytes omitted" in result["stdout"]
+    assert len(result["stdout"]) < 1200
+
+  @pytest.mark.asyncio
+  async def test_stdout_and_stderr_are_bounded_independently(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=500)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    script = (
+        "import sys\n"
+        "for _ in range(64):\n"
+        '    sys.stdout.buffer.write(b"o" * 16384)\n'
+        '    sys.stderr.buffer.write(b"e" * 16384)\n'
+    )
+    (workspace / "noisy.py").write_text(script)
+    result = await tool.run_async(
+        args={"command": "python3 noisy.py"},
+        tool_context=tool_context_confirmed,
+    )
+    assert result["returncode"] == 0
+    assert result["stdout"].startswith("o" * 500 + "\n...[stdout truncated")
+    assert result["stderr"].startswith("e" * 500 + "\n...[stderr truncated")
+    assert len(result["stdout"]) < 700
+    assert len(result["stderr"]) < 700
+
+  @pytest.mark.asyncio
+  async def test_limit_can_be_disabled(self, workspace, tool_context_confirmed):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=None)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    result = await tool.run_async(
+        args={
+            "command": (
+                'python3 -c \'import sys; sys.stdout.buffer.write(b"x" *'
+                " 200000)'"
+            )
+        },
+        tool_context=tool_context_confirmed,
+    )
+    assert result["stdout"] == "x" * 200000
+
+  @pytest.mark.asyncio
+  async def test_timeout_output_is_bounded_and_process_reaped(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=1, max_output_bytes_per_stream=100
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "forever.py").write_text(
+        'import sys\nwhile True:\n    sys.stdout.buffer.write(b"y" * 65536)\n'
+    )
+    result = await tool.run_async(
+        args={"command": "python3 forever.py"},
+        tool_context=tool_context_confirmed,
+    )
+    assert "timed out" in result["error"]
+    assert result["stdout"].startswith("y" * 100 + "\n...[stdout truncated")
+    assert len(result["stdout"]) < 300
+    assert result["returncode"] == -signal.SIGKILL
+
+  @pytest.mark.asyncio
+  async def test_timeout_setsid_child_holding_pipe_cleans_up(
+      self, workspace, tool_context_confirmed
+  ):
+    """Timeout closes the pipe so a setsid descendant stops writing.
+
+    A descendant that calls setsid() leaves the process group, so killpg does
+    not close its inherited stdout. Cleanup cancels the explicit waiter and
+    readers, then closes the subprocess transport. The descendant's next write
+    fails and the writer exits instead of outliving run_async.
+    """
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=1, max_output_bytes_per_stream=64
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "setsid_hold.py").write_text(_SETSID_PIPE_HOLDER)
+    loop = asyncio.get_running_loop()
+    reports = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: reports.append(context))
+    try:
+      started = time.monotonic()
+      result = await tool.run_async(
+          args={"command": "python3 setsid_hold.py"},
+          tool_context=tool_context_confirmed,
+      )
+      elapsed = time.monotonic() - started
+      for _ in range(5):
+        await asyncio.sleep(0)
+      gc.collect()
+      await asyncio.sleep(0)
+      assert "timed out" in result["error"]
+      # Returns after timeout plus drain grace, not the child's 60s sleep.
+      assert elapsed < 5.0
+      leftover = [
+          t
+          for t in asyncio.all_tasks()
+          if not t.done()
+          and t is not asyncio.current_task()
+          and getattr(getattr(t, "get_coro", lambda: None)(), "__name__", None)
+          in {"_drain_stream", "wait"}
+      ]
+      assert leftover == []
+      noisy = [
+          r
+          for r in reports
+          if "never retrieved" in r.get("message", "")
+          or "shielded" in r.get("message", "").lower()
+      ]
+      assert noisy == []
+      writer_pid = int((workspace / "writer.pid").read_text().strip())
+      assert await _wait_for_pid_exit(writer_pid)
+    finally:
+      loop.set_exception_handler(previous_handler)
+      _kill_pidfile(workspace / "writer.pid")
+      _kill_pidfile(workspace / "parent.pid")
+
+  def test_rejects_negative_output_limit(self):
+    with pytest.raises(ValueError, match="max_output_bytes_per_stream"):
+      bash_tool.BashToolPolicy(max_output_bytes_per_stream=-1)
+
+  def test_zero_output_limit_is_allowed(self):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=0)
+    assert policy.max_output_bytes_per_stream == 0
+
+  @pytest.mark.asyncio
+  async def test_output_exactly_at_limit_is_not_truncated(
+      self, workspace, tool_context_confirmed
+  ):
+    limit = 1000
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=limit)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    result = await tool.run_async(
+        args={
+            "command": (
+                "python3 -c 'import sys;"
+                f' sys.stdout.buffer.write(b"x" * {limit})\''
+            )
+        },
+        tool_context=tool_context_confirmed,
+    )
+    assert result["returncode"] == 0
+    assert result["stdout"] == "x" * limit
+    assert "truncated" not in result["stdout"]
+
+  @pytest.mark.asyncio
+  async def test_cancellation_cleans_up_drain_and_wait(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async must not leave drain/wait tasks pending.
+
+    A child that stays in the process group and keeps stdout open would
+    otherwise leave _drain_stream tasks hanging after CancelledError.
+    """
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=30, max_output_bytes_per_stream=64
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "hold_pipe.py").write_text(
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "if os.fork() == 0:\n"
+        "    while True:\n"
+        '        sys.stdout.buffer.write(b"z" * 1024)\n'
+        "        sys.stdout.buffer.flush()\n"
+        "        time.sleep(0.05)\n"
+        "else:\n"
+        "    time.sleep(60)\n"
+    )
+    task = asyncio.create_task(
+        tool.run_async(
+            args={"command": "python3 hold_pipe.py"},
+            tool_context=tool_context_confirmed,
+        )
+    )
+    await asyncio.sleep(0.4)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+    await asyncio.sleep(0)
+    leftover_drains = [
+        t
+        for t in asyncio.all_tasks()
+        if not t.done()
+        and getattr(getattr(t, "get_coro", lambda: None)(), "__name__", None)
+        == "_drain_stream"
+    ]
+    assert leftover_drains == []
+
+  @pytest.mark.asyncio
+  async def test_cancellation_setsid_child_holding_pipe_exits(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async closes the pipe so a setsid writer exits.
+
+    The forked child leaves the process group, so killing that group does not
+    stop it. Transport close after the cancelled readers are gathered must
+    make the writer exit.
+    """
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=30, max_output_bytes_per_stream=64
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "setsid_hold.py").write_text(_SETSID_PIPE_HOLDER)
+    task = asyncio.create_task(
+        tool.run_async(
+            args={"command": "python3 setsid_hold.py"},
+            tool_context=tool_context_confirmed,
+        )
+    )
+    pid_path = workspace / "writer.pid"
+    try:
+      deadline = time.monotonic() + 2
+      while not pid_path.is_file():
+        if task.done() or time.monotonic() >= deadline:
+          break
+        await asyncio.sleep(0.05)
+      assert pid_path.is_file()
+      task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await task
+      writer_pid = int(pid_path.read_text().strip())
+      assert await _wait_for_pid_exit(writer_pid)
+    finally:
+      if not task.done():
+        task.cancel()
+      _kill_pidfile(pid_path)
+      _kill_pidfile(workspace / "parent.pid")
+
+  @pytest.mark.asyncio
+  async def test_cancellation_retrieves_completion_exception(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async must not report an unretrieved gather exception."""
+    loop = asyncio.get_running_loop()
+    reports = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: reports.append(context))
+    try:
+      tool = bash_tool.ExecuteBashTool(
+          workspace=workspace,
+          policy=bash_tool.BashToolPolicy(timeout_seconds=30),
+      )
+      task = asyncio.create_task(
+          tool.run_async(
+              args={"command": "sleep 30"},
+              tool_context=tool_context_confirmed,
+          )
+      )
+      await asyncio.sleep(0.4)
+      task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await task
+      del task
+      for _ in range(3):
+        await asyncio.sleep(0)
+      gc.collect()
+      await asyncio.sleep(0)
+    finally:
+      loop.set_exception_handler(previous_handler)
+    assert [
+        r
+        for r in reports
+        if "never retrieved" in r.get("message", "")
+        or "shielded" in r.get("message", "").lower()
+    ] == []
