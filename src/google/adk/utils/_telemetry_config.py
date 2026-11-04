@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
-import typing
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -29,7 +28,7 @@ def get_user_config_path() -> pathlib.Path:
   return pathlib.Path.home() / ".adk" / "config.json"
 
 
-def read_telemetry_consent() -> typing.Optional[bool]:
+def read_telemetry_consent() -> bool | None:
   """Reads the telemetry consent status from local config (config.json).
 
   Returns:

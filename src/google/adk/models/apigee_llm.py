@@ -27,7 +27,6 @@ import os
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
-from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 import weakref
@@ -76,7 +75,7 @@ _CONNECT_TIMEOUT_SECONDS = 30.0
 _REQUEST_TIMEOUT_SECONDS = 600.0
 
 
-def _httpx_timeout(timeout_seconds: Optional[float] = None) -> httpx.Timeout:
+def _httpx_timeout(timeout_seconds: float | None = None) -> httpx.Timeout:
   """Returns the httpx timeout budget for a completions request.
 
   A bare float would spend the caller's whole budget on the connect phase too,
@@ -119,7 +118,7 @@ class ApigeeLlm(Gemini):
       model: str,
       proxy_url: str | None = None,
       custom_headers: dict[str, str] | None = None,
-      retry_options: Optional[types.HttpRetryOptions] = None,
+      retry_options: types.HttpRetryOptions | None = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
       credentials: Credentials | None = None,
       client: Client | None = None,
@@ -494,7 +493,7 @@ class CompletionsHTTPClient:
       self,
       base_url: str,
       headers: dict[str, str] | None = None,
-      retry_options: Optional[types.HttpRetryOptions] = None,
+      retry_options: types.HttpRetryOptions | None = None,
   ):
     self._base_url = base_url
     self._headers = headers or {}
@@ -953,7 +952,7 @@ class CompletionsHTTPClient:
     }
 
   def _serialize_system_instruction(
-      self, system_instruction: Optional[types.ContentUnion]
+      self, system_instruction: types.ContentUnion | None
   ) -> str | None:
     """Serializes system instruction to a string from ContentUnion type."""
     if not system_instruction:

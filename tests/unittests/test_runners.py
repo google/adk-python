@@ -22,7 +22,6 @@ import sys
 import textwrap
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
@@ -86,7 +85,7 @@ class MockAgent(BaseAgent):
   def __init__(
       self,
       name: str,
-      parent_agent: Optional[BaseAgent] = None,
+      parent_agent: BaseAgent | None = None,
   ):
     super().__init__(name=name, sub_agents=[])
     # BaseAgent doesn't have disallow_transfer_to_parent field
@@ -131,7 +130,7 @@ class MockLlmAgent(LlmAgent):
       self,
       name: str,
       disallow_transfer_to_parent: bool = False,
-      parent_agent: Optional[BaseAgent] = None,
+      parent_agent: BaseAgent | None = None,
   ):
     # Use a string model instead of mock
     super().__init__(name=name, model="gemini-1.5-pro", sub_agents=[])
@@ -182,7 +181,7 @@ class MockPlugin(BasePlugin):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
-    self.before_run_response: Optional[types.Content] = None
+    self.before_run_response: types.Content | None = None
     self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
@@ -190,7 +189,7 @@ class MockPlugin(BasePlugin):
       *,
       invocation_context: InvocationContext,
       user_message: types.Content,
-  ) -> Optional[types.Content]:
+  ) -> types.Content | None:
     if not self.enable_user_message_callback:
       return None
     return types.Content(
@@ -202,7 +201,7 @@ class MockPlugin(BasePlugin):
       self,
       *,
       invocation_context: InvocationContext,
-  ) -> Optional[types.Content]:
+  ) -> types.Content | None:
     self.user_content_seen_in_before_run_callback = (
         invocation_context.user_content
     )
@@ -210,7 +209,7 @@ class MockPlugin(BasePlugin):
 
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
-  ) -> Optional[Event]:
+  ) -> Event | None:
     if not self.enable_event_callback:
       return None
     return Event(
@@ -360,7 +359,7 @@ async def test_session_not_found_message_includes_alignment_hint():
 
     def _infer_agent_origin(
         self, agent: BaseAgent
-    ) -> tuple[Optional[str], Optional[Path]]:
+    ) -> tuple[str | None, Path | None]:
       del agent
       return "expected_app", Path("/workspace/agents/expected_app")
 
@@ -397,7 +396,7 @@ async def test_session_auto_creation():
 
     def _infer_agent_origin(
         self, agent: BaseAgent
-    ) -> tuple[Optional[str], Optional[Path]]:
+    ) -> tuple[str | None, Path | None]:
       del agent
       return "expected_app", Path("/workspace/agents/expected_app")
 
@@ -1188,7 +1187,7 @@ class _ReplacingPlugin(BasePlugin):
 
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
-  ) -> Optional[Event]:
+  ) -> Event | None:
     del invocation_context
     return Event(
         invocation_id=event.invocation_id,
@@ -1526,7 +1525,7 @@ async def test_chat_mode_honors_get_session_config():
 class _SlowCloseToolset(BaseToolset):
   """A toolset whose close takes long enough to be cancelled mid-flight."""
 
-  def __init__(self, close_started: Optional[asyncio.Event] = None):
+  def __init__(self, close_started: asyncio.Event | None = None):
     super().__init__()
     # Shared because set order decides which toolset closes first.
     self.close_started = close_started or asyncio.Event()
@@ -3050,7 +3049,7 @@ def _llm_runner(mock_model: testing_utils.MockModel) -> Runner:
   )
 
 
-async def _stored_user_event_roles(runner: Runner) -> list[Optional[str]]:
+async def _stored_user_event_roles(runner: Runner) -> list[str | None]:
   session = await runner.session_service.get_session(
       app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
   )
@@ -4696,7 +4695,7 @@ async def test_retry_does_not_retrigger_on_user_message_callback(agent_cls):
         *,
         invocation_context: InvocationContext,
         user_message: types.Content,
-    ) -> Optional[types.Content]:
+    ) -> types.Content | None:
       callback_calls.append(user_message)
       return None
 
@@ -4753,7 +4752,7 @@ async def test_node_runner_passes_modified_user_message_as_node_input():
         *,
         invocation_context: InvocationContext,
         user_message: types.Content,
-    ) -> Optional[types.Content]:
+    ) -> types.Content | None:
       return types.Content(
           role="user", parts=[types.Part(text="modified text")]
       )
@@ -4900,7 +4899,7 @@ async def test_retry_is_deduplicated_even_when_a_plugin_rewrote_the_message():
         *,
         invocation_context: InvocationContext,
         user_message: types.Content,
-    ) -> Optional[types.Content]:
+    ) -> types.Content | None:
       self.calls += 1
       return types.Content(
           role="user",
@@ -5712,10 +5711,10 @@ class _AbortableAgent(BaseAgent):
 def _abort_runner(
     agent: BaseAgent | Workflow,
     *,
-    plugins: Optional[list[BasePlugin]] = None,
-    session_service: Optional[BaseSessionService] = None,
+    plugins: list[BasePlugin] | None = None,
+    session_service: BaseSessionService | None = None,
     resumable: bool = False,
-    compaction: Optional[EventsCompactionConfig] = None,
+    compaction: EventsCompactionConfig | None = None,
 ) -> Runner:
   return Runner(
       app=App(
@@ -5738,7 +5737,7 @@ async def _run_turn(
     *,
     abort_when=None,
     close_on_abort: bool = False,
-    run_config: Optional[RunConfig] = None,
+    run_config: RunConfig | None = None,
 ) -> tuple[list[Event], Session]:
   """Runs one turn, setting the abort signal on the first matching event.
 
@@ -5920,7 +5919,7 @@ def _has_fc(event: Event) -> bool:
   return bool(event.get_function_calls())
 
 
-def _texts(contents: list[Optional[types.Content]]) -> list[str]:
+def _texts(contents: list[types.Content | None]) -> list[str]:
   return [p.text for c in contents if c for p in c.parts or [] if p.text]
 
 
@@ -6441,7 +6440,7 @@ async def test_run_async_reroutes_when_on_user_message_callback_replaces_message
         *,
         invocation_context: InvocationContext,
         user_message: types.Content,
-    ) -> Optional[types.Content]:
+    ) -> types.Content | None:
       del invocation_context, user_message
       fr_part = types.Part.from_function_response(
           name="lro_tool", response={"status": "done"}
@@ -6606,7 +6605,7 @@ async def test_function_response_resumes_sub_agent_on_its_branch_when_not_resuma
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fr_id", [None, "unmatched_fc_id"])
 async def test_unmatched_or_idless_function_response_starts_new_invocation_when_not_resumable(
-    fr_id: Optional[str],
+    fr_id: str | None,
 ):
   """An id-less or unmatched FunctionResponse starts a new invocation and restores the active sub-agent's branch from history when not resumable."""
 

@@ -27,9 +27,7 @@ from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
 from typing import Generator
-from typing import List
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
@@ -86,7 +84,7 @@ _EventQueueItem = tuple[object, asyncio.Event | None]
 _UNCACHED_TRANSFER_APPS: set[str] = set()
 
 
-def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
+def _find_active_task_scope(session: Session) -> tuple[str, str] | None:
   """Walk session backwards; find the active paused task agent's scope.
 
   Two flavors of task scope:
@@ -235,33 +233,33 @@ class Runner:
 
   Instances are never None, so the declared type stays ``BaseNode``.
   """
-  artifact_service: Optional[BaseArtifactService] = None
+  artifact_service: BaseArtifactService | None = None
   """The artifact service for the runner."""
   plugin_manager: PluginManager
   """The plugin manager for the runner."""
   session_service: BaseSessionService
   """The session service for the runner."""
-  memory_service: Optional[BaseMemoryService] = None
+  memory_service: BaseMemoryService | None = None
   """The memory service for the runner."""
-  credential_service: Optional[BaseCredentialService] = None
+  credential_service: BaseCredentialService | None = None
   """The credential service for the runner."""
-  context_cache_config: Optional[ContextCacheConfig] = None
+  context_cache_config: ContextCacheConfig | None = None
   """The context cache config for the runner."""
-  resumability_config: Optional[ResumabilityConfig] = None
+  resumability_config: ResumabilityConfig | None = None
   """The resumability config for the application."""
 
   def __init__(
       self,
       *,
-      app: Optional[App] = None,
-      app_name: Optional[str] = None,
-      agent: Optional[BaseAgent] = None,
+      app: App | None = None,
+      app_name: str | None = None,
+      agent: BaseAgent | None = None,
       node: BaseNode | None = None,
-      plugins: Optional[List[BasePlugin]] = None,
-      artifact_service: Optional[BaseArtifactService] = None,
+      plugins: list[BasePlugin] | None = None,
+      artifact_service: BaseArtifactService | None = None,
       session_service: BaseSessionService,
-      memory_service: Optional[BaseMemoryService] = None,
-      credential_service: Optional[BaseCredentialService] = None,
+      memory_service: BaseMemoryService | None = None,
+      credential_service: BaseCredentialService | None = None,
       plugin_close_timeout: float = 5.0,
       auto_create_session: bool = False,
   ) -> None:
@@ -316,7 +314,7 @@ class Runner:
         self._agent_origin_app_name,
         self._agent_origin_dir,
     ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
-    self._app_name_alignment_hint: Optional[str] = None
+    self._app_name_alignment_hint: str | None = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
 
@@ -330,11 +328,11 @@ class Runner:
 
   @staticmethod
   def _resolve_app(
-      app: Optional[App],
-      app_name: Optional[str],
-      agent: Optional[BaseAgent],
+      app: App | None,
+      app_name: str | None,
+      agent: BaseAgent | None,
       node: BaseNode | None,
-      plugins: Optional[List[BasePlugin]],
+      plugins: list[BasePlugin] | None,
   ) -> App:
     """Validates inputs and normalizes to an App instance.
 
@@ -409,7 +407,7 @@ class Runner:
 
   def _infer_agent_origin(
       self, agent: BaseAgent
-  ) -> tuple[Optional[str], Optional[Path]]:
+  ) -> tuple[str | None, Path | None]:
     """Infer the origin app name and directory from an agent's module location.
 
     Returns:
@@ -502,9 +500,9 @@ class Runner:
   def _resolve_invocation_id(
       self,
       session: Session,
-      new_message: Optional[types.Content],
-      invocation_id: Optional[str],
-  ) -> Optional[str]:
+      new_message: types.Content | None,
+      invocation_id: str | None,
+  ) -> str | None:
     """Infers invocation_id from new_message if it is a function response."""
     if new_message is None:
       return invocation_id
@@ -550,14 +548,14 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
       yield_user_message: bool = False,
       node: BaseNode | None = None,
-      session: Optional[Session] = None,
-      abort_signal: Optional[asyncio.Event] = None,
+      session: Session | None = None,
+      abort_signal: asyncio.Event | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a BaseNode through NodeRunner.
 
@@ -588,7 +586,7 @@ class Runner:
       *,
       session: Session,
       live_request_queue: LiveRequestQueue,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a non-agent BaseNode in live mode."""
     from .live import _runner_utils as _live_runner_utils
@@ -605,7 +603,7 @@ class Runner:
         yield event
 
   def _extract_resume_inputs(
-      self, message: Optional[types.Content]
+      self, message: types.Content | None
   ) -> dict[str, Any] | None:
     """Extract function response payloads from a message as resume_inputs."""
     if not message or not message.parts:
@@ -618,7 +616,7 @@ class Runner:
 
   def _validate_new_message(
       self,
-      message: Optional[types.Content],
+      message: types.Content | None,
       resume_inputs: dict[str, Any] | None,
   ) -> None:
     """Validate that new_message doesn't mix FR and text parts."""
@@ -637,7 +635,7 @@ class Runner:
       new_message: types.Content,
       *,
       strict: bool = True,
-  ) -> Optional[str]:
+  ) -> str | None:
     """Infer invocation_id by matching function responses to FC events.
 
     When ``strict`` is True, raises ValueError if responses resolve to
@@ -684,9 +682,9 @@ class Runner:
       self,
       ic: InvocationContext,
       *,
-      session: Optional[Session] = None,
-      content: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
+      session: Session | None = None,
+      content: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
   ) -> Event:
     """Builds a user event, stamps context/isolation metadata, and appends it."""
     target_session = session or ic.session
@@ -716,7 +714,7 @@ class Runner:
       ic: InvocationContext,
       content: types.Content,
       *,
-      state_delta: Optional[dict[str, Any]] = None,
+      state_delta: dict[str, Any] | None = None,
   ) -> Event:
     """Append a user message event to the session and return it."""
     if content.parts and any(p.function_call for p in content.parts):
@@ -965,7 +963,7 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      get_session_config: Optional[GetSessionConfig] = None,
+      get_session_config: GetSessionConfig | None = None,
   ) -> Session:
     """Gets the session or creates it if auto-creation is enabled.
 
@@ -1008,8 +1006,8 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
 
@@ -1046,7 +1044,7 @@ class Runner:
     # can cancel it instead of leaking a running task. See
     # `_cleanup_root_task()` for the equivalent guarantee on `run_async()`.
     invocation_handle: queue.Queue[
-        tuple[asyncio.AbstractEventLoop, Optional[asyncio.Task[Any]]]
+        tuple[asyncio.AbstractEventLoop, asyncio.Task[Any] | None]
     ] = queue.Queue(maxsize=1)
     caller_closed_early = False
 
@@ -1128,12 +1126,12 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
       yield_user_message: bool = False,
-      abort_signal: Optional[asyncio.Event] = None,
+      abort_signal: asyncio.Event | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
@@ -1255,8 +1253,8 @@ class Runner:
     root_agent = self._require_root_agent()
 
     async def _run_with_trace(
-        new_message: Optional[types.Content] = None,
-        invocation_id: Optional[str] = None,
+        new_message: types.Content | None = None,
+        invocation_id: str | None = None,
     ) -> AsyncGenerator[Event, None]:
       session = await self._get_or_create_session(
           user_id=user_id,
@@ -1394,7 +1392,7 @@ class Runner:
       user_id: str,
       session_id: str,
       rewind_before_invocation_id: str,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> None:
     """Rewinds the session to before the specified invocation.
 
@@ -1627,11 +1625,11 @@ class Runner:
   async def _append_new_message_to_session(
       self,
       *,
-      session: Optional[Session] = None,
+      session: Session | None = None,
       new_message: types.Content,
       invocation_context: InvocationContext,
       save_input_blobs_as_artifacts: bool = False,
-      state_delta: Optional[dict[str, Any]] = None,
+      state_delta: dict[str, Any] | None = None,
   ) -> None:
     """Appends a new message to the session.
 
@@ -1688,11 +1686,11 @@ class Runner:
   async def run_live(
       self,
       *,
-      user_id: Optional[str] = None,
-      session_id: Optional[str] = None,
+      user_id: str | None = None,
+      session_id: str | None = None,
       live_request_queue: LiveRequestQueue,
-      run_config: Optional[RunConfig] = None,
-      session: Optional[Session] = None,
+      run_config: RunConfig | None = None,
+      session: Session | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
 
@@ -1919,7 +1917,7 @@ class Runner:
       node: BaseNode,
       *,
       root: BaseNode,
-      invocation_id: Optional[str] = None,
+      invocation_id: str | None = None,
   ) -> None:
     """Restores a non-root node's branch from its latest matching event."""
     from .agents import _agent_router
@@ -1937,9 +1935,9 @@ class Runner:
       session: Session,
       new_message: types.Content,
       run_config: RunConfig,
-      state_delta: Optional[dict[str, Any]],
-      invocation_id: Optional[str] = None,
-      abort_signal: Optional[asyncio.Event] = None,
+      state_delta: dict[str, Any] | None,
+      invocation_id: str | None = None,
+      abort_signal: asyncio.Event | None = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -1997,11 +1995,11 @@ class Runner:
       self,
       *,
       session: Session,
-      new_message: Optional[types.Content],
+      new_message: types.Content | None,
       invocation_id: str,
       run_config: RunConfig,
-      state_delta: Optional[dict[str, Any]],
-      abort_signal: Optional[asyncio.Event] = None,
+      state_delta: dict[str, Any] | None,
+      abort_signal: asyncio.Event | None = None,
   ) -> InvocationContext:
     """Sets up the context for a resumed invocation.
 
@@ -2087,10 +2085,10 @@ class Runner:
       self,
       session: Session,
       *,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      live_request_queue: Optional[LiveRequestQueue] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      live_request_queue: LiveRequestQueue | None = None,
+      run_config: RunConfig | None = None,
   ) -> InvocationContext:
     """Creates a new invocation context.
 
@@ -2156,7 +2154,7 @@ class Runner:
       new_message: types.Content,
       invocation_context: InvocationContext,
       run_config: RunConfig,
-      state_delta: Optional[dict[str, Any]],
+      state_delta: dict[str, Any] | None,
   ) -> None:
     """Handles a new message by running callbacks and appending to session.
 
@@ -2344,12 +2342,12 @@ class InMemoryRunner(Runner):
 
   def __init__(
       self,
-      agent: Optional[BaseAgent] = None,
+      agent: BaseAgent | None = None,
       *,
       node: BaseNode | None = None,
-      app_name: Optional[str] = None,
-      plugins: Optional[list[BasePlugin]] = None,
-      app: Optional[App] = None,
+      app_name: str | None = None,
+      plugins: list[BasePlugin] | None = None,
+      app: App | None = None,
       plugin_close_timeout: float = 5.0,
   ) -> None:
     """Initializes the InMemoryRunner.

@@ -44,6 +44,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 def _has_non_output_content(event: Event) -> bool:
+  if event.content is not None or event.error_code or event.error_message:
+    return True
   if event.actions:
     if (
         event.actions.state_delta
@@ -465,11 +467,7 @@ class NodeRunner:
       ctx.output = event.content
     if event.long_running_tool_ids is not None:
       ctx._interrupt_ids.update(event.long_running_tool_ids)
-    # Only propagate decisions from native events (authored by this node or unspecified).
-    # This prevents structured parent nodes (e.g. SequentialAgent) from intercepting
-    # and bubbling up actions already handled internally by their nested sub-agents.
-    is_native_node_event = not event.author or event.author == self._node.name
-    if event.actions and is_native_node_event:
+    if event.actions and self._is_native_event(event):
       if event.actions.route is not None:
         ctx.route = event.actions.route
         ctx._route_emitted = True
@@ -499,7 +497,9 @@ class NodeRunner:
     if event.output is not None and ctx._output_delegated:
       if not _has_non_output_content(event):
         return
-      event = event.model_copy(update={"output": None})
+      # Rehydration reads an error code without an output as a failed node.
+      if event.error_code is None:
+        event = event.model_copy(update={"output": None})
 
     self._enrich_event(event, ctx)
     if not event.partial:
@@ -562,18 +562,34 @@ class NodeRunner:
       event.actions.artifact_delta.update(artifact_delta)
       artifact_delta.clear()
 
+  def _is_native_event(self, event: Event) -> bool:
+    """Whether this node produced the event itself rather than relaying it.
+
+    A structured agent run as a node (e.g. a SequentialAgent or ParallelAgent)
+    re-yields its sub-agents' events, still authored by those sub-agents. The
+    sub-agents already acted on what such an event carries, so its route,
+    transfer and branch apply to them, not to this node. Read the author before
+    ``_enrich_event`` overwrites it.
+    """
+    return not event.author or event.author == self._node.name
+
   def _enrich_event(self, event: Event, ctx: Context) -> None:
     """Set author, node_info, invocation_id on the event."""
+    is_native_event = self._is_native_event(event)
     event.author = ctx.event_author or self._node.name
     event.invocation_id = ctx._invocation_context.invocation_id
     event.node_info.path = ctx.node_path
     if event.branch is None:
       event.branch = ctx._invocation_context.branch
-    elif event.branch == "":
-      event.branch = None
-      ctx._invocation_context.branch = None
     else:
-      ctx._invocation_context.branch = event.branch
+      if event.branch == "":
+        event.branch = None
+      # An event the node emits on another branch moves the node there. A
+      # relayed event stays on its sub-agent's branch: following it would put
+      # the node's later events and its successors on whichever sub-branch
+      # spoke last, hiding the other branches from them.
+      if is_native_event:
+        ctx._invocation_context.branch = event.branch
     if event.output is not None:
       event.node_info.output_for = [ctx.node_path] + ctx._output_for_ancestors
       # An explicitly claimed output is the claimer's output: publish it on

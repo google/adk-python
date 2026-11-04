@@ -697,6 +697,15 @@ class EvaluationGenerator:
 
         yield event
 
+    if invocation_id is None:
+      # A silent turn never exposes the Runner's invocation ID, so this
+      # synthetic one will not match the user event stored in the session.
+      yield Event(
+          content=user_content,
+          author=_USER_AUTHOR,
+          invocation_id=Event.new_id(),
+      )
+
   @staticmethod
   async def _generate_inferences_for_single_user_invocation_live(
       live_request_queue: LiveRequestQueue,

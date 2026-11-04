@@ -48,7 +48,7 @@ def precise_timestamp():
 @pytest.mark.parametrize(
     "dialect_name, expected_type",
     [
-        ("postgresql", postgresql.JSONB),
+        ("postgresql", postgresql.JSON),
         ("mysql", mysql.LONGTEXT),
         ("sqlite", Text),
     ],
@@ -56,7 +56,7 @@ def precise_timestamp():
 def test_dynamic_json_load_dialect_impl(
     dynamic_json, dialect_name, expected_type
 ):
-  """Each dialect gets the widest JSON-capable column type it supports."""
+  """Each dialect gets the column type that round-trips JSON as written."""
   dialect = _dialect(dialect_name)
 
   impl = dynamic_json.load_dialect_impl(dialect)
@@ -120,7 +120,7 @@ def test_dynamic_json_escapes_non_ascii_text_for_other_dialects(
 
 
 def test_dynamic_json_passes_values_through_for_postgresql(dynamic_json):
-  """JSONB accepts and returns Python objects, so no conversion happens."""
+  """JSON accepts and returns Python objects, so no conversion happens."""
   dialect = _dialect("postgresql")
   value = {"key": "value"}
 

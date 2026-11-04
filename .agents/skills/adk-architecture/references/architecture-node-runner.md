@@ -111,7 +111,8 @@ Orchestrator
 When a child is scheduled with `use_as_output=True`, its output Event also
 counts as the parent's output. NodeRunner sets `ctx._output_delegated`, drops
 the output field from the parent's own event (keeping the event if it still
-carries deltas or a route), stamps `node_info.output_for` with the ancestor
-paths, and publishes non-tool output events on the outermost explicit claiming
-ancestor's branch (leaving tool responses such as `finish_task` paired on the
-child's branch).
+carries content, an error code or message, deltas or a route, and keeping the
+output beside an error code so rehydration does not read the node as failed),
+stamps `node_info.output_for` with the ancestor paths, and publishes non-tool
+output events on the outermost explicit claiming ancestor's branch (leaving
+tool responses such as `finish_task` paired on the child's branch).

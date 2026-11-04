@@ -20,7 +20,6 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from typing import Annotated
 from typing import Literal
-from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -29,12 +28,10 @@ from pydantic import Field
 from pydantic import JsonValue
 from typing_extensions import TypeAlias
 
-JSONContent: TypeAlias = Union[
-    str, Mapping[str, JsonValue], Sequence[JsonValue]
-]
+JSONContent: TypeAlias = str | Mapping[str, JsonValue] | Sequence[JsonValue]
 """Text, or a JSON-serializable mapping or sequence."""
 
-ClassifierInput: TypeAlias = Union[JSONContent, types.Content]
+ClassifierInput: TypeAlias = JSONContent | types.Content
 """The input a classifier answers questions about.
 
 Text and JSON are supported by every classifier. A ``types.Content`` carries
@@ -147,11 +144,11 @@ class RefusalAnswer(BaseModel):
 
 
 Question: TypeAlias = Annotated[
-    Union[Choice, Binary, Score], Field(discriminator='type')
+    Choice | Binary | Score, Field(discriminator='type')
 ]
 
 Answer: TypeAlias = Annotated[
-    Union[ChoiceAnswer, BinaryAnswer, ScoreAnswer, RefusalAnswer],
+    ChoiceAnswer | BinaryAnswer | ScoreAnswer | RefusalAnswer,
     Field(discriminator='type'),
 ]
 
