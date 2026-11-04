@@ -17,7 +17,9 @@ from __future__ import annotations
 from unittest import mock
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.integrations.firestore.firestore_memory_service import FirestoreMemoryService
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
@@ -295,6 +297,113 @@ async def test_add_session_to_memory(mock_firestore_client):
   assert "quick" in data["keywords"]
   assert data["author"] == "user"
   assert data["timestamp"] == 1234567890.0
+
+
+def _mock_batch(client):
+  batch = mock.MagicMock()
+  batch.commit = mock.AsyncMock()
+  client.batch.return_value = batch
+  return batch
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_keeps_thoughts_out(mock_firestore_client):
+  """Keywords and stored content come only from non-thought parts."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = _mock_batch(mock_firestore_client)
+  session = Session(id="s1", app_name="test_app", user_id="test_user")
+  session.events.append(
+      Event(
+          invocation_id="inv",
+          author="model",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      text="weighing the hidden escalation", thought=True
+                  ),
+                  types.Part.from_text(text="quick brown fox"),
+              ],
+          ),
+      )
+  )
+
+  await service.add_session_to_memory(session)
+
+  data = batch.set.call_args.args[1]
+  assert set(data["keywords"]) == {"quick", "brown", "fox"}
+  assert data["content"]["parts"] == [{"text": "quick brown fox"}]
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_thought_only_events(
+    mock_firestore_client,
+):
+  """An event whose only text is a thought is not stored."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = _mock_batch(mock_firestore_client)
+  session = Session(id="s1", app_name="test_app", user_id="test_user")
+  session.events.append(
+      Event(
+          invocation_id="inv",
+          author="model",
+          content=types.Content(
+              role="model",
+              parts=[types.Part(text="planning the reply", thought=True)],
+          ),
+      )
+  )
+
+  await service.add_session_to_memory(session)
+
+  batch.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_memory_drops_stored_thought_parts(mock_firestore_client):
+  """Search results omit thought parts already stored in a memory."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  doc_snapshot = mock_firestore_client.collection.return_value.get.return_value[
+      0
+  ]
+  # A memory written before thoughts were filtered at ingest.
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="weighing the hidden escalation", thought=True),
+          types.Part.from_text(text="quick brown fox"),
+      ],
+  )
+  doc_snapshot.to_dict.return_value = {
+      "appName": "test_app",
+      "userId": "test_user",
+      "author": "model",
+      "content": content.model_dump(exclude_none=True, mode="json"),
+      "timestamp": 1234567890.0,
+  }
+  thought_only_snapshot = mock.MagicMock()
+  thought_only_snapshot.to_dict.return_value = {
+      **doc_snapshot.to_dict.return_value,
+      "content": (
+          types.Content(
+              role="model",
+              parts=[types.Part(text="the fox is a decoy", thought=True)],
+          ).model_dump(exclude_none=True, mode="json")
+      ),
+  }
+  mock_firestore_client.collection.return_value.get.return_value = [
+      doc_snapshot,
+      thought_only_snapshot,
+  ]
+
+  response = await service.search_memory(
+      app_name="test_app", user_id="test_user", query="fox"
+  )
+
+  assert len(response.memories) == 1
+  assert [p.text for p in response.memories[0].content.parts] == [
+      "quick brown fox"
+  ]
 
 
 def _text_event(text, event_id):
@@ -587,3 +696,109 @@ async def test_add_session_to_memory_exceeds_batch_limit(mock_firestore_client):
   batch1.commit.assert_called_once()
   assert batch2.set.call_count == 1
   batch2.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events(
+    mock_firestore_client,
+):
+  """Turns a rewind took back are not written to the memories collection."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  session.events += [
+      Event(
+          id="kept",
+          invocation_id="inv_kept",
+          author="user",
+          content=types.Content(parts=[types.Part.from_text(text="paris")]),
+      ),
+      Event(
+          id="rewound",
+          invocation_id="inv_rewound",
+          author="user",
+          content=types.Content(parts=[types.Part.from_text(text="baker")]),
+      ),
+      Event(
+          invocation_id="inv_rewind",
+          author="user",
+          actions=EventActions(rewind_before_invocation_id="inv_rewound"),
+      ),
+  ]
+  batch = mock.MagicMock()
+  mock_firestore_client.batch.return_value = batch
+  batch.commit = mock.AsyncMock()
+
+  await service.add_session_to_memory(session)
+
+  keywords = [call.args[1]["keywords"] for call in batch.set.call_args_list]
+  assert keywords == [["paris"]]
+
+
+def _ref_per_doc_id(client):
+  """Gives each memory document ID its own ref, keyed by the ID."""
+  refs = {}
+  client.collection.return_value.document.side_effect = (
+      lambda doc_id: refs.setdefault(doc_id, mock.MagicMock(name=doc_id))
+  )
+  return refs
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_deletes_previously_stored_rewound_events(
+    mock_firestore_client,
+):
+  """A turn memorized before it was rewound is deleted on the next add."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = mock_firestore_client.batch.return_value
+  batch.commit = mock.AsyncMock()
+  refs = _ref_per_doc_id(mock_firestore_client)
+  rewound = _text_event("baker", "rewound")
+  rewound.invocation_id = "inv_rewound"
+  session = Session(
+      id="s1",
+      app_name="test_app",
+      user_id="test_user",
+      events=[_text_event("paris", "kept"), rewound],
+  )
+  await service.add_session_to_memory(session)
+  kept_id, rewound_id = _written_doc_ids(mock_firestore_client)
+
+  session.events.append(
+      Event(
+          invocation_id="inv_rewind",
+          author="user",
+          actions=EventActions(rewind_before_invocation_id="inv_rewound"),
+      )
+  )
+  await service.add_session_to_memory(session)
+
+  deleted = [call.args[0] for call in batch.delete.call_args_list]
+  assert refs[rewound_id] in deleted
+  assert refs[kept_id] not in deleted
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_keeps_turns_outside_a_truncated_session(
+    mock_firestore_client,
+):
+  """Turns missing from a session loaded with num_recent_events stay stored."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = mock_firestore_client.batch.return_value
+  batch.commit = mock.AsyncMock()
+  refs = _ref_per_doc_id(mock_firestore_client)
+  older = _text_event("paris", "older")
+  recent = _text_event("london", "recent")
+  session = Session(
+      id="s1", app_name="test_app", user_id="test_user", events=[older, recent]
+  )
+  await service.add_session_to_memory(session)
+  memories = mock_firestore_client.collection.return_value
+  memories.stream.return_value.__aiter__.return_value = [
+      mock.MagicMock(id=doc_id, reference=ref) for doc_id, ref in refs.items()
+  ]
+
+  session.events = [recent]
+  await service.add_session_to_memory(session)
+
+  batch.delete.assert_not_called()

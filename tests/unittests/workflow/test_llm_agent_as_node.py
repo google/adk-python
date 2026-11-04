@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio as _asyncio
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -233,6 +234,63 @@ class TestValidation:
     assert wrapper.rerun_on_resume is True
 
 
+@pytest.mark.parametrize('parallel_worker', [None, False])
+def test_agent_worker_limit_requires_parallel_worker(parallel_worker):
+  """An agent rejects a worker limit unless parallel worker mode is enabled."""
+  with pytest.raises(
+      ValidationError,
+      match='max_parallel_workers can only be set when parallel_worker is True',
+  ):
+    LlmAgent(
+        name='worker',
+        parallel_worker=parallel_worker,
+        max_parallel_workers=2,
+    )
+
+
+@pytest.mark.parametrize('max_parallel_workers', [0, -1])
+def test_agent_worker_limit_must_be_positive(max_parallel_workers):
+  """An agent rejects worker limits below one."""
+  with pytest.raises(ValidationError, match='greater than or equal to 1'):
+    LlmAgent(
+        name='worker',
+        parallel_worker=True,
+        max_parallel_workers=max_parallel_workers,
+    )
+
+
+def test_agent_worker_limit_check_skips_mocked_agent_field():
+  """An autospec LlmAgent mock is accepted as a field value of another model."""
+
+  class _Holder(BaseModel):
+    agent: LlmAgent
+
+  mocked = mock.create_autospec(LlmAgent, instance=True)
+
+  assert _Holder(agent=mocked).agent is mocked
+
+
+@pytest.mark.parametrize('max_parallel_workers', [None, 1, 4])
+def test_agent_worker_limit_survives_clone_and_serialization(
+    max_parallel_workers,
+):
+  """Cloned and restored agents retain their parallel worker configuration."""
+  agent = LlmAgent(
+      name='worker',
+      parallel_worker=True,
+      max_parallel_workers=max_parallel_workers,
+  )
+
+  cloned = agent.clone()
+  restored = LlmAgent.model_validate_json(agent.model_dump_json())
+  built = build_node(agent)
+
+  for worker in (cloned, restored, agent):
+    assert worker.parallel_worker is True
+    assert worker.max_parallel_workers == max_parallel_workers
+  assert built.max_parallel_workers == max_parallel_workers
+
+
 @pytest.mark.asyncio
 async def test_single_turn_input_event_inherits_branch_and_scope(
     request: pytest.FixtureRequest,
@@ -286,6 +344,59 @@ async def test_single_turn_input_skipped_when_resuming(
   assert len(ic.session.events) == initial_len
   # Verify the resumed node still sees the initial user input from turn 1
   assert ic.session.events[-1].content.parts[0].text == 'turn 1 initial input'
+
+
+@pytest.mark.asyncio
+async def test_single_turn_input_removal_skips_comparing_history(
+    request: pytest.FixtureRequest,
+):
+  """Removing the node's input event compares ids, not every whole event."""
+  wrapper = build_node(_make_agent(mode='single_turn'))
+
+  async def fake_run_async(_):
+    yield Event(
+        invocation_id='inv',
+        author=wrapper.name,
+        content=types.Content(parts=[types.Part(text='ok')]),
+    )
+
+  object.__setattr__(wrapper, 'run_async', fake_run_async)
+  ic = await create_parent_invocation_context(
+      request.function.__name__, wrapper
+  )
+  history = [
+      Event(author='user', content=types.UserContent(f'message {i}'))
+      for i in range(20)
+  ]
+  ic.session.events.extend(history)
+
+  with mock.patch.object(
+      Event, '__eq__', autospec=True, side_effect=Event.__eq__
+  ) as event_eq:
+    async for _ in wrapper._run_impl(
+        ctx=Context(invocation_context=ic), node_input='hi'
+    ):
+      pass
+    event_eq.assert_not_called()
+
+  assert ic.session.events == history
+
+
+def test_remove_event_removes_the_first_equal_event():
+  """The first event equal to the target goes, as with `list.remove`."""
+  target = Event(author='user', content=types.UserContent('hi'))
+  other = Event(author='user', content=types.UserContent('other'))
+  equal_copy = target.model_copy()
+  events = [other, equal_copy, target]
+
+  agent_wrapper._remove_event(events, target)
+
+  assert len(events) == 2
+  assert events[0] is other
+  assert events[1] is target
+
+  agent_wrapper._remove_event(events, Event(author='user'))
+  assert len(events) == 2
 
 
 # --- Single-turn output extraction ---

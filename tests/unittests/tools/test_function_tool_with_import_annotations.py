@@ -422,3 +422,51 @@ def test_type_checking_only_annotation_on_declared_param_still_raises():
       _automatic_function_calling_util.build_function_declaration(
           summarize, ignore_params=['tool_context']
       )
+
+
+async def test_run_async_coerces_pydantic_model_with_type_checking_return_or_sibling():
+  """FunctionTool coerces Pydantic model args when return or sibling annotations are TYPE_CHECKING-only."""
+  from unittest.mock import MagicMock
+
+  from google.adk.agents.invocation_context import InvocationContext
+  from google.adk.tools.tool_context import ToolContext as _RuntimeToolContext
+
+  def process_order_untyped_return(
+      item: ItemModel,
+      tool_context: ToolContext,
+  ) -> Session:
+    del tool_context
+    return f'{item.name}:{item.quantity}'  # type: ignore[return-value]
+
+  def process_order_with_sibling(
+      item: ItemModel,
+      tool_context: ToolContext,
+      session: Session | None = None,
+  ) -> str:
+    del tool_context, session
+    return f'{item.name}:{item.quantity}'
+
+  mock_ic = MagicMock(spec=InvocationContext)
+  mock_ic._state_schema = None
+  mock_ic.session = MagicMock()
+  mock_ic.session.state = {}
+  runtime_ctx = _RuntimeToolContext(invocation_context=mock_ic)
+
+  return_tool = FunctionTool(process_order_untyped_return)
+  declaration = return_tool._get_declaration()
+  assert declaration is not None
+  assert list(declaration.parameters_json_schema['properties']) == ['item']
+  assert (
+      await return_tool.run_async(
+          args={'item': {'name': 'Burger', 'quantity': 3}},
+          tool_context=runtime_ctx,
+      )
+      == 'Burger:3'
+  )
+
+  result = await FunctionTool(process_order_with_sibling).run_async(
+      args={'item': {'name': 'Burger', 'quantity': 3}},
+      tool_context=runtime_ctx,
+  )
+
+  assert result == 'Burger:3'

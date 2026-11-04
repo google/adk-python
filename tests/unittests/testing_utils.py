@@ -17,8 +17,6 @@ import contextlib
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
-from typing import Optional
-from typing import Union
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
@@ -85,7 +83,7 @@ async def create_invocation_context(
     user_content: str = '',
     run_config: RunConfig = None,
     plugins: list[BasePlugin] = [],
-    abort_signal: Optional[asyncio.Event] = None,
+    abort_signal: asyncio.Event | None = None,
 ):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
@@ -147,7 +145,7 @@ END_OF_AGENT = 'end_of_agent'
 # Could be used to compare events for testing resumability.
 def simplify_resumable_app_events(
     events: list[Event],
-) -> list[(str, Union[types.Part, str])]:
+) -> list[(str, types.Part | str)]:
   results = []
   for event in events:
     if event.content:
@@ -174,7 +172,7 @@ def simplify_contents(contents: list[types.Content]) -> list[(str, types.Part)]:
 # - remove function_call_id if it exists
 def simplify_content(
     content: types.Content,
-) -> Union[str, types.Part, list[types.Part]]:
+) -> str | types.Part | list[types.Part]:
   for part in content.parts:
     if part.function_call and part.function_call.id:
       part.function_call.id = None
@@ -240,7 +238,7 @@ class TestInMemoryRunner(AfInMemoryRunner):
   async def run_async_with_new_session(
       self,
       new_message: types.ContentUnion,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> list[Event]:
 
     collected_events: list[Event] = []
@@ -254,7 +252,7 @@ class TestInMemoryRunner(AfInMemoryRunner):
   async def run_async_with_new_session_agen(
       self,
       new_message: types.ContentUnion,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> AsyncGenerator[Event, None]:
     session = await self.session_service.create_session(
         app_name='InMemoryRunner', user_id='test_user'
@@ -275,10 +273,10 @@ class InMemoryRunner:
 
   def __init__(
       self,
-      root_agent: Optional[Union[Agent, LlmAgent]] = None,
+      root_agent: Agent | LlmAgent | None = None,
       response_modalities: list[str] = None,
       plugins: list[BasePlugin] = [],
-      app: Optional[App] = None,
+      app: App | None = None,
       node: Any = None,
       check_invariants: bool = True,
   ):
@@ -350,8 +348,8 @@ class InMemoryRunner:
 
   async def run_async(
       self,
-      new_message: Optional[types.ContentUnion] = None,
-      invocation_id: Optional[str] = None,
+      new_message: types.ContentUnion | None = None,
+      invocation_id: str | None = None,
   ) -> list[Event]:
     events = []
     async for event in self.runner.run_async(
@@ -418,19 +416,20 @@ class MockModel(BaseLlm):
 
   requests: list[LlmRequest] = []
   responses: list[LlmResponse]
-  error: Union[Exception, None] = None
+  error: Exception | None = None
   response_index: int = -1
 
   @classmethod
   def create(
       cls,
-      responses: Union[
-          list[types.Part], list[LlmResponse], list[str], list[list[types.Part]]
-      ],
-      error: Union[Exception, None] = None,
-      usage_metadata: Optional[
-          types.GenerateContentResponseUsageMetadata
-      ] = None,
+      responses: (
+          list[types.Part]
+          | list[LlmResponse]
+          | list[str]
+          | list[list[types.Part]]
+      ),
+      error: Exception | None = None,
+      usage_metadata: types.GenerateContentResponseUsageMetadata | None = None,
   ):
     if error and not responses:
       return cls(responses=[], error=error)

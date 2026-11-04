@@ -20,6 +20,7 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import json
 import logging
@@ -29,7 +30,6 @@ from typing import Any
 from typing import cast
 from typing import get_args
 from typing import get_origin
-from typing import Optional
 from typing import Union
 
 from google.genai import types
@@ -95,7 +95,7 @@ def is_list_of_basemodel(schema: SchemaType) -> bool:
   return isinstance(inner_type, type) and issubclass(inner_type, BaseModel)
 
 
-def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
+def get_list_inner_type(schema: SchemaType) -> type[BaseModel] | None:
   """Get the inner BaseModel type from a list[BaseModel] schema.
 
   Args:
@@ -174,6 +174,7 @@ def lowercase_schema_types(value: object) -> None:
         lowercase_schema_types(child_value)
 
   for single_key in (
+      "additionalItems",
       "additionalProperties",
       "additional_properties",
       "contains",
@@ -183,6 +184,7 @@ def lowercase_schema_types(value: object) -> None:
       "not",
       "propertyNames",
       "then",
+      "unevaluatedItems",
       "unevaluatedProperties",
   ):
     child_value = value.get(single_key)
@@ -336,7 +338,7 @@ def _unwrap_content_payload(
 
 
 def validate_node_data(
-    schema: Optional[SchemaType],
+    schema: SchemaType | None,
     data: Any,
     *,
     preserve_content: bool = False,
@@ -393,6 +395,27 @@ def validate_node_data(
   return _validate_python_object(data)
 
 
+def _find_enum_member(enum_type: type[Enum], value: object) -> Enum | None:
+  """Returns the member of enum_type that value stands for, or None."""
+  try:
+    # Looking up a member returns the member itself.
+    return enum_type(value)
+  except (ValueError, TypeError):
+    pass
+  # Without json_schema_for_func_decl the declaration renders non-str values
+  # with json.dumps, so the model sends that back.
+  if isinstance(value, str):
+    for candidate in enum_type:
+      if isinstance(candidate.value, str):
+        continue
+      try:
+        if json.dumps(candidate.value) == value:
+          return candidate
+      except TypeError:
+        continue
+  return None
+
+
 def preprocess_args(
     args: dict[str, Any],
     signature: inspect.Signature | None,
@@ -401,7 +424,9 @@ def preprocess_args(
   """Preprocess and convert incoming argument dictionary before invocation.
 
   Converts dictionary values to Pydantic model instances where the function
-  signature expects a BaseModel subclass or Optional[BaseModel].
+  signature expects a BaseModel subclass, an Optional or list of one, raw
+  values to the member where it expects an Enum, Optional[Enum] or
+  list[Enum], and integral floats to int where it expects int or list[int].
 
   Args:
     args: The incoming argument dictionary to preprocess.
@@ -410,7 +435,8 @@ def preprocess_args(
     type_hints: Optional cached type hints dictionary for the callable.
 
   Returns:
-    A copy of args with applicable values converted to Pydantic model instances.
+    A copy of args with applicable values converted to Pydantic model
+    instances, Enum members or ints.
   """
   converted_args = args.copy()
   if signature is None:
@@ -462,6 +488,24 @@ def preprocess_args(
               )
             continue
 
+        # The declaration lists the enum's values, so the model sends a value
+        # back. Look up the member so the function gets the Enum it declared.
+        if inspect.isclass(target_type) and issubclass(target_type, Enum):
+          value = args[param_name]
+          if value is not None and not isinstance(value, target_type):
+            member = _find_enum_member(target_type, value)
+            if member is None:
+              logger.warning(
+                  "Argument '%s' is not a value of enum %s: %r; passing it"
+                  " through unchanged.",
+                  param_name,
+                  target_type.__name__,
+                  value,
+              )
+            else:
+              converted_args[param_name] = member
+          continue
+
         # Some session stores persist call args as a proto `Struct`, whose
         # only number type is double, so an int comes back as a float.
         if target_type is int and type(args[param_name]) is float:
@@ -503,6 +547,39 @@ def preprocess_args(
                 non_integral_items,
             )
           converted_args[param_name] = coerced_items
+          continue
+
+        # The declaration lists an enum's values, so each element of a
+        # list[Enum] argument comes back as a value. Look up the members so
+        # the function gets the Enums it declared.
+        item_types = (
+            get_args(target_type) if get_origin(target_type) is list else ()
+        )
+        if (
+            len(item_types) == 1
+            and inspect.isclass(item_types[0])
+            and issubclass(item_types[0], Enum)
+            and isinstance(args[param_name], list)
+        ):
+          enum_type = item_types[0]
+          converted_items = []
+          unknown_items = []
+          for item in args[param_name]:
+            member = _find_enum_member(enum_type, item)
+            if member is None:
+              unknown_items.append(item)
+              converted_items.append(item)
+            else:
+              converted_items.append(member)
+          if unknown_items:
+            logger.warning(
+                "Argument '%s' is typed list[%s] but contains values that are"
+                " not members: %r; passing them through unchanged.",
+                param_name,
+                enum_type.__name__,
+                unknown_items,
+            )
+          converted_args[param_name] = converted_items
           continue
 
         if inspect.isclass(target_type) and issubclass(target_type, BaseModel):

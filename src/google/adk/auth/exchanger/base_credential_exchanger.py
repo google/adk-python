@@ -20,7 +20,6 @@ import abc
 from typing import NamedTuple
 from typing import Optional
 
-from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_schemes import AuthScheme
 
@@ -34,7 +33,6 @@ class ExchangeResult(NamedTuple):
   was_exchanged: bool
 
 
-@experimental
 class BaseCredentialExchanger(abc.ABC):
   """Base interface for credential exchangers.
 

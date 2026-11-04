@@ -21,7 +21,6 @@ import json
 import os
 import sys
 import traceback
-from typing import Optional
 import uuid
 
 import agentplatform
@@ -142,16 +141,16 @@ class ChatRequest(BaseModel):
   message: str = ""
   agent_type: str = "remote"
   local_agent: str = ""
-  project_id: Optional[str] = os.environ.get(
+  project_id: str | None = os.environ.get(
       "GOOGLE_CLOUD_PROJECT", default_project or ""
   )
-  location: Optional[str] = os.environ.get("GOOGLE_CLOUD_LOCATION", "")
-  agent_id: Optional[str] = os.environ.get("AGENT_ID", "")
+  location: str | None = os.environ.get("GOOGLE_CLOUD_LOCATION", "")
+  agent_id: str | None = os.environ.get("AGENT_ID", "")
   user_id: str = "default_user_id"
-  session_id: Optional[str] = None
-  is_auth_resume: Optional[bool] = False
-  auth_config: Optional[dict] = None
-  auth_request_function_call_id: Optional[str] = None
+  session_id: str | None = None
+  is_auth_resume: bool | None = False
+  auth_config: dict | None = None
+  auth_request_function_call_id: str | None = None
 
 
 # Endpoint for querying the agent.

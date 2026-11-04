@@ -261,7 +261,9 @@ class FunctionTool(BaseTool):
       signature = self._spec.signature
     else:
       signature = None
-    return _schema_utils.preprocess_args(args, signature, self._spec.type_hints)
+    return _schema_utils.preprocess_args(
+        args, signature, self._spec.get_best_effort_type_hints()
+    )
 
   def _preprocess_args_with_validation(
       self, args: dict[str, Any]
@@ -293,7 +295,7 @@ class FunctionTool(BaseTool):
       return preprocessed_args, []
 
     signature = self._spec.signature
-    type_hints = self._spec.type_hints
+    type_hints = self._spec.get_best_effort_type_hints()
 
     return self._validate_args(
         preprocessed_args,

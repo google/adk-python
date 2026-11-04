@@ -246,7 +246,7 @@ def _client_cert_ssl_context(
     cached = _client_cert_cache.get(verify)
     if cached is not None and time.monotonic() < cached[1]:
       return cached[0]
-    ctx = httpx.create_ssl_context(verify=verify)
+    ctx: ssl.SSLContext | None = httpx.create_ssl_context(verify=verify)
     try:
       if not load_default_client_cert(ctx):
         ctx = None

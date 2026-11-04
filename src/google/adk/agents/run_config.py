@@ -18,7 +18,6 @@ import logging
 import os
 import sys
 from typing import Any
-from typing import Optional
 import warnings
 
 from google.genai import types
@@ -92,16 +91,16 @@ class RunConfig(BaseModel):
   )
   """The pydantic model config."""
 
-  speech_config: Optional[types.SpeechConfig] = None
+  speech_config: types.SpeechConfig | None = None
   """Speech configuration for the live agent."""
 
-  http_options: Optional[types.HttpOptions] = None
+  http_options: types.HttpOptions | None = None
   """HTTP options for the agent execution (e.g. custom headers)."""
 
-  labels: Optional[dict[str, str]] = None
+  labels: dict[str, str] | None = None
   """User labels for the current invocation (e.g. for billing/attribution)."""
 
-  service_tier: Optional[ServiceTier | str] = None
+  service_tier: ServiceTier | str | None = None
   """Serving tier for the model calls of this run.
 
   Reaches models that call the interactions API through `Gemini`, and nothing
@@ -123,10 +122,10 @@ class RunConfig(BaseModel):
   `StreamingMode.SSE`.
   """
 
-  response_modalities: Optional[list[types.Modality]] = None
+  response_modalities: list[types.Modality] | None = None
   """The output modalities. If not set, it defaults to AUDIO."""
 
-  avatar_config: Optional[types.AvatarConfig] = None
+  avatar_config: types.AvatarConfig | None = None
   """Avatar configuration for the live agent."""
 
   save_input_blobs_as_artifacts: bool = Field(
@@ -153,50 +152,48 @@ class RunConfig(BaseModel):
   streaming_mode: StreamingMode = StreamingMode.NONE
   """Streaming mode, None or StreamingMode.SSE or StreamingMode.BIDI."""
 
-  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+  output_audio_transcription: types.AudioTranscriptionConfig | None = Field(
       default_factory=types.AudioTranscriptionConfig
   )
   """Output transcription for live agents with audio response."""
 
-  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+  input_audio_transcription: types.AudioTranscriptionConfig | None = Field(
       default_factory=types.AudioTranscriptionConfig
   )
   """Input transcription for live agents with audio input from user."""
 
-  realtime_input_config: Optional[types.RealtimeInputConfig] = None
+  realtime_input_config: types.RealtimeInputConfig | None = None
   """Realtime input config for live agents with audio input from user."""
 
-  explicit_vad_signal: Optional[bool] = None
+  explicit_vad_signal: bool | None = None
   """Whether to enable explicit voice activity detection (VAD) signals from the model."""
 
-  translation_config: Optional[types.TranslationConfig] = None
+  translation_config: types.TranslationConfig | None = None
   """Configures real-time speech-to-speech translation.
 
   Only supported by translation models such as
   `gemini-3.5-live-translate-preview`.
   """
 
-  enable_affective_dialog: Optional[bool] = None
+  enable_affective_dialog: bool | None = None
   """If enabled, the model will detect emotions and adapt its responses accordingly."""
 
-  proactivity: Optional[types.ProactivityConfig] = None
+  proactivity: types.ProactivityConfig | None = None
   """Configures the proactivity of the model. This allows the model to respond proactively to the input and to ignore irrelevant input."""
 
-  session_resumption: Optional[types.SessionResumptionConfig] = None
+  session_resumption: types.SessionResumptionConfig | None = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
 
-  history_config: Optional[types.HistoryConfig] = None
+  history_config: types.HistoryConfig | None = None
   """Configures the exchange of history between the client and the server."""
 
-  context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
-      None
-  )
+  context_window_compression: types.ContextWindowCompressionConfig | None = None
   """Configuration for context window compression. If set, this will enable context window compression for LLM input."""
 
   save_live_blob: bool = False
   """Saves live video and audio data to session and artifact service."""
 
-  tool_thread_pool_config: Optional[ToolThreadPoolConfig] = None
+  tool_thread_pool_config: ToolThreadPoolConfig | None = None
   """Configuration for running tools in a thread pool.
 
   When set, tool executions will run in a separate thread pool executor
@@ -287,7 +284,7 @@ class RunConfig(BaseModel):
     - Less than or equal to 0: This allows for unbounded number of llm calls.
   """
 
-  custom_metadata: Optional[dict[str, Any]] = None
+  custom_metadata: dict[str, Any] | None = None
   """Custom metadata for the current invocation."""
 
   telemetry: TelemetryConfig | None = None
@@ -303,7 +300,7 @@ class RunConfig(BaseModel):
       Experimental; API may change.
   """
 
-  get_session_config: Optional[GetSessionConfig] = None
+  get_session_config: GetSessionConfig | None = None
   """Configuration for controlling which events are fetched when loading
   a session.
 

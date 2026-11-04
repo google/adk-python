@@ -19,8 +19,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from typing import Any
-from typing import Dict
-from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
 
@@ -85,7 +83,7 @@ class _Tool(base_tool.BaseTool):
   def _get_declaration(self) -> types.FunctionDeclaration:
     return self._function_declaration
 
-  async def run_async(self, *, args: Dict[str, Any], tool_context: Any) -> str:
+  async def run_async(self, *, args: dict[str, Any], tool_context: Any) -> str:
     """Runs the tool by converting tool call to env action and stepping env."""
     env_response = self._env.step(
         types.Part(function_call=types.FunctionCall(name=self.name, args=args))
@@ -212,7 +210,7 @@ def run_environment_loop(
     tools: list[types.FunctionDeclaration],
     task_index: int,
     max_num_steps: int = 30,
-    plugins: Optional[Any] = None,
+    plugins: Any | None = None,
     agent_model: str | None = None,
     agent_name: str | None = None,
 ) -> Generator[event_lib.Event]:

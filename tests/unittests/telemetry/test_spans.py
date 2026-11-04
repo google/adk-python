@@ -14,8 +14,6 @@
 
 import json
 from typing import Any
-from typing import Dict
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -137,8 +135,8 @@ def mock_event_fixture():
 
 async def _create_invocation_context(
     agent: LlmAgent,
-    state: Optional[dict[str, object]] = None,
-    run_config: Optional[RunConfig] = None,
+    state: dict[str, object] | None = None,
+    run_config: RunConfig | None = None,
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -1260,7 +1258,7 @@ def test_trace_tool_call_with_scalar_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
+  test_args: dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
   test_tool_call_id: str = 'tool_call_id_001'
   test_event_id: str = 'event_id_001'
   scalar_function_response: object = 'Scalar result'
@@ -1319,10 +1317,10 @@ def test_trace_tool_call_with_dict_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, object] = {
+  dict_function_response: dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -1996,10 +1994,10 @@ def test_trace_tool_call_disabling_request_response_content(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, object] = {
+  dict_function_response: dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -2783,7 +2781,7 @@ def test_trace_tool_call_with_tool_execution_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a'}
+  test_args: dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Internal server error',
       error_type=ToolErrorType.INTERNAL_SERVER_ERROR,
@@ -2823,7 +2821,7 @@ def test_trace_tool_call_with_timeout_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a'}
+  test_args: dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Request timed out',
       error_type=ToolErrorType.REQUEST_TIMEOUT,
@@ -2849,7 +2847,7 @@ def test_trace_tool_call_with_standard_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param': 1}
+  test_args: dict[str, object] = {'param': 1}
   test_error = ValueError('Invalid arguments')
 
   trace_tool_call(
@@ -3024,6 +3022,69 @@ async def test_generate_content_span_system_name_follows_model(
     assert log_record.attributes[GEN_AI_SYSTEM] == expected_system
 
 
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+@mock.patch('google.adk.telemetry.tracing.tracer')
+@mock.patch(
+    'google.adk.telemetry.tracing._guess_gemini_system_name',
+    return_value='gemini',
+)
+@pytest.mark.parametrize(
+    'request_model,model_version,expected_system',
+    [
+        # LiteLLM returns model_version without the provider prefix.
+        ('openai/gpt-4o', 'gpt-4o', 'openai'),
+        ('groq/llama-3.1-8b-instant', 'llama-3.1-8b-instant', 'groq'),
+        # Anthropic bare ids already resolve; keep working with model_version.
+        ('anthropic/claude-sonnet-4-5', 'claude-sonnet-4-5', 'anthropic'),
+        # Gemini model_version must still resolve to the deployment default.
+        ('gemini-2.0-flash', 'gemini-2.0-flash', 'gemini'),
+    ],
+)
+async def test_choice_log_system_name_when_model_version_lacks_provider(
+    mock_guess_system_name: mock.MagicMock,
+    mock_tracer: mock.MagicMock,
+    mock_otel_logger: mock.MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    request_model: str,
+    model_version: str,
+    expected_system: str,
+) -> None:
+  """Choice logs match the span when LiteLLM omits the provider prefix."""
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: False,
+  )
+  agent = LlmAgent(name='test_agent', model=request_model)
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model=request_model, contents=[])
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=[types.Part(text='hi')]),
+      finish_reason=types.FinishReason.STOP,
+      model_version=model_version,
+  )
+  model_response_event = Event(author='test_agent', id='event-123')
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    trace_inference_result(invocation_context, gc_span, llm_response)
+
+  mock_span.set_attribute.assert_any_call(GEN_AI_SYSTEM, expected_system)
+  choice_logs: list[LogRecord] = [
+      call.args[0]
+      for call in mock_otel_logger.emit.call_args_list
+      if call.args[0].event_name == 'gen_ai.choice'
+  ]
+  assert choice_logs
+  for choice_log in choice_logs:
+    assert choice_log.attributes is not None
+    assert choice_log.attributes[GEN_AI_SYSTEM] == expected_system
+
+
 # Model ids that are resource paths: the leading segment is a resource
 # collection, so reading it as a provider prefix mislabels the model.
 _RESOURCE_PATH_MODELS = [
@@ -3158,7 +3219,7 @@ class _ErrorDetectingTool(BaseTool):
   async def run_async(self, *, args, tool_context):
     return 'result'
 
-  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+  def _detect_error_in_response(self, response: Any) -> str | None:
     raise RuntimeError('detection exploded')
 
 

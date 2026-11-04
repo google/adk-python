@@ -246,24 +246,7 @@
                       "content": {
                         "parts": [
                           {
-                            "text": "text "
-                          }
-                        ],
-                        "role": "model"
-                      },
-                      "index": 0
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": {
-                        "parts": [
-                          {
-                            "text": "response"
+                            "text": "text response"
                           }
                         ],
                         "role": "model"
@@ -287,6 +270,26 @@
     "logs": []
   },
   "metric_points": {
+    "gen_ai.client.inference.time_per_output_chunk": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.client.inference.time_to_first_chunk": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash"
+        },
+        "value": "PRESENT"
+      }
+    ],
     "gen_ai.client.operation.duration": [
       {
         "attributes": {

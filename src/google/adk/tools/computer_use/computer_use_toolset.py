@@ -38,8 +38,6 @@ from packaging.version import Version
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
-from ...features import experimental
-from ...features import FeatureName
 from ...models.llm_request import LlmRequest
 from ...utils.model_name_utils import extract_model_name
 from .._url_validator import _is_blocked_hostname
@@ -272,7 +270,6 @@ def _get_computer_execution_lock(computer: BaseComputer) -> asyncio.Lock:
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class ComputerUseToolset(BaseToolset):
 
   def __init__(
@@ -524,11 +521,6 @@ class ComputerUseToolset(BaseToolset):
         if not isinstance(url, str):
           raise ValueError("url is not a string")
         target = _parse_request_target(url)
-        # A browser ends the authority at "\" but urlparse does not: in
-        # `http://169.254.169.254\@example.com/` the host is example.com here
-        # and 169.254.169.254 in Chrome, so refuse instead of checking it.
-        if "\\" in target.parsed_url.netloc:
-          raise ValueError("backslash in hostname")
         if not self._allow_private_network_access:
           if _is_blocked_hostname(target.hostname):
             raise ValueError("hostname is blocked")

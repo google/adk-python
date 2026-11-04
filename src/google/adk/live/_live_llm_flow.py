@@ -250,9 +250,12 @@ async def receive_from_model(
               'Update session resumption handle:'
               f' {llm_response.live_session_resumption_update}.'
           )
-          invocation_context.live_session_resumption_handle = (
-              llm_response.live_session_resumption_update.new_handle
-          )
+          # Updates sent while the session can't be resumed (the model is
+          # generating or a tool call is running) carry no handle. Keep the
+          # last handle the server offered, so a reconnect can still resume.
+          new_handle = llm_response.live_session_resumption_update.new_handle
+          if new_handle:
+            invocation_context.live_session_resumption_handle = new_handle
         if llm_response.go_away:
           logger.info(f'Received go away signal: {llm_response.go_away}')
           # The server signals that it will close the connection soon.

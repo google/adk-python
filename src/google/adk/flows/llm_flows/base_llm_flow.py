@@ -19,7 +19,6 @@ from collections.abc import Iterator
 import logging
 from typing import AsyncGenerator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
@@ -318,8 +317,9 @@ class BaseLlmFlow(ABC):
 
     A node that interrupts mid-call raises `NodeInterruptedError`, which is a
     `BaseException` specifically so intermediate handlers do not swallow it.
-    It is left to propagate: `NodeRunner` catches it and reads the interrupt
-    ids off the context, which `ctx.run_node` populated before raising.
+    It is left to propagate: `NodeRunner` catches it and merges the interrupt
+    ids it carries into the node's context, since a tool's context is not the
+    node's.
     """
     async with Aclosing(
         self._postprocess_handle_function_calls_async(
@@ -401,7 +401,6 @@ class BaseLlmFlow(ABC):
             # fresh id only after a complete event so distinct responses differ.
             if not event.partial:
               model_response_event.id = Event.new_id()
-            model_response_event.timestamp = platform_time.get_time()
             yield event
 
   async def _preprocess_async(
@@ -498,7 +497,8 @@ class BaseLlmFlow(ABC):
     ):
       return
 
-    # Builds the event.
+    # Stamp at build time so timestamp order matches append order.
+    model_response_event.timestamp = platform_time.get_time()
     model_response_event = self._finalize_model_response_event(
         llm_request, llm_response, model_response_event
     )
@@ -579,7 +579,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
       model_response_event: Event,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     return await handle_before_model_callback(
         invocation_context, llm_request, model_response_event
     )
@@ -589,7 +589,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       llm_response: LlmResponse,
       model_response_event: Event,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     return await handle_after_model_callback(
         invocation_context, llm_response, model_response_event
     )
@@ -600,7 +600,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
       model_response_event: Event,
-      call_llm_span: Optional[trace.Span] = None,
+      call_llm_span: trace.Span | None = None,
   ) -> AsyncGenerator[LlmResponse, None]:
     async with Aclosing(
         run_and_handle_error(

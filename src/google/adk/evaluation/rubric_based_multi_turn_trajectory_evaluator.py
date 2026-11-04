@@ -255,23 +255,34 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
 
     # Grab instructions and tools locally from Invocation
     instructions_parts = []
-    tools_parts = []
+    # Tool lines are de-duplicated per agent, so agents sharing a tool each
+    # still list it.
+    tools_by_agent: dict[str, dict[str, None]] = {}
     for invocation in actual_invocations:
       if invocation.app_details and invocation.app_details.agent_details:
         for agent_id, details in invocation.app_details.agent_details.items():
           instructions_parts.append(
               f"Agent {agent_id} Instructions:\n{details.instructions}"
           )
-          tools_parts.append(f"Agent: {agent_id}")
+          agent_tools = tools_by_agent.setdefault(agent_id, {})
           if details.tool_declarations:
             for tool in details.tool_declarations:
-              for func in tool.function_declarations:
-                tools_parts.append(f"- {func.name}: {func.description}")
+              for func in tool.function_declarations or []:
+                agent_tools[f"- {func.name}: {func.description}"] = None
+              # Built-in tools such as google_search carry no function
+              # declarations; name them so the judge still sees them.
+              for field_name in tool.model_dump(exclude_none=True):
+                if field_name != "function_declarations":
+                  agent_tools[f"- {field_name} (built-in)"] = None
 
     self._formatted_instructions = "\n\n".join(
         dict.fromkeys(instructions_parts)
     )
-    self._formatted_tools = "\n".join(dict.fromkeys(tools_parts))
+    self._formatted_tools = "\n".join(
+        line
+        for agent_id, agent_tools in tools_by_agent.items()
+        for line in (f"Agent: {agent_id}", *agent_tools)
+    )
 
   @override
   async def evaluate_invocations(

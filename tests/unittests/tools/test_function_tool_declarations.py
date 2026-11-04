@@ -38,9 +38,9 @@ from unittest import mock
 from absl.testing import parameterized
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
-from google.adk.tools._function_tool_declarations import _resolve_annotation
 from google.adk.tools._function_tool_declarations import build_function_declaration_with_json_schema
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._callable_utils import resolve_annotation
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pyd_dataclass
@@ -995,19 +995,19 @@ class TestAnnotatedMetadata(parameterized.TestCase):
     self.assertIn("Address", schema["$defs"])
 
   def test_resolve_annotation_container_forward_refs(self):
-    """Test _resolve_annotation directly on containers with forward refs."""
+    """Test resolve_annotation directly on containers with forward refs."""
     globalns = {"Address": Address}
 
-    resolved_list = _resolve_annotation(list["Address"], globalns)
+    resolved_list = resolve_annotation(list["Address"], globalns)
     self.assertEqual(get_origin(resolved_list), list)
     self.assertEqual(get_args(resolved_list), (Address,))
 
-    resolved_dict = _resolve_annotation(dict[str, "Address"], globalns)
+    resolved_dict = resolve_annotation(dict[str, "Address"], globalns)
     self.assertEqual(get_origin(resolved_dict), dict)
     self.assertEqual(get_args(resolved_dict), (str, Address))
 
     annotated_list = Annotated[list["Address"], Field(description="items")]
-    resolved_annotated = _resolve_annotation(annotated_list, globalns)
+    resolved_annotated = resolve_annotation(annotated_list, globalns)
     self.assertEqual(get_origin(resolved_annotated), Annotated)
     inner_type = get_args(resolved_annotated)[0]
     self.assertEqual(get_origin(inner_type), list)

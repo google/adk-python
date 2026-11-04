@@ -239,6 +239,12 @@ def _set_sqlite_pragma(
   cursor.close()
 
 
+def _begin_sqlite_write_transaction(connection: Connection) -> None:
+  """Takes the SQLite write lock before a read-write transaction reads."""
+  if not connection.get_execution_options().get("read_only"):
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def _ensure_schema_indexes_exist(
     connection: Connection, metadata: MetaData
 ) -> None:
@@ -401,6 +407,11 @@ class DatabaseSessionService(BaseSessionService):
         if db_engine.dialect.name == _SQLITE_DIALECT:
           # Set sqlite pragma to enable foreign keys constraints
           event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
+          # A StaticPool shares one connection, which cannot nest transactions.
+          if not isinstance(db_engine.pool, StaticPool):
+            event.listen(
+                db_engine.sync_engine, "begin", _begin_sqlite_write_transaction
+            )
 
       except Exception as e:
         redacted_url = _schema_check_utils._redact_db_url(db_url)
@@ -655,8 +666,8 @@ class DatabaseSessionService(BaseSessionService):
     # 4. Build the session object with generated id
     # 5. Return the session
     await self.prepare_tables()
-    has_user_provided_id = session_id is not None
-    if session_id is None:
+    has_user_provided_id = bool(session_id)
+    if not session_id:
       session_id = platform_uuid.new_uuid()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
@@ -765,7 +776,7 @@ class DatabaseSessionService(BaseSessionService):
             .filter(schema.StorageEvent.user_id == user_id)
         )
 
-        if config and config.after_timestamp:
+        if config and config.after_timestamp is not None:
           after_dt = datetime.fromtimestamp(
               config.after_timestamp, tz=timezone.utc
           )
