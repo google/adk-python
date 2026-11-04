@@ -334,12 +334,26 @@ class TestExecuteBashTool:
     assert "error" in result
     assert "required" in result["error"].lower()
 
+  @pytest.mark.parametrize(
+      "memory_bytes, file_size_bytes, child_processes",
+      [
+          (100 * 1024 * 1024, 50 * 1024 * 1024, 10),
+          (0, 0, 0),
+      ],
+  )
   @pytest.mark.asyncio
-  async def test_resource_limits_set(self, workspace, tool_context_confirmed):
+  async def test_resource_limits_set(
+      self,
+      workspace,
+      tool_context_confirmed,
+      memory_bytes,
+      file_size_bytes,
+      child_processes,
+  ):
     policy = bash_tool.BashToolPolicy(
-        max_memory_bytes=100 * 1024 * 1024,
-        max_file_size_bytes=50 * 1024 * 1024,
-        max_child_processes=10,
+        max_memory_bytes=memory_bytes,
+        max_file_size_bytes=file_size_bytes,
+        max_child_processes=child_processes,
     )
     tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
     mock_process = mock.AsyncMock()
@@ -360,8 +374,26 @@ class TestExecuteBashTool:
         preexec_fn()
         mock_setrlimit.assert_any_call(resource.RLIMIT_CORE, (0, 0))
         mock_setrlimit.assert_any_call(
-            resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024)
+            resource.RLIMIT_AS, (memory_bytes, memory_bytes)
         )
         mock_setrlimit.assert_any_call(
-            resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024)
+            resource.RLIMIT_FSIZE, (file_size_bytes, file_size_bytes)
         )
+        mock_setrlimit.assert_any_call(
+            resource.RLIMIT_NPROC, (child_processes, child_processes)
+        )
+
+  @pytest.mark.asyncio
+  async def test_zero_file_size_limit_blocks_file_writes(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_file_size_bytes=0)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+
+    result = await tool.run_async(
+        args={"command": "dd if=/dev/zero of=out.bin bs=1024 count=4"},
+        tool_context=tool_context_confirmed,
+    )
+
+    assert result["returncode"] != 0
+    assert (workspace / "out.bin").stat().st_size == 0
