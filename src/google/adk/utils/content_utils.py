@@ -33,11 +33,11 @@ def is_audio_part(part: types.Part) -> bool:
   return (
       part.inline_data is not None
       and part.inline_data.mime_type is not None
-      and part.inline_data.mime_type.startswith('audio/')
+      and part.inline_data.mime_type.lower().startswith('audio/')
   ) or (
       part.file_data is not None
       and part.file_data.mime_type is not None
-      and part.file_data.mime_type.startswith('audio/')
+      and part.file_data.mime_type.lower().startswith('audio/')
   )
 
 
