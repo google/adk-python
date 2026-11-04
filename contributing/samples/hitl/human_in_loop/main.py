@@ -18,11 +18,9 @@ from typing import Any
 
 import agent
 from dotenv import load_dotenv
-from google.adk.agents.llm_agent import Agent
-from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 from opentelemetry import trace
 from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
@@ -48,6 +46,50 @@ async def main():
       session_service=session_service,
   )
 
+  async def answer_confirmations(
+      confirmation_calls: list[types.FunctionCall],
+      approved_args: dict[str, Any] | None = None,
+  ):
+    """Confirm at most one reimbursement matching the approved ticket."""
+    for confirmation_call in confirmation_calls:
+      original_call = confirmation_call.args["originalFunctionCall"]
+      confirmed = (
+          approved_args is not None
+          and original_call["name"] == "reimburse"
+          and original_call["args"] == approved_args
+      )
+      if confirmed:
+        approved_args = None
+      print(f"--- Confirming reimbursement: {confirmed} ---")
+      async for event in runner.run_async(
+          session_id=session.id,
+          user_id=USER_ID,
+          new_message=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=confirmation_call.id,
+                          name=confirmation_call.name,
+                          response=ToolConfirmation(
+                              confirmed=confirmed
+                          ).model_dump(),
+                      )
+                  )
+              ],
+          ),
+      ):
+        if event.content and event.content.parts:
+          for i, part in enumerate(event.content.parts):
+            if part.text:
+              print(f"    Part {i} [Text]: {part.text.strip()}")
+            if part.function_response:
+              print(
+                  f"    Part {i} [FunctionResponse]: For"
+                  f" '{part.function_response.name}', Response:"
+                  f" {part.function_response.response}"
+              )
+
   async def call_agent(query: str):
     content = types.Content(role="user", parts=[types.Part(text=query)])
 
@@ -61,6 +103,7 @@ async def main():
     long_running_function_call: types.FunctionCall | None = None
     initial_tool_response: types.FunctionResponse | None = None
     ticket_id: str | None = None
+    confirmation_calls: list[types.FunctionCall] = []
 
     async for event in events_async:
       if event.content and event.content.parts:
@@ -73,7 +116,9 @@ async def main():
                 f" {part.function_call.name}({part.function_call.args}) ID:"
                 f" {part.function_call.id}"
             )
-            if not long_running_function_call and part.function_call.id in (
+            if part.function_call.name == "adk_request_confirmation":
+              confirmation_calls.append(part.function_call)
+            elif not long_running_function_call and part.function_call.id in (
                 event.long_running_tool_ids or []
             ):
               long_running_function_call = part.function_call
@@ -101,6 +146,9 @@ async def main():
               )
 
     print("--- End of agent's initial turn ---\n")
+
+    # No ticket has been approved yet, even if the model calls reimburse first.
+    await answer_confirmations(confirmation_calls)
 
     if (
         long_running_function_call
@@ -131,6 +179,7 @@ async def main():
       )
       print("--- Running agent's turn AFTER receiving updated tool result ---")
 
+      confirmation_calls = []
       async for event in runner.run_async(
           session_id=session.id,
           user_id=USER_ID,
@@ -143,6 +192,8 @@ async def main():
             if part.text:
               print(f"    Part {i} [Text]: {part.text.strip()}")
             if part.function_call:
+              if part.function_call.name == "adk_request_confirmation":
+                confirmation_calls.append(part.function_call)
               print(
                   f"    Part {i} [FunctionCall]:"
                   f" {part.function_call.name}({part.function_call.args}) ID:"
@@ -155,6 +206,14 @@ async def main():
                   f" {part.function_response.id}, Response:"
                   f" {part.function_response.response}"
               )
+      await answer_confirmations(
+          confirmation_calls,
+          approved_args=(
+              long_running_function_call.args
+              if updated_tool_output_data["status"] == "approved"
+              else None
+          ),
+      )
       print("--- End of agent's turn AFTER receiving updated tool result ---")
 
     elif long_running_function_call and not initial_tool_response:

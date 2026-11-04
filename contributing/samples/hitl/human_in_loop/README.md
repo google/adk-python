@@ -47,4 +47,6 @@ This example demonstrates an agent using a long-running tool (`ask_for_approval`
 
 1. **Agent Acts on Update**: The agent receives this message containing the `types.FunctionResponse` and, based on its instructions, proceeds with the next steps (e.g., calling another tool like `reimburse`).
 
+1. **Application Confirms the Reimbursement**: For amounts of $100 or more, `FunctionTool(require_confirmation=needs_manager_approval)` holds `reimburse` and emits `adk_request_confirmation`. The application answers with a `FunctionResponse` using that confirmation call's `id` and `name`, with a `ToolConfirmation` payload. In `main.py`, `answer_confirmations` confirms at most one call matching the approved ticket's amount and purpose; calls without approval are rejected. The instruction and the updated approval response alone do not authorize a reimbursement.
+
 **Why is this important?** The agent relies on receiving this subsequent `types.FunctionResponse` (provided in a message with `role="user"` containing the specific `Part`) to understand that the long-running task has concluded or its state has changed. Without it, the agent will remain unaware of the outcome of the pending task.
