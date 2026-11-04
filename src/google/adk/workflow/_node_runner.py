@@ -44,6 +44,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 def _has_non_output_content(event: Event) -> bool:
+  if event.content is not None or event.error_code or event.error_message:
+    return True
   if event.actions:
     if (
         event.actions.state_delta
@@ -495,7 +497,9 @@ class NodeRunner:
     if event.output is not None and ctx._output_delegated:
       if not _has_non_output_content(event):
         return
-      event = event.model_copy(update={"output": None})
+      # Rehydration reads an error code without an output as a failed node.
+      if event.error_code is None:
+        event = event.model_copy(update={"output": None})
 
     self._enrich_event(event, ctx)
     if not event.partial:
