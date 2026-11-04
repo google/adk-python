@@ -23,6 +23,7 @@ from typing_extensions import override
 
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_tool import AuthConfig
+from ..auth.credential_manager import _is_unauthorized_error
 from ..auth.credential_manager import CredentialManager
 from .base_tool import BaseTool
 from .tool_context import ToolContext
@@ -89,14 +90,33 @@ class BaseAuthenticatedTool(BaseTool):
         await self._credentials_manager.request_credential(tool_context)
         return self._response_for_auth_required or "Pending User Authorization."
 
-    return await self._run_async_impl(
-        args=args,
-        tool_context=tool_context,
-        # A tool with no credentials manager runs unauthenticated, so this is
-        # None on that path. Widening the abstract signature instead would
-        # invalidate every subclass that declares the narrower type.
-        credential=cast(AuthCredential, credential),
-    )
+    try:
+      return await self._run_async_impl(
+          args=args,
+          tool_context=tool_context,
+          # A tool with no credentials manager runs unauthenticated, so this is
+          # None on that path. Widening the abstract signature instead would
+          # invalidate every subclass that declares the narrower type.
+          credential=cast(AuthCredential, credential),
+      )
+    except Exception as e:
+      if _is_unauthorized_error(e):
+        await self._discard_rejected_credential(tool_context)
+      raise
+
+  async def _discard_rejected_credential(
+      self, tool_context: ToolContext
+  ) -> None:
+    """Drops the stored credential after the server rejected it.
+
+    `run_async` calls this when `_run_async_impl` raises an HTTP 401/403
+    (`httpx.HTTPStatusError`, also when wrapped in another exception). A
+    subclass that reports an unauthorized outcome as a return value instead
+    should call it itself. The next call then goes through
+    `request_credential` rather than reusing the rejected credential.
+    """
+    if self._credentials_manager:
+      await self._credentials_manager.discard_stored_credential(tool_context)
 
   @abstractmethod
   async def _run_async_impl(

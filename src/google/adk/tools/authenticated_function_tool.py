@@ -25,6 +25,7 @@ from typing_extensions import override
 
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_tool import AuthConfig
+from ..auth.credential_manager import _is_unauthorized_error
 from ..auth.credential_manager import CredentialManager
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
@@ -88,9 +89,16 @@ class AuthenticatedFunctionTool(FunctionTool):
         await self._credentials_manager.request_credential(tool_context)
         return self._response_for_auth_required or "Pending User Authorization."
 
-    return await self._run_async_impl(
-        args=args, tool_context=tool_context, credential=credential
-    )
+    try:
+      return await self._run_async_impl(
+          args=args, tool_context=tool_context, credential=credential
+      )
+    except Exception as e:
+      # The server rejected the credential: drop it so the next call asks for
+      # a new one instead of replaying this one.
+      if self._credentials_manager and _is_unauthorized_error(e):
+        await self._credentials_manager.discard_stored_credential(tool_context)
+      raise
 
   async def _run_async_impl(
       self,
