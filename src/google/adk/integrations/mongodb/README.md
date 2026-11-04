@@ -378,6 +378,121 @@ memory_service = MongoDbMemoryService(
 )
 ```
 
+## Security
+
+This section covers what the integration stores, which inputs it trusts, and
+how to deploy it safely.
+
+| Topic | What to do |
+| :--- | :--- |
+| [Stored data](#stored-data-is-sensitive) | Use TLS, authentication, least-privilege users, and encryption at rest. |
+| [Identifiers](#identifiers-must-come-from-an-authenticated-identity) | Derive `app_name`, `user_id`, and `session_id` from an authenticated identity, as plain strings. |
+| [Search filters](#search-filters-are-allowlisted) | Rely on the operator allowlist, and scope the search user's privileges. |
+| [Search results](#search-results-are-untrusted-input) | Search only trusted collections, and pin `output_fields` in a `before_tool_callback`. |
+| [Resource limits](#reads-are-bounded-by-configuration) | Set `timeoutMS`, and bound how much of a session is loaded. |
+
+### Stored data is sensitive
+
+`MongoDbSessionService` stores every event verbatim under `event_data`: user
+prompts, model replies, function calls, and function responses. Tool results
+routinely carry document contents, API responses, and other data the agent
+saw, so an event can contain anything, including credentials. Session,
+`app:`, and `user:` state hold whatever the agent and tools write there, and
+`MongoDbMemoryService` keeps the same event text plus, depending on
+`retrieval_mode`, its extracted keywords or its embedding.
+
+Treat these collections as you would any store of user conversations:
+
+- **Connect over TLS and authenticate.** Both are configured on the
+  connection string or on the `MongoClient` you pass in; the integration
+  adds no TLS or authentication settings of its own. On Atlas, both are on
+  by default.
+- **Use least-privileged users.** Give each component its own database user,
+  as described in
+  [Required permissions](#required-permissions-least-privilege-setup). Never
+  hand the integration an admin user.
+- **Protect write access.** Write access to `sessions`, `events`, and the
+  state collections is equivalent to controlling what a resumed session
+  believes, and write access to `memories` controls what the agent recalls.
+  Don't load sessions or recall memories from a database that untrusted
+  parties can write to.
+- **Encrypt at rest.** If plaintext conversations must never reach the
+  server, configure the `MongoClient` for automatic
+  [Client-Side Field Level Encryption (CSFLE)](https://www.mongodb.com/docs/manual/core/csfle/)
+  with
+  [randomized encryption](https://www.mongodb.com/docs/manual/core/csfle/fundamentals/encryption-algorithms/)
+  of `event_data` and the state fields. The session service never queries
+  inside these payloads, so they do not need to be queryable.
+  - Keep the `_id` key fields and the indexed fields (`app_name`, `user_id`,
+    `session_id`, `timestamp`, `revision`) unencrypted.
+  - In `memories`, encrypt `content`, which holds the event's content, and
+    keep `expire_at` unencrypted. The rest depends on `retrieval_mode`:
+    - `"keyword"`: encrypt `text`. `keywords` must stay unencrypted because
+      the memory service matches on it, so the server still sees every
+      distinct word of each event's text, lowercased and minus stop words, in
+      plaintext.
+    - `"vector"`: encrypt `text`. `embedding` must stay unencrypted because
+      `$vectorSearch` reads it.
+    - `"auto"`: `text` must stay unencrypted because Atlas embeds it, so the
+      server sees each event's text in plaintext.
+
+    If that is unacceptable, don't use `MongoDbMemoryService` for that data;
+    encrypting the field a mode searches on disables recall.
+- **Keep the connection string out of code.** See
+  [Keep the connection string out of the deployment package](#keep-the-connection-string-out-of-the-deployment-package).
+
+### Identifiers must come from an authenticated identity
+
+The services don't authenticate callers. `app_name`, `user_id`, and
+`session_id` are placed directly into MongoDB query filters and `_id` keys,
+and they are the only boundary between users and tenants.
+
+- Derive them from an authenticated identity on the server.
+- Pass them as plain strings.
+- Never take them from untrusted input such as a request body.
+
+> [!WARNING]
+> A non-string value such as the dict `{"$ne": ""}` acts as a query operator
+> and can match other users' sessions or memories.
+
+### Search filters are allowlisted
+
+The `filter` argument of `mongodb_vector_search` and `mongodb_hybrid_search`
+is chosen by the model, so it reflects whatever reached the prompt, including
+prompt-injected text. Every nesting level is checked against the operators
+`$vectorSearch.filter` accepts:
+
+`$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$exists`, `$and`,
+`$or`, `$not`, `$nor`
+
+Any other operator, including `$where` and `$expr`, makes the tool return
+`{"status": "ERROR", "error_details": "..."}` before a query runs.
+
+The allowlist limits what a filter can *express*, not which data it can
+*reach*. The model also picks the collection and `output_fields`, so scope
+the search user's privileges as described in
+[The model chooses the collection](#the-model-chooses-the-collection).
+
+### Search results are untrusted input
+
+Documents returned by the search tools go straight back into the model's
+context. If the searched collections hold content written by users or third
+parties, that content can carry prompt injection.
+
+- Search only collections whose contents you trust the model to read.
+- The model chooses `output_fields`, so it does not keep fields from the
+  agent on its own. To return only the fields the agent needs, overwrite
+  `output_fields` in a `before_tool_callback`, as in the example under
+  [The model chooses the collection](#the-model-chooses-the-collection).
+
+### Reads are bounded by configuration
+
+| Component | Default bound | How to tighten it |
+| :--- | :--- | :--- |
+| Search tools | Results capped at `max_results` (`50`); each query capped at `timeout_ms` (`60000`). | Lower them in [`MongoDbToolSettings`](#configuration-mongodbtoolsettings). |
+| Session and memory services | No operation time limit. | Add [`timeoutMS`](https://www.mongodb.com/docs/manual/reference/connection-string-options/) to the connection string. |
+| `get_session` | Loads every event of the session. | Pass a `GetSessionConfig` with `num_recent_events` or `after_timestamp`. |
+
 ## Required permissions (least-privilege setup)
 
 Do not hand the integration an admin user. The components need very little,
@@ -443,7 +558,8 @@ role exposes all of them to prompt-driven queries. Scope accordingly:
 - Put only collections the agent may read into the bound database, or give
   the toolset its own database.
 - For a hard allowlist enforced in code, add a `before_tool_callback`, which
-  sees the call arguments the model chose:
+  sees the call arguments the model chose. Changes it makes to `args` reach
+  the tool, so it can also pin `output_fields`:
 
 ```python
 def allow_products_only(tool, args, tool_context):
@@ -452,6 +568,7 @@ def allow_products_only(tool, args, tool_context):
         "status": "ERROR",
         "error_details": "Only the products collection may be searched.",
     }
+  args["output_fields"] = ["name", "description"]
   return None  # None lets the call proceed.
 
 agent = Agent(
