@@ -480,6 +480,37 @@ async def test_sqlite_session_service_rejects_concurrent_stale_writer(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_append_event_waits_for_write_lock_held_past_5_seconds(
+    tmp_path: Path,
+) -> None:
+  """An append waits for another writer instead of failing as locked."""
+  db_path = tmp_path / 'sessions.db'
+  service = SqliteSessionService(str(db_path))
+  session = await service.create_session(app_name='app', user_id='user')
+  writer = sqlite3.connect(db_path, isolation_level=None)
+  try:
+    writer.execute('BEGIN IMMEDIATE')
+
+    async def release_lock() -> None:
+      await asyncio.sleep(5.5)
+      writer.rollback()
+
+    await asyncio.gather(
+        service.append_event(
+            session, Event(invocation_id='inv', author='user')
+        ),
+        release_lock(),
+    )
+  finally:
+    writer.close()
+
+  stored = await service.get_session(
+      app_name='app', user_id='user', session_id=session.id
+  )
+  assert [event.invocation_id for event in stored.events] == ['inv']
+
+
+@pytest.mark.asyncio
 async def test_sqlite_stale_append_releases_reused_connection() -> None:
   """A rejected append leaves no open transaction on a reused connection."""
 
