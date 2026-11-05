@@ -17,7 +17,6 @@
 import asyncio
 import logging
 import ssl
-from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -1946,7 +1945,7 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 @pytest.mark.asyncio
 async def test_run_live_transfer_is_independent_of_response_order(
     function_response_names: tuple[str, ...],
-    transfer_action: Optional[str],
+    transfer_action: str | None,
     expect_transfer: bool,
 ):
   """Live transfer keys off the action, not the transfer response's position."""

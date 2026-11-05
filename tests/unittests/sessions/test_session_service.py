@@ -1641,6 +1641,21 @@ async def test_create_session_with_blank_id_generates_one():
 
 
 @pytest.mark.asyncio
+async def test_create_session_with_empty_id_generates_one(session_service):
+  """An empty session id is replaced by a generated one, as if omitted."""
+  first = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+  second = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+
+  assert first.id
+  assert second.id
+  assert first.id != second.id
+
+
+@pytest.mark.asyncio
 async def test_get_session_finds_session_by_id_passed_to_create(
     session_service,
 ):
@@ -2020,15 +2035,8 @@ async def test_append_event_with_requested_tool_confirmations(session_service):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'service_type',
-    [SessionServiceType.DATABASE, SessionServiceType.SQLITE],
-)
-async def test_append_event_with_non_serializable_state_delta(
-    service_type, tmp_path
-):
+async def test_append_event_with_non_serializable_state_delta(session_service):
   """A value the JSON encoder rejects must not destroy the whole event."""
-  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -2038,9 +2046,24 @@ async def test_append_event_with_non_serializable_state_delta(
   event = Event(
       invocation_id='invocation',
       author='user',
-      actions=EventActions(state_delta={'callback': lambda: 1, 'ok': 2}),
+      actions=EventActions(
+          state_delta={
+              'callback': lambda: 1,
+              'screenshot': b'\x89PNG\r\n\x1a\n',
+              'ok': 2,
+          }
+      ),
   )
   await session_service.append_event(session=session, event=event)
+  assert (
+      '"screenshot":"iVBORw0KGgo="'
+      in Session(
+          id='s',
+          app_name=app_name,
+          user_id=user_id,
+          state={'screenshot': b'\x89PNG\r\n\x1a\n'},
+      ).model_dump_json()
+  )
 
   refreshed_session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
@@ -2048,10 +2071,12 @@ async def test_append_event_with_non_serializable_state_delta(
   assert refreshed_session is not None
   assert len(refreshed_session.events) == 1
   assert refreshed_session.state['ok'] == 2
-  assert isinstance(refreshed_session.state['callback'], str)
-
-  if isinstance(session_service, DatabaseSessionService):
-    await session_service.close()
+  if isinstance(session_service, InMemorySessionService):
+    assert refreshed_session.state['screenshot'] == b'\x89PNG\r\n\x1a\n'
+    assert callable(refreshed_session.state['callback'])
+  else:
+    assert refreshed_session.state['screenshot'] == 'iVBORw0KGgo='
+    assert isinstance(refreshed_session.state['callback'], str)
 
 
 @pytest.mark.asyncio
@@ -2729,17 +2754,45 @@ async def test_partial_events_are_not_persisted(session_service):
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
+  original_last_update_time = session.last_update_time
   event = Event(author='user', partial=True)
   returned = await session_service.append_event(session, event)
 
   assert returned is event
   # Check in-memory session
   assert len(session.events) == 0
+  # Partial events must not advance last_update_time.
+  assert session.last_update_time == original_last_update_time
   # Check persisted session
   session_got = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert len(session_got.events) == 0
+  assert session_got.last_update_time == original_last_update_time
+
+
+@pytest.mark.asyncio
+async def test_get_session_after_timestamp_zero_filters_negative_events(
+    session_service,
+):
+  """after_timestamp=0 is a valid filter, not 'unset' (epoch is not None)."""
+  app_name = 'my_app'
+  user_id = 'user'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  await session_service.append_event(
+      session, Event(author='user', timestamp=-1.0)
+  )
+  await session_service.append_event(
+      session, Event(author='user', timestamp=1.0)
+  )
+
+  config = GetSessionConfig(after_timestamp=0)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert [event.timestamp for event in session.events] == [1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -3433,6 +3486,76 @@ async def test_append_event_locks_only_scopes_with_deltas(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'state, expected_locks',
+    [
+        pytest.param(
+            None,
+            {'app_states': False, 'user_states': False},
+            id='no_initial_state',
+        ),
+        pytest.param(
+            {'session_key': 'v'},
+            {'app_states': False, 'user_states': False},
+            id='session_state_only',
+        ),
+        pytest.param(
+            {'app:key': 'v'},
+            {'app_states': True, 'user_states': False},
+            id='app_state_only',
+        ),
+        pytest.param(
+            {'user:key': 'v'},
+            {'app_states': False, 'user_states': True},
+            id='user_state_only',
+        ),
+        pytest.param(
+            {'app:a': '1', 'user:b': '2', 'sk': '3'},
+            {'app_states': True, 'user_states': True},
+            id='all_scopes',
+        ),
+    ],
+)
+async def test_create_session_locks_the_state_rows_its_initial_state_writes(
+    state, expected_locks
+):
+  """With row-level locks, create_session locks just the rows it merges into.
+
+  SQLite ignores FOR UPDATE, so the lock request is checked instead.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  lock_requests = {}
+  original_fn = database_session_service._get_or_create_state
+
+  async def tracking_fn(**kwargs):
+    lock_requests[kwargs['state_model'].__tablename__] = kwargs.get(
+        'use_row_level_locking', False
+    )
+    return await original_fn(**kwargs)
+
+  try:
+    # An earlier session leaves both state rows in place, so the locking path
+    # runs against rows that already exist.
+    await service.create_session(app_name='app', user_id='user')
+    with (
+        mock.patch.object(
+            service, '_supports_row_level_locking', return_value=True
+        ),
+        mock.patch.object(
+            database_session_service, '_get_or_create_state', tracking_fn
+        ),
+    ):
+      session = await service.create_session(
+          app_name='app', user_id='user', state=state
+      )
+  finally:
+    await service.close()
+
+  assert lock_requests == expected_locks
+  assert session.state == (state or {})
+
+
+@pytest.mark.asyncio
 async def test_get_user_state_returns_empty_dict_when_no_state_exists(
     session_service,
 ):
@@ -3548,6 +3671,116 @@ async def test_get_user_state_reflects_latest_write(session_service):
 
   state = await session_service.get_user_state(app_name='my_app', user_id='u1')
   assert state['counter'] == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_to_different_sessions_keep_every_scoped_key(
+    session_service,
+):
+  """Concurrent appends from different sessions keep each app: and user: key.
+
+  Setup: three sessions of one user and three sessions of other users, all in
+    one app.
+  Act: every session appends an event at once, each writing its own app: key
+    and its own user: key.
+  Assert: the app scope holds all six app: keys and the shared user holds all
+    three of its user: keys.
+  """
+  user_sessions = [
+      await session_service.create_session(
+          app_name='my_app', user_id='u1', session_id=f'tab{i}'
+      )
+      for i in range(3)
+  ]
+  other_user_sessions = [
+      await session_service.create_session(
+          app_name='my_app', user_id=f'other{i}', session_id=f'other{i}'
+      )
+      for i in range(3)
+  ]
+  sessions = user_sessions + other_user_sessions
+
+  await asyncio.gather(*(
+      session_service.append_event(
+          session,
+          Event(
+              invocation_id=f'inv_{session.id}',
+              author='user',
+              actions=EventActions(
+                  state_delta={
+                      f'app:seen_{session.id}': True,
+                      f'user:seen_{session.id}': True,
+                  }
+              ),
+          ),
+      )
+      for session in sessions
+  ))
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='tab0'
+  )
+  assert {key for key in reloaded.state if key.startswith('app:')} == {
+      f'app:seen_{session.id}' for session in sessions
+  }
+  assert await session_service.get_user_state(
+      app_name='my_app', user_id='u1'
+  ) == {f'seen_{session.id}': True for session in user_sessions}
+
+
+@pytest.mark.asyncio
+async def test_create_session_scoped_state_survives_concurrent_writers(
+    session_service,
+):
+  """Initial app: and user: state is merged with concurrent writes, not lost.
+
+  Setup: one existing session for the user.
+  Act: the existing session appends an app: and a user: key while three new
+    sessions of the same user are created with their own app: and user: keys.
+  Assert: every writer's keys are present in both scopes.
+  """
+  existing = await session_service.create_session(
+      app_name='my_app', user_id='u1', session_id='existing'
+  )
+
+  await asyncio.gather(
+      session_service.append_event(
+          existing,
+          Event(
+              invocation_id='inv_existing',
+              author='user',
+              actions=EventActions(
+                  state_delta={
+                      'app:from_existing': True,
+                      'user:from_existing': True,
+                  }
+              ),
+          ),
+      ),
+      *(
+          session_service.create_session(
+              app_name='my_app',
+              user_id='u1',
+              session_id=f'new{i}',
+              state={f'app:from_new{i}': True, f'user:from_new{i}': True},
+          )
+          for i in range(3)
+      ),
+  )
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='existing'
+  )
+  expected_keys = {'from_existing', 'from_new0', 'from_new1', 'from_new2'}
+  assert {
+      key.removeprefix('app:')
+      for key in reloaded.state
+      if key.startswith('app:')
+  } == expected_keys
+  assert (
+      set(await session_service.get_user_state(app_name='my_app', user_id='u1'))
+      == expected_keys
+  )
 
 
 @pytest.mark.asyncio

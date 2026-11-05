@@ -234,6 +234,63 @@ class TestValidation:
     assert wrapper.rerun_on_resume is True
 
 
+@pytest.mark.parametrize('parallel_worker', [None, False])
+def test_agent_worker_limit_requires_parallel_worker(parallel_worker):
+  """An agent rejects a worker limit unless parallel worker mode is enabled."""
+  with pytest.raises(
+      ValidationError,
+      match='max_parallel_workers can only be set when parallel_worker is True',
+  ):
+    LlmAgent(
+        name='worker',
+        parallel_worker=parallel_worker,
+        max_parallel_workers=2,
+    )
+
+
+@pytest.mark.parametrize('max_parallel_workers', [0, -1])
+def test_agent_worker_limit_must_be_positive(max_parallel_workers):
+  """An agent rejects worker limits below one."""
+  with pytest.raises(ValidationError, match='greater than or equal to 1'):
+    LlmAgent(
+        name='worker',
+        parallel_worker=True,
+        max_parallel_workers=max_parallel_workers,
+    )
+
+
+def test_agent_worker_limit_check_skips_mocked_agent_field():
+  """An autospec LlmAgent mock is accepted as a field value of another model."""
+
+  class _Holder(BaseModel):
+    agent: LlmAgent
+
+  mocked = mock.create_autospec(LlmAgent, instance=True)
+
+  assert _Holder(agent=mocked).agent is mocked
+
+
+@pytest.mark.parametrize('max_parallel_workers', [None, 1, 4])
+def test_agent_worker_limit_survives_clone_and_serialization(
+    max_parallel_workers,
+):
+  """Cloned and restored agents retain their parallel worker configuration."""
+  agent = LlmAgent(
+      name='worker',
+      parallel_worker=True,
+      max_parallel_workers=max_parallel_workers,
+  )
+
+  cloned = agent.clone()
+  restored = LlmAgent.model_validate_json(agent.model_dump_json())
+  built = build_node(agent)
+
+  for worker in (cloned, restored, agent):
+    assert worker.parallel_worker is True
+    assert worker.max_parallel_workers == max_parallel_workers
+  assert built.max_parallel_workers == max_parallel_workers
+
+
 @pytest.mark.asyncio
 async def test_single_turn_input_event_inherits_branch_and_scope(
     request: pytest.FixtureRequest,

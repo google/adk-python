@@ -96,9 +96,10 @@ Orchestrator
 - When retries are exhausted, the error is recorded on `ctx.error` and
   `ctx.error_node_path` and the Context is returned normally — NodeRunner does
   not re-raise to the orchestrator.
-- `NodeInterruptedError` from a dynamic child is swallowed here: the child's
-  interrupt IDs are already on `ctx`, so the caller just reads
-  `ctx.interrupt_ids`.
+- `NodeInterruptedError` from a dynamic child is swallowed here, and the
+  interrupt IDs it carries are merged into `ctx`. `ctx.run_node()` writes them
+  only onto the context it was called on, which is a separate `ToolContext`
+  when the child runs from a tool, so `ctx` may not have them yet.
 - When `abort_signal` is triggered (`ic.is_aborted` is `True`), active node
   tasks are cancelled without retrying. In `_node_runner_utils`, the outer
   workflow runner loop catches the cancellation, calls
@@ -111,7 +112,8 @@ Orchestrator
 When a child is scheduled with `use_as_output=True`, its output Event also
 counts as the parent's output. NodeRunner sets `ctx._output_delegated`, drops
 the output field from the parent's own event (keeping the event if it still
-carries deltas or a route), stamps `node_info.output_for` with the ancestor
-paths, and publishes non-tool output events on the outermost explicit claiming
-ancestor's branch (leaving tool responses such as `finish_task` paired on the
-child's branch).
+carries content, an error code or message, deltas or a route, and keeping the
+output beside an error code so rehydration does not read the node as failed),
+stamps `node_info.output_for` with the ancestor paths, and publishes non-tool
+output events on the outermost explicit claiming ancestor's branch (leaving
+tool responses such as `finish_task` paired on the child's branch).

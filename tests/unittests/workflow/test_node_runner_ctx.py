@@ -969,6 +969,56 @@ async def test_child_event_branch_does_not_mutate_parent_ic():
 
 
 @pytest.mark.asyncio
+async def test_own_event_branch_moves_node_branch():
+  """An event the node authors on another branch moves the node there."""
+
+  class _Node(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield Event(branch='other_branch')
+      yield Event(output='result')
+
+  parent_ctx, events = _make_ctx()
+  parent_ctx._invocation_context.branch = 'parent_branch'
+  child_ctx = await NodeRunner(
+      node=_Node(name='n'), parent_ctx=parent_ctx
+  ).run()
+
+  assert [e.branch for e in events] == ['other_branch', 'other_branch']
+  assert child_ctx._invocation_context.branch == 'other_branch'
+
+
+@pytest.mark.asyncio
+async def test_relayed_event_branch_does_not_move_node_branch():
+  """A sub-agent's event relayed by the node does not move the node's branch.
+
+  A structured agent run as a node, such as a ParallelAgent, re-yields events
+  its sub-agents emitted on their own sub-branches. Each relayed event keeps
+  its sub-branch, but the node stays on its own branch, so its later events
+  and the branch its successors inherit do not depend on which sub-agent
+  spoke last.
+  """
+
+  class _Node(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield Event(author='sub_agent', branch='parent_branch.n.sub_agent')
+      yield Event(output='result')
+
+  parent_ctx, events = _make_ctx()
+  parent_ctx._invocation_context.branch = 'parent_branch'
+  child_ctx = await NodeRunner(
+      node=_Node(name='n'), parent_ctx=parent_ctx
+  ).run()
+
+  assert [e.branch for e in events] == [
+      'parent_branch.n.sub_agent',
+      'parent_branch',
+  ]
+  assert child_ctx._invocation_context.branch == 'parent_branch'
+
+
+@pytest.mark.asyncio
 async def test_override_isolation_scope_used_in_node_runner():
   """NodeRunner sets isolation_scope on child context and enriches emitted events."""
 

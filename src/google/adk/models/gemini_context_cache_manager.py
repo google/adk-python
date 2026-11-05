@@ -23,7 +23,6 @@ import logging
 import time
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -44,7 +43,7 @@ if TYPE_CHECKING:
   from google.genai import Client
 
 
-def _minimum_cache_tokens(model: Optional[str]) -> Optional[int]:
+def _minimum_cache_tokens(model: str | None) -> int | None:
   """Return the explicit-cache token floor for a named Gemini model."""
   model_name = (model or "").rsplit("/", maxsplit=1)[-1]
   if model_name.startswith("gemini-2.5-"):
@@ -97,7 +96,7 @@ class GeminiContextCacheManager:
 
   async def handle_context_caching(
       self, llm_request: LlmRequest
-  ) -> Optional[CacheMetadata]:
+  ) -> CacheMetadata | None:
     """Handle context caching for Gemini models.
 
     Validates existing cache or creates a new one if needed. Applies
@@ -383,7 +382,7 @@ class GeminiContextCacheManager:
 
   async def _create_new_cache_with_contents(
       self, llm_request: LlmRequest, cache_contents_count: int
-  ) -> Optional[CacheMetadata]:
+  ) -> CacheMetadata | None:
     """Create a new cache with specified number of contents.
 
     Args:
@@ -461,7 +460,7 @@ class GeminiContextCacheManager:
   def _estimate_request_tokens(
       self,
       llm_request: LlmRequest,
-      cache_contents_count: Optional[int] = None,
+      cache_contents_count: int | None = None,
   ) -> int:
     """Estimate token count for the request (or its cacheable prefix).
 

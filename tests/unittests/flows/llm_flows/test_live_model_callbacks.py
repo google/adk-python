@@ -20,7 +20,6 @@ import asyncio
 import contextlib
 from typing import Any
 from typing import Iterable
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
@@ -121,7 +120,7 @@ async def _append_user_event(invocation_context, text: str) -> None:
 
 
 def _content_texts(
-    contents: Optional[Iterable[Optional[types.Content]]],
+    contents: Iterable[types.Content | None] | None,
 ) -> list[str]:
   """Flattens the text parts of a sequence of contents."""
   return [
@@ -209,7 +208,7 @@ def _content_request(text: str, *, partial: bool = False) -> LiveRequest:
   )
 
 
-def _function_response_request(*, text: Optional[str] = None) -> LiveRequest:
+def _function_response_request(*, text: str | None = None) -> LiveRequest:
   """A tool result, optionally carrying a text part alongside it."""
   parts = [
       types.Part(

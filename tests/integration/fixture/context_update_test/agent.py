@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
-from typing import Union
 
 from google.adk import Agent
 from google.adk.tools.tool_context import ToolContext
@@ -22,9 +20,9 @@ from pydantic import BaseModel
 
 def update_fc(
     data_one: str,
-    data_two: Union[int, float, str],
+    data_two: int | float | str,
     data_three: list[str],
-    data_four: List[Union[int, float, str]],
+    data_four: list[int | float | str],
     tool_context: ToolContext,
 ):
   """Simply ask to update these variables in the context"""

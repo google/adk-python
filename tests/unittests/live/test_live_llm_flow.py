@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from typing import AsyncGenerator
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -33,12 +35,15 @@ from google.adk.live._visual_frames import unpack_visual_frames
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from google.genai import errors
 from google.genai import types
 from pydantic import BaseModel
 import pytest
+from websockets.exceptions import ConnectionClosed
 
 from .. import testing_utils
 
@@ -545,6 +550,177 @@ async def test_receive_from_model_keeps_non_audio_blobs_out_of_audio_cache():
   assert [entry.data.data for entry in context.output_realtime_cache] == [
       b'model_audio'
   ]
+
+
+@pytest.mark.parametrize(
+    'update_without_handle',
+    [
+        types.LiveServerSessionResumptionUpdate(resumable=False),
+        types.LiveServerSessionResumptionUpdate(
+            last_consumed_client_message_index=7
+        ),
+    ],
+    ids=['not_resumable', 'consumed_index_only'],
+)
+async def test_receive_from_model_keeps_the_last_handle_the_server_offered(
+    update_without_handle: types.LiveServerSessionResumptionUpdate,
+) -> None:
+  """An update that carries no handle does not erase the one held.
+
+  While the model is generating or a tool call is in flight, the server reports
+  the session as not resumable with an update that has no handle. The handle a
+  reconnect resumes with must stay the latest one the server actually offered.
+  """
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context()
+  calls = 0
+
+  async def _receive() -> AsyncGenerator[LlmResponse, None]:
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      for update in (
+          types.LiveServerSessionResumptionUpdate(
+              new_handle='handle-1', resumable=True
+          ),
+          update_without_handle,
+          types.LiveServerSessionResumptionUpdate(
+              new_handle='handle-2', resumable=True
+          ),
+          update_without_handle,
+      ):
+        yield LlmResponse(live_session_resumption_update=update)
+
+  connection = mock.MagicMock(receive=_receive)
+
+  async for _ in _live_llm_flow.receive_from_model(
+      flow, connection, context, LlmRequest()
+  ):
+    pass
+
+  assert context.live_session_resumption_handle == 'handle-2'
+
+
+@pytest.mark.parametrize(
+    'interruption',
+    [
+        LlmResponse(go_away=types.LiveServerGoAway(time_left='10s')),
+        errors.APIError(1006, {}),
+        errors.APIError(1011, {}),
+        ConnectionClosed(None, None),
+    ],
+    ids=['go_away', 'abnormal_closure', 'internal_error', 'connection_closed'],
+)
+async def test_run_live_resumes_a_connection_lost_while_not_resumable(
+    interruption: LlmResponse | Exception,
+) -> None:
+  """A connection lost while the model is answering still resumes the session.
+
+  Setup: the server offers a handle, then reports the session as not resumable
+    because the model has started answering, and then the connection goes: a
+    GoAway, or a connection that drops.
+  Act: run the live session through `Runner.run_live`.
+  Assert: the run reconnects with the handle the server offered, and does not
+    replay the conversation history that the resumed session already holds.
+  """
+
+  class _ScriptedConnection(testing_utils.MockLlmConnection):
+    """Plays one connection's script once, raising the exceptions in it."""
+
+    def __init__(self, script: list[LlmResponse | Exception]):
+      super().__init__(llm_responses=[])
+      self.script = script
+      self.history: list[types.Content] | None = None
+
+    async def send_history(self, history: list[types.Content]) -> None:
+      self.history = history
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      while self.script:
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+          raise item
+        yield item
+
+  class _ScriptedModel(testing_utils.MockModel):
+    """Opens the next scripted connection on each connect."""
+
+    scripts: list[list[LlmResponse | Exception]]
+    connections: list[_ScriptedConnection] = []
+    handles: list[str | None] = []
+
+    # MockModel.connect is annotated as returning the connection itself, so
+    # mypy reads its yield type as Never and rejects any typed override.
+    @contextlib.asynccontextmanager
+    async def connect(  # type: ignore[override]
+        self, llm_request: LlmRequest
+    ) -> AsyncGenerator[_ScriptedConnection, None]:
+      resumption = llm_request.live_connect_config.session_resumption
+      self.handles.append(resumption.handle if resumption else None)
+      connection = _ScriptedConnection(self.scripts[len(self.connections)])
+      self.connections.append(connection)
+      yield connection
+
+  def _resumption_update(
+      *, new_handle: str | None = None, resumable: bool
+  ) -> LlmResponse:
+    return LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle=new_handle, resumable=resumable
+        )
+    )
+
+  model = _ScriptedModel(
+      responses=[],
+      scripts=[
+          [
+              _resumption_update(new_handle='handle-1', resumable=True),
+              _resumption_update(resumable=False),
+              interruption,
+          ],
+          # The resumed connection has nothing more to send, which ends the
+          # run.
+          [],
+      ],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  # An earlier turn, which a session started from scratch replays.
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id='earlier',
+          author='user',
+          content=types.UserContent('Book a table for two.'),
+      ),
+  )
+  runner = Runner(
+      app_name='app',
+      agent=LlmAgent(name='root_agent', model=model),
+      session_service=session_service,
+  )
+
+  async def _run_to_end() -> None:
+    async with contextlib.aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=LiveRequestQueue(),
+            run_config=RunConfig(
+                session_resumption=types.SessionResumptionConfig()
+            ),
+        )
+    ) as events:
+      async for _ in events:
+        pass
+
+  await asyncio.wait_for(_run_to_end(), timeout=5)
+
+  assert model.handles == [None, 'handle-1']
+  # The first connection started the session and replayed the earlier turn;
+  # the resumed one must not replay it into the session that already has it.
+  assert model.connections[0].history
+  assert model.connections[1].history is None
 
 
 async def test_turn_complete_saves_image_frames_sent_to_the_model():

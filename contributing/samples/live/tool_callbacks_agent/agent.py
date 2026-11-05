@@ -16,15 +16,13 @@ from datetime import datetime
 import random
 import time
 from typing import Any
-from typing import Dict
-from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 
-def get_weather(location: str, tool_context: ToolContext) -> Dict[str, Any]:
+def get_weather(location: str, tool_context: ToolContext) -> dict[str, Any]:
   """Get weather information for a location.
   Args:
     location: The city or location to get weather for.
@@ -44,7 +42,7 @@ def get_weather(location: str, tool_context: ToolContext) -> Dict[str, Any]:
   }
 
 
-async def calculate_async(operation: str, x: float, y: float) -> Dict[str, Any]:
+async def calculate_async(operation: str, x: float, y: float) -> dict[str, Any]:
   """Perform async mathematical calculations.
   Args:
     operation: The operation to perform (add, subtract, multiply, divide).
@@ -74,7 +72,7 @@ async def calculate_async(operation: str, x: float, y: float) -> Dict[str, Any]:
   }
 
 
-def log_activity(message: str, tool_context: ToolContext) -> Dict[str, str]:
+def log_activity(message: str, tool_context: ToolContext) -> dict[str, str]:
   """Log an activity message with timestamp.
   Args:
     message: The message to log.
@@ -96,8 +94,8 @@ def log_activity(message: str, tool_context: ToolContext) -> Dict[str, str]:
 
 # Before tool callbacks
 def before_tool_audit_callback(
-    tool, args: Dict[str, Any], tool_context: ToolContext
-) -> Optional[Dict[str, Any]]:
+    tool, args: dict[str, Any], tool_context: ToolContext
+) -> dict[str, Any] | None:
   """Audit callback that logs all tool calls before execution."""
   print(f"🔍 AUDIT: About to call tool '{tool.name}' with args: {args}")
 
@@ -117,8 +115,8 @@ def before_tool_audit_callback(
 
 
 def before_tool_security_callback(
-    tool, args: Dict[str, Any], tool_context: ToolContext
-) -> Optional[Dict[str, Any]]:
+    tool, args: dict[str, Any], tool_context: ToolContext
+) -> dict[str, Any] | None:
   """Security callback that can block certain tool calls."""
   # Example: Block weather requests for restricted locations
   if tool.name == "get_weather" and args.get("location", "").lower() in [
@@ -140,8 +138,8 @@ def before_tool_security_callback(
 
 
 async def before_tool_async_callback(
-    tool, args: Dict[str, Any], tool_context: ToolContext
-) -> Optional[Dict[str, Any]]:
+    tool, args: dict[str, Any], tool_context: ToolContext
+) -> dict[str, Any] | None:
   """Async before callback that can add preprocessing."""
   print(f"⚡ ASYNC BEFORE: Processing tool '{tool.name}' asynchronously")
 
@@ -168,10 +166,10 @@ async def before_tool_async_callback(
 # After tool callbacks
 def after_tool_enhancement_callback(
     tool,
-    args: Dict[str, Any],
+    args: dict[str, Any],
     tool_context: ToolContext,
-    tool_response: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+    tool_response: dict[str, Any],
+) -> dict[str, Any] | None:
   """Enhance tool responses with additional metadata."""
   print(f"✨ ENHANCE: Adding metadata to response from '{tool.name}'")
 
@@ -191,10 +189,10 @@ def after_tool_enhancement_callback(
 
 async def after_tool_async_callback(
     tool,
-    args: Dict[str, Any],
+    args: dict[str, Any],
     tool_context: ToolContext,
-    tool_response: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+    tool_response: dict[str, Any],
+) -> dict[str, Any] | None:
   """Async after callback for post-processing."""
   print(
       f"🔄 ASYNC AFTER: Post-processing response from '{tool.name}'"
