@@ -583,7 +583,9 @@ class HallucinationsV1Evaluator(Evaluator):
         logger.debug("No label found for sentence: %s", result)
         continue
 
-      label = label.strip().lower()
+      # The prompt lists the labels in backticks, so the validator may echo
+      # them that way (e.g. `contradictory`).
+      label = label.strip().strip("`").strip().lower()
       if label in _POSITIVE_LABELS:
         scores.append(1)
       elif label in _NEGATIVE_LABELS:
@@ -591,7 +593,22 @@ class HallucinationsV1Evaluator(Evaluator):
       else:
         logger.debug("Unexpected label: %s", label)
 
-    accuracy_score = statistics.mean(scores) if scores else None
+    # A sentence left without a usable label (omitted by the validator, given
+    # a label outside the label set, or merged into a neighbouring block when
+    # a line is missing) would drop out of the average and inflate the score,
+    # so the response is not scored, as in rubric_based_evaluator.
+    num_sentences = len(sentences)
+    if len(validation_results) != num_sentences or len(scores) != num_sentences:
+      logger.warning(
+          "Sentence validator returned %d usable labels in %d blocks for %d"
+          " sentences; this response will not be scored.",
+          len(scores),
+          len(validation_results),
+          num_sentences,
+      )
+      return None, json.dumps(validation_results, indent=2)
+
+    accuracy_score = statistics.mean(scores)
     return accuracy_score, json.dumps(validation_results, indent=2)
 
   def _get_steps_to_evaluate(self, actual: Invocation) -> list[EvaluationStep]:
@@ -765,8 +782,17 @@ class HallucinationsV1Evaluator(Evaluator):
         fs_score, _ = await self._evaluate_nl_response(
             step.nl_response, step.context
         )
-        if fs_score is not None:
-          scores_per_step.append(fs_score)
+        if fs_score is None:
+          # A step that could not be scored would drop out of the average and
+          # let the remaining steps decide the result, so the invocation is
+          # not scored, and its remaining steps are not sent to the judge.
+          logger.warning(
+              "A response in this invocation could not be scored; the"
+              " invocation will not be scored."
+          )
+          scores_per_step = []
+          break
+        scores_per_step.append(fs_score)
 
       invocation_score = (
           statistics.mean(scores_per_step) if scores_per_step else None
