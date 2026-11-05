@@ -20,6 +20,7 @@ from collections.abc import Mapping
 import math
 import os
 from typing import Any
+from typing import ClassVar
 
 from google.genai import types
 import httpx
@@ -38,6 +39,7 @@ from ...labs.classifiers._types import ClassifierResponse
 from ...labs.classifiers._types import JSONContent
 from ...labs.classifiers._types import Question
 from ...labs.classifiers._types import ScoreAnswer
+from ...utils._client_labels_utils import get_client_labels
 
 _DEFAULT_BASE_URL = 'https://api.typesafe.ai'
 _API_KEY_ENV = 'TYPESAFE_API_KEY'
@@ -208,6 +210,8 @@ class TypesafeClassifier(BaseClassifier):
       response.answers['department'].choice  # 'billing'
   """
 
+  _CLIENT_LABEL_KIND: ClassVar[str] = 'typesafe'
+
   model: str = 'jev-latest'
   """The TypeSafe model, such as ``jev-latest`` or a pinned ``jev-1.13``."""
 
@@ -248,7 +252,10 @@ class TypesafeClassifier(BaseClassifier):
           f'TypesafeClassifier needs an API key. Set {_API_KEY_ENV} or pass'
           ' api_key.'
       )
-    return {'Authorization': f'Bearer {api_key}'}
+    return {
+        'Authorization': f'Bearer {api_key}',
+        'User-Agent': ' '.join(get_client_labels()),
+    }
 
   async def _post(
       self, client: httpx.AsyncClient, body: dict[str, Any]

@@ -164,13 +164,13 @@
                       "gen_ai.conversation.id": "PRESENT",
                       "gcp.vertex.agent.event_id": "PRESENT",
                       "gcp.vertex.agent.invocation_id": "PRESENT",
+                      "gen_ai.response.finish_reasons": [
+                        "stop"
+                      ],
                       "gen_ai.usage.input_tokens": 150,
                       "gen_ai.usage.output_tokens": 50,
                       "gen_ai.usage.cache_read.input_tokens": 60,
                       "gen_ai.usage.reasoning.output_tokens": 15,
-                      "gen_ai.response.finish_reasons": [
-                        "stop"
-                      ],
                       "gen_ai.tool.definitions": [
                         {
                           "name": "some_tool",

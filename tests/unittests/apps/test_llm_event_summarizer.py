@@ -149,6 +149,26 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(compacted_event)
     self.mock_llm.generate_content_async.assert_not_called()
 
+  async def test_maybe_summarize_events_closes_llm_stream_on_early_break(self):
+    """Breaking after the first LLM response closes the underlying generator."""
+    events = [self._create_event(1.0, 'Hello', 'user')]
+    stream_closed = False
+
+    async def multi_chunk_gen():
+      nonlocal stream_closed
+      try:
+        yield LlmResponse(content=Content(parts=[Part(text='Summary')]))
+        yield LlmResponse(content=Content(parts=[Part(text='Extra')]))
+      finally:
+        stream_closed = True
+
+    self.mock_llm.generate_content_async.return_value = multi_chunk_gen()
+
+    compacted_event = await self.compactor.maybe_summarize_events(events=events)
+
+    self.assertIsNotNone(compacted_event)
+    self.assertTrue(stream_closed)
+
   def test_format_events_for_prompt(self):
     events = [
         self._create_event(1.0, 'User says...', 'user'),

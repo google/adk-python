@@ -27,9 +27,7 @@ from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
 from typing import Generator
-from typing import List
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
@@ -65,7 +63,8 @@ from .tools.base_toolset import BaseToolset
 from .utils import _lazy
 from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
-from .utils._runner_utils import _notify_run_error
+from .utils._runner_utils import _CALLER_CLOSED_EARLY_MSG
+from .utils._runner_utils import _run_invocation_lifecycle
 from .utils.model_name_utils import is_gemini_model
 from .utils.model_name_utils import is_gemini_model_id_check_disabled
 from .workflow._base_node import _walk_static_nodes
@@ -84,12 +83,8 @@ _EventQueueItem = tuple[object, asyncio.Event | None]
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
 
-# Sentinel cancellation message indicating synchronous run() caller stopped
-# iterating early.
-_CALLER_CLOSED_EARLY_MSG = 'adk-runner-caller-closed-early'
 
-
-def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
+def _find_active_task_scope(session: Session) -> tuple[str, str] | None:
   """Walk session backwards; find the active paused task agent's scope.
 
   Two flavors of task scope:
@@ -238,33 +233,33 @@ class Runner:
 
   Instances are never None, so the declared type stays ``BaseNode``.
   """
-  artifact_service: Optional[BaseArtifactService] = None
+  artifact_service: BaseArtifactService | None = None
   """The artifact service for the runner."""
   plugin_manager: PluginManager
   """The plugin manager for the runner."""
   session_service: BaseSessionService
   """The session service for the runner."""
-  memory_service: Optional[BaseMemoryService] = None
+  memory_service: BaseMemoryService | None = None
   """The memory service for the runner."""
-  credential_service: Optional[BaseCredentialService] = None
+  credential_service: BaseCredentialService | None = None
   """The credential service for the runner."""
-  context_cache_config: Optional[ContextCacheConfig] = None
+  context_cache_config: ContextCacheConfig | None = None
   """The context cache config for the runner."""
-  resumability_config: Optional[ResumabilityConfig] = None
+  resumability_config: ResumabilityConfig | None = None
   """The resumability config for the application."""
 
   def __init__(
       self,
       *,
-      app: Optional[App] = None,
-      app_name: Optional[str] = None,
-      agent: Optional[BaseAgent] = None,
+      app: App | None = None,
+      app_name: str | None = None,
+      agent: BaseAgent | None = None,
       node: BaseNode | None = None,
-      plugins: Optional[List[BasePlugin]] = None,
-      artifact_service: Optional[BaseArtifactService] = None,
+      plugins: list[BasePlugin] | None = None,
+      artifact_service: BaseArtifactService | None = None,
       session_service: BaseSessionService,
-      memory_service: Optional[BaseMemoryService] = None,
-      credential_service: Optional[BaseCredentialService] = None,
+      memory_service: BaseMemoryService | None = None,
+      credential_service: BaseCredentialService | None = None,
       plugin_close_timeout: float = 5.0,
       auto_create_session: bool = False,
   ) -> None:
@@ -319,7 +314,7 @@ class Runner:
         self._agent_origin_app_name,
         self._agent_origin_dir,
     ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
-    self._app_name_alignment_hint: Optional[str] = None
+    self._app_name_alignment_hint: str | None = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
 
@@ -333,11 +328,11 @@ class Runner:
 
   @staticmethod
   def _resolve_app(
-      app: Optional[App],
-      app_name: Optional[str],
-      agent: Optional[BaseAgent],
+      app: App | None,
+      app_name: str | None,
+      agent: BaseAgent | None,
       node: BaseNode | None,
-      plugins: Optional[List[BasePlugin]],
+      plugins: list[BasePlugin] | None,
   ) -> App:
     """Validates inputs and normalizes to an App instance.
 
@@ -412,7 +407,7 @@ class Runner:
 
   def _infer_agent_origin(
       self, agent: BaseAgent
-  ) -> tuple[Optional[str], Optional[Path]]:
+  ) -> tuple[str | None, Path | None]:
     """Infer the origin app name and directory from an agent's module location.
 
     Returns:
@@ -505,9 +500,9 @@ class Runner:
   def _resolve_invocation_id(
       self,
       session: Session,
-      new_message: Optional[types.Content],
-      invocation_id: Optional[str],
-  ) -> Optional[str]:
+      new_message: types.Content | None,
+      invocation_id: str | None,
+  ) -> str | None:
     """Infers invocation_id from new_message if it is a function response."""
     if new_message is None:
       return invocation_id
@@ -553,14 +548,14 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
       yield_user_message: bool = False,
       node: BaseNode | None = None,
-      session: Optional[Session] = None,
-      abort_signal: Optional[asyncio.Event] = None,
+      session: Session | None = None,
+      abort_signal: asyncio.Event | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a BaseNode through NodeRunner.
 
@@ -591,7 +586,7 @@ class Runner:
       *,
       session: Session,
       live_request_queue: LiveRequestQueue,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a non-agent BaseNode in live mode."""
     from .live import _runner_utils as _live_runner_utils
@@ -608,7 +603,7 @@ class Runner:
         yield event
 
   def _extract_resume_inputs(
-      self, message: Optional[types.Content]
+      self, message: types.Content | None
   ) -> dict[str, Any] | None:
     """Extract function response payloads from a message as resume_inputs."""
     if not message or not message.parts:
@@ -621,7 +616,7 @@ class Runner:
 
   def _validate_new_message(
       self,
-      message: Optional[types.Content],
+      message: types.Content | None,
       resume_inputs: dict[str, Any] | None,
   ) -> None:
     """Validate that new_message doesn't mix FR and text parts."""
@@ -640,7 +635,7 @@ class Runner:
       new_message: types.Content,
       *,
       strict: bool = True,
-  ) -> Optional[str]:
+  ) -> str | None:
     """Infer invocation_id by matching function responses to FC events.
 
     When ``strict`` is True, raises ValueError if responses resolve to
@@ -687,9 +682,9 @@ class Runner:
       self,
       ic: InvocationContext,
       *,
-      session: Optional[Session] = None,
-      content: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
+      session: Session | None = None,
+      content: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
   ) -> Event:
     """Builds a user event, stamps context/isolation metadata, and appends it."""
     target_session = session or ic.session
@@ -719,7 +714,7 @@ class Runner:
       ic: InvocationContext,
       content: types.Content,
       *,
-      state_delta: Optional[dict[str, Any]] = None,
+      state_delta: dict[str, Any] | None = None,
   ) -> Event:
     """Append a user message event to the session and return it."""
     if content.parts and any(p.function_call for p in content.parts):
@@ -968,7 +963,7 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      get_session_config: Optional[GetSessionConfig] = None,
+      get_session_config: GetSessionConfig | None = None,
   ) -> Session:
     """Gets the session or creates it if auto-creation is enabled.
 
@@ -1011,8 +1006,8 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
 
@@ -1049,7 +1044,7 @@ class Runner:
     # can cancel it instead of leaking a running task. See
     # `_cleanup_root_task()` for the equivalent guarantee on `run_async()`.
     invocation_handle: queue.Queue[
-        tuple[asyncio.AbstractEventLoop, Optional[asyncio.Task[Any]]]
+        tuple[asyncio.AbstractEventLoop, asyncio.Task[Any] | None]
     ] = queue.Queue(maxsize=1)
     caller_closed_early = False
 
@@ -1131,12 +1126,12 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
       yield_user_message: bool = False,
-      abort_signal: Optional[asyncio.Event] = None,
+      abort_signal: asyncio.Event | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
@@ -1258,8 +1253,8 @@ class Runner:
     root_agent = self._require_root_agent()
 
     async def _run_with_trace(
-        new_message: Optional[types.Content] = None,
-        invocation_id: Optional[str] = None,
+        new_message: types.Content | None = None,
+        invocation_id: str | None = None,
     ) -> AsyncGenerator[Event, None]:
       session = await self._get_or_create_session(
           user_id=user_id,
@@ -1360,17 +1355,11 @@ class Runner:
               session=invocation_context.session,
               execute_fn=execute,
               is_live_call=False,
+              run_compaction=True,
           )
       ) as agen:
         async for event in agen:
           yield event
-      if not invocation_context.is_aborted:
-        # Run compaction after all events are yielded from the agent.
-        # (We don't compact in the middle of an invocation, we only compact at
-        # the end of an invocation.)
-        await self._run_post_invocation_compaction(
-            invocation_context=invocation_context,
-        )
 
     from .telemetry import _instrumentation
 
@@ -1403,7 +1392,7 @@ class Runner:
       user_id: str,
       session_id: str,
       rewind_before_invocation_id: str,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> None:
     """Rewinds the session to before the specified invocation.
 
@@ -1572,6 +1561,7 @@ class Runner:
       session: Session,
       execute_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
       is_live_call: bool = False,
+      run_compaction: bool = False,
   ) -> AsyncGenerator[Event, None]:
     """Wraps execution with plugin callbacks.
 
@@ -1580,16 +1570,26 @@ class Runner:
       session: The current session (ignored, kept for backward compatibility)
       execute_fn: A callable that returns an AsyncGenerator of Events
       is_live_call: Whether this is a live call
+      run_compaction: Whether to run post-invocation compaction after completion
 
     Yields:
       Events from the execution, including any generated by plugins
     """
 
     plugin_manager = invocation_context.plugin_manager
-    run_error: BaseException | None = None
-    closing_early = False
+    post_run_compaction = None
+    if run_compaction and not is_live_call:
+      post_run_compaction = lambda ctx: self._run_post_invocation_compaction(
+          invocation_context=ctx
+      )
 
-    try:
+    async with _run_invocation_lifecycle(
+        invocation_context=invocation_context,
+        plugin_manager=plugin_manager,
+        synthesize_abort_events=self._synthesize_abort_events_if_needed,
+        is_live_call=is_live_call,
+        post_run_compaction=post_run_compaction,
+    ):
       # Step 1: Run the before_run callbacks to see if we should early exit.
       early_exit_result = await plugin_manager.run_before_run_callback(
           invocation_context=invocation_context
@@ -1621,67 +1621,15 @@ class Runner:
           )
           for abort_event in abort_events:
             yield abort_event
-    except GeneratorExit:
-      # Early generator close is treated as a clean completion.
-      closing_early = True
-      raise
-    except Exception as e:
-      run_error = e
-      # Notify plugins of the unhandled execution error. Covers failures in
-      # before_run_callback, early-exit, and the main execution loop.
-      # Notification-only; the original exception is always re-raised.
-      await _notify_run_error(plugin_manager, invocation_context, e)
-      raise
-    except asyncio.CancelledError as e:
-      if (
-          e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG
-      ) or invocation_context.is_aborted:
-        closing_early = True
-      else:
-        run_error = e
-      raise
-    except BaseException as e:
-      # Interrupts or aborts; skip after_run callbacks.
-      run_error = e
-      raise
-    finally:
-      if not is_live_call and invocation_context.is_aborted:
-        # Best-effort: only reached on early close or error, where raising
-        # would mask the in-flight exception and skip after_run.
-        try:
-          await self._synthesize_abort_events_if_needed(invocation_context)
-        except Exception:  # pylint: disable=broad-exception-caught
-          logger.error(
-              'Failed to seal aborted invocation %s.',
-              invocation_context.invocation_id,
-              exc_info=True,
-          )
-      # Step 4: Run after_run callbacks on successful completion or early exit.
-      if run_error is None:
-        try:
-          await plugin_manager.run_after_run_callback(
-              invocation_context=invocation_context
-          )
-        except Exception as e:
-          await _notify_run_error(plugin_manager, invocation_context, e)
-          if closing_early:
-            # Avoid masking the in-flight GeneratorExit or early-exit cancellation.
-            logger.error(
-                'after_run callback failed while closing invocation %s early.',
-                invocation_context.invocation_id,
-                exc_info=True,
-            )
-          else:
-            raise
 
   async def _append_new_message_to_session(
       self,
       *,
-      session: Optional[Session] = None,
+      session: Session | None = None,
       new_message: types.Content,
       invocation_context: InvocationContext,
       save_input_blobs_as_artifacts: bool = False,
-      state_delta: Optional[dict[str, Any]] = None,
+      state_delta: dict[str, Any] | None = None,
   ) -> None:
     """Appends a new message to the session.
 
@@ -1738,11 +1686,11 @@ class Runner:
   async def run_live(
       self,
       *,
-      user_id: Optional[str] = None,
-      session_id: Optional[str] = None,
+      user_id: str | None = None,
+      session_id: str | None = None,
       live_request_queue: LiveRequestQueue,
-      run_config: Optional[RunConfig] = None,
-      session: Optional[Session] = None,
+      run_config: RunConfig | None = None,
+      session: Session | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
 
@@ -1969,7 +1917,7 @@ class Runner:
       node: BaseNode,
       *,
       root: BaseNode,
-      invocation_id: Optional[str] = None,
+      invocation_id: str | None = None,
   ) -> None:
     """Restores a non-root node's branch from its latest matching event."""
     from .agents import _agent_router
@@ -1987,9 +1935,9 @@ class Runner:
       session: Session,
       new_message: types.Content,
       run_config: RunConfig,
-      state_delta: Optional[dict[str, Any]],
-      invocation_id: Optional[str] = None,
-      abort_signal: Optional[asyncio.Event] = None,
+      state_delta: dict[str, Any] | None,
+      invocation_id: str | None = None,
+      abort_signal: asyncio.Event | None = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -2047,11 +1995,11 @@ class Runner:
       self,
       *,
       session: Session,
-      new_message: Optional[types.Content],
+      new_message: types.Content | None,
       invocation_id: str,
       run_config: RunConfig,
-      state_delta: Optional[dict[str, Any]],
-      abort_signal: Optional[asyncio.Event] = None,
+      state_delta: dict[str, Any] | None,
+      abort_signal: asyncio.Event | None = None,
   ) -> InvocationContext:
     """Sets up the context for a resumed invocation.
 
@@ -2137,10 +2085,10 @@ class Runner:
       self,
       session: Session,
       *,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      live_request_queue: Optional[LiveRequestQueue] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      live_request_queue: LiveRequestQueue | None = None,
+      run_config: RunConfig | None = None,
   ) -> InvocationContext:
     """Creates a new invocation context.
 
@@ -2206,7 +2154,7 @@ class Runner:
       new_message: types.Content,
       invocation_context: InvocationContext,
       run_config: RunConfig,
-      state_delta: Optional[dict[str, Any]],
+      state_delta: dict[str, Any] | None,
   ) -> None:
     """Handles a new message by running callbacks and appending to session.
 
@@ -2394,12 +2342,12 @@ class InMemoryRunner(Runner):
 
   def __init__(
       self,
-      agent: Optional[BaseAgent] = None,
+      agent: BaseAgent | None = None,
       *,
       node: BaseNode | None = None,
-      app_name: Optional[str] = None,
-      plugins: Optional[list[BasePlugin]] = None,
-      app: Optional[App] = None,
+      app_name: str | None = None,
+      plugins: list[BasePlugin] | None = None,
+      app: App | None = None,
       plugin_close_timeout: float = 5.0,
   ) -> None:
     """Initializes the InMemoryRunner.

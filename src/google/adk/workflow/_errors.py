@@ -23,15 +23,18 @@ class NodeInterruptedError(BaseException):
   """Internal: raised when a dynamic node interrupts (HITL).
 
   Used exclusively by ``ctx.run_node()`` to signal that the dynamic
-  child has unresolved interrupt IDs. The parent's NodeRunner catches
-  this and reads the interrupt IDs from the parent's ctx (set by
-  ``ctx.run_node()`` before raising).
+  child has unresolved interrupt IDs. Carries those IDs so the parent's
+  NodeRunner also receives interrupts raised from a separate tool context.
 
   This is a ``BaseException`` so user code cannot accidentally catch
   it with ``except Exception``.
 
   Internal to the framework — not part of the public API.
   """
+
+  def __init__(self, *, interrupt_ids: set[str] | None = None) -> None:
+    super().__init__()
+    self.interrupt_ids = frozenset(interrupt_ids or ())
 
 
 class GraphValidationError(ValueError):

@@ -21,7 +21,6 @@ import datetime
 from functools import lru_cache
 import logging
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
@@ -184,12 +183,12 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
   def __init__(
       self,
-      project: Optional[str] = None,
-      location: Optional[str] = None,
-      agent_engine_id: Optional[str] = None,
+      project: str | None = None,
+      location: str | None = None,
+      agent_engine_id: str | None = None,
       *,
-      express_mode_api_key: Optional[str] = None,
-      credentials: Optional[Credentials] = None,
+      express_mode_api_key: str | None = None,
+      credentials: Credentials | None = None,
   ):
     """Initializes a VertexAiMemoryBankService.
 

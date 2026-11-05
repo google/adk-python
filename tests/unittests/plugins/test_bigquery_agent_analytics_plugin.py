@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import concurrent.futures
 import contextlib
 import contextvars
@@ -237,7 +238,11 @@ def dummy_arrow_schema():
                       "object_ref",
                       pa.struct([
                           pa.field("uri", pa.string(), nullable=True),
-                          pa.field("authorizer", pa.string(), nullable=True),
+                          pa.field(
+                              "authorizer",
+                              pa.string(),
+                              nullable=True,
+                          ),
                           pa.field("version", pa.string(), nullable=True),
                           pa.field(
                               "details",
@@ -12606,6 +12611,35 @@ class TestAnalyticsViews:
     with pytest.raises(ValueError, match="view_prefix"):
       self._make_plugin(view_prefix="")
 
+  @pytest.mark.parametrize(
+      "field_name",
+      ["project_id", "dataset_id", "table_id", "view_prefix"],
+  )
+  @pytest.mark.parametrize(
+      "bad_value",
+      ["", "bad`val", "bad\\val", "bad\nval", "bad\rval", "bad\x00val"],
+  )
+  def test_init_rejects_empty_or_unquotable_identifiers(
+      self, field_name: str, bad_value: str
+  ) -> None:
+    """project_id, dataset_id, table_id, and view_prefix must be quotable."""
+    kwargs: dict[str, Any] = {
+        "project_id": PROJECT_ID,
+        "dataset_id": DATASET_ID,
+        "table_id": TABLE_ID,
+    }
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    if field_name == "view_prefix":
+      config.view_prefix = bad_value
+    elif field_name == "table_id" and bad_value == "":
+      kwargs["table_id"] = None
+      config.table_id = ""
+    else:
+      kwargs[field_name] = bad_value
+    kwargs["config"] = config
+    with pytest.raises(ValueError, match=field_name):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(**kwargs)
+
 
 class TestSchemaReadinessMemo:
   """Tests that a successful table readiness pass is not repeated."""
@@ -12845,16 +12879,22 @@ class _EvalViewSqlEvaluator:
   GoogleSQL subset that the eval views use is supported:
 
   - A ``WITH`` list of CTEs and a final SELECT, each with ``*`` or
-    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY.
+    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY, and
+    an optional ``;`` at the end.  ``--`` comments are skipped.
   - FROM a table or CTE, joined by ``, UNNEST(...) AS x [WITH OFFSET AS y]``
-    or by ``LEFT JOIN ... USING (...)`` or ``LEFT JOIN ... ON ...``.
-  - Literals, columns, CASE, IF, AND/OR/NOT, comparisons, ``+`` and ``-``,
-    IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``, ``[SAFE_OFFSET(n)]``, CAST,
-    SAFE_CAST, and ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and
-    ``ARRAY(SELECT ...)`` over ``UNNEST``.
-  - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``;
-    ROW_NUMBER, LAG and LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``;
-    and the scalar functions in ``_call``.
+    or ``INNER JOIN UNNEST(...) AS x [WITH OFFSET AS y]``, which both unnest
+    an array of the row they join, or by ``LEFT JOIN ... USING (...)`` or
+    ``LEFT JOIN ... ON ...``.
+  - Literals, columns, CASE with a required ELSE, IF, AND/OR/NOT,
+    comparisons, ``+`` and ``-``, IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``,
+    ``[SAFE_OFFSET(n)]``, CAST to INT64 or JSON, SAFE_CAST, and
+    ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and ``ARRAY(SELECT ...)`` over
+    ``UNNEST``.
+  - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``,
+    or, with ``ORDER BY ...``, over the frame
+    ``ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW``; ROW_NUMBER, LAG and
+    LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``; and the scalar
+    functions in ``_call``.
 
   SQL NULL is ``None``, and JSON values are Python dicts, lists and scalars.
   A JSON function reads a field of a ``str`` by parsing it as JSON text, as
@@ -12863,11 +12903,11 @@ class _EvalViewSqlEvaluator:
   """
 
   _TOKEN_RE = re.compile(
-      r"(?P<space>\s+)"
+      r"(?P<space>\s+|--[^\n]*)"
       r"|(?P<string>[rR]?(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"))"
       r"|(?P<number>\d+)"
       r"|(?P<name>`[^`]*`|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
-      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\]])"
+      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\];])"
   )
   _COMPARISONS = {
       "=": lambda a, b: a == b,
@@ -12921,6 +12961,7 @@ class _EvalViewSqlEvaluator:
       if not self._accept(","):
         break
     self._final = self._parse_query()
+    self._accept(";")
     assert self._pos == self._end, f"Unsupported SQL at token {self._pos}"
 
   def run(self, table_rows, cte=None):
@@ -13008,7 +13049,9 @@ class _EvalViewSqlEvaluator:
     if self._accept("FROM"):
       query["from"].append((None, *self._parse_source(), None))
       while True:
-        if self._accept(","):
+        if self._accept(",") or self._accept("INNER", "JOIN"):
+          # Only an UNNEST of the joined row's array is supported here, which
+          # needs no join condition.
           query["from"].append(("cross", *self._parse_source(), None))
         elif self._accept("LEFT", "JOIN"):
           source, alias = self._parse_source()
@@ -13137,9 +13180,8 @@ class _EvalViewSqlEvaluator:
         branches.append((condition, self._parse_expr()))
         if not self._accept("WHEN"):
           break
-      default = ("literal", None)
-      if self._accept("ELSE"):
-        default = self._parse_expr()
+      self._expect("ELSE")  # The SQL lint requires one, so the files have it.
+      default = self._parse_expr()
       self._expect("END")
       return ("case", operand, branches, default)
     if word == "ARRAY" and self._accept("<"):
@@ -13179,8 +13221,11 @@ class _EvalViewSqlEvaluator:
       if self._accept("PARTITION", "BY"):
         partition_by = self._parse_exprs()
       order_by = self._parse_order_by() if self._accept("ORDER", "BY") else []
+      running = self._accept(
+          "ROWS", "BETWEEN", "UNBOUNDED", "PRECEDING", "AND", "CURRENT", "ROW"
+      )
       self._expect(")")
-      return ("window", node, partition_by, order_by)
+      return ("window", node, partition_by, order_by, running)
     return node
 
   @classmethod
@@ -13402,8 +13447,12 @@ class _EvalViewSqlEvaluator:
         "SUM": sum,
     }[name](values)
 
-  def _window(self, row, rows, function, partition_by, order_by):
-    """Evaluates ``function`` over ``row``'s window partition of ``rows``."""
+  def _window(self, row, rows, function, partition_by, order_by, running):
+    """Evaluates ``function`` over ``row``'s window partition of ``rows``.
+
+    A ``running`` frame ends at ``row``; an aggregate without one reads the
+    whole partition.
+    """
     assert rows is not None, "A window function needs the input rows"
     key = [self._eval(node, row, None) for node in partition_by]
     partition = self._sorted(
@@ -13414,11 +13463,13 @@ class _EvalViewSqlEvaluator:
         ],
         order_by,
     )
-    if function[0] == "aggregate":
-      assert not order_by, "Only whole-partition aggregate frames are supported"
-      return self._aggregate(partition, *function[1:])
-    name, call_args = function[1:]
     index = next(i for i, other in enumerate(partition) if other is row)
+    if function[0] == "aggregate":
+      assert running or not order_by, "Unsupported aggregate window frame"
+      frame = partition[: index + 1] if running else partition
+      return self._aggregate(frame, *function[1:])
+    name, call_args = function[1:]
+    assert not running, f"{name} takes no window frame"
     if name == "ROW_NUMBER":
       return index + 1
     assert name in ("LAG", "LEAD"), f"Unsupported window function {name}"
@@ -13572,13 +13623,19 @@ class TestEvalViews:
 
   @staticmethod
   def _output_columns(sql):
+    """Returns the names of the top-level SELECT's columns, in order."""
     # A long column's alias wraps onto its own line, indented 4 spaces.
     final_select = TestEvalViews._final_select(sql).replace("\n    AS ", " AS ")
-    return [
-        line.rsplit(" AS ", 1)[1].rstrip(",")
-        for line in final_select.splitlines()
-        if not line.startswith("   ") and " AS " in line
-    ]
+    columns = []
+    for line in final_select.splitlines():
+      if line.startswith("   "):
+        continue  # A line inside a column's expression.
+      if " AS " in line:
+        columns.append(line.rsplit(" AS ", 1)[1].rstrip(","))
+      elif not line.endswith("("):
+        # A column without an alias keeps the name of the column it reads.
+        columns.append(line.strip().rstrip(",").rsplit(".", 1)[-1])
+    return columns
 
   @staticmethod
   def _normalized_view_sql():
@@ -13624,6 +13681,33 @@ class TestEvalViews:
         "is_truncated": False,
         **columns,
     }
+
+  @staticmethod
+  def _finished_turn(
+      session_id: str, invocation_id: str, second: int, **reply_columns: Any
+  ) -> list[dict[str, Any]]:
+    """Returns the rows of a finished turn; the reply row has the columns."""
+    columns = {"session_id": session_id}
+    return [
+        TestEvalViews._event(
+            invocation_id,
+            second,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Hi"},
+            **columns,
+        ),
+        TestEvalViews._event(
+            invocation_id,
+            second + 1,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Done.'"},
+            **columns,
+            **reply_columns,
+        ),
+        TestEvalViews._event(
+            invocation_id, second + 2, "INVOCATION_COMPLETED", **columns
+        ),
+    ]
 
   def test_config_create_eval_views_default_false(self):
     """Eval views are opt-in, so default setup only creates analytics views."""
@@ -13833,6 +13917,7 @@ class TestEvalViews:
         "LLM_REQUEST",
         "TOOL_STARTING",
         "TOOL_COMPLETED",
+        "TOOL_ERROR",
         "AGENT_TRANSFER",
         "AGENT_RESPONSE",
         "INVOCATION_COMPLETED",
@@ -13875,9 +13960,10 @@ class TestEvalViews:
       )
 
     # The trace carries a multi-agent handoff only as the AGENT_TRANSFER
-    # function_call, and a HITL pause and resumption only as the pause rows,
-    # so an allowlist without either is rejected too.
-    for missing_events in ({"AGENT_TRANSFER"}, pause_events):
+    # function_call, the response of a tool that raised only as TOOL_ERROR,
+    # and a HITL pause and resumption only as the pause rows, so an allowlist
+    # without any of them is rejected too.
+    for missing_events in ({"AGENT_TRANSFER"}, {"TOOL_ERROR"}, pause_events):
       with pytest.raises(
           ValueError, match=re.escape(f"missing: {sorted(missing_events)}.")
       ):
@@ -13955,9 +14041,9 @@ class TestEvalViews:
     eval_sql = self._queried_sql(plugin.client)
     assert len(eval_sql) == 2
     for sql in eval_sql:
-      # raw_events is the only CTE that reads the table.
+      # RawEvents is the only CTE that reads the table.
       assert sql.count(f"`{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`") == 1
-      raw_events = sql.split("raw_events AS (", 1)[1].split("\n  ),", 1)[0]
+      raw_events = sql.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
       denied_refs = [
           line.strip().rstrip(",")
           for line in raw_events.splitlines()
@@ -13980,7 +14066,7 @@ class TestEvalViews:
     default_sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
         "p.d.t"
     )
-    default_raw_events = default_sql.split("raw_events AS (", 1)[1]
+    default_raw_events = default_sql.split("RawEvents AS (", 1)[1]
     assert (
         "      content_parts,\n      attributes,\n      latency_ms,\n"
         in default_raw_events
@@ -14072,26 +14158,46 @@ class TestEvalViews:
     """Guardrail columns follow the per-turn rules and roll up per session."""
     session_sql, turn_sql = self._normalized_view_sql()
     for sql in (session_sql, turn_sql):
+      # Tool metrics skip transfer_to_agent (AGENT_TRANSFER is the handoff)
+      # and the pseudo-tools that pause for a credential, a confirmation or
+      # the user's input, so a tool added to _HITL_EVENT_MAP must join them.
+      (framework_tools,) = re.findall(
+          r"COALESCE\(JSON_VALUE\(content, '\$\.tool'\), ''\) IN \(([^)]*)\)"
+          r" AS is_framework_tool",
+          sql,
+      )
+      assert set(re.findall(r"'(\w+)'", framework_tools)) == {
+          *bigquery_agent_analytics_plugin._HITL_EVENT_MAP,
+          "transfer_to_agent",
+      }
       for fragment in (
-          # Tool metrics skip transfer_to_agent; AGENT_TRANSFER is the handoff.
+          # A TOOL_STARTING row that names no tool is not a tool call.
           (
-              "( event_type = 'TOOL_STARTING' AND COALESCE(tool_name, '') !="
-              " 'transfer_to_agent' ) AS is_tool_call"
+              "( event_type = 'TOOL_STARTING' AND NULLIF(tool_name, '') IS NOT"
+              " NULL AND NOT is_framework_tool ) AS is_tool_call"
           ),
           "COUNTIF(is_tool_call) AS tool_call_count",
-          "IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name",
+          "IF(is_tool_call, tool_name, NULL) AS invoked_tool_name",
           (
               "ARRAY_AGG( DISTINCT invoked_tool_name IGNORE NULLS ORDER BY"
               " invoked_tool_name ), ARRAY<STRING>[] ) AS distinct_tools_used"
           ),
-          # Calls in a row with the same name and args share an island.
+          # Consecutive calls with the same name and args share an island,
+          # unless a HITL request comes between them.
           "TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json",
+          (
+              "COUNTIF( event_type IN ( 'HITL_CREDENTIAL_REQUEST',"
+              " 'HITL_CONFIRMATION_REQUEST', 'HITL_INPUT_REQUEST' ) ) OVER ("
+              " PARTITION BY session_id, invocation_id ORDER BY timestamp,"
+              " event_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) AS"
+              " hitl_request_count"
+          ),
           (
               "ROW_NUMBER() OVER ( PARTITION BY session_id, invocation_id,"
               " is_tool_call ORDER BY timestamp, event_id ) - ROW_NUMBER()"
               " OVER ( PARTITION BY session_id, invocation_id, is_tool_call,"
-              " tool_name, tool_args_json ORDER BY timestamp, event_id ) AS"
-              " tool_call_island"
+              " tool_name, tool_args_json, hitl_request_count ORDER BY"
+              " timestamp, event_id ) AS tool_call_island"
           ),
           (
               "COUNT(*) OVER ( PARTITION BY session_id, invocation_id,"
@@ -14104,7 +14210,13 @@ class TestEvalViews:
           ),
           "COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count",
           "COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count",
-          "LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content",
+          # Only a row that puts an event in the trace can mark its turn
+          # truncated, so an LLM_REQUEST row, which repeats the conversation,
+          # cannot hold back a later turn.
+          (
+              "LOGICAL_OR(event_content IS NOT NULL AND COALESCE(is_truncated,"
+              " FALSE)) AS has_truncated_content"
+          ),
           # Token totals count terminal LLM_RESPONSE rows when the turn has
           # any, so streamed usage is not counted twice.
           "JSON_VALUE(content, '$.usage.prompt') AS INT64) AS usage_prompt",
@@ -14158,8 +14270,8 @@ class TestEvalViews:
     completed = event("inv-1", 9, "INVOCATION_COMPLETED")
 
     def turn(*events):
-      """Returns the turn_rollup row of a one-turn session."""
-      (row,) = turn_view.run([hello, *events], cte="turn_rollup")
+      """Returns the TurnRollup row of a one-turn session."""
+      (row,) = turn_view.run([hello, *events], cte="TurnRollup")
       return row
 
     def paused_and_complete(*events):
@@ -14257,7 +14369,7 @@ class TestEvalViews:
           content,
           content_parts=list(parts),
       )
-      (typed,) = turn_view.run([row], cte="typed_events")
+      (typed,) = turn_view.run([row], cte="TypedEvents")
       return typed["message_text"], typed["is_function_response"]
 
     # Inline text parts are joined in part order. Other parts are skipped,
@@ -14274,6 +14386,19 @@ class TestEvalViews:
     assert user_message(
         {"text_summary": ""}, part(0, "[BINARY DATA]", "image/png")
     ) == (None, False)
+    # Rows logged before placeholders kept the blob's MIME type have
+    # text/plain placeholders, which are not user text either.
+    assert user_message(
+        {"text_summary": ""}, part(0, "[BINARY DATA]", "text/plain")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": ""}, part(0, "[UPLOAD FAILED]", "text/plain")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": "Hello | [BINARY DATA]"},
+        part(0, "Hello"),
+        part(1, "[BINARY DATA]", "text/plain"),
+    ) == ("Hello", False)
     assert user_message(
         {"text_summary": ""},
         part(0, "Long text... [OFFLOADED]", storage_mode="GCS_REFERENCE"),
@@ -14410,7 +14535,7 @@ class TestEvalViews:
             row["eval_ready"],
             row["session_turn_eval_ready"],
         )
-        for row in turn_view.run(rows, cte="turns")
+        for row in turn_view.run(rows, cte="Turns")
     } == expected_turns
     assert {
         (row["session_id"], row["invocation_id"]): row["eval_ready"]
@@ -14433,7 +14558,8 @@ class TestEvalViews:
     _, turn_view = self._eval_views()
 
     # Guard against drift in _format_content's prefixes or delimiter without
-    # updating response_events in _EVAL_VIEW_CTES_SQL.
+    # updating ResponseEvents in bigquery_agent_analytics_sql/
+    # eval_view_ctes_v1.sql.
     format_content_src = inspect.getsource(
         bigquery_agent_analytics_plugin._format_content
     )
@@ -14603,6 +14729,7 @@ class TestEvalViews:
     # Free-form payloads inside FunctionCall.args and FunctionResponse.response.
     freeform_payload_key_tuples = {
         ("agent_name",),
+        ("error",),
         ("result",),
     }
 
@@ -14996,10 +15123,10 @@ class TestEvalViews:
         "inv-4": False,
         "inv-5": False,
     }
-    # request_input is a tool the model called, so tool metrics count it.
-    assert session_row["tool_call_count"] == 4
+    # request_input pauses the turn for the user's input, as the framework's
+    # HITL calls do, so tool metrics skip it.
+    assert session_row["tool_call_count"] == 3
     assert session_row["distinct_tools_used"] == [
-        "adk_request_input",
         "cancel_order",
         "lookup_order",
     ]
@@ -15201,7 +15328,7 @@ class TestEvalViews:
     )
 
   def test_eval_agent_instruction_fallback_from_session_agent_prompts(self):
-    """agent_configs falls back to earliest session LLM_REQUEST.system_prompt.
+    """AgentConfigs falls back to earliest session LLM_REQUEST.system_prompt.
 
     Covers legacy callable reprs, empty text_summary, and current
     before_agent_callback rows with content=None and
@@ -15327,7 +15454,7 @@ class TestEvalViews:
         ),
         # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt,
         # and sub_agent logs AGENT_STARTING with {"text_summary": ""} (to
-        # exercise NULLIF(instruction, '') in agent_configs) without a new
+        # exercise NULLIF(instruction, '') in AgentConfigs) without a new
         # LLM_REQUEST; both still resolve to their earliest session
         # system_prompt in turn_view and session_view.
         event(
@@ -15455,6 +15582,1099 @@ class TestEvalViews:
     assert session_rows["s-conv-only"]["trace"]["turns"][0]["events"][1][
         "content"
     ]["parts"] == [{"text": "Fast-path answer."}]
+
+  def test_eval_tool_error_is_a_function_response_after_its_call(self) -> None:
+    """A TOOL_ERROR answers its function_call with the error message."""
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {"id": 1}, "tool_origin": "LOCAL"}
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        # The next three rows share a timestamp and the reply's event_id sorts
+        # first, so only event_seq puts the call, its error and the reply in
+        # that order.
+        event("inv-1", 1, "TOOL_STARTING", call, event_id="b-call"),
+        event(
+            "inv-1",
+            1,
+            "TOOL_ERROR",
+            call,
+            event_id="c-error",
+            status="ERROR",
+            error_message="Order 42 not found.",
+        ),
+        event(
+            "inv-1",
+            1,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Sorry.'"},
+            event_id="a-reply",
+        ),
+        event("inv-1", 2, "INVOCATION_COMPLETED"),
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    for row in (turn_row, session_row):
+      trace_parts = [
+          e["content"]["parts"] for e in row["trace"]["turns"][0]["events"]
+      ]
+      assert trace_parts == [
+          [{"text": "Hi"}],
+          [{"function_call": {"name": "lookup", "args": {"id": 1}}}],
+          [{
+              "function_response": {
+                  "name": "lookup",
+                  "response": {"error": "Order 42 not found."},
+              }
+          }],
+          [{"text": "Sorry."}],
+      ]
+      assert (row["tool_call_count"], row["tool_error_count"]) == (1, 1)
+      assert row["has_error"] is True
+
+  @pytest.mark.parametrize("error_message", [None, ""])
+  def test_eval_tool_error_without_a_message_reports_a_default_error(
+      self, error_message: str | None
+  ) -> None:
+    """A TOOL_ERROR with no message still answers its call with an error."""
+    _, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {}}
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-1", 1, "TOOL_STARTING", call),
+        event(
+            "inv-1",
+            2,
+            "TOOL_ERROR",
+            call,
+            status="ERROR",
+            error_message=error_message,
+        ),
+        event("inv-1", 3, "INVOCATION_COMPLETED"),
+    ]
+
+    (row,) = turn_view.run(rows)
+
+    response_event = row["trace"]["turns"][0]["events"][2]
+    assert response_event["content"]["parts"] == [{
+        "function_response": {
+            "name": "lookup",
+            "response": {"error": "Tool execution failed"},
+        }
+    }]
+
+  @pytest.mark.parametrize("content", [None, {"tool": "", "args": {}}])
+  def test_eval_tool_rows_without_a_tool_name_add_no_trace_event(
+      self, content: dict[str, Any] | None
+  ) -> None:
+    """A tool row that names no tool adds no event to the trace.
+
+    A custom content_formatter that fails leaves a row without its tool's
+    name, so the trace could not pair the call with its response.  Such a
+    TOOL_STARTING is not a tool call, but such a TOOL_ERROR still counts as a
+    tool error, and the turn still has an error.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-1", 1, "TOOL_STARTING", content),
+        event("inv-1", 2, "TOOL_COMPLETED", content),
+        event("inv-1", 3, "TOOL_STARTING", content),
+        event(
+            "inv-1",
+            4,
+            "TOOL_ERROR",
+            content,
+            status="ERROR",
+            error_message="boom",
+        ),
+        event("inv-1", 5, "INVOCATION_COMPLETED"),
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    for row in (turn_row, session_row):
+      trace_parts = [
+          e["content"]["parts"] for e in row["trace"]["turns"][0]["events"]
+      ]
+      assert trace_parts == [[{"text": "Hi"}]]
+      assert row["has_error"] is True
+      assert (row["tool_call_count"], row["tool_error_count"]) == (0, 1)
+      assert row["distinct_tools_used"] == []
+      assert row["max_consecutive_identical_tool_calls"] == 0
+
+  @pytest.mark.parametrize(
+      "failed_attempts, has_tool_loop", [(1, False), (2, True)]
+  )
+  def test_eval_tool_retries_pair_each_call_with_its_error_or_result(
+      self, failed_attempts: int, has_tool_loop: bool
+  ) -> None:
+    """A retried call is one function_call and one response per attempt.
+
+    Identical attempts count as consecutive identical calls whether or not an
+    error separates them, so the third attempt makes a tool loop.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {"id": 1}}
+    function_call = [{"function_call": {"name": "lookup", "args": {"id": 1}}}]
+    rows = [event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"})]
+    expected_parts = [[{"text": "Hi"}]]
+    for attempt in range(1, failed_attempts + 1):
+      message = f"Attempt {attempt} failed."
+      rows += [
+          event("inv-1", 2 * attempt - 1, "TOOL_STARTING", call),
+          event(
+              "inv-1",
+              2 * attempt,
+              "TOOL_ERROR",
+              call,
+              status="ERROR",
+              error_message=message,
+          ),
+      ]
+      expected_parts += [
+          function_call,
+          [{
+              "function_response": {
+                  "name": "lookup",
+                  "response": {"error": message},
+              }
+          }],
+      ]
+    last = 2 * failed_attempts + 1
+    rows += [
+        event("inv-1", last, "TOOL_STARTING", call),
+        event(
+            "inv-1",
+            last + 1,
+            "TOOL_COMPLETED",
+            {**call, "result": {"found": True}},
+        ),
+        event(
+            "inv-1",
+            last + 2,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Found it.'"},
+        ),
+        event("inv-1", last + 3, "INVOCATION_COMPLETED"),
+    ]
+    expected_parts += [
+        function_call,
+        [{
+            "function_response": {
+                "name": "lookup",
+                "response": {"found": True},
+            }
+        }],
+        [{"text": "Found it."}],
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    trace_parts = [
+        e["content"]["parts"] for e in turn_row["trace"]["turns"][0]["events"]
+    ]
+    assert trace_parts == expected_parts
+    for row in (turn_row, session_row):
+      assert row["tool_call_count"] == failed_attempts + 1
+      assert row["tool_error_count"] == failed_attempts
+      assert row["max_consecutive_identical_tool_calls"] == failed_attempts + 1
+      assert row["has_tool_loop"] is has_tool_loop
+
+  def test_eval_parallel_tool_calls_come_before_their_responses(self) -> None:
+    """Calls that start together all precede their results and errors.
+
+    The model's function_calls form one message and the responses follow it, so
+    the error of one call does not fall between the calls, even though its
+    event_id sorts before the other call's.
+    """
+    _, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        # The next four rows share a timestamp.
+        event(
+            "inv-1",
+            1,
+            "TOOL_STARTING",
+            {"tool": "lookup_a", "args": {}},
+            event_id="a-call",
+        ),
+        event(
+            "inv-1",
+            1,
+            "TOOL_ERROR",
+            {"tool": "lookup_a", "args": {}},
+            event_id="a-error",
+            status="ERROR",
+            error_message="A failed.",
+        ),
+        event(
+            "inv-1",
+            1,
+            "TOOL_STARTING",
+            {"tool": "lookup_b", "args": {}},
+            event_id="b-call",
+        ),
+        event(
+            "inv-1",
+            1,
+            "TOOL_COMPLETED",
+            {"tool": "lookup_b", "result": {"ok": True}},
+            event_id="b-done",
+        ),
+        event("inv-1", 2, "INVOCATION_COMPLETED"),
+    ]
+
+    (row,) = turn_view.run(rows)
+
+    # Skips the user message, which has a text part.
+    steps = []
+    for e in row["trace"]["turns"][0]["events"][1:]:
+      for part in e["content"]["parts"]:
+        steps.extend((kind, part[kind]["name"]) for kind in part)
+    assert steps == [
+        ("function_call", "lookup_a"),
+        ("function_call", "lookup_b"),
+        ("function_response", "lookup_a"),
+        ("function_response", "lookup_b"),
+    ]
+    assert (row["tool_call_count"], row["tool_error_count"]) == (2, 1)
+
+  @pytest.mark.parametrize(
+      "tool",
+      [
+          "transfer_to_agent",
+          "adk_request_credential",
+          "adk_request_confirmation",
+          "adk_request_input",
+      ],
+  )
+  def test_eval_tool_error_of_a_framework_tool_adds_no_trace_event(
+      self, tool: str
+  ) -> None:
+    """A framework tool's TOOL_ERROR adds no function_response.
+
+    The handoff and the HITL requests reach the trace as AGENT_TRANSFER and
+    HITL_* rows, so a function_response for their TOOL_ERROR would answer no
+    function_call.  Tool metrics skip it too, though the turn has an error.
+    """
+    _, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event(
+            "inv-1",
+            1,
+            "TOOL_ERROR",
+            {"tool": tool, "args": {}},
+            status="ERROR",
+            error_message="failed",
+        ),
+        event("inv-1", 2, "AGENT_RESPONSE", {"response": "text: 'Done.'"}),
+        event("inv-1", 3, "INVOCATION_COMPLETED"),
+    ]
+
+    (row,) = turn_view.run(rows)
+
+    trace_parts = [
+        e["content"]["parts"] for e in row["trace"]["turns"][0]["events"]
+    ]
+    assert trace_parts == [[{"text": "Hi"}], [{"text": "Done."}]]
+    assert (row["tool_call_count"], row["tool_error_count"]) == (0, 0)
+    assert row["has_error"] is True
+
+  def test_eval_hitl_request_tools_are_not_tool_calls(self) -> None:
+    """Tool metrics skip the pseudo-tools that pause the turn for the user.
+
+    adk_request_credential, adk_request_confirmation and adk_request_input
+    pause for a credential, a confirmation or the user's input, so repeating
+    them is not a tool loop.  Any other tool still counts.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    def turn(
+        invocation_id: str, second: int, tool: str
+    ) -> list[dict[str, Any]]:
+      """Returns a turn that calls ``tool`` three times with the same args."""
+      return [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+          ),
+          *(
+              event(
+                  invocation_id,
+                  second + n,
+                  "TOOL_STARTING",
+                  {"tool": tool, "args": {}},
+              )
+              for n in (1, 2, 3)
+          ),
+          event(invocation_id, second + 4, "INVOCATION_COMPLETED"),
+      ]
+
+    rows = [
+        *turn("inv-credential", 0, "adk_request_credential"),
+        *turn("inv-confirmation", 10, "adk_request_confirmation"),
+        *turn("inv-input", 20, "adk_request_input"),
+        *turn("inv-lookup", 30, "lookup"),
+    ]
+
+    metrics = {
+        row["invocation_id"]: (
+            row["tool_call_count"],
+            row["distinct_tools_used"],
+            row["max_consecutive_identical_tool_calls"],
+            row["has_tool_loop"],
+        )
+        for row in turn_view.run(rows)
+    }
+    assert metrics == {
+        "inv-credential": (0, [], 0, False),
+        "inv-confirmation": (0, [], 0, False),
+        "inv-input": (0, [], 0, False),
+        "inv-lookup": (3, ["lookup"], 3, True),
+    }
+    (session_row,) = session_view.run(rows)
+    assert session_row["tool_call_count"] == 3
+    assert session_row["distinct_tools_used"] == ["lookup"]
+
+  def test_eval_hitl_requests_end_runs_of_identical_tool_calls(self) -> None:
+    """A HITL request between identical tool calls ends their run.
+
+    A turn that resumes after a HITL request keeps its invocation_id, so
+    calling a tool again once the user has answered would otherwise look like
+    a tool loop.
+    """
+    _, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {"id": 1}}
+
+    def turn(
+        invocation_id: str, second: int, tool: str | None
+    ) -> list[dict[str, Any]]:
+      """Returns a turn that calls lookup three times, pausing for ``tool``."""
+      rows = [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+          ),
+          event(invocation_id, second + 1, "TOOL_STARTING", call),
+      ]
+      for n in (2, 5):
+        if tool:
+          request = bigquery_agent_analytics_plugin._HITL_EVENT_MAP[tool]
+          rows += [
+              event(
+                  invocation_id,
+                  second + n,
+                  request,
+                  {"tool": tool, "args": {}},
+              ),
+              event(
+                  invocation_id,
+                  second + n + 1,
+                  f"{request}_COMPLETED",
+                  {"tool": tool, "result": {}},
+              ),
+          ]
+        rows.append(event(invocation_id, second + n + 2, "TOOL_STARTING", call))
+      rows.append(event(invocation_id, second + 8, "INVOCATION_COMPLETED"))
+      return rows
+
+    rows = [
+        *turn("inv-no-pause", 0, None),
+        *turn("inv-credential", 10, "adk_request_credential"),
+        *turn("inv-confirmation", 20, "adk_request_confirmation"),
+        *turn("inv-input", 30, "adk_request_input"),
+    ]
+
+    metrics = {
+        row["invocation_id"]: (
+            row["tool_call_count"],
+            row["max_consecutive_identical_tool_calls"],
+            row["has_tool_loop"],
+        )
+        for row in turn_view.run(rows)
+    }
+    assert metrics == {
+        "inv-no-pause": (3, 3, True),
+        "inv-credential": (3, 1, False),
+        "inv-confirmation": (3, 1, False),
+        "inv-input": (3, 1, False),
+    }
+
+  def test_eval_repeated_input_requests_are_not_a_tool_loop(self) -> None:
+    """Three requests in a row for the user's input count as no tool call.
+
+    request_input logs TOOL_STARTING as well as the HITL_INPUT_REQUEST that
+    the trace shows, so a turn that asks the user the same question three
+    times would otherwise look like a loop of three identical tool calls.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    ask = {"tool": "adk_request_input", "args": {"message": "Which order?"}}
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Help."})
+    ]
+    for second in (1, 3, 5):
+      rows += [
+          event("inv-1", second, "TOOL_STARTING", ask),
+          event("inv-1", second + 1, "HITL_INPUT_REQUEST", ask),
+      ]
+    rows += [
+        event("inv-1", 7, "TOOL_PAUSED", ask),
+        event("inv-1", 8, "INVOCATION_COMPLETED"),
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    for row in (turn_row, session_row):
+      assert row["tool_call_count"] == 0
+      assert row["distinct_tools_used"] == []
+      assert row["max_consecutive_identical_tool_calls"] == 0
+      assert row["has_tool_loop"] is False
+    # The trace still shows each request, once, as a function_call.
+    calls = []
+    for e in turn_row["trace"]["turns"][0]["events"]:
+      calls.extend(
+          part["function_call"]["name"]
+          for part in e["content"]["parts"]
+          if "function_call" in part
+      )
+    assert calls == ["adk_request_input"] * 3
+
+  def test_eval_truncated_turns_are_not_eval_ready(self) -> None:
+    """A row flagged is_truncated makes its turn and session not eval ready.
+
+    The other turns of the session stay ready.
+    """
+    session_view, turn_view = self._eval_views()
+    finished_turn = self._finished_turn
+    rows = [
+        *finished_turn("s-clean", "inv-clean", 0),
+        *finished_turn("s-flagged", "inv-flagged", 0, is_truncated=True),
+        *finished_turn("s-flagged", "inv-after-flagged", 10),
+    ]
+
+    turn_states = {
+        row["invocation_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in turn_view.run(rows)
+    }
+    session_states = {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    }
+    assert turn_states == {
+        "inv-clean": (False, True),
+        "inv-flagged": (True, False),
+        "inv-after-flagged": (False, True),
+    }
+    # One truncated turn is enough to hold back the session.
+    assert session_states == {
+        "s-clean": (False, True),
+        "s-flagged": (True, False),
+    }
+
+  def test_eval_truncated_row_of_a_paused_session_is_not_eval_ready(
+      self,
+  ) -> None:
+    """A truncated row in a paused or resumed turn holds back its session.
+
+    A turn that paused for a HITL answer and the turn that resumes it count as
+    ready for their session, unless one of their rows is truncated.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    confirm = "adk_request_confirmation"
+    request = {"tool": confirm, "args": {}}
+    answer = {"tool": confirm, "result": {"confirmed": True}}
+
+    def paused_and_resumed(
+        session_id: str,
+        request_columns: dict[str, Any] | None = None,
+        answer_columns: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+      """Returns a turn paused for a confirmation, and the turn that resumes it.
+
+      Args:
+        session_id: The session of both turns.
+        request_columns: More columns of the paused turn's request row.
+        answer_columns: More columns of the resumed turn's answer row.
+      """
+      columns = {"session_id": session_id}
+      return [
+          event(
+              "inv-1",
+              0,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Delete it."},
+              **columns,
+          ),
+          event(
+              "inv-1",
+              1,
+              "HITL_CONFIRMATION_REQUEST",
+              request,
+              **columns,
+              **(request_columns or {}),
+          ),
+          event("inv-1", 2, "TOOL_PAUSED", request, **columns),
+          event("inv-1", 3, "INVOCATION_COMPLETED", **columns),
+          event(
+              "inv-2",
+              10,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": f"Function response: {confirm}"},
+              **columns,
+          ),
+          event(
+              "inv-2",
+              11,
+              "HITL_CONFIRMATION_REQUEST_COMPLETED",
+              answer,
+              **columns,
+              **(answer_columns or {}),
+          ),
+          event(
+              "inv-2",
+              12,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Deleted.'"},
+              **columns,
+          ),
+          event("inv-2", 13, "INVOCATION_COMPLETED", **columns),
+      ]
+
+    rows = [
+        *paused_and_resumed("s-clean"),
+        *paused_and_resumed(
+            "s-request", request_columns={"is_truncated": True}
+        ),
+        *paused_and_resumed("s-answer", answer_columns={"is_truncated": True}),
+    ]
+
+    # (has_truncated_content, session_turn_eval_ready) of each turn.
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_truncated_content"],
+            row["session_turn_eval_ready"],
+        )
+        for row in turn_view.run(rows, cte="Turns")
+    } == {
+        ("s-clean", "inv-1"): (False, True),
+        ("s-clean", "inv-2"): (False, True),
+        ("s-request", "inv-1"): (True, False),
+        ("s-request", "inv-2"): (False, True),
+        ("s-answer", "inv-1"): (False, True),
+        ("s-answer", "inv-2"): (True, False),
+    }
+    assert {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    } == {
+        "s-clean": (False, True),
+        "s-request": (True, False),
+        "s-answer": (True, False),
+    }
+
+  def test_eval_truncated_llm_request_does_not_hold_back_later_turns(
+      self,
+  ) -> None:
+    """A later turn stays ready when only its LLM_REQUEST row is truncated.
+
+    An LLM_REQUEST row logs the conversation so far, so one oversized message
+    flags the request of every later turn, though the events that those turns
+    take from their own rows are whole.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    def turn(
+        session_id: str,
+        invocation_id: str,
+        second: int,
+        *,
+        user_truncated: bool = False,
+        request_truncated: bool = False,
+    ) -> list[dict[str, Any]]:
+      """Returns the rows of a finished turn that sent one LLM_REQUEST."""
+      columns = {"session_id": session_id}
+      return [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+              is_truncated=user_truncated,
+              **columns,
+          ),
+          event(
+              invocation_id,
+              second + 1,
+              "LLM_REQUEST",
+              {"system_prompt": "Be brief."},
+              is_truncated=request_truncated,
+              **columns,
+          ),
+          event(
+              invocation_id,
+              second + 2,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Done.'"},
+              **columns,
+          ),
+          event(invocation_id, second + 3, "INVOCATION_COMPLETED", **columns),
+      ]
+
+    rows = [
+        # The first message is oversized, and every later request repeats it.
+        *turn(
+            "s-oversized",
+            "inv-1",
+            0,
+            user_truncated=True,
+            request_truncated=True,
+        ),
+        *turn("s-oversized", "inv-2", 10, request_truncated=True),
+        *turn("s-oversized", "inv-3", 20, request_truncated=True),
+        # Only a request is truncated.
+        *turn("s-request", "inv-1", 0, request_truncated=True),
+    ]
+
+    # (has_truncated_content, eval_ready) of each turn.
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_truncated_content"],
+            row["eval_ready"],
+        )
+        for row in turn_view.run(rows)
+    } == {
+        ("s-oversized", "inv-1"): (True, False),
+        ("s-oversized", "inv-2"): (False, True),
+        ("s-oversized", "inv-3"): (False, True),
+        ("s-request", "inv-1"): (False, True),
+    }
+    # The oversized message still holds back its own session.
+    assert {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    } == {
+        "s-oversized": (True, False),
+        "s-request": (False, True),
+    }
+
+  @pytest.mark.parametrize(
+      ("event_type", "content", "puts_event_in_trace"),
+      [
+          ("USER_MESSAGE_RECEIVED", {"text_summary": "More."}, True),
+          ("TOOL_STARTING", {"tool": "lookup", "args": {"q": "x"}}, True),
+          ("TOOL_COMPLETED", {"tool": "lookup", "result": {"n": 1}}, True),
+          ("TOOL_ERROR", {"tool": "lookup"}, True),
+          (
+              "AGENT_TRANSFER",
+              {"from_agent": "root_agent", "to_agent": "helper"},
+              True,
+          ),
+          ("AGENT_RESPONSE", {"response": "text: 'More.'"}, True),
+          ("LLM_REQUEST", {"system_prompt": "Be brief."}, False),
+          ("LLM_RESPONSE", {"response": "text: 'More.'"}, False),
+          ("AGENT_STARTING", {"text_summary": "Be brief."}, False),
+          # The trace shows a HITL row for a framework tool, not its own rows.
+          ("TOOL_STARTING", {"tool": "adk_request_input", "args": {}}, False),
+          # A tool row that names no tool puts no event in the trace.
+          ("TOOL_COMPLETED", {"result": {"n": 1}}, False),
+      ],
+      ids=[
+          "user_message",
+          "tool_call",
+          "tool_response",
+          "tool_error",
+          "agent_transfer",
+          "agent_response",
+          "llm_request",
+          "llm_response",
+          "agent_starting",
+          "framework_tool_call",
+          "unnamed_tool_response",
+      ],
+  )
+  def test_eval_truncated_row_counts_only_if_it_puts_an_event_in_the_trace(
+      self,
+      event_type: str,
+      content: dict[str, Any],
+      puts_event_in_trace: bool,
+  ) -> None:
+    """A truncated row counts only if it puts an event in the trace."""
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-1", 1, event_type, content, is_truncated=True),
+        event("inv-1", 2, "AGENT_RESPONSE", {"response": "text: 'Done.'"}),
+        event("inv-1", 3, "INVOCATION_COMPLETED"),
+    ]
+
+    # (has_truncated_content, eval_ready) of the one turn and session.
+    expected = (True, False) if puts_event_in_trace else (False, True)
+    for view in (turn_view, session_view):
+      assert [
+          (row["has_truncated_content"], row["eval_ready"])
+          for row in view.run(rows)
+      ] == [expected]
+
+  @pytest.mark.parametrize(
+      "build_view_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  def test_eval_views_reject_denying_is_truncated(
+      self, build_view_sql: Callable[..., str]
+  ) -> None:
+    """A protected is_truncated column cannot be projected out of the views.
+
+    Read as FALSE, a withheld is_truncated column would mark truncated turns
+    eval ready, so the builders fail closed.
+    """
+    with pytest.raises(ValueError, match=r"got \['is_truncated'\]"):
+      build_view_sql("p.d.t", denied_columns=frozenset({"is_truncated"}))
+
+  def test_eval_view_ctes_end_without_a_newline(self) -> None:
+    """The shared CTEs end at the closing paren, for the view templates."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+    assert ctes.startswith("WITH\n")
+    assert "\n  RawEvents AS (\n" in ctes
+    assert ctes.endswith("\n  )")
+
+  def test_eval_view_ctes_filter_the_table_on_session_and_invocation(
+      self,
+  ) -> None:
+    """The one filter on the events table keeps the rows of a turn."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+    raw_events = ctes.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
+
+    assert raw_events.endswith(
+        "\n    FROM\n      `p.d.t`\n    WHERE\n      session_id IS NOT NULL\n"
+        "      AND invocation_id IS NOT NULL"
+    )
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  def test_eval_builders_substitute_the_ctes_only_once(
+      self, build_sql: Callable[..., str]
+  ) -> None:
+    """Braces in the CTE text reach the statement as written."""
+    ctes = "WITH x AS (SELECT r'\\d{4}', '{\"a\": {}}', '{x}', '{{}}', '{0}')"
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin,
+        "_build_eval_view_ctes",
+        return_value=ctes,
+    ):
+      sql = build_sql("p.d.t")
+
+    assert ctes in sql
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  @pytest.mark.parametrize(
+      "full_table_id",
+      [
+          "p.d.t`x",
+          "p.d.t` AS x; DROP TABLE y; --",
+          "p`.d.t",
+          "p.d.t\\x",
+          "p.d.t\n",
+          "p.d.t\r",
+          "p.d.t\t",
+          "p.d.t\x00",
+          "p.d.t\x7f",
+          "p.d.t\x85",
+          "p.d.t\u2028",
+          "p.d.t\u2029",
+      ],
+  )
+  def test_eval_builders_reject_a_table_id_the_sql_cannot_quote(
+      self, build_sql: Callable[..., str], full_table_id: str
+  ) -> None:
+    """A backtick, backslash, control or line-break character is an error."""
+    with pytest.raises(ValueError, match="backtick, backslash"):
+      build_sql(full_table_id)
+
+  @pytest.mark.parametrize(
+      "build_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  @pytest.mark.parametrize(
+      "view_prefix",
+      [
+          "",
+          "v`bad",
+          "v\\bad",
+          "v\nbad",
+          "v\rbad",
+          "v\tbad",
+          "v\x00bad",
+          "v\x7fbad",
+          "v\x85bad",
+          "v\u2028bad",
+          "v\u2029bad",
+      ],
+  )
+  def test_eval_builders_reject_a_view_prefix_the_sql_cannot_quote(
+      self, build_sql: Callable[..., str], view_prefix: str
+  ) -> None:
+    """An empty or unquotable view_prefix is rejected."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "view_prefix must be a non-empty string without a backtick,"
+            " backslash"
+        ),
+    ):
+      build_sql("p.d.t", view_prefix=view_prefix)
+
+  @pytest.mark.parametrize(
+      "full_table_id",
+      [
+          "my-project.my_dataset.my_events",
+          "my-project.my_dataset.my events 01",
+          "my-project.my_dataset.my\u00a0events",
+      ],
+  )
+  def test_eval_builders_accept_a_table_id_with_a_dash_or_a_space(
+      self, full_table_id: str
+  ) -> None:
+    """A dash, an underscore or a space can be in the quoted table name."""
+    sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
+        full_table_id
+    )
+
+    assert f"\n      `{full_table_id}`\n" in sql
+
+  @pytest.fixture
+  def eval_sql_dir(self, tmp_path, monkeypatch):
+    """Yields an empty SQL directory beside where the plugin module now is.
+
+    The module's ``__file__`` points into ``tmp_path``, and the loader's cache
+    is cleared before and after the test.
+    """
+    sql_dir = tmp_path / "plugins" / "bigquery_agent_analytics_sql"
+    sql_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        bigquery_agent_analytics_plugin,
+        "__file__",
+        str(sql_dir.parent / "bigquery_agent_analytics_plugin.py"),
+    )
+    bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
+    yield sql_dir
+    bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
+
+  def test_load_eval_sql_template_drops_the_license_header(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """The loader returns the text after the '--' header and its blank line.
+
+    The header may name a placeholder, as the packaged files' headers do.
+    """
+    (eval_sql_dir / "test_header.sql").write_text(
+        "-- License line one.\n-- Names {x}.\n\nSELECT {x}\n\nFROM t\n",
+        encoding="utf-8",
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_header.sql"
+    )
+
+    assert template == "SELECT {x}\n\nFROM t\n"
+
+  def test_load_eval_sql_template_normalizes_crlf_newlines(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """A file with the CRLF line breaks of a Windows checkout loads the same.
+
+    The file is read in text mode, so its CRLF line breaks become newlines
+    before the header and its blank line are found.
+    """
+    (eval_sql_dir / "test_crlf.sql").write_bytes(
+        b"-- License.\r\n\r\nSELECT 1\r\n"
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_crlf.sql"
+    )
+
+    assert template == "SELECT 1\n"
+
+  def test_load_eval_sql_template_reads_each_file_once(
+      self, eval_sql_dir: pathlib.Path
+  ) -> None:
+    """A template is cached, so a later edit to its file is not read."""
+    path = eval_sql_dir / "test_cache.sql"
+    path.write_text("-- License.\n\nSELECT 1\n", encoding="utf-8")
+    first = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_cache.sql"
+    )
+    path.write_text("-- License.\n\nSELECT 2\n", encoding="utf-8")
+
+    second = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_cache.sql"
+    )
+
+    assert (first, second) == ("SELECT 1\n", "SELECT 1\n")
+
+  @pytest.mark.parametrize(
+      "text",
+      [
+          "",
+          "SELECT 1\n",
+          "-- License\nSELECT 1\n",
+          "\n\nSELECT 1\n",
+          "-- License\nnot a comment\n\nSELECT 1\n",
+      ],
+  )
+  def test_load_eval_sql_template_rejects_a_missing_license_header(
+      self, eval_sql_dir: pathlib.Path, text: str
+  ) -> None:
+    """A file without a '--' header and a blank line is not a template."""
+    (eval_sql_dir / "test_bad.sql").write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must begin with"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template("test_bad.sql")
+
+  @pytest.mark.parametrize(
+      "filename", ["", ".", "..", "../ok.sql", "sub/ok.sql", "/tmp/ok.sql"]
+  )
+  def test_load_eval_sql_template_rejects_a_path(self, filename: str) -> None:
+    """Only a bare file name in the SQL directory can be loaded."""
+    with pytest.raises(ValueError, match="bare file name"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template(filename)
+
+  @pytest.mark.usefixtures("eval_sql_dir")
+  def test_load_eval_sql_template_reports_a_missing_file(self) -> None:
+    """A file that is neither beside the module nor packaged is an error."""
+    with pytest.raises(FileNotFoundError, match="test_missing.sql"):
+      bigquery_agent_analytics_plugin._load_eval_sql_template(
+          "test_missing.sql"
+      )
+
+  def test_load_eval_sql_template_reads_beside_a_linked_module_first(
+      self, eval_sql_dir: pathlib.Path, tmp_path: pathlib.Path
+  ) -> None:
+    """The SQL beside a link to the module is read before its target's.
+
+    A build such as Blaze links the module into a tree of runfiles, and the
+    link's target, in a cache, may have no SQL beside it.
+    """
+    target_sql_dir = tmp_path / "cache" / "bigquery_agent_analytics_sql"
+    target_sql_dir.mkdir(parents=True)
+    target = target_sql_dir.parent / "0123abcd"
+    target.write_text("# The plugin module.\n", encoding="utf-8")
+    (eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py").symlink_to(
+        target
+    )
+    for sql_dir, place in [(eval_sql_dir, "link"), (target_sql_dir, "target")]:
+      (sql_dir / "test_linked.sql").write_text(
+          f"-- License.\n\nSELECT 'beside the {place}'\n", encoding="utf-8"
+      )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_linked.sql"
+    )
+
+    assert template == "SELECT 'beside the link'\n"
+
+  def test_load_eval_sql_template_follows_a_link_to_the_module(
+      self,
+      eval_sql_dir: pathlib.Path,
+      tmp_path: pathlib.Path,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    """A link to the module, alone in its directory, finds its target's SQL."""
+    module = eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py"
+    module.write_text("# The plugin module.\n", encoding="utf-8")
+    link = tmp_path / "checkout" / "bigquery_agent_analytics_plugin.py"
+    link.parent.mkdir()
+    link.symlink_to(module)
+    monkeypatch.setattr(bigquery_agent_analytics_plugin, "__file__", str(link))
+    (eval_sql_dir / "test_target.sql").write_text(
+        "-- License.\n\nSELECT 'beside the target'\n", encoding="utf-8"
+    )
+
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "test_target.sql"
+    )
+
+    assert template == "SELECT 'beside the target'\n"
+
+  @pytest.mark.usefixtures("eval_sql_dir")
+  def test_load_eval_sql_template_falls_back_to_the_package_resources(
+      self,
+  ) -> None:
+    """With no SQL beside the module, the package's resource is read."""
+    template = bigquery_agent_analytics_plugin._load_eval_sql_template(
+        "eval_turn_view_v1.sql"
+    )
+
+    assert template.startswith(
+        "CREATE OR REPLACE VIEW `{view_ref}` AS\n{ctes}\nSELECT\n"
+    )
+
+  def test_eval_view_evaluator_requires_an_else_in_every_case(self) -> None:
+    """The evaluator rejects a CASE without an ELSE, as the SQL lint does."""
+    with_else = (
+        "WITH x AS (SELECT CASE WHEN a THEN 1 ELSE 2 END AS y FROM t)"
+        " SELECT y FROM x"
+    )
+    without_else = with_else.replace(" ELSE 2", "")
+
+    assert _EvalViewSqlEvaluator(with_else).run(
+        [{"a": True}, {"a": False}]
+    ) == [
+        {"y": 1},
+        {"y": 2},
+    ]
+    with pytest.raises(AssertionError, match="ELSE"):
+      _EvalViewSqlEvaluator(without_else)
 
 
 # ==============================================================================
@@ -17443,6 +18663,173 @@ class TestOffloadUnitSeparation:
     assert is_truncated
     assert parts[0]["storage_mode"] == "INLINE"
     assert "TRUNCATED" in parts[0]["text"]
+
+  @pytest.mark.asyncio
+  async def test_parser_parse_offload_false_skips_offloader_for_text_and_binary(
+      self,
+  ):
+    """parse(offload=False) keeps text and binary parts inline.
+
+    Each parse() entry point that parses content objects passes it on: the
+    LlmRequest contents, a non-str LlmRequest system_instruction, and a
+    types.Content or types.Part.
+    """
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/unexpected"
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=100,
+    )
+    # Each text part is longer than both offload thresholds, inline_text_limit
+    # (bytes) and max_length (characters), yet offload=False keeps it inline,
+    # truncated at max_length.
+    text_len = parser.inline_text_limit + 1
+    request = llm_request_lib.LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(text="P" * text_len),
+                    types.Part.from_bytes(
+                        data=b"\x89PNG", mime_type="image/png"
+                    ),
+                ],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            system_instruction=types.Content(
+                parts=[types.Part(text="S" * text_len)]
+            )
+        ),
+    )
+    content = types.Content(
+        parts=[
+            types.Part(text="C" * text_len),
+            types.Part.from_bytes(data=b"RIFF", mime_type="audio/wav"),
+        ]
+    )
+
+    request_payload, request_parts, request_truncated = await parser.parse(
+        request, offload=False
+    )
+    content_payload, content_parts, content_truncated = await parser.parse(
+        content, offload=False
+    )
+    part_payload, part_parts, part_truncated = await parser.parse(
+        types.Part(text="T" * text_len), offload=False
+    )
+
+    mock_offloader.upload_content.assert_not_called()
+    assert request_payload == {
+        "prompt": [{"role": "user", "content": "P" * 100 + "...[TRUNCATED]"}],
+        "system_prompt": "S" * 100 + "...[TRUNCATED]",
+    }
+    assert content_payload == {"text_summary": "C" * 100 + "...[TRUNCATED]"}
+    assert part_payload == {"text_summary": "T" * 100 + "...[TRUNCATED]"}
+    assert request_truncated and content_truncated and part_truncated
+    assert [
+        (part["mime_type"], part["text"], part["storage_mode"])
+        for part in request_parts + content_parts + part_parts
+    ] == [
+        ("text/plain", "P" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("image/png", "[BINARY DATA]", "INLINE"),
+        ("text/plain", "S" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("text/plain", "C" * 100 + "...[TRUNCATED]", "INLINE"),
+        ("audio/wav", "[BINARY DATA]", "INLINE"),
+        ("text/plain", "T" * 100 + "...[TRUNCATED]", "INLINE"),
+    ]
+
+  @pytest.mark.parametrize(
+      ("mime_type", "expected_mime_type"),
+      [
+          ("image/png", "image/png"),
+          ("application/pdf", "application/pdf"),
+          (None, "application/octet-stream"),
+          ("", "application/octet-stream"),
+      ],
+      ids=["png", "pdf", "none", "empty"],
+  )
+  @pytest.mark.parametrize(
+      (
+          "upload_outcome",
+          "offload",
+          "expected_text",
+          "expected_storage_mode",
+          "expected_uri",
+      ),
+      [
+          pytest.param(
+              None, True, "[BINARY DATA]", "INLINE", None, id="no_offloader"
+          ),
+          pytest.param(
+              "gs://bucket/blob",
+              False,
+              "[BINARY DATA]",
+              "INLINE",
+              None,
+              id="offload_false",
+          ),
+          pytest.param(
+              RuntimeError("boom"),
+              True,
+              "[UPLOAD FAILED]",
+              "INLINE",
+              None,
+              id="upload_failed",
+          ),
+          pytest.param(
+              "gs://bucket/blob",
+              True,
+              "[MEDIA OFFLOADED]",
+              "GCS_REFERENCE",
+              "gs://bucket/blob",
+              id="uploaded",
+          ),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_inline_data_preserves_mime_type_without_offloader_and_on_upload_failure(
+      self,
+      mime_type,
+      expected_mime_type,
+      upload_outcome,
+      offload,
+      expected_text,
+      expected_storage_mode,
+      expected_uri,
+  ):
+    """An inline_data part keeps its mime_type whether or not it is uploaded.
+
+    The part is labeled with the blob's mime_type, or
+    application/octet-stream when the blob has none, never text/plain:
+    without an offloader, with offload=False, after a failed upload and after
+    a successful one. upload_outcome is what the offloader's upload returns
+    or raises; None means there is no offloader.
+    """
+    offloader = None
+    if upload_outcome is not None:
+      offloader = mock.AsyncMock()
+      offloader.upload_content.side_effect = [upload_outcome]
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader, trace_id="t", span_id="s"
+    )
+    content = types.Content(
+        parts=[
+            types.Part(
+                inline_data=types.Blob(data=b"\x00\x01", mime_type=mime_type)
+            )
+        ]
+    )
+
+    _, parts, _ = await parser.parse(content, offload=offload)
+
+    (part,) = parts
+    assert part["mime_type"] == expected_mime_type
+    assert part["text"] == expected_text
+    assert part["storage_mode"] == expected_storage_mode
+    assert part["uri"] == expected_uri
 
   @pytest.mark.asyncio
   async def test_raw_prompt_text_is_sanitized_inline(self):
@@ -22057,6 +23444,7 @@ async def test_content_parts_denied_disables_gcs_offload(
     mock_to_arrow_schema,
     dummy_arrow_schema,
     mock_storage_client,
+    caplog,
 ):
   # denying content_parts (which holds the offload object reference)
   # must disable GCS offload, otherwise the payload is uploaded with no
@@ -22068,9 +23456,16 @@ async def test_content_parts_denied_disables_gcs_offload(
   async with managed_plugin(
       PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
   ) as plugin:
-    await plugin._ensure_started(
-        storage_client=mock_storage_client.return_value
-    )
+    with caplog.at_level(logging.WARNING):
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+      # close() clears the parser, so the next start re-runs the offload
+      # setup; the warning is still logged once per plugin instance.
+      await plugin.close()
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
     assert plugin.offloader is None
     mock_blob = (
         mock_storage_client.return_value.bucket.return_value.blob.return_value
@@ -22085,6 +23480,345 @@ async def test_content_parts_denied_disables_gcs_offload(
     )
     await plugin.flush()
     mock_blob.upload_from_string.assert_not_called()
+
+  setup_warnings = [
+      record.getMessage()
+      for record in caplog.records
+      if "GCS offload disabled" in record.getMessage()
+  ]
+  assert len(setup_warnings) == 1
+  assert "payload_column_denylist drops 'content_parts'" in setup_warnings[0]
+  assert (
+      "large text is kept inline (truncated) in 'content' and binary parts"
+      " are not stored"
+      in setup_warnings[0]
+  )
+
+
+async def _log_large_user_message_and_llm_request(
+    plugin, invocation_context, callback_context
+):
+  """Logs a user message and an LLM request that both carry large payloads.
+
+  The USER_MESSAGE_RECEIVED row parses a types.Content with a "U" text part
+  over 32 KiB and an inline image/png part. The LLM_REQUEST row parses a
+  prompt with a "P" text part over 32 KiB and an inline image/png part, plus
+  a non-str system instruction with an "S" text part over 32 KiB.
+  """
+  large = 32 * 1024 + 1
+  image = types.Part.from_bytes(data=b"\x89PNG", mime_type="image/png")
+  await plugin.on_user_message_callback(
+      invocation_context=invocation_context,
+      user_message=types.Content(
+          role="user", parts=[types.Part(text="U" * large), image]
+      ),
+  )
+  await plugin.before_model_callback(
+      callback_context=callback_context,
+      llm_request=llm_request_lib.LlmRequest(
+          model="gemini-pro",
+          contents=[
+              types.Content(
+                  role="user", parts=[types.Part(text="P" * large), image]
+              )
+          ],
+          config=types.GenerateContentConfig(
+              system_instruction=types.Content(
+                  parts=[types.Part(text="S" * large)]
+              )
+          ),
+      ),
+  )
+  await plugin.flush()
+
+
+@pytest.mark.asyncio
+async def test_log_multi_modal_false_disables_gcs_offload_and_keeps_large_text_inline(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+    caplog,
+):
+  """log_multi_modal_content=False keeps large text inline instead of in GCS.
+
+  log_multi_modal_content=False writes content_parts as [], and content_parts
+  is the only column that holds an offloaded object's reference, so an upload
+  would leave the payload in GCS with no reference and the text missing from
+  content. The setup warning is logged once per plugin instance.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=False,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    with caplog.at_level(logging.WARNING):
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+      # close() clears the parser, so the next start re-runs the offload
+      # setup; the warning is still logged once per plugin instance.
+      await plugin.close()
+      await plugin._ensure_started(
+          storage_client=mock_storage_client.return_value
+      )
+    assert plugin.offloader is None
+    mock_storage_client.assert_not_called()
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  setup_warnings = [
+      record.getMessage()
+      for record in caplog.records
+      if "GCS offload disabled" in record.getMessage()
+  ]
+  assert len(setup_warnings) == 1
+  assert "log_multi_modal_content" in setup_warnings[0]
+  assert (
+      "large text is kept inline (truncated) in 'content' and binary parts"
+      " are not stored"
+      in setup_warnings[0]
+  )
+  assert "test-bucket" in setup_warnings[0]
+  mock_blob = (
+      mock_storage_client.return_value.bucket.return_value.blob.return_value
+  )
+  mock_blob.upload_from_string.assert_not_called()
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert user_row["content_parts"] == []
+  assert request_row["content_parts"] == []
+  assert user_row["is_truncated"] is True
+  assert request_row["is_truncated"] is True
+  assert json.loads(user_row["content"]) == {
+      "text_summary": "U" * 500 + "...[TRUNCATED]"
+  }
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
+
+
+@pytest.mark.parametrize("log_multi_modal_content", [True, False])
+@pytest.mark.parametrize("gcs_bucket_name", [None, "test-bucket"])
+@pytest.mark.asyncio
+async def test_large_content_stays_inline_unless_offloaded_with_a_row_reference(
+    gcs_bucket_name,
+    log_multi_modal_content,
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Large content is kept inline unless the row keeps its GCS reference.
+
+  Setup: every gcs_bucket_name x log_multi_modal_content combination.
+  Act: log a user message and an LLM request whose text parts are over
+    32 KiB and that each carry an inline image/png part.
+  Assert:
+    - Content is uploaded only when a bucket is set and content_parts is
+      persisted, and each upload is a GCS_REFERENCE part in content_parts.
+    - Otherwise the large text stays inline, truncated, in content.
+    - Persisted image parts keep their image/png mime_type.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name=gcs_bucket_name,
+      log_multi_modal_content=log_multi_modal_content,
+      max_content_length=500,
+  )
+  offloaded = gcs_bucket_name is not None and log_multi_modal_content
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  def summary(char):
+    """Returns the content summary of a large text part made of ``char``."""
+    return "" if offloaded else char * 500 + "...[TRUNCATED]"
+
+  def describe(parts):
+    """Returns the (mime_type, storage_mode, has_uri) of each part."""
+    return [
+        (part["mime_type"], part["storage_mode"], part["uri"] is not None)
+        for part in parts
+    ]
+
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  upload = mock_bucket.blob.return_value.upload_from_string
+  assert upload.call_count == (5 if offloaded else 0)
+  assert user_row["is_truncated"] is (not offloaded)
+  assert request_row["is_truncated"] is (not offloaded)
+  assert json.loads(user_row["content"]) == {"text_summary": summary("U")}
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": summary("P")}],
+      "system_prompt": summary("S"),
+  }
+  if log_multi_modal_content:
+    storage_mode = "GCS_REFERENCE" if offloaded else "INLINE"
+    text_part = ("text/plain", storage_mode, offloaded)
+    image_part = ("image/png", storage_mode, offloaded)
+    assert describe(user_row["content_parts"]) == [text_part, image_part]
+    assert describe(request_row["content_parts"]) == [
+        text_part,
+        image_part,
+        text_part,
+    ]
+  else:
+    assert user_row["content_parts"] == []
+    assert request_row["content_parts"] == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_flip_log_multi_modal_false_skips_offload_per_row(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Rows logged after log_multi_modal_content is turned off stay inline.
+
+  Setup built the offloader while log_multi_modal_content was True. The flag
+  is read again for each row, so a row logged after it is set to False keeps
+  its large text inline and writes content_parts as [].
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=True,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is not None
+    plugin.config.log_multi_modal_content = False
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  mock_blob = (
+      mock_storage_client.return_value.bucket.return_value.blob.return_value
+  )
+  mock_blob.upload_from_string.assert_not_called()
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert user_row["content_parts"] == []
+  assert request_row["content_parts"] == []
+  assert json.loads(user_row["content"]) == {
+      "text_summary": "U" * 500 + "...[TRUNCATED]"
+  }
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
+
+
+@pytest.mark.asyncio
+async def test_mid_parse_flip_log_multi_modal_false_keeps_row_consistent(
+    mock_write_client,
+    callback_context,
+    invocation_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Turning off log_multi_modal_content mid-parse never orphans an upload.
+
+  Setup: log_multi_modal_content=True with a GCS bucket; the mocked GCS
+    upload turns log_multi_modal_content off.
+  Act: log a user message, then an LLM request, each with a text part over
+    32 KiB and an inline image/png part; the first upload turns the flag off
+    while the user message row is still being parsed.
+  Assert:
+    - The user message row writes a GCS_REFERENCE part in content_parts for
+      each object it uploaded, so none of its uploads loses its reference.
+    - The LLM request row uploads nothing, keeps its large text inline,
+      truncated, in content, and writes content_parts as [].
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      log_multi_modal_content=True,
+      max_content_length=500,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is not None
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+
+    def turn_off_multi_modal_logging(*args, **kwargs):
+      """Stands in for the GCS upload and turns log_multi_modal_content off."""
+      del args, kwargs
+      plugin.config.log_multi_modal_content = False
+
+    upload = mock_bucket.blob.return_value.upload_from_string
+    upload.side_effect = turn_off_multi_modal_logging
+    await _log_large_user_message_and_llm_request(
+        plugin, invocation_context, callback_context
+    )
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+
+  uploaded_uris = [
+      f"gs://test-bucket/{blob_call.args[0]}"
+      for blob_call in mock_bucket.blob.call_args_list
+  ]
+  rows_by_type = {row["event_type"]: row for row in rows}
+  user_row = rows_by_type["USER_MESSAGE_RECEIVED"]
+  request_row = rows_by_type["LLM_REQUEST"]
+  assert upload.call_count == 2
+  assert [
+      (part["mime_type"], part["storage_mode"], part["uri"])
+      for part in user_row["content_parts"]
+  ] == [
+      ("text/plain", "GCS_REFERENCE", uploaded_uris[0]),
+      ("image/png", "GCS_REFERENCE", uploaded_uris[1]),
+  ]
+  assert user_row["is_truncated"] is False
+  assert json.loads(user_row["content"]) == {"text_summary": ""}
+  assert request_row["content_parts"] == []
+  assert request_row["is_truncated"] is True
+  assert json.loads(request_row["content"]) == {
+      "prompt": [{"role": "user", "content": "P" * 500 + "...[TRUNCATED]"}],
+      "system_prompt": "S" * 500 + "...[TRUNCATED]",
+  }
 
 
 @pytest.mark.asyncio
@@ -23359,6 +25093,110 @@ async def test_both_payload_columns_denied_skips_parse_and_offload(
     mock_blob.upload_from_string.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_content_denied_and_log_multi_modal_false_skips_parse_and_offload(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Content is not parsed when no payload column keeps the parser output.
+
+  content is projected out and log_multi_modal_content=False writes
+  content_parts as [], so parsing and GCS upload work would be discarded.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content"],
+      log_multi_modal_content=False,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_blob = (
+        mock_storage_client.return_value.bucket.return_value.blob.return_value
+    )
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * (32 * 1024 + 1))])
+        ],
+    )
+    with mock.patch.object(
+        plugin.parser, "parse", wraps=plugin.parser.parse
+    ) as parse_spy:
+      await plugin.before_model_callback(
+          callback_context=callback_context, llm_request=llm_request
+      )
+      await plugin.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+  parse_spy.assert_not_called()
+  mock_blob.upload_from_string.assert_not_called()
+  assert row["event_type"] == "LLM_REQUEST"
+  assert row["content"] is None
+  assert row["content_parts"] == []
+
+
+@pytest.mark.asyncio
+async def test_content_denied_and_log_multi_modal_true_parses_and_offloads(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  """Denying only content still parses and offloads into content_parts.
+
+  content is projected out, but log_multi_modal_content=True keeps
+  content_parts, so the large text is uploaded and the row keeps its GCS
+  reference.
+  """
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content"],
+      log_multi_modal_content=True,
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    mock_bucket = mock_storage_client.return_value.bucket.return_value
+    mock_bucket.name = "test-bucket"
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * (32 * 1024 + 1))])
+        ],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await plugin.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+  mock_bucket.blob.return_value.upload_from_string.assert_called_once()
+  assert row["event_type"] == "LLM_REQUEST"
+  assert row["content"] is None
+  assert len(row["content_parts"]) == 1
+  assert row["content_parts"][0]["storage_mode"] == "GCS_REFERENCE"
+  assert row["content_parts"][0]["uri"].startswith("gs://test-bucket/")
+
+
 class TestSafetyLifecycleHardening:
   """Safety and lifecycle invariants."""
 
@@ -23798,7 +25636,12 @@ class TestSafetyLifecycleHardening:
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID
     )
     legacy_state = plugin.__getstate__()
-    for key in ("_local_drop_counts", "_setup_failures", "_setup_retry_at"):
+    for key in (
+        "_local_drop_counts",
+        "_setup_failures",
+        "_setup_retry_at",
+        "_offload_disabled_warned",
+    ):
       legacy_state.pop(key, None)
     restored = (
         bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
@@ -23806,6 +25649,7 @@ class TestSafetyLifecycleHardening:
         )
     )
     restored.__setstate__(legacy_state)
+    assert restored._offload_disabled_warned is False
     assert restored.get_drop_stats() == {}
     assert restored._setup_failures == 0
     assert restored._setup_retry_at == 0.0

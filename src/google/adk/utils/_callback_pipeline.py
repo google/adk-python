@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Sequence
 from contextlib import nullcontext
 import inspect
+import logging
 from typing import Any
 from typing import cast
 from typing import TypeVar
@@ -26,6 +28,8 @@ from typing import TypeVar
 from ..agents._callback_metadata import _callback_scope
 from ..agents._callback_metadata import _CallbackContext
 from ..agents._callback_metadata import CallbackType
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _TCallback = TypeVar('_TCallback', bound=Callable[..., object])
 _TResult = TypeVar('_TResult')
@@ -79,6 +83,46 @@ def _invoke_callback(
       return _callback(*pos_args)
 
   return _callback(*args, **kwargs)
+
+
+async def _invoke_cleanup_callback(
+    _callback: Callable[..., object] | None,
+    /,
+    *,
+    owner_kind: str,
+    owner_name: str,
+    callback_name: str,
+    subject: str,
+    subject_name: str,
+    **kwargs: Any,
+) -> None:
+  """Invokes one error callback during cancellation cleanup."""
+  if _callback is None:
+    return
+  try:
+    result = _invoke_callback(_callback, **kwargs)
+    if inspect.isawaitable(result):
+      await result
+  except asyncio.CancelledError:
+    logger.warning(
+        '%s %r %s was cancelled while %s %r was being cancelled; continuing'
+        ' remaining cleanup callbacks.',
+        owner_kind,
+        owner_name,
+        callback_name,
+        subject,
+        subject_name,
+    )
+  except Exception:  # pylint: disable=broad-exception-caught
+    logger.exception(
+        '%s %r %s raised while %s %r was being cancelled; the cancellation'
+        ' propagates regardless.',
+        owner_kind,
+        owner_name,
+        callback_name,
+        subject,
+        subject_name,
+    )
 
 
 # Not ParamSpec: PEP 612 forbids the keyword-only callback_type after

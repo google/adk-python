@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import Annotated
-from typing import Optional
 
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
@@ -49,7 +48,7 @@ from .workflow_testing_utils import get_auth_request_events
 class _PipelineSchema(BaseModel):
   counter: int
   name: str
-  optional_field: Optional[str] = None
+  optional_field: str | None = None
 
 
 class _NodeSchema(BaseModel):

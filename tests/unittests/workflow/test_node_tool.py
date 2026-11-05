@@ -64,6 +64,100 @@ def test_node_tool_requires_input_schema():
     NodeTool(node=wf)
 
 
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize('questions', [1, 2])
+async def test_single_turn_delegate_waits_for_workflow_input(
+    resumable, questions
+):
+  """Delegation waits for every workflow answer, then returns its result."""
+
+  def ask_first(node_input):
+    yield RequestInput(interrupt_id='first', message='First answer?')
+
+  def ask_second(node_input):
+    yield RequestInput(interrupt_id='second', message='Second answer?')
+
+  def after(node_input):
+    yield Event(output='workflow done', state={'answer': node_input})
+
+  steps = [START, ask_first]
+  if questions == 2:
+    steps.append(ask_second)
+  steps.append(after)
+  workflow = Workflow(
+      name='classify', input_schema=DummyRequest, edges=[tuple(steps)]
+  )
+  helper_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='classify', args={'request': 'item'}
+          ),
+          'helper done',
+      ]
+  )
+  helper = LlmAgent(
+      name='helper', mode='single_turn', model=helper_model, tools=[workflow]
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='helper', args={'request': 'item'}
+          ),
+          'root done',
+      ]
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name='delegation_test',
+          root_agent=LlmAgent(
+              name='root', model=root_model, sub_agents=[helper]
+          ),
+          resumability_config=ResumabilityConfig(is_resumable=True)
+          if resumable
+          else None,
+      )
+  )
+  events = await runner.run_async('start')
+  for index in range(questions):
+    assert len(root_model.requests) == 1
+    assert len(helper_model.requests) == 1
+    assert not runner.session.state.get('answer')
+    assert not any(
+        response.name == 'helper'
+        for event in events
+        for response in event.get_function_responses()
+    )
+    question = workflow_testing_utils.find_function_call_event(
+        events, REQUEST_INPUT_FUNCTION_CALL_NAME
+    )
+    assert question is not None
+    [interrupt_id] = extract_event_interrupt_ids(question)
+    events = await runner.run_async(
+        testing_utils.UserContent(
+            create_request_input_response(
+                interrupt_id, {'text': f'answer {index}'}
+            )
+        )
+    )
+  assert runner.session.state['answer'] == {'text': f'answer {questions - 1}'}
+  assert len(helper_model.requests) == 2
+  assert len(root_model.requests) == 2
+  responses = [
+      response
+      for event in events
+      for response in event.get_function_responses()
+      if response.name == 'helper'
+  ]
+  assert len(responses) == 1
+  assert responses[0].response == {'result': 'helper done'}
+  assert any(
+      event.author == 'root'
+      and event.content
+      and any(part.text == 'root done' for part in event.content.parts or [])
+      for event in events
+  )
+
+
 @pytest.mark.asyncio
 async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
   """Workflow-as-a-tool suspends on RequestInput and resumes successfully.

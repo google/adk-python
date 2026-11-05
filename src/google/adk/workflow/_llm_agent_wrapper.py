@@ -432,11 +432,8 @@ def _remove_event(events: list[Event], event: Event) -> None:
     events: The events to remove from.
     event: The event to remove. Nothing is removed if no entry equals it.
   """
-  # getattr: some test doubles carry no id.
   for i, candidate in enumerate(events):
-    if candidate is event or (
-        getattr(candidate, 'id', None) == event.id and candidate == event
-    ):
+    if candidate is event or (candidate.id == event.id and candidate == event):
       del events[i]
       return
 
