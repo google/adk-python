@@ -424,5 +424,55 @@
         "reason": "On a call that failed the instrumentor records a zeroed usage point; ADK records no usage at all."
       }
     ]
+  },
+  {
+    "owner_type": "metric",
+    "owner_name": "gen_ai.client.inference.time_per_output_chunk",
+    "affected_tests": "streaming/*",
+    "divergences": [
+      {
+        "path": [],
+        "example_native_instrumentation_value": [
+          {
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gemini",
+              "gen_ai.request.model": "gemini-2.5-flash"
+            },
+            "value": "PRESENT"
+          }
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor this suite pins predates chunk timing. Later releases time chunks too, but under `gen_ai.client.operation.*`, the names semantic-conventions-genai#521 replaced."
+      }
+    ]
+  },
+  {
+    "owner_type": "metric",
+    "owner_name": "gen_ai.client.inference.time_to_first_chunk",
+    "affected_tests": "streaming/*",
+    "divergences": [
+      {
+        "path": [],
+        "example_native_instrumentation_value": [
+          {
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gemini",
+              "gen_ai.request.model": "gemini-2.5-flash"
+            },
+            "value": "PRESENT"
+          }
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor this suite pins predates chunk timing. Later releases time chunks too, but under `gen_ai.client.operation.*`, the names semantic-conventions-genai#521 replaced."
+      }
+    ]
   }
 ]

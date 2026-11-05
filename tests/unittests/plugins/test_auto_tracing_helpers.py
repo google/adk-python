@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import inspect
 from typing import Any
 from typing import Iterator
@@ -283,3 +284,64 @@ def test_build_tracing_wrapper_records_nothing_on_non_recording_span():
 
   assert wrapped(3) == 4
   assert span.attributes == {}
+
+
+@pytest.mark.asyncio
+async def test_async_gen_wrapper_closes_underlying_generator_on_early_break():
+  """Closing an auto-traced async generator early closes the inner stream."""
+  closed = False
+
+  async def source_stream():
+    nonlocal closed
+    try:
+      yield 1
+      yield 2
+    finally:
+      closed = True
+
+  wrapped = auto_tracing_helpers.build_tracing_wrapper(
+      source_stream,
+      _FakeTracer(_FakeSpan()),
+      _CAPS,
+  )
+  stream = wrapped()
+  try:
+    async for item in stream:
+      if item == 1:
+        break
+  finally:
+    await stream.aclose()
+
+  assert closed
+
+
+def test_gen_wrapper_closes_underlying_generator_on_early_break():
+  """Closing an auto-traced sync generator early closes the inner generator."""
+  closed = False
+  inner_refs: list[Any] = []
+
+  def source_stream():
+    nonlocal closed
+    # Hold a live reference to the inner generator so CPython refcounting alone
+    # cannot close it on unwind; only an explicit close() from the wrapper will.
+    inner_refs.extend(gc.get_referrers(inspect.currentframe()))
+    try:
+      yield 1
+      yield 2
+    finally:
+      closed = True
+
+  wrapped = auto_tracing_helpers.build_tracing_wrapper(
+      source_stream,
+      _FakeTracer(_FakeSpan()),
+      _CAPS,
+  )
+  stream = wrapped()
+  try:
+    for item in stream:
+      if item == 1:
+        break
+  finally:
+    stream.close()
+
+  assert closed

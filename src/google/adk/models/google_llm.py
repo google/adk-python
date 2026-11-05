@@ -26,9 +26,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import AsyncIterator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
@@ -131,22 +129,22 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
-  client: Optional[genai.Client] = Field(default=None, exclude=True)
+  client: genai.Client | None = Field(default=None, exclude=True)
   """An optional pre-configured google-genai Client.
 
   When provided, this client will be used for all API calls instead of
   constructing a new one from environment variables or other attributes.
   """
 
-  client_kwargs: Optional[dict[str, Any]] = Field(
+  client_kwargs: dict[str, Any] | None = Field(
       default=None, exclude=True, repr=False
   )
   """Extra arguments to pass to the google.genai.Client constructor."""
 
-  base_url: Optional[str] = None
+  base_url: str | None = None
   """The base URL for the AI platform service endpoint."""
 
-  api_version: Optional[str] = None
+  api_version: str | None = None
   """The API version to use for the AI platform service endpoint.
 
   For the Vertex AI backend the google-genai SDK defaults to ``v1beta1``, which
@@ -167,7 +165,7 @@ class Gemini(BaseLlm):
   ```
   """
 
-  speech_config: Optional[types.SpeechConfig] = None
+  speech_config: types.SpeechConfig | None = None
 
   use_interactions_api: bool = False
   """Whether to use the interactions API for model invocation.
@@ -187,7 +185,7 @@ class Gemini(BaseLlm):
   ```
   """
 
-  retry_options: Optional[types.HttpRetryOptions] = None
+  retry_options: types.HttpRetryOptions | None = None
   """Allow Gemini to retry failed responses.
 
   Sample:
@@ -485,7 +483,7 @@ class Gemini(BaseLlm):
   def _tracking_headers(self) -> dict[str, str]:
     return get_tracking_headers()
 
-  def _configured_api_version(self) -> Optional[str]:
+  def _configured_api_version(self) -> str | None:
     """Returns the explicitly configured API version, if any.
 
     Resolution order:
@@ -501,7 +499,7 @@ class Gemini(BaseLlm):
     return os.environ.get(_API_VERSION_ENV_VARIABLE_NAME) or None
 
   @cached_property
-  def _base_url_and_api_version(self) -> tuple[Optional[str], Optional[str]]:
+  def _base_url_and_api_version(self) -> tuple[str | None, str | None]:
     return _normalize_base_url_and_api_version(self.base_url)
 
   @cached_property
@@ -547,7 +545,7 @@ class Gemini(BaseLlm):
 
   def _with_adk_http_options(
       self,
-      http_options: Optional[types.HttpOptionsOrDict],
+      http_options: types.HttpOptionsOrDict | None,
       adk_http_options: types.HttpOptions,
   ) -> types.HttpOptions:
     """Returns a copy of http_options with ADK's options merged in.
@@ -767,7 +765,7 @@ def _build_function_declaration_log(
 def _build_request_log(req: LlmRequest) -> str:
   # Find which tool contains function_declarations
   function_decls: list[types.FunctionDeclaration] = []
-  function_decl_tool_index: Optional[int] = None
+  function_decl_tool_index: int | None = None
 
   if req.config.tools:
     for idx, tool in enumerate(req.config.tools):
@@ -892,7 +890,7 @@ Raw response:
 
 
 def _remove_display_name_if_present(
-    data_obj: Union[types.Blob, types.FileData, None],
+    data_obj: types.Blob | types.FileData | None,
 ) -> None:
   """Sets display_name to None for the Gemini API (non-Vertex) backend.
 
@@ -904,8 +902,8 @@ def _remove_display_name_if_present(
 
 
 def _normalize_base_url_and_api_version(
-    base_url: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
+    base_url: str | None,
+) -> tuple[str | None, str | None]:
   """Extracts a Google API version suffix from a base URL when present.
 
   Returns:

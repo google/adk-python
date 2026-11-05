@@ -16,10 +16,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
+import contextlib
 import logging
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+from typing import cast
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
@@ -32,6 +37,19 @@ if TYPE_CHECKING:
   from daytona import AsyncSandbox
   from daytona import ExecuteResponse
   from daytona import Image
+
+
+class _ClosableBytesStream(Protocol):
+
+  def __aiter__(self) -> AsyncIterator[bytes]:
+    ...
+
+  async def __anext__(self) -> bytes:
+    ...
+
+  async def aclose(self) -> object:
+    ...
+
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -149,6 +167,42 @@ class DaytonaEnvironment(BaseEnvironment):
       if isinstance(e, DaytonaNotFoundError):
         raise FileNotFoundError(resolved) from e
       raise e
+
+  @override
+  async def read_file_stream(
+      self, path: str | os.PathLike[str]
+  ) -> AsyncGenerator[bytes, None]:
+    from daytona import DaytonaError
+    from daytona import DaytonaNotFoundError
+
+    sandbox = await self._ensure_sandbox()
+    resolved = self._resolve_path(path)
+    received = False
+    try:
+      # SDK stub types the stream as AsyncIterator, omitting aclose().
+      chunks = cast(
+          _ClosableBytesStream,
+          await sandbox.fs.download_file_stream(resolved),
+      )
+      async with contextlib.aclosing(chunks):
+        async for chunk in chunks:
+          received = True
+          yield bytes(chunk)
+      return
+    except DaytonaNotFoundError as e:
+      raise FileNotFoundError(resolved) from e
+    except DaytonaError as e:
+      # download_file_stream raises this for an empty file, where read_file
+      # returns b''; only then fall back to read_file so both agree.
+      if (
+          received
+          or e.status_code is not None
+          or not str(e).endswith(f"No file data received for: {resolved}")
+      ):
+        raise
+    content = await self.read_file(path)
+    if content:
+      yield content
 
   @override
   async def write_file(

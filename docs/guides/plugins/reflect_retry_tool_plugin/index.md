@@ -56,9 +56,11 @@ If `get_stock_price` raises (for example, on a ticker symbol it does not know), 
 The plugin observes tool execution through two hooks exposed by `BasePlugin`.
 
 1. **Exception handling (`on_tool_error_callback`)**: When a tool raises, this hook forwards the exception to the central, lock-guarded `_handle_tool_error` routine.
-2. **Result inspection (`after_tool_callback`)**: After a tool returns, the plugin first skips its own reflection responses (identified by the `REFLECT_AND_RETRY_RESPONSE_TYPE` marker) to avoid retrying its own output. It then calls `extract_error_from_result` to detect soft errors, and on a clean success resets that tool's counter.
+2. **Result inspection (`after_tool_callback`)**: After a tool returns, the plugin first skips its own reflection responses (identified by the `REFLECT_AND_RETRY_RESPONSE_TYPE` marker) and confirmation or credential pause placeholders. It then calls `extract_error_from_result` to detect soft errors, and on a clean success resets that tool's counter.
 3. **Track and retry**: On a caught failure it increments a per-tool counter via `ScopedFailureTracker`. While `current_retries <= max_retries`, it returns a `ToolFailureResponse` — a structured reflection message naming the tool, the error details, the arguments used, and the current attempt number — telling the model not to repeat the same call.
 4. **Exhaustion**: Once the count exceeds `max_retries`, it either re-raises the original exception or returns a "give up on this tool" `ToolFailureResponse`, depending on `throw_exception_if_retry_exceeded`.
+
+Under `TrackingScope.INVOCATION`, the plugin also drops an invocation's counters when a run ends, is aborted, or fails with an unhandled error, through `after_run_callback` and `on_run_error_callback`. A run that pauses on an unanswered interrupt (such as a long-running, confirmation, or credential call) keeps its counters, so the run that answers it, which reuses the invocation id, continues the same retry budget. Counters under a scope key that does not contain the invocation id, such as one from a per-session or per-user `_get_scope_key` override, are kept. `GLOBAL` counters persist across runs.
 
 For counting, the plugin depends on `_reflect_retry_utils`: `ScopedFailureTracker`, `TrackingScope` (invocation vs. global lifecycle), and `resolve_scope_key`. The scope key is derived from `tool_context.invocation_id` through the `_get_scope_key` method.
 
@@ -72,10 +74,15 @@ The following options are introduced by `ReflectAndRetryToolPlugin` (options inh
 | `max_retries` | `int` | `3` | Maximum consecutive failures before giving up. Must be non-negative; `0` disables retries. |
 | `throw_exception_if_retry_exceeded` | `bool` | `True` | If `True`, re-raises the final exception once the limit is exceeded; if `False`, returns reflection guidance instead. |
 | `tracking_scope` | `TrackingScope` | `TrackingScope.INVOCATION` | Failure-counter lifecycle: per-invocation isolation or global sharing. |
+| `reflection_guidance` | `str` or callable | `None` | Replaces the default guidance on retry attempts. A callable, sync or async, receives a `ToolReflectionContext` and returns the text. |
+| `retry_exceeded_guidance` | `str` or callable | `None` | Replaces the default guidance once the limit is exceeded and the plugin does not re-raise. Same forms as `reflection_guidance`. |
 
 - **`max_retries`** is checked as `current_retries <= max_retries`, so `3` allows attempts 1–3 and the 4th consecutive failure triggers exhaustion. A negative value raises `ValueError` at construction, and `0` gives up on the very first failure without retrying.
 - **`throw_exception_if_retry_exceeded`** selects the failure mode once retries are spent: re-raise for an outer supervisor to catch, or return a final `ToolFailureResponse` that instructs the model to abandon the tool. Non-`Exception` errors are wrapped in `Exception` before being raised.
 - **`tracking_scope`** defaults to `INVOCATION`; `GLOBAL` shares one counter across invocations.
+- **`reflection_guidance`** and **`retry_exceeded_guidance`** are keyword-only. Each takes a string or a sync or async callable that receives a `ToolReflectionContext` (import it from `google.adk.plugins.reflect_retry_tool_plugin`). `None` keeps the built-in text; any other string, including `""`, replaces it. A value that is neither a string nor a callable raises `TypeError` at construction.
+- **`retry_exceeded_guidance`** is never called when `throw_exception_if_retry_exceeded=True`, because the plugin re-raises instead of returning guidance.
+- **Provider errors end the run**: a callable that raises, or returns something other than a string (which raises `TypeError`), propagates out of the plugin callback, and `PluginManager` re-raises that as a `RuntimeError`.
 
 ## Advanced applications
 
@@ -101,6 +108,36 @@ retry_plugin = CustomRetryPlugin(max_retries=5)
 ```
 
 When the override returns something other than `None`, the plugin processes it like a raised exception.
+
+### Custom guidance
+
+Pass a string or a callable to replace the default guidance text. A callable can also extend the built-in text, which it receives as `default_guidance`:
+
+```python
+from google.adk.plugins import ReflectAndRetryToolPlugin
+from google.adk.plugins.reflect_retry_tool_plugin import ToolReflectionContext
+
+
+def retry_guidance(reflection_context: ToolReflectionContext) -> str:
+  return (
+      f"`{reflection_context.tool_name}` failed with"
+      f" {reflection_context.error_details}. Attempt"
+      f" {reflection_context.retry_count} of {reflection_context.max_retries}:"
+      " check the arguments and try again."
+  )
+
+
+def exceeded_guidance(reflection_context: ToolReflectionContext) -> str:
+  return reflection_context.default_guidance + "\nTell the user what failed."
+
+
+retry_plugin = ReflectAndRetryToolPlugin(
+    max_retries=3,
+    throw_exception_if_retry_exceeded=False,
+    reflection_guidance=retry_guidance,
+    retry_exceeded_guidance=exceeded_guidance,
+)
+```
 
 ### Graceful degradation instead of raising
 

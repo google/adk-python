@@ -380,9 +380,16 @@ class TestAuthLlmRequestProcessor:
         auth_config=mock_auth_config
     )
 
-    # Verify parse_and_store_auth_response was called
-    mock_auth_handler.parse_and_store_auth_response.assert_called_once_with(
-        state=mock_invocation_context.session.state
+    # Verify parse_and_store_auth_response stores into the session state
+    mock_auth_handler.parse_and_store_auth_response.assert_called_once()
+    stored_state = (
+        mock_auth_handler.parse_and_store_auth_response.call_args.kwargs[
+            'state'
+        ]
+    )
+    stored_state['credential_key'] = 'credential'
+    assert (
+        mock_invocation_context.session.state['credential_key'] == 'credential'
     )
 
   @pytest.mark.asyncio

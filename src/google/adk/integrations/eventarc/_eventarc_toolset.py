@@ -122,5 +122,5 @@ class EventarcToolset(BaseToolset):
 
   @override
   async def close(self) -> None:
-    """Clean up resources used by the toolset."""
+    """Closes the running event loop's cached publisher clients."""
     await eventarc_client.cleanup_clients()

@@ -491,6 +491,17 @@ is set each case runs once. `AgentEvaluator` and `adk web` do not read it yet;
 """,
   )
 
+  parallelism: int | None = Field(
+      default=None,
+      ge=1,
+      description=(
+          "Maximum number of eval cases to run in parallel during inference and"
+          " metric evaluation. If unset, `LocalEvalService` uses its built-in"
+          " default (4), unless overridden by `adk eval --parallelism` or"
+          " `AgentEvaluator`'s `parallelism` argument."
+      ),
+  )
+
   @model_validator(mode="before")
   @classmethod
   def _inject_default_user_simulator_type(cls, values: Any) -> Any:

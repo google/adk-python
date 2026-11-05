@@ -14,16 +14,25 @@
 
 """Unit tests for _model_response_finalizer module."""
 
+import asyncio
+from typing import AsyncGenerator
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk.agents._callback_metadata import CallbackType
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.events.event import TOOL_DISPLAY_NAMES_METADATA_KEY
 from google.adk.flows.llm_flows.core import _finalizer as _model_response_finalizer
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 import pytest
 
@@ -59,8 +68,6 @@ def test_finalize_model_response_event_merges_llm_response_fields():
 
 
 def test_finalize_model_response_event_populates_function_call_ids():
-  from google.adk.tools.function_tool import FunctionTool
-
   tool = FunctionTool(func=dummy_tool)
   fc = types.FunctionCall(name="dummy_tool", args={"x": 1})
   content = types.Content(parts=[types.Part(function_call=fc)])
@@ -79,6 +86,168 @@ def test_finalize_model_response_event_populates_function_call_ids():
   assert function_calls[0].name == "dummy_tool"
   # Client function call ID was populated
   assert function_calls[0].id is not None
+  assert finalized.custom_metadata is None
+
+
+class _TitledTool(BaseTool):
+  """Minimal BaseTool test double with an optional display title."""
+
+  def __init__(self, *, name: str, title: str | None = None):
+    super().__init__(name=name, description=f"Test tool {name}", title=title)
+
+
+def test_finalize_model_response_event_populates_tool_display_names():
+  """Called titled tools populate adk:tool_display_names metadata."""
+  prefixed_tool = _TitledTool(
+      name="kb_Internal-KB-Search",
+      title="  @Internal-KB Search  ",
+  )
+  plain_tool = FunctionTool(func=dummy_tool)
+
+  content = types.Content(
+      parts=[
+          types.Part.from_function_call(
+              name="kb_Internal-KB-Search", args={"q": "policy"}
+          ),
+          types.Part.from_function_call(name="dummy_tool", args={}),
+      ]
+  )
+  llm_response = LlmResponse(content=content)
+  llm_request = LlmRequest(
+      tools_dict={
+          "kb_Internal-KB-Search": prefixed_tool,
+          "dummy_tool": plain_tool,
+      }
+  )
+  event = Event(id="e-3", invocation_id="inv-1", author="model_agent")
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert TOOL_DISPLAY_NAMES_METADATA_KEY == "adk:tool_display_names"
+  assert finalized.custom_metadata == {
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "kb_Internal-KB-Search": "@Internal-KB Search",
+      }
+  }
+
+
+def test_finalize_merges_tool_display_names_without_mutating_inputs():
+  """Real tool titles override response entries without mutating input dicts."""
+  titled_tool = _TitledTool(
+      name="Internal-KB-Search",
+      title="@Internal-KB Search",
+  )
+  base_metadata = {"run_label": "prod"}
+  response_metadata = {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "prepopulated_tool": "Prepopulated Title",
+          "Internal-KB-Search": "Spoofed Response Title",
+      },
+  }
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part.from_function_call(
+                  name="Internal-KB-Search", args={"q": "travel policy"}
+              )
+          ]
+      ),
+      custom_metadata=response_metadata,
+  )
+  llm_request = LlmRequest(tools_dict={"Internal-KB-Search": titled_tool})
+  event = Event(
+      id="e-4",
+      invocation_id="inv-1",
+      author="model_agent",
+      custom_metadata=base_metadata,
+  )
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert finalized.custom_metadata == {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "prepopulated_tool": "Prepopulated Title",
+          "Internal-KB-Search": "@Internal-KB Search",
+      },
+  }
+  assert base_metadata == {"run_label": "prod"}
+  assert response_metadata == {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "prepopulated_tool": "Prepopulated Title",
+          "Internal-KB-Search": "Spoofed Response Title",
+      },
+  }
+
+
+def test_finalize_ignores_mocked_tools_without_str_title():
+  """Mocked BaseTool instances do not inject mock titles."""
+  mocked_tool = mock.MagicMock(spec=BaseTool)
+  mocked_tool.is_long_running = False
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part.from_function_call(name="mocked_tool", args={}),
+          ]
+      )
+  )
+  llm_request = LlmRequest(tools_dict={"mocked_tool": mocked_tool})
+  event = Event(id="e-5", invocation_id="inv-1", author="model_agent")
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert finalized.custom_metadata is None
+  assert finalized.model_dump(mode="json")["custom_metadata"] is None
+
+
+def test_finalize_overwrites_non_mapping_existing_tool_display_names():
+  """Non-mapping existing adk:tool_display_names entries are replaced safely."""
+  titled_tool = _TitledTool(
+      name="Internal-KB-Search",
+      title="@Internal-KB Search",
+  )
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part.from_function_call(
+                  name="Internal-KB-Search", args={"q": "policy"}
+              )
+          ]
+      ),
+      custom_metadata={
+          "trace_id": "abc",
+          TOOL_DISPLAY_NAMES_METADATA_KEY: "invalid-non-dict",
+      },
+  )
+  llm_request = LlmRequest(tools_dict={"Internal-KB-Search": titled_tool})
+  event = Event(id="e-6", invocation_id="inv-1", author="model_agent")
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert finalized.custom_metadata == {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "Internal-KB-Search": "@Internal-KB Search",
+      },
+  }
 
 
 # --- Tests for handle_before_model_callback ---
@@ -459,6 +628,305 @@ async def test_run_and_handle_error_reraises_when_unhandled():
         failing_generator(), ctx, llm_request, event
     ):
       pass
+
+
+class _ModelErrorHookRecorder(BasePlugin):
+  """Records model calls that started and the errors their hooks received."""
+
+  def __init__(
+      self,
+      *,
+      name: str = "model_error_hook_recorder",
+      error_response: LlmResponse | None = None,
+      error_to_raise: BaseException | None = None,
+      state_on_error: dict[str, object] | None = None,
+  ) -> None:
+    super().__init__(name=name)
+    self.started: list[str] = []
+    self.errors: list[tuple[str, type[BaseException]]] = []
+    self.error_messages: list[str] = []
+    self.callback_types: list[CallbackType | None] = []
+    self._error_response = error_response
+    self._error_to_raise = error_to_raise
+    self._state_on_error = state_on_error
+
+  async def before_model_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+  ) -> LlmResponse | None:
+    self.started.append(callback_context.agent_name)
+    return None
+
+  async def on_model_error_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+      error: Exception,
+  ) -> LlmResponse | None:
+    del llm_request
+    await asyncio.sleep(0)
+    self.errors.append((callback_context.agent_name, type(error)))
+    self.error_messages.append(str(error))
+    info = callback_context.callback_info
+    self.callback_types.append(info.type if info is not None else None)
+    if self._state_on_error is not None:
+      for key, value in self._state_on_error.items():
+        callback_context.state[key] = value
+    if self._error_to_raise is not None:
+      raise self._error_to_raise
+    return self._error_response
+
+
+class _BlockingLlm(BaseLlm):
+  """Test model that signals once entered and blocks until cancelled."""
+
+  started: asyncio.Event
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    del llm_request, stream
+    self.started.set()
+    await asyncio.Event().wait()
+    for response in ():
+      yield response
+
+
+async def _cancel_while_model_runs(
+    plugin: _ModelErrorHookRecorder,
+) -> list[Event]:
+  """Runs an agent whose model never returns and cancels the run mid-call."""
+  model_started = asyncio.Event()
+  model = _BlockingLlm(model="blocking-test-model", started=model_started)
+  agent = Agent(name="test_agent", model=model, tools=[])
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+  events: list[Event] = []
+
+  async def _consume() -> None:
+    async with Aclosing(
+        runner.runner.run_async(
+            user_id=runner.session.user_id,
+            session_id=runner.session.id,
+            new_message=testing_utils.get_user_content("hi"),
+        )
+    ) as agen:
+      async for event in agen:
+        events.append(event)
+
+  run = asyncio.create_task(_consume())
+  await model_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+  return events
+
+
+@pytest.mark.asyncio
+async def test_run_cancelled_mid_model_call_runs_on_model_error() -> None:
+  """Cancelling a run mid-model-call reaches error hooks and stays cancelled."""
+  recovery = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text="recovered")])
+  )
+  plugin = _ModelErrorHookRecorder(error_response=recovery)
+
+  events = await _cancel_while_model_runs(plugin)
+
+  assert plugin.started == ["test_agent"]
+  assert plugin.errors == [("test_agent", asyncio.CancelledError)]
+  assert plugin.callback_types == [CallbackType.ON_MODEL_ERROR]
+  assert not events
+
+
+@pytest.mark.asyncio
+async def test_cancelled_model_call_propagates_when_error_hook_raises() -> None:
+  """An error hook that raises must not replace the model cancellation."""
+  plugin = _ModelErrorHookRecorder(
+      error_to_raise=RuntimeError("cleanup failed")
+  )
+
+  await _cancel_while_model_runs(plugin)
+
+  assert plugin.errors == [("test_agent", asyncio.CancelledError)]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_model_call_runs_all_plugins_and_agent_callbacks(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """All plugins and agent callbacks run on cancellation."""
+  recovery = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text="recovered")])
+  )
+  plugin_a = _ModelErrorHookRecorder(name="plugin_a", error_response=recovery)
+  plugin_b = _ModelErrorHookRecorder(
+      name="plugin_b", error_to_raise=RuntimeError("plugin b failed")
+  )
+  plugin_c = _ModelErrorHookRecorder(
+      name="plugin_c", error_to_raise=asyncio.CancelledError()
+  )
+  plugin_d = _ModelErrorHookRecorder(name="plugin_d")
+
+  agent_called: list[tuple[str, CallbackType | None, type[BaseException]]] = []
+
+  async def on_agent_model_error_cancelling(
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+      error: Exception,
+  ) -> LlmResponse | None:
+    del llm_request
+    info = callback_context.callback_info
+    agent_called.append((
+        "first",
+        info.type if info is not None else None,
+        type(error),
+    ))
+    raise asyncio.CancelledError()
+
+  def on_agent_model_error(
+      ctx: CallbackContext,
+      req: LlmRequest,
+      err: Exception,
+  ) -> LlmResponse | None:
+    del req
+    info = ctx.callback_info
+    agent_called.append((
+        "second",
+        info.type if info is not None else None,
+        type(err),
+    ))
+    return recovery
+
+  model_started = asyncio.Event()
+  model = _BlockingLlm(model="blocking-test-model", started=model_started)
+  agent = Agent(
+      name="test_agent",
+      model=model,
+      tools=[],
+      on_model_error_callback=[
+          on_agent_model_error_cancelling,
+          on_agent_model_error,
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      agent, plugins=[plugin_a, plugin_b, plugin_c, plugin_d]
+  )
+
+  async def _consume() -> None:
+    async with Aclosing(
+        runner.runner.run_async(
+            user_id=runner.session.user_id,
+            session_id=runner.session.id,
+            new_message=testing_utils.get_user_content("hi"),
+        )
+    ) as agen:
+      async for _ in agen:
+        pass
+
+  run = asyncio.create_task(_consume())
+  await model_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+
+  assert plugin_a.errors == [("test_agent", asyncio.CancelledError)]
+  assert plugin_b.errors == [("test_agent", asyncio.CancelledError)]
+  assert plugin_c.errors == [("test_agent", asyncio.CancelledError)]
+  assert plugin_d.errors == [("test_agent", asyncio.CancelledError)]
+  assert agent_called == [
+      ("first", CallbackType.ON_MODEL_ERROR, asyncio.CancelledError),
+      ("second", CallbackType.ON_MODEL_ERROR, asyncio.CancelledError),
+  ]
+  assert (
+      "Plugin 'plugin_b' on_model_error callback raised while model call for"
+      " agent 'test_agent' was being cancelled"
+      in caplog.text
+  )
+  assert (
+      "Plugin 'plugin_c' on_model_error callback was cancelled while model"
+      " call for agent 'test_agent' was being cancelled"
+      in caplog.text
+  )
+  assert (
+      "Agent 'test_agent' on_model_error callback was cancelled while model"
+      " call for agent 'test_agent' was being cancelled"
+      in caplog.text
+  )
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_close_after_partial_runs_on_model_error() -> None:
+  """Closing the stream after only partial chunks notifies error hooks."""
+  partial_resp = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text="hel")]),
+      partial=True,
+  )
+  final_resp = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text="hello")]),
+      partial=False,
+  )
+
+  async def streaming_generator() -> AsyncGenerator[LlmResponse, None]:
+    yield partial_resp
+    yield final_resp
+
+  plugin = _ModelErrorHookRecorder(state_on_error={"cleaned_up": True})
+  agent = Agent(name="test_agent", tools=[])
+  ctx = await testing_utils.create_invocation_context(
+      agent=agent, plugins=[plugin]
+  )
+  event = Event(invocation_id=ctx.invocation_id, author=agent.name)
+  llm_request = LlmRequest()
+
+  received: list[LlmResponse] = []
+  async with Aclosing(
+      _model_response_finalizer.run_and_handle_error(
+          streaming_generator(), ctx, llm_request, event
+      )
+  ) as agen:
+    async for item in agen:
+      received.append(item)
+      break
+
+  assert received == [partial_resp]
+  assert plugin.errors == [("test_agent", asyncio.CancelledError)]
+  assert plugin.error_messages == [
+      "Model response stream closed before completion."
+  ]
+  assert event.actions.state_delta == {"cleaned_up": True}
+
+
+@pytest.mark.asyncio
+async def test_generator_close_after_non_partial_skips_on_model_error() -> None:
+  """Closing after a completed response does not fire on_model_error."""
+  completed_resp = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text="done")]),
+      partial=False,
+  )
+
+  async def generator_with_trailing_work() -> AsyncGenerator[LlmResponse, None]:
+    yield completed_resp
+    await asyncio.Event().wait()
+
+  plugin = _ModelErrorHookRecorder()
+  agent = Agent(name="test_agent", tools=[])
+  ctx = await testing_utils.create_invocation_context(
+      agent=agent, plugins=[plugin]
+  )
+  event = Event(invocation_id=ctx.invocation_id, author=agent.name)
+  llm_request = LlmRequest()
+
+  async with Aclosing(
+      _model_response_finalizer.run_and_handle_error(
+          generator_with_trailing_work(), ctx, llm_request, event
+      )
+  ) as agen:
+    async for _ in agen:
+      break
+
+  assert not plugin.errors
 
 
 # --- Tests for has_meaningful_content ---

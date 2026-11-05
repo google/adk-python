@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -52,19 +50,19 @@ class EventsCompactionConfig(BaseModel):
       extra="forbid",
   )
 
-  summarizer: Optional[BaseEventsSummarizer] = None
+  summarizer: BaseEventsSummarizer | None = None
   """The event summarizer to use for compaction."""
 
-  compaction_interval: Optional[int] = Field(default=None, gt=0)
+  compaction_interval: int | None = Field(default=None, gt=0)
   """The number of *new* user-initiated invocations that, once
   fully represented in the session's events, will trigger a compaction."""
 
-  overlap_size: Optional[int] = Field(default=None, ge=0)
+  overlap_size: int | None = Field(default=None, ge=0)
   """The number of preceding invocations to include from the
   end of the last compacted range. This creates an overlap between consecutive
   compacted summaries, maintaining context."""
 
-  token_threshold: Optional[int] = Field(
+  token_threshold: int | None = Field(
       default=None,
       gt=0,
   )
@@ -74,7 +72,7 @@ class EventsCompactionConfig(BaseModel):
   observed prompt token count meets or exceeds this threshold.
   """
 
-  event_retention_size: Optional[int] = Field(default=None, ge=0)
+  event_retention_size: int | None = Field(default=None, ge=0)
   """Post-invocation raw event retention size.
 
   If token-based post-invocation compaction is triggered, this keeps the last N
