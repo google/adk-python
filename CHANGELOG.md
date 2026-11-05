@@ -25,7 +25,6 @@ This release graduates execution environments, A2A, evaluation, and core runtime
 
 #### Breaking changes
 
-* **Live WebSockets (`/run_live`) now close instead of hanging**: the server closes the socket with code 1007 on a malformed frame and 1000 when the run ends, so reconnect for each new live run instead of reusing an idle socket. ([3b227d6](https://github.com/google/adk-python/commit/3b227d6ec82490dae6473f681dcc825b1ac31679))
 * **Enum tool arguments arrive as members**: tools whose parameters are annotated with a plain `Enum` (or `list[Enum]`) now receive the declared members instead of raw strings, so `arg == "celsius"` is now `False` and `str(arg)` on a `(str, Enum)` gives `Unit.CELSIUS`. Members a tool returns in its result are sent to the model as their values. ([82fe029](https://github.com/google/adk-python/commit/82fe029b8490479229dbfc33815468fe17a427ab), [58332a2](https://github.com/google/adk-python/commit/58332a284b73435eb5c54dac73f6740258b7a741))
 * **`VertexAiSessionService.create_session` accepts only session config options**: it forwards only `display_name`, `ttl`, `expire_time`, `labels` and their camelCase aliases, and raises `ValueError` for anything else, such as `http_options`, `session_state`/`sessionState`, `sessionId` or `wait_for_completion`. ([968cd86](https://github.com/google/adk-python/commit/968cd869ff79be622eb921c5e314bd19efd889d2))
 * **Firestore sessions store `event_data` as a JSON string**: 2.13.0 cannot read sessions that 2.14.0 has appended to, so rolling back after upgrading breaks those sessions. ([0894c03](https://github.com/google/adk-python/commit/0894c034c499bd195558f31c677c44d31d1555e0))
@@ -34,6 +33,7 @@ This release graduates execution environments, A2A, evaluation, and core runtime
 
 #### Behavior changes
 
+* `/run_live` now closes the socket with code 1007 on a malformed frame and 1000 when the run ends, instead of leaving it hanging; reconnect for each new live run instead of reusing an idle socket. ([3b227d6](https://github.com/google/adk-python/commit/3b227d6ec82490dae6473f681dcc825b1ac31679))
 * OpenAPI tool query parameters now follow their declared `style` and `explode`. ([1d81896](https://github.com/google/adk-python/commit/1d81896aa081e7b2e50b3a4a227f7c6933805752))
 * `DatabaseSessionService` creates new PostgreSQL JSON columns as `json` instead of `jsonb`; existing `jsonb` tables are not migrated and keep working (the PostgreSQL sample README shows how to convert them). Queries outside ADK that rely on jsonb-only operators or GIN indexes will not work on new tables. ([d487c53](https://github.com/google/adk-python/commit/d487c537774278a98d5970b67c03a10049af2786))
 * `gen_ai.invoke_workflow.duration`, `gen_ai.client.operation.duration`, and `gen_ai.client.token.usage` histograms now use the semconv bucket bounds. ([ba45671](https://github.com/google/adk-python/commit/ba456715ce8a25c99218db992d4b96ab30f2d5c5))
@@ -44,10 +44,6 @@ This release graduates execution environments, A2A, evaluation, and core runtime
 
 <details>
 <summary>All changes</summary>
-
-### ⚠ BREAKING CHANGES
-
-* close malformed live WebSockets instead of wedging them
 
 ### Features
 
@@ -117,6 +113,7 @@ This release graduates execution environments, A2A, evaluation, and core runtime
 * classify stream-level non-retryable BigQuery write errors as non_retryable ([bd38535](https://github.com/google/adk-python/commit/bd38535817a9639408a5f863c0f044aaa65d74cb))
 * **cli:** monitor ASGI receive channel for client disconnect in /run_sse ([1fbe9e0](https://github.com/google/adk-python/commit/1fbe9e034506a0a9a03039a68e822fb1b787a165))
 * close inner async generators across node `_run_impl` and skip compaction on early close ([facd7dd](https://github.com/google/adk-python/commit/facd7ddafe0e23715e079e50971ad27b251e2e98))
+* close malformed live WebSockets instead of wedging them ([3b227d6](https://github.com/google/adk-python/commit/3b227d6ec82490dae6473f681dcc825b1ac31679))
 * compact AgentTool nested history at caller token threshold ([ae8323b](https://github.com/google/adk-python/commit/ae8323b6d3de2fa75181e80f510ca91b0a0da336)), closes [#7397](https://github.com/google/adk-python/issues/7397)
 * **compaction:** cancel in-flight summarization when invocation aborts ([87d9dcd](https://github.com/google/adk-python/commit/87d9dcdf5273b54f61ee9d9cba95c30e5c0a5e0e))
 * complete A2A task when the run recovers from an error ([512d56b](https://github.com/google/adk-python/commit/512d56b2220b08feda559787045a7d8c9f8ebe0f))
