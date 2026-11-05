@@ -139,6 +139,35 @@ class RedisSessionService(BaseSessionService):
         and not k.startswith(State.TEMP_PREFIX)
     }
 
+  async def _apply_scoped_state_delta(
+      self, client: Any, key: str, delta: dict[str, Any]
+  ) -> dict[str, Any]:
+    """Merges `delta` into the app or user state at `key` and returns it.
+
+    Other sessions write the same key, so the read and write run in one
+    watched transaction that retries if the key changes in between.
+    """
+    if not delta:
+      raw = await client.get(key)
+      return cast(dict[str, Any], json.loads(raw)) if raw else {}
+
+    merged: dict[str, Any] = {}
+
+    async def merge(pipe: Any) -> None:
+      nonlocal merged
+      raw = await pipe.get(key)
+      merged = json.loads(raw) if raw else {}
+      merged.update(delta)
+      pipe.multi()
+      pipe.set(
+          key,
+          json.dumps(merged),
+          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+      )
+
+    await client.transaction(merge, key)
+    return merged
+
   async def create_session(
       self,
       *,
@@ -199,28 +228,10 @@ class RedisSessionService(BaseSessionService):
           f"Session {sid} already exists for user {user_id} in app {app_name}."
       )
 
-    app_raw, user_raw = await asyncio.gather(
-        client.get(app_key),
-        client.get(user_key),
+    current_app, current_user = await asyncio.gather(
+        self._apply_scoped_state_delta(client, app_key, app_state_delta),
+        self._apply_scoped_state_delta(client, user_key, user_state_delta),
     )
-    current_app = json.loads(app_raw) if app_raw else {}
-    current_user = json.loads(user_raw) if user_raw else {}
-
-    if app_state_delta:
-      current_app.update(app_state_delta)
-      await client.set(
-          app_key,
-          json.dumps(current_app),
-          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-      )
-
-    if user_state_delta:
-      current_user.update(user_state_delta)
-      await client.set(
-          user_key,
-          json.dumps(current_user),
-          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-      )
 
     # Return session with dynamically merged state (including app/user/temp state)
     merged_state = self._merge_state(current_app, current_user, session_state)
@@ -376,25 +387,14 @@ class RedisSessionService(BaseSessionService):
       session_delta = deltas.get("session", {})
 
       if app_delta:
-        app_key = self._app_state_key(session.app_name)
-        app_raw = await client.get(app_key)
-        app_state = json.loads(app_raw) if app_raw else {}
-        app_state.update(app_delta)
-        await client.set(
-            app_key,
-            json.dumps(app_state),
-            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+        await self._apply_scoped_state_delta(
+            client, self._app_state_key(session.app_name), app_delta
         )
-
       if user_delta:
-        user_key = self._user_state_key(session.app_name, session.user_id)
-        user_raw = await client.get(user_key)
-        user_state = json.loads(user_raw) if user_raw else {}
-        user_state.update(user_delta)
-        await client.set(
-            user_key,
-            json.dumps(user_state),
-            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+        await self._apply_scoped_state_delta(
+            client,
+            self._user_state_key(session.app_name, session.user_id),
+            user_delta,
         )
 
     # Prepare storage copy with ONLY session-scoped state (excluding app:, user:, temp:)

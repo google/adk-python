@@ -3486,6 +3486,76 @@ async def test_append_event_locks_only_scopes_with_deltas(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'state, expected_locks',
+    [
+        pytest.param(
+            None,
+            {'app_states': False, 'user_states': False},
+            id='no_initial_state',
+        ),
+        pytest.param(
+            {'session_key': 'v'},
+            {'app_states': False, 'user_states': False},
+            id='session_state_only',
+        ),
+        pytest.param(
+            {'app:key': 'v'},
+            {'app_states': True, 'user_states': False},
+            id='app_state_only',
+        ),
+        pytest.param(
+            {'user:key': 'v'},
+            {'app_states': False, 'user_states': True},
+            id='user_state_only',
+        ),
+        pytest.param(
+            {'app:a': '1', 'user:b': '2', 'sk': '3'},
+            {'app_states': True, 'user_states': True},
+            id='all_scopes',
+        ),
+    ],
+)
+async def test_create_session_locks_the_state_rows_its_initial_state_writes(
+    state, expected_locks
+):
+  """With row-level locks, create_session locks just the rows it merges into.
+
+  SQLite ignores FOR UPDATE, so the lock request is checked instead.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  lock_requests = {}
+  original_fn = database_session_service._get_or_create_state
+
+  async def tracking_fn(**kwargs):
+    lock_requests[kwargs['state_model'].__tablename__] = kwargs.get(
+        'use_row_level_locking', False
+    )
+    return await original_fn(**kwargs)
+
+  try:
+    # An earlier session leaves both state rows in place, so the locking path
+    # runs against rows that already exist.
+    await service.create_session(app_name='app', user_id='user')
+    with (
+        mock.patch.object(
+            service, '_supports_row_level_locking', return_value=True
+        ),
+        mock.patch.object(
+            database_session_service, '_get_or_create_state', tracking_fn
+        ),
+    ):
+      session = await service.create_session(
+          app_name='app', user_id='user', state=state
+      )
+  finally:
+    await service.close()
+
+  assert lock_requests == expected_locks
+  assert session.state == (state or {})
+
+
+@pytest.mark.asyncio
 async def test_get_user_state_returns_empty_dict_when_no_state_exists(
     session_service,
 ):
@@ -3601,6 +3671,116 @@ async def test_get_user_state_reflects_latest_write(session_service):
 
   state = await session_service.get_user_state(app_name='my_app', user_id='u1')
   assert state['counter'] == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_to_different_sessions_keep_every_scoped_key(
+    session_service,
+):
+  """Concurrent appends from different sessions keep each app: and user: key.
+
+  Setup: three sessions of one user and three sessions of other users, all in
+    one app.
+  Act: every session appends an event at once, each writing its own app: key
+    and its own user: key.
+  Assert: the app scope holds all six app: keys and the shared user holds all
+    three of its user: keys.
+  """
+  user_sessions = [
+      await session_service.create_session(
+          app_name='my_app', user_id='u1', session_id=f'tab{i}'
+      )
+      for i in range(3)
+  ]
+  other_user_sessions = [
+      await session_service.create_session(
+          app_name='my_app', user_id=f'other{i}', session_id=f'other{i}'
+      )
+      for i in range(3)
+  ]
+  sessions = user_sessions + other_user_sessions
+
+  await asyncio.gather(*(
+      session_service.append_event(
+          session,
+          Event(
+              invocation_id=f'inv_{session.id}',
+              author='user',
+              actions=EventActions(
+                  state_delta={
+                      f'app:seen_{session.id}': True,
+                      f'user:seen_{session.id}': True,
+                  }
+              ),
+          ),
+      )
+      for session in sessions
+  ))
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='tab0'
+  )
+  assert {key for key in reloaded.state if key.startswith('app:')} == {
+      f'app:seen_{session.id}' for session in sessions
+  }
+  assert await session_service.get_user_state(
+      app_name='my_app', user_id='u1'
+  ) == {f'seen_{session.id}': True for session in user_sessions}
+
+
+@pytest.mark.asyncio
+async def test_create_session_scoped_state_survives_concurrent_writers(
+    session_service,
+):
+  """Initial app: and user: state is merged with concurrent writes, not lost.
+
+  Setup: one existing session for the user.
+  Act: the existing session appends an app: and a user: key while three new
+    sessions of the same user are created with their own app: and user: keys.
+  Assert: every writer's keys are present in both scopes.
+  """
+  existing = await session_service.create_session(
+      app_name='my_app', user_id='u1', session_id='existing'
+  )
+
+  await asyncio.gather(
+      session_service.append_event(
+          existing,
+          Event(
+              invocation_id='inv_existing',
+              author='user',
+              actions=EventActions(
+                  state_delta={
+                      'app:from_existing': True,
+                      'user:from_existing': True,
+                  }
+              ),
+          ),
+      ),
+      *(
+          session_service.create_session(
+              app_name='my_app',
+              user_id='u1',
+              session_id=f'new{i}',
+              state={f'app:from_new{i}': True, f'user:from_new{i}': True},
+          )
+          for i in range(3)
+      ),
+  )
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='existing'
+  )
+  expected_keys = {'from_existing', 'from_new0', 'from_new1', 'from_new2'}
+  assert {
+      key.removeprefix('app:')
+      for key in reloaded.state
+      if key.startswith('app:')
+  } == expected_keys
+  assert (
+      set(await session_service.get_user_state(app_name='my_app', user_id='u1'))
+      == expected_keys
+  )
 
 
 @pytest.mark.asyncio
