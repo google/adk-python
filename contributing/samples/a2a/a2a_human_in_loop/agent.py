@@ -20,6 +20,7 @@ from google.adk.agents.remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.apps import App
 from google.adk.apps import ResumabilityConfig
+from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
 
@@ -30,9 +31,14 @@ def reimburse(purpose: str, amount: float) -> dict[str, Any]:
   }
 
 
+def needs_manager_approval(purpose: str, amount: float) -> bool:
+  """Require manager approval for reimbursements of $100 or more."""
+  return amount >= 100
+
+
 approval_agent = RemoteA2aAgent(
     name='approval_agent',
-    description='Help approve the reimburse if the amount is greater than 100.',
+    description='Help approve the reimburse if the amount is at least 100.',
     agent_card=(
         f'http://localhost:8001/a2a/human_in_loop{AGENT_CARD_WELL_KNOWN_PATH}'
     ),
@@ -46,10 +52,12 @@ root_agent = Agent(
       the employees. If the amount is less than $100, you will automatically
       approve the reimbursement. And call reimburse() to reimburse the amount to the employee.
 
-      If the amount is greater than $100. You will hand over the request to
+      If the amount is at least $100. You will hand over the request to
       approval_agent to handle the reimburse.
 """,
-    tools=[reimburse],
+    tools=[
+        FunctionTool(reimburse, require_confirmation=needs_manager_approval),
+    ],
     sub_agents=[approval_agent],
     generate_content_config=types.GenerateContentConfig(temperature=0.1),
 )
