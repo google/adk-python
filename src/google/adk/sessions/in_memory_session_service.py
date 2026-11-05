@@ -70,6 +70,17 @@ def _copy_state(state: dict[str, Any]) -> dict[str, Any]:
   return copy.deepcopy(state)
 
 
+def _copy_event(event: Event) -> Event:
+  """Copies an event as deeply as _copy_session copies a session's events.
+
+  Under IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, stored events stay aliased to
+  the appended Event, by design.
+  """
+  if is_feature_enabled(FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY):
+    return event
+  return copy.deepcopy(event)
+
+
 class InMemorySessionService(BaseSessionService):
   """An in-memory implementation of the session service.
 
@@ -330,6 +341,15 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
+    """Appends an event to the session and updates stored state.
+
+    Stored events and state deltas are deep-copied by default so later
+    mutations on ``session`` or ``event`` do not alter saved history or
+    state. Under ``IN_MEMORY_SESSION_SERVICE_LIGHT_COPY``, stored events stay
+    aliased and state buckets are shallow-copied; subclasses that mutate
+    ``session.events`` in place must either enable light copy or update
+    ``self.sessions[app_name][user_id][session_id]`` as well.
+    """
     if event.partial:
       return event
 
@@ -354,21 +374,25 @@ class InMemorySessionService(BaseSessionService):
       return event
 
     # Update the in-memory session.
-    await super().append_event(session=session, event=event)
+    event = await super().append_event(session=session, event=event)
     session.last_update_time = event.timestamp
 
-    # Update the storage session if the caller holds a stale copy.
-    if storage_session is not session:
-      storage_session.events.append(event)
+    # Store a copy so mutating the caller's event or session afterwards cannot
+    # alter saved history or state.
+    stored_event = _copy_event(event)
+    if storage_session is session:
+      storage_session.events[-1] = stored_event
+    else:
+      storage_session.events.append(stored_event)
       storage_session.last_update_time = event.timestamp
 
     if event.actions and event.actions.state_delta:
       state_deltas = _session_util.extract_state_delta(
           event.actions.state_delta
       )
-      app_state_delta = state_deltas['app']
-      user_state_delta = state_deltas['user']
-      session_state_delta = state_deltas['session']
+      app_state_delta = _copy_state(state_deltas['app'])
+      user_state_delta = _copy_state(state_deltas['user'])
+      session_state_delta = _copy_state(state_deltas['session'])
       if app_state_delta:
         self.app_state.setdefault(app_name, {}).update(app_state_delta)
       if user_state_delta:
