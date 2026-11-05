@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import html
 from typing import Any
 from typing import List
@@ -26,7 +27,10 @@ from . import models
 
 
 def format_skills_as_xml(
-    skills: List[Union[models.Frontmatter, models.Skill]],
+    skills: (
+        List[Union[models.Frontmatter, models.Skill]]
+        | Sequence[Union[models.Frontmatter, models.Skill]]
+    ),
 ) -> str:
   """Formats available skills into a standard XML string.
 

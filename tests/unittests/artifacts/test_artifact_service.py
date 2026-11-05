@@ -27,8 +27,6 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 from typing import Callable
-from typing import Optional
-from typing import Union
 from unittest import mock
 from unittest.mock import patch
 from urllib.parse import urlparse
@@ -76,8 +74,8 @@ class MockBlob:
         name: The name of the blob.
     """
     self.name = name
-    self.content: Optional[bytes] = None
-    self.content_type: Optional[str] = None
+    self.content: bytes | None = None
+    self.content_type: str | None = None
     self.time_created = FIXED_DATETIME
     self.metadata: dict[str, Any] = {}
     # GCS evaluates a generation precondition and applies the write as one
@@ -86,9 +84,9 @@ class MockBlob:
 
   def upload_from_string(
       self,
-      data: Union[str, bytes],
-      content_type: Optional[str] = None,
-      if_generation_match: Optional[int] = None,
+      data: str | bytes,
+      content_type: str | None = None,
+      if_generation_match: int | None = None,
   ) -> None:
     """Mocks uploading data to the blob (from a string or bytes).
 
@@ -139,7 +137,7 @@ class MockBlob:
       self,
       expiration: Any = None,
       method: str = "GET",
-      version: Optional[str] = None,
+      version: str | None = None,
       **kwargs: Any,
   ) -> str:
     """Mocks generating a signed URL for the blob."""
@@ -176,7 +174,7 @@ class MockBucket:
         self.blobs[blob_name] = MockBlob(blob_name)
       return self.blobs[blob_name]
 
-  def get_blob(self, blob_name: str) -> Optional[MockBlob]:
+  def get_blob(self, blob_name: str) -> MockBlob | None:
     """Mocks getting a blob from storage if it exists and has content."""
     blob = self.blobs.get(blob_name)
     if blob and blob.content is not None:
@@ -197,7 +195,7 @@ class MockClient:
       self.buckets[bucket_name] = MockBucket(bucket_name)
     return self.buckets[bucket_name]
 
-  def list_blobs(self, bucket: MockBucket, prefix: Optional[str] = None):
+  def list_blobs(self, bucket: MockBucket, prefix: str | None = None):
     """Mocks listing blobs in a bucket, optionally with a prefix.
 
     Results are ordered lexicographically by name, like the real client.
@@ -305,6 +303,90 @@ async def test_save_load_delete(service_type, artifact_service_factory):
       user_id=user_id,
       session_id=session_id,
       filename=filename,
+  )
+
+
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "invalid_artifact",
+    [
+        types.Part(),
+        types.Part.from_uri(
+            file_uri="gs://bucket/report.txt", mime_type="text/plain"
+        ),
+    ],
+)
+async def test_file_rejected_save_preserves_artifact_catalog(
+    tmp_path: Path,
+    filename: str,
+    existing: bool,
+    invalid_artifact: types.Part,
+) -> None:
+  """A rejected save must not leave a listed artifact that cannot be loaded.
+
+  Setup: Start with either no artifact or one valid version in each scope.
+  Act: Reject content FileArtifactService cannot store, then retry.
+  Assert: The rejected save leaves the catalog and versions unchanged, and
+    the retry gets the next version.
+  """
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  previous = types.Part.from_text(text="previous")
+  if existing:
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=previous,
+    )
+
+  with pytest.raises(InputValidationError, match="inline_data or text"):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=invalid_artifact,
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == ([filename] if existing else [])
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == ([0] if existing else [])
+  assert await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == (previous if existing else None)
+  replacement = types.Part.from_text(text="replacement")
+  assert await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=replacement,
+  ) == (1 if existing else 0)
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == [filename]
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      == replacement
   )
 
 
@@ -3633,7 +3715,7 @@ async def test_artifact_removed_by_rewind_loads_as_none(
     artifact_service_factory: Callable[
         [ArtifactServiceType], BaseArtifactService
     ],
-    version: Optional[int],
+    version: int | None,
 ) -> None:
   """A version holding the rewind tombstone loads as absent."""
   artifact_service = artifact_service_factory(service_type)
@@ -4167,3 +4249,149 @@ async def test_load_artifact_survives_malformed_metadata_on_binary_payload(
   )
 
   assert loaded is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (
+            ("team/project", "alice", "s1", "notes.txt"),
+            ("team", "project/alice", "s1", "notes.txt"),
+        ),
+        (
+            ("team", "project/alice", "s1", "notes.txt"),
+            ("team/project", "alice", "s1", "notes.txt"),
+        ),
+        (
+            ("team/project", "alice", "s1", "user:notes.txt"),
+            ("team", "project/alice", "s1", "user:notes.txt"),
+        ),
+        (
+            ("app", "alice", "s1/a", "notes.txt"),
+            ("app", "alice", "s1", "a/notes.txt"),
+        ),
+        (
+            ("team%2Fproject", "alice", "s1", "notes.txt"),
+            ("team/project", "alice", "s1", "notes.txt"),
+        ),
+    ],
+)
+async def test_in_memory_slash_in_identifiers_keeps_scopes_separate(
+    first, second
+):
+  """Distinct scopes whose identifiers contain '/' or '%' stay isolated.
+
+  The shared validator allows '/' inside identifiers, so joining raw
+  identifiers into one storage key would let either scope read, version and
+  delete the other's artifacts.
+  """
+  artifact_service = InMemoryArtifactService()
+  saved = types.Part.from_text(text="first scope value")
+  assert (
+      await artifact_service.save_artifact(
+          app_name=first[0],
+          user_id=first[1],
+          session_id=first[2],
+          filename=first[3],
+          artifact=saved,
+      )
+      == 0
+  )
+
+  # The second scope has its own empty history.
+  assert (
+      await artifact_service.load_artifact(
+          app_name=second[0],
+          user_id=second[1],
+          session_id=second[2],
+          filename=second[3],
+      )
+      is None
+  )
+  assert (
+      await artifact_service.list_versions(
+          app_name=second[0],
+          user_id=second[1],
+          session_id=second[2],
+          filename=second[3],
+      )
+      == []
+  )
+  assert (
+      await artifact_service.list_artifact_keys(
+          app_name=second[0], user_id=second[1], session_id=second[2]
+      )
+      == []
+  )
+
+  # Saving through the second scope allocates its own version 0.
+  assert (
+      await artifact_service.save_artifact(
+          app_name=second[0],
+          user_id=second[1],
+          session_id=second[2],
+          filename=second[3],
+          artifact=types.Part.from_text(text="second scope value"),
+      )
+      == 0
+  )
+  loaded_first = await artifact_service.load_artifact(
+      app_name=first[0],
+      user_id=first[1],
+      session_id=first[2],
+      filename=first[3],
+  )
+  assert loaded_first is not None
+  assert loaded_first.text == "first scope value"
+  assert await artifact_service.list_versions(
+      app_name=first[0],
+      user_id=first[1],
+      session_id=first[2],
+      filename=first[3],
+  ) == [0]
+
+  # Deleting through the second scope leaves the first scope intact.
+  await artifact_service.delete_artifact(
+      app_name=second[0],
+      user_id=second[1],
+      session_id=second[2],
+      filename=second[3],
+  )
+  reloaded_first = await artifact_service.load_artifact(
+      app_name=first[0],
+      user_id=first[1],
+      session_id=first[2],
+      filename=first[3],
+  )
+  assert reloaded_first is not None
+  assert reloaded_first.text == "first scope value"
+
+
+@pytest.mark.asyncio
+async def test_in_memory_plain_identifier_keys_are_unchanged():
+  """Keys for identifiers without '/' or '%' keep the raw joined layout.
+
+  Callers parse InMemoryArtifactService.artifacts keys directly, so escaping
+  must not alter keys for plain identifiers.
+  """
+  artifact_service = InMemoryArtifactService()
+  await artifact_service.save_artifact(
+      app_name="app",
+      user_id="u1",
+      session_id="s1",
+      filename="notes.txt",
+      artifact=types.Part.from_text(text="session value"),
+  )
+  await artifact_service.save_artifact(
+      app_name="app",
+      user_id="u1",
+      session_id="s1",
+      filename="user:prefs.json",
+      artifact=types.Part.from_text(text="user value"),
+  )
+
+  assert set(artifact_service.artifacts) == {
+      "app/u1/s1/notes.txt",
+      "app/u1/user/user:prefs.json",
+  }

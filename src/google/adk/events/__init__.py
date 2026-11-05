@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from ._rewind_events import get_active_events
 from .event import Event
 from .event_actions import EventActions
 from .request_input import RequestInput
@@ -20,4 +21,5 @@ __all__ = [
     'Event',
     'EventActions',
     'RequestInput',
+    'get_active_events',
 ]

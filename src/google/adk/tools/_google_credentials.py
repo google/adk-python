@@ -38,19 +38,13 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.auth_credential import AuthCredentialTypes
 from ..auth.auth_credential import OAuth2Auth
 from ..auth.auth_tool import AuthConfig
-from ..features import experimental
-from ..features import FeatureName
 from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class BaseGoogleCredentialsConfig(BaseModel):
-  """Base Google Credentials Configuration for Google API tools (Experimental).
-
-  Please do not use this in production, as it may be deprecated later.
-  """
+  """Base Google Credentials Configuration for Google API tools."""
 
   # Configure the model to allow arbitrary types like Credentials
   model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")

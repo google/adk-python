@@ -21,6 +21,7 @@ from collections.abc import Callable
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.loop_agent import LoopAgentState
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
@@ -321,6 +322,67 @@ def test_auto_to_sequential(is_resumable: bool):
         ('root_agent', 'response3'),
         ('root_agent', END_OF_AGENT),
     ]
+
+
+@pytest.mark.parametrize('is_resumable', [True, False])
+def test_auto_to_sequential_with_parallel_keeps_merger_branch(
+    is_resumable: bool,
+):
+  """A merger after a parallel step stays on its sequence's branch.
+
+  After the transfer the pipeline runs as one node that relays the events of
+  every agent inside it. The merger's reply belongs on the pipeline's branch,
+  as when the same pipeline is the root agent, not on whichever parallel
+  sub-branch spoke last; otherwise only that one worker sees the merger's
+  reply on later turns.
+  """
+  # root (auto) - pipeline (seq) - fan_out (parallel) - worker_a (single)
+  #                                                    \ worker_b (single)
+  #                             \ merger (single)
+  worker_a = Agent(
+      name='worker_a',
+      model=testing_utils.MockModel.create(responses=['from a']),
+  )
+  worker_b = Agent(
+      name='worker_b',
+      model=testing_utils.MockModel.create(responses=['from b']),
+  )
+  merger = Agent(
+      name='merger',
+      model=testing_utils.MockModel.create(responses=['merged']),
+  )
+  pipeline = SequentialAgent(
+      name='pipeline',
+      sub_agents=[
+          ParallelAgent(name='fan_out', sub_agents=[worker_a, worker_b]),
+          merger,
+      ],
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[transfer_call_part('pipeline')]
+      ),
+      sub_agents=[pipeline],
+  )
+  app = App(
+      name='test_app',
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = runner.run('test1')
+
+  assert {
+      event.author: event.branch
+      for event in events
+      if event.content and event.author != 'root_agent'
+  } == {
+      'worker_a': 'fan_out.worker_a',
+      'worker_b': 'fan_out.worker_b',
+      'merger': None,
+  }
 
 
 @pytest.mark.parametrize('is_resumable', [True, False])
@@ -1023,6 +1085,154 @@ def test_transfer_cyclic_loop(is_resumable: bool):
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
         ('root_agent', 'response_from_root_2'),
         ('root_agent', END_OF_AGENT),
+    ]
+
+
+@pytest.mark.parametrize('is_resumable', [True, False])
+def test_transfer_to_parent_and_back_in_turn_started_by_sub_agent(
+    is_resumable: bool,
+):
+  """Verify a turn started in a sub-agent can transfer to the parent and back.
+
+  Turn 2 starts in sub_agent_1, which replied last. When root_agent transfers
+  back to it, sub_agent_1 must run again instead of having its first run of the
+  turn replayed.
+  """
+  # Arrange
+  response = [
+      transfer_call_part('sub_agent_1'),
+      'response1',
+      transfer_call_part('root_agent'),
+      transfer_call_part('sub_agent_1'),
+      'response2',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=response)
+
+  sub_agent_1 = Agent(name='sub_agent_1', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      sub_agents=[sub_agent_1],
+  )
+  app = App(
+      name='test_app',
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act & Assert
+  if not is_resumable:
+    assert testing_utils.simplify_events(runner.run('test1')) == [
+        ('root_agent', transfer_call_part('sub_agent_1')),
+        ('root_agent', TRANSFER_RESPONSE_PART),
+        ('sub_agent_1', 'response1'),
+    ]
+
+    # Turn 2: starts at sub_agent_1, goes to root_agent and comes back
+    assert testing_utils.simplify_events(runner.run('test2')) == [
+        ('sub_agent_1', transfer_call_part('root_agent')),
+        ('sub_agent_1', TRANSFER_RESPONSE_PART),
+        ('root_agent', transfer_call_part('sub_agent_1')),
+        ('root_agent', TRANSFER_RESPONSE_PART),
+        ('sub_agent_1', 'response2'),
+    ]
+  else:
+    assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
+        ('root_agent', transfer_call_part('sub_agent_1')),
+        ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
+        ('sub_agent_1', 'response1'),
+        ('sub_agent_1', END_OF_AGENT),
+    ]
+
+    # Turn 2: starts at sub_agent_1, goes to root_agent and comes back
+    assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
+        ('sub_agent_1', transfer_call_part('root_agent')),
+        ('sub_agent_1', TRANSFER_RESPONSE_PART),
+        ('sub_agent_1', END_OF_AGENT),
+        ('root_agent', transfer_call_part('sub_agent_1')),
+        ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
+        ('sub_agent_1', 'response2'),
+        ('sub_agent_1', END_OF_AGENT),
+    ]
+
+
+@pytest.mark.parametrize('is_resumable', [True, False])
+def test_transfer_to_parent_and_back_in_turn_started_by_grandchild(
+    is_resumable: bool,
+):
+  """Verify a turn that starts two levels down can transfer up and back.
+
+  Turn 2 starts in leaf_agent, which replied last, transfers to mid_agent, and
+  mid_agent transfers back. The transfer back is allocated under mid_agent's
+  path, so leaf_agent must get a new run there instead of having its first run
+  of the turn replayed.
+  """
+  # Arrange
+  response = [
+      transfer_call_part('mid_agent'),
+      transfer_call_part('leaf_agent'),
+      'response1',
+      transfer_call_part('mid_agent'),
+      transfer_call_part('leaf_agent'),
+      'response2',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=response)
+
+  leaf_agent = Agent(name='leaf_agent', model=mock_model)
+  mid_agent = Agent(name='mid_agent', model=mock_model, sub_agents=[leaf_agent])
+  root_agent = Agent(
+      name='root_agent', model=mock_model, sub_agents=[mid_agent]
+  )
+  app = App(
+      name='test_app',
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act & Assert
+  if not is_resumable:
+    assert testing_utils.simplify_events(runner.run('test1')) == [
+        ('root_agent', transfer_call_part('mid_agent')),
+        ('root_agent', TRANSFER_RESPONSE_PART),
+        ('mid_agent', transfer_call_part('leaf_agent')),
+        ('mid_agent', TRANSFER_RESPONSE_PART),
+        ('leaf_agent', 'response1'),
+    ]
+
+    # Turn 2: starts at leaf_agent, goes to mid_agent and comes back
+    assert testing_utils.simplify_events(runner.run('test2')) == [
+        ('leaf_agent', transfer_call_part('mid_agent')),
+        ('leaf_agent', TRANSFER_RESPONSE_PART),
+        ('mid_agent', transfer_call_part('leaf_agent')),
+        ('mid_agent', TRANSFER_RESPONSE_PART),
+        ('leaf_agent', 'response2'),
+    ]
+  else:
+    assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
+        ('root_agent', transfer_call_part('mid_agent')),
+        ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
+        ('mid_agent', transfer_call_part('leaf_agent')),
+        ('mid_agent', TRANSFER_RESPONSE_PART),
+        ('mid_agent', END_OF_AGENT),
+        ('leaf_agent', 'response1'),
+        ('leaf_agent', END_OF_AGENT),
+    ]
+
+    # Turn 2: starts at leaf_agent, goes to mid_agent and comes back
+    assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
+        ('leaf_agent', transfer_call_part('mid_agent')),
+        ('leaf_agent', TRANSFER_RESPONSE_PART),
+        ('leaf_agent', END_OF_AGENT),
+        ('mid_agent', transfer_call_part('leaf_agent')),
+        ('mid_agent', TRANSFER_RESPONSE_PART),
+        ('mid_agent', END_OF_AGENT),
+        ('leaf_agent', 'response2'),
+        ('leaf_agent', END_OF_AGENT),
     ]
 
 

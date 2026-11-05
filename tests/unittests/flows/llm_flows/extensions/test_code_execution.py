@@ -19,7 +19,6 @@ import asyncio
 import datetime
 import threading
 from typing import Any
-from typing import Optional
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -54,8 +53,8 @@ class _ExecutionRecord:
   """Captures how the executor ran, for cross-thread inspection in tests."""
 
   def __init__(self):
-    self.thread: Optional[Any] = None
-    self.released: Optional[bool] = None
+    self.thread: Any | None = None
+    self.released: bool | None = None
 
 
 class _RecordingCodeExecutor(BaseCodeExecutor):
@@ -161,6 +160,33 @@ async def test_builtin_code_executor_image_artifact_creation(mock_datetime):
       == f'Saved as artifact: {expected_filename2}. '
   )
   assert not llm_response.content.parts[2].inline_data
+
+
+@pytest.mark.asyncio
+async def test_builtin_code_executor_emits_no_event_without_images():
+  """Test BuiltInCodeExecutor emits no event when there is no image to save."""
+  code_executor = BuiltInCodeExecutor()
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock(
+      return_value='v1'
+  )
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part(text='The answer is 42.')])
+  )
+
+  events = []
+  async for event in response_processor.run_async(
+      invocation_context, llm_response
+  ):
+    events.append(event)
+
+  assert events == []
+  invocation_context.artifact_service.save_artifact.assert_not_called()
+  assert llm_response.content.parts == [types.Part(text='The answer is 42.')]
 
 
 @pytest.mark.asyncio

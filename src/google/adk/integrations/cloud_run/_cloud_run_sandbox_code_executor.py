@@ -87,7 +87,7 @@ class CloudRunSandboxCodeExecutor(BaseCodeExecutor):
   None waits for the execution indefinitely.
   """
 
-  def __init__(self, **data):
+  def __init__(self, **data: object) -> None:
     if 'stateful' in data and data['stateful']:
       raise ValueError(
           'Cannot set `stateful=True` in CloudRunSandboxCodeExecutor.'

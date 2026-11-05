@@ -29,7 +29,6 @@ import inspect
 import logging
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -298,7 +297,7 @@ async def _process_function_live_helper(
     # orders the two, so the request can be missing from the emitted event.
 
     # For input-streaming tools (those with `input_stream: LiveRequestQueue`),
-    # create a dedicated LiveRequestQueue that _send_to_model copies live
+    # create a dedicated LiveRequestQueue that send_to_model copies live
     # requests into. It must exist before the task first runs, since the tool
     # receives it as an argument.
     sig = inspect.signature(streaming_tool.func)
@@ -354,7 +353,7 @@ async def _execute_single_prepared_call_live(
     invocation_context: InvocationContext,
     prepared_call: _PreparedFunctionCall,
     agent: LlmAgent,
-) -> Optional[Event]:
+) -> Event | None:
   """Runs one prepared function call in live mode.
 
   This is the live counterpart of `_execute_single_prepared_call_async`: steps
@@ -392,7 +391,7 @@ def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
 
 
 def _require_function_call_id(
-    function_call_id: Optional[str], tool_name: str
+    function_call_id: str | None, tool_name: str
 ) -> str:
   """Returns the id a background tool call is tracked by.
 

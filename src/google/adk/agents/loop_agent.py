@@ -19,15 +19,12 @@ from __future__ import annotations
 import logging
 from typing import AsyncGenerator
 from typing import ClassVar
-from typing import Optional
 import warnings
 
 from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
-from ..features import experimental
-from ..features import FeatureName
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
@@ -48,7 +45,6 @@ with warnings.catch_warnings():
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental(FeatureName.AGENT_STATE)
 class LoopAgentState(BaseAgentState):
   """State for LoopAgent."""
 
@@ -81,7 +77,7 @@ class LoopAgent(BaseAgent):
   version, along with the AgentConfig YAML loader.
   """
 
-  max_iterations: Optional[int] = None
+  max_iterations: int | None = None
   """The maximum number of iterations to run the loop agent.
 
   If not set, the loop agent will run indefinitely until a sub-agent
@@ -147,7 +143,7 @@ class LoopAgent(BaseAgent):
 
   def _get_start_state(
       self,
-      agent_state: Optional[LoopAgentState],
+      agent_state: LoopAgentState | None,
   ) -> tuple[int, int]:
     """Computes the start state of the loop agent from the agent state."""
     if not agent_state:

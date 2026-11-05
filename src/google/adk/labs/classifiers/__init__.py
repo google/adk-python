@@ -16,6 +16,7 @@
 
 from ._base_classifier import BaseClassifier
 from ._classifier_node import ClassifierNode
+from ._llm_classifier import LlmClassifier
 from ._types import Answer
 from ._types import Binary
 from ._types import BinaryAnswer
@@ -25,6 +26,7 @@ from ._types import ClassifierInput
 from ._types import ClassifierResponse
 from ._types import JSONContent
 from ._types import Question
+from ._types import RefusalAnswer
 from ._types import Score
 from ._types import ScoreAnswer
 
@@ -39,7 +41,9 @@ __all__ = [
     'ClassifierInput',
     'ClassifierResponse',
     'JSONContent',
+    'LlmClassifier',
     'Question',
+    'RefusalAnswer',
     'Score',
     'ScoreAnswer',
 ]

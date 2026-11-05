@@ -20,6 +20,7 @@ from unittest.mock import patch
 from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
+from fastapi.openapi.models import HTTPBase
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlowClientCredentials
@@ -859,6 +860,36 @@ class TestGetAuthResponse:
     assert result.http is not None
     assert result.http.scheme == "bearer"
     assert result.http.credentials.token == "my_http_bearer_token"
+
+  def test_get_auth_response_http_basic_str_falls_back_and_returns_none(
+      self, caplog
+  ):
+    """String under HTTP basic in temp key falls back instead of raising."""
+    config = AuthConfig(
+        auth_scheme=HTTPBase(scheme="basic"),
+        credential_key="basic_cred",
+    )
+    handler = AuthHandler(config)
+    state = MockState()
+    state["temp:basic_cred"] = "invalid_bare_string"
+
+    with caplog.at_level("WARNING", logger="google_adk"):
+      assert handler.has_auth_response(state) is False
+      assert handler.get_auth_response(state) is None
+    assert any("temp:basic_cred" in r.message for r in caplog.records)
+    assert not any("invalid_bare_string" in r.message for r in caplog.records)
+
+    valid_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="basic",
+            credentials=HttpCredentials(username="u", password="p"),
+        ),
+    )
+    state["basic_cred"] = valid_cred
+
+    assert handler.has_auth_response(state) is True
+    assert handler.get_auth_response(state) == valid_cred
 
   @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
   def test_reattaches_configured_client_for_exchange(

@@ -89,7 +89,7 @@ def test_mongodb_toolset_requires_client_or_connection_string():
 
 def test_mongodb_toolset_rejects_client_and_connection_string():
   """Constructing with both a client and a connection string raises ValueError."""
-  with pytest.raises(ValueError, match="Only one of"):
+  with pytest.raises(ValueError, match="Exactly one of"):
     MongoDbToolset(
         database_name="test_db",
         connection_string="mongodb://localhost:27017",
@@ -306,3 +306,73 @@ def test_toolset_with_caller_owned_genai_client_cannot_be_pickled(monkeypatch):
   )
   with pytest.raises(TypeError, match="genai_client"):
     pickle.dumps(toolset)
+
+
+def test_toolset_env_var_rejects_a_second_connection_source():
+  """connection_string_env_var cannot be combined with another source."""
+  with pytest.raises(ValueError, match="Exactly one of"):
+    MongoDbToolset(
+        database_name="test_db",
+        connection_string="mongodb://localhost:27017",
+        connection_string_env_var="MONGODB_URI",
+    )
+  with pytest.raises(ValueError, match="Exactly one of"):
+    MongoDbToolset(
+        database_name="test_db",
+        connection_string_env_var="MONGODB_URI",
+        mongo_client=mock.MagicMock(),
+    )
+
+
+def test_toolset_env_var_mode_resolves_the_connection_string(monkeypatch):
+  """connection_string_env_var builds the client from the env var's value."""
+  monkeypatch.setenv("ITEST_MONGODB_URI", "mongodb://localhost:27017")
+  get_mongo_client = mock.MagicMock(
+      side_effect=lambda *args, **kwargs: mock.MagicMock()
+  )
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._client.get_mongo_client",
+      get_mongo_client,
+  )
+
+  toolset = MongoDbToolset(
+      database_name="test_db", connection_string_env_var="ITEST_MONGODB_URI"
+  )
+
+  assert get_mongo_client.call_args.args == ("mongodb://localhost:27017",)
+  # The credential itself is never stored on the toolset...
+  assert toolset._connection_string is None
+  assert toolset._connection_string_env_var == "ITEST_MONGODB_URI"
+
+
+def test_toolset_env_var_mode_missing_env_var_raises(monkeypatch):
+  """A missing environment variable fails with its name in the error."""
+  monkeypatch.delenv("ITEST_MONGODB_URI", raising=False)
+  with pytest.raises(ValueError, match="ITEST_MONGODB_URI"):
+    MongoDbToolset(
+        database_name="test_db",
+        connection_string_env_var="ITEST_MONGODB_URI",
+    )
+
+
+def test_toolset_env_var_mode_pickle_carries_no_credential(monkeypatch):
+  """Pickling keeps only the env var name; the URI never enters the package."""
+  uri = "mongodb://user:s3cret@localhost:27017"
+  monkeypatch.setenv("ITEST_MONGODB_URI", uri)
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._client.get_mongo_client",
+      lambda *args, **kwargs: mock.MagicMock(),
+  )
+  toolset = MongoDbToolset(
+      database_name="test_db", connection_string_env_var="ITEST_MONGODB_URI"
+  )
+
+  payload = pickle.dumps(toolset)
+
+  assert uri.encode() not in payload
+  assert b"s3cret" not in payload
+  assert b"ITEST_MONGODB_URI" in payload
+  # ...and restoring re-resolves from the environment on the destination.
+  restored = pickle.loads(payload)
+  assert restored._client is not None
+  assert restored._connection_string is None

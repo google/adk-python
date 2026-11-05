@@ -17,8 +17,9 @@ name: ADK Pull Request Triaging Agent
 on:
   # React within seconds of a PR arriving so the owner is assigned promptly.
   # pull_request_target (not pull_request) is required so the run has the
-  # base-repo token needed to assign on community fork PRs; this workflow only
-  # reads PR metadata via the API and never checks out untrusted PR code.
+  # ADK_TRIAGE_AGENT secret needed to assign on community fork PRs; this
+  # workflow only reads PR metadata via the API and never checks out untrusted
+  # PR code.
   #
   # Only events that bring in a new PR are listed. Pushes to an open PR and a
   # periodic backfill would both re-assign an owner a maintainer had just taken
@@ -48,7 +49,6 @@ jobs:
     if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
       contents: read
 
     steps:

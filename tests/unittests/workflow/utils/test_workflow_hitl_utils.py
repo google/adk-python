@@ -22,12 +22,11 @@ from urllib.parse import urlparse
 from authlib.oauth2.rfc6749 import OAuth2Token
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from google.adk.auth.auth_handler import AuthHandler
-from google.adk.events.event import Event
-from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
-from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow._errors import WorkflowDataError
+from google.adk.workflow.utils import _workflow_hitl_utils
 from google.adk.workflow.utils._workflow_hitl_utils import apply_confirmation_resume
 from google.adk.workflow.utils._workflow_hitl_utils import auth_interrupt_id
 from google.adk.workflow.utils._workflow_hitl_utils import confirmation_interrupt_id
@@ -37,7 +36,6 @@ from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.adk.workflow.utils._workflow_hitl_utils import has_auth_credential
 from google.adk.workflow.utils._workflow_hitl_utils import process_auth_resume
-from google.genai import types
 import pytest
 
 
@@ -70,6 +68,42 @@ def test_apply_confirmation_resume():
   assert ctx.tool_confirmation == ToolConfirmation(
       confirmed=True, payload={"note": "approved"}
   )
+
+
+def test_apply_confirmation_resume_wrapped_parsed_dict():
+  """Resume sets tool_confirmation from a wrapped parsed dict."""
+  ctx = MagicMock()
+  ctx.node_path = "wf@1/node@1"
+  ctx.tool_confirmation = None
+  ctx.resume_inputs = {
+      "wf_tool_confirmation:wf@1/node@1": {
+          "response": {
+              "confirmed": True,
+              "payload": {"note": "approved"},
+          }
+      }
+  }
+
+  assert apply_confirmation_resume(ctx) is True
+  assert ctx.tool_confirmation == ToolConfirmation(
+      confirmed=True, payload={"note": "approved"}
+  )
+
+
+def test_parse_tool_confirmation_invalid_inner_value():
+  """Invalid inner value in wrapper raises WorkflowDataError."""
+  with pytest.raises(
+      WorkflowDataError, match="Invalid tool confirmation response"
+  ):
+    _workflow_hitl_utils.parse_tool_confirmation({"response": 123})
+
+
+def test_parse_tool_confirmation_wrapped_dict_with_none_field():
+  """Omitted fields serialized as None inside wrapper are dropped."""
+  res = _workflow_hitl_utils.parse_tool_confirmation(
+      {"response": {"confirmed": True, "hint": None}}
+  )
+  assert res == ToolConfirmation(confirmed=True)
 
 
 def test_create_confirmation_request_input():
@@ -284,7 +318,7 @@ class TestProcessAuthResume:
 
   @pytest.mark.asyncio
   async def test_plain_value_becomes_api_key_credential(self):
-    """A bare string resume response is interpreted per the raw credential type."""
+    """A bare string resume response is interpreted per the auth scheme."""
     from google.adk.auth.auth_credential import AuthCredentialTypes
 
     auth_config = _api_key_auth_config()
@@ -298,6 +332,123 @@ class TestProcessAuthResume:
     stored = state["temp:node-cred"]
     assert stored.auth_type == AuthCredentialTypes.API_KEY
     assert stored.api_key == "user-supplied-key"
+    assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_plain_value_becomes_api_key_without_raw_credential(self):
+    """APIKey scheme without raw_auth_credential wraps a string as a key."""
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_tool import AuthConfig
+
+    auth_config = AuthConfig(
+        auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+        credential_key="node-cred",
+    )
+    state = _empty_state()
+
+    await process_auth_resume("k", auth_config, state, "auth-id-1")
+
+    stored = state["temp:node-cred"]
+    assert stored.auth_type == AuthCredentialTypes.API_KEY
+    assert stored.api_key == "k"
+    assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_api_key_config_validates_auth_credential_dict(self):
+    """APIKey config validates an AuthCredential dict instead of str()."""
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+
+    auth_config = _api_key_auth_config()
+    state = _empty_state()
+
+    await process_auth_resume(
+        {"auth_type": "apiKey", "api_key": "k"},
+        auth_config,
+        state,
+        "auth-id-1",
+    )
+
+    stored = state["temp:node-cred"]
+    assert stored.auth_type == AuthCredentialTypes.API_KEY
+    assert stored.api_key == "k"
+    assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_plain_value_becomes_http_bearer_credential(self):
+    """HTTPBearer scheme wraps a bare string as a bearer credential."""
+    from fastapi.openapi.models import HTTPBearer
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_tool import AuthConfig
+
+    auth_config = AuthConfig(
+        auth_scheme=HTTPBearer(),
+        credential_key="node-cred",
+    )
+    state = _empty_state()
+
+    await process_auth_resume("tok", auth_config, state, "auth-id-1")
+
+    stored = state["temp:node-cred"]
+    assert stored.auth_type == AuthCredentialTypes.HTTP
+    assert stored.http is not None
+    assert stored.http.scheme == "bearer"
+    assert stored.http.credentials.token == "tok"
+    assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_plain_value_rejected_for_http_basic_scheme(self):
+    """HTTP basic scheme rejects a bare token string on resume."""
+    from fastapi.openapi.models import HTTPBase
+    from google.adk.auth.auth_tool import AuthConfig
+    from google.adk.workflow._errors import WorkflowDataError
+
+    auth_config = AuthConfig(
+        auth_scheme=HTTPBase(scheme="basic"),
+        credential_key="node-cred",
+    )
+    state = _empty_state()
+
+    with pytest.raises(WorkflowDataError):
+      await process_auth_resume("tok", auth_config, state, "auth-id-1")
+
+    assert has_auth_credential(auth_config, state) is False
+
+  @pytest.mark.asyncio
+  async def test_empty_string_rejected(self):
+    """An empty credential string is rejected on resume."""
+    from google.adk.workflow._errors import WorkflowDataError
+
+    auth_config = _api_key_auth_config()
+    state = _empty_state()
+
+    with pytest.raises(WorkflowDataError):
+      await process_auth_resume("", auth_config, state, "auth-id-1")
+
+    assert has_auth_credential(auth_config, state) is False
+
+  @pytest.mark.asyncio
+  async def test_numeric_value_from_unwrapped_json_becomes_string_credential(
+      self,
+  ):
+    """An all-digit key parsed as int by _unwrap_response becomes str."""
+    from fastapi.openapi.models import HTTPBearer
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_tool import AuthConfig
+
+    auth_config = AuthConfig(
+        auth_scheme=HTTPBearer(),
+        credential_key="node-cred",
+    )
+    state = _empty_state()
+
+    await process_auth_resume(12345678, auth_config, state, "auth-id-1")
+
+    stored = state["temp:node-cred"]
+    assert stored.auth_type == AuthCredentialTypes.HTTP
+    assert stored.http is not None
+    assert stored.http.credentials.token == "12345678"
     assert has_auth_credential(auth_config, state) is True
 
   @pytest.mark.asyncio
@@ -514,6 +665,40 @@ class TestProcessAuthResumeOAuth:
     with pytest.raises(ValueError):
       await process_auth_resume(
           _oauth_resume_response(auth_config, "some-other-state"),
+          auth_config,
+          state,
+          "auth-id-1",
+      )
+
+    assert self.exchanged_schemes == []
+    assert has_auth_credential(auth_config, state) is False
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "oauth2_payload",
+      [
+          {"access_token": "tok", "state": "some-other-state"},
+          {
+              "access_token": "tok",
+              "auth_code": "authorization-code",
+              "state": "some-other-state",
+          },
+      ],
+  )
+  async def test_credential_dict_with_access_token_and_mismatched_state_is_rejected(
+      self,
+      oauth2_payload,
+  ):
+    """An OAuth2 dict with access_token and wrong state is rejected."""
+    from google.adk.workflow._errors import WorkflowDataError
+
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+    create_auth_request_event(auth_config, "auth-id-1", state)
+
+    with pytest.raises(WorkflowDataError):
+      await process_auth_resume(
+          {"auth_type": "oauth2", "oauth2": oauth2_payload},
           auth_config,
           state,
           "auth-id-1",

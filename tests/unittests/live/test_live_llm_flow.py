@@ -12,28 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for _live_llm_flow helper module and its BaseLlmFlow shims."""
+"""Unit tests for the _live_llm_flow helper module."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+from typing import AsyncGenerator
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.live import _live_llm_flow
 from google.adk.live._active_background_tool import ActiveBackgroundTool
 from google.adk.live._active_streaming_tool import ActiveStreamingTool
+from google.adk.live._visual_frames import unpack_visual_frames
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from google.genai import errors
 from google.genai import types
+from pydantic import BaseModel
 import pytest
+from websockets.exceptions import ConnectionClosed
+
+from .. import testing_utils
 
 
 class _TestBaseLlmFlow(BaseLlmFlow):
@@ -176,6 +188,40 @@ async def test_postprocess_live_flow_skips_empty_response():
   assert events == []
 
 
+@pytest.mark.parametrize('control', ['turn_complete', 'interrupted'])
+async def test_postprocess_live_flow_yields_control_event_after_flushed_audio(
+    control,
+):
+  """Flushing saved audio still yields the control event that triggered it."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(
+      live_request_queue=LiveRequestQueue(),
+      run_config=RunConfig(save_live_blob=True),
+  )
+  response = LlmResponse(**{control: True})
+  event = Event(
+      id='ev-1',
+      invocation_id=context.invocation_id,
+      author='model',
+  )
+  flushed = Event(id='flushed-event')
+
+  with mock.patch.object(
+      flow._realtime_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+  ) as mock_flush:
+    mock_flush.return_value = [flushed]
+    events = [
+        e
+        async for e in _live_llm_flow.postprocess_live_flow(
+            flow, context, LlmRequest(), response, event
+        )
+    ]
+
+  assert len(events) == 2
+  assert events[0] is flushed
+  assert getattr(events[1], control) is True
+
+
 async def test_handle_control_event_flush_on_interrupted():
   """An interrupted response triggers a model-only cache flush."""
   flow = _TestBaseLlmFlow()
@@ -192,12 +238,15 @@ async def test_handle_control_event_flush_on_interrupted():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=False, flush_model_audio=True
+      context,
+      flush_user_audio=False,
+      flush_model_audio=True,
+      flush_user_visual=False,
   )
 
 
 async def test_handle_control_event_flush_on_turn_complete():
-  """A turn_complete response triggers both user and model audio cache flushes."""
+  """A turn_complete response triggers both user and model cache flushes."""
   flow = _TestBaseLlmFlow()
   context = _create_test_context(live_request_queue=LiveRequestQueue())
   response = LlmResponse(turn_complete=True)
@@ -212,7 +261,10 @@ async def test_handle_control_event_flush_on_turn_complete():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=True, flush_model_audio=True
+      context,
+      flush_user_audio=True,
+      flush_model_audio=True,
+      flush_user_visual=True,
   )
 
 
@@ -299,25 +351,6 @@ async def test_screen_live_user_content_returns_blocked_event():
   assert blocked_event.content == blocked_response.content
 
 
-async def test_base_llm_flow_forwarding_shims():
-  """BaseLlmFlow shims delegate to _live_llm_flow while preserving caller interface."""
-  flow = _TestBaseLlmFlow()
-  context = _create_test_context(live_request_queue=LiveRequestQueue())
-  update = types.LiveServerSessionResumptionUpdate(new_handle='shim-handle')
-  response = LlmResponse(live_session_resumption_update=update)
-  event = Event(id='e-shim', invocation_id=context.invocation_id)
-
-  events = [
-      e
-      async for e in flow._postprocess_live(
-          context, LlmRequest(), response, event
-      )
-  ]
-
-  assert len(events) == 1
-  assert events[0].live_session_resumption_update == update
-
-
 async def test_stop_background_tool_tasks_uses_timeout():
   """stop_background_tool_tasks uses _TOOL_SHUTDOWN_TIMEOUT_SECONDS."""
   from google.adk.live import _flow_utils
@@ -367,15 +400,16 @@ async def test_send_to_model_uses_flow_realtime_cache_manager():
   """send_to_model accesses the realtime cache manager directly from the flow instance."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
-  queue.send_realtime(types.Blob(mime_type='audio/pcm', data=b'audio_bytes'))
+  audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
+  queue.send_realtime(audio_blob)
   context = _create_test_context(
       live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
   )
   mock_connection = mock.AsyncMock()
 
   with mock.patch.object(
-      flow._realtime_cache_manager, 'cache_audio'
-  ) as mock_cache_audio:
+      flow._realtime_cache_manager, 'cache_blob'
+  ) as mock_cache_blob:
     # Run send_to_model briefly and cancel it after processing the queued item
     send_task = asyncio.create_task(
         _live_llm_flow.send_to_model(
@@ -389,11 +423,13 @@ async def test_send_to_model_uses_flow_realtime_cache_manager():
     except asyncio.CancelledError:
       pass
 
-  mock_cache_audio.assert_called_once()
+  mock_cache_blob.assert_called_once_with(
+      context, audio_blob, cache_type='input'
+  )
 
 
-async def test_send_to_model_caches_only_audio_blobs():
-  """Non-audio blobs such as video frames are sent but not cached."""
+async def test_send_to_model_keeps_non_audio_blobs_out_of_audio_cache():
+  """Non-audio blobs are sent but stay out of the audio cache."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
   audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
@@ -474,8 +510,8 @@ async def test_send_to_model_feeds_streams_set_through_deprecated_field():
   assert forwarded.blob == blob
 
 
-async def test_receive_from_model_caches_only_audio_blobs():
-  """Model audio blobs are cached; other inline blobs are not."""
+async def test_receive_from_model_keeps_non_audio_blobs_out_of_audio_cache():
+  """Model audio blobs go to the audio cache; other inline blobs don't."""
   flow = _TestBaseLlmFlow()
   context = _create_test_context(run_config=RunConfig(save_live_blob=True))
   calls = 0
@@ -516,8 +552,384 @@ async def test_receive_from_model_caches_only_audio_blobs():
   ]
 
 
+@pytest.mark.parametrize(
+    'update_without_handle',
+    [
+        types.LiveServerSessionResumptionUpdate(resumable=False),
+        types.LiveServerSessionResumptionUpdate(
+            last_consumed_client_message_index=7
+        ),
+    ],
+    ids=['not_resumable', 'consumed_index_only'],
+)
+async def test_receive_from_model_keeps_the_last_handle_the_server_offered(
+    update_without_handle: types.LiveServerSessionResumptionUpdate,
+) -> None:
+  """An update that carries no handle does not erase the one held.
+
+  While the model is generating or a tool call is in flight, the server reports
+  the session as not resumable with an update that has no handle. The handle a
+  reconnect resumes with must stay the latest one the server actually offered.
+  """
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context()
+  calls = 0
+
+  async def _receive() -> AsyncGenerator[LlmResponse, None]:
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      for update in (
+          types.LiveServerSessionResumptionUpdate(
+              new_handle='handle-1', resumable=True
+          ),
+          update_without_handle,
+          types.LiveServerSessionResumptionUpdate(
+              new_handle='handle-2', resumable=True
+          ),
+          update_without_handle,
+      ):
+        yield LlmResponse(live_session_resumption_update=update)
+
+  connection = mock.MagicMock(receive=_receive)
+
+  async for _ in _live_llm_flow.receive_from_model(
+      flow, connection, context, LlmRequest()
+  ):
+    pass
+
+  assert context.live_session_resumption_handle == 'handle-2'
+
+
+@pytest.mark.parametrize(
+    'interruption',
+    [
+        LlmResponse(go_away=types.LiveServerGoAway(time_left='10s')),
+        errors.APIError(1006, {}),
+        errors.APIError(1011, {}),
+        ConnectionClosed(None, None),
+    ],
+    ids=['go_away', 'abnormal_closure', 'internal_error', 'connection_closed'],
+)
+async def test_run_live_resumes_a_connection_lost_while_not_resumable(
+    interruption: LlmResponse | Exception,
+) -> None:
+  """A connection lost while the model is answering still resumes the session.
+
+  Setup: the server offers a handle, then reports the session as not resumable
+    because the model has started answering, and then the connection goes: a
+    GoAway, or a connection that drops.
+  Act: run the live session through `Runner.run_live`.
+  Assert: the run reconnects with the handle the server offered, and does not
+    replay the conversation history that the resumed session already holds.
+  """
+
+  class _ScriptedConnection(testing_utils.MockLlmConnection):
+    """Plays one connection's script once, raising the exceptions in it."""
+
+    def __init__(self, script: list[LlmResponse | Exception]):
+      super().__init__(llm_responses=[])
+      self.script = script
+      self.history: list[types.Content] | None = None
+
+    async def send_history(self, history: list[types.Content]) -> None:
+      self.history = history
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      while self.script:
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+          raise item
+        yield item
+
+  class _ScriptedModel(testing_utils.MockModel):
+    """Opens the next scripted connection on each connect."""
+
+    scripts: list[list[LlmResponse | Exception]]
+    connections: list[_ScriptedConnection] = []
+    handles: list[str | None] = []
+
+    # MockModel.connect is annotated as returning the connection itself, so
+    # mypy reads its yield type as Never and rejects any typed override.
+    @contextlib.asynccontextmanager
+    async def connect(  # type: ignore[override]
+        self, llm_request: LlmRequest
+    ) -> AsyncGenerator[_ScriptedConnection, None]:
+      resumption = llm_request.live_connect_config.session_resumption
+      self.handles.append(resumption.handle if resumption else None)
+      connection = _ScriptedConnection(self.scripts[len(self.connections)])
+      self.connections.append(connection)
+      yield connection
+
+  def _resumption_update(
+      *, new_handle: str | None = None, resumable: bool
+  ) -> LlmResponse:
+    return LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle=new_handle, resumable=resumable
+        )
+    )
+
+  model = _ScriptedModel(
+      responses=[],
+      scripts=[
+          [
+              _resumption_update(new_handle='handle-1', resumable=True),
+              _resumption_update(resumable=False),
+              interruption,
+          ],
+          # The resumed connection has nothing more to send, which ends the
+          # run.
+          [],
+      ],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  # An earlier turn, which a session started from scratch replays.
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id='earlier',
+          author='user',
+          content=types.UserContent('Book a table for two.'),
+      ),
+  )
+  runner = Runner(
+      app_name='app',
+      agent=LlmAgent(name='root_agent', model=model),
+      session_service=session_service,
+  )
+
+  async def _run_to_end() -> None:
+    async with contextlib.aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=LiveRequestQueue(),
+            run_config=RunConfig(
+                session_resumption=types.SessionResumptionConfig()
+            ),
+        )
+    ) as events:
+      async for _ in events:
+        pass
+
+  await asyncio.wait_for(_run_to_end(), timeout=5)
+
+  assert model.handles == [None, 'handle-1']
+  # The first connection started the session and replayed the earlier turn;
+  # the resumed one must not replay it into the session that already has it.
+  assert model.connections[0].history
+  assert model.connections[1].history is None
+
+
+async def test_turn_complete_saves_image_frames_sent_to_the_model():
+  """Camera frames sent during a turn are saved as one archive at its end."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  for data in (b'frame_1', b'frame_2'):
+    queue.send_realtime(types.Blob(mime_type='image/jpeg', data=data))
+  queue.close()
+  context = _create_test_context(
+      live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
+  )
+  artifact_service = InMemoryArtifactService()
+  context.artifact_service = artifact_service
+  await _live_llm_flow.send_to_model(
+      flow, mock.AsyncMock(), context, LlmRequest()
+  )
+
+  events = await _live_llm_flow.handle_control_event_flush(
+      flow, context, LlmResponse(turn_complete=True)
+  )
+
+  (event,) = events
+  file_data = event.content.parts[0].file_data
+  assert event.author == 'user'
+  assert file_data.mime_type == 'application/zip'
+  filename = file_data.file_uri.split('/_adk_live/')[1].split('#')[0]
+  saved = await artifact_service.load_artifact(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+      filename=filename,
+  )
+  frames, _ = unpack_visual_frames(saved.inline_data.data)
+  assert [frame.blob.data for frame in frames] == [b'frame_1', b'frame_2']
+
+
+async def _postprocess(
+    flow: BaseLlmFlow, context: InvocationContext, response: LlmResponse
+) -> list[Event]:
+  """Returns the events `postprocess_live_flow` yields for one response."""
+  event = Event(
+      id='ev-1', invocation_id=context.invocation_id, author='test_agent'
+  )
+  return [
+      e
+      async for e in _live_llm_flow.postprocess_live_flow(
+          flow, context, LlmRequest(), response, event
+      )
+  ]
+
+
+def _context_with_cached_frames(flow: BaseLlmFlow) -> InvocationContext:
+  """Returns a save_live_blob context holding two cached camera frames."""
+  context = _create_test_context(
+      live_request_queue=LiveRequestQueue(),
+      run_config=RunConfig(save_live_blob=True),
+  )
+  context.artifact_service = InMemoryArtifactService()
+  for data in (b'frame_1', b'frame_2'):
+    flow._realtime_cache_manager.cache_blob(
+        context, types.Blob(mime_type='image/jpeg', data=data), 'input'
+    )
+  return context
+
+
+async def test_turn_complete_follows_the_saved_frames_in_a_text_session():
+  """Frames from a session without audio are saved before turn_complete."""
+  flow = _TestBaseLlmFlow()
+  context = _context_with_cached_frames(flow)
+
+  saved, turn_end = await _postprocess(
+      flow, context, LlmResponse(turn_complete=True)
+  )
+
+  assert saved.content.parts[0].file_data.mime_type == 'application/zip'
+  assert turn_end.turn_complete is True
+
+
+async def test_interrupted_keeps_frames_for_the_turn_end():
+  """interrupted is yielded alone; the frames are saved at the turn end."""
+  flow = _TestBaseLlmFlow()
+  context = _context_with_cached_frames(flow)
+
+  interrupted = await _postprocess(flow, context, LlmResponse(interrupted=True))
+  saved, turn_end = await _postprocess(
+      flow, context, LlmResponse(turn_complete=True)
+  )
+
+  assert [event.interrupted for event in interrupted] == [True]
+  file_uri = saved.content.parts[0].file_data.file_uri
+  archive = await context.artifact_service.load_artifact(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+      filename=file_uri.split('/_adk_live/')[1].split('#')[0],
+  )
+  frames, _ = unpack_visual_frames(archive.inline_data.data)
+  assert [frame.blob.data for frame in frames] == [b'frame_1', b'frame_2']
+  assert turn_end.turn_complete is True
+
+
 def test_audio_cache_manager_alias_points_to_realtime_cache_manager():
   """`flow.audio_cache_manager` is kept as an alias of the flow's manager."""
   flow = _TestBaseLlmFlow()
 
   assert flow.audio_cache_manager is flow._realtime_cache_manager
+
+
+class _WeatherReport(BaseModel):
+  city: str
+  temperature_celsius: float
+
+
+def _get_weather(city: str) -> dict[str, object]:
+  """Returns the weather in a city.
+
+  Args:
+    city: The city name.
+  """
+  return {'city': city, 'temperature_celsius': 26}
+
+
+def test_run_live_ignores_output_schema(caplog):
+  """A live session gets no set_model_response tool and logs a warning."""
+  mock_model = testing_utils.MockModel.create([LlmResponse(turn_complete=True)])
+  agent = LlmAgent(
+      name='weather_agent',
+      model=mock_model,
+      tools=[_get_weather],
+      output_schema=_WeatherReport,
+  )
+  runner = testing_utils.InMemoryRunner(
+      root_agent=agent, response_modalities=['AUDIO']
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+
+  with caplog.at_level(logging.WARNING):
+    runner.run_live(live_request_queue)
+
+  llm_request = mock_model.requests[0]
+  assert SetModelResponseTool.NAME not in llm_request.tools_dict
+  assert SetModelResponseTool.NAME not in (
+      llm_request.config.system_instruction or ''
+  )
+  assert 'not supported in live mode' in caplog.text
+
+
+def test_run_live_does_not_warn_for_task_mode_output_schema(caplog):
+  """A task-mode agent reports output via finish_task, so no warning."""
+  mock_model = testing_utils.MockModel.create([LlmResponse(turn_complete=True)])
+  agent = LlmAgent(
+      name='weather_agent',
+      model=mock_model,
+      mode='task',
+      tools=[_get_weather],
+      output_schema=_WeatherReport,
+  )
+  runner = testing_utils.InMemoryRunner(
+      root_agent=agent, response_modalities=['AUDIO']
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+
+  with caplog.at_level(logging.WARNING):
+    runner.run_live(live_request_queue)
+
+  assert mock_model.requests
+  assert 'not supported in live mode' not in caplog.text
+
+
+async def test_postprocess_live_flow_does_not_synthesize_structured_response():
+  """A set_model_response call yields only the call and its response."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(live_request_queue=LiveRequestQueue())
+  llm_request = LlmRequest()
+  llm_request.append_tools([SetModelResponseTool(_WeatherReport)])
+  response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id='call-1',
+                      name=SetModelResponseTool.NAME,
+                      args={'city': 'Tokyo', 'temperature_celsius': 26},
+                  )
+              )
+          ],
+      )
+  )
+  event = Event(
+      id='ev-1',
+      invocation_id=context.invocation_id,
+      author=context.agent.name,
+  )
+
+  events = [
+      e
+      async for e in _live_llm_flow.postprocess_live_flow(
+          flow, context, llm_request, response, event
+      )
+  ]
+
+  assert len(events) == 2
+  assert events[0].get_function_calls()
+  assert events[1].get_function_responses()

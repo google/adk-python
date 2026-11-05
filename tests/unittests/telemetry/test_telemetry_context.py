@@ -20,7 +20,6 @@ import asyncio
 from collections.abc import Iterable
 import itertools
 import re
-from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
@@ -53,6 +52,8 @@ _ENV_ADMIN_LOCK = ADK_TELEMETRY_IGNORE_RUN_CONFIG
 _ENV_ADK_EXPERIMENTAL_TELEMETRY = 'ADK_EXPERIMENTAL_TELEMETRY'
 _ENV_ADK_EXPERIMENTAL_FEATURES = 'ADK_EXPERIMENTAL_TELEMETRY_FEATURES'
 
+_ENV_SCHEMA_VERSION = 'ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN'
+
 _ALL_TELEMETRY_ENV_VARS = (
     _ENV_EXPERIMENTAL,
     _ENV_CAPTURE,
@@ -60,10 +61,11 @@ _ALL_TELEMETRY_ENV_VARS = (
     _ENV_ADMIN_LOCK,
     _ENV_ADK_EXPERIMENTAL_TELEMETRY,
     _ENV_ADK_EXPERIMENTAL_FEATURES,
+    _ENV_SCHEMA_VERSION,
 )
 
 
-def _set_env(monkeypatch: pytest.MonkeyPatch, **env: Optional[str]) -> None:
+def _set_env(monkeypatch: pytest.MonkeyPatch, **env: str | None) -> None:
   """Applies a clean telemetry env: unset everything, then set the given vars.
 
   Starting from a known-empty state keeps each parametrized case hermetic
@@ -115,9 +117,9 @@ _VALID_CONSTRUCTION_TABLE = list(
     'opt_in,capture,adk_experimental_telemetry', _VALID_CONSTRUCTION_TABLE
 )
 def test_telemetry_config_construction_accepts_valid_combinations(
-    opt_in: Optional[str],
-    capture: Optional[ContentCapturingMode],
-    adk_experimental_telemetry: Optional[bool],
+    opt_in: str | None,
+    capture: ContentCapturingMode | None,
+    adk_experimental_telemetry: bool | None,
 ):
   """Every valid (opt_in, capture, adk_experimental_telemetry) triple constructs and round-trips its fields."""
   cfg = TelemetryConfig(
@@ -306,7 +308,7 @@ def test_resolution_properties_are_static_once_constructed(
   one still is what keeps a single run whole: an ``os.environ`` change part way
   through cannot leave half its telemetry gated one way and half the other.
   """
-  _set_env(monkeypatch)
+  _set_env(monkeypatch, **{_ENV_SCHEMA_VERSION: '1'})
   cfg = TelemetryConfig()  # all fields unset => pure env-fallback.
   assert cfg.should_use_experimental_genai_semconv is False
   monkeypatch.setenv(_ENV_EXPERIMENTAL, 'gen_ai_latest_experimental')
@@ -337,12 +339,44 @@ _EXPERIMENTAL_RESOLUTION_TABLE = [
 )
 def test_should_use_experimental_genai_semconv_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    opt_in: Optional[str],
-    env_value: Optional[str],
+    opt_in: str | None,
+    env_value: str | None,
     expected: bool,
 ):
   """Per-request opt_in wins; otherwise the env CSV opt-in token decides."""
-  _set_env(monkeypatch, **{_ENV_EXPERIMENTAL: env_value})
+  _set_env(
+      monkeypatch,
+      **{_ENV_EXPERIMENTAL: env_value, _ENV_SCHEMA_VERSION: '1'},
+  )
+  cfg = TelemetryConfig(genai_semconv_stability_opt_in=opt_in)
+  assert cfg.should_use_experimental_genai_semconv is expected
+
+
+@pytest.mark.parametrize(
+    'opt_in,env_value,expected',
+    [
+        # The semconv-aligned schema emits the experimental semconv with
+        # nothing opting in: the stable one is what it drops.
+        (None, None, True),
+        (None, 'gen_ai_latest_experimental', True),
+        (None, 'http_latest', True),
+        # A per-request field still outranks the schema's default, which is
+        # the only way back to the stable semconv short of pinning the schema.
+        ('stable', None, False),
+        ('experimental', None, True),
+    ],
+)
+def test_should_use_experimental_genai_semconv_defaults_on_under_schema_v2(
+    monkeypatch: pytest.MonkeyPatch,
+    opt_in: str | None,
+    env_value: str | None,
+    expected: bool,
+):
+  """Under the semconv-aligned schema the env var can only opt further in."""
+  _set_env(
+      monkeypatch,
+      **{_ENV_EXPERIMENTAL: env_value, _ENV_SCHEMA_VERSION: '2'},
+  )
   cfg = TelemetryConfig(genai_semconv_stability_opt_in=opt_in)
   assert cfg.should_use_experimental_genai_semconv is expected
 
@@ -373,8 +407,8 @@ _CAPTURE_RESOLUTION_TABLE = [
 )
 def test_content_capturing_mode_value_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    capture: Optional[ContentCapturingMode],
-    env_value: Optional[str],
+    capture: ContentCapturingMode | None,
+    env_value: str | None,
     expected: str,
 ):
   """Per-request capture field wins; else env fallback w/ legacy coercion."""
@@ -432,8 +466,8 @@ _LEGACY_SPAN_RESOLUTION_TABLE = [
 )
 def test_should_add_content_to_legacy_spans_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    capture: Optional[ContentCapturingMode],
-    env_value: Optional[str],
+    capture: ContentCapturingMode | None,
+    env_value: str | None,
     expected: bool,
 ):
   """Legacy ADK span knob: field uses OTel routing, else its own default-on env."""
@@ -546,8 +580,8 @@ _EXPERIMENTAL_FEATURE_ENV_TABLE = [
 )
 def test_experimental_feature_enabled_env_parsing(
     monkeypatch: pytest.MonkeyPatch,
-    env_value: Optional[str],
-    features_value: Optional[str],
+    env_value: str | None,
+    features_value: str | None,
     feature: _ExperimentalFeature,
     expected: bool,
 ):
@@ -621,7 +655,7 @@ def test_admin_lock_disables_all_resolution_properties(
   (empty) env defaults across all properties. The legacy span knob still
   defaults to on (its env default), matching pre-CL behavior.
   """
-  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: '1'})
+  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: '1', _ENV_SCHEMA_VERSION: '1'})
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.SPAN_AND_EVENT,
@@ -803,11 +837,11 @@ _FEATURES_FIELD_PRECEDENCE_TABLE = [
 )
 def test_features_field_precedence(
     monkeypatch: pytest.MonkeyPatch,
-    lock: Optional[str],
-    opt_in: Optional[bool],
-    features_field: Optional[Iterable[str]],
-    env_blanket: Optional[str],
-    env_features: Optional[str],
+    lock: str | None,
+    opt_in: bool | None,
+    features_field: Iterable[str] | None,
+    env_blanket: str | None,
+    env_features: str | None,
     feature: _ExperimentalFeature,
     expected: bool,
 ):
@@ -851,8 +885,8 @@ _FEATURES_FIELD_COERCION_TABLE = [
 @pytest.mark.parametrize('value,expected', _FEATURES_FIELD_COERCION_TABLE)
 def test_features_field_normalizes_its_value(
     monkeypatch: pytest.MonkeyPatch,
-    value: Optional[Iterable[str]],
-    expected: Optional[frozenset[str]],
+    value: Iterable[str] | None,
+    expected: frozenset[str] | None,
 ):
   """Any iterable of names is accepted and normalized like the env parser."""
   _set_env(monkeypatch)
@@ -913,7 +947,7 @@ def test_all_features_unrecognized_results_in_none(
 
 
 def _run_set_common_attrs(
-    telemetry_config: Optional[TelemetryConfig],
+    telemetry_config: TelemetryConfig | None,
 ) -> dict:
   """Runs set_operation_details_common_attributes and returns the result map."""
   out: dict = {}
@@ -1004,7 +1038,9 @@ def test_admin_lock_value_parsing(
   ignored and the (empty) env fallback wins; when unlocked, the cfg wins.
   Asserts across all six decision functions to pin the shared parsing.
   """
-  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: lock_value})
+  _set_env(
+      monkeypatch, **{_ENV_ADMIN_LOCK: lock_value, _ENV_SCHEMA_VERSION: '1'}
+  )
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.EVENT_ONLY,
@@ -1266,7 +1302,7 @@ async def test_concurrent_runner_invocations_do_not_leak_telemetry(
 
   async def _run(
       runner: InMemoryRunner,
-      telemetry_config: Optional[TelemetryConfig],
+      telemetry_config: TelemetryConfig | None,
   ) -> None:
     session = await runner.runner.session_service.create_session(
         app_name=runner.app_name, user_id='test_user'
@@ -1343,6 +1379,7 @@ async def test_runner_invocation_with_admin_lock_ignores_per_request_telemetry(
   """
   del span_exporter  # Wired up by fixture; not directly asserted on.
   monkeypatch.setenv(_ENV_ADMIN_LOCK, '1')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   monkeypatch.delenv(_ENV_EXPERIMENTAL, raising=False)
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
@@ -1417,6 +1454,7 @@ async def test_runner_invocation_with_capture_false_elides_legacy_span_attrs(
   """
   del log_collector  # Kept to match otel_logger wiring; not asserted on.
   monkeypatch.setenv(_ENV_ADK_SPAN_CAPTURE, 'true')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
       app_name=runner.app_name, user_id='test_user'
@@ -1473,6 +1511,7 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
   """
   del log_collector
   monkeypatch.setenv(_ENV_ADMIN_LOCK, '1')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   monkeypatch.setenv(_ENV_ADK_SPAN_CAPTURE, 'false')
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
@@ -1510,7 +1549,6 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
 # The functional matrix only ever opts in by env var, so it catches neither.
 # ---------------------------------------------------------------------------
 
-_ENV_SCHEMA_VERSION = 'ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN'
 
 # Recorded whenever a workflow scope opts in, even at a count of zero, so its
 # presence reflects the resolved config alone and not what the model reported.

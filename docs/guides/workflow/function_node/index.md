@@ -54,8 +54,9 @@ export.
 The second is `step_three`. The state key it names has to already be in state by
 the time it runs, because a parameter that is neither `ctx` nor `node_input` is
 looked up by name in `ctx.state`. If the key is missing and the parameter has no
-Python default, the node raises
-`ValueError: Missing value for parameter "user_name"` before the function body
+Python default, the node raises `WorkflowDataError`, a `ValueError` subclass,
+with `Missing value for parameter "user_name" of function "step_three". It was
+not found in ctx.state and has no default value.` before the function body
 executes at all. In this graph `step_two` is what puts the key there. When a
 parameter is genuinely optional, give it a default and the lookup stops being
 fatal.
@@ -85,6 +86,23 @@ coerced. There is no opt-out, and no kind of hint is exempt:
 
 A parameter with no annotation is passed through untouched, since there is
 nothing to build an adapter from.
+
+### Synchronous and asynchronous execution
+
+`FunctionNode` accepts synchronous `def` functions, `async def` coroutines,
+synchronous generators, and asynchronous generators. Coroutines and
+asynchronous generators execute on the caller event loop. By default,
+synchronous functions and synchronous generators also execute inline on the
+event loop thread; when the run's `RunConfig` sets `tool_thread_pool_config`,
+synchronous callables (including a synchronous callable
+`require_confirmation`) and synchronous generator steps run on the configured
+tool thread pool instead so blocking I/O does not stall concurrent branches.
+
+When a synchronous callable runs on the pool, a node `timeout` raises
+`NodeTimeoutError` on schedule without waiting for the blocked call, while the
+underlying worker thread continues running in the background until the call
+returns. Until then, it continues holding a `max_workers` slot and can overlap
+with subsequent attempts if `retry_config` is also configured on the node.
 
 ### Event normalization
 
@@ -123,7 +141,9 @@ Two options are the other way round. `@node` also takes `parallel_worker` and
 In the default `'state'` mode, a parameter named `node_input` receives the
 predecessor's output and every other parameter is looked up by name in
 `ctx.state`. A parameter that is in neither, and has no default, raises
-`ValueError: Missing value for parameter "<name>"` before the function body
+`WorkflowDataError`, a `ValueError` subclass, with
+`Missing value for parameter "<name>" of function "<node_name>". It was not
+found in ctx.state and has no default value.` before the function body
 runs.
 
 In `'node_input'` mode the predecessor's output is expected to be a dict (or a

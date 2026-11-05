@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 from unittest import mock
 
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
@@ -2071,7 +2070,7 @@ async def test_receive_populates_turn_complete_reason(
 
 
 def _create_turn_complete_message(
-    interaction_status: Optional[types.InteractionStatus],
+    interaction_status: types.InteractionStatus | None,
 ) -> mock.Mock:
   """Creates a turn_complete message carrying the given interaction status.
 

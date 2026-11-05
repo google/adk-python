@@ -299,8 +299,9 @@ class SetModelResponseTool(BaseTool):
     result: object
     try:
       if self._model_type is not None:
-        # For regular BaseModel, validate directly
-        validated_model = self._model_type.model_validate(args)
+        # For regular BaseModel, validate directly. The declaration lists
+        # field names, so accept them even when the fields have aliases.
+        validated_model = self._model_type.model_validate(args, by_name=True)
         result = validated_model.model_dump(exclude_none=True)
       elif self._list_model_type is not None:
         # For list[BaseModel], extract and validate the 'items' field

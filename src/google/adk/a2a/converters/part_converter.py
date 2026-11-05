@@ -33,7 +33,6 @@ from pydantic import BaseModel
 from .. import _compat
 from ...utils.variant_utils import get_google_llm_variant
 from ...utils.variant_utils import GoogleLLMVariant
-from ..experimental import a2a_experimental
 from .utils import _get_adk_metadata_key
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -115,7 +114,6 @@ GenAIPartToA2APartConverter = Callable[
 ]
 
 
-@a2a_experimental
 def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
 ) -> Optional[genai_types.Part]:
@@ -261,7 +259,6 @@ def convert_a2a_part_to_genai_part(
   return None
 
 
-@a2a_experimental
 def convert_genai_part_to_a2a_part(
     part: genai_types.Part,
 ) -> Optional[a2a_types.Part]:

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Sequence
 import json
 import logging
 from typing import Any
@@ -37,7 +38,6 @@ from ...agents.invocation_context import InvocationContext
 from ...events._internal_metadata import without_internal_metadata
 from ...events.event import Event
 from ...events.event_actions import EventActions
-from ..experimental import a2a_experimental
 from .part_converter import A2A_DATA_PART_END_TAG
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_START_TAG
@@ -45,6 +45,9 @@ from .part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 from .utils import _get_adk_metadata_key
+from .utils import _is_failed_status
+from .utils import A2A_TASK_FAILED_ERROR_CODE
+from .utils import A2A_TASK_FAILED_ERROR_MESSAGE
 
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
@@ -153,7 +156,7 @@ Returns:
 
 
 def _convert_a2a_parts_to_adk_parts(
-    a2a_parts: List[A2APart],
+    a2a_parts: Sequence[A2APart],
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> tuple[List[genai_types.Part], set[str]]:
   """Converts a list of A2A parts to a list of ADK parts."""
@@ -207,6 +210,7 @@ def _create_event(
     custom_metadata: Any = None,
     usage_metadata: Any = None,
     error_code: Any = None,
+    error_message: Any = None,
     citation_metadata: Any = None,
     allow_empty_event: bool = False,
 ) -> Optional[Event]:
@@ -215,6 +219,7 @@ def _create_event(
   if (
       not allow_empty_event
       and not output_parts
+      and not error_code
       and event_actions == EventActions()
   ):
     return None
@@ -244,9 +249,30 @@ def _create_event(
       custom_metadata=custom_metadata,
       usage_metadata=usage_metadata,
       error_code=error_code,
+      error_message=error_message,
       citation_metadata=citation_metadata,
   )
 
+  return event
+
+
+def _extract_text_from_event(event: Event) -> str:
+  """Returns the text content of an ADK event, or an empty string."""
+  if event.content and event.content.parts:
+    return "".join(part.text or "" for part in event.content.parts if part.text)
+  return ""
+
+
+def _mark_a2a_task_failed(event: Optional[Event]) -> Optional[Event]:
+  """Marks an event produced from a failed A2A task."""
+  if event is None:
+    return None
+  if not event.error_code:
+    event.error_code = A2A_TASK_FAILED_ERROR_CODE
+  if not event.error_message:
+    event.error_message = (
+        _extract_text_from_event(event) or A2A_TASK_FAILED_ERROR_MESSAGE
+    )
   return event
 
 
@@ -512,7 +538,6 @@ def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
   return {k: v for k, v in fields.items() if v is not None}
 
 
-@a2a_experimental
 def convert_a2a_task_to_event(
     a2a_task: Task,
     author: Optional[str] = None,
@@ -567,6 +592,7 @@ def convert_a2a_task_to_event(
             _compat.TS_INPUT_REQUIRED,
             _compat.TS_AUTH_REQUIRED,
         )
+        or _is_failed_status(a2a_task.status)
         or (
             not artifact_parts
             and a2a_task.status.state in _TASK_RESPONSE_BOUNDARY_STATES
@@ -603,7 +629,7 @@ def convert_a2a_task_to_event(
     ):
       event_actions.skip_summarization = True
 
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -615,13 +641,15 @@ def convert_a2a_task_to_event(
         ),
         **metadata_fields,
     )
+    if _is_failed_status(a2a_task.status):
+      event = _mark_a2a_task_failed(event)
+    return event
 
   except Exception as e:
     logger.error("Failed to convert A2A task to event: %s", e)
     raise
 
 
-@a2a_experimental
 def convert_a2a_message_to_event(
     a2a_message: Message,
     author: Optional[str] = None,
@@ -654,7 +682,7 @@ def convert_a2a_message_to_event(
     )
     content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
     metadata_fields = _extract_all_metadata_fields(a2a_message.metadata)
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -663,13 +691,13 @@ def convert_a2a_message_to_event(
         content_role=content_role,
         **metadata_fields,
     )
+    return event
 
   except Exception as e:
     logger.error("Failed to convert A2A message to event: %s", e)
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
-@a2a_experimental
 def convert_a2a_status_update_to_event(
     a2a_status_update: TaskStatusUpdateEvent,
     author: Optional[str] = None,
@@ -713,7 +741,7 @@ def convert_a2a_status_update_to_event(
         )
     )
 
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -725,13 +753,38 @@ def convert_a2a_status_update_to_event(
         ),
         **metadata_fields,
     )
+    if _is_failed_status(a2a_status_update.status):
+      event = _mark_a2a_task_failed(event)
+    return event
   except Exception as e:
     logger.error("Failed to convert A2A status update to event: %s", e)
     raise RuntimeError(f"Failed to convert status update: {e}") from e
 
 
+def _artifact_event_id(
+    artifact_id: str, invocation_context: Optional[InvocationContext]
+) -> Optional[str]:
+  """The event id shared by every chunk of one A2A artifact.
+
+  ADK's own streaming gives the partial chunks of one model response and the
+  complete response that closes them a single event id, which is how a
+  consumer knows the complete response replaces the chunks instead of adding
+  to them. Over A2A the chunks of one response are the updates of one
+  artifact, closed by a ``last_chunk`` update that replaces it whole
+  (``append=False``), so the artifact id plays that role. It is scoped to the
+  invocation, so an artifact id a peer reuses in another invocation does not
+  collide with it in the session.
+
+  Returns None when there is no artifact id or invocation to derive it from,
+  so the event keeps a fresh id.
+  """
+  if not artifact_id or invocation_context is None:
+    return None
+  key = f"{invocation_context.invocation_id}:{artifact_id}"
+  return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+
+
 # TODO: Add support for non-ADK Artifact Updates.
-@a2a_experimental
 def convert_a2a_artifact_update_to_event(
     a2a_artifact_update: TaskArtifactUpdateEvent,
     author: Optional[str] = None,
@@ -759,7 +812,7 @@ def convert_a2a_artifact_update_to_event(
     metadata_fields = _extract_all_metadata_fields(
         a2a_artifact_update.artifact.metadata
     )
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -768,6 +821,13 @@ def convert_a2a_artifact_update_to_event(
         partial=not a2a_artifact_update.last_chunk,
         **metadata_fields,
     )
+    if event is not None:
+      event_id = _artifact_event_id(
+          a2a_artifact_update.artifact.artifact_id, invocation_context
+      )
+      if event_id:
+        event.id = event_id
+    return event
   except Exception as e:
     logger.error("Failed to convert A2A artifact update to event: %s", e)
     raise RuntimeError(f"Failed to convert artifact update: {e}") from e

@@ -19,8 +19,13 @@ from typing import TYPE_CHECKING
 
 from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
+from pydantic import ValidationError
 
 from .auth_credential import AuthCredential
+from .auth_credential import AuthCredentialTypes
+from .auth_credential import HttpAuth
+from .auth_credential import HttpCredentials
+from .auth_credential import OAuth2Auth
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
@@ -30,7 +35,7 @@ from .oauth2_credential_util import _with_configured_client
 
 if TYPE_CHECKING:
   from ..sessions.state import State
-
+  from .auth_schemes import AuthScheme
 try:
   from authlib.common.security import generate_token
   from authlib.integrations.requests_client import OAuth2Session
@@ -51,6 +56,46 @@ def _normalize_oauth_scopes(
   if isinstance(scopes, dict):
     return list(scopes.keys())
   return list(scopes)
+
+
+def _credential_from_string(
+    val: str,
+    auth_scheme: AuthScheme | None = None,
+) -> AuthCredential:
+  """Builds an AuthCredential from a raw token or key string per auth_scheme."""
+  if not val:
+    raise ValueError("Credential string cannot be empty.")
+
+  if not auth_scheme:
+    return AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token=val),
+    )
+
+  scheme_type = auth_scheme.type_
+  if scheme_type == AuthSchemeType.apiKey:
+    return AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+        api_key=val,
+    )
+  if scheme_type == AuthSchemeType.http:
+    scheme = getattr(auth_scheme, "scheme", "bearer")
+    if scheme.lower() == "basic":
+      raise ValueError(
+          "HTTP basic authentication requires username and password"
+          " credentials, not a raw token string."
+      )
+    return AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme=scheme,
+            credentials=HttpCredentials(token=val),
+        ),
+    )
+  return AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(access_token=val),
+  )
 
 
 def _credential_without_configured_secrets(
@@ -160,10 +205,16 @@ class AuthHandler:
       val = state.get(key, None)
       if isinstance(val, AuthCredential):
         return key, val
-      if isinstance(val, dict):
-        return key, AuthCredential.model_validate(val)
-      if isinstance(val, str) and val:
-        return key, self._build_credential_from_string(val)
+      try:
+        if isinstance(val, dict):
+          return key, AuthCredential.model_validate(val)
+        if isinstance(val, str) and val:
+          return key, _credential_from_string(val, self.auth_config.auth_scheme)
+      except (ValidationError, ValueError):
+        logger.warning(
+            "Ignoring malformed credential stored under state key %r.", key
+        )
+        continue
 
     return None
 
@@ -199,45 +250,6 @@ class AuthHandler:
     )
     state[key] = _credential_without_client_secret(exchange_result.credential)
     return exchange_result.credential
-
-  def _build_credential_from_string(self, val: str) -> AuthCredential:
-    from .auth_credential import AuthCredentialTypes
-    from .auth_credential import HttpAuth
-    from .auth_credential import HttpCredentials
-    from .auth_credential import OAuth2Auth
-
-    auth_scheme = self.auth_config.auth_scheme
-    if not auth_scheme:
-      return AuthCredential(
-          auth_type=AuthCredentialTypes.OAUTH2,
-          oauth2=OAuth2Auth(access_token=val),
-      )
-
-    scheme_type = auth_scheme.type_
-    if scheme_type == AuthSchemeType.apiKey:
-      return AuthCredential(
-          auth_type=AuthCredentialTypes.API_KEY,
-          api_key=val,
-      )
-    elif scheme_type == AuthSchemeType.http:
-      scheme = getattr(auth_scheme, "scheme", "bearer")
-      return AuthCredential(
-          auth_type=AuthCredentialTypes.HTTP,
-          http=HttpAuth(
-              scheme=scheme,
-              credentials=HttpCredentials(token=val),
-          ),
-      )
-    elif scheme_type in (AuthSchemeType.oauth2, AuthSchemeType.openIdConnect):
-      return AuthCredential(
-          auth_type=AuthCredentialTypes.OAUTH2,
-          oauth2=OAuth2Auth(access_token=val),
-      )
-    else:
-      return AuthCredential(
-          auth_type=AuthCredentialTypes.OAUTH2,
-          oauth2=OAuth2Auth(access_token=val),
-      )
 
   def generate_auth_request(self) -> AuthConfig:
     return _without_configured_secrets(self._generate_auth_request())

@@ -18,8 +18,6 @@ import dataclasses
 import logging
 from typing import Any
 from typing import cast
-from typing import Optional
-from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -33,6 +31,16 @@ from .base_artifact_service import BaseArtifactService
 from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _encode_segment(value: str) -> str:
+  """Escapes ``%`` and ``/`` so a scope identifier is one storage-key segment.
+
+  Identifiers may contain ``/`` by design, so joining them raw lets distinct
+  scopes share a key. Only ``%`` and ``/`` are escaped, so the key of an
+  identifier without either is unchanged.
+  """
+  return value.replace("%", "%25").replace("/", "%2F")
 
 
 @dataclasses.dataclass
@@ -74,7 +82,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
+      session_id: str | None,
   ) -> str:
     """Constructs the artifact path.
 
@@ -89,15 +97,16 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     """
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
+    scope = f"{_encode_segment(app_name)}/{_encode_segment(user_id)}"
     if self._file_has_user_namespace(filename):
-      return f"{app_name}/{user_id}/user/{filename}"
+      return f"{scope}/user/{filename}"
 
     if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     artifact_util.validate_path_segment(session_id, "session_id")
-    return f"{app_name}/{user_id}/{session_id}/{filename}"
+    return f"{scope}/{_encode_segment(session_id)}/{filename}"
 
   @override
   async def save_artifact(
@@ -106,9 +115,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      artifact: types.Part | dict[str, Any],
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     if not self._file_has_user_namespace(filename):
       if session_id is None:
@@ -169,9 +178,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[types.Part]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> types.Part | None:
     return await self._load_artifact(
         app_name=app_name,
         user_id=user_id,
@@ -187,10 +196,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
-      version: Optional[int],
+      session_id: str | None,
+      version: int | None,
       remaining_depth: int,
-  ) -> Optional[types.Part]:
+  ) -> types.Part | None:
     """Loads an artifact, following at most `remaining_depth` references."""
     path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
@@ -235,15 +244,16 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
+      self, *, app_name: str, user_id: str, session_id: str | None = None
   ) -> list[str]:
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
-    usernamespace_prefix = f"{app_name}/{user_id}/user/"
+    scope = f"{_encode_segment(app_name)}/{_encode_segment(user_id)}"
+    usernamespace_prefix = f"{scope}/user/"
     session_prefix = (
-        f"{app_name}/{user_id}/{session_id}/" if session_id else None
+        f"{scope}/{_encode_segment(session_id)}/" if session_id else None
     )
     filenames = []
     for path in self.artifacts:
@@ -262,7 +272,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> None:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if not self.artifacts.get(path):
@@ -276,7 +286,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[int]:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
@@ -291,7 +301,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[ArtifactVersion]:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     entries = self.artifacts.get(path)
@@ -306,9 +316,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     path = self._artifact_path(app_name, user_id, filename, session_id)
     entries = self.artifacts.get(path)
     if not entries:
