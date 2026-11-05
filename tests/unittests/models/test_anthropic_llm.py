@@ -5521,10 +5521,11 @@ async def test_cache_breakpoint_skips_a_reasoning_block(
 
   kwargs = await _sent_anthropic_kwargs(request)
 
-  blocks = kwargs["messages"][-1]["content"]
+  blocks = kwargs["messages"][1]["content"]
   assert blocks[-1]["type"] == expected_block_type
   assert "cache_control" not in blocks[-1]
   assert blocks[-2]["cache_control"] == _EPHEMERAL
+  assert "cache_control" not in kwargs["messages"][-1]["content"][0]
 
 
 @pytest.mark.asyncio
@@ -5555,6 +5556,61 @@ async def test_cache_breakpoint_skips_a_turn_left_with_no_blocks():
       "tools[1]": _EPHEMERAL,
       "messages[0][0]": _EPHEMERAL,
   }
+
+
+_HAIKU_USER = Content(role="user", parts=[Part.from_text(text="Write a haiku")])
+_HAIKU_MODEL = Content(
+    role="model", parts=[Part.from_text(text="An old silent pond")]
+)
+_CONTINUE_TEXT = (
+    "Continue processing previous requests as instructed."
+    " Exit or provide a summary if no more outputs are needed."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "contents,expected_roles,expected_text",
+    [
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="ends_on_assistant",
+        ),
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL, Content(role="user", parts=[])],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="trailing_user_turn_dropped",
+        ),
+        pytest.param(
+            [],
+            ["user"],
+            "Handle the requests as specified in the System Instruction.",
+            id="no_contents",
+        ),
+        pytest.param(
+            [_HAIKU_USER],
+            ["user"],
+            "Write a haiku",
+            id="ends_on_user",
+        ),
+    ],
+)
+async def test_request_ends_on_a_user_turn(
+    contents, expected_roles, expected_text, stream
+):
+  """Claude reads a trailing assistant turn as prefill, which 4.6+ rejects."""
+  request = LlmRequest(model="claude-sonnet-4-20250514", contents=contents)
+
+  kwargs = await _sent_anthropic_kwargs(request, stream=stream)
+
+  assert [m["role"] for m in kwargs["messages"]] == expected_roles
+  assert kwargs["messages"][-1]["content"] == [
+      {"type": "text", "text": expected_text}
+  ]
 
 
 @pytest.mark.asyncio
