@@ -97,7 +97,9 @@ def test_tool_declarations_survive_json_round_trip():
 
 def test_tool_declarations_keep_dicts_that_are_not_tools(caplog):
   """A dict that is not a serialized genai Tool is kept as a dict."""
-  with caplog.at_level(logging.DEBUG):
+  # Other tests (e.g. CLI tests via setup_adk_logger) may raise the
+  # "google_adk" logger level, so set it explicitly for this capture.
+  with caplog.at_level(logging.DEBUG, logger='google_adk'):
     agent_details = AgentDetails.model_validate(
         {'name': 'agent1', 'tool_declarations': [{'not_a_tool_field': 1}]}
     )
