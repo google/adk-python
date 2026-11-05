@@ -5369,7 +5369,7 @@ def test_save_artifact_returns_400_on_validation_error(
 def test_save_artifact_returns_500_on_unexpected_error(
     test_app, create_test_session, mock_artifact_service
 ):
-  """Test save artifact endpoint surfaces unexpected errors as HTTP 500."""
+  """Test save artifact endpoint reports unexpected errors as HTTP 500."""
   info = create_test_session
   url = (
       f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
@@ -5382,12 +5382,12 @@ def test_save_artifact_returns_500_on_unexpected_error(
   }
 
   mock_artifact_service.save_artifact_side_effect = RuntimeError(
-      "unexpected failure"
+      "bucket my-bucket object a/b.txt agent@example.iam.gserviceaccount.com"
   )
 
   response = test_app.post(url, json=payload)
   assert response.status_code == 500
-  assert response.json()["detail"] == "unexpected failure"
+  assert response.json()["detail"] == "Failed to save artifact"
 
 
 def test_get_artifact_version_metadata(
