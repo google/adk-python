@@ -20,6 +20,7 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+import copy
 from enum import Enum
 import inspect
 import json
@@ -203,6 +204,72 @@ def lowercase_schema_types(value: object) -> None:
     child_list = value.get(list_key)
     if isinstance(child_list, list):
       lowercase_schema_types(child_list)
+
+
+def enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
+  """Recursively transforms a JSON schema for OpenAI strict structured outputs.
+
+  OpenAI strict mode requires:
+  1. additionalProperties: false on all object schemas (including nested/$defs).
+  2. All properties listed in 'required' (no optional omissions).
+  3. $ref nodes must have no sibling keywords (e.g., no 'description' next to
+     '$ref').
+
+  This function mutates the schema dict in place.
+
+  Args:
+    schema: A JSON schema dictionary to transform.
+  """
+  if not isinstance(schema, dict):
+    return
+
+  # A root $ref beside $defs (Pydantic's form for a recursive model) is
+  # inlined, so the root is an object and the $defs it points to are kept.
+  # Root keys win over the definition's; `seen` stops a cyclic $ref chain.
+  defs = schema.get("$defs")
+  seen: set[str] = set()
+  while isinstance(defs, dict):
+    ref = schema.get("$ref")
+    if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+      break
+    name = ref.removeprefix("#/$defs/")
+    target = defs.get(name)
+    if name in seen or not isinstance(target, dict):
+      break
+    seen.add(name)
+    del schema["$ref"]
+    for key, value in copy.deepcopy(target).items():
+      schema.setdefault(key, value)
+
+  # Strip sibling keywords from $ref nodes (OpenAI rejects them).
+  if "$ref" in schema:
+    for key in list(schema.keys()):
+      if key != "$ref":
+        del schema[key]
+    return
+
+  # Ensure all object schemas have additionalProperties: false and list every
+  # property as required.
+  if schema.get("type") == "object" and "properties" in schema:
+    schema["additionalProperties"] = False
+    schema["required"] = sorted(schema["properties"].keys())
+
+  # Recurse into $defs (Pydantic's nested model definitions).
+  for defn in schema.get("$defs", {}).values():
+    enforce_strict_openai_schema(defn)
+
+  # Recurse into property schemas.
+  for prop in schema.get("properties", {}).values():
+    enforce_strict_openai_schema(prop)
+
+  # Recurse into combinators.
+  for key in ("anyOf", "oneOf", "allOf"):
+    for item in schema.get(key, []):
+      enforce_strict_openai_schema(item)
+
+  # Recurse into array item schemas.
+  if "items" in schema and isinstance(schema["items"], dict):
+    enforce_strict_openai_schema(schema["items"])
 
 
 # Anchored, linear-time removal of an optional leading language tag

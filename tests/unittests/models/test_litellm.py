@@ -36,7 +36,6 @@ from google.adk.models.lite_llm import _build_function_declaration_log
 from google.adk.models.lite_llm import _build_tool_call_from_json_dict
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
-from google.adk.models.lite_llm import _enforce_strict_openai_schema
 from google.adk.models.lite_llm import _extract_gemini_model_from_litellm
 from google.adk.models.lite_llm import _extract_json_from_deepseek_args
 from google.adk.models.lite_llm import _extract_reasoning_value
@@ -80,6 +79,7 @@ from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.utils._schema_utils import enforce_strict_openai_schema
 from google.genai import types
 import litellm
 from litellm import ChatCompletionAssistantMessage
@@ -464,7 +464,7 @@ def test_enforce_strict_openai_schema_adds_additional_properties_recursively():
   """additionalProperties: false must appear on all object schemas."""
   schema = _OuterModel.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   # Root level
   assert schema["additionalProperties"] is False
@@ -477,7 +477,7 @@ def test_enforce_strict_openai_schema_marks_all_properties_required():
   """All properties must appear in 'required', including optional fields."""
   schema = _InnerModel.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   assert sorted(schema["required"]) == ["optional_field", "value"]
 
@@ -490,17 +490,135 @@ def test_enforce_strict_openai_schema_strips_ref_sibling_keywords():
   assert "$ref" in inner_prop, "Expected Pydantic to generate a $ref property"
   assert len(inner_prop) > 1, "Expected sibling keywords alongside $ref"
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   inner_prop = schema["properties"]["inner"]
   assert list(inner_prop.keys()) == ["$ref"]
+
+
+class _TreeNode(BaseModel):
+  name: str
+  children: list["_TreeNode"] = []
+
+
+_STRICT_TREE_NODE_SCHEMA = {
+    "properties": {
+        "name": {"title": "Name", "type": "string"},
+        "children": {
+            "default": [],
+            "items": {"$ref": "#/$defs/_TreeNode"},
+            "title": "Children",
+            "type": "array",
+        },
+    },
+    "required": ["children", "name"],
+    "title": "_TreeNode",
+    "type": "object",
+    "additionalProperties": False,
+}
+_EXPECTED_STRICT_RECURSIVE_SCHEMA = {
+    **_STRICT_TREE_NODE_SCHEMA,
+    "$defs": {"_TreeNode": _STRICT_TREE_NODE_SCHEMA},
+}
+
+
+def test_enforce_strict_openai_schema_inlines_root_ref():
+  """A self-referencing model must keep the $defs its root $ref points to."""
+  schema = _TreeNode.model_json_schema()
+  # Pydantic v2 emits a root {"$defs": ..., "$ref": ...} for recursive models.
+  assert sorted(schema) == ["$defs", "$ref"]
+
+  enforce_strict_openai_schema(schema)
+
+  assert schema == _EXPECTED_STRICT_RECURSIVE_SCHEMA
+
+
+def test_to_litellm_response_format_recursive_schema():
+  """A recursive model must keep $defs in _to_litellm_response_format."""
+  result = _to_litellm_response_format(_TreeNode, model="openai/gpt-4o-mini")
+
+  assert result == {
+      "type": "json_schema",
+      "json_schema": {
+          "name": "_TreeNode",
+          "strict": True,
+          "schema": _EXPECTED_STRICT_RECURSIVE_SCHEMA,
+      },
+  }
+
+
+_STRICT_X_OBJECT = {
+    "type": "object",
+    "properties": {"x": {"type": "integer"}},
+    "additionalProperties": False,
+    "required": ["x"],
+}
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        pytest.param(
+            {
+                "$ref": "#/$defs/A",
+                "$defs": {
+                    "A": {"$ref": "#/$defs/B"},
+                    "B": {
+                        "type": "object",
+                        "properties": {"x": {"type": "integer"}},
+                    },
+                },
+            },
+            {
+                **_STRICT_X_OBJECT,
+                "$defs": {"A": {"$ref": "#/$defs/B"}, "B": _STRICT_X_OBJECT},
+            },
+            id="multi_hop_chain",
+        ),
+        pytest.param(
+            {
+                "$ref": "#/$defs/A",
+                "$defs": {
+                    "A": {"$ref": "#/$defs/B"},
+                    "B": {"$ref": "#/$defs/A"},
+                },
+            },
+            {"$ref": "#/$defs/A"},
+            id="cycle",
+        ),
+        pytest.param(
+            {
+                "$ref": "#/$defs/A",
+                "description": "root",
+                "$defs": {
+                    "A": {
+                        "type": "object",
+                        "description": "def",
+                        "properties": {"x": {"type": "integer"}},
+                    }
+                },
+            },
+            {
+                **_STRICT_X_OBJECT,
+                "description": "root",
+                "$defs": {"A": {**_STRICT_X_OBJECT, "description": "def"}},
+            },
+            id="root_keys_win",
+        ),
+    ],
+)
+def test_enforce_strict_openai_schema_root_ref_edge_cases(schema, expected):
+  """Root $ref chains resolve, cycles stop, and root keys are kept."""
+  enforce_strict_openai_schema(schema)
+
+  assert schema == expected
 
 
 def test_enforce_strict_openai_schema_handles_array_items():
   """Array item schemas should also be recursively transformed."""
   schema = _WithList.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   assert schema["additionalProperties"] is False
   inner_def = schema["$defs"]["_InnerModel"]
@@ -512,7 +630,7 @@ def test_enforce_strict_openai_schema_preserves_anyof_and_default():
   """anyOf structure and default value for Optional fields must be preserved."""
   schema = _InnerModel.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   opt_prop = schema["properties"]["optional_field"]
   assert opt_prop["anyOf"] == [{"type": "string"}, {"type": "null"}]
