@@ -37,6 +37,7 @@ from google.adk.runners import InMemoryRunner
 from google.genai import Client
 from google.genai import interactions
 from google.genai import types
+from google.genai import version as genai_version
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionResultStep
@@ -381,6 +382,191 @@ class TestConvertPartToInteractionContent:
         'temperature': 20,
         'condition': 'sunny',
     }
+
+  @pytest.mark.parametrize(
+      ('mime_type', 'content_type'),
+      [
+          ('image/png', 'image'),
+          ('audio/wav', 'audio'),
+          ('video/mp4', 'video'),
+          ('application/pdf', 'document'),
+      ],
+  )
+  def test_function_response_with_media(
+      self, monkeypatch, mime_type, content_type
+  ):
+    """Media a tool attached to its response is sent after its JSON."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'media-bytes', mime_type=mime_type
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': content_type,
+                'data': base64.b64encode(b'media-bytes').decode(),
+                'mime_type': mime_type,
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_with_media_uri(self, monkeypatch):
+    """Media a tool returned as a uri is sent by uri."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='fetch_report',
+            response={'pages': 2},
+            parts=[
+                types.FunctionResponsePart.from_uri(
+                    file_uri='gs://bucket/report.pdf',
+                    mime_type='application/pdf',
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='fetch_report',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"pages": 2}'},
+            {
+                'type': 'document',
+                'uri': 'gs://bucket/report.pdf',
+                'mime_type': 'application/pdf',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_drops_only_the_media_the_client_cannot_send(
+      self, monkeypatch
+  ):
+    """Media the client can send still goes out after a part it cannot."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                ),
+                types.FunctionResponsePart.from_bytes(
+                    data=b'png-bytes', mime_type='image/png'
+                ),
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': 'image',
+                'data': base64.b64encode(b'png-bytes').decode(),
+                'mime_type': 'image/png',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_media_the_client_cannot_send_is_dropped(
+      self, monkeypatch, caplog
+  ):
+    """Media the client cannot send is dropped, warned about once."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='record_audio',
+            response={'duration': 3},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                )
+            ],
+        )
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils._convert_part_to_interaction_content(part)
+      # History is reconverted every turn; the drop is reported only once.
+      interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='record_audio',
+        call_id='call_123',
+        result={'duration': 3},
+        is_error=False,
+    )
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert warnings == [
+        'Dropping tool result media of type audio/wav, which the installed'
+        ' google-genai cannot send in a function result; google-genai 2.33'
+        ' and later can.'
+    ]
+
+  def test_function_response_media_types_follow_the_client_release(self):
+    """google-genai 2.33 added audio, video and document to image."""
+    release = tuple(int(n) for n in genai_version.__version__.split('.')[:2])
+    expected = (
+        {'image', 'audio', 'video', 'document'}
+        if release >= (2, 33)
+        else {'image'}
+    )
+    assert interactions_utils._FUNCTION_RESULT_MEDIA_TYPES == expected
 
   def test_function_response_simple(self):
     """Test converting a function response Part with simple response."""
