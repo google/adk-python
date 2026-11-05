@@ -22,6 +22,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.models.llm_request import LlmRequest
@@ -37,6 +38,7 @@ from google.adk.workflow._parallel_worker import _ParallelWorker as ParallelWork
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils import _replay_manager
 from google.adk.workflow.utils import _replay_sequence_barrier
+from google.adk.workflow.utils import _workflow_hitl_utils
 from google.genai import types
 from pydantic import Field
 import pytest
@@ -583,3 +585,81 @@ async def test_max_concurrency_held_transfer_reports_divergence(
 
   with pytest.raises(RuntimeError, match='Replay divergence detected'):
     await run(build_runner(with_b=False), answer(events2, 'sub'), invocation_id)
+
+
+@pytest.mark.parametrize('resumable', [True, False])
+@pytest.mark.asyncio
+async def test_slow_resumed_node_does_not_block_replayed_sibling(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    resumable: bool,
+):
+  """A resumed node that runs longer than the barrier timeout still finishes.
+
+  Setup:
+    `approve_then_job` asks for approval, and `report` completes after that
+    request; a JoinNode waits for both. The barrier timeout is shortened.
+  Act:
+    - Turn 1: `approve_then_job` pauses and `report` completes.
+    - Turn 2: approve, and the job runs longer than the barrier timeout.
+  Assert:
+    - The join gets both outputs and `report` is replayed, not run again.
+  """
+  monkeypatch.setattr(
+      _replay_manager,
+      'ReplaySequenceBarrier',
+      functools.partial(
+          _replay_sequence_barrier.ReplaySequenceBarrier, timeout_sec=0.2
+      ),
+  )
+  calls = []
+
+  async def approve_then_job(
+      ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    del node_input
+    if not ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approve', message='approve?')
+      return
+    calls.append('job')
+    await asyncio.sleep(0.5)
+    yield 'job_done'
+
+  async def report(node_input: Any) -> str:
+    del node_input
+    await asyncio.sleep(0.05)
+    calls.append('report')
+    return 'report_done'
+
+  job = FunctionNode(func=approve_then_job, rerun_on_resume=True)
+  workflow = Workflow(
+      name='root',
+      edges=[(START, (job, report)), ((job, report), JoinNode(name='join'))],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=workflow,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  [interrupt_id] = [
+      interrupt_id
+      for event in events1
+      for interrupt_id in extract_event_interrupt_ids(event)
+  ]
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          _workflow_hitl_utils.create_request_input_response(
+              interrupt_id, {'ok': True}
+          )
+      ),
+      invocation_id=events1[0].invocation_id if resumable else None,
+  )
+
+  outputs = [e.output for e in events2 if e.output is not None]
+  assert {'approve_then_job': 'job_done', 'report': 'report_done'} in outputs
+  assert calls == ['report', 'job']

@@ -17,7 +17,6 @@ import concurrent.futures
 from functools import cached_property
 import logging
 import sys
-from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -1965,9 +1964,9 @@ async def test_connect_safety_settings_remain_none_when_unset(
 async def test_preprocess_request_handles_backend_specific_fields(
     gemini_llm: Gemini,
     api_backend: GoogleLLMVariant,
-    expected_file_display_name: Optional[str],
-    expected_inline_display_name: Optional[str],
-    expected_labels: Optional[str],
+    expected_file_display_name: str | None,
+    expected_inline_display_name: str | None,
+    expected_labels: str | None,
 ):
   """Tests that _preprocess_request correctly sanitizes fields based on the API backend.
 

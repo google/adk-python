@@ -34,6 +34,8 @@ from google.adk.labs.classifiers import ClassifierResponse
 from google.adk.labs.classifiers import Question
 from google.adk.labs.classifiers import RefusalAnswer
 from google.adk.labs.classifiers import ScoreAnswer
+from google.adk.utils._client_labels_utils import classifier_client_label
+from google.adk.utils._client_labels_utils import get_client_labels
 from google.adk.workflow import DEFAULT_ROUTE
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
@@ -67,7 +69,11 @@ class _FixedClassifier(BaseClassifier):
       input: ClassifierInput,
       questions: Mapping[str, Question],
   ) -> ClassifierResponse:
-    self.calls.append({'input': input, 'questions': dict(questions)})
+    self.calls.append({
+        'input': input,
+        'questions': dict(questions),
+        'client_labels': get_client_labels(),
+    })
     answers = {} if self.answer is None else {n: self.answer for n in questions}
     return ClassifierResponse(model_version=self.model, answers=answers)
 
@@ -149,6 +155,26 @@ async def test_binary_routes_on_threshold(probability, expected_route):
 
   assert len(yes.received_inputs) == expected_route
   assert len(no.received_inputs) == (not expected_route)
+
+
+async def test_labels_classifier_calls_with_the_classifier_kind():
+  """Requests a custom classifier sends carry the "custom" client label."""
+  node = _triage_node(_choice('billing'))
+  billing = InputCapturingNode(name='billing')
+  wf = Workflow(
+      name='wf',
+      edges=[
+          (START, node),
+          (node, {'billing': billing, DEFAULT_ROUTE: billing}),
+      ],
+  )
+
+  await run_workflow(wf)
+
+  assert node.classifier.calls[0]['client_labels'][-1] == (
+      classifier_client_label('custom')
+  )
+  assert classifier_client_label('custom') not in get_client_labels()
 
 
 async def test_answer_key_stores_answer_in_state():

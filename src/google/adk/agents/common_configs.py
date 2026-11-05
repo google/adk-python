@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import model_validator
@@ -50,7 +48,7 @@ class AgentRefConfig(BaseModel):
 
   model_config = ConfigDict(extra="forbid")
 
-  config_path: Optional[str] = None
+  config_path: str | None = None
   """The YAML config file path of the sub-agent.
 
   Only one of `config_path` or `code` can be set.
@@ -64,7 +62,7 @@ class AgentRefConfig(BaseModel):
     ```
   """
 
-  code: Optional[str] = None
+  code: str | None = None
   """The agent instance defined in the code.
 
   Only one of `config` or `code` can be set.

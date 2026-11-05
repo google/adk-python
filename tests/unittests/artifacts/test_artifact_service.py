@@ -27,8 +27,6 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 from typing import Callable
-from typing import Optional
-from typing import Union
 from unittest import mock
 from unittest.mock import patch
 from urllib.parse import urlparse
@@ -76,8 +74,8 @@ class MockBlob:
         name: The name of the blob.
     """
     self.name = name
-    self.content: Optional[bytes] = None
-    self.content_type: Optional[str] = None
+    self.content: bytes | None = None
+    self.content_type: str | None = None
     self.time_created = FIXED_DATETIME
     self.metadata: dict[str, Any] = {}
     # GCS evaluates a generation precondition and applies the write as one
@@ -86,9 +84,9 @@ class MockBlob:
 
   def upload_from_string(
       self,
-      data: Union[str, bytes],
-      content_type: Optional[str] = None,
-      if_generation_match: Optional[int] = None,
+      data: str | bytes,
+      content_type: str | None = None,
+      if_generation_match: int | None = None,
   ) -> None:
     """Mocks uploading data to the blob (from a string or bytes).
 
@@ -139,7 +137,7 @@ class MockBlob:
       self,
       expiration: Any = None,
       method: str = "GET",
-      version: Optional[str] = None,
+      version: str | None = None,
       **kwargs: Any,
   ) -> str:
     """Mocks generating a signed URL for the blob."""
@@ -176,7 +174,7 @@ class MockBucket:
         self.blobs[blob_name] = MockBlob(blob_name)
       return self.blobs[blob_name]
 
-  def get_blob(self, blob_name: str) -> Optional[MockBlob]:
+  def get_blob(self, blob_name: str) -> MockBlob | None:
     """Mocks getting a blob from storage if it exists and has content."""
     blob = self.blobs.get(blob_name)
     if blob and blob.content is not None:
@@ -197,7 +195,7 @@ class MockClient:
       self.buckets[bucket_name] = MockBucket(bucket_name)
     return self.buckets[bucket_name]
 
-  def list_blobs(self, bucket: MockBucket, prefix: Optional[str] = None):
+  def list_blobs(self, bucket: MockBucket, prefix: str | None = None):
     """Mocks listing blobs in a bucket, optionally with a prefix.
 
     Results are ordered lexicographically by name, like the real client.
@@ -3717,7 +3715,7 @@ async def test_artifact_removed_by_rewind_loads_as_none(
     artifact_service_factory: Callable[
         [ArtifactServiceType], BaseArtifactService
     ],
-    version: Optional[int],
+    version: int | None,
 ) -> None:
   """A version holding the rewind tombstone loads as absent."""
   artifact_service = artifact_service_factory(service_type)

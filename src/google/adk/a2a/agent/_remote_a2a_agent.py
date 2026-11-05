@@ -87,7 +87,6 @@ from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..converters.utils import _is_failed_status
 from ..converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from ..converters.utils import A2A_TASK_FAILED_ERROR_MESSAGE
-from ..experimental import a2a_experimental
 from ..logs.log_utils import build_a2a_request_log
 from ..logs.log_utils import build_a2a_response_log
 from .config import A2aCardRequestConfig
@@ -447,14 +446,12 @@ def _card_target_origin(url: str) -> tuple[str, str, Optional[int]]:
   return scheme, host, port
 
 
-@a2a_experimental
 class AgentCardResolutionError(Exception):
   """Raised when agent card resolution fails."""
 
   pass
 
 
-@a2a_experimental
 class A2AClientError(Exception):
   """Raised when A2A client operations fail."""
 
@@ -695,7 +692,6 @@ def _build_auth_interceptors(
   )
 
 
-@a2a_experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
 

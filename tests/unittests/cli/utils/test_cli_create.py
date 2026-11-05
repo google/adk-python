@@ -586,6 +586,7 @@ def test_handle_login_with_google_option_2(
 ) -> None:
   """User selects 2, goes through express sign up."""
   monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(_onboarding, "get_gcp_project_from_gcloud", lambda: "")
   monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
@@ -660,6 +661,7 @@ def test_handle_login_with_google_option_3(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   """User selects 3, aborts."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
   monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")

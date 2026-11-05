@@ -23,6 +23,7 @@ from unittest import mock
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -32,7 +33,9 @@ from google.adk.events.request_input import RequestInput
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils import _function_call_names
 from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
@@ -295,6 +298,85 @@ async def test_agent_node_that_spoke_before_pausing_reruns_on_resume(
   ]
   assert resumed_texts == ['Approved, so I sent it.']
   assert 'Waiting for you to approve.' not in [e.output for e in events2]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize(
+    'stored_as_message', [False, True], ids=['output_stored', 'message_only']
+)
+@pytest.mark.parametrize(
+    'reply',
+    [
+        '{"title": "Weekly", "bullets": ["one"]}',
+        '```json\n{"title": "Weekly", "bullets": ["one"]}\n```',
+    ],
+    ids=['unfenced', 'fenced'],
+)
+@pytest.mark.asyncio
+async def test_resume_replays_schema_agent_output_as_parsed_live(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+    stored_as_message: bool,
+    reply: str,
+):
+  """A finished schema agent replays on resume the output it parsed live.
+
+  The live path strips a Markdown fence before validating against
+  output_schema. Sessions saved by ADK 2.10 and earlier hold only the reply
+  text, so a resume rebuilds the output from that message.
+  """
+
+  class Digest(BaseModel):
+    title: str
+    bullets: list[str]
+
+  mock_model = testing_utils.MockModel.create(responses=[reply])
+  summarise = LlmAgent(name='summarise', model=mock_model, output_schema=Digest)
+
+  @node(rerun_on_resume=True)
+  def approve(ctx: Context, node_input: Any):
+    if 'approve' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approve', message='Publish?')
+      return
+    yield Event(output={'digest': node_input, **ctx.resume_inputs['approve']})
+
+  publish = InputCapturingNode(name='publish')
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(
+          name='digest', edges=[(START, summarise, approve, publish)]
+      ),
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  assert workflow_testing_utils.get_request_input_events(events1)
+  if stored_as_message:
+    # How ADK 2.10 and earlier stored a schema agent's reply.
+    stored = runner.runner.session_service.sessions[runner.app_name][
+        'test_user'
+    ][runner.session_id].events
+    [agent_event] = [
+        e for e in stored if e.author == 'summarise' and e.output is not None
+    ]
+    agent_event.output = None
+    agent_event.node_info.message_as_output = True
+
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('approve', {'approved': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  # One model call: the resume replayed the agent instead of rerunning it.
+  assert len(mock_model.requests) == 1
+  assert publish.received_inputs == [
+      {'digest': {'title': 'Weekly', 'bullets': ['one']}, 'approved': True}
+  ]
 
 
 @pytest.mark.asyncio
@@ -2548,3 +2630,77 @@ async def test_parallel_nested_workflows_with_hitl_resume_does_not_deadlock(
   assert workflow_testing_utils.get_request_input_events(events2) == []
   outputs2 = [e.output for e in events2 if e.output is not None]
   assert outputs2
+
+
+@pytest.mark.asyncio
+async def test_confirmation_after_parallel_agent_node_survives_resume(
+    request: pytest.FixtureRequest,
+):
+  """A HITL resume keeps a node after a ParallelAgent node on its branch.
+
+  On resume the ParallelAgent node is replayed from its stored events, which
+  include its sub-agents' relayed events. Its successor must resume on the
+  branch it paused on, not on whichever sub-branch spoke last, or it no
+  longer finds the confirmation it asked for and never runs the tool.
+  """
+  confirmation_name = (
+      _function_call_names.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  booked = []
+
+  def book() -> dict[str, str]:
+    """Books the trip."""
+    booked.append('trip')
+    return {'result': 'booked'}
+
+  research = ParallelAgent(
+      name='research',
+      sub_agents=[
+          LlmAgent(
+              name='researcher_a',
+              model=testing_utils.MockModel.create(responses=['from a']),
+          ),
+          LlmAgent(
+              name='researcher_b',
+              model=testing_utils.MockModel.create(responses=['from b']),
+          ),
+      ],
+  )
+  booker = LlmAgent(
+      name='booker',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='book', args={}),
+              'Booked.',
+          ]
+      ),
+      tools=[FunctionTool(func=book, require_confirmation=True)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='wf', edges=[(START, research, booker)]),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  confirmation_call = next(
+      part.function_call
+      for event in events1
+      for part in (event.content.parts if event.content else None) or []
+      if part.function_call and part.function_call.name == confirmation_name
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation_call.id,
+                  name=confirmation_name,
+                  response={'confirmed': True},
+              )
+          )
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert booked == ['trip']
+  assert {e.branch for e in events1 + events2 if e.author == 'booker'} == {None}

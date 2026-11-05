@@ -175,7 +175,9 @@ The runner automatically detects unclosed function calls upon cancellation and a
 Cancelling the consuming task directly seals open non-long-running tool calls
 the same way without an `abort_signal`, whereas closing the generator early
 (`aclose()` or `break`) deliberately does not seal so paused long-running calls
-stay resumable.
+stay resumable. If a newer turn updates the session in storage before abort
+cleanup finishes (`StaleSessionError`), the runner skips appending the late
+abort seal event so the newer turn's history is preserved.
 
 ## Limitations
 
