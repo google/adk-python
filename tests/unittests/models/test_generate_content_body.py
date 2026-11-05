@@ -14,19 +14,25 @@
 
 """Tests for the LlmRequest -> generateContent body conversion."""
 
-import pytest
-from google.adk.models.llm_request import LlmRequest
-from google.genai import models as _genai_models
-from google.genai import types
+import base64
+import json
+from unittest import mock
 
 from google.adk.models._generate_content_body import to_generate_content_body
+from google.adk.models.llm_request import LlmRequest
+from google.genai import _common as _genai_common
+from google.genai import Client
+from google.genai import models as _genai_models
+from google.genai import types
+import pytest
 
 # Fields that sit at the top level of a Vertex generateContent request, as of
-# google-genai 2.18.1. This list exists to be asserted against, not to be used:
+# google-genai 2.30, the floor of our pin. This list exists to be asserted against, not to be used:
 # the helper derives the split rather than reading it. If a release moves a
 # field, test_every_config_field_is_classified fails first and names it.
 TOP_LEVEL = {
     "cachedContent",
+    "continuationToken",
     "labels",
     "modelArmorConfig",
     "safetySettings",
@@ -39,6 +45,7 @@ TOP_LEVEL = {
 # Config fields the client library consumes. The endpoint rejects them.
 CLIENT_ONLY = {
     "httpOptions",
+    "automaticContinuation",
     "automaticFunctionCalling",
     "shouldReturnHttpResponse",
 }
@@ -70,9 +77,10 @@ def _request(**config_kwargs) -> LlmRequest:
 def _full_config_kwargs() -> dict:
   """Every field that can be set at once on a Vertex-bound request.
 
-  Two of the 35 are left out on purpose. response_json_schema is mutually
-  exclusive with response_schema, and enable_enhanced_civic_answers is Developer
-  API only, which test_developer_api_only_field_is_named covers separately.
+  Left out on purpose: response_json_schema is mutually exclusive with
+  response_schema. enable_enhanced_civic_answers and store are Developer API
+  only, and generation_output_config is newer than our pin's floor; each has its
+  own test below.
   """
   return dict(
       system_instruction="You are a research agent.",
@@ -92,6 +100,8 @@ def _full_config_kwargs() -> dict:
           disable=True
       ),
       should_return_http_response=True,
+      automatic_continuation=False,
+      continuation_token=b"\xb6\x89",
       temperature=0.2,
       top_p=0.9,
       top_k=40,
@@ -160,6 +170,7 @@ def test_client_only_fields_never_reach_the_wire():
               disable=True
           ),
           should_return_http_response=True,
+          automatic_continuation=False,
       )
   )
 
@@ -175,7 +186,18 @@ def test_url_routing_key_is_stripped():
   assert "_url" not in body
 
 
-def test_full_field_set_splits_eight_twentytwo_three():
+def test_every_underscore_key_is_stripped():
+  with mock.patch.object(
+      _genai_models,
+      "_GenerateContentParameters_to_vertex",
+      return_value={"_url": {}, "_query": {}, "contents": []},
+  ):
+    body = to_generate_content_body(_request(temperature=0.2))
+
+  assert body == {"contents": []}
+
+
+def test_full_field_set_splits_nine_twentytwo_four():
   body = to_generate_content_body(_request(**_full_config_kwargs()))
 
   top = set(body) - {"contents", "generationConfig"}
@@ -184,7 +206,7 @@ def test_full_field_set_splits_eight_twentytwo_three():
   assert top == TOP_LEVEL
   assert not (TOP_LEVEL & generation), "a top-level field was buried"
   assert not (CLIENT_ONLY & (top | generation))
-  # 33 set, 8 up top, 3 dropped, so 22 sampling settings and nothing lost.
+  # 35 set, 9 up top, 4 dropped, so 22 sampling settings and nothing lost.
   assert len(generation) == 22
 
 
@@ -224,6 +246,125 @@ def test_developer_api_accepts_what_vertex_rejects():
   assert body is not None
 
 
+def _needs_field(name: str) -> None:
+  if name not in types.GenerateContentConfig.model_fields:
+    pytest.skip(f"{name} is newer than this google-genai")
+
+
+def test_store_is_top_level_on_the_developer_api():
+  _needs_field("store")
+
+  body = to_generate_content_body(_request(store=True), vertexai=False)
+
+  assert body["store"] is True
+  assert "store" not in body["generationConfig"]
+
+
+def test_store_is_rejected_on_vertex_and_named():
+  _needs_field("store")
+
+  with pytest.raises(ValueError, match="LlmRequest.config.store"):
+    to_generate_content_body(_request(store=True), vertexai=True)
+
+
+def test_generation_output_config_is_renamed_and_top_level_on_vertex():
+  _needs_field("generation_output_config")
+
+  body = to_generate_content_body(
+      _request(
+          generation_output_config=types.GenerationOutputConfig(
+              output_uri_prefix="gs://bucket/prefix"
+          )
+      ),
+      vertexai=True,
+  )
+
+  assert body["outputConfig"]
+  assert "generationOutputConfig" not in body
+  assert "outputConfig" not in body["generationConfig"]
+
+
+def _image_request(**config_kwargs) -> LlmRequest:
+  return LlmRequest(
+      model="gemini-3.5-flash",
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      text="what is this", thought_signature=b"\x01\x02"
+                  ),
+                  types.Part(
+                      inline_data=types.Blob(
+                          data=b"\x89PNG\x00\xff", mime_type="image/png"
+                      )
+                  ),
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(**config_kwargs),
+  )
+
+
+def test_full_body_is_json_serializable():
+  # Tools and schemas come out of the converter as pydantic objects, and bytes as
+  # bytes. The docstring promises a body you can send, so hold it to that.
+  body = to_generate_content_body(_image_request(**_full_config_kwargs()))
+
+  assert json.loads(json.dumps(body))["tools"]
+
+
+def test_bytes_are_base64_encoded():
+  body = to_generate_content_body(
+      _image_request(continuation_token=b"\xb6\x89")
+  )
+
+  part = body["contents"][0]["parts"][1]
+  assert base64.urlsafe_b64decode(part["inlineData"]["data"]) == (
+      b"\x89PNG\x00\xff"
+  )
+  assert base64.urlsafe_b64decode(body["continuationToken"]) == b"\xb6\x89"
+
+
+@pytest.mark.parametrize(
+    "client_kwargs, config_kwargs",
+    [
+        (
+            {"vertexai": True, "project": "p", "location": "us-central1"},
+            _full_config_kwargs(),
+        ),
+        (
+            {"vertexai": False, "api_key": "k"},
+            {"tools": [_tool()], "temperature": 0.2},
+        ),
+    ],
+    ids=["vertex", "developer_api"],
+)
+def test_body_matches_what_the_genai_client_sends(client_kwargs, config_kwargs):
+  """The real check on the helper: same request, same body as genai itself."""
+  request = _image_request(**config_kwargs)
+  client = Client(**client_kwargs)
+  captured = {}
+
+  # _request sits below all of genai's own request building, so what it receives
+  # is what goes on the wire.
+  def capture(http_request, http_options=None, stream=False):
+    captured.update(http_request.data)
+    raise InterruptedError
+
+  with mock.patch.object(client._api_client, "_request", side_effect=capture):
+    with pytest.raises(InterruptedError):
+      client.models._generate_content(
+          model=request.model, contents=request.contents, config=request.config
+      )
+
+  assert captured
+  assert (
+      to_generate_content_body(request, vertexai=client_kwargs["vertexai"])
+      == captured
+  )
+
+
 def test_string_system_instruction_becomes_a_content_block():
   body = to_generate_content_body(_request(system_instruction="Be terse."))
 
@@ -253,7 +394,12 @@ def test_every_config_field_is_classified():
   known = (
       TOP_LEVEL
       | CLIENT_ONLY
-      | {"enableEnhancedCivicAnswers", "responseJsonSchema"}
+      | {
+          "enableEnhancedCivicAnswers",
+          "generationOutputConfig",
+          "responseJsonSchema",
+          "store",
+      }
   )
   body = to_generate_content_body(_request(**_full_config_kwargs()))
   classified = (
@@ -285,6 +431,8 @@ def test_every_config_field_is_classified():
         (types, "_GenerateContentParameters"),
         (_genai_models, "_GenerateContentParameters_to_vertex"),
         (_genai_models, "_GenerateContentParameters_to_mldev"),
+        (_genai_common, "convert_to_dict"),
+        (_genai_common, "encode_unserializable_types"),
     ],
 )
 def test_private_genai_symbols_still_exist(module, symbol):

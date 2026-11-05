@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from google.genai import _common as _genai_common
 from google.genai import models as _genai_models
 from google.genai import types
 
@@ -77,8 +78,9 @@ def to_generate_content_body(
       ``vertexai`` because it is the real thing rather than a stand-in.
 
   Returns:
-    A dict ready to send as the request body. The model name is not in it; the
-    caller already knows the model, and on Vertex it belongs in the URL.
+    A JSON-serializable dict ready to send as the request body. The model name
+    is not in it; the caller already knows the model, and on Vertex it belongs
+    in the URL.
 
   Raises:
     ValueError: if a config field is not valid for the target API. The message
@@ -108,9 +110,16 @@ def to_generate_content_body(
 
   # The converters return the model under a private "_url" key, because the
   # caller is normally the genai client, which uses it to build the path. It is
-  # routing information, not body content. Sending it is a 400.
-  body.pop("_url", None)
-  return body
+  # routing information, not body content. Sending it is a 400. The client drops
+  # every underscore key before sending, so do the same.
+  body = {key: value for key, value in body.items() if not key.startswith("_")}
+  # The converters leave pydantic objects and raw bytes in the dict: tools,
+  # schemas, inline images, thought signatures. genai finishes the job with
+  # these two calls just before it sends, so a caller doing its own HTTP needs
+  # them too or json.dumps fails.
+  return _genai_common.encode_unserializable_types(
+      _genai_common.convert_to_dict(body)
+  )
 
 
 def _annotate(message: str, *, vertexai: bool) -> str:
