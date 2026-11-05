@@ -2647,6 +2647,15 @@ class BigQueryLoggerConfig:
         a ``HITL_*_REQUEST`` event and ``INVOCATION_COMPLETED`` without
         ``AGENT_RESPONSE`` text) followed by the ``function_response`` turn that
         resumes it needs no reply, and that resumption turn needs no user text.
+        No turn with ``has_truncated_content`` is ready, as a row flagged
+        ``is_truncated`` that puts an event in its trace left the trace
+        without part of a payload. No other row counts: an ``LLM_REQUEST``
+        row repeats the conversation so far, so one oversized message would
+        hold back every later turn of its session.
+        ``has_truncated_content`` tells a caller that truncation keeps a turn
+        from being ready, but not whether it is the only reason: no column
+        of the views holds the other conditions of ``eval_ready``, so a
+        truncated turn may also be unfinished or lack user text.
         Each agent's ``instruction`` in the trace is the one logged by
         ``AGENT_STARTING``; when none was logged (for example a callable
         ``InstructionProvider``), it falls back to the earliest non-empty
@@ -5528,6 +5537,19 @@ WHERE
 #   ``function_response`` turn that resumes it in the next invocation also
 #   satisfy ``session_turn_eval_ready``; a turn that merely ended without a
 #   reply is not paused.
+# - Neither ``eval_ready`` nor ``session_turn_eval_ready`` holds for a turn
+#   with ``has_truncated_content``: a row that puts an event in the trace and
+#   is flagged ``is_truncated`` leaves the trace without part of its payload.
+#   No other row counts: an ``LLM_REQUEST`` row repeats the conversation so
+#   far, so one oversized message would hold back every later turn of its
+#   session.  ``has_truncated_content`` tells a caller that truncation keeps a
+#   turn from being ready, but not whether it is the only reason: no column of
+#   the views holds the other conditions of ``eval_ready``, such as
+#   ``has_user_message`` and ``is_complete``, so a truncated turn may also be
+#   unfinished or lack user text.
+#   ``is_truncated`` is a protected column, so the builders reject it in
+#   ``denied_columns``: read as FALSE, it would mark truncated turns eval
+#   ready.
 # - Every column is aggregated per session or turn, so filters on the output
 #   timestamps cannot prune the events table's ``timestamp`` partitions.
 # - ``eval_view_mode`` picks the events that must be logged for the views to be
@@ -5669,6 +5691,9 @@ def _eval_view_dataset_ref(
     view_prefix: str = "v",
 ) -> str:
   """Validates the eval view inputs and returns the table's dataset ref."""
+  # A protected column such as is_truncated cannot be denied: read as FALSE,
+  # it would mark truncated turns eval ready.
+  _validate_payload_column_denylist(list(denied_columns))
   if "content" in denied_columns:
     raise ValueError(
         "Cannot build eval view SQL when 'content' is in"
@@ -5748,6 +5773,15 @@ def _build_eval_session_view_sql(
   The view has one row per session.  Its ``trace`` column is an ``AgentData``
   object holding every turn of the session, numbered from 0 in start order.
 
+  ``eval_ready`` is FALSE for a session that has ``has_truncated_content``,
+  because a row that puts an event in its trace and is flagged
+  ``is_truncated`` left the trace without part of a payload.  No other row
+  counts, such as an ``LLM_REQUEST`` row, which repeats the conversation so
+  far.  ``has_truncated_content`` tells a caller that truncation keeps a
+  session from being ready, but not whether it is the only reason: no column
+  of the view holds the other conditions of ``eval_ready``, so a truncated
+  session may also have a turn that is unfinished or lacks user text.
+
   Args:
     full_table_id: The events table as ``project.dataset.table``.  The view is
       created in the same dataset.
@@ -5758,9 +5792,11 @@ def _build_eval_session_view_sql(
     A ``CREATE OR REPLACE VIEW`` statement.
 
   Raises:
-    ValueError: ``content`` is denied, ``full_table_id`` has no dataset or
-      has a backtick, backslash, control or line-break character, or
-      ``view_prefix`` is empty or has one of those characters.
+    ValueError: ``denied_columns`` holds ``content`` or a column that is not a
+      projectable payload column, such as the protected ``is_truncated``,
+      ``full_table_id`` has no dataset or has a backtick, backslash, control
+      or line-break character, or ``view_prefix`` is empty or has one of those
+      characters.
   """
   dataset_ref = _eval_view_dataset_ref(
       full_table_id, denied_columns, view_prefix
@@ -5783,6 +5819,15 @@ def _build_eval_turn_view_sql(
   that turn, with ``turn_index`` 0 as single-turn metrics require; the
   ``turn_index`` column keeps the turn's position in its session.
 
+  ``eval_ready`` is FALSE for a turn that has ``has_truncated_content``,
+  because a row that puts an event in its trace and is flagged
+  ``is_truncated`` left the trace without part of a payload.  No other row
+  counts, such as an ``LLM_REQUEST`` row, which repeats the conversation so
+  far.  ``has_truncated_content`` tells a caller that truncation keeps a turn
+  from being ready, but not whether it is the only reason: no column of the
+  view holds the other conditions of ``eval_ready``, so a truncated turn may
+  also be unfinished or lack user text.
+
   Args:
     full_table_id: The events table as ``project.dataset.table``.  The view is
       created in the same dataset.
@@ -5793,9 +5838,11 @@ def _build_eval_turn_view_sql(
     A ``CREATE OR REPLACE VIEW`` statement.
 
   Raises:
-    ValueError: ``content`` is denied, ``full_table_id`` has no dataset or
-      has a backtick, backslash, control or line-break character, or
-      ``view_prefix`` is empty or has one of those characters.
+    ValueError: ``denied_columns`` holds ``content`` or a column that is not a
+      projectable payload column, such as the protected ``is_truncated``,
+      ``full_table_id`` has no dataset or has a backtick, backslash, control
+      or line-break character, or ``view_prefix`` is empty or has one of those
+      characters.
   """
   dataset_ref = _eval_view_dataset_ref(
       full_table_id, denied_columns, view_prefix

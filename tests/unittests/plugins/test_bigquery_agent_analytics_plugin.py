@@ -13682,6 +13682,33 @@ class TestEvalViews:
         **columns,
     }
 
+  @staticmethod
+  def _finished_turn(
+      session_id: str, invocation_id: str, second: int, **reply_columns: Any
+  ) -> list[dict[str, Any]]:
+    """Returns the rows of a finished turn; the reply row has the columns."""
+    columns = {"session_id": session_id}
+    return [
+        TestEvalViews._event(
+            invocation_id,
+            second,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Hi"},
+            **columns,
+        ),
+        TestEvalViews._event(
+            invocation_id,
+            second + 1,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Done.'"},
+            **columns,
+            **reply_columns,
+        ),
+        TestEvalViews._event(
+            invocation_id, second + 2, "INVOCATION_COMPLETED", **columns
+        ),
+    ]
+
   def test_config_create_eval_views_default_false(self):
     """Eval views are opt-in, so default setup only creates analytics views."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
@@ -14183,7 +14210,13 @@ class TestEvalViews:
           ),
           "COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count",
           "COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count",
-          "LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content",
+          # Only a row that puts an event in the trace can mark its turn
+          # truncated, so an LLM_REQUEST row, which repeats the conversation,
+          # cannot hold back a later turn.
+          (
+              "LOGICAL_OR(event_content IS NOT NULL AND COALESCE(is_truncated,"
+              " FALSE)) AS has_truncated_content"
+          ),
           # Token totals count terminal LLM_RESPONSE rows when the turn has
           # any, so streamed usage is not counted twice.
           "JSON_VALUE(content, '$.usage.prompt') AS INT64) AS usage_prompt",
@@ -16024,6 +16057,304 @@ class TestEvalViews:
           if "function_call" in part
       )
     assert calls == ["adk_request_input"] * 3
+
+  def test_eval_truncated_turns_are_not_eval_ready(self) -> None:
+    """A row flagged is_truncated makes its turn and session not eval ready.
+
+    The other turns of the session stay ready.
+    """
+    session_view, turn_view = self._eval_views()
+    finished_turn = self._finished_turn
+    rows = [
+        *finished_turn("s-clean", "inv-clean", 0),
+        *finished_turn("s-flagged", "inv-flagged", 0, is_truncated=True),
+        *finished_turn("s-flagged", "inv-after-flagged", 10),
+    ]
+
+    turn_states = {
+        row["invocation_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in turn_view.run(rows)
+    }
+    session_states = {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    }
+    assert turn_states == {
+        "inv-clean": (False, True),
+        "inv-flagged": (True, False),
+        "inv-after-flagged": (False, True),
+    }
+    # One truncated turn is enough to hold back the session.
+    assert session_states == {
+        "s-clean": (False, True),
+        "s-flagged": (True, False),
+    }
+
+  def test_eval_truncated_row_of_a_paused_session_is_not_eval_ready(
+      self,
+  ) -> None:
+    """A truncated row in a paused or resumed turn holds back its session.
+
+    A turn that paused for a HITL answer and the turn that resumes it count as
+    ready for their session, unless one of their rows is truncated.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    confirm = "adk_request_confirmation"
+    request = {"tool": confirm, "args": {}}
+    answer = {"tool": confirm, "result": {"confirmed": True}}
+
+    def paused_and_resumed(
+        session_id: str,
+        request_columns: dict[str, Any] | None = None,
+        answer_columns: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+      """Returns a turn paused for a confirmation, and the turn that resumes it.
+
+      Args:
+        session_id: The session of both turns.
+        request_columns: More columns of the paused turn's request row.
+        answer_columns: More columns of the resumed turn's answer row.
+      """
+      columns = {"session_id": session_id}
+      return [
+          event(
+              "inv-1",
+              0,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Delete it."},
+              **columns,
+          ),
+          event(
+              "inv-1",
+              1,
+              "HITL_CONFIRMATION_REQUEST",
+              request,
+              **columns,
+              **(request_columns or {}),
+          ),
+          event("inv-1", 2, "TOOL_PAUSED", request, **columns),
+          event("inv-1", 3, "INVOCATION_COMPLETED", **columns),
+          event(
+              "inv-2",
+              10,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": f"Function response: {confirm}"},
+              **columns,
+          ),
+          event(
+              "inv-2",
+              11,
+              "HITL_CONFIRMATION_REQUEST_COMPLETED",
+              answer,
+              **columns,
+              **(answer_columns or {}),
+          ),
+          event(
+              "inv-2",
+              12,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Deleted.'"},
+              **columns,
+          ),
+          event("inv-2", 13, "INVOCATION_COMPLETED", **columns),
+      ]
+
+    rows = [
+        *paused_and_resumed("s-clean"),
+        *paused_and_resumed(
+            "s-request", request_columns={"is_truncated": True}
+        ),
+        *paused_and_resumed("s-answer", answer_columns={"is_truncated": True}),
+    ]
+
+    # (has_truncated_content, session_turn_eval_ready) of each turn.
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_truncated_content"],
+            row["session_turn_eval_ready"],
+        )
+        for row in turn_view.run(rows, cte="Turns")
+    } == {
+        ("s-clean", "inv-1"): (False, True),
+        ("s-clean", "inv-2"): (False, True),
+        ("s-request", "inv-1"): (True, False),
+        ("s-request", "inv-2"): (False, True),
+        ("s-answer", "inv-1"): (False, True),
+        ("s-answer", "inv-2"): (True, False),
+    }
+    assert {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    } == {
+        "s-clean": (False, True),
+        "s-request": (True, False),
+        "s-answer": (True, False),
+    }
+
+  def test_eval_truncated_llm_request_does_not_hold_back_later_turns(
+      self,
+  ) -> None:
+    """A later turn stays ready when only its LLM_REQUEST row is truncated.
+
+    An LLM_REQUEST row logs the conversation so far, so one oversized message
+    flags the request of every later turn, though the events that those turns
+    take from their own rows are whole.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    def turn(
+        session_id: str,
+        invocation_id: str,
+        second: int,
+        *,
+        user_truncated: bool = False,
+        request_truncated: bool = False,
+    ) -> list[dict[str, Any]]:
+      """Returns the rows of a finished turn that sent one LLM_REQUEST."""
+      columns = {"session_id": session_id}
+      return [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+              is_truncated=user_truncated,
+              **columns,
+          ),
+          event(
+              invocation_id,
+              second + 1,
+              "LLM_REQUEST",
+              {"system_prompt": "Be brief."},
+              is_truncated=request_truncated,
+              **columns,
+          ),
+          event(
+              invocation_id,
+              second + 2,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Done.'"},
+              **columns,
+          ),
+          event(invocation_id, second + 3, "INVOCATION_COMPLETED", **columns),
+      ]
+
+    rows = [
+        # The first message is oversized, and every later request repeats it.
+        *turn(
+            "s-oversized",
+            "inv-1",
+            0,
+            user_truncated=True,
+            request_truncated=True,
+        ),
+        *turn("s-oversized", "inv-2", 10, request_truncated=True),
+        *turn("s-oversized", "inv-3", 20, request_truncated=True),
+        # Only a request is truncated.
+        *turn("s-request", "inv-1", 0, request_truncated=True),
+    ]
+
+    # (has_truncated_content, eval_ready) of each turn.
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_truncated_content"],
+            row["eval_ready"],
+        )
+        for row in turn_view.run(rows)
+    } == {
+        ("s-oversized", "inv-1"): (True, False),
+        ("s-oversized", "inv-2"): (False, True),
+        ("s-oversized", "inv-3"): (False, True),
+        ("s-request", "inv-1"): (False, True),
+    }
+    # The oversized message still holds back its own session.
+    assert {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    } == {
+        "s-oversized": (True, False),
+        "s-request": (False, True),
+    }
+
+  @pytest.mark.parametrize(
+      ("event_type", "content", "puts_event_in_trace"),
+      [
+          ("USER_MESSAGE_RECEIVED", {"text_summary": "More."}, True),
+          ("TOOL_STARTING", {"tool": "lookup", "args": {"q": "x"}}, True),
+          ("TOOL_COMPLETED", {"tool": "lookup", "result": {"n": 1}}, True),
+          ("TOOL_ERROR", {"tool": "lookup"}, True),
+          (
+              "AGENT_TRANSFER",
+              {"from_agent": "root_agent", "to_agent": "helper"},
+              True,
+          ),
+          ("AGENT_RESPONSE", {"response": "text: 'More.'"}, True),
+          ("LLM_REQUEST", {"system_prompt": "Be brief."}, False),
+          ("LLM_RESPONSE", {"response": "text: 'More.'"}, False),
+          ("AGENT_STARTING", {"text_summary": "Be brief."}, False),
+          # The trace shows a HITL row for a framework tool, not its own rows.
+          ("TOOL_STARTING", {"tool": "adk_request_input", "args": {}}, False),
+          # A tool row that names no tool puts no event in the trace.
+          ("TOOL_COMPLETED", {"result": {"n": 1}}, False),
+      ],
+      ids=[
+          "user_message",
+          "tool_call",
+          "tool_response",
+          "tool_error",
+          "agent_transfer",
+          "agent_response",
+          "llm_request",
+          "llm_response",
+          "agent_starting",
+          "framework_tool_call",
+          "unnamed_tool_response",
+      ],
+  )
+  def test_eval_truncated_row_counts_only_if_it_puts_an_event_in_the_trace(
+      self,
+      event_type: str,
+      content: dict[str, Any],
+      puts_event_in_trace: bool,
+  ) -> None:
+    """A truncated row counts only if it puts an event in the trace."""
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-1", 1, event_type, content, is_truncated=True),
+        event("inv-1", 2, "AGENT_RESPONSE", {"response": "text: 'Done.'"}),
+        event("inv-1", 3, "INVOCATION_COMPLETED"),
+    ]
+
+    # (has_truncated_content, eval_ready) of the one turn and session.
+    expected = (True, False) if puts_event_in_trace else (False, True)
+    for view in (turn_view, session_view):
+      assert [
+          (row["has_truncated_content"], row["eval_ready"])
+          for row in view.run(rows)
+      ] == [expected]
+
+  @pytest.mark.parametrize(
+      "build_view_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  def test_eval_views_reject_denying_is_truncated(
+      self, build_view_sql: Callable[..., str]
+  ) -> None:
+    """A protected is_truncated column cannot be projected out of the views.
+
+    Read as FALSE, a withheld is_truncated column would mark truncated turns
+    eval ready, so the builders fail closed.
+    """
+    with pytest.raises(ValueError, match=r"got \['is_truncated'\]"):
+      build_view_sql("p.d.t", denied_columns=frozenset({"is_truncated"}))
 
   def test_eval_view_ctes_end_without_a_newline(self) -> None:
     """The shared CTEs end at the closing paren, for the view templates."""

@@ -41,6 +41,17 @@
 --     session_id for one trace per session, or session_id, invocation_id for
 --     one trace per turn.
 --
+-- Truncated content: a row that has is_truncated set lacks part of its
+-- payload.  When the row puts an event in the trace, has_truncated_content
+-- holds for its turn, and neither eval_ready nor session_turn_eval_ready
+-- does.  No other row counts, such as an LLM_REQUEST row: it repeats the
+-- conversation so far, so one oversized message would hold back every later
+-- turn of its session.  has_truncated_content tells a caller that truncation
+-- keeps a turn from being ready, but not whether it is the only reason: no
+-- column of the views holds the other conditions of eval_ready, such as
+-- has_user_message and is_complete, so a truncated turn may also be
+-- unfinished or lack user text.
+--
 -- Versioning: the _v1 in the file name is the version of this contract.  A
 -- backward-compatible fix, which keeps the placeholders and the output
 -- columns, edits the file in place; a change to either needs a new _v2 file.
@@ -466,7 +477,13 @@ WITH
         ),
         FALSE
       ) AS has_error,
-      LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content,
+      -- Whether any row that puts an event in the trace, one with an
+      -- event_content, has is_truncated set.  No other row counts: an
+      -- LLM_REQUEST row repeats the conversation so far, so one oversized
+      -- message would flag it in every later turn, though the events that
+      -- the trace takes from that turn are whole.
+      LOGICAL_OR(event_content IS NOT NULL AND COALESCE(is_truncated, FALSE))
+        AS has_truncated_content,
       COALESCE(MAX(tool_call_run_length), 0) >= 3 AS has_tool_loop,
       COALESCE(MAX(tool_call_run_length), 0)
         AS max_consecutive_identical_tool_calls,
@@ -558,6 +575,7 @@ WITH
       (
         has_user_message
         AND is_complete
+        AND NOT has_truncated_content
         AND COALESCE(ARRAY_LENGTH(events), 0) > 0
       ) AS eval_ready,
       -- In a session, a paused turn and the function response turn that
@@ -589,6 +607,7 @@ WITH
             )
           )
         )
+        AND NOT has_truncated_content
         AND COALESCE(ARRAY_LENGTH(events), 0) > 0
       ) AS session_turn_eval_ready
     FROM
