@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -50,8 +49,8 @@ FINISH_TASK_DEFAULT_WRAPPER_KEY = 'result'
 
 
 def get_output_wrapper_key(
-    output_schema: Optional[SchemaType],
-) -> Optional[str]:
+    output_schema: SchemaType | None,
+) -> str | None:
   """Determine the wrapper key for the output schema."""
   schema = output_schema if output_schema is not None else _DefaultTaskOutput
   if isinstance(schema, dict):
@@ -112,7 +111,7 @@ class FinishTaskTool(BaseTool):
     )
 
   @override
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
     """Get the function declaration for this tool."""
     raw_schema = self._adapter.json_schema()
     if self._wrapper_key:

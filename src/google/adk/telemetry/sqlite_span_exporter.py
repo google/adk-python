@@ -23,15 +23,17 @@ import threading
 from typing import cast
 from typing import Iterable
 from typing import Mapping
-from typing import Optional
 from typing import Sequence
 
+from opentelemetry.sdk.trace import Event
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import Link
 from opentelemetry.trace import SpanContext
 from opentelemetry.trace import SpanKind
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 from opentelemetry.util.types import AttributeValue
@@ -67,6 +69,11 @@ CREATE INDEX IF NOT EXISTS spans_trace_id_idx ON spans(trace_id);
 _MIGRATIONS: tuple[tuple[str, ...], ...] = (
     (_CREATE_SPANS_TABLE, _CREATE_SESSION_INDEX, _CREATE_TRACE_INDEX),
     ("ALTER TABLE spans ADD COLUMN kind TEXT NOT NULL DEFAULT 'INTERNAL'",),
+    (
+        "ALTER TABLE spans ADD COLUMN status_code TEXT",
+        "ALTER TABLE spans ADD COLUMN status_description TEXT",
+        "ALTER TABLE spans ADD COLUMN events_json TEXT",
+    ),
     ("ALTER TABLE spans ADD COLUMN links_json TEXT NOT NULL DEFAULT '[]'",),
 )
 
@@ -82,8 +89,11 @@ INSERT OR REPLACE INTO spans (
   invocation_id,
   attributes_json,
   kind,
+  status_code,
+  status_description,
+  events_json,
   links_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -105,8 +115,18 @@ def _apply_migrations(
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= len(migrations):
       return
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(spans)")}
+    if version == 3 and "links_json" in columns:
+      # Earlier builds stored links in version 3, before status and events.
+      version = 2
+    add_span_column = "ALTER TABLE spans ADD COLUMN "
     for statements in migrations[version:]:
       for statement in statements:
+        if statement.startswith(add_span_column):
+          column = statement.removeprefix(add_span_column).split(maxsplit=1)[0]
+          if column in columns:
+            continue
+          columns.add(column)
         conn.execute(statement)
     # PRAGMA takes no bind parameters; the value is an int length.
     conn.execute(f"PRAGMA user_version = {len(migrations)}")
@@ -118,14 +138,15 @@ class SqliteSpanExporter(SpanExporter):
   This is intended for local development (e.g. `adk web`) to allow reloading
   traces for older sessions after process restart.
 
-  Span kinds survive export and reload. Existing databases are upgraded in
-  place; spans saved before kind persistence retain the INTERNAL default.
+  Span kinds and links survive export and reload. Existing databases are
+  upgraded in place. Older spans retain the INTERNAL kind and empty links
+  when those fields were not saved.
   """
 
   def __init__(self, *, db_path: str):
     self._db_path = db_path
     self._lock = threading.Lock()
-    self._conn: Optional[sqlite3.Connection] = None
+    self._conn: sqlite3.Connection | None = None
     self._ensure_schema()
 
   def _get_connection(self) -> sqlite3.Connection:
@@ -168,6 +189,64 @@ class SqliteSpanExporter(SpanExporter):
     if not isinstance(decoded, dict):
       return {}
     return cast(dict[str, AttributeValue], decoded)
+
+  def _serialize_events(self, events: Sequence[Event]) -> str:
+    try:
+      return json.dumps(
+          [
+              {
+                  "name": event.name,
+                  "timestamp": event.timestamp,
+                  "attributes": dict(event.attributes or {}),
+              }
+              for event in events
+          ],
+          ensure_ascii=False,
+          default=lambda o: "<not serializable>",
+      )
+    except (TypeError, ValueError) as e:
+      logger.debug("Failed to serialize span events: %r", e)
+      return "[]"
+
+  def _deserialize_events(self, events_json: object) -> list[Event]:
+    if not isinstance(events_json, (str, bytes, bytearray)):
+      return []
+    try:
+      decoded: object = json.loads(events_json)
+    except (json.JSONDecodeError, TypeError) as e:
+      logger.debug("Failed to deserialize span events: %r", e)
+      return []
+    if not isinstance(decoded, list):
+      return []
+    events: list[Event] = []
+    for item in decoded:
+      if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+        continue
+      timestamp = item.get("timestamp")
+      # Event substitutes time_ns() for a missing timestamp; drop the event.
+      if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+        continue
+      attributes = item.get("attributes")
+      events.append(
+          Event(
+              name=item["name"],
+              attributes=attributes if isinstance(attributes, dict) else None,
+              timestamp=timestamp,
+          )
+      )
+    return events
+
+  def _deserialize_status(
+      self, status_code: object, status_description: object
+  ) -> Status:
+    try:
+      code = StatusCode[str(status_code)]
+    except KeyError:
+      return Status(StatusCode.UNSET)
+    # OpenTelemetry keeps a description only for an error status.
+    if code is StatusCode.ERROR and isinstance(status_description, str):
+      return Status(code, status_description)
+    return Status(code)
 
   def _serialize_links(self, links: Sequence[Link]) -> str:
     return json.dumps(
@@ -252,6 +331,9 @@ class SqliteSpanExporter(SpanExporter):
               invocation_id,
               self._serialize_attributes(attributes),
               span.kind.name,
+              span.status.status_code.name,
+              span.status.description,
+              self._serialize_events(span.events),
               self._serialize_links(span.links),
           ))
         conn.executemany(_INSERT_SPAN, rows)
@@ -308,6 +390,10 @@ class SqliteSpanExporter(SpanExporter):
         context=context,
         parent=parent,
         kind=SpanKind[row["kind"]],
+        status=self._deserialize_status(
+            row["status_code"], row["status_description"]
+        ),
+        events=self._deserialize_events(row["events_json"]),
         links=self._deserialize_links(row["links_json"]),
         attributes=attributes,
         start_time=row["start_time_unix_nano"],

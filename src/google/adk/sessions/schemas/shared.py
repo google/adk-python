@@ -49,7 +49,7 @@ def utc_datetime_to_timestamp(value: datetime.datetime) -> float:
 
 
 class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
-  """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
+  """A JSON-like type: JSON on PostgreSQL, JSON-serialized TEXT elsewhere."""
 
   impl = Text  # Default implementation is TEXT
   # Behavior depends only on the dialect, which the compiled cache already
@@ -58,7 +58,9 @@ class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
 
   def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
     if dialect.name == "postgresql":
-      return dialect.type_descriptor(postgresql.JSONB())
+      # Not JSONB: it reorders keys, rewrites floats such as -0.0 and 1e23,
+      # and rejects NUL, so values would not round-trip as on other dialects.
+      return dialect.type_descriptor(postgresql.JSON())
     if dialect.name == "mysql":
       # Use LONGTEXT for MySQL to address the data too long issue
       return dialect.type_descriptor(mysql.LONGTEXT())
@@ -69,7 +71,7 @@ class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
   ) -> dict[str, Any] | str | None:
     if value is not None:
       if dialect.name == "postgresql":
-        return value  # JSONB handles dict directly
+        return value  # JSON accepts dict directly
       if dialect.name == "sqlite":
         # Only SQLite TEXT is always Unicode; other backends' TEXT columns may
         # use a non-UTF-8 charset, so they keep the ASCII-only escaped form.

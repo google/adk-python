@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Sequence
 import json
 import logging
 from typing import Any
@@ -37,7 +38,6 @@ from ...agents.invocation_context import InvocationContext
 from ...events._internal_metadata import without_internal_metadata
 from ...events.event import Event
 from ...events.event_actions import EventActions
-from ..experimental import a2a_experimental
 from .part_converter import A2A_DATA_PART_END_TAG
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_START_TAG
@@ -156,7 +156,7 @@ Returns:
 
 
 def _convert_a2a_parts_to_adk_parts(
-    a2a_parts: List[A2APart],
+    a2a_parts: Sequence[A2APart],
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> tuple[List[genai_types.Part], set[str]]:
   """Converts a list of A2A parts to a list of ADK parts."""
@@ -538,7 +538,6 @@ def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
   return {k: v for k, v in fields.items() if v is not None}
 
 
-@a2a_experimental
 def convert_a2a_task_to_event(
     a2a_task: Task,
     author: Optional[str] = None,
@@ -651,7 +650,6 @@ def convert_a2a_task_to_event(
     raise
 
 
-@a2a_experimental
 def convert_a2a_message_to_event(
     a2a_message: Message,
     author: Optional[str] = None,
@@ -700,7 +698,6 @@ def convert_a2a_message_to_event(
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
-@a2a_experimental
 def convert_a2a_status_update_to_event(
     a2a_status_update: TaskStatusUpdateEvent,
     author: Optional[str] = None,
@@ -788,7 +785,6 @@ def _artifact_event_id(
 
 
 # TODO: Add support for non-ADK Artifact Updates.
-@a2a_experimental
 def convert_a2a_artifact_update_to_event(
     a2a_artifact_update: TaskArtifactUpdateEvent,
     author: Optional[str] = None,

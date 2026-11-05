@@ -23,6 +23,7 @@ installed a2a-sdk version.
 from __future__ import annotations
 
 import base64
+from collections.abc import Sequence
 import copy
 import dataclasses
 from datetime import datetime
@@ -143,17 +144,17 @@ else:
 
 if IS_A2A_V1:
   # 1.x: protobuf EnumTypeWrapper — access values as integer constants.
-  ROLE_USER = Role.Value("ROLE_USER")
-  ROLE_AGENT = Role.Value("ROLE_AGENT")
-  TS_UNKNOWN = TaskState.Value("TASK_STATE_UNSPECIFIED")
-  TS_SUBMITTED = TaskState.Value("TASK_STATE_SUBMITTED")
-  TS_WORKING = TaskState.Value("TASK_STATE_WORKING")
-  TS_COMPLETED = TaskState.Value("TASK_STATE_COMPLETED")
-  TS_FAILED = TaskState.Value("TASK_STATE_FAILED")
-  TS_INPUT_REQUIRED = TaskState.Value("TASK_STATE_INPUT_REQUIRED")
-  TS_AUTH_REQUIRED = TaskState.Value("TASK_STATE_AUTH_REQUIRED")
-  TS_CANCELED = TaskState.Value("TASK_STATE_CANCELED")
-  TS_REJECTED = TaskState.Value("TASK_STATE_REJECTED")
+  ROLE_USER = Role.ROLE_USER
+  ROLE_AGENT = Role.ROLE_AGENT
+  TS_UNKNOWN = TaskState.TASK_STATE_UNSPECIFIED
+  TS_SUBMITTED = TaskState.TASK_STATE_SUBMITTED
+  TS_WORKING = TaskState.TASK_STATE_WORKING
+  TS_COMPLETED = TaskState.TASK_STATE_COMPLETED
+  TS_FAILED = TaskState.TASK_STATE_FAILED
+  TS_INPUT_REQUIRED = TaskState.TASK_STATE_INPUT_REQUIRED
+  TS_AUTH_REQUIRED = TaskState.TASK_STATE_AUTH_REQUIRED
+  TS_CANCELED = TaskState.TASK_STATE_CANCELED
+  TS_REJECTED = TaskState.TASK_STATE_REJECTED
 
   TP_JSONRPC = TransportProtocol.JSONRPC
   TP_HTTP_JSON = TransportProtocol.HTTP_JSON
@@ -583,10 +584,10 @@ def build_agent_skill(
     id: str,
     name: str,
     description: str,
-    tags: list[str],
-    examples: list[str] | None = None,
-    input_modes: list[str] | None = None,
-    output_modes: list[str] | None = None,
+    tags: Sequence[str],
+    examples: Sequence[str] | None = None,
+    input_modes: Sequence[str] | None = None,
+    output_modes: Sequence[str] | None = None,
     security: list[dict[str, list[str]]] | None = None,
 ) -> AgentSkill:
   """Builds an ``AgentSkill`` from primitive fields."""

@@ -18,6 +18,7 @@ from abc import ABC
 from collections.abc import Callable as CallableABC
 import inspect
 import logging
+from types import UnionType
 from typing import Any
 from typing import Callable
 from typing import get_args
@@ -242,8 +243,9 @@ class BaseTool(ABC):
       if param_name in config_dict:
         value = config_dict[param_name]
 
-        # Get the actual type T of the parameter if it's Optional[T]
-        if get_origin(param_type) is Union:
+        # Get the actual type T of the parameter if it's Optional[T]. Before
+        # Python 3.14, `T | None` has origin UnionType rather than Union.
+        if get_origin(param_type) in (Union, UnionType):
           # This is Optional[T] which is Union[T, None]
           args = get_args(param_type)
           if len(args) == 2 and type(None) in args:

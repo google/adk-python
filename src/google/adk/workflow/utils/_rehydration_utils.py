@@ -37,6 +37,7 @@ from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...flows.llm_flows.tools._functions import _collect_function_call_ids
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils._schema_utils import _strip_json_code_fence
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
@@ -194,6 +195,8 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   if node.output_schema:
     if node.output_schema is str:
       return text
+    # The live path strips the fence in validate_schema; replay must match.
+    text = _strip_json_code_fence(text)
     try:
       validated: Any = TypeAdapter[Any](node.output_schema).validate_json(text)
       return node._to_serializable(validated)
@@ -414,8 +417,15 @@ def _reconstruct_node_states(
             event.branch, owner_path_builder.node_name, tool_call_ids
         )
     )
+    # Like NodeRunner._is_native_event: only the node's own events move its
+    # branch. A stored native event carries the node's name or one it inherits
+    # from an ancestor; a relayed one keeps its sub-agent's name.
+    is_native = not event.author or event.author in (
+        event_path_builder.static_path.split('/')
+    )
     if (
         is_direct
+        and is_native
         and event.branch
         and not has_claimed_branch
         and not is_tool_branch
@@ -445,7 +455,12 @@ def _reconstruct_node_states(
     if is_direct or is_delegated:
       if event.output is not None:
         child.output = event.output
-        if is_direct and not has_claimed_branch and not is_tool_branch:
+        if (
+            is_direct
+            and is_native
+            and not has_claimed_branch
+            and not is_tool_branch
+        ):
           child.branch = event.branch
       elif use_message_as_output:
         child.output = event.content

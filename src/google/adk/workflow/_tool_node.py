@@ -129,7 +129,7 @@ class _ToolNode(BaseNode):
       all_params = list(getattr(schema, 'properties', None) or ())
       required_params = list(getattr(schema, 'required', None) or ())
     else:
-      all_params, required_params = (), ()
+      all_params, required_params = [], []
 
     if args is None:
       args = {}
@@ -212,8 +212,11 @@ class _ToolNode(BaseNode):
           )
           return _AuthPending(auth_request)
       except asyncio.CancelledError as cancelled:
-        ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
-        ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
+        if ctx.function_call_id is not None:
+          ctx.actions.requested_tool_confirmations.pop(
+              ctx.function_call_id, None
+          )
+          ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
         await _tool_error_handler.notify_tool_cancelled(
             invocation_context=ctx.get_invocation_context(),
             tool=self.tool,

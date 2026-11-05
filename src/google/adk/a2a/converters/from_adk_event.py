@@ -34,7 +34,6 @@ from a2a.types import TaskStatusUpdateEvent
 from .. import _compat
 from ...events._internal_metadata import public_metadata
 from ...events.event import Event
-from ..experimental import a2a_experimental
 from .part_converter import convert_genai_part_to_a2a_part
 from .part_converter import GenAIPartToA2APartConverter
 from .utils import _get_adk_metadata_key
@@ -145,7 +144,6 @@ def create_error_status_event(
   return error_event
 
 
-@a2a_experimental
 def convert_event_to_a2a_events(
     event: Event,
     agents_artifacts: Optional[Dict[str, str]],

@@ -44,6 +44,7 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_configs import ToolArgsConfig
 from google.adk.tools.tool_context import ToolContext
@@ -204,10 +205,15 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
   assert captured['session_app_name'] == parent_app_name
 
 
-async def _capture_nested_run_config(
-    monkeypatch, parent_run_config: RunConfig
-) -> RunConfig:
-  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+async def _capture_sub_runner_kwargs(
+    monkeypatch,
+    *,
+    parent_run_config: Optional[RunConfig] = None,
+    memory_service=None,
+) -> dict[str, Any]:
+  """Returns the kwargs an AgentTool hands to the Runner it starts."""
+  if parent_run_config is None:
+    parent_run_config = RunConfig()
   captured: dict[str, Any] = {}
 
   async def _empty_async_generator():
@@ -227,7 +233,8 @@ async def _capture_nested_run_config(
         credential_service,
         plugins,
     ):
-      del app_name, artifact_service, memory_service, credential_service
+      del app_name, artifact_service, credential_service
+      captured['memory_service'] = memory_service
       self.agent = agent
       self.session_service = session_service
       self.plugin_manager = PluginManager(plugins=plugins)
@@ -275,7 +282,7 @@ async def _capture_nested_run_config(
   invocation_context = InvocationContext(
       artifact_service=InMemoryArtifactService(),
       session_service=parent_session_service,
-      memory_service=InMemoryMemoryService(),
+      memory_service=memory_service,
       plugin_manager=PluginManager(),
       invocation_id='invocation-id',
       agent=root_agent,
@@ -288,6 +295,18 @@ async def _capture_nested_run_config(
       tool_context=ToolContext(invocation_context),
   )
 
+  return captured
+
+
+async def _capture_nested_run_config(
+    monkeypatch, parent_run_config: RunConfig
+) -> RunConfig:
+  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+  captured = await _capture_sub_runner_kwargs(
+      monkeypatch,
+      parent_run_config=parent_run_config,
+      memory_service=InMemoryMemoryService(),
+  )
   return captured['run_config']
 
 
@@ -431,6 +450,28 @@ async def test_agent_tool_forwards_parent_abort_signal(monkeypatch):
   )
 
   assert captured['abort_signal'] is parent_signal
+
+
+@mark.asyncio
+async def test_agent_tool_forwards_parent_memory_service(monkeypatch):
+  """The sub-agent must see the memory service the app is configured with."""
+  parent_memory_service = InMemoryMemoryService()
+
+  captured = await _capture_sub_runner_kwargs(
+      monkeypatch, memory_service=parent_memory_service
+  )
+
+  assert captured['memory_service'] is parent_memory_service
+
+
+@mark.asyncio
+async def test_agent_tool_memory_service_defaults_when_parent_has_none(
+    monkeypatch,
+):
+  """Without a parent memory service the sub-agent still gets a usable one."""
+  captured = await _capture_sub_runner_kwargs(monkeypatch, memory_service=None)
+
+  assert isinstance(captured['memory_service'], InMemoryMemoryService)
 
 
 def test_no_schema():
@@ -3262,3 +3303,73 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
       event for event in runner.session.events if event.actions.compaction
   ]
   assert len(compactions) == 1
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('failure_mode', 'expected_exc'),
+    [
+        ('cancelled_error', asyncio.CancelledError),
+        ('runtime_error', RuntimeError),
+    ],
+    ids=['cancelled_error', 'runtime_error'],
+)
+async def test_agent_tool_closes_runner_when_nested_run_raises(
+    failure_mode: str,
+    expected_exc: type[BaseException],
+):
+  """The child runner and its toolsets are closed when the nested run raises."""
+
+  class _TrackingToolset(BaseToolset):
+
+    def __init__(self):
+      super().__init__()
+      self.close_calls = 0
+
+    async def get_tools(self, readonly_context=None):
+      del readonly_context
+      return []
+
+    async def close(self) -> None:
+      self.close_calls += 1
+
+  in_child = asyncio.Event()
+
+  async def fail_in_child(callback_context: CallbackContext):
+    del callback_context
+    if failure_mode == 'runtime_error':
+      raise RuntimeError('boom')
+    in_child.set()
+    await asyncio.Future()
+
+  toolset = _TrackingToolset()
+  tool_agent = LlmAgent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      tools=[toolset],
+      before_agent_callback=fail_in_child,
+  )
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      tools=[agent_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=root_agent
+  )
+
+  task = asyncio.create_task(
+      agent_tool.run_async(
+          args={'request': 'go'},
+          tool_context=ToolContext(invocation_context),
+      )
+  )
+  if failure_mode == 'cancelled_error':
+    await in_child.wait()
+    task.cancel()
+
+  with pytest.raises(expected_exc):
+    await task
+
+  assert toolset.close_calls == 1

@@ -100,7 +100,7 @@ class CacheMetadata(BaseModel):
   )
 
   @model_validator(mode="after")
-  def _enforce_active_state_invariant(self) -> "CacheMetadata":
+  def _enforce_active_state_invariant(self) -> CacheMetadata:
     active = (self.cache_name, self.expire_time, self.invocations_used)
     if len({f is not None for f in active}) > 1:
       raise ValueError(
