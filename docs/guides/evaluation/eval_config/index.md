@@ -275,9 +275,10 @@ and the metric silently gets default info instead.
 
 ## The other top-level keys
 
-`EvalConfig` accepts five keys in all. Two of them, `criteria` and
-`custom_metrics`, are covered above. The remaining three are
-`user_simulator_config`, `live_model_config` and `multi_run_config`.
+`EvalConfig` accepts six keys in all. Two of them, `criteria` and
+`custom_metrics`, are covered above. The remaining four are
+`user_simulator_config`, `live_model_config`, `parallelism` and
+`multi_run_config`.
 
 `user_simulator_config` replaces the recorded user turns with a model that plays
 the user against a scenario. Which simulator you get is chosen by a `type`
@@ -298,6 +299,25 @@ audio settings of its own on top of them.
 `live_model_config` switches inference to bidirectional streaming mode, which is
 required for Live API models. Its only key is `timeout_seconds`, default `300`,
 the time to wait for a model turn to complete.
+
+`parallelism` caps how many eval cases `LocalEvalService` runs at once during
+inference and metric scoring, and must be at least `1`:
+
+```json
+{
+  "criteria": {
+    "tool_trajectory_avg_score": 1.0,
+    "response_match_score": 0.8
+  },
+  "parallelism": 8
+}
+```
+
+Raise it when an eval set is large and model quota allows; set it to `1` to run
+cases one at a time against a tight rate limit. Both `adk eval` and
+`AgentEvaluator` read it, and `adk eval --parallelism N` or `AgentEvaluator`'s
+`parallelism` argument overrides it for one run. When neither sets a value,
+`LocalEvalService` defaults to `4`.
 
 `multi_run_config` runs each eval case more than once. An agent can answer the
 same case differently from one run to the next, so a single run can pass or

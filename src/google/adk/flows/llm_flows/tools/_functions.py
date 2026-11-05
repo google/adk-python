@@ -17,8 +17,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import uuid as platform_uuid
@@ -73,7 +71,7 @@ def populate_client_function_call_id(model_response_event: Event) -> None:
       function_call.id = _new_client_function_call_id()
 
 
-def remove_client_function_call_id(content: Optional[types.Content]) -> None:
+def remove_client_function_call_id(content: types.Content | None) -> None:
   """Removes ADK-generated function call IDs from content before sending to LLM.
 
   Strips client-side function call/response IDs that start with 'adk-' prefix
@@ -116,10 +114,10 @@ def get_long_running_function_calls(
 
 def build_auth_request_event(
     invocation_context: InvocationContext,
-    auth_requests: Dict[str, AuthConfig],
+    auth_requests: dict[str, AuthConfig],
     *,
-    author: Optional[str] = None,
-    role: Optional[str] = None,
+    author: str | None = None,
+    role: str | None = None,
 ) -> Event:
   """Builds an auth request event with function calls for each auth request.
 
@@ -175,7 +173,7 @@ def build_auth_request_event(
 def generate_auth_event(
     invocation_context: InvocationContext,
     function_response_event: Event,
-) -> Optional[Event]:
+) -> Event | None:
   """Generates an auth request event from a function response event.
 
   This is used for tool-level auth where a tool requests credentials during
@@ -206,7 +204,7 @@ def generate_request_confirmation_event(
     invocation_context: InvocationContext,
     function_call_event: Event,
     function_response_event: Event,
-) -> Optional[Event]:
+) -> Event | None:
   """Generates a request confirmation event from a function response event."""
   if not function_response_event.actions.requested_tool_confirmations:
     return None
@@ -251,9 +249,9 @@ async def handle_function_call_list_async(
     invocation_context: InvocationContext,
     function_calls: list[types.FunctionCall],
     tools_dict: dict[str, BaseTool],
-    filters: Optional[set[str]] = None,
-    tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
-) -> Optional[Event]:
+    filters: set[str] | None = None,
+    tool_confirmation_dict: dict[str, ToolConfirmation] | None = None,
+) -> Event | None:
   """Calls the functions and returns the function response event."""
   return await _handle_function_call_list_async(
       invocation_context=invocation_context,
@@ -268,9 +266,9 @@ async def handle_function_calls_async(
     invocation_context: InvocationContext,
     function_call_event: Event,
     tools_dict: dict[str, BaseTool],
-    filters: Optional[set[str]] = None,
-    tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
-) -> Optional[Event]:
+    filters: set[str] | None = None,
+    tool_confirmation_dict: dict[str, ToolConfirmation] | None = None,
+) -> Event | None:
   """Calls the functions and returns the function response event."""
   from .. import functions
 
@@ -300,7 +298,7 @@ async def handle_function_calls_live(
 def find_event_by_function_call_id(
     events: list[Event],
     function_call_id: str,
-) -> Optional[Event]:
+) -> Event | None:
   """Finds the function call event that matches the function call id."""
   for event in reversed(events):
     for function_call in event.get_function_calls():
@@ -321,8 +319,8 @@ def _collect_function_call_ids(events: list[Event]) -> set[str]:
 
 def find_matching_function_call(
     events: list[Event],
-    function_response_event: Optional[Event] = None,
-) -> Optional[Event]:
+    function_response_event: Event | None = None,
+) -> Event | None:
   """Finds the function call event that matches the function response id."""
   if not events:
     return None

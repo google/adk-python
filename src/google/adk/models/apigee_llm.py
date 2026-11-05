@@ -18,16 +18,17 @@ import asyncio
 import atexit
 import base64
 import collections.abc
+import copy
 import enum
 from functools import cached_property
 from functools import partial
 import json
 import logging
 import os
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
-from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 import weakref
@@ -42,6 +43,8 @@ from ..utils import _json_utils
 from ..utils import streaming_utils
 from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
+from ..utils._schema_utils import schema_to_json_schema
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -76,7 +79,7 @@ _CONNECT_TIMEOUT_SECONDS = 30.0
 _REQUEST_TIMEOUT_SECONDS = 600.0
 
 
-def _httpx_timeout(timeout_seconds: Optional[float] = None) -> httpx.Timeout:
+def _httpx_timeout(timeout_seconds: float | None = None) -> httpx.Timeout:
   """Returns the httpx timeout budget for a completions request.
 
   A bare float would spend the caller's whole budget on the connect phase too,
@@ -119,7 +122,7 @@ class ApigeeLlm(Gemini):
       model: str,
       proxy_url: str | None = None,
       custom_headers: dict[str, str] | None = None,
-      retry_options: Optional[types.HttpRetryOptions] = None,
+      retry_options: types.HttpRetryOptions | None = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
       credentials: Credentials | None = None,
       client: Client | None = None,
@@ -494,7 +497,7 @@ class CompletionsHTTPClient:
       self,
       base_url: str,
       headers: dict[str, str] | None = None,
-      retry_options: Optional[types.HttpRetryOptions] = None,
+      retry_options: types.HttpRetryOptions | None = None,
   ):
     self._base_url = base_url
     self._headers = headers or {}
@@ -755,10 +758,32 @@ class CompletionsHTTPClient:
       if config.logprobs is not None:
         payload['top_logprobs'] = config.logprobs
 
-    if config.response_json_schema:
+    response_schema = config.response_json_schema
+    if response_schema is None:
+      response_schema = config.response_schema
+    if response_schema is not None:
+      if (
+          isinstance(response_schema, dict)
+          and isinstance(response_schema.get('name'), str)
+          and isinstance(response_schema.get('schema'), dict)
+      ):
+        json_schema = response_schema
+      else:
+        if isinstance(response_schema, types.Schema):
+          schema_dict = response_schema.model_dump(
+              by_alias=True, exclude_none=True, mode='json'
+          )
+        else:
+          schema_dict = copy.deepcopy(schema_to_json_schema(response_schema))
+        lowercase_schema_types(schema_dict)
+        title = schema_dict.get('title')
+        name = title if isinstance(title, str) and title else 'response'
+        name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)[:64]
+        # No 'strict': strict mode rejects non-object roots and defaults.
+        json_schema = {'name': name, 'schema': schema_dict}
       payload['response_format'] = {
           'type': 'json_schema',
-          'json_schema': config.response_json_schema,
+          'json_schema': json_schema,
       }
     elif config.response_mime_type == 'application/json':
       payload['response_format'] = {'type': 'json_object'}
@@ -953,7 +978,7 @@ class CompletionsHTTPClient:
     }
 
   def _serialize_system_instruction(
-      self, system_instruction: Optional[types.ContentUnion]
+      self, system_instruction: types.ContentUnion | None
   ) -> str | None:
     """Serializes system instruction to a string from ContentUnion type."""
     if not system_instruction:
@@ -1015,6 +1040,7 @@ class ChatCompletionsResponseHandler:
     self.content_parts = ''
     self.tool_call_parts: dict[int, types.Part] = {}
     self._tool_call_deltas: dict[int, list[str]] = {}
+    self._last_tool_call_index: int | None = None
     self._tool_call_trackers: dict[int, streaming_utils._JsonPathTracker] = {}
     self.role = ''
     self.streaming_complete = False
@@ -1036,6 +1062,33 @@ class ChatCompletionsResponseHandler:
       )
     choice = choices[0]
     message = choice.get('message', {})
+    incomplete_tool_args = False
+    if choice.get('finish_reason') == 'length':
+      tool_calls = list(message.get('tool_calls', []))
+      if message.get('function_call'):
+        tool_calls.append({'function': message['function_call']})
+      # Leave unsupported call types on their existing error path. Only
+      # unparseable or non-object arguments qualify for the token-limit
+      # response.
+      if all(c.get('type') in (None, 'function') for c in tool_calls):
+        for tool_call in tool_calls:
+          arguments = tool_call.get('function', {}).get('arguments', '')
+          if not arguments or (
+              isinstance(arguments, str) and not arguments.strip()
+          ):
+            incomplete_tool_args = True
+            continue
+          try:
+            parsed_args = _json_utils.safe_json_loads(arguments)
+          except ValueError:
+            incomplete_tool_args = True
+            continue
+          if not isinstance(parsed_args, dict):
+            incomplete_tool_args = True
+        if incomplete_tool_args:
+          # Validate before _upsert_tool_call parses eagerly; retain text but
+          # discard the whole batch without mutating the provider response.
+          message = {**message, 'tool_calls': [], 'function_call': None}
     _, role = self._add_chat_completion_message(message)
     parts = self._get_content_parts()
 
@@ -1058,7 +1111,20 @@ class ChatCompletionsResponseHandler:
         custom_metadata[k] = v
 
     return LlmResponse(
-        content=types.Content(role=role, parts=parts),
+        content=(
+            None
+            if incomplete_tool_args and not parts
+            else types.Content(role=role, parts=parts)
+        ),
+        error_code=(
+            types.FinishReason.MAX_TOKENS if incomplete_tool_args else None
+        ),
+        error_message=(
+            'Tool call arguments were truncated and could not be parsed as'
+            ' valid JSON. Increase `max_output_tokens` and retry.'
+            if incomplete_tool_args
+            else None
+        ),
         usage_metadata=usage_metadata,
         finish_reason=self._map_finish_reason(choice.get('finish_reason')),
         logprobs_result=logprobs_result,
@@ -1129,6 +1195,36 @@ class ChatCompletionsResponseHandler:
 
     finish_reason = choice.get('finish_reason')
     if finish_reason:
+      if finish_reason == 'length' and self._has_incomplete_tool_call_args():
+        error_response = LlmResponse(
+            error_code=types.FinishReason.MAX_TOKENS,
+            error_message=(
+                'Tool call arguments were truncated while streaming and'
+                ' could not be parsed as valid JSON. Increase'
+                ' `max_output_tokens` and retry.'
+            ),
+            finish_reason=types.FinishReason.MAX_TOKENS,
+            custom_metadata=self.custom_metadata,
+            model_version=self.model,
+            usage_metadata=usage_metadata,
+            logprobs_result=logprobs_result,
+        )
+        # Match LiteLlm: retain text separately, but discard the entire call
+        # batch so no complete call can execute alongside an incomplete one.
+        if self.content_parts:
+          yield error_response.model_copy(
+              update={
+                  'content': types.Content(
+                      role=role,
+                      parts=[types.Part.from_text(text=self.content_parts)],
+                  ),
+                  'error_message': 'Maximum tokens reached',
+              }
+          )
+          # Usage belongs to one final response, not both persisted events.
+          error_response.usage_metadata = None
+        yield error_response
+        return
       yield LlmResponse(
           content=types.Content(
               role=role,
@@ -1142,6 +1238,48 @@ class ChatCompletionsResponseHandler:
       )
       # Exit because the 'finish_reason' chunk is the final chunk.
       return
+
+  def _has_incomplete_tool_call_args(self) -> bool:
+    """Checks all calls before the length path can expose a final call batch."""
+    for index in self.tool_call_parts:
+      deltas = self._tool_call_deltas.get(index, [])
+      arguments = ''.join(deltas)
+      if not arguments.strip():
+        return True
+      try:
+        parsed_args = _json_utils.safe_json_loads(arguments)
+      except ValueError:
+        # Some backends send complete JSON objects per delta. Preserve the
+        # existing merge fallback, but never let it discard a bad fragment.
+        merged_args, all_deltas_merged = self._merge_tool_call_deltas(index)
+        if not all_deltas_merged or not merged_args:
+          return True
+        continue
+      if not isinstance(parsed_args, dict):
+        return True
+    return False
+
+  def _merge_tool_call_deltas(self, index: int) -> tuple[dict[str, Any], bool]:
+    """Merges per-delta JSON objects; the flag is False if any delta is bad."""
+    merged_args: dict[str, Any] = {}
+    all_deltas_merged = True
+    for delta in self._tool_call_deltas.get(index, []):
+      if not delta.strip():
+        continue
+      try:
+        parsed_delta = _json_utils.safe_json_loads(
+            delta, context=f'tool call arguments: {delta}'
+        )
+      except ValueError:
+        logger.warning('Failed to parse individual delta as JSON: %s', delta)
+        all_deltas_merged = False
+        continue
+      if isinstance(parsed_delta, dict):
+        merged_args.update(parsed_delta)
+      else:
+        logger.warning('Parsed delta is not a dict: %s', parsed_delta)
+        all_deltas_merged = False
+    return merged_args, all_deltas_merged
 
   def _map_finish_reason(self, reason: str | None) -> types.FinishReason:
     if reason == 'stop':
@@ -1288,28 +1426,36 @@ class ChatCompletionsResponseHandler:
             )
           except ValueError:
             # Fallback: try parsing individual deltas and merging them
-            deltas = self._tool_call_deltas.get(index, [])
-            merged_args = {}
-            for delta in deltas:
-              if not delta.strip():
-                continue
-              try:
-                parsed_delta = _json_utils.safe_json_loads(
-                    delta, context=f'tool call arguments: {delta}'
-                )
-                if isinstance(parsed_delta, dict):
-                  merged_args.update(parsed_delta)
-                else:
-                  logger.warning('Parsed delta is not a dict: %s', parsed_delta)
-              except ValueError:
-                logger.warning(
-                    'Failed to parse individual delta as JSON: %s', delta
-                )
+            merged_args, _ = self._merge_tool_call_deltas(index)
             if not merged_args:
               raise
             part.function_call.args = merged_args
       parts.append(part)
     return parts
+
+  def _infer_tool_call_index(
+      self, tool_call: dict[str, Any], is_streaming: bool
+  ) -> int:
+    """Picks the slot of a tool call that arrives without an index.
+
+    A complete call (non-streaming, or a streamed call that opens with a new
+    id or a function name) gets a new slot. A streamed fragment that carries
+    neither continues the call resolved last.
+    """
+    next_index = len(self.tool_call_parts)
+    if not is_streaming:
+      return next_index
+    tool_call_id = tool_call.get('id')
+    if tool_call_id:
+      for index, part in self.tool_call_parts.items():
+        if part.function_call and part.function_call.id == tool_call_id:
+          return index
+      return next_index
+    if tool_call.get('function', {}).get('name'):
+      return next_index
+    if self._last_tool_call_index is not None:
+      return self._last_tool_call_index
+    return max(self.tool_call_parts, default=0)
 
   def _upsert_tool_call(
       self, tool_call: dict[str, Any], is_streaming: bool = False
@@ -1329,9 +1475,8 @@ class ChatCompletionsResponseHandler:
     """
     index = tool_call.get('index')
     if index is None:
-      # If index is not provided, we might be in a non-streaming response.
-      # We just append it as a new tool call.
-      index = len(self.tool_call_parts)
+      index = self._infer_tool_call_index(tool_call, is_streaming)
+    self._last_tool_call_index = index
 
     if index not in self.tool_call_parts:
       self.tool_call_parts[index] = types.Part(

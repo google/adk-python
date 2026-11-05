@@ -355,6 +355,25 @@ def test_load_web_page_blocks_loopback_ip_urls_behind_a_proxy(monkeypatch):
   mock_send.assert_not_called()
 
 
+def test_load_web_page_blocks_a_backslash_authority_behind_a_proxy(
+    monkeypatch,
+):
+  """urllib3 would ask the proxy for 169.254.169.254, not example.com."""
+  _set_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  mock_get = mock.Mock(
+      return_value=_create_response(
+          '<html><body><p>This page has enough words to keep.</p></body></html>'
+      )
+  )
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+
+  url = 'http://169.254.169.254\\@example.com/latest/meta-data/'
+
+  assert load_web_page(url) == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
+
+
 def test_load_web_page_fetches_public_urls_by_pinning_the_resolved_ip(
     monkeypatch,
 ):
@@ -774,3 +793,53 @@ def test_load_web_page_returns_failure_for_non_200_responses(monkeypatch):
   assert load_web_page('https://example.com') == (
       'Failed to fetch url: https://example.com'
   )
+
+
+@pytest.mark.parametrize(
+    ('html', 'expected'),
+    [
+        (
+            (
+                '<html><body><nav>首页</nav>'
+                '<p>2024款Model Y补贴后起售价为24.99万元。</p></body></html>'
+            ),
+            '2024款Model Y补贴后起售价为24.99万元。',
+        ),
+        (
+            (
+                '<html><body><nav>ホーム</nav>'
+                '<p>今月の注文分は4週間後に納車が始まります。</p></body></html>'
+            ),
+            '今月の注文分は4週間後に納車が始まります。',
+        ),
+    ],
+    ids=['chinese', 'japanese'],
+)
+def test_load_web_page_keeps_lines_of_scripts_written_without_spaces(
+    monkeypatch, html, expected
+):
+  monkeypatch.setattr(
+      load_web_page_module,
+      '_fetch_content',
+      mock.Mock(return_value=html.encode()),
+  )
+
+  assert load_web_page('https://example.com/') == expected
+
+
+@pytest.mark.parametrize(
+    ('line', 'expected'),
+    [
+        ('This page has enough words to keep.', 7),
+        ('- Home -', 3),
+        ('首页', 2),
+        ('本月下单的车辆预计四周后开始交付。', 16),
+        ('2024款Model Y价格', 6),
+        ('ホーム', 3),
+        ('ﾎｰﾑ', 3),
+        ('𠮷𠮟', 2),
+        ('สวัสดีครับ', 7),
+    ],
+)
+def test_count_words_counts_each_letter_of_an_unspaced_script(line, expected):
+  assert load_web_page_module._count_words(line) == expected

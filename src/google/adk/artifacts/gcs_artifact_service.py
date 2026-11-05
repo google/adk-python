@@ -29,8 +29,6 @@ import logging
 from typing import Any
 from typing import cast
 from typing import Literal
-from typing import Optional
-from typing import Union
 import urllib.parse
 
 from google.genai import types
@@ -85,7 +83,7 @@ def _get_file_uri(
   )
 
 
-def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
+def _parse_version(blob_name: str, prefix: str) -> int | None:
   """Extracts the version of an artifact from one of its blob names.
 
   GCS has a flat namespace, so listing by prefix is a plain string match with
@@ -144,9 +142,9 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      artifact: types.Part | dict[str, Any],
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     return await asyncio.to_thread(
         self._save_artifact,
@@ -165,9 +163,9 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[types.Part]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> types.Part | None:
     return await asyncio.to_thread(
         self._load_artifact,
         app_name,
@@ -179,7 +177,7 @@ class GcsArtifactService(BaseArtifactService):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
+      self, *, app_name: str, user_id: str, session_id: str | None = None
   ) -> list[str]:
     return await asyncio.to_thread(
         self._list_artifact_keys,
@@ -195,7 +193,7 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> None:
     return await asyncio.to_thread(
         self._delete_artifact,
@@ -212,7 +210,7 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[int]:
     return await asyncio.to_thread(
         self._list_versions,
@@ -239,7 +237,7 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> str:
     """Constructs the blob name prefix in GCS for a given artifact."""
     artifact_util.validate_path_segment(app_name, "app_name")
@@ -260,7 +258,7 @@ class GcsArtifactService(BaseArtifactService):
       user_id: str,
       filename: str,
       version: int,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> str:
     """Constructs the blob name in GCS.
 
@@ -282,10 +280,10 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      custom_metadata: Optional[dict[str, Any]] = None,
+      artifact: types.Part | dict[str, Any],
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     from google.cloud import exceptions  # pylint: disable=g-import-not-at-top
 
@@ -310,8 +308,8 @@ class GcsArtifactService(BaseArtifactService):
       # inline_data).
       blob_metadata[_GCS_IS_TEXT_METADATA_KEY] = "true"
 
-    data: Union[str, bytes]
-    content_type: Optional[str]
+    data: str | bytes
+    content_type: str | None
     if artifact.inline_data:
       if artifact.inline_data.data is None:
         raise InputValidationError("Artifact inline_data must contain data.")
@@ -388,12 +386,12 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
-      version: Optional[int] = None,
+      version: int | None = None,
       *,
       max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
-  ) -> Optional[types.Part]:
+  ) -> types.Part | None:
     if version is None:
       versions = self._list_versions(
           app_name=app_name,
@@ -466,7 +464,7 @@ class GcsArtifactService(BaseArtifactService):
     return artifact
 
   def _list_artifact_keys(
-      self, app_name: str, user_id: str, session_id: Optional[str]
+      self, app_name: str, user_id: str, session_id: str | None
   ) -> list[str]:
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
@@ -504,7 +502,7 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
   ) -> None:
     versions = self._list_versions(
@@ -525,7 +523,7 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
   ) -> list[int]:
     """Lists all available versions of an artifact.
@@ -564,10 +562,10 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     if version is None:
       versions = self._list_versions(
           app_name=app_name,
@@ -601,7 +599,7 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
   ) -> list[ArtifactVersion]:
     """Lists all versions and their metadata of an artifact."""
@@ -635,7 +633,7 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[ArtifactVersion]:
     return await asyncio.to_thread(
         self._list_artifact_versions_sync,
@@ -652,9 +650,9 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     return await asyncio.to_thread(
         self._get_artifact_version_sync,
         app_name,
@@ -668,12 +666,12 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
-      version: Optional[int] = None,
+      version: int | None = None,
       *,
       max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
-  ) -> Optional[str]:
+  ) -> str | None:
     """Generates an authenticated browser URL for an artifact."""
     if version is None:
       versions = self._list_versions(
@@ -723,9 +721,9 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[str]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> str | None:
     """Generates an authenticated browser URL for an artifact.
 
     The URL returned requires the user to be authenticated with a Google
@@ -756,18 +754,16 @@ class GcsArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
-      version: Optional[int] = None,
-      expiration: Optional[
-          Union[datetime.datetime, datetime.timedelta, int]
-      ] = None,
+      version: int | None = None,
+      expiration: datetime.datetime | datetime.timedelta | int | None = None,
       method: str = "GET",
-      signing_version: Optional[Literal["v2", "v4"]] = None,
-      extra_signing_options: Optional[dict[str, Any]] = None,
+      signing_version: Literal["v2", "v4"] | None = None,
+      extra_signing_options: dict[str, Any] | None = None,
       *,
       max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
-  ) -> Optional[str]:
+  ) -> str | None:
     """Generates a time-limited signed URL for an artifact."""
     if version is None:
       versions = self._list_versions(
@@ -834,15 +830,13 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-      expiration: Optional[
-          Union[datetime.datetime, datetime.timedelta, int]
-      ] = None,
+      session_id: str | None = None,
+      version: int | None = None,
+      expiration: datetime.datetime | datetime.timedelta | int | None = None,
       method: str = "GET",
-      signing_version: Optional[Literal["v2", "v4"]] = None,
+      signing_version: Literal["v2", "v4"] | None = None,
       **kwargs: Any,
-  ) -> Optional[str]:
+  ) -> str | None:
     """Generates a time-limited signed URL for an artifact.
 
     Args:

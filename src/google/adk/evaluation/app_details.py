@@ -14,12 +14,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from google.genai import types as genai_types
 from pydantic import Field
+from pydantic import field_validator
+from pydantic import ValidationError
 
 from .common import EvalBaseModel
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class AgentDetails(EvalBaseModel):
@@ -40,6 +45,25 @@ class AgentDetails(EvalBaseModel):
   At runtime, this contains elements of type genai_types.ToolListUnion.
   We use list[Any] for Pydantic schema generation compatibility.
   """
+
+  @field_validator("tool_declarations", mode="before")
+  @classmethod
+  def _restore_tools_from_json(cls, tools: object) -> object:
+    """Turns tools that were serialized to JSON back into genai Tools."""
+    if not isinstance(tools, list):
+      return tools
+    restored = []
+    for tool in tools:
+      if isinstance(tool, dict):
+        try:
+          # Every Tool field is optional, so an empty dict becomes Tool().
+          tool = genai_types.Tool.model_validate(tool)
+        except ValidationError as e:
+          # Debug, not warning: non-Tool dicts are valid here and land in
+          # this branch too.
+          logger.debug("Keeping tool declaration as a dict: %s", e)
+      restored.append(tool)
+    return restored
 
 
 class AppDetails(EvalBaseModel):

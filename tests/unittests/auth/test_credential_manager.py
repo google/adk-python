@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import time
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -46,6 +47,7 @@ from google.adk.auth.credential_manager import CredentialManager
 from google.adk.auth.credential_manager import ServiceAccountCredentialExchanger
 from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
+from google.adk.auth.refresher import base_credential_refresher
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
 from pydantic import Field
@@ -757,6 +759,357 @@ class TestCredentialManager:
     manager._save_credential.assert_called_once()
 
   @pytest.mark.asyncio
+  async def test_get_auth_credential_returns_none_when_refresh_token_revoked(
+      self, mocker
+  ):
+    """A revoked refresh token asks for re-authorization and is evicted."""
+    stale = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="stale-access-token",
+            refresh_token="revoked-refresh-token",
+            expires_at=1,
+        ),
+    )
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=_authorization_code_scheme())
+    )
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=stale)
+    manager._load_from_auth_response = mocker.AsyncMock(return_value=None)
+    manager._exchange_credential = mocker.AsyncMock(return_value=(stale, False))
+    manager._refresh_credential = mocker.AsyncMock(
+        side_effect=base_credential_refresher._CredentialRevokedError(
+            "invalid_grant"
+        )
+    )
+    manager._save_credential = mocker.AsyncMock()
+    context = mocker.Mock(spec=CallbackContext)
+
+    result = await manager.get_auth_credential(context)
+
+    assert result is None
+    manager._save_credential.assert_called_once_with(context, None)
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_evicts_revoked_from_credential_service(
+      self, mocker
+  ):
+    """The in-memory service drops the revoked credential for the next turn."""
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    stale = _oauth2_credential(
+        access_token="stale-access-token",
+        refresh_token="revoked-refresh-token",
+        expires_at=1,
+    )
+    fresh = _oauth2_credential(
+        access_token="fresh-access-token",
+        refresh_token="fresh-refresh-token",
+    )
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app", user_id="user_a", session_id="session_a"
+    )
+    credential_service = InMemoryCredentialService()
+    context = CallbackContext(
+        InvocationContext(
+            session_service=session_service,
+            invocation_id="invocation_a",
+            session=session,
+            credential_service=credential_service,
+        )
+    )
+    seeded = auth_config.model_copy(deep=True)
+    seeded.exchanged_auth_credential = stale
+    await credential_service.save_credential(seeded, context)
+
+    async def refresh(credential):
+      if credential.oauth2.refresh_token == "revoked-refresh-token":
+        raise base_credential_refresher._CredentialRevokedError("invalid_grant")
+      return credential, False
+
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._load_from_auth_response = mocker.AsyncMock(
+        side_effect=[None, fresh]
+    )
+    manager._exchange_credential = mocker.AsyncMock(
+        side_effect=lambda credential: (credential, False)
+    )
+    manager._refresh_credential = mocker.AsyncMock(side_effect=refresh)
+
+    assert await manager.get_auth_credential(context) is None
+    assert (
+        await credential_service.load_credential(auth_config, context) is None
+    )
+
+    assert await manager.get_auth_credential(context) == fresh
+    assert (
+        await credential_service.load_credential(auth_config, context) == fresh
+    )
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_continues_when_eviction_fails(
+      self, mocker
+  ):
+    """A credential service that rejects None does not fail the tool call."""
+    manager = _revoke_test_manager(
+        mocker,
+        stored=_oauth2_credential(refresh_token="revoked", expires_at=1),
+        auth_response=None,
+    )
+    manager._save_credential.side_effect = TypeError("None not supported")
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._save_credential.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_prefers_new_auth_response_over_revoked(
+      self, mocker
+  ):
+    """A stored revoked credential must not shadow a new authorization."""
+    stale = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="stale-access-token",
+            refresh_token="revoked-refresh-token",
+            expires_at=1,
+        ),
+    )
+    auth_response = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="new-code",
+        ),
+    )
+    fresh = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="fresh-access-token",
+            refresh_token="fresh-refresh-token",
+        ),
+    )
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=_authorization_code_scheme())
+    )
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=stale)
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=auth_response
+    )
+    manager._exchange_credential = mocker.AsyncMock(
+        side_effect=[(stale, False), (fresh, True)]
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        side_effect=base_credential_refresher._CredentialRevokedError(
+            "invalid_grant"
+        )
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is fresh
+    assert manager._save_credential.call_args_list[-1].args[1] is fresh
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_returns_none_when_auth_response_revoked(
+      self, mocker
+  ):
+    """A revoked credential from the auth response is not saved."""
+    revoked = _oauth2_credential(refresh_token="revoked", expires_at=1)
+    manager = _revoke_test_manager(mocker, stored=None, auth_response=revoked)
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._load_from_auth_response.assert_called_once()
+    manager._save_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_rejects_unchanged_auth_response(
+      self, mocker
+  ):
+    """An auth response equal to the revoked stored credential is rejected."""
+    revoked = _oauth2_credential(refresh_token="revoked", expires_at=1)
+    manager = _revoke_test_manager(
+        mocker, stored=revoked, auth_response=revoked.model_copy(deep=True)
+    )
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._refresh_credential.assert_called_once()
+    manager._save_credential.assert_called_once()
+    assert manager._save_credential.call_args.args[1] is None
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_rejects_auth_response_with_same_token(
+      self, mocker
+  ):
+    """An auth response carrying the revoked refresh token is rejected."""
+    manager = _revoke_test_manager(
+        mocker,
+        stored=_oauth2_credential(
+            access_token="refreshed", refresh_token="revoked", expires_at=1
+        ),
+        auth_response=_oauth2_credential(
+            access_token="original", refresh_token="revoked", expires_at=1
+        ),
+    )
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._refresh_credential.assert_called_once()
+    manager._save_credential.assert_called_once()
+    assert manager._save_credential.call_args.args[1] is None
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_returns_none_when_both_revoked(
+      self, mocker
+  ):
+    """A distinct auth response that is revoked too yields None."""
+    manager = _revoke_test_manager(
+        mocker,
+        stored=_oauth2_credential(refresh_token="revoked", expires_at=1),
+        auth_response=_oauth2_credential(
+            refresh_token="also-revoked", expires_at=1
+        ),
+    )
+    manager._refresh_credential.side_effect = [
+        base_credential_refresher._CredentialRevokedError("invalid_grant"),
+        base_credential_refresher._CredentialRevokedError("invalid_grant"),
+    ]
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    assert manager._refresh_credential.call_count == 2
+    manager._save_credential.assert_called_once()
+    assert manager._save_credential.call_args.args[1] is None
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_refreshes_auth_response_after_revoke(
+      self, mocker
+  ):
+    """An unexchanged auth response is refreshed before it is returned."""
+    auth_response = _oauth2_credential(refresh_token="new", expires_at=1)
+    refreshed = _oauth2_credential(access_token="refreshed")
+    manager = _revoke_test_manager(
+        mocker,
+        stored=_oauth2_credential(refresh_token="revoked", expires_at=1),
+        auth_response=auth_response,
+    )
+    manager._refresh_credential.side_effect = [
+        base_credential_refresher._CredentialRevokedError("invalid_grant"),
+        (refreshed, True),
+    ]
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is refreshed
+    assert manager._refresh_credential.call_args.args[0] is auth_response
+    assert manager._save_credential.call_args.args[1] is refreshed
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_reexchanges_client_credentials(
+      self, mocker
+  ):
+    """Client credentials flow exchanges the raw credential after a revoke."""
+    raw = _oauth2_credential()
+    fresh = _oauth2_credential(access_token="fresh")
+    manager = _client_credentials_revoke_manager(mocker, raw=raw)
+    manager._exchange_credential.side_effect = [
+        (manager._load_existing_credential.return_value, False),
+        (fresh, True),
+    ]
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is fresh
+    exchanged_input = manager._exchange_credential.call_args.args[0]
+    assert exchanged_input == raw
+    assert exchanged_input is not raw
+    manager._save_credential.assert_called_once()
+    assert manager._save_credential.call_args.args[1] is fresh
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_failed_client_credentials_reexchange(
+      self, mocker
+  ):
+    """A failed client credentials exchange after a revoke saves no token."""
+    raw = _oauth2_credential()
+    manager = _client_credentials_revoke_manager(mocker, raw=raw)
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    assert manager._exchange_credential.call_count == 2
+    assert manager._exchange_credential.call_args.args[0] == raw
+    manager._save_credential.assert_called_once()
+    assert manager._save_credential.call_args.args[1] is None
+
+  @pytest.mark.asyncio
+  async def test_refresh_credential_propagates_revoked_error(self, mocker):
+    """_refresh_credential lets the refresher's revocation signal through."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            refresh_token="revoked-refresh-token",
+            expires_at=1,
+        ),
+    )
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=_authorization_code_scheme())
+    )
+    refresher = mocker.Mock()
+    refresher.is_refresh_needed = mocker.AsyncMock(return_value=True)
+    refresher.refresh = mocker.AsyncMock(
+        side_effect=base_credential_refresher._CredentialRevokedError(
+            "invalid_grant"
+        )
+    )
+    mocker.patch.object(
+        manager._refresher_registry, "get_refresher", return_value=refresher
+    )
+
+    with pytest.raises(base_credential_refresher._CredentialRevokedError):
+      await manager._refresh_credential(credential)
+
+  @pytest.mark.asyncio
   async def test_get_auth_credential_discards_a_spent_oidc_code(self, mocker):
     """OIDC shares the oauth2 payload and exchanger, so it spends codes too."""
     unexchanged = AuthCredential(
@@ -1181,6 +1534,175 @@ class TestCredentialManager:
     assert was_refreshed is False
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "auth_scheme, auth_type",
+      [
+          (
+              OAuth2(
+                  flows=OAuthFlows(
+                      clientCredentials=OAuthFlowClientCredentials(
+                          tokenUrl="https://example.com/token",
+                          scopes={},
+                      )
+                  )
+              ),
+              AuthCredentialTypes.OAUTH2,
+          ),
+          (
+              OpenIdConnectWithConfig(
+                  authorization_endpoint="https://example.com/auth",
+                  token_endpoint="https://example.com/token",
+                  grant_types_supported=["client_credentials"],
+              ),
+              AuthCredentialTypes.OPEN_ID_CONNECT,
+          ),
+      ],
+      ids=["oauth2", "oidc"],
+  )
+  async def test_get_auth_credential_refetches_expired_client_credentials_token(
+      self, auth_scheme, auth_type
+  ):
+    """Client credentials tokens have no refresh token, so fetch a new one."""
+    raw_credential = AuthCredential(
+        auth_type=auth_type,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    stored_credential = raw_credential.model_copy(deep=True)
+    stored_credential.oauth2.access_token = "expired_token"
+    stored_credential.oauth2.expires_at = int(time.time()) - 60
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=auth_scheme, raw_auth_credential=raw_credential)
+    )
+    manager._load_existing_credential = AsyncMock(
+        return_value=stored_credential
+    )
+    manager._save_credential = AsyncMock()
+    context = Mock()
+
+    with patch.object(
+        oauth2_credential_util, "OAuth2Session", autospec=True
+    ) as mock_oauth2_session:
+      mock_client = mock_oauth2_session.return_value
+      mock_client.fetch_token.return_value = {
+          "access_token": "new_token",
+          "expires_at": int(time.time()) + 3600,
+      }
+      # There is no refresh token to send.
+      mock_client.refresh_token.side_effect = AssertionError(
+          "refresh_token() called without a refresh token"
+      )
+      result = await manager.get_auth_credential(context)
+
+    assert result.oauth2.access_token == "new_token"
+    mock_client.fetch_token.assert_called_once()
+    manager._save_credential.assert_awaited_once_with(context, result)
+    # The shared tool config is not mutated.
+    assert raw_credential.oauth2.access_token is None
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_refreshes_token_that_has_refresh_token(
+      self,
+  ):
+    """A client credentials token that has a refresh token is refreshed."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    stored_credential = raw_credential.model_copy(deep=True)
+    stored_credential.oauth2.access_token = "expired_token"
+    stored_credential.oauth2.refresh_token = "refresh_token"
+    stored_credential.oauth2.expires_at = int(time.time()) - 60
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=auth_scheme, raw_auth_credential=raw_credential)
+    )
+    manager._load_existing_credential = AsyncMock(
+        return_value=stored_credential
+    )
+    manager._save_credential = AsyncMock()
+    context = Mock()
+
+    with patch.object(
+        oauth2_credential_util, "OAuth2Session", autospec=True
+    ) as mock_oauth2_session:
+      mock_client = mock_oauth2_session.return_value
+      mock_client.refresh_token.return_value = {
+          "access_token": "refreshed_token",
+          "refresh_token": "refresh_token",
+          "expires_at": int(time.time()) + 3600,
+      }
+      result = await manager.get_auth_credential(context)
+
+    assert result.oauth2.access_token == "refreshed_token"
+    mock_client.refresh_token.assert_called_once()
+    assert (
+        mock_client.refresh_token.call_args.kwargs["refresh_token"]
+        == "refresh_token"
+    )
+    mock_client.fetch_token.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_keeps_stored_token_when_refetch_fails(
+      self,
+  ):
+    """A failed client credentials refetch returns the stored token unsaved."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    stored_credential = raw_credential.model_copy(deep=True)
+    stored_credential.oauth2.access_token = "expired_token"
+    stored_credential.oauth2.expires_at = int(time.time()) - 60
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=auth_scheme, raw_auth_credential=raw_credential)
+    )
+    manager._load_existing_credential = AsyncMock(
+        return_value=stored_credential
+    )
+    manager._save_credential = AsyncMock()
+    context = Mock()
+
+    with patch.object(
+        oauth2_credential_util, "OAuth2Session", autospec=True
+    ) as mock_oauth2_session:
+      mock_client = mock_oauth2_session.return_value
+      mock_client.fetch_token.side_effect = OAuth2Error(error="invalid_client")
+      mock_client.refresh_token.side_effect = AssertionError(
+          "refresh_token() called without a refresh token"
+      )
+      result = await manager.get_auth_credential(context)
+
+    assert result is stored_credential
+    assert result.oauth2.access_token == "expired_token"
+    mock_client.fetch_token.assert_called_once()
+    manager._save_credential.assert_not_awaited()
+    assert raw_credential.oauth2.access_token is None
+
+  @pytest.mark.asyncio
   async def test_is_credential_ready_api_key(self):
     """Test _is_credential_ready with API key credential."""
     mock_raw_credential = Mock(spec=AuthCredential)
@@ -1533,6 +2055,76 @@ class TestCredentialManager:
     manager = CredentialManager(auth_config)
 
     assert manager._is_client_credentials_flow() is False
+
+
+def _oauth2_credential(**oauth2_fields):
+  """An OAuth2 credential with test client info and the given token fields."""
+  return AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test_client_id",
+          client_secret="test_client_secret",
+          **oauth2_fields,
+      ),
+  )
+
+
+def _revoke_test_manager(mocker, *, stored, auth_response):
+  """A manager whose refresh raises a revocation error on every call."""
+  manager = CredentialManager(
+      AuthConfig(auth_scheme=_authorization_code_scheme())
+  )
+  manager._validate_credential = mocker.AsyncMock()
+  manager._load_existing_credential = mocker.AsyncMock(return_value=stored)
+  manager._load_from_auth_response = mocker.AsyncMock(
+      return_value=auth_response
+  )
+  manager._exchange_credential = mocker.AsyncMock(
+      side_effect=lambda credential: (credential, False)
+  )
+  manager._refresh_credential = mocker.AsyncMock(
+      side_effect=base_credential_refresher._CredentialRevokedError(
+          "invalid_grant"
+      )
+  )
+  manager._save_credential = mocker.AsyncMock()
+  return manager
+
+
+def _client_credentials_revoke_manager(mocker, *, raw):
+  """A client credentials manager whose refresher rejects the stored token."""
+  manager = CredentialManager(
+      AuthConfig(
+          auth_scheme=OAuth2(
+              flows=OAuthFlows(
+                  clientCredentials=OAuthFlowClientCredentials(
+                      tokenUrl="https://example.com/token", scopes={}
+                  )
+              )
+          ),
+          raw_auth_credential=raw,
+      )
+  )
+  manager._validate_credential = mocker.AsyncMock()
+  manager._load_existing_credential = mocker.AsyncMock(
+      return_value=_oauth2_credential(refresh_token="revoked", expires_at=1)
+  )
+  manager._load_from_auth_response = mocker.AsyncMock(return_value=None)
+  manager._exchange_credential = mocker.AsyncMock(
+      side_effect=lambda credential: (credential, False)
+  )
+  refresher = mocker.Mock()
+  refresher.is_refresh_needed = mocker.AsyncMock(return_value=True)
+  refresher.refresh = mocker.AsyncMock(
+      side_effect=base_credential_refresher._CredentialRevokedError(
+          "invalid_grant"
+      )
+  )
+  mocker.patch.object(
+      manager._refresher_registry, "get_refresher", return_value=refresher
+  )
+  manager._save_credential = mocker.AsyncMock()
+  return manager
 
 
 def _authorization_code_scheme():

@@ -31,9 +31,7 @@ roll_agent = Agent(
     name="roll_agent",
     model=Gemini(
         # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
-        model="gemini-live-2.5-flash-native-audio",  # Vertex
-        # Find supported models in Gemini API here: https://ai.google.dev/gemini-api/docs/models
-        # model='gemini-2.5-flash-native-audio-preview-12-2025',  # Gemini API
+        model="gemini-3.8-live",
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -85,9 +83,7 @@ prime_agent = Agent(
     name="prime_agent",
     model=Gemini(
         # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
-        model="gemini-live-2.5-flash-native-audio",  # Vertex
-        # Find supported models in Gemini API here: https://ai.google.dev/gemini-api/docs/models
-        # model='gemini-2.5-flash-native-audio-preview-12-2025',  # Gemini API
+        model="gemini-3.8-live",
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -128,9 +124,7 @@ def get_current_weather(location: str):
 root_agent = Agent(
     model=Gemini(
         # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
-        model="gemini-live-2.5-flash-native-audio",  # Vertex
-        # Find supported models in Gemini API here: https://ai.google.dev/gemini-api/docs/models
-        # model='gemini-2.5-flash-native-audio-preview-12-2025',  # Gemini API
+        model="gemini-3.8-live",
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(

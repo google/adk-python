@@ -28,7 +28,6 @@ import logging
 from typing import Any
 from typing import Callable
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
@@ -102,7 +101,7 @@ def _get_tool(
 def _create_tool_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> ToolContext:
   """Creates a ToolContext object."""
   return ToolContext(
@@ -116,7 +115,7 @@ def _get_tool_and_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> tuple[BaseTool, ToolContext]:
   """Returns the tool and tool context corresponding to the function call."""
   tool = _get_tool(function_call, tools_dict)
@@ -131,7 +130,7 @@ def _get_tool_and_context(
 def _try_decode_computer_use_image(
     tool: BaseTool,
     function_result: dict[str, object],
-) -> Optional[list[types.FunctionResponsePart]]:
+) -> list[types.FunctionResponsePart] | None:
   """Decodes the image from the function result for a computer use tool.
 
   Args:
@@ -171,7 +170,7 @@ def _try_decode_computer_use_image(
 
 def _as_function_response_part(
     value: object,
-) -> Optional[types.FunctionResponsePart]:
+) -> types.FunctionResponsePart | None:
   """Converts a tool-returned part into a function response part.
 
   Returns None when the value is not a part carrying usable media.
@@ -224,7 +223,7 @@ def _extract_media_from_entry(
 def _extract_multimodal_parts(
     function_result: object,
     depth: int = 0,
-) -> tuple[object, Optional[list[types.FunctionResponsePart]]]:
+) -> tuple[object, list[types.FunctionResponsePart] | None]:
   """Moves media in a tool result into function response parts.
 
   A tool result is otherwise required to be JSON-serializable, which leaves no
@@ -269,8 +268,8 @@ def _extract_multimodal_parts(
 def _build_function_response_content(
     tool: BaseTool,
     function_result: object,
-    function_call_id: Optional[str],
-    function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
+    function_call_id: str | None,
+    function_response_parts: list[types.FunctionResponsePart] | None = None,
 ) -> types.Content:
   """Builds the content carrying a tool result as a FunctionResponse."""
   # A streaming tool that wants a different Live scheduling mode for one
@@ -413,7 +412,7 @@ class _PreparedFunctionCall:
   function_args: dict[str, Any]
   contextvars_snapshot: contextvars.Context
   tools_dict: dict[str, BaseTool] = dataclasses.field(default_factory=dict)
-  tool_lookup_error: Optional[Exception] = None
+  tool_lookup_error: Exception | None = None
 
 
 async def _prepare_single(
@@ -421,7 +420,7 @@ async def _prepare_single(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> _PreparedFunctionCall:
   """Resolves one call to the tool it names and the context it will run in.
 
@@ -471,7 +470,7 @@ async def _execute_single_prepared_call(
     agent: LlmAgent,
     *,
     tool_runner: Callable[[], Awaitable[Any]],
-) -> Optional[Event]:
+) -> Event | None:
   """Runs one prepared function call and builds its response event.
 
   Args:
@@ -488,7 +487,7 @@ async def _execute_single_prepared_call(
   tool_context = prepared_call.tool_context
   function_args = prepared_call.function_args
   function_response: object | None = None
-  detected_error_type: Optional[str] = None
+  detected_error_type: str | None = None
   response_source: _instrumentation.ToolResponseSource | None = None
 
   async def _run_with_trace() -> Event | None:
@@ -674,7 +673,7 @@ async def _execute_single_prepared_call_async(
     invocation_context: InvocationContext,
     prepared_call: _PreparedFunctionCall,
     agent: LlmAgent,
-) -> Optional[Event]:
+) -> Event | None:
   """Runs one prepared function call and builds its response event.
 
   This is steps 1 to 6 of the tool pipeline: run the before-tool callbacks, run
