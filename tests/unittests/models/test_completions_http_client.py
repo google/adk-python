@@ -28,6 +28,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import httpx
+from pydantic import BaseModel
 import pytest
 
 
@@ -325,8 +326,11 @@ async def test_generate_content_async_function_call_response(
             {
                 'type': 'json_schema',
                 'json_schema': {
-                    'type': 'object',
-                    'properties': {'name': {'type': 'string'}},
+                    'name': 'response',
+                    'schema': {
+                        'type': 'object',
+                        'properties': {'name': {'type': 'string'}},
+                    },
                 },
             },
         ),
@@ -337,8 +341,11 @@ async def test_generate_content_async_function_call_response(
             {
                 'type': 'json_schema',
                 'json_schema': {
-                    'type': 'object',
-                    'properties': {'name': {'type': 'string'}},
+                    'name': 'response',
+                    'schema': {
+                        'type': 'object',
+                        'properties': {'name': {'type': 'string'}},
+                    },
                 },
             },
         ),
@@ -347,6 +354,58 @@ async def test_generate_content_async_function_call_response(
             None,
             'application/json',
             {'type': 'json_object'},
+        ),
+        (
+            {
+                'name': 'weather',
+                'description': 'Forecast',
+                'strict': True,
+                'schema': {'type': 'object', 'properties': {}},
+            },
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'weather',
+                    'description': 'Forecast',
+                    'strict': True,
+                    'schema': {'type': 'object', 'properties': {}},
+                },
+            },
+        ),
+        (
+            {'title': 'Daily weather!', 'type': 'object', 'properties': {}},
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'Daily_weather_',
+                    'schema': {
+                        'title': 'Daily weather!',
+                        'type': 'object',
+                        'properties': {},
+                    },
+                },
+            },
+        ),
+        (
+            {},
+            'application/json',
+            {
+                'type': 'json_schema',
+                'json_schema': {'name': 'response', 'schema': {}},
+            },
+        ),
+        (
+            {'title': 'a' * 70, 'type': 'object'},
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'a' * 64,
+                    'schema': {'title': 'a' * 70, 'type': 'object'},
+                },
+            },
         ),
     ],
 )
@@ -379,6 +438,116 @@ async def test_construct_payload_response_format(
     payload = mock_post.call_args[1]['json']
 
     assert payload['response_format'] == expected_response_format
+
+
+@pytest.mark.asyncio
+async def test_output_schema_model_is_sent_to_chat_completions(
+    client, llm_request
+):
+  class Weather(BaseModel):
+    city: str
+
+  llm_request.set_output_schema(Weather)
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'Weather', 'schema': Weather.model_json_schema()},
+  }
+
+
+@pytest.mark.asyncio
+async def test_response_json_schema_takes_precedence_over_output_schema(
+    client, llm_request
+):
+  llm_request.config = types.GenerateContentConfig(
+      response_schema={'type': 'object', 'title': 'Ignored'},
+      response_json_schema={},
+      response_mime_type='application/json',
+  )
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'response', 'schema': {}},
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('schema', 'expected_schema'),
+    [
+        (
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={'city': types.Schema(type=types.Type.STRING)},
+            ),
+            {'type': 'object', 'properties': {'city': {'type': 'string'}}},
+        ),
+        (
+            {
+                'type': 'OBJECT',
+                'properties': {'city': {'type': 'STRING'}},
+                'default': {'type': 'EXAMPLE'},
+            },
+            {
+                'type': 'object',
+                'properties': {'city': {'type': 'string'}},
+                'default': {'type': 'EXAMPLE'},
+            },
+        ),
+        (list[str], {'items': {'type': 'string'}, 'type': 'array'}),
+    ],
+)
+async def test_output_schema_formats_supported_types(
+    client, llm_request, schema, expected_schema
+):
+  llm_request.set_output_schema(schema)
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'response', 'schema': expected_schema},
+  }
+  if isinstance(schema, dict):
+    assert schema['type'] == 'OBJECT'
+    assert schema['properties']['city']['type'] == 'STRING'
 
 
 @pytest.mark.asyncio
