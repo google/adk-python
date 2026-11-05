@@ -25,6 +25,7 @@ from a2a.types import Message
 from a2a.types import Task
 from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a import _compat
+from google.adk.a2a.converters.from_adk_event import DEFAULT_ERROR_MESSAGE
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.executor.a2a_agent_executor_impl import _A2aAgentExecutor as A2aAgentExecutor
@@ -500,10 +501,11 @@ class TestA2aAgentExecutor:
     assert failure_event.status.state == _compat.TS_FAILED
     _assert_final(failure_event)
     _failure_part = failure_event.status.message.parts[0]
-    if _compat.IS_A2A_V1:
-      assert "Test error" in _failure_part.text
-    else:
-      assert "Test error" in _failure_part.root.text
+    failure_text = (
+        _failure_part.text if _compat.IS_A2A_V1 else _failure_part.root.text
+    )
+    assert failure_text == DEFAULT_ERROR_MESSAGE
+    assert "Test error" not in failure_text
 
   @pytest.mark.asyncio
   async def test_handle_request_with_non_working_state(self):

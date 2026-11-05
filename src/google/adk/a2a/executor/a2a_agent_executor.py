@@ -35,6 +35,7 @@ from typing_extensions import override
 from .. import _compat
 from ...events.event import Event
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
+from ..converters.event_converter import DEFAULT_ERROR_MESSAGE
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
 from .a2a_agent_executor_impl import _A2aAgentExecutor as ExecutorImpl
@@ -172,7 +173,7 @@ class A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=platform_uuid.new_uuid(),
                         role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
+                        parts=[_compat.make_text_part(DEFAULT_ERROR_MESSAGE)],
                     ),
                 ),
                 final=True,
