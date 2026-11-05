@@ -820,49 +820,289 @@ async def test_evaluate_single_inference_result(
     assert metric_result.eval_status == EvalStatus.PASSED
 
 
-@pytest.mark.asyncio
-async def test_evaluate_single_inference_result_can_score_inferences_again(
-    eval_service, mock_eval_sets_manager
-):
-  """Rubrics go on copies, so the same inferences can be scored twice."""
-  rubric = Rubric(
-      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+def _rubric(rubric_id: str, text: str = "p1") -> Rubric:
+  return Rubric(
+      rubric_id=rubric_id, rubric_content=RubricContent(text_property=text)
   )
-  invocation = Invocation(
+
+
+def _invocation_for_rescoring(
+    rubrics: Optional[list[Rubric]] = None,
+) -> Invocation:
+  return Invocation(
       user_content=genai_types.Content(
           parts=[genai_types.Part(text="test user content.")]
       ),
       final_response=genai_types.Content(
           parts=[genai_types.Part(text="test final response.")]
       ),
+      rubrics=rubrics,
   )
-  inference_result = InferenceResult(
-      app_name="test_app",
-      eval_set_id="test_eval_set",
-      eval_case_id="case1",
-      inferences=[invocation.model_copy(deep=True)],
-      session_id="session1",
-  )
-  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
-  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+
+def _inference_results_for_rescoring(
+    *rubrics_per_invocation: Optional[list[Rubric]],
+) -> list[InferenceResult]:
+  return [
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case1",
+          inferences=[
+              _invocation_for_rescoring(rubrics)
+              for rubrics in rubrics_per_invocation
+          ],
+          session_id="session1",
+      )
+  ]
+
+
+async def _rescore(
+    eval_service,
+    inference_results: list[InferenceResult],
+    metric_name: str = "fake_metric",
+) -> list[EvalCaseResult]:
+  return [
+      result
+      async for result in eval_service.evaluate(
+          EvaluateRequest(
+              inference_results=inference_results,
+              evaluate_config=EvaluateConfig(
+                  eval_metrics=[
+                      EvalMetric(metric_name=metric_name, threshold=0.5)
+                  ],
+                  parallelism=1,
+              ),
+          )
+      )
+  ]
+
+
+def _actual_invocations(result: EvalCaseResult) -> list[Invocation]:
+  return [
+      per_invocation.actual_invocation
+      for per_invocation in result.eval_metric_result_per_invocation
+  ]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_can_score_the_same_inference_results_twice(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """Rubrics go on copies: the caller's results stay as they were."""
+  case_rubric = _rubric("case_rubric")
+  turn_rubric = _rubric("turn_rubric")
   mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
       eval_id="case1",
-      conversation=[invocation.model_copy(deep=True)],
-      rubrics=[rubric],
+      conversation=[_invocation_for_rescoring([turn_rubric])],
+      rubrics=[case_rubric],
+  )
+  inference_results = _inference_results_for_rescoring(None)
+  metric_spy = mocker.spy(FakeEvaluator, "evaluate_invocations")
+
+  first = await _rescore(eval_service, inference_results)
+  second = await _rescore(eval_service, inference_results)
+
+  assert inference_results == _inference_results_for_rescoring(None)
+  expected_actual = _invocation_for_rescoring([case_rubric, turn_rubric])
+  for results in (first, second):
+    assert results[0].final_eval_status == EvalStatus.PASSED
+    assert _actual_invocations(results[0]) == [expected_actual]
+  # The results don't share objects with the caller's inferences.
+  actual = _actual_invocations(first[0])[0]
+  caller = inference_results[0].inferences[0]
+  assert actual.user_content is not caller.user_content
+  assert actual.final_response is not caller.final_response
+  # The metric itself has to see the rubrics, not only the returned result.
+  assert metric_spy.call_count == 2
+  for call in metric_spy.call_args_list:
+    assert call.kwargs["actual_invocations"] == [expected_actual]
+
+
+@pytest.mark.parametrize(
+    ("case_rubrics", "turn_rubrics"),
+    [
+        pytest.param(
+            [_rubric("case")], [[_rubric("turn")]], id="case_and_turn_rubrics"
+        ),
+        pytest.param([_rubric("case")], [None], id="case_rubrics_only"),
+        pytest.param(None, [[_rubric("turn")]], id="turn_rubrics_only"),
+        pytest.param(
+            None,
+            [[_rubric("turn1")], [_rubric("turn2")]],
+            id="each_turn_has_its_own",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_evaluate_scores_results_saved_with_rubrics_by_an_older_version(
+    eval_service, mock_eval_sets_manager, case_rubrics, turn_rubrics
+):
+  """Rubrics an older evaluate left on saved results are not duplicates."""
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[_invocation_for_rescoring(r) for r in turn_rubrics],
+      rubrics=case_rubrics,
+  )
+  saved = _inference_results_for_rescoring(
+      *[(case_rubrics or []) + (r or []) for r in turn_rubrics]
+  )
+  restored = [
+      InferenceResult.model_validate_json(result.model_dump_json())
+      for result in saved
+  ]
+
+  results = await _rescore(eval_service, restored)
+
+  assert restored == saved
+  assert results[0].final_eval_status == EvalStatus.PASSED
+  assert _actual_invocations(results[0]) == saved[0].inferences
+
+
+@pytest.mark.asyncio
+async def test_evaluate_scores_saved_results_of_a_conversation_scenario(
+    eval_service, mock_eval_sets_manager
+):
+  """A scenario case has no expected invocations to read turn rubrics from."""
+  case_rubric = _rubric("case_rubric")
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation_scenario=ConversationScenario(
+          starting_prompt="test prompt", conversation_plan="test plan"
+      ),
+      rubrics=[case_rubric],
+  )
+  saved = _inference_results_for_rescoring([case_rubric])
+
+  results = await _rescore(
+      eval_service, saved, metric_name="fake_single_sided_metric"
   )
 
-  _, first = await eval_service._evaluate_single_inference_result(
-      inference_result=inference_result, evaluate_config=evaluate_config
+  assert results[0].final_eval_status == EvalStatus.PASSED
+  assert _actual_invocations(results[0]) == saved[0].inferences
+
+
+@pytest.mark.asyncio
+async def test_evaluate_keeps_an_inference_rubric_the_eval_case_does_not_add(
+    eval_service, mock_eval_sets_manager
+):
+  case_rubric = _rubric("case_rubric")
+  own_rubric = _rubric("own_rubric")
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[_invocation_for_rescoring()],
+      rubrics=[case_rubric],
   )
-  _, second = await eval_service._evaluate_single_inference_result(
-      inference_result=inference_result, evaluate_config=evaluate_config
+  inference_results = _inference_results_for_rescoring([own_rubric])
+
+  results = await _rescore(eval_service, inference_results)
+
+  assert inference_results == _inference_results_for_rescoring([own_rubric])
+  assert _actual_invocations(results[0]) == [
+      _invocation_for_rescoring([own_rubric, case_rubric])
+  ]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_keeps_a_rubric_that_belongs_to_another_turn(
+    eval_service, mock_eval_sets_manager
+):
+  turn1 = _rubric("turn1")
+  turn2 = _rubric("turn2")
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[
+          _invocation_for_rescoring([turn1]),
+          _invocation_for_rescoring([turn2]),
+      ],
   )
 
-  assert inference_result.inferences == [invocation]
-  for result in (first, second):
-    actual = result.eval_metric_result_per_invocation[0].actual_invocation
-    assert result.final_eval_status == EvalStatus.PASSED
-    assert actual == invocation.model_copy(update={"rubrics": [rubric]})
+  results = await _rescore(
+      eval_service, _inference_results_for_rescoring(None, [turn1])
+  )
+
+  assert _actual_invocations(results[0]) == [
+      _invocation_for_rescoring([turn1]),
+      _invocation_for_rescoring([turn1, turn2]),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_scores_saved_results_when_a_rubric_was_added_since(
+    eval_service, mock_eval_sets_manager
+):
+  old = _rubric("old")
+  new = _rubric("new")
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[_invocation_for_rescoring()],
+      rubrics=[old, new],
+  )
+
+  results = await _rescore(
+      eval_service, _inference_results_for_rescoring([old])
+  )
+
+  assert _actual_invocations(results[0]) == [
+      _invocation_for_rescoring([old, new])
+  ]
+
+
+@pytest.mark.parametrize(
+    ("inference_rubrics", "case_rubrics", "turn_rubrics"),
+    [
+        pytest.param(
+            [_rubric("shared", text="a different property")],
+            [_rubric("shared")],
+            None,
+            id="different_text_than_a_case_rubric",
+        ),
+        pytest.param(
+            [_rubric("shared").model_copy(update={"description": "older"})],
+            [_rubric("shared")],
+            None,
+            id="different_description_than_a_case_rubric",
+        ),
+        pytest.param(
+            [_rubric("shared").model_copy(update={"type": "OLDER_TYPE"})],
+            [_rubric("shared")],
+            None,
+            id="different_type_than_a_case_rubric",
+        ),
+        pytest.param(
+            [_rubric("shared", text="a different property")],
+            None,
+            [_rubric("shared")],
+            id="different_text_than_a_turn_rubric",
+        ),
+        pytest.param(
+            None,
+            [_rubric("shared")],
+            [_rubric("shared")],
+            id="case_and_turn_share_an_id",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_evaluate_still_rejects_a_rubric_id_conflict(
+    eval_service,
+    mock_eval_sets_manager,
+    inference_rubrics,
+    case_rubrics,
+    turn_rubrics,
+):
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[_invocation_for_rescoring(turn_rubrics)],
+      rubrics=case_rubrics,
+  )
+
+  with pytest.raises(
+      ValueError, match="Rubric with rubric_id 'shared' already exists."
+  ):
+    await _rescore(
+        eval_service, _inference_results_for_rescoring(inference_rubrics)
+    )
 
 
 @pytest.mark.asyncio
