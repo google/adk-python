@@ -41,6 +41,8 @@ from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from google.genai.types import Part
@@ -526,3 +528,75 @@ class MockLlmConnection(BaseLlmConnection):
 
   async def close(self):
     self._closed.set()
+
+
+class StatefulToolset(BaseToolset):
+  """Toolset for testing that fails if used after close."""
+
+  def __init__(self, slow_gate: asyncio.Event | None = None):
+    super().__init__()
+    self.closed = False
+    self.close_count = 0
+
+    async def search_item(query: str) -> str:
+      if query == 'slow' and slow_gate is not None:
+        await slow_gate.wait()
+      if self.closed:
+        raise RuntimeError('Toolset closed while still in use!')
+      return f'{query}_result'
+
+    self._tool = FunctionTool(func=search_item)
+
+  @override
+  async def get_tools(self, readonly_context=None):
+    del readonly_context
+    if self.closed:
+      raise RuntimeError('Toolset already closed!')
+    return [self._tool]
+
+  @override
+  async def close(self) -> None:
+    self.closed = True
+    self.close_count += 1
+
+
+class QueryAwareLlm(BaseLlm):
+  """Fake LLM that calls search_item('fast'|'slow') based on prompt text."""
+
+  model: str = 'query-aware-llm'
+
+  @override
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    del stream
+    last_content = llm_request.contents[-1]
+    for part in last_content.parts or []:
+      if part.function_response:
+        yield LlmResponse(
+            content=types.Content(
+                role='model',
+                parts=[
+                    Part.from_text(
+                        text=f'Done: {part.function_response.response}'
+                    )
+                ],
+            )
+        )
+        return
+    user_text = ''
+    for content in llm_request.contents:
+      for part in content.parts or []:
+        if part.text:
+          user_text += part.text
+    query = 'fast' if 'fast' in user_text else 'slow'
+    yield LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[
+                Part.from_function_call(
+                    name='search_item', args={'query': query}
+                )
+            ],
+        )
+    )
