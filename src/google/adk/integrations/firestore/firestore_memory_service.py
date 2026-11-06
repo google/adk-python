@@ -156,7 +156,9 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
       if not event.content or not event.content.parts:
         continue
 
-      text = " ".join([part.text for part in event.content.parts if part.text])
+      # Thoughts are the model's hidden reasoning, not conversation.
+      parts = [part for part in event.content.parts if not part.thought]
+      text = " ".join([part.text for part in parts if part.text])
       if not text:
         continue
 
@@ -180,8 +182,10 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
               "sessionId": session_id,
               "keywords": list(keywords),
               "author": event.author,
-              "content": event.content.model_dump(
-                  exclude_none=True, mode="json"
+              "content": (
+                  event.content.model_copy(update={"parts": parts}).model_dump(
+                      exclude_none=True, mode="json"
+                  )
               ),
               "timestamp": event.timestamp,
           },
@@ -237,6 +241,12 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
           from google.genai import types
 
           content = types.Content.model_validate(data["content"])
+          # Memories written before thoughts were filtered at ingest may
+          # still hold them.
+          if content.parts:
+            content.parts = [part for part in content.parts if not part.thought]
+            if not content.parts:
+              continue
           entries.append(
               MemoryEntry(
                   content=content,

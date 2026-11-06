@@ -32,6 +32,7 @@ from google.adk.flows.llm_flows import functions
 from google.adk.plugins.reflect_retry_tool_plugin import GLOBAL_SCOPE_KEY
 from google.adk.plugins.reflect_retry_tool_plugin import REFLECT_AND_RETRY_RESPONSE_TYPE
 from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+from google.adk.plugins.reflect_retry_tool_plugin import ToolReflectionContext
 from google.adk.plugins.reflect_retry_tool_plugin import TrackingScope
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
@@ -765,6 +766,205 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
         error=asyncio.CancelledError(),
     )
     self.assertIsNone(result)
+
+  async def _fail(self, plugin, error, tool_context=None):
+    """Reports one tool failure to the plugin and returns its response."""
+    return await plugin.on_tool_error_callback(
+        tool=self.get_mock_tool(),
+        tool_args=self.get_sample_tool_args(),
+        tool_context=tool_context or self.get_mock_tool_context(),
+        error=error,
+    )
+
+  async def test_string_guidance_replaces_default_guidance(self):
+    """String guidance replaces only the guidance text in the response."""
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        throw_exception_if_retry_exceeded=False,
+        reflection_guidance="Custom retry guidance.",
+        retry_exceeded_guidance="Custom exceeded guidance.",
+    )
+    error = TimeoutError("Timed out")
+    tool_context = self.get_mock_tool_context()
+
+    first = await self._fail(plugin, error, tool_context)
+    exceeded = await self._fail(plugin, error, tool_context)
+
+    self.assertEqual(
+        first,
+        {
+            "response_type": REFLECT_AND_RETRY_RESPONSE_TYPE,
+            "error_type": "TimeoutError",
+            "error_details": "Timed out",
+            "retry_count": 1,
+            "reflection_guidance": "Custom retry guidance.",
+        },
+    )
+    self.assertEqual(
+        exceeded,
+        {
+            "response_type": REFLECT_AND_RETRY_RESPONSE_TYPE,
+            "error_type": "TimeoutError",
+            "error_details": "Timed out",
+            "retry_count": 1,
+            "reflection_guidance": "Custom exceeded guidance.",
+        },
+    )
+
+  async def test_empty_string_guidance_does_not_fall_back(self):
+    """An empty string is used as the guidance, not the default text."""
+    plugin = ReflectAndRetryToolPlugin(max_retries=1, reflection_guidance="")
+
+    result = await self._fail(plugin, ValueError("boom"))
+
+    self.assertEqual(result["reflection_guidance"], "")
+
+  async def test_sync_callable_guidance_receives_context(self):
+    """A sync callable receives the failure context."""
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Invalid arg")
+    captured_contexts: list[ToolReflectionContext] = []
+
+    def provider(reflection_context: ToolReflectionContext) -> str:
+      captured_contexts.append(reflection_context)
+      return (
+          f"Retry {reflection_context.tool_name}"
+          f" {reflection_context.retry_count}/{reflection_context.max_retries}"
+      )
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=3, reflection_guidance=provider
+    )
+
+    result = await plugin.on_tool_error_callback(
+        tool=self.get_mock_tool(),
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+
+    self.assertEqual(len(captured_contexts), 1)
+    reflection_context = captured_contexts[0]
+    self.assertEqual(reflection_context.tool_name, "test_tool_id")
+    self.assertEqual(reflection_context.tool_args, sample_tool_args)
+    self.assertIs(reflection_context.error, error)
+    self.assertEqual(
+        reflection_context.error_details, "ValueError: Invalid arg"
+    )
+    self.assertEqual(reflection_context.retry_count, 1)
+    self.assertEqual(reflection_context.max_retries, 3)
+    self.assertIs(reflection_context.tool_context, mock_tool_context)
+    self.assertEqual(result["reflection_guidance"], "Retry test_tool_id 1/3")
+
+  async def test_async_callable_guidance_is_awaited(self):
+    """Async callables are awaited on both the retry and exceeded paths."""
+
+    async def on_retry(reflection_context: ToolReflectionContext) -> str:
+      return f"Async retry {reflection_context.retry_count}"
+
+    async def on_exceeded(reflection_context: ToolReflectionContext) -> str:
+      return f"Async exceeded {reflection_context.retry_count}"
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        throw_exception_if_retry_exceeded=False,
+        reflection_guidance=on_retry,
+        retry_exceeded_guidance=on_exceeded,
+    )
+    error = ValueError("boom")
+    tool_context = self.get_mock_tool_context()
+
+    first = await self._fail(plugin, error, tool_context)
+    exceeded = await self._fail(plugin, error, tool_context)
+
+    self.assertEqual(first["reflection_guidance"], "Async retry 1")
+    self.assertEqual(exceeded["reflection_guidance"], "Async exceeded 1")
+
+  async def test_callable_guidance_can_extend_default_guidance(self):
+    """Providers get the built-in text for their path as default_guidance."""
+
+    def extend(reflection_context: ToolReflectionContext) -> str:
+      return reflection_context.default_guidance + "\nNever retry 404s."
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        throw_exception_if_retry_exceeded=False,
+        reflection_guidance=extend,
+        retry_exceeded_guidance=extend,
+    )
+    default_plugin = ReflectAndRetryToolPlugin(
+        max_retries=1, throw_exception_if_retry_exceeded=False
+    )
+    error = ValueError("boom")
+    tool_context = self.get_mock_tool_context()
+    default_tool_context = self.get_mock_tool_context()
+
+    first = await self._fail(plugin, error, tool_context)
+    exceeded = await self._fail(plugin, error, tool_context)
+    default_first = await self._fail(
+        default_plugin, error, default_tool_context
+    )
+    default_exceeded = await self._fail(
+        default_plugin, error, default_tool_context
+    )
+
+    self.assertEqual(
+        first["reflection_guidance"],
+        default_first["reflection_guidance"] + "\nNever retry 404s.",
+    )
+    self.assertEqual(
+        exceeded["reflection_guidance"],
+        default_exceeded["reflection_guidance"] + "\nNever retry 404s.",
+    )
+
+  async def test_non_string_guidance_raises_type_error(self):
+    """A provider that returns a non-string raises TypeError."""
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1, reflection_guidance=lambda reflection_context: None
+    )
+
+    with self.assertRaisesRegex(TypeError, "NoneType"):
+      await self._fail(plugin, ValueError("boom"))
+
+  def test_invalid_guidance_type_raises_at_construction(self):
+    """A guidance value that is neither a string nor callable is rejected."""
+    with self.assertRaisesRegex(TypeError, "list"):
+      ReflectAndRetryToolPlugin(reflection_guidance=["line"])
+    with self.assertRaisesRegex(TypeError, "int"):
+      ReflectAndRetryToolPlugin(retry_exceeded_guidance=1)
+
+  async def test_exceeded_guidance_not_built_when_raising(self):
+    """The exceeded provider is not called when the plugin re-raises."""
+    provider = Mock(return_value="unused")
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1, retry_exceeded_guidance=provider
+    )
+    error = ValueError("boom")
+    tool_context = self.get_mock_tool_context()
+    await self._fail(plugin, error, tool_context)
+
+    with self.assertRaises(ValueError):
+      await self._fail(plugin, error, tool_context)
+
+    provider.assert_not_called()
+
+  async def test_subclass_can_build_default_exceeded_response(self):
+    """Subclasses may call the response helper without guidance text."""
+
+    class ShortCircuitPlugin(ReflectAndRetryToolPlugin):
+
+      async def _handle_tool_error(self, tool, tool_args, tool_context, error):
+        return self._get_tool_retry_exceed_msg(tool, tool_args, error)
+
+    result = await self._fail(ShortCircuitPlugin(), ValueError("boom"))
+
+    self.assertEqual(result["retry_count"], 3)
+    self.assertIn("ValueError: boom", result["reflection_guidance"])
+    self.assertIn(
+        "Do not attempt to use the `test_tool_id` tool again",
+        result["reflection_guidance"],
+    )
 
   async def _run_flaky_agent(
       self,

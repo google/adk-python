@@ -39,10 +39,12 @@ from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.context import _fencing
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.mcp_tool import mcp_tool
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_tool import ProgressCallbackFactory
 from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
@@ -3062,3 +3064,120 @@ class TestProgressFnT:
       return None
 
     assert isinstance(factory, ProgressCallbackFactory)
+
+
+class TestMcpToolTitle:
+  """Tests for McpTool.title extraction across MCP specification formats."""
+
+  def setup_method(self):
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+
+  @pytest.mark.parametrize(
+      "tool_payload, expected_title",
+      [
+          (
+              {
+                  "name": "Internal-KB-Search",
+                  "title": "@Internal-KB Search",
+                  "inputSchema": {"type": "object"},
+              },
+              "@Internal-KB Search",
+          ),
+          (
+              {
+                  "name": "Internal-KB-Search",
+                  "annotations": {"title": "@Internal-KB Search (Legacy)"},
+                  "inputSchema": {"type": "object"},
+              },
+              "@Internal-KB Search (Legacy)",
+          ),
+          (
+              {
+                  "name": "Internal-KB-Search",
+                  "title": "@Internal-KB Search",
+                  "annotations": {"title": "@Internal-KB Search (Legacy)"},
+                  "inputSchema": {"type": "object"},
+              },
+              "@Internal-KB Search",
+          ),
+          (
+              {
+                  "name": "Internal-KB-Search",
+                  "title": "   ",
+                  "annotations": {"title": "  @Trimmed Title  "},
+                  "inputSchema": {"type": "object"},
+              },
+              "@Trimmed Title",
+          ),
+          (
+              {
+                  "name": "untitled_tool",
+                  "inputSchema": {"type": "object"},
+              },
+              None,
+          ),
+          (
+              {
+                  "name": "whitespace_tool",
+                  "title": "   ",
+                  "annotations": {"title": "\t\n"},
+                  "inputSchema": {"type": "object"},
+              },
+              None,
+          ),
+      ],
+      ids=[
+          "top_level_title",
+          "annotations_title_fallback",
+          "top_level_takes_precedence_over_annotations",
+          "blank_top_level_falls_back_to_trimmed_annotations_title",
+          "unset_title_returns_none",
+          "whitespace_only_titles_return_none",
+      ],
+  )
+  def test_title_resolves_from_mcp_tool_metadata(
+      self, tool_payload, expected_title
+  ):
+    """McpTool.title resolves top-level title before annotations.title."""
+    raw_tool = McpBaseTool.model_validate(tool_payload)
+
+    tool = McpTool(
+        mcp_tool=raw_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.title == expected_title
+
+  @pytest.mark.asyncio
+  async def test_prefixed_copy_preserves_original_title(self):
+    """Prefixing an McpTool via BaseToolset preserves its display title."""
+    raw_tool = McpBaseTool.model_validate({
+        "name": "Internal-KB-Search",
+        "title": "@Internal-KB Search",
+        "inputSchema": {"type": "object"},
+    })
+    tool = McpTool(
+        mcp_tool=raw_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    class _Toolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        return [tool]
+
+    [prefixed_tool] = await _Toolset(
+        tool_name_prefix="kb"
+    ).get_tools_with_prefix()
+
+    assert prefixed_tool.name == "kb_Internal-KB-Search"
+    assert prefixed_tool.title == "@Internal-KB Search"
+
+  def test_stub_without_title_or_annotations_defaults_to_none(self):
+    """Lightweight tool stubs lacking title and annotations default to None."""
+    tool = McpTool(
+        mcp_tool=MockMCPTool(),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.title is None

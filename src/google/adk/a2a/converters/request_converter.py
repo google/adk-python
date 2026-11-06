@@ -26,7 +26,6 @@ from pydantic import BaseModel
 
 from .. import _compat
 from ...agents.run_config import RunConfig
-from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 
@@ -35,7 +34,6 @@ logger = logging.getLogger('google_adk.' + __name__)
 A2A_METADATA_KEY = 'a2a_metadata'
 
 
-@a2a_experimental
 class AgentRunRequest(BaseModel):
   """Data model for arguments passed to the ADK runner."""
 
@@ -96,7 +94,6 @@ def _warn_unauthenticated_user_name_once() -> None:
   )
 
 
-@a2a_experimental
 def convert_a2a_request_to_agent_run_request(
     request: RequestContext,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,

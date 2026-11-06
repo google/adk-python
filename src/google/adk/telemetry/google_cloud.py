@@ -21,7 +21,6 @@ import os
 from typing import Callable
 from typing import cast
 from typing import Final
-from typing import Optional
 from typing import TYPE_CHECKING
 
 import google.auth
@@ -104,7 +103,7 @@ def get_gcp_exporters(
     enable_cloud_tracing: bool = False,
     enable_cloud_metrics: bool = False,
     enable_cloud_logging: bool = False,
-    google_auth: Optional[tuple[Credentials, str]] = None,
+    google_auth: tuple[Credentials, str] | None = None,
 ) -> OTelHooks:
   """Returns GCP OTel exporters to be used in the app.
 

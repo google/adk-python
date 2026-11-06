@@ -16,8 +16,6 @@
 from datetime import datetime
 import os
 from typing import Any
-from typing import Dict
-from typing import Optional
 
 from google.adk.tools import ToolContext
 from google.cloud import bigquery
@@ -75,8 +73,8 @@ CURRENT_ROUND = "round1"
 
 
 def get_voting_options(
-    tool_context: ToolContext, round_id: Optional[str] = None
-) -> Dict[str, Any]:
+    tool_context: ToolContext, round_id: str | None = None
+) -> dict[str, Any]:
   """Returns the current voting options available to the user.
 
   Args:
@@ -107,7 +105,7 @@ def get_voting_options(
 
 def set_voting_round(
     round_id: str, tool_context: ToolContext
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Sets the current voting round.
 
   Args:
@@ -138,10 +136,10 @@ def set_voting_round(
 def store_vote_to_bigquery(
     vote_choice: str,
     user_id: str,
-    additional_feedback: Optional[str],
+    additional_feedback: str | None,
     tool_context: ToolContext,
-    round_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    round_id: str | None = None,
+) -> dict[str, Any]:
   """Stores a validated vote to BigQuery (or local storage in dev mode).
 
   Args:
@@ -226,7 +224,7 @@ def store_vote_to_bigquery(
       }
 
 
-def get_vote_summary(tool_context: ToolContext) -> Dict[str, Any]:
+def get_vote_summary(tool_context: ToolContext) -> dict[str, Any]:
   """Returns a summary of all votes collected so far.
 
   Returns:

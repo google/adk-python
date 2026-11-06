@@ -79,6 +79,7 @@ def mock_sampler(mocker):
 @pytest.fixture
 def mock_agent(mocker):
   agent = mocker.MagicMock(spec=Agent)
+  agent.max_parallel_workers = None
   agent.instruction = "Initial instruction"
   agent.sub_agents = {}
   agent.mode = None

@@ -208,6 +208,87 @@ def test_from_config_skips_list_of_non_class():
   assert tool.anys is None
 
 
+def test_from_config_unwraps_pep604_optional_args():
+  """``T | None`` args are mapped like ``Optional[T]``, not dropped."""
+  from google.adk.tools.tool_configs import ToolArgsConfig
+
+  class SearchTool(BaseTool):
+
+    def __init__(
+        self,
+        *,
+        top_k: int | None = None,
+        corpora: list[str] | None = None,
+        threshold: float | None = None,
+        corpus: Optional[str] = None,
+    ):
+      super().__init__(name='search', description='desc')
+      self.top_k = top_k
+      self.corpora = corpora
+      self.threshold = threshold
+      self.corpus = corpus
+
+    async def run_async(self, **kwargs):
+      pass
+
+  config = ToolArgsConfig(
+      top_k=5, corpora=['contracts'], threshold=0.4, corpus='legal'
+  )
+  tool = SearchTool.from_config(config, '')
+
+  assert tool.top_k == 5
+  assert tool.corpora == ['contracts']
+  assert tool.threshold == 0.4
+  assert tool.corpus == 'legal'
+
+
+def test_from_config_skips_non_optional_pep604_unions():
+  """Multi-type ``X | Y`` unions are skipped, not unwrapped as optional."""
+  from google.adk.tools.tool_configs import ToolArgsConfig
+
+  class UnionTool(BaseTool):
+
+    def __init__(
+        self,
+        *,
+        either: int | str | None = None,
+        pair: int | str = 'default',
+    ):
+      super().__init__(name='union_tool', description='desc')
+      self.either = either
+      self.pair = pair
+
+    async def run_async(self, **kwargs):
+      pass
+
+  config = ToolArgsConfig(either=5, pair=5)
+  tool = UnionTool.from_config(config, '')
+
+  assert tool.either is None
+  assert tool.pair == 'default'
+
+
+def test_vertex_ai_rag_retrieval_from_config_keeps_pep604_args():
+  """VertexAiRagRetrieval's ``X | None`` args survive a YAML tool config."""
+  from google.adk.tools.retrieval import vertex_ai_rag_retrieval
+  from google.adk.tools.tool_configs import ToolArgsConfig
+
+  corpus = 'projects/p/locations/us-central1/ragCorpora/123'
+  config = ToolArgsConfig(
+      name='retrieve_contracts',
+      description='Retrieves contract clauses.',
+      rag_corpora=[corpus],
+      similarity_top_k=5,
+      vector_distance_threshold=0.4,
+  )
+
+  tool = vertex_ai_rag_retrieval.VertexAiRagRetrieval.from_config(config, '')
+
+  assert tool.vertex_rag_store.rag_corpora == [corpus]
+  assert tool.vertex_rag_store.similarity_top_k == 5
+  assert tool.vertex_rag_store.vector_distance_threshold == 0.4
+
+
 def test_response_scheduling_defaults_to_none():
   """response_scheduling defaults to None, preserving existing behavior."""
 

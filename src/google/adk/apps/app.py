@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -72,7 +71,7 @@ class App(BaseModel):
 
   # InstanceOf rejects dicts rather than coercing them into a bare BaseNode;
   # SerializeAsAny keeps the subclass fields when an App is dumped.
-  root_agent: Optional[SerializeAsAny[InstanceOf[BaseNode]]] = None
+  root_agent: SerializeAsAny[InstanceOf[BaseNode]] | None = None
   """The root agent or node in the application.
 
   Accepts any BaseNode instance, including a BaseAgent.
@@ -81,13 +80,13 @@ class App(BaseModel):
   plugins: list[BasePlugin] = Field(default_factory=list)
   """The plugins in the application."""
 
-  events_compaction_config: Optional[EventsCompactionConfig] = None
+  events_compaction_config: EventsCompactionConfig | None = None
   """The config of event compaction for the application."""
 
-  context_cache_config: Optional[ContextCacheConfig] = None
+  context_cache_config: ContextCacheConfig | None = None
   """Context cache configuration that applies to all LLM agents in the app."""
 
-  resumability_config: Optional[ResumabilityConfig] = None
+  resumability_config: ResumabilityConfig | None = None
   """
   The config of the resumability for the application.
   If configured, will be applied to all agents in the app.

@@ -12,8 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import subprocess
+import sys
+from types import SimpleNamespace
+
+from google.adk.a2a import _compat
 from google.adk.a2a.converters.utils import _from_a2a_context_id
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.a2a.converters.utils import _is_failed_status
 from google.adk.a2a.converters.utils import _to_a2a_context_id
 from google.adk.a2a.converters.utils import ADK_CONTEXT_ID_PREFIX
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
@@ -228,3 +235,51 @@ class TestUtilsFunctions:
     assert parsed_app == app_name
     assert parsed_user == user_id
     assert parsed_session == session_id
+
+
+class TestIsFailedStatus:
+  """Test suite for _is_failed_status."""
+
+  def test_failed_state_is_failed(self):
+    assert _is_failed_status(SimpleNamespace(state=_compat.TS_FAILED))
+
+  @pytest.mark.parametrize(
+      "state",
+      [_compat.TS_COMPLETED, _compat.TS_WORKING, _compat.TS_CANCELED, None],
+  )
+  def test_other_states_are_not_failed(self, state):
+    assert not _is_failed_status(SimpleNamespace(state=state))
+
+  def test_none_status_is_not_failed(self):
+    assert not _is_failed_status(None)
+
+  def test_status_without_state_is_not_failed(self):
+    assert not _is_failed_status(object())
+
+
+def test_utils_importable_without_a2a_sdk():
+  """The module must import on a bare install, without the a2a extra."""
+  # Run in a fresh interpreter so modules cached by other tests cannot hide
+  # the failure. A None entry in sys.modules makes every `import a2a...`
+  # raise ModuleNotFoundError, as it does when a2a-sdk is not installed.
+  code = """
+import sys
+sys.modules["a2a"] = None
+import google.adk.a2a.converters.utils
+try:
+  import google.adk.a2a._compat
+except ModuleNotFoundError:
+  pass
+else:
+  sys.exit("a2a was not blocked")
+"""
+  env = dict(os.environ)
+  env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+  result = subprocess.run(
+      [sys.executable, "-c", code],
+      capture_output=True,
+      text=True,
+      env=env,
+      check=False,
+  )
+  assert result.returncode == 0, result.stderr

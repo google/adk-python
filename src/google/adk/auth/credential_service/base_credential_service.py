@@ -63,6 +63,9 @@ class BaseCredentialService(ABC):
     Saves the exchanged_auth_credential in auth config to the backend credential
     store.
 
+    An exchanged_auth_credential of None means the stored credential must be
+    removed, so that load_credential returns None for that key afterwards.
+
     Args:
         auth_config: The auth config which contains the auth scheme and auth
         credential information. auth_config.get_credential_key will be used to
