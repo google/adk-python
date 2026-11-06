@@ -454,19 +454,10 @@ def _extract_user_input_prompt(part: genai_types.Part) -> Any:
       len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
   ]
   try:
-    data_part = json.loads(raw_json)
+    return _compat.data_from_data_part_blob(raw_json)
   except (ValueError, TypeError) as e:
     logger.warning("Failed to parse A2A data part JSON for HITL prompt: %s", e)
     return None
-
-  if not isinstance(data_part, dict):
-    logger.warning(
-        "Unexpected A2A data part JSON of type %s for HITL prompt",
-        type(data_part).__name__,
-    )
-    return None
-
-  return data_part.get("data")
 
 
 def _create_mock_function_call_for_required_user_input(
