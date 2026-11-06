@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+import contextlib
 import dataclasses
 import functools
 import inspect
@@ -514,11 +515,12 @@ def build_tracing_wrapper(
       items: list[Any] = []
       total = 0
       try:
-        async for item in fn(*args, **kwargs):
-          total += 1
-          if len(items) < yield_cap:
-            items.append(item)
-          yield item
+        async with contextlib.aclosing(fn(*args, **kwargs)) as agen:
+          async for item in agen:
+            total += 1
+            if len(items) < yield_cap:
+              items.append(item)
+            yield item
       except BaseException as exc:
         _finish(span, args, kwargs, StreamResult(items, caps, total), exc)
         raise
@@ -530,11 +532,12 @@ def build_tracing_wrapper(
       items: list[Any] = []
       total = 0
       try:
-        for item in fn(*args, **kwargs):
-          total += 1
-          if len(items) < yield_cap:
-            items.append(item)
-          yield item
+        with contextlib.closing(fn(*args, **kwargs)) as gen:
+          for item in gen:
+            total += 1
+            if len(items) < yield_cap:
+              items.append(item)
+            yield item
       except BaseException as exc:
         _finish(span, args, kwargs, StreamResult(items, caps, total), exc)
         raise

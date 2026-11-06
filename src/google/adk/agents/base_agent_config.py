@@ -14,11 +14,8 @@
 
 from __future__ import annotations
 
-from typing import List
 from typing import Literal
-from typing import Optional
 from typing import TypeVar
-from typing import Union
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -46,7 +43,7 @@ class BaseAgentConfig(BaseModel):
       extra='allow',
   )
 
-  agent_class: Union[Literal['BaseAgent'], str] = Field(
+  agent_class: Literal['BaseAgent'] | str = Field(
       default='BaseAgent',
       description=(
           'Required. The class of the agent. The value is used to differentiate'
@@ -60,11 +57,11 @@ class BaseAgentConfig(BaseModel):
       default='', description='Optional. The description of the agent.'
   )
 
-  sub_agents: Optional[List[AgentRefConfig]] = Field(
+  sub_agents: list[AgentRefConfig] | None = Field(
       default=None, description='Optional. The sub-agents of the agent.'
   )
 
-  before_agent_callbacks: Optional[List[CodeConfig]] = Field(
+  before_agent_callbacks: list[CodeConfig] | None = Field(
       default=None,
       description="""\
 Optional. The before_agent_callbacks of the agent.
@@ -77,7 +74,7 @@ Example:
   ```""",
   )
 
-  after_agent_callbacks: Optional[List[CodeConfig]] = Field(
+  after_agent_callbacks: list[CodeConfig] | None = Field(
       default=None,
       description='Optional. The after_agent_callbacks of the agent.',
   )

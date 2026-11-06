@@ -81,7 +81,9 @@ This directory contains specific developer guides for the ADK Python implementat
 * [MongoDbMemoryService](integrations/mongodb/memory_service/index.md) - Storing session events in a MongoDB collection and recalling them by keyword match.
 * [MongoDbSessionService](integrations/mongodb/session_service/index.md) - Sharing sessions across processes through MongoDB, with transactional writes where the deployment supports them.
 * [MongoDbToolset](integrations/mongodb/mongodb_toolset/index.md) - Vector and hybrid search over a MongoDB database, with the query text embedded on the way through.
+* [OpenAIDecisionsClassifier](integrations/openai/openai_decisions_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with the OpenAI Decisions API, including questions OpenAI declines to answer.
 * [RedisSessionService](integrations/redis/redis_session_service/index.md) - Sharing sessions across processes through Redis, including the expiry every other backend lacks.
+* [TeamsRunner](integrations/teams/teams_runner/index.md) - Running an agent as a Microsoft Teams bot, and why replies arrive after the request is acknowledged.
 * [TypesafeClassifier](integrations/typesafe/typesafe_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with TypeSafe's Jev decision models instead of a model turn.
 
 ### Labs
@@ -111,6 +113,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [BasePlanner](planners/planner/index.md) - Guiding model execution with structured planning instructions, thinking configurations, and Plan-Re-Act thought tagging.
 
 ### Plugins
+* [BigQuery Agent Analytics eval queries](plugins/bigquery_agent_analytics_eval_sql/index.md) - Building the eval session and turn queries over the plugin's events table, with a lookback that prunes partitions and a filter on the rebuilt rows.
 * [ForceEscalationPlugin](tools/model_consult/force_escalation_plugin/index.md) - Enforcing deterministic first-turn, repeated-tool-call, and pre-tool gating escalations to ModelConsultTool.
 * [ModelConsultObservabilityPlugin](tools/model_consult/observability_plugin/index.md) - Measuring ModelConsultTool escalations, advisor and executor tokens, latency, and estimated cost for every invocation.
 * [ReflectAndRetryModelPlugin](plugins/reflect_retry_model_plugin/index.md) - Self-healing, concurrent-safe error recovery for model failures.

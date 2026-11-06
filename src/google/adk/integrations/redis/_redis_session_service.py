@@ -139,6 +139,35 @@ class RedisSessionService(BaseSessionService):
         and not k.startswith(State.TEMP_PREFIX)
     }
 
+  async def _apply_scoped_state_delta(
+      self, client: Any, key: str, delta: dict[str, Any]
+  ) -> dict[str, Any]:
+    """Merges `delta` into the app or user state at `key` and returns it.
+
+    Other sessions write the same key, so the read and write run in one
+    watched transaction that retries if the key changes in between.
+    """
+    if not delta:
+      raw = await client.get(key)
+      return cast(dict[str, Any], json.loads(raw)) if raw else {}
+
+    merged: dict[str, Any] = {}
+
+    async def merge(pipe: Any) -> None:
+      nonlocal merged
+      raw = await pipe.get(key)
+      merged = json.loads(raw) if raw else {}
+      merged.update(delta)
+      pipe.multi()
+      pipe.set(
+          key,
+          json.dumps(merged),
+          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+      )
+
+    await client.transaction(merge, key)
+    return merged
+
   async def create_session(
       self,
       *,
@@ -166,36 +195,13 @@ class RedisSessionService(BaseSessionService):
     key = self._session_key(app_name, user_id, sid)
 
     initial_state = state or {}
-    state_deltas = _session_util.extract_state_delta(initial_state)
+    state_deltas = _session_util.extract_json_safe_state_delta(initial_state)
     app_state_delta = state_deltas.get("app", {})
     user_state_delta = state_deltas.get("user", {})
     session_state = state_deltas.get("session", {})
 
     app_key = self._app_state_key(app_name)
     user_key = self._user_state_key(app_name, user_id)
-
-    app_raw, user_raw = await asyncio.gather(
-        client.get(app_key),
-        client.get(user_key),
-    )
-    current_app = json.loads(app_raw) if app_raw else {}
-    current_user = json.loads(user_raw) if user_raw else {}
-
-    if app_state_delta:
-      current_app.update(app_state_delta)
-      await client.set(
-          app_key,
-          json.dumps(current_app),
-          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-      )
-
-    if user_state_delta:
-      current_user.update(user_state_delta)
-      await client.set(
-          user_key,
-          json.dumps(current_user),
-          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-      )
 
     now = time.time()
     # Save ONLY session-scoped state to Redis storage
@@ -208,6 +214,9 @@ class RedisSessionService(BaseSessionService):
         last_update_time=now,
     )
 
+    # Claim the session key before touching app or user state. Those are
+    # shared with every other session, so a create rejected as a duplicate
+    # must leave them exactly as it found them.
     created = await client.set(
         key,
         storage_session.model_dump_json(),
@@ -218,6 +227,11 @@ class RedisSessionService(BaseSessionService):
       raise AlreadyExistsError(
           f"Session {sid} already exists for user {user_id} in app {app_name}."
       )
+
+    current_app, current_user = await asyncio.gather(
+        self._apply_scoped_state_delta(client, app_key, app_state_delta),
+        self._apply_scoped_state_delta(client, user_key, user_state_delta),
+    )
 
     # Return session with dynamically merged state (including app/user/temp state)
     merged_state = self._merge_state(current_app, current_user, session_state)
@@ -351,6 +365,10 @@ class RedisSessionService(BaseSessionService):
     if not await client.exists(key):
       raise SessionNotFoundError(f"Session {session.id} not found.")
     event = await super().append_event(session, event)
+    # Partial events are not persisted: they neither advance last_update_time
+    # nor touch storage, matching every other session service backend.
+    if event.partial:
+      return event
     # Stamp the session with the event's own timestamp, matching
     # InMemorySessionService, SqliteSessionService and DatabaseSessionService.
     # The wall clock is wrong here: an event records when it was produced, which
@@ -361,35 +379,28 @@ class RedisSessionService(BaseSessionService):
     # Sync app and user state deltas to their respective keys
     session_delta: dict[str, Any] = {}
     if event.actions and event.actions.state_delta:
-      deltas = _session_util.extract_state_delta(event.actions.state_delta)
+      deltas = _session_util.extract_json_safe_state_delta(
+          event.actions.state_delta
+      )
       app_delta = deltas.get("app", {})
       user_delta = deltas.get("user", {})
       session_delta = deltas.get("session", {})
 
       if app_delta:
-        app_key = self._app_state_key(session.app_name)
-        app_raw = await client.get(app_key)
-        app_state = json.loads(app_raw) if app_raw else {}
-        app_state.update(app_delta)
-        await client.set(
-            app_key,
-            json.dumps(app_state),
-            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+        await self._apply_scoped_state_delta(
+            client, self._app_state_key(session.app_name), app_delta
         )
-
       if user_delta:
-        user_key = self._user_state_key(session.app_name, session.user_id)
-        user_raw = await client.get(user_key)
-        user_state = json.loads(user_raw) if user_raw else {}
-        user_state.update(user_delta)
-        await client.set(
-            user_key,
-            json.dumps(user_state),
-            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+        await self._apply_scoped_state_delta(
+            client,
+            self._user_state_key(session.app_name, session.user_id),
+            user_delta,
         )
 
     # Prepare storage copy with ONLY session-scoped state (excluding app:, user:, temp:)
-    session_only_state = self._extract_session_only_state(session.state)
+    session_only_state = _session_util.make_json_safe_state(
+        self._extract_session_only_state(session.state)
+    )
     storage_session = Session(
         id=session.id,
         app_name=session.app_name,
@@ -407,10 +418,9 @@ class RedisSessionService(BaseSessionService):
         stored_session = Session.model_validate_json(raw)
         storage_session.events = stored_session.events
         storage_session.state = stored_session.state
-        if not event.partial:
-          storage_session.events.append(event)
-          if session_delta:
-            storage_session.state.update(session_delta)
+        storage_session.events.append(event)
+        if session_delta:
+          storage_session.state.update(session_delta)
       else:
         storage_session.events = list(session.events)
         storage_session.state = dict(session_only_state)

@@ -12,17 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 import unittest
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.apps import compaction as compaction_module
 from google.adk.apps.app import App
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
-import google.adk.apps.compaction as compaction_module
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_tool import AuthConfig
@@ -3194,3 +3195,69 @@ def test_find_active_task_scope_ignores_compaction_events_with_synthetic_invocat
 
   # Act / Assert
   assert runners._find_active_task_scope(session) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['sliding', 'token'])
+@pytest.mark.parametrize(
+    'pre_abort', [False, True], ids=['inflight', 'pre_abort']
+)
+async def test_compaction_cancels_inflight_summarizer_on_abort(
+    mode: str, pre_abort: bool
+):
+  """Cancels in-flight summarization and skips persisting on abort."""
+  # pylint: disable=protected-access
+  started, cancelled, sig = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+  async def _slow(*, events):
+    del events
+    started.set()
+    try:
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      cancelled.set()
+      raise
+
+  summarizer = AsyncMock(spec=BaseEventsSummarizer)
+  summarizer.maybe_summarize_events.side_effect = _slow
+  svc, agent = AsyncMock(spec=BaseSessionService), BaseAgent(name='root')
+  ev = _create_trace_test_event(
+      timestamp=1.0, invocation_id='inv1', text='x' * 400
+  )
+  session = Session(app_name='t', user_id='u', id='s', events=[ev])
+  cfg = EventsCompactionConfig(
+      summarizer=summarizer,
+      compaction_interval=1,
+      overlap_size=0,
+      token_threshold=10 if mode == 'token' else None,
+      event_retention_size=0 if mode == 'token' else None,
+  )
+  app = App(name='t', root_agent=agent, events_compaction_config=cfg)
+
+  async def _drive():
+    if mode == 'sliding':
+      return [
+          e
+          async for e in _run_compaction_for_sliding_window(
+              app, session, svc, abort_signal=sig
+          )
+      ]
+    return await compaction_module._run_compaction_for_token_threshold_config(
+        config=cfg,
+        session=session,
+        session_service=svc,
+        agent=agent,
+        abort_signal=sig,
+    )
+
+  if pre_abort:
+    sig.set()
+    assert not await _drive()
+    assert not started.is_set()
+  else:
+    task = asyncio.create_task(_drive())
+    await started.wait()
+    sig.set()
+    assert not await asyncio.wait_for(task, timeout=0.5)
+    assert cancelled.is_set()
+  svc.append_event.assert_not_called()

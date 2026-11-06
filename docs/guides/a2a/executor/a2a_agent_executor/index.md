@@ -250,9 +250,6 @@ async def stamp_trace(executor_context, final_event):
     per-interceptor error isolation. An exception in `after_event` or
     `after_agent` ends the task `failed`, and the events already published stay
     published, so a client can see an artifact for a task that then fails.
-*   **Experimental.** Both the executor and its config are decorated
-    `@a2a_experimental` and emit a `UserWarning` on construction. Set
-    `ADK_SUPPRESS_A2A_EXPERIMENTAL_FEATURE_WARNINGS` to silence it.
 
 ## Related samples
 

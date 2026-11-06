@@ -129,6 +129,16 @@ class TestProcessRehydratedOutput:
     content = types.Content(parts=[types.Part(text='{"foo": "bar"}')])
     assert _process_rehydrated_output(node, content) == {"foo": "bar"}
 
+  def test_strips_markdown_fence_like_the_live_path(self):
+    class MySchema(BaseModel):
+      foo: str
+
+    node = BaseNode(name="dummy", output_schema=MySchema)
+    content = types.Content(
+        parts=[types.Part(text='```json\n{"foo": "bar"}\n```')]
+    )
+    assert _process_rehydrated_output(node, content) == {"foo": "bar"}
+
   def test_joins_multiple_parts(self):
     node = BaseNode(name="dummy")
     content = types.Content(

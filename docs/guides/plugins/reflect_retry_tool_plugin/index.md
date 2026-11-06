@@ -74,10 +74,15 @@ The following options are introduced by `ReflectAndRetryToolPlugin` (options inh
 | `max_retries` | `int` | `3` | Maximum consecutive failures before giving up. Must be non-negative; `0` disables retries. |
 | `throw_exception_if_retry_exceeded` | `bool` | `True` | If `True`, re-raises the final exception once the limit is exceeded; if `False`, returns reflection guidance instead. |
 | `tracking_scope` | `TrackingScope` | `TrackingScope.INVOCATION` | Failure-counter lifecycle: per-invocation isolation or global sharing. |
+| `reflection_guidance` | `str` or callable | `None` | Replaces the default guidance on retry attempts. A callable, sync or async, receives a `ToolReflectionContext` and returns the text. |
+| `retry_exceeded_guidance` | `str` or callable | `None` | Replaces the default guidance once the limit is exceeded and the plugin does not re-raise. Same forms as `reflection_guidance`. |
 
 - **`max_retries`** is checked as `current_retries <= max_retries`, so `3` allows attempts 1–3 and the 4th consecutive failure triggers exhaustion. A negative value raises `ValueError` at construction, and `0` gives up on the very first failure without retrying.
 - **`throw_exception_if_retry_exceeded`** selects the failure mode once retries are spent: re-raise for an outer supervisor to catch, or return a final `ToolFailureResponse` that instructs the model to abandon the tool. Non-`Exception` errors are wrapped in `Exception` before being raised.
 - **`tracking_scope`** defaults to `INVOCATION`; `GLOBAL` shares one counter across invocations.
+- **`reflection_guidance`** and **`retry_exceeded_guidance`** are keyword-only. Each takes a string or a sync or async callable that receives a `ToolReflectionContext` (import it from `google.adk.plugins.reflect_retry_tool_plugin`). `None` keeps the built-in text; any other string, including `""`, replaces it. A value that is neither a string nor a callable raises `TypeError` at construction.
+- **`retry_exceeded_guidance`** is never called when `throw_exception_if_retry_exceeded=True`, because the plugin re-raises instead of returning guidance.
+- **Provider errors end the run**: a callable that raises, or returns something other than a string (which raises `TypeError`), propagates out of the plugin callback, and `PluginManager` re-raises that as a `RuntimeError`.
 
 ## Advanced applications
 
@@ -103,6 +108,36 @@ retry_plugin = CustomRetryPlugin(max_retries=5)
 ```
 
 When the override returns something other than `None`, the plugin processes it like a raised exception.
+
+### Custom guidance
+
+Pass a string or a callable to replace the default guidance text. A callable can also extend the built-in text, which it receives as `default_guidance`:
+
+```python
+from google.adk.plugins import ReflectAndRetryToolPlugin
+from google.adk.plugins.reflect_retry_tool_plugin import ToolReflectionContext
+
+
+def retry_guidance(reflection_context: ToolReflectionContext) -> str:
+  return (
+      f"`{reflection_context.tool_name}` failed with"
+      f" {reflection_context.error_details}. Attempt"
+      f" {reflection_context.retry_count} of {reflection_context.max_retries}:"
+      " check the arguments and try again."
+  )
+
+
+def exceeded_guidance(reflection_context: ToolReflectionContext) -> str:
+  return reflection_context.default_guidance + "\nTell the user what failed."
+
+
+retry_plugin = ReflectAndRetryToolPlugin(
+    max_retries=3,
+    throw_exception_if_retry_exceeded=False,
+    reflection_guidance=retry_guidance,
+    retry_exceeded_guidance=exceeded_guidance,
+)
+```
 
 ### Graceful degradation instead of raising
 

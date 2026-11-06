@@ -314,9 +314,7 @@ that two-stage validation works.
     the evaluation does.
 *   **Registration is process-global.** `DEFAULT_METRIC_EVALUATOR_REGISTRY` is a
     module-level singleton, so registering the same metric name twice replaces
-    the first registration and logs it. Constructing any registry also emits an
-    experimental-feature warning, `MetricEvaluatorRegistry` being marked
-    experimental.
+    the first registration and logs it.
 *   **Nothing is re-exported at package level.** Import from
     `google.adk.evaluation.evaluator` and
     `google.adk.evaluation.metric_evaluator_registry` directly; the package

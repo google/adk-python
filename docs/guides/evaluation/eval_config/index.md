@@ -275,9 +275,10 @@ and the metric silently gets default info instead.
 
 ## The other top-level keys
 
-`EvalConfig` accepts five keys in all. Two of them, `criteria` and
-`custom_metrics`, are covered above. The remaining three are
-`user_simulator_config`, `live_model_config` and `multi_run_config`.
+`EvalConfig` accepts six keys in all. Two of them, `criteria` and
+`custom_metrics`, are covered above. The remaining four are
+`user_simulator_config`, `live_model_config`, `parallelism` and
+`multi_run_config`.
 
 `user_simulator_config` replaces the recorded user turns with a model that plays
 the user against a scenario. Which simulator you get is chosen by a `type`
@@ -298,6 +299,25 @@ audio settings of its own on top of them.
 `live_model_config` switches inference to bidirectional streaming mode, which is
 required for Live API models. Its only key is `timeout_seconds`, default `300`,
 the time to wait for a model turn to complete.
+
+`parallelism` caps how many eval cases `LocalEvalService` runs at once during
+inference and metric scoring, and must be at least `1`:
+
+```json
+{
+  "criteria": {
+    "tool_trajectory_avg_score": 1.0,
+    "response_match_score": 0.8
+  },
+  "parallelism": 8
+}
+```
+
+Raise it when an eval set is large and model quota allows; set it to `1` to run
+cases one at a time against a tight rate limit. Both `adk eval` and
+`AgentEvaluator` read it, and `adk eval --parallelism N` or `AgentEvaluator`'s
+`parallelism` argument overrides it for one run. When neither sets a value,
+`LocalEvalService` defaults to `4`.
 
 `multi_run_config` runs each eval case more than once. An agent can answer the
 same case differently from one run to the next, so a single run can pass or
@@ -373,9 +393,10 @@ above the threshold.
 
 A **rule object**, `{"method": ..., "threshold": ...}`, counts the runs that
 passed and compares the result with its own `threshold`, from 0 to 1. Each run
-is first judged on its own, as a single run would be. The one such method so
-far is `pass_rate`: the runs that passed, divided by the runs that passed or
-failed. pass@k and pass^k are planned as further methods of this kind.
+is first judged on its own, as a single run would be. `pass_rate` is the runs
+that passed, divided by the runs that passed or failed. `pass_at_k` and
+`pass_hat_k` also count passing runs, in `cross_run_criteria` only; see
+[pass@k and pass^k](#passk-and-passk).
 
 The case passes when its metrics pass, combined as for a single run, and every
 cross-run criterion passes, unless more of its runs crashed than
@@ -416,13 +437,63 @@ as a bare name without a threshold, when a method that combines scores is given
 as a rule object or in `cross_run_criteria`, when a key of
 `cross_run_scoring_by_metric` is not in `criteria`, when a `threshold` is
 outside 0 to 1, when `max_crashed_runs` is negative, or when a rule object has
-a key it does not recognize.
+a key it does not recognize. The checks for `k` are listed under
+[pass@k and pass^k](#passk-and-passk).
 
 A rule object judges a case run once as well, so with one configured,
 `adk eval --print_detailed_results` prints every case the way it prints a case
 run several times: each metric with its method and value, then each cross-run
 criterion, then the runs. `AgentEvaluator`, which pytest suites call, and
 `adk web` ignore these keys for now.
+
+### pass@k and pass^k
+
+Two methods look at k runs at a time:
+
+*   `pass_at_k` measures capability: the chance that at least one of k runs
+    passes. It answers whether the agent can do the task at all.
+*   `pass_hat_k` measures reliability: the chance that all k runs pass. It
+    answers whether the agent does the task every time.
+
+Both are unbiased estimates from the runs that passed or failed, so any k up to
+that number can be reported from the same runs. At k of 1 both equal
+`pass_rate`. A `pass_hat_k` well below `pass_at_k` marks a case that the agent
+can pass but not consistently, which is flaky rather than wrong.
+
+They go in `cross_run_criteria`, with `k`, and count the runs of the whole eval
+case: a run passes only when every metric passed in it, as in HumanEval and
+tau-bench. Without a `threshold`, a criterion only reports its value: its
+status is `INFORMATIONAL`, and it never passes or fails the case. With a
+`threshold`, it judges the case as `pass_rate` does.
+
+```json
+{
+  "criteria": {
+    "tool_trajectory_avg_score": 1.0,
+    "response_match_score": 0.6
+  },
+  "multi_run_config": {
+    "num_runs": 3,
+    "cross_run_criteria": [
+      {"method": "pass_at_k", "k": 2},
+      {"method": "pass_hat_k", "k": 2}
+    ]
+  }
+}
+```
+
+With the three runs in the table above, the case passed 2 of 3 runs, so it
+reports a `pass_at_k` of 1, printed as `pass@2`, and a `pass_hat_k` of 1 in 3,
+printed as `pass^2`. Neither has a threshold, so the case still passes on its
+metrics.
+
+A criterion has no value when fewer than k runs passed or failed, for example
+after a judge outage. The file fails to load when `pass_at_k` or `pass_hat_k`
+has no `k`, when `k` is less than 1, when another method has a `k`, when a
+method other than these two has no `threshold`, or when `pass_at_k` or
+`pass_hat_k` is used outside `cross_run_criteria`. `adk eval` checks `k`
+against the number of runs once `--num_runs` has been applied, and stops before
+any inference when `k` is more than that number.
 
 ### Crashed runs
 
