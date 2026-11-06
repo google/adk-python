@@ -672,7 +672,7 @@ def _part_to_message_block(
     sanitizer: _ToolUseIdSanitizer,
     downloads: dict[str, bytes],
 ) -> _MessageBlockParam:
-  if part.thought and part.text:
+  if part.thought and part.text is not None:
     signature = ""
     if part.thought_signature:
       signature = part.thought_signature.decode("utf-8")
