@@ -27,6 +27,7 @@ from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
 import pytest
 
@@ -192,6 +193,15 @@ def _text_response(
   )
 
 
+def _text_response_without_streaming_fields(text: str) -> LlmResponse:
+  """Builds a text response that omits partial and turn_complete."""
+  return LlmResponse(
+      content=types.Content(
+          role='model', parts=[types.Part.from_text(text=text)]
+      )
+  )
+
+
 def _rebuilding_callback(
     replacement: LlmResponse,
 ) -> _SingleAfterModelCallback:
@@ -206,12 +216,29 @@ def _rebuilding_callback(
   return _callback
 
 
+class _ReplacementPlugin(BasePlugin):
+  """Plugin that replaces the response with a rebuilt response."""
+
+  def __init__(self, replacement: LlmResponse):
+    super().__init__(name='replacement_plugin')
+    self._replacement = replacement
+
+  async def after_model_callback(
+      self, *, callback_context: CallbackContext, llm_response: LlmResponse
+  ) -> LlmResponse:
+    del callback_context, llm_response
+    return self._replacement
+
+
 async def _run_handle_after_model_callback(
-    agent: Agent, llm_response: LlmResponse
+    agent: Agent,
+    llm_response: LlmResponse,
+    *,
+    plugins: list[BasePlugin] | None = None,
 ) -> LlmResponse | None:
   """Runs the after-model callback chain for the agent over one response."""
   invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
+      agent=agent, plugins=plugins or []
   )
   event = Event(
       id=Event.new_id(),
@@ -273,6 +300,66 @@ async def test_after_model_callback_replacement_explicit_partial_respected():
   )
 
   assert result.partial is False
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_replacement_explicit_turn_complete_respected():
+  """An explicitly set turn_complete=False is not overridden."""
+  agent = Agent(
+      name='test_agent',
+      after_model_callback=[
+          _rebuilding_callback(_text_response('final', turn_complete=False))
+      ],
+  )
+
+  result = await _run_handle_after_model_callback(
+      agent, _text_response('final', turn_complete=True)
+  )
+
+  assert result.turn_complete is False
+
+
+@pytest.mark.parametrize('field', ['partial', 'turn_complete'])
+@pytest.mark.asyncio
+async def test_after_model_callback_explicit_none_does_not_clear_lifecycle(
+    field: str,
+):
+  """Explicit None does not clear framework-owned lifecycle fields."""
+  replacement = _text_response('scrubbed', **{field: None})
+  agent = Agent(
+      name='test_agent',
+      after_model_callback=[_rebuilding_callback(replacement)],
+  )
+
+  result = await _run_handle_after_model_callback(
+      agent, _text_response('original', **{field: True})
+  )
+
+  assert getattr(result, field) is True
+  # Inheritance is copy-on-write; the callback's object remains unchanged.
+  assert getattr(replacement, field) is None
+  assert result is not replacement
+
+
+@pytest.mark.parametrize('field', ['partial', 'turn_complete'])
+@pytest.mark.asyncio
+async def test_after_model_callback_omitted_lifecycle_field_is_inherited(
+    field: str,
+):
+  """An omitted lifecycle field is filled from the replaced response."""
+  replacement = _text_response_without_streaming_fields('scrubbed')
+  assert field not in replacement.model_fields_set
+  agent = Agent(
+      name='test_agent',
+      after_model_callback=[_rebuilding_callback(replacement)],
+  )
+
+  result = await _run_handle_after_model_callback(
+      agent, _text_response('original', **{field: True})
+  )
+
+  assert getattr(result, field) is True
+  assert result is not replacement
 
 
 @pytest.mark.asyncio
@@ -429,6 +516,85 @@ async def test_after_model_callback_replacement_explicit_usage_respected():
   assert result.usage_metadata == own_usage
 
 
+@pytest.mark.asyncio
+async def test_after_model_callback_default_none_constructor_preserves_usage():
+  """Regression guard for #7451: a callback helper that forwards None by default
+  must not erase the original model call's usage."""
+  # Mirrors #7451's `_resp(text, partial=None, usage=None)` helper, which
+  # always passes usage_metadata explicitly, even when the caller omits it.
+  def _resp(text, partial=None, usage=None):
+    return LlmResponse(
+        content=types.Content(
+            role='model', parts=[types.Part.from_text(text=text)]
+        ),
+        partial=partial,
+        usage_metadata=usage,
+    )
+
+  replacement = _resp('scrubbed')
+  assert 'usage_metadata' in replacement.model_fields_set
+  agent = Agent(
+      name='test_agent',
+      after_model_callback=[_rebuilding_callback(replacement)],
+  )
+  original = _text_response('Hello world.')
+  original.usage_metadata = _USAGE
+
+  result = await _run_handle_after_model_callback(agent, original)
+
+  assert result.usage_metadata == _USAGE
+  assert result.content.parts[0].text == 'scrubbed'
+
+
+@pytest.mark.asyncio
+async def test_plugin_omitted_fields_inherit_lifecycle_and_usage():
+  """Plugin replacement inherits omitted lifecycle fields and usage."""
+  replacement = _text_response_without_streaming_fields('scrubbed')
+  plugin = _ReplacementPlugin(replacement)
+  agent = Agent(name='test_agent')
+  original = _text_response('Hello world.', partial=True, turn_complete=True)
+  original.usage_metadata = _USAGE
+
+  result = await _run_handle_after_model_callback(
+      agent, original, plugins=[plugin]
+  )
+
+  assert result.partial is True
+  assert result.turn_complete is True
+  assert result.usage_metadata == _USAGE
+  assert result.content.parts[0].text == 'scrubbed'
+  assert replacement.partial is None
+  assert replacement.usage_metadata is None
+
+
+@pytest.mark.asyncio
+async def test_plugin_default_none_constructor_preserves_lifecycle_and_usage():
+  """#7451 guard: a plugin helper forwarding None by default must not erase
+  the original lifecycle markers or usage."""
+  def _resp(text, partial=None, usage=None):
+    return LlmResponse(
+        content=types.Content(
+            role='model', parts=[types.Part.from_text(text=text)]
+        ),
+        partial=partial,
+        usage_metadata=usage,
+    )
+
+  plugin = _ReplacementPlugin(_resp('scrubbed'))
+  agent = Agent(name='test_agent')
+  original = _text_response('Hello world.', partial=True, turn_complete=True)
+  original.usage_metadata = _USAGE
+
+  result = await _run_handle_after_model_callback(
+      agent, original, plugins=[plugin]
+  )
+
+  assert result.partial is True
+  assert result.turn_complete is True
+  assert result.usage_metadata == _USAGE
+  assert result.content.parts[0].text == 'scrubbed'
+
+
 class _StreamingFakeModelWithUsage(_StreamingFakeModel):
   """Like _StreamingFakeModel, but reports usage on the final response only."""
 
@@ -465,3 +631,110 @@ async def test_run_async_sse_rebuilt_final_keeps_usage_metadata():
 
   assert [event.partial for event in events] == [True, True, None]
   assert [event.usage_metadata for event in events] == [None, None, _USAGE]
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_only_final_sse_event_with_explicit_partial_none():
+  """Explicit partial=None cannot make partial deltas persist as finals."""
+  agent = Agent(
+      name='test_agent',
+      model=_StreamingFakeModel.create(),
+      after_model_callback=[
+          _rebuilding_callback(_text_response('scrubbed', partial=None))
+      ],
+  )
+  harness = testing_utils.InMemoryRunner(agent, check_invariants=False)
+
+  events = []
+  async for event in harness.runner.run_async(
+      user_id=harness.session.user_id,
+      session_id=harness.session.id,
+      new_message=testing_utils.get_user_content('test message'),
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  ):
+    events.append(event)
+
+  assert [event.partial for event in events] == [True, True, None]
+  persisted_model_events = [
+      event for event in harness.session.events if event.author == agent.name
+  ]
+  assert len(persisted_model_events) == 1
+  assert persisted_model_events[0].partial is None
+  assert persisted_model_events[0].content.parts[0].text == 'scrubbed'
+
+
+_TOOL_CALLS: list[str] = []
+
+
+def record_tool() -> dict[str, str]:
+  """Tool used to verify partial function calls run only once."""
+  _TOOL_CALLS.append('record_tool')
+  return {'result': 'ok'}
+
+
+def _function_call_response(partial: bool | None = None) -> LlmResponse:
+  """Builds a response whose only content is a record_tool call."""
+  return LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(name='record_tool', args={})
+              )
+          ],
+      ),
+      partial=partial,
+  )
+
+
+class _ToolStreamingFakeModel(BaseLlm):
+  """Streams function-call chunks, then answers the result with text."""
+
+  model: str = 'fake-tool-streaming'
+  turn_index: int = 0
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    del llm_request, stream
+    self.turn_index += 1
+    if self.turn_index == 1:
+      yield _function_call_response(partial=True)
+      yield _function_call_response(partial=True)
+      yield _function_call_response(partial=None)
+    else:
+      yield _text_response('done')
+
+
+@pytest.mark.asyncio
+async def test_explicit_partial_none_replacement_does_not_execute_partial_tool():
+  """Partial function-call deltas stay partial after callback replacement."""
+  _TOOL_CALLS.clear()
+
+  async def _rebuild_function_call(
+      callback_context: CallbackContext, llm_response: LlmResponse
+  ) -> LlmResponse | None:
+    del callback_context
+    if not llm_response.get_function_calls():
+      return None
+    return _function_call_response(partial=None)
+
+  agent = Agent(
+      name='test_agent',
+      model=_ToolStreamingFakeModel(model='fake-tool-streaming'),
+      tools=[record_tool],
+      after_model_callback=[_rebuild_function_call],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='call the tool',
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+
+  events = []
+  async for event in BaseLlmFlowForTesting().run_async(invocation_context):
+    events.append(event)
+
+  # The tool runs only for the terminal function-call event.
+  assert [_event.partial for _event in events] == [True, True, None, None, None]
+  assert _TOOL_CALLS == ['record_tool']
