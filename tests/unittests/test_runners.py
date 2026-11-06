@@ -54,6 +54,7 @@ from google.adk.events.event import EventActions
 from google.adk.events.event import NodeInfo
 from google.adk.models.google_llm import Gemini
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.runners import InMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
@@ -1978,6 +1979,103 @@ class TestRunnerWithPlugins:
     assert not toolset.closed
     await runner.close()
     assert toolset.closed
+
+  @pytest.mark.asyncio
+  async def test_runner_close_only_closes_shared_toolset_on_last_holder(
+      self,
+  ):
+    """Shared toolset is only closed when the last Runner holding it closes."""
+
+    class RecordingToolset(BaseToolset):
+      """Toolset that records close calls."""
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+        self.close_count = 0
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+        self.close_count += 1
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    shared_agent = LlmAgent(
+        name="shared_agent", model=mock_model, tools=[toolset]
+    )
+    runner1 = Runner(
+        app_name="test_app",
+        agent=shared_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    runner2 = Runner(
+        app_name="test_app",
+        agent=shared_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await runner1.close()
+    assert not toolset.closed
+    assert toolset.close_count == 0
+
+    # Redundant close on runner1 must not release runner2's hold.
+    await runner1.close()
+    assert not toolset.closed
+    assert toolset.close_count == 0
+
+    await runner2.close()
+    assert toolset.closed
+    assert toolset.close_count == 1
+
+    # Redundant close after all holders have closed must not re-close toolset.
+    await runner2.close()
+    assert toolset.close_count == 1
+
+  @pytest.mark.asyncio
+  async def test_parallel_runners_sharing_agent_with_stateful_toolset(self):
+    """Parallel Runners sharing an agent keep toolset open until all finish."""
+    runner1_closed = asyncio.Event()
+    toolset = testing_utils.StatefulToolset(slow_gate=runner1_closed)
+    shared_agent = LlmAgent(
+        name="shared_agent",
+        model=testing_utils.QueryAwareLlm(),
+        tools=[toolset],
+    )
+
+    async def run_one(prompt: str) -> list[str]:
+      texts = []
+      async with InMemoryRunner(agent=shared_agent) as runner:
+        runner.auto_create_session = True
+        async for event in runner.run_async(
+            user_id="u1",
+            session_id=f"s_{prompt}",
+            new_message=types.Content(
+                role="user", parts=[types.Part.from_text(text=prompt)]
+            ),
+        ):
+          if event.content and event.content.parts:
+            for p in event.content.parts:
+              if p.text:
+                texts.append(p.text)
+      if prompt == "fast":
+        assert not toolset.closed
+        runner1_closed.set()
+      return texts
+
+    res_fast, res_slow = await asyncio.gather(
+        run_one("fast"),
+        run_one("slow"),
+    )
+    assert res_fast == ["Done: {'result': 'fast_result'}"]
+    assert res_slow == ["Done: {'result': 'slow_result'}"]
+    assert toolset.closed
+    assert toolset.close_count == 1
 
   @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):
@@ -5245,7 +5343,7 @@ def test_stamp_event_branch_context_preserves_isolation_scope():
   session = mock.Mock(spec=Session, events=[fc_event, fr_event])
   ic = InvocationContext(
       session_service=mock.Mock(spec=BaseSessionService),
-      agent=mock.Mock(spec=BaseAgent, name="agent"),
+      agent=mock.MagicMock(spec=BaseAgent, name="agent"),
       invocation_id="inv_1",
       session=session,
   )
@@ -5279,7 +5377,7 @@ def test_stamp_event_branch_context_does_not_overwrite_existing_scope():
   session = mock.Mock(spec=Session, events=[fc_event, fr_event])
   ic = InvocationContext(
       session_service=mock.Mock(spec=BaseSessionService),
-      agent=mock.Mock(spec=BaseAgent, name="agent"),
+      agent=mock.MagicMock(spec=BaseAgent, name="agent"),
       invocation_id="inv_1",
       session=session,
   )

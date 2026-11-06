@@ -212,9 +212,14 @@ Within a single step (`_execute_step`), when replay is enabled:
      `resume_inputs=recovered.resolved_responses`.
 
 7. **No output, route, or interrupts in recovered events** —
-   - If `node.wait_for_output` or `node.rerun_on_resume`: returns
+   - If `node.wait_for_output` and the node is a `BaseAgent` (task or chat
+     mode), or `node.rerun_on_resume` with `wait_for_output`: returns
      `should_run=True` with `resume_inputs=recovered.resolved_responses`.
-   - Otherwise: returns `should_run = (current_run is not None and not current_run.is_static)`
+   - Else if `node.rerun_on_resume`: fast-forwards (`should_run=False`) when
+     `recovered.finished_after_resume`, otherwise returns `should_run=True`
+     with `resume_inputs`.
+   - Otherwise (including any other `wait_for_output` node, whose next trigger
+     starts a new run): returns `should_run = (current_run is not None and not current_run.is_static)`
      (static nodes that completed with `None` output fast-forward with
      `should_run=False`, while dynamic nodes with no recorded outcome
      re-execute with `should_run=True`).
