@@ -21,16 +21,15 @@ Please do not rely on the implementation details.
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from .env_utils import is_enterprise_mode_enabled
 
 
 def get_express_mode_api_key(
-    project: Optional[str],
-    location: Optional[str],
-    express_mode_api_key: Optional[str],
-) -> Optional[str]:
+    project: str | None,
+    location: str | None,
+    express_mode_api_key: str | None,
+) -> str | None:
   """Validates and returns the API key for Express Mode."""
   if (project or location) and express_mode_api_key:
     raise ValueError(

@@ -13,8 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Optional
-
 from google.genai.types import Content
 from google.genai.types import Part
 
@@ -69,7 +67,7 @@ class LlmEventSummarizer(BaseEventsSummarizer):
   def __init__(
       self,
       llm: BaseLlm,
-      prompt_template: Optional[str] = None,
+      prompt_template: str | None = None,
   ):
     """Initializes the LlmEventSummarizer.
 
@@ -129,7 +127,7 @@ class LlmEventSummarizer(BaseEventsSummarizer):
 
   async def maybe_summarize_events(
       self, *, events: list[Event]
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Compacts given events and returns the compacted content.
 
     Args:

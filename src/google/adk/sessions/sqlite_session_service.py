@@ -24,7 +24,6 @@ import os
 import sqlite3
 from typing import Any
 from typing import cast
-from typing import Optional
 from urllib.parse import unquote
 from urllib.parse import urlparse
 
@@ -48,6 +47,8 @@ from .state import State
 logger = logging.getLogger("google_adk." + __name__)
 
 PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
+
+_BUSY_TIMEOUT_SECONDS = 30.0
 
 # Merges {delta} into {state} with dict.update() semantics: keys in the delta
 # always win with their delta value (including SQL NULL / JSON null), unlike
@@ -232,8 +233,8 @@ class SqliteSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     now = platform_time.get_time()
 
@@ -314,8 +315,8 @@ class SqliteSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     async with self._get_db_connection() as db:
       session_id = await self._resolve_session_id(
           db, app_name, user_id, session_id
@@ -381,7 +382,7 @@ class SqliteSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     sessions_list = []
     async with self._get_db_connection() as db:
@@ -595,7 +596,9 @@ class SqliteSessionService(BaseSessionService):
           raise
     else:
       async with aiosqlite.connect(
-          self._db_connect_path, uri=self._db_connect_uri
+          self._db_connect_path,
+          uri=self._db_connect_uri,
+          timeout=_BUSY_TIMEOUT_SECONDS,
       ) as db:
         db.row_factory = aiosqlite.Row
         await db.execute(PRAGMA_FOREIGN_KEYS)

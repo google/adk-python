@@ -22,7 +22,6 @@ import dataclasses
 import logging
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -52,14 +51,14 @@ async def run_node_async(
     *,
     user_id: str,
     session_id: str,
-    invocation_id: Optional[str] = None,
-    new_message: Optional[types.Content] = None,
-    state_delta: Optional[dict[str, Any]] = None,
-    run_config: Optional[RunConfig] = None,
+    invocation_id: str | None = None,
+    new_message: types.Content | None = None,
+    state_delta: dict[str, Any] | None = None,
+    run_config: RunConfig | None = None,
     yield_user_message: bool = False,
     node: BaseNode | None = None,
-    session: Optional[Session] = None,
-    abort_signal: Optional[asyncio.Event] = None,
+    session: Session | None = None,
+    abort_signal: asyncio.Event | None = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs a BaseNode or Workflow in async mode."""
   from ..runners import _find_active_task_scope

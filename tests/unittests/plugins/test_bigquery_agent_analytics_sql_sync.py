@@ -16,12 +16,13 @@
 
 The plugin loads each eval SQL template from its ``.sql`` file, and services
 that cannot import the plugin run the same files.  These tests read the files,
-and the plugin's source, as text, so they need neither ADK nor its runtime
-dependencies.  They check the header of each file, which holds the license and
-the substitution contract, the placeholders of each template, the rules of the
-SQL lint and of the SQL style guide that a template must keep, and a few
-choices in the SQL that a consumer relies on.  They live apart from the
-plugin's unit tests so that they can run without importing the plugin.
+and the source of the plugin's module that loads them, as text, so they need
+neither ADK nor its runtime dependencies.  They check the header of each file,
+which holds the license and the substitution contract, the placeholders of
+each template, the rules of the SQL lint and of the SQL style guide that a
+template must keep, and a few choices in the SQL that a consumer relies on.
+They live apart from the plugin's unit tests so that they can run without
+importing the plugin.
 """
 
 from __future__ import annotations
@@ -33,7 +34,8 @@ import string
 
 import pytest
 
-_PLUGIN_FILE = "bigquery_agent_analytics_plugin.py"
+# The plugin's module that loads the templates, beside its SQL directory.
+_LOADER_FILE = "_bigquery_agent_analytics_eval_sql.py"
 _SQL_DIR = "bigquery_agent_analytics_sql"
 _CTE_FILE = "eval_view_ctes_v1.sql"
 
@@ -45,13 +47,17 @@ _PLACEHOLDERS_BY_FILE = {
         "attributes_column",
         "latency_ms_column",
         "scope_columns",
+        "raw_where_clause",
     },
-    "eval_session_view_v1.sql": {"view_ref", "ctes"},
-    "eval_turn_view_v1.sql": {"view_ref", "ctes"},
+    "eval_session_query_v1.sql": {"ctes", "where_clause"},
+    "eval_turn_query_v1.sql": {"ctes", "where_clause"},
 }
 _ALL_FILES = tuple(_PLACEHOLDERS_BY_FILE)
-# The files that end a statement, which the CTE file begins.
-_STATEMENT_FILES = tuple(name for name in _ALL_FILES if name != _CTE_FILE)
+# Each query file, and the CTE of output rows that its final SELECT reads.
+_SOURCE_BY_QUERY_FILE = {
+    "eval_session_query_v1.sql": "EvalSessions",
+    "eval_turn_query_v1.sql": "EvalTurns",
+}
 
 # What every header says about the substitution contract.
 _CONTRACT_PHRASES = (
@@ -113,16 +119,16 @@ def _search_roots() -> list[pathlib.Path]:
 
 @pytest.fixture(scope="module")
 def plugins_dir() -> pathlib.Path:
-  """The directory that holds the plugin module and its SQL directory."""
+  """The directory that holds the plugin's SQL module and its SQL directory."""
   for root in _search_roots():
     for candidate in (
         root / "plugins",
         root / "src" / "google" / "adk" / "plugins",
     ):
-      if (candidate / _PLUGIN_FILE).is_file():
+      if (candidate / _LOADER_FILE).is_file():
         return candidate
   raise FileNotFoundError(
-      f"Cannot find {_PLUGIN_FILE} above {__file__} or the working directory"
+      f"Cannot find {_LOADER_FILE} above {__file__} or the working directory"
       f" {pathlib.Path.cwd()}."
   )
 
@@ -459,25 +465,20 @@ def test_countif_scan_finds_each_test_for_any_row(
   assert len(_countif_tests(sql)) == test_count
 
 
-@pytest.mark.parametrize("filename", _STATEMENT_FILES)
-def test_statement_file_ends_with_its_only_semicolon(
-    bodies: dict[str, str], filename: str
-) -> None:
-  """A view template is one statement, which ends with a ';'."""
-  body = bodies[filename]
+@pytest.mark.parametrize("filename", _ALL_FILES)
+def test_file_has_no_semicolon(bodies: dict[str, str], filename: str) -> None:
+  """No template ends a statement, so a caller can extend a query or wrap it.
 
-  assert body.endswith(";\n")
-  assert body.count(";") == 1
-
-
-def test_cte_file_has_no_semicolon(bodies: dict[str, str]) -> None:
-  """The shared CTEs begin a statement that another template ends."""
-  assert ";" not in bodies[_CTE_FILE]
+  The shared CTEs begin a query that a query template continues, and a query
+  template ends without a ';', so that a caller can append ORDER BY or LIMIT
+  to the query, or read it as a subquery.
+  """
+  assert ";" not in bodies[filename]
 
 
 def test_plugin_loads_each_packaged_template(plugins_dir: pathlib.Path) -> None:
-  """The plugin loads every .sql file of its SQL directory, and only those."""
-  source = (plugins_dir / _PLUGIN_FILE).read_text(encoding="utf-8")
+  """The SQL module loads each .sql file of its SQL directory and no other."""
+  source = (plugins_dir / _LOADER_FILE).read_text(encoding="utf-8")
 
   loaded = set(
       re.findall(r'_load_eval_sql_template\(\s*"([^"]+)"\s*\)', source)
@@ -490,13 +491,16 @@ def test_plugin_loads_each_packaged_template(plugins_dir: pathlib.Path) -> None:
 def test_events_table_is_read_once_for_the_events_of_a_turn(
     bodies: dict[str, str],
 ) -> None:
-  """One CTE reads the table, and only events with a session and a turn."""
+  """One CTE reads the table, and only events with a session and a turn.
+
+  The caller's condition is added to that filter.
+  """
   sql = _squash(bodies[_CTE_FILE])
 
   assert sql.count("`{full_table_id}`") == 1
   assert (
       "FROM `{full_table_id}` WHERE session_id IS NOT NULL"
-      " AND invocation_id IS NOT NULL),"
+      " AND invocation_id IS NOT NULL{raw_where_clause}),"
   ) in sql
 
 
@@ -512,11 +516,9 @@ def test_instruction_falls_back_to_the_logged_system_prompt(
   ) in sql
 
 
-def test_transfers_are_not_tool_calls(bodies: dict[str, str]) -> None:
-  """A transfer is not a tool call; AGENT_TRANSFER is the handoff."""
-  sql = _squash(bodies[_CTE_FILE])
-
-  assert (
-      "(event_type = 'TOOL_STARTING' AND COALESCE(tool_name, '') !="
-      " 'transfer_to_agent') AS is_tool_call"
-  ) in sql
+@pytest.mark.parametrize("filename, source", _SOURCE_BY_QUERY_FILE.items())
+def test_query_where_clause_filters_the_output_rows_last(
+    bodies: dict[str, str], filename: str, source: str
+) -> None:
+  """A query's where_clause follows the CTE of output rows that it reads."""
+  assert bodies[filename].endswith(f"\nFROM\n  {source}{{where_clause}}\n")

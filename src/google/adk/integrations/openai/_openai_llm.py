@@ -54,8 +54,8 @@ from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...utils import streaming_utils
+from ...utils._schema_utils import enforce_strict_openai_schema
 from ...utils._schema_utils import lowercase_schema_types
-from ._openai_schema import enforce_strict_openai_schema
 
 logger = logging.getLogger("google_adk." + __name__)
 

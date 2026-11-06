@@ -21,8 +21,6 @@ attribute mappings instead of probing individual keys.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.dependencies._mcp import Tool as McpTool
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -171,7 +169,7 @@ def test_request_attributes_synthesize_missing_tool_call_ids():
     ],
 )
 def test_request_attributes_map_genai_roles_to_otel_roles(
-    role: Optional[str], expected: str
+    role: str | None, expected: str
 ):
   content = types.Content(role=role, parts=[types.Part(text='hi')])
 

@@ -2159,7 +2159,9 @@ class ApiServer:
             exc,
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to save artifact"
+        ) from exc
       artifact_version = await self.artifact_service.get_artifact_version(
           app_name=app_name,
           user_id=user_id,

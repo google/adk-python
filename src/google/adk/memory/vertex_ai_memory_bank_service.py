@@ -21,7 +21,6 @@ import datetime
 from functools import lru_cache
 import logging
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
@@ -30,6 +29,7 @@ from typing_extensions import override
 
 from ..events._rewind_events import _apply_rewinds
 from ..utils._event_loop_cache import per_loop_value
+from ..utils._google_client_headers import merge_tracking_http_options
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
@@ -184,12 +184,12 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
   def __init__(
       self,
-      project: Optional[str] = None,
-      location: Optional[str] = None,
-      agent_engine_id: Optional[str] = None,
+      project: str | None = None,
+      location: str | None = None,
+      agent_engine_id: str | None = None,
       *,
-      express_mode_api_key: Optional[str] = None,
-      credentials: Optional[Credentials] = None,
+      express_mode_api_key: str | None = None,
+      credentials: Credentials | None = None,
   ):
     """Initializes a VertexAiMemoryBankService.
 
@@ -659,6 +659,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.info('Retrieved no memory profiles.')
     return profiles
 
+  def _api_client_http_options_override(
+      self,
+  ) -> types.HttpOptions | types.HttpOptionsDict | None:
+    return None
+
   def _get_api_client(self) -> agentplatform.AsyncClient:
     """Returns the API client for the running event loop.
 
@@ -682,12 +687,19 @@ class VertexAiMemoryBankService(BaseMemoryService):
     """
     from ..dependencies._agentplatform import agentplatform
 
+    http_options = merge_tracking_http_options(
+        self._api_client_http_options_override()
+    )
     if self._express_mode_api_key:
-      return agentplatform.Client(api_key=self._express_mode_api_key).aio
+      return agentplatform.Client(
+          http_options=http_options,
+          api_key=self._express_mode_api_key,
+      ).aio
     return agentplatform.Client(
         project=self._project,
         location=self._location,
         credentials=self._credentials,
+        http_options=http_options,
     ).aio
 
 
