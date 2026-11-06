@@ -14,8 +14,6 @@
 
 import json
 from typing import Any
-from typing import Dict
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -137,8 +135,8 @@ def mock_event_fixture():
 
 async def _create_invocation_context(
     agent: LlmAgent,
-    state: Optional[dict[str, object]] = None,
-    run_config: Optional[RunConfig] = None,
+    state: dict[str, object] | None = None,
+    run_config: RunConfig | None = None,
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -1260,7 +1258,7 @@ def test_trace_tool_call_with_scalar_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
+  test_args: dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
   test_tool_call_id: str = 'tool_call_id_001'
   test_event_id: str = 'event_id_001'
   scalar_function_response: object = 'Scalar result'
@@ -1319,10 +1317,10 @@ def test_trace_tool_call_with_dict_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, object] = {
+  dict_function_response: dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -1996,10 +1994,10 @@ def test_trace_tool_call_disabling_request_response_content(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, object] = {
+  dict_function_response: dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -2783,7 +2781,7 @@ def test_trace_tool_call_with_tool_execution_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a'}
+  test_args: dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Internal server error',
       error_type=ToolErrorType.INTERNAL_SERVER_ERROR,
@@ -2823,7 +2821,7 @@ def test_trace_tool_call_with_timeout_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a'}
+  test_args: dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Request timed out',
       error_type=ToolErrorType.REQUEST_TIMEOUT,
@@ -2849,7 +2847,7 @@ def test_trace_tool_call_with_standard_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param': 1}
+  test_args: dict[str, object] = {'param': 1}
   test_error = ValueError('Invalid arguments')
 
   trace_tool_call(
@@ -3221,7 +3219,7 @@ class _ErrorDetectingTool(BaseTool):
   async def run_async(self, *, args, tool_context):
     return 'result'
 
-  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+  def _detect_error_in_response(self, response: Any) -> str | None:
     raise RuntimeError('detection exploded')
 
 

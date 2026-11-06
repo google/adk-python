@@ -38,7 +38,7 @@ graph TD
        input_schema=UserPreferences,
        output_schema=PhoneRecommendation,
        tools=[check_phone_price],
-       ...
+       # ...
    )
    ```
 
@@ -47,7 +47,7 @@ graph TD
    ```python
    root_agent = Agent(
        sub_agents=[phone_recommender],
-       ...
+       # ...
    )
    ```
 

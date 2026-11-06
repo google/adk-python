@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from collections.abc import Mapping
 
 from google.adk.features import FeatureName
@@ -26,6 +27,11 @@ from google.adk.labs.classifiers import BinaryAnswer
 from google.adk.labs.classifiers import ClassifierInput
 from google.adk.labs.classifiers import ClassifierResponse
 from google.adk.labs.classifiers import Question
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.adk.utils._client_labels_utils import classifier_client_label
+from google.adk.utils._client_labels_utils import get_client_labels
 import pytest
 
 
@@ -54,6 +60,56 @@ async def test_subclass_answers_through_classify():
   assert response == ClassifierResponse(
       model_version='constant', answers={'risky': BinaryAnswer(probability=0.5)}
   )
+
+
+class _LabelRecordingClassifier(BaseClassifier):
+
+  model: str = 'recording'
+
+  labels: list[str] = []
+
+  async def classify(
+      self,
+      *,
+      input: ClassifierInput,
+      questions: Mapping[str, Question],
+  ) -> ClassifierResponse:
+    self.labels = get_client_labels()
+    return ClassifierResponse(answers={})
+
+
+async def test_classify_runs_with_the_classifier_label():
+  classifier = _LabelRecordingClassifier()
+
+  await classifier.classify(input='x', questions={'risky': Binary()})
+
+  assert classifier.labels[-1] == classifier_client_label('custom')
+  assert classifier_client_label('custom') not in get_client_labels()
+
+
+class _StubLlm(BaseLlm):
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    yield LlmResponse()
+
+
+class _InheritedModelClassifier(BaseClassifier):
+
+  async def classify(
+      self,
+      *,
+      input: ClassifierInput,
+      questions: Mapping[str, Question],
+  ) -> ClassifierResponse:
+    return ClassifierResponse(answers={})
+
+
+def test_subclass_accepts_a_model_instance():
+  llm = _StubLlm(model='stub')
+
+  assert _InheritedModelClassifier(model=llm).model is llm
 
 
 def test_base_classifier_cannot_be_instantiated():

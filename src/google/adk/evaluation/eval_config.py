@@ -18,15 +18,19 @@ import logging
 import os
 from typing import Annotated
 from typing import Any
+from typing import get_args
+from typing import Literal
 from typing import Optional
 from typing import Union
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Discriminator
 from pydantic import Field
 from pydantic import model_validator
 from pydantic import SerializeAsAny
+from pydantic import Tag
 
 from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
@@ -119,8 +123,56 @@ class MultiRunCriterion(BaseModel):
   It can also name a method declared in `custom_methods`.
   """
 
-  threshold: float = Field(ge=0.0, le=1.0)
-  """The lowest value of `method` that passes, from 0.0 to 1.0."""
+  threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+  """The lowest value of `method` that passes, from 0.0 to 1.0.
+
+  Required, except in a `PassKMultiRunCriterion`, whose value is only reported
+  when it has no threshold.
+  """
+
+
+class PassKMultiRunCriterion(MultiRunCriterion):
+  """A cross-run criterion that looks at k runs at a time: pass@k or pass^k.
+
+  `pass_at_k` is the chance that at least one of k runs passes, a measure of
+  capability; `pass_hat_k` is the chance that all k runs pass, a measure of
+  reliability. Both count the runs of the whole eval case, as in HumanEval and
+  tau-bench. Without a `threshold`, the value is only reported: the criterion
+  is INFORMATIONAL and never passes or fails the eval case.
+  """
+
+  method: Literal["pass_at_k", "pass_hat_k"]
+  """`pass_at_k` or `pass_hat_k`."""
+
+  k: int = Field(ge=1)
+  """How many runs are looked at together, at most the number of runs."""
+
+
+def _cross_run_criterion_tag(value: Any) -> str:
+  """Returns the model that parses a cross-run criterion, by its `method`.
+
+  Parsing each criterion with one model only means a mistake is reported once,
+  against the model it was meant for, rather than once per model.
+  """
+  if isinstance(value, dict):
+    pass_k_methods = get_args(
+        PassKMultiRunCriterion.model_fields["method"].annotation
+    )
+    is_pass_k = value.get("method") in pass_k_methods
+  else:
+    # An object built in Python keeps its own class, so a MultiRunCriterion
+    # naming "pass_hat_k" still reaches the check that asks for `k`.
+    is_pass_k = isinstance(value, PassKMultiRunCriterion)
+  return "PassKMultiRunCriterion" if is_pass_k else "MultiRunCriterion"
+
+
+_CrossRunCriterion = Annotated[
+    Union[
+        Annotated[PassKMultiRunCriterion, Tag("PassKMultiRunCriterion")],
+        Annotated[MultiRunCriterion, Tag("MultiRunCriterion")],
+    ],
+    Discriminator(_cross_run_criterion_tag),
+]
 
 
 class CustomCrossRunMethodConfig(BaseModel):
@@ -228,7 +280,7 @@ class MultiRunConfig(BaseModel):
       ),
   )
 
-  cross_run_criteria: Optional[list[MultiRunCriterion]] = Field(
+  cross_run_criteria: Optional[list[_CrossRunCriterion]] = Field(
       default=None,
       description=(
           "Rules that judge the eval case on its runs as a whole, on top of"
@@ -237,7 +289,10 @@ class MultiRunConfig(BaseModel):
           " metric failed. Any other run is left out, as is a run that"
           " crashed without producing any metric results. Each entry names a"
           ' method that counts passing runs, such as "pass_rate", and its'
-          " threshold. The case fails if any entry fails."
+          " threshold. The case fails if any entry fails. A `pass_at_k` or"
+          ' `pass_hat_k` entry also gives `k`, such as {"method":'
+          ' "pass_hat_k", "k": 3}, and without a threshold only reports its'
+          " value."
       ),
   )
 
@@ -279,9 +334,10 @@ class MultiRunConfig(BaseModel):
         (name, config.uses_scores) for name, config in custom_methods.items()
     )
 
-    # Each rule as where it is written, the method it names, and whether it is
-    # written as an object, with a threshold of its own.
-    rules: list[tuple[str, str, bool]] = []
+    # Each rule as where it is written, the method it names, the rule itself
+    # when it is written as an object, and whether it is in
+    # `cross_run_criteria`.
+    rules: list[tuple[str, str, Optional[MultiRunCriterion], bool]] = []
     metric_rules = [
         ("cross_run_scoring", self.cross_run_scoring),
         *(
@@ -293,17 +349,22 @@ class MultiRunConfig(BaseModel):
     ]
     for where, rule in metric_rules:
       if isinstance(rule, str):
-        rules.append((where, rule, False))
+        rules.append((where, rule, None, False))
       elif isinstance(rule, MultiRunCriterion):
-        rules.append((where, rule.method, True))
+        rules.append((where, rule.method, rule, False))
       else:
         raise TypeError(f"Unsupported aggregation rule: {rule!r}.")
     rules.extend(
-        (f"cross_run_criteria[{index}]", criterion.method, True)
+        (f"cross_run_criteria[{index}]", criterion.method, criterion, True)
         for index, criterion in enumerate(self.cross_run_criteria or [])
     )
 
-    for where, method, has_threshold in rules:
+    takes_k = {
+        name
+        for name, method in built_in_methods.items()
+        if method.compute_with_k is not None
+    }
+    for where, method, criterion, in_criteria in rules:
       if method not in uses_scores:
         message = (
             f"{where}: Unknown method: {method!r}. Built-in"
@@ -312,7 +373,7 @@ class MultiRunConfig(BaseModel):
         if custom_methods:
           message += f" Custom methods: {sorted(custom_methods)}."
         raise ValueError(message)
-      if uses_scores[method] and has_threshold:
+      if uses_scores[method] and criterion is not None:
         raise ValueError(
             f"{where}: {method!r} combines scores, so it is judged against the"
             " metric's threshold in `criteria` and cannot have a threshold of"
@@ -320,11 +381,30 @@ class MultiRunConfig(BaseModel):
             " `cross_run_scoring_by_metric`, or use a method that counts"
             " passing runs, such as 'pass_rate'."
         )
-      if not uses_scores[method] and not has_threshold:
+      if not uses_scores[method] and criterion is None:
         raise ValueError(
             f"{where}: {method!r} counts passing runs, so it needs a threshold"
             f' of its own: write {{"method": "{method}", "threshold": ...}}'
             " instead of the plain name."
+        )
+      if criterion is None:
+        continue
+      if method in takes_k and not in_criteria:
+        raise ValueError(
+            f"{where}: {method!r} is only supported in `cross_run_criteria`,"
+            " where it counts the runs of the whole eval case."
+        )
+      if method in takes_k and not isinstance(
+          criterion, PassKMultiRunCriterion
+      ):
+        raise ValueError(
+            f"{where}: {method!r} needs `k`, the number of runs it looks at"
+            " together."
+        )
+      if criterion.threshold is None and method not in takes_k:
+        raise ValueError(
+            f"{where}: {method!r} needs a threshold. Only"
+            f" {sorted(takes_k)} can leave it out, to only report a value."
         )
     return self
 

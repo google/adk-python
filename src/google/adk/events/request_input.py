@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -49,16 +48,16 @@ class RequestInput(BaseModel):
   iteration is still recommended for clarity in event logs.
   """
 
-  payload: Optional[Any] = None
+  payload: Any | None = None
   """ Custom payload to be provided for resuming."""
 
-  message: Optional[str] = Field(
+  message: str | None = Field(
       None,
       description="A message to display to the user when requesting input.",
   )
   """A message to display to the user when requesting input."""
 
-  response_schema: Optional[SchemaType] = Field(
+  response_schema: SchemaType | None = Field(
       None,
       description=(
           "The expected schema of the response. Accepts a Python type"

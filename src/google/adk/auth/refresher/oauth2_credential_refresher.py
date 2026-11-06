@@ -27,6 +27,7 @@ from google.adk.auth.oauth2_credential_util import update_credential_with_tokens
 import requests
 from typing_extensions import override
 
+from .base_credential_refresher import _CredentialRevokedError
 from .base_credential_refresher import BaseCredentialRefresher
 
 try:
@@ -80,7 +81,8 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
       auth_scheme: Optional[AuthScheme] = None,
   ) -> AuthCredential:
     """Refresh the OAuth2 credential.
-    If refresh failed, return the original credential.
+
+    If refresh failed transiently, return the original credential.
 
     Args:
         auth_credential: The OAuth2 credential to refresh.
@@ -89,6 +91,9 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
     Returns:
         The refreshed credential.
 
+    Raises:
+        CredentialRefresherError: If the authorization server rejected the
+            refresh token with `invalid_grant` (revoked or expired).
     """
 
     # Handle regular OAuth2 credentials
@@ -103,6 +108,14 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
           "expires_at": auth_credential.oauth2.expires_at,
           "expires_in": auth_credential.oauth2.expires_in,
       }).is_expired():
+        if not auth_credential.oauth2.refresh_token:
+          # Client credentials tokens, and some providers' user tokens, come
+          # without a refresh token. Keep the stale token, as for a failed
+          # refresh below.
+          logger.warning(
+              "OAuth2 token expired and has no refresh token; cannot refresh"
+          )
+          return auth_credential
         client, token_endpoint = create_oauth2_session(
             auth_scheme, auth_credential
         )
@@ -120,6 +133,12 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
           update_credential_with_tokens(auth_credential, tokens)
           logger.debug("Successfully refreshed OAuth2 tokens")
         except (AuthlibBaseError, requests.RequestException) as e:
+          if getattr(e, "error", None) == "invalid_grant":
+            # Permanent: the refresh token is dead, so a stale access token
+            # would only fail later; the caller must ask for re-authorization.
+            raise _CredentialRevokedError(
+                f"OAuth2 refresh token was rejected: {e}"
+            ) from e
           # Non-fatal: keep the stale token so its eventual 401
           # re-triggers auth.
           logger.error("Failed to refresh OAuth2 tokens: %s", e)

@@ -32,6 +32,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from pathlib import PureWindowsPath
 import secrets
+import shlex as _shlex
 from typing import Any
 from typing import cast
 from typing import Optional
@@ -708,13 +709,12 @@ def _build_skill_system_instruction(
   if script_execution_enabled and skills_folder_posix is not None:
     steps.append(
         "NOTE ON ENVIRONMENT EXECUTION: When using"
-        f" `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}` with the `command` parameter, all"
+        f" `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}`, all"
         " skill resources (including scripts and assets) are materialized in"
         " the execution environment under"
-        f" `{skills_folder_posix}/<skill_name>/`. Always specify file and"
-        " script paths relative to or starting with"
-        f" `{skills_folder_posix}/<skill_name>/` (e.g.,"
-        f" `{skills_folder_posix}/<skill_name>/scripts/<script_name>`)."
+        f" `{skills_folder_posix}/<skill_name>/` and scripts execute with that"
+        " skill directory as their working directory (e.g., reference bundled"
+        " assets as `assets/<asset_name>`)."
     )
 
   instruction = (
@@ -1732,42 +1732,20 @@ _materialize_and_run()
     )
 
     if ext == "py":
-      argv_list = [file_path]
-      if isinstance(script_args, list):
-        argv_list.extend(str(v) for v in script_args)
-      else:
-        if isinstance(script_args, dict):
-          for k, v in script_args.items():
-            argv_list.extend([f"--{k}", str(v)])
-
-        if short_options:
-          for k, v in short_options.items():
-            argv_list.extend([f"-{k}", str(v)])
-
-        if positional_args:
-          argv_list.append("--")
-          argv_list.extend(str(v) for v in positional_args)
-
+      argv_list = [
+          file_path,
+          *_build_script_cli_args(script_args, short_options, positional_args),
+      ]
       code += self._WRAPPER_PYTHON_TEMPLATE.format(
           argv_list=argv_list,
           file_path=file_path,
       )
     elif ext in ("sh", "bash"):
-      arr = ["bash", file_path]
-      if isinstance(script_args, list):
-        arr.extend(str(v) for v in script_args)
-      else:
-        if isinstance(script_args, dict):
-          for k, v in script_args.items():
-            arr.extend([f"--{k}", str(v)])
-
-        if short_options:
-          for k, v in short_options.items():
-            arr.extend([f"-{k}", str(v)])
-
-        if positional_args:
-          arr.append("--")
-          arr.extend(positional_args)
+      arr = [
+          "bash",
+          file_path,
+          *_build_script_cli_args(script_args, short_options, positional_args),
+      ]
       timeout = self._script_timeout
       code += self._WRAPPER_SHELL_TEMPLATE.format(
           arr=arr,
@@ -1793,6 +1771,37 @@ _materialize_and_run()
     return code
 
 
+def _build_script_cli_args(
+    script_args: dict[str, Any] | list[Any] | None,
+    short_options: dict[str, Any] | None = None,
+    positional_args: list[Any] | None = None,
+) -> list[str]:
+  """Formats structured script options and arguments into an argv tail."""
+  if isinstance(script_args, list):
+    return [str(v) for v in script_args]
+  cli_args: list[str] = []
+  if isinstance(script_args, dict):
+    for k, v in script_args.items():
+      cli_args.extend([f"--{k}", str(v)])
+  if short_options:
+    for k, v in short_options.items():
+      cli_args.extend([f"-{k}", str(v)])
+  if positional_args:
+    cli_args.append("--")
+    cli_args.extend(str(v) for v in positional_args)
+  return cli_args
+
+
+def _script_interpreter_for_path(file_path: str) -> str | None:
+  """Returns the interpreter binary for a supported skill script extension."""
+  ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+  if ext == "py":
+    return "python3"
+  if ext in ("sh", "bash"):
+    return "bash"
+  return None
+
+
 class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
 
@@ -1806,34 +1815,6 @@ class RunSkillScriptTool(BaseTool):
     self._toolset = toolset
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
-    if self._toolset._env is not None:
-      return types.FunctionDeclaration(
-          name=self.name,
-          description=self.description,
-          parameters_json_schema={
-              "type": "object",
-              "properties": {
-                  "skill_name": {
-                      "type": "string",
-                      "description": "The name of the skill.",
-                  },
-                  "file_path": {
-                      "type": "string",
-                      "description": (
-                          "The relative path to the script (e.g.,"
-                          " 'scripts/setup.py')."
-                      ),
-                  },
-                  "command": {
-                      "type": "string",
-                      "description": (
-                          "The command to execute in the environment."
-                      ),
-                  },
-              },
-              "required": ["skill_name", "file_path", "command"],
-          },
-      )
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,
@@ -1891,7 +1872,6 @@ class RunSkillScriptTool(BaseTool):
     # Standardized arguments: skill_name and file_path.
     skill_name: str | None = args.get("skill_name")
     file_path: str | None = args.get("file_path")
-    command: str | None = args.get("command")
     script_args: Any = args.get("args")
     short_options: Any = args.get("short_options")
     positional_args: Any = args.get("positional_args")
@@ -1912,44 +1892,47 @@ class RunSkillScriptTool(BaseTool):
         _hallucination.MaybeHallucinated(file_path),
     )
 
+    if "command" in args:
+      return {
+          "error": (
+              "Argument 'command' is not supported; pass script arguments"
+              " via 'args', 'short_options', or 'positional_args'."
+          ),
+          "error_code": "INVALID_ARGUMENTS",
+      }
+
+    errors = []
+    if script_args is not None and not isinstance(script_args, (dict, list)):
+      errors.append(
+          "'args' must be a JSON object (dict) or a list of strings,"
+          f" got {type(script_args).__name__}."
+      )
+
+    if short_options is not None and not isinstance(short_options, dict):
+      errors.append(
+          "'short_options' must be a JSON object (dict),"
+          f" got {type(short_options).__name__}."
+      )
+
+    if positional_args is not None and not isinstance(positional_args, list):
+      errors.append(
+          "'positional_args' must be a list of strings,"
+          f" got {type(positional_args).__name__}."
+      )
+
+    if isinstance(script_args, list) and (short_options or positional_args):
+      errors.append(
+          "Cannot specify 'short_options' or 'positional_args' when 'args'"
+          " is a list."
+      )
+
+    if errors:
+      return {
+          "error": "\n".join(errors),
+          "error_code": "INVALID_ARGUMENTS",
+      }
+
     env = self._toolset._env
-    if env is not None:
-      if command is None or not isinstance(command, str) or not command:
-        return {
-            "error": "Argument 'command' is required and must be a string.",
-            "error_code": "INVALID_ARGUMENTS",
-        }
-    else:
-      errors = []
-      if script_args is not None and not isinstance(script_args, (dict, list)):
-        errors.append(
-            "'args' must be a JSON object (dict) or a list of strings,"
-            f" got {type(script_args).__name__}."
-        )
-
-      if short_options is not None and not isinstance(short_options, dict):
-        errors.append(
-            "'short_options' must be a JSON object (dict),"
-            f" got {type(short_options).__name__}."
-        )
-
-      if positional_args is not None and not isinstance(positional_args, list):
-        errors.append(
-            "'positional_args' must be a list of strings,"
-            f" got {type(positional_args).__name__}."
-        )
-
-      if isinstance(script_args, list) and (short_options or positional_args):
-        errors.append(
-            "Cannot specify 'short_options' or 'positional_args' when 'args'"
-            " is a list."
-        )
-
-      if errors:
-        return {
-            "error": "\n".join(errors),
-            "error_code": "INVALID_ARGUMENTS",
-        }
 
     try:
       skill = await self._toolset._get_or_fetch_skill(
@@ -2010,10 +1993,39 @@ class RunSkillScriptTool(BaseTool):
       )
 
     if env is not None:
+      interpreter = _script_interpreter_for_path(file_path)
+      if interpreter is None:
+        ext_msg = (
+            f"'.{file_path.rsplit('.', 1)[-1]}'"
+            if "." in file_path
+            else "(no extension)"
+        )
+        return {
+            "error": (
+                f"Unsupported script type {ext_msg}."
+                " Supported types: .py, .sh, .bash"
+            ),
+            "error_code": "UNSUPPORTED_SCRIPT_TYPE",
+        }
       try:
-        await self._ensure_skill_materialized_in_env(skill, file_path, env)
+        script_path = await self._ensure_skill_materialized_in_env(
+            skill, file_path, env
+        )
+        skill_dir = PurePosixPath(
+            (cast(Path, self._toolset.skills_folder) / skill.name).as_posix()
+        )
+        argv = [
+            interpreter,
+            script_path.relative_to(skill_dir).as_posix(),
+            *_build_script_cli_args(
+                script_args, short_options, positional_args
+            ),
+        ]
+        command = (
+            f"cd {_shlex.quote(skill_dir.as_posix())} && {_shlex.join(argv)}"
+        )
         result = await env.execute(
-            command=cast(str, command),
+            command=command,
             timeout=self._toolset._script_timeout,
         )
         skill_telemetry.script_exit_code = result.exit_code
@@ -2074,7 +2086,7 @@ class RunSkillScriptTool(BaseTool):
 
   async def _ensure_skill_materialized_in_env(
       self, skill: models.Skill, file_path: str, env: BaseEnvironment
-  ) -> None:
+  ) -> PurePosixPath:
     # JIT Materialization: Check if the script exists in the environment.
     # If not, write all skill resources (including scripts) to the environment.
     skills_folder = self._toolset.skills_folder
@@ -2086,10 +2098,12 @@ class RunSkillScriptTool(BaseTool):
     normalized_file = _validate_skill_subpath(
         file_path, base_dir=skill_dir, sub_dir="scripts", strip_sub_dir=True
     )
-    script_path = skill_dir / "scripts" / normalized_file
+    script_path = PurePosixPath(
+        (skill_dir / "scripts" / normalized_file).as_posix()
+    )
 
     try:
-      await env.read_file(cast(Path, PurePosixPath(script_path.as_posix())))
+      await env.read_file(cast(Path, script_path))
       script_exists = True
     except FileNotFoundError:
       script_exists = False
@@ -2099,6 +2113,7 @@ class RunSkillScriptTool(BaseTool):
           "Materializing skill resources for %s in environment", skill.name
       )
       await _write_skill_resources_to_env(skill, skill_dir, env)
+    return script_path
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
     """Telemetry hook: returns an error type if the response indicates an error."""

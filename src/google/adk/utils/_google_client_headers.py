@@ -79,3 +79,33 @@ def merge_tracking_headers(
           value_parts.append(custom_value_part)
     new_headers[key] = " ".join(value_parts)
   return new_headers
+
+
+def merge_tracking_http_options(
+    http_options: types.HttpOptions | types.HttpOptionsDict | None = None,
+    framework_label: str | None = None,
+) -> types.HttpOptions | types.HttpOptionsDict:
+  """Merges tracking headers into the given HttpOptions or HttpOptionsDict.
+
+  Args:
+    http_options: Optional HttpOptions or HttpOptionsDict to merge tracking
+      headers into. If None or empty, a new HttpOptions instance is returned.
+    framework_label: Optional SemVer build-metadata suffix appended to the
+      google-adk framework token (e.g. "managed_agent"), used to distinguish a
+      specific ADK surface in Google's server-side usage pipeline.
+
+  Returns:
+    HttpOptions or HttpOptionsDict with tracking headers merged.
+  """
+  if not http_options:
+    http_options = types.HttpOptions()
+  if isinstance(http_options, dict):
+    headers = http_options.get("headers")
+    http_options["headers"] = merge_tracking_headers(
+        headers, framework_label=framework_label
+    )
+  else:
+    http_options.headers = merge_tracking_headers(
+        http_options.headers, framework_label=framework_label
+    )
+  return http_options

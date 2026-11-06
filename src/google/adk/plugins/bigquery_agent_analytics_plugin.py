@@ -114,6 +114,10 @@ from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
+from ._bigquery_agent_analytics_eval_sql import _build_eval_session_view_sql
+from ._bigquery_agent_analytics_eval_sql import _build_eval_turn_view_sql
+from ._bigquery_agent_analytics_eval_sql import _EVAL_TABLE_ID_UNQUOTABLE_RE
+from ._bigquery_agent_analytics_eval_sql import _validate_payload_column_denylist
 from ._callback_helpers import _classify_tool_result_error
 from ._callback_helpers import _imported_types
 from ._callback_helpers import _is_durable_node_error
@@ -127,10 +131,28 @@ from .base_plugin import BasePlugin
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
 
-# Defined in _callback_helpers, which the observability plugins share, and
-# still importable from this module: _LLM_RESPONSE_ERROR_CODES was defined
-# here, and ToolResultClassification is what a tool_result_classifier returns.
+# Defined elsewhere and still importable from this module.  The names of
+# _bigquery_agent_analytics_eval_sql were defined here: that module builds the
+# eval SQL with the standard library alone, so a caller can build the eval
+# queries without this module's pyarrow and BigQuery Storage imports.
+# _callback_helpers is shared with the observability plugins:
+# _LLM_RESPONSE_ERROR_CODES was defined here, and ToolResultClassification is
+# what a tool_result_classifier returns.
 # pylint: disable=unused-import
+from ._bigquery_agent_analytics_eval_sql import _blank_eval_sql_comments  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _build_eval_view_ctes  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_DIRNAME  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_LEADING_WHERE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_OPENING_QUOTE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _eval_view_dataset_ref  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_outer_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_raw_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _load_eval_sql_template  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _normalize_eval_where_condition  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _PROJECTABLE_PAYLOAD_COLUMNS  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _read_eval_sql_file  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql  # noqa: F401
 from ._callback_helpers import _LLM_RESPONSE_ERROR_CODES  # noqa: F401
 from ._callback_helpers import ToolResultClassification  # noqa: F401
 
@@ -632,8 +654,8 @@ def _format_content(
   """
   # NOTE: Keep these part prefixes ("text: '...'", "call: ...", "resp: ...",
   # "Executable code (...): ...", "Code execution result (...): ...", "other")
-  # and the " | " delimiter in sync with the ``response_events`` CTE in
-  # ``_EVAL_VIEW_CTES_SQL`` and
+  # and the " | " delimiter in sync with the ``ResponseEvents`` CTE in
+  # ``bigquery_agent_analytics_sql/eval_view_ctes_v1.sql`` and
   # ``TestEvalViews.test_eval_response_text_patterns_unwrap_format_content``.
   if content is None or not content.parts:
     return "None", False
@@ -2481,7 +2503,11 @@ class BigQueryLoggerConfig:
       max_content_length: Max length for text content before truncation.
       table_id: BigQuery table ID.
       clustering_fields: Fields to cluster the table by.
-      log_multi_modal_content: Whether to log detailed content parts.
+      log_multi_modal_content: Whether to log detailed content parts in
+        the ``content_parts`` column. When ``False``, ``content_parts`` is
+        written as ``[]`` and GCS offloading (``gcs_bucket_name``) is disabled
+        so large text remains inline (truncated at ``max_content_length``) in
+        ``content`` and binary parts are not stored.
       retry_config: Retry configuration for writes.
       batch_size: Number of rows per batch.
       batch_flush_interval: Max time to wait before flushing a batch.
@@ -2523,7 +2549,13 @@ class BigQueryLoggerConfig:
         SDK queries such as ``ERROR_SQL_PREDICATE`` treat any non-null
         ``error_message`` as an error, so such a row still marks its session
         ``has_error``.
-      gcs_bucket_name: GCS bucket for offloading large content.
+      gcs_bucket_name: GCS bucket for offloading large text and binary content.
+        Offloading only runs when ``content_parts`` is persisted
+        (``log_multi_modal_content=True`` and ``"content_parts"`` not in
+        ``payload_column_denylist``); otherwise ``GCSOffloader`` is not
+        created, a warning is logged once per plugin instance, large text is
+        kept inline (truncated) in ``content``, and binary parts are not
+        stored.
       connection_id: BigQuery connection ID for ObjectRef columns.
       log_session_metadata: Whether to log session metadata.
       custom_tags: Static custom tags to attach to every event.
@@ -2641,6 +2673,15 @@ class BigQueryLoggerConfig:
         a ``HITL_*_REQUEST`` event and ``INVOCATION_COMPLETED`` without
         ``AGENT_RESPONSE`` text) followed by the ``function_response`` turn that
         resumes it needs no reply, and that resumption turn needs no user text.
+        No turn with ``has_truncated_content`` is ready, as a row flagged
+        ``is_truncated`` that puts an event in its trace left the trace
+        without part of a payload. No other row counts: an ``LLM_REQUEST``
+        row repeats the conversation so far, so one oversized message would
+        hold back every later turn of its session.
+        ``has_truncated_content`` tells a caller that truncation keeps a turn
+        from being ready, but not whether it is the only reason: no column
+        of the views holds the other conditions of ``eval_ready``, so a
+        truncated turn may also be unfinished or lack user text.
         Each agent's ``instruction`` in the trace is the one logged by
         ``AGENT_STARTING``; when none was logged (for example a callable
         ``InstructionProvider``), it falls back to the earliest non-empty
@@ -2652,7 +2693,7 @@ class BigQueryLoggerConfig:
         ``content`` column and, with the default ``eval_view_mode`` of
         ``"full"``, require ``USER_MESSAGE_RECEIVED``,
         ``AGENT_STARTING``, ``LLM_REQUEST``, ``TOOL_STARTING``,
-        ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
+        ``TOOL_COMPLETED``, ``TOOL_ERROR``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
         ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
         ``HITL_*_REQUEST_COMPLETED`` events, so denying ``content`` via
         ``payload_column_denylist`` or filtering out any of those events via
@@ -2749,7 +2790,8 @@ class BigQueryLoggerConfig:
   shutdown_timeout: float = 10.0
   queue_max_size: int = 10000
   content_formatter: Optional[Callable[[Any, str], Any]] = None
-  # If provided, large content (images, audio, video, large text) will be offloaded to this GCS bucket.
+  # If provided and content_parts is persisted, large content (images, audio,
+  # video, large text) is offloaded to this GCS bucket.
   gcs_bucket_name: Optional[str] = None
   # If provided, this connection ID will be used as the authorizer for ObjectRef columns.
   # Format: "location.connection_id" (e.g. "us.my-connection")
@@ -4338,7 +4380,13 @@ class GCSOffloader:
 
 
 class HybridContentParser:
-  """Parses content and offloads large/binary parts to GCS."""
+  """Parses content and offloads large/binary parts to GCS.
+
+  GCS offloading runs when an offloader is configured and ``offload=True``
+  (the default). When ``offload=False``, binary parts stay inline with
+  ``"[BINARY DATA]"`` and oversized text parts stay inline (truncated at
+  ``max_length``) regardless of whether an offloader is present.
+  """
 
   def __init__(
       self,
@@ -4555,6 +4603,7 @@ class HybridContentParser:
       span_id: Optional[str] = None,
       parse_uid: str = "",
       content_ordinal: int = 0,
+      offload: bool = True,
   ) -> tuple[str, list[dict[str, Any]], bool]:
     """Parses a Content or Part object into summary text and content parts.
 
@@ -4567,6 +4616,11 @@ class HybridContentParser:
     message index within a multi-content request) disambiguate GCS object
     names: the part index alone restarts per Content, so two messages in
     one request would otherwise collide at the same part ordinal.
+
+    ``offload`` controls GCS offloading. When ``False``, ``self.offloader``
+    is ignored: binary parts stay inline with ``"[BINARY DATA]"`` and
+    oversized text parts stay inline (truncated at ``max_length``) in
+    ``part_data["text"]`` and ``summary_text``.
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
@@ -4613,7 +4667,8 @@ class HybridContentParser:
       elif part.inline_data:
         inline_data = part.inline_data
         mime_type = inline_data.mime_type or "application/octet-stream"
-        if self.offloader:
+        part_data["mime_type"] = mime_type
+        if self.offloader and offload:
           ext = mimetypes.guess_extension(mime_type) or ".bin"
           path = (
               f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
@@ -4634,7 +4689,6 @@ class HybridContentParser:
                 ),
             }
             part_data["object_ref"] = object_ref
-            part_data["mime_type"] = mime_type
             part_data["text"] = "[MEDIA OFFLOADED]"
           except Exception as e:
             logger.warning("Failed to offload content to GCS: %s", e)
@@ -4658,7 +4712,11 @@ class HybridContentParser:
             self.max_length != -1 and char_len > self.max_length
         )
 
-        if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
+        if (
+            self.offloader
+            and offload
+            and (exceeds_inline_byte_limit or exceeds_char_limit)
+        ):
           # Text is too big, treat as file
           path = (
               f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
@@ -4689,7 +4747,7 @@ class HybridContentParser:
             part_data["text"] = clean_text
             summary_text.append(clean_text)
         else:
-          # Text is small or no offloader, keep inline
+          # Text is small or offloading is disabled, keep inline
           clean_text, truncated = self._truncate(safe_text)
           if truncated:
             is_truncated = True
@@ -4775,6 +4833,7 @@ class HybridContentParser:
       *,
       trace_id: Optional[str] = None,
       span_id: Optional[str] = None,
+      offload: bool = True,
   ) -> tuple[Any, list[dict[str, Any]], bool]:
     """Parses content into JSON payload and content parts, potentially offloading to GCS.
 
@@ -4783,6 +4842,10 @@ class HybridContentParser:
     events, so relying on the mutable instance fields lets one event's await
     resume with another event's identity and overwrite its objects. The instance
     fields remain only as a backward-compatible default.
+
+    ``offload`` controls whether eligible binary and oversized text parts are
+    uploaded via ``self.offloader``. When ``False``, parts stay inline
+    (``"[BINARY DATA]"`` for binary parts and truncated text for text parts).
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
@@ -4812,6 +4875,7 @@ class HybridContentParser:
             span_id=span_id,
             parse_uid=parse_uid,
             content_ordinal=content_idx,
+            offload=offload,
         )
         if trunc:
           is_truncated = True
@@ -4836,6 +4900,7 @@ class HybridContentParser:
               span_id=span_id,
               parse_uid=parse_uid,
               content_ordinal=len(contents),
+              offload=offload,
           )
           if trunc:
             is_truncated = True
@@ -4848,6 +4913,7 @@ class HybridContentParser:
           trace_id=trace_id,
           span_id=span_id,
           parse_uid=parse_uid,
+          offload=offload,
       )
       return {"text_summary": summary}, parts, trunc
 
@@ -5122,39 +5188,6 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           ),
       ),
   ]
-
-
-# Payload columns eligible for physical projection.  Every other
-# schema column is an identity / correlation / view-critical column and is
-# *protected* — it cannot be projected out, because the BQAA execution tree
-# and the per-event views depend on it.
-_PROJECTABLE_PAYLOAD_COLUMNS = frozenset(
-    {"content", "content_parts", "attributes", "latency_ms"}
-)
-
-
-def _validate_payload_column_denylist(
-    denylist: Optional[list[str]],
-) -> frozenset[str]:
-  """Validates ``payload_column_denylist`` and returns the denied set.
-
-  Only the projectable payload columns may be denied.  Anything else —
-  an identity/correlation column or an unknown name — is a hard error,
-  so a typo or an attempt to drop a join key fails loudly at construction
-  rather than producing malformed rows or broken views.
-  """
-  denied = frozenset(denylist or ())
-  invalid = denied - _PROJECTABLE_PAYLOAD_COLUMNS
-  if invalid:
-    raise ValueError(
-        "payload_column_denylist may only contain projectable payload"
-        f" columns {sorted(_PROJECTABLE_PAYLOAD_COLUMNS)}; got"
-        f" {sorted(invalid)}. Identity/correlation columns (timestamp,"
-        " event_type, session_id, invocation_id, trace_id, span_id,"
-        " parent_span_id, is_truncated, ...) are protected and cannot be"
-        " projected out."
-    )
-  return denied
 
 
 def _project_schema(
@@ -5662,9 +5695,20 @@ WHERE
 # - USER_MESSAGE_RECEIVED becomes user text; TOOL_STARTING and HITL_*_REQUEST
 #   a function_call; AGENT_TRANSFER a ``transfer_to_agent`` function_call; and
 #   TOOL_COMPLETED and HITL_*_REQUEST_COMPLETED a function_response whose
-#   non-object result is wrapped as ``{"result": ...}``.  The transfer and
-#   ``adk_request_*`` HITL tools' own TOOL_STARTING and TOOL_COMPLETED rows
-#   are skipped: AGENT_TRANSFER, logged after both, carries the handoff, and
+#   non-object result is wrapped as ``{"result": ...}``.  TOOL_ERROR, which is
+#   logged instead of TOOL_COMPLETED when a tool raises, becomes a
+#   function_response of ``{"error": ...}`` holding the error message (or
+#   ``Tool execution failed`` when it has none), so every tool call that
+#   completes or raises has a response.  ``after_tool_callback`` also logs
+#   TOOL_ERROR, for a result that reports a failure: that row records the
+#   error message it synthesized and leaves out the result the model saw, so
+#   the response holds that message, not the result.  A TOOL_STARTING,
+#   TOOL_COMPLETED or TOOL_ERROR row that names no tool, as when a custom
+#   ``content_formatter`` fails, adds no event, and a HITL row that names none
+#   gets the name ``""``.
+#   The transfer and ``adk_request_*`` HITL tools' own
+#   TOOL_STARTING, TOOL_COMPLETED and TOOL_ERROR rows are skipped:
+#   AGENT_TRANSFER, logged after them, carries the handoff, and
 #   HITL_*_REQUEST and HITL_*_REQUEST_COMPLETED carry the HITL request and
 #   the completion that resumes it.
 # - Model text comes from AGENT_RESPONSE (which strips thought parts).
@@ -5673,7 +5717,7 @@ WHERE
 #   prefer terminal rows, which keeps streamed usage from being counted
 #   twice.
 # - ``_format_content`` renders text parts as ``text: '...'`` joined by
-#   `` | ``; ``response_events`` strips that ``_format_content`` wrapper back
+#   `` | ``; ``ResponseEvents`` strips that ``_format_content`` wrapper back
 #   to plain text (kept in sync with ``_format_content`` by
 #   ``TestEvalViews.test_eval_response_text_patterns_unwrap_format_content``).
 #   Any other ``_format_content`` output (``None``, or one with a non-text
@@ -5687,18 +5731,24 @@ WHERE
 # - An agent's ``instruction`` comes from its latest AGENT_STARTING event.
 #   Where none logged one (a callable ``InstructionProvider`` is not logged as
 #   text), it falls back to ``logged_system_prompt`` from
-#   ``session_agent_prompts``, the earliest non-empty ``system_prompt`` logged
+#   ``SessionAgentPrompts``, the earliest non-empty ``system_prompt`` logged
 #   for that agent in the session's LLM_REQUEST events.
 # - ``trace`` holds only ``agents`` and ``turns``, and every nested object uses
 #   proto field names only, because unknown fields are rejected.
 # - No output column is named ``status``, avoiding collisions with
 #   downstream evaluation output schemas.
-# - Tool metrics (``tool_call_count``, ``distinct_tools_used`` and the
-#   consecutive-call columns) skip the ``transfer_to_agent`` tool, whose
-#   handoff the trace carries as the AGENT_TRANSFER function_call.  Two calls
+# - Tool metrics (``tool_call_count``, ``tool_error_count``,
+#   ``distinct_tools_used`` and the consecutive-call columns) skip the
+#   ``transfer_to_agent`` tool, whose handoff the trace carries as the
+#   AGENT_TRANSFER function_call, and the ``adk_request_credential``,
+#   ``adk_request_confirmation`` and ``adk_request_input`` tools, which the
+#   framework calls to pause for a credential, a confirmation or the user's
+#   input.  A TOOL_STARTING row that names no tool is not a tool call, though
+#   a TOOL_ERROR row that names none still counts as a tool error.  Two calls
 #   are identical when their tool name and args match; ``tool_call_island``
 #   numbers each run of consecutive identical calls, and ``has_tool_loop``
-#   means a run of 3 or more.
+#   means a run of 3 or more.  A HITL request ends a run, even though the turn
+#   that resumes after it keeps its invocation_id.
 # - ``eval_ready`` needs user text, a finished turn and at least one trace
 #   event: user input with no text (image-only or offloaded to GCS) leaves
 #   the judge without a prompt. In ``eval_session``, a paused turn (one that
@@ -5707,8 +5757,26 @@ WHERE
 #   ``function_response`` turn that resumes it in the next invocation also
 #   satisfy ``session_turn_eval_ready``; a turn that merely ended without a
 #   reply is not paused.
-# - Every column is aggregated per session or turn, so filters on the output
-#   timestamps cannot prune the events table's ``timestamp`` partitions.
+# - Neither ``eval_ready`` nor ``session_turn_eval_ready`` holds for a turn
+#   with ``has_truncated_content``: a row that puts an event in the trace and
+#   is flagged ``is_truncated`` leaves the trace without part of its payload.
+#   No other row counts: an ``LLM_REQUEST`` row repeats the conversation so
+#   far, so one oversized message would hold back every later turn of its
+#   session.  ``has_truncated_content`` tells a caller that truncation keeps a
+#   turn from being ready, but not whether it is the only reason: no column of
+#   the views holds the other conditions of ``eval_ready``, such as
+#   ``has_user_message`` and ``is_complete``, so a truncated turn may also be
+#   unfinished or lack user text.
+#   ``is_truncated`` is a protected column, so the builders reject it in
+#   ``denied_columns``: read as FALSE, it would mark truncated turns eval
+#   ready.
+# - Every column is aggregated per session or turn, so a filter on the views'
+#   output timestamps cannot prune the events table's ``timestamp``
+#   partitions.  The query builders, ``build_eval_session_query_sql`` and
+#   ``build_eval_turn_query_sql``, take a ``raw_where_clause`` for that, a
+#   lookback on ``timestamp`` that keeps every event of the sessions to read,
+#   and a ``where_clause`` that then picks output rows, such as those of a
+#   time window, without dropping the earlier events that they need.
 # - ``eval_view_mode`` picks the events that must be logged for the views to be
 #   created (``_EVAL_VIEW_EVENTS_BY_MODE``): all of
 #   ``_EVAL_VIEW_REQUIRED_EVENTS`` for ``"full"``, but only
@@ -5720,6 +5788,7 @@ _EVAL_VIEW_REQUIRED_EVENTS = frozenset({
     "LLM_REQUEST",
     "TOOL_STARTING",
     "TOOL_COMPLETED",
+    "TOOL_ERROR",
     "TOOL_PAUSED",
     "AGENT_TRANSFER",
     "HITL_CREDENTIAL_REQUEST",
@@ -5741,877 +5810,6 @@ _EVAL_VIEW_EVENTS_BY_MODE = {
     "full": _EVAL_VIEW_REQUIRED_EVENTS,
     "conversation_only": _EVAL_VIEW_CORE_EVENTS,
 }
-
-_EVAL_VIEW_CTES_SQL = """\
-WITH
-  raw_events AS (
-    SELECT
-      timestamp,
-      event_id,
-      event_type,
-      agent,
-      session_id,
-      invocation_id,
-      user_id,
-      content,
-      {content_parts_column},
-      {attributes_column},
-      {latency_ms_column},
-      status,
-      error_message,
-      is_truncated
-    FROM
-      `{full_table_id}`
-    WHERE
-      session_id IS NOT NULL
-      AND invocation_id IS NOT NULL
-  ),
-  typed_events AS (
-    SELECT
-      *,
-      COALESCE(
-        agent, JSON_VALUE(attributes, '$.root_agent_name'), 'root_agent'
-      ) AS author,
-      JSON_VALUE(content, '$.tool') AS tool_name,
-      TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json,
-      CASE
-        WHEN event_type != 'USER_MESSAGE_RECEIVED' THEN NULL
-        WHEN COALESCE(ARRAY_LENGTH(content_parts), 0) > 0 THEN (
-          SELECT
-            STRING_AGG(p.text, '\\n' ORDER BY p.part_index)
-          FROM
-            UNNEST(content_parts) AS p
-          WHERE
-            p.mime_type = 'text/plain'
-            AND COALESCE(p.storage_mode, 'INLINE') = 'INLINE'
-            AND COALESCE(p.part_attributes, '{{}}') = '{{}}'
-            AND p.text IS NOT NULL
-            AND p.text NOT IN ('', '[BINARY DATA]', '[UPLOAD FAILED]')
-        )
-        WHEN NOT REGEXP_CONTAINS(
-          COALESCE(
-            JSON_VALUE(content, '$.text_summary'),
-            JSON_VALUE(content, '$'),
-            ''
-          ),
-          r'^Function response: '
-        ) THEN NULLIF(
-          COALESCE(
-            JSON_VALUE(content, '$.text_summary'), JSON_VALUE(content, '$')
-          ),
-          ''
-        )
-        ELSE NULL
-      END AS message_text,
-      (
-        event_type = 'USER_MESSAGE_RECEIVED'
-        AND (
-          REGEXP_CONTAINS(
-            COALESCE(
-              JSON_VALUE(content, '$.text_summary'),
-              JSON_VALUE(content, '$'),
-              ''
-            ),
-            r'^Function response: '
-          )
-          OR EXISTS(
-            SELECT 1
-            FROM UNNEST(content_parts) AS p
-            WHERE
-              JSON_QUERY(p.part_attributes, '$.function_response')
-              IS NOT NULL
-          )
-        )
-      ) AS is_function_response,
-      IF(
-        event_type = 'AGENT_RESPONSE',
-        COALESCE(
-          IF(
-            JSON_TYPE(JSON_QUERY(content, '$.text_summary')) = 'string'
-              AND TRIM(JSON_VALUE(content, '$.text_summary')) != '',
-            JSON_VALUE(content, '$.text_summary'),
-            NULL
-          ),
-          NULLIF(JSON_VALUE(content, '$.response'), ''),
-          IF(
-            JSON_TYPE(JSON_QUERY(content, '$.response'))
-              IN ('object', 'array'),
-            TO_JSON_STRING(JSON_QUERY(content, '$.response')),
-            NULL
-          )
-        ),
-        NULL
-      ) AS formatted_response,
-      (
-        event_type = 'LLM_RESPONSE'
-        AND (
-          JSON_VALUE(attributes, '$.finish_reason') IS NOT NULL
-          OR JSON_VALUE(attributes, '$.cache_type') IS NOT NULL
-        )
-      ) AS is_final_llm_response,
-      SAFE_CAST(JSON_VALUE(content, '$.usage.total') AS INT64) AS usage_total,
-      SAFE_CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)
-        AS usage_prompt,
-      SAFE_CAST(JSON_VALUE(content, '$.usage.completion') AS INT64)
-        AS usage_completion,
-      SAFE_CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms
-    FROM
-      raw_events
-  ),
-  response_events AS (
-    SELECT
-      *,
-      (
-        event_type = 'TOOL_STARTING'
-        AND COALESCE(tool_name, '') != 'transfer_to_agent'
-      ) AS is_tool_call,
-      CASE
-        WHEN
-          REGEXP_CONTAINS(formatted_response, r"(?s)^text: '.*'$")
-          AND NOT REGEXP_CONTAINS(
-            formatted_response,
-            r" [|] (?:call: |resp: |Executable code |Code execution result )"
-          )
-          AND NOT REGEXP_CONTAINS(formatted_response, r" [|] other(?: [|] |$)")
-          THEN NULLIF(
-            REGEXP_REPLACE(
-              REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
-              r"' [|] text: '",
-              CHR(10)
-            ),
-            ''
-          )
-        WHEN
-          NOT REGEXP_CONTAINS(
-            formatted_response,
-            r"^(?:call: |resp: |Executable code |Code execution result )"
-          )
-          AND NOT REGEXP_CONTAINS(
-            formatted_response, r"^(?:None$|text: '|other(?: [|] |$))"
-          )
-          THEN NULLIF(formatted_response, '')
-      END AS response_text
-    FROM
-      typed_events
-  ),
-  annotated_events AS (
-    SELECT
-      *,
-      (
-        COUNTIF(is_final_llm_response)
-          OVER (PARTITION BY session_id, invocation_id)
-      ) > 0 AS turn_has_final_llm_response,
-      ROW_NUMBER() OVER (
-        PARTITION BY session_id, invocation_id, is_tool_call
-        ORDER BY timestamp, event_id
-      ) - ROW_NUMBER() OVER (
-        PARTITION BY
-          session_id, invocation_id, is_tool_call, tool_name, tool_args_json
-        ORDER BY timestamp, event_id
-      ) AS tool_call_island
-    FROM
-      response_events
-  ),
-  trace_events AS (
-    SELECT
-      session_id,
-      invocation_id,
-      timestamp,
-      event_id,
-      event_type,
-      user_id,
-      agent,
-      JSON_VALUE(attributes, '$.root_agent_name') AS root_agent_name,
-      status,
-      error_message,
-      is_truncated,
-      message_text,
-      response_text,
-      is_function_response,
-      is_tool_call,
-      IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name,
-      IF(
-        is_tool_call,
-        COUNT(*) OVER (
-          PARTITION BY
-            session_id,
-            invocation_id,
-            is_tool_call,
-            tool_name,
-            tool_args_json,
-            tool_call_island
-        ),
-        NULL
-      ) AS tool_call_run_length,
-      -- Like EvaluationGenerator, sum raw reports, not cumulative deltas.
-      (
-        (event_type = 'LLM_RESPONSE'
-          AND (is_final_llm_response OR NOT turn_has_final_llm_response))
-        OR event_type = 'LIVE_USAGE'
-      ) AS is_usage_row,
-      usage_total,
-      usage_prompt,
-      usage_completion,
-      total_ms,
-      CASE
-        WHEN event_type = 'USER_MESSAGE_RECEIVED' THEN 1
-        WHEN
-          event_type IN (
-            'TOOL_STARTING',
-            'HITL_CREDENTIAL_REQUEST',
-            'HITL_CONFIRMATION_REQUEST',
-            'HITL_INPUT_REQUEST'
-          )
-          THEN 2
-        WHEN event_type = 'AGENT_TRANSFER' THEN 3
-        WHEN
-          event_type IN (
-            'TOOL_COMPLETED',
-            'HITL_CREDENTIAL_REQUEST_COMPLETED',
-            'HITL_CONFIRMATION_REQUEST_COMPLETED',
-            'HITL_INPUT_REQUEST_COMPLETED'
-          )
-          THEN 4
-        ELSE 5
-      END AS event_seq,
-      CASE event_type
-        WHEN 'USER_MESSAGE_RECEIVED' THEN 'user'
-        WHEN 'AGENT_TRANSFER'
-          THEN COALESCE(JSON_VALUE(content, '$.from_agent'), author)
-        ELSE author
-      END AS event_author,
-      CASE
-        WHEN event_type = 'USER_MESSAGE_RECEIVED' AND message_text IS NOT NULL
-          THEN JSON_OBJECT(
-            'role', 'user',
-            'parts', JSON_ARRAY(JSON_OBJECT('text', message_text))
-          )
-        WHEN
-          (
-            is_tool_call
-            AND COALESCE(tool_name, '') NOT IN (
-              'adk_request_credential',
-              'adk_request_confirmation',
-              'adk_request_input'
-            )
-          )
-          OR event_type IN (
-            'HITL_CREDENTIAL_REQUEST',
-            'HITL_CONFIRMATION_REQUEST',
-            'HITL_INPUT_REQUEST'
-          )
-          THEN JSON_OBJECT(
-            'role', 'model',
-            'parts', JSON_ARRAY(
-              JSON_OBJECT(
-                'function_call', JSON_OBJECT(
-                  'name', COALESCE(tool_name, ''),
-                  'args', IF(
-                    JSON_TYPE(JSON_QUERY(content, '$.args')) = 'object',
-                    JSON_QUERY(content, '$.args'),
-                    JSON_OBJECT()
-                  )
-                )
-              )
-            )
-          )
-        WHEN event_type = 'AGENT_TRANSFER'
-          THEN JSON_OBJECT(
-            'role', 'model',
-            'parts', JSON_ARRAY(
-              JSON_OBJECT(
-                'function_call', JSON_OBJECT(
-                  'name', 'transfer_to_agent',
-                  'args', JSON_OBJECT(
-                    'agent_name',
-                    COALESCE(JSON_VALUE(content, '$.to_agent'), '')
-                  )
-                )
-              )
-            )
-          )
-        WHEN
-          (
-            event_type = 'TOOL_COMPLETED'
-            AND COALESCE(tool_name, '') NOT IN (
-              'transfer_to_agent',
-              'adk_request_credential',
-              'adk_request_confirmation',
-              'adk_request_input'
-            )
-          )
-          OR event_type IN (
-            'HITL_CREDENTIAL_REQUEST_COMPLETED',
-            'HITL_CONFIRMATION_REQUEST_COMPLETED',
-            'HITL_INPUT_REQUEST_COMPLETED'
-          )
-          THEN JSON_OBJECT(
-            'role', 'user',
-            'parts', JSON_ARRAY(
-              JSON_OBJECT(
-                'function_response', JSON_OBJECT(
-                  'name', COALESCE(tool_name, ''),
-                  'response', IF(
-                    JSON_TYPE(JSON_QUERY(content, '$.result')) = 'object',
-                    JSON_QUERY(content, '$.result'),
-                    JSON_OBJECT('result', JSON_QUERY(content, '$.result'))
-                  )
-                )
-              )
-            )
-          )
-        WHEN event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL
-          THEN JSON_OBJECT(
-            'role', 'model',
-            'parts', JSON_ARRAY(JSON_OBJECT('text', response_text))
-          )
-      END AS event_content
-    FROM
-      annotated_events
-  ),
-  turn_rollup AS (
-    SELECT
-      session_id,
-      invocation_id,
-      ARRAY_AGG(
-        user_id IGNORE NULLS ORDER BY timestamp LIMIT 1
-      )[SAFE_OFFSET(0)] AS user_id,
-      ARRAY_AGG(
-        root_agent_name IGNORE NULLS ORDER BY timestamp LIMIT 1
-      )[SAFE_OFFSET(0)] AS first_root_agent_name,
-      ARRAY_AGG(
-        agent IGNORE NULLS ORDER BY timestamp LIMIT 1
-      )[SAFE_OFFSET(0)] AS first_agent,
-      MIN(timestamp) AS turn_start_timestamp,
-      MAX(timestamp) AS turn_end_timestamp,
-      COUNTIF(is_tool_call) AS tool_call_count,
-      COUNTIF(event_type = 'TOOL_ERROR') AS tool_error_count,
-      COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count,
-      COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count,
-      COALESCE(
-        LOGICAL_OR(
-          status = 'ERROR'
-          OR (COALESCE(status, '') != 'OK' AND error_message IS NOT NULL)
-          OR (event_type = 'LLM_RESPONSE' AND error_message IS NOT NULL)
-        ),
-        FALSE
-      ) AS has_error,
-      LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content,
-      COALESCE(MAX(tool_call_run_length), 0) >= 3 AS has_tool_loop,
-      COALESCE(MAX(tool_call_run_length), 0)
-        AS max_consecutive_identical_tool_calls,
-      COALESCE(
-        ARRAY_AGG(
-          DISTINCT invoked_tool_name IGNORE NULLS ORDER BY invoked_tool_name
-        ),
-        ARRAY<STRING>[]
-      ) AS distinct_tools_used,
-      COALESCE(SUM(IF(is_usage_row, usage_prompt, NULL)), 0)
-        AS total_prompt_tokens,
-      COALESCE(SUM(IF(is_usage_row, usage_completion, NULL)), 0)
-        AS total_completion_tokens,
-      COALESCE(SUM(IF(is_usage_row, usage_total, NULL)), 0) AS total_tokens,
-      COALESCE(
-        MAX(IF(event_type = 'INVOCATION_COMPLETED', total_ms, NULL)),
-        MAX(IF(event_type = 'AGENT_COMPLETED', total_ms, NULL))
-      ) AS turn_latency_ms,
-      (
-        COUNTIF(event_type = 'INVOCATION_COMPLETED') > 0
-        AND COUNTIF(
-          event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL
-        ) = 0
-        AND COUNTIF(
-          event_type IN (
-            'TOOL_PAUSED',
-            'HITL_CREDENTIAL_REQUEST',
-            'HITL_CONFIRMATION_REQUEST',
-            'HITL_INPUT_REQUEST'
-          )
-        ) > 0
-      ) AS is_paused,
-      (
-        COUNTIF(event_type = 'INVOCATION_COMPLETED') > 0
-        AND COUNTIF(
-          event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL
-        ) > 0
-      ) AS is_complete,
-      COUNTIF(
-        event_type = 'USER_MESSAGE_RECEIVED' AND message_text IS NOT NULL
-      ) > 0 AS has_user_message,
-      COUNTIF(is_function_response) > 0 AS has_function_response,
-      ARRAY_AGG(
-        IF(
-          event_content IS NULL,
-          NULL,
-          JSON_OBJECT(
-            'author', event_author,
-            'content', event_content,
-            'event_time',
-            FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', timestamp)
-          )
-        )
-        IGNORE NULLS
-        ORDER BY timestamp, event_seq, event_id
-      ) AS events
-    FROM
-      trace_events
-    GROUP BY
-      session_id,
-      invocation_id
-  ),
-  turns AS (
-    SELECT
-      *,
-      COALESCE(first_root_agent_name, first_agent) AS root_agent,
-      ROW_NUMBER() OVER (
-        PARTITION BY session_id
-        ORDER BY turn_start_timestamp, invocation_id
-      ) - 1 AS turn_index,
-      IF(
-        COALESCE(ARRAY_LENGTH(events), 0) > 0, TO_JSON(events), JSON_ARRAY()
-      ) AS events_json,
-      (
-        has_user_message
-        AND is_complete
-        AND COALESCE(ARRAY_LENGTH(events), 0) > 0
-      ) AS eval_ready,
-      (
-        (
-          has_user_message
-          OR (
-            has_function_response
-            AND COALESCE(
-              LAG(is_paused) OVER (
-                PARTITION BY session_id
-                ORDER BY turn_start_timestamp, invocation_id
-              ),
-              FALSE
-            )
-          )
-        )
-        AND (
-          is_complete
-          OR (
-            is_paused
-            AND COALESCE(
-              LEAD(has_function_response) OVER (
-                PARTITION BY session_id
-                ORDER BY turn_start_timestamp, invocation_id
-              ),
-              FALSE
-            )
-          )
-        )
-        AND COALESCE(ARRAY_LENGTH(events), 0) > 0
-      ) AS session_turn_eval_ready
-    FROM
-      turn_rollup
-  ),
-  agent_rows AS (
-    SELECT
-      session_id,
-      invocation_id,
-      agent AS agent_id,
-      timestamp,
-      IF(
-        event_type = 'AGENT_STARTING',
-        COALESCE(
-          JSON_VALUE(content, '$.text_summary'),
-          IF(
-            REGEXP_CONTAINS(
-              JSON_VALUE(content, '$'),
-              r'^(?:<(?:function|bound method) |<.+ at 0x[0-9a-fA-F]+>|functools\\.partial\\()'
-            ),
-            NULL,
-            JSON_VALUE(content, '$')
-          ),
-          JSON_VALUE(attributes, '$.static_instruction')
-        ),
-        NULL
-      ) AS instruction,
-      IF(
-        event_type = 'AGENT_STARTING',
-        JSON_VALUE(attributes, '$.agent_description'),
-        NULL
-      ) AS description,
-      IF(
-        event_type = 'AGENT_STARTING'
-        AND JSON_TYPE(JSON_QUERY(attributes, '$.sub_agents')) = 'array',
-        JSON_QUERY(attributes, '$.sub_agents'),
-        NULL
-      ) AS sub_agents,
-      IF(
-        event_type = 'LLM_REQUEST'
-        AND JSON_TYPE(JSON_QUERY(attributes, '$.tools')) = 'array',
-        JSON_QUERY(attributes, '$.tools'),
-        NULL
-      ) AS tool_declarations
-    FROM
-      raw_events
-    WHERE
-      agent IS NOT NULL
-  ),
-  agent_latest AS (
-    SELECT
-      {scope_columns},
-      agent_id,
-      ARRAY_AGG(
-        instruction IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
-      )[SAFE_OFFSET(0)] AS instruction,
-      ARRAY_AGG(
-        description IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
-      )[SAFE_OFFSET(0)] AS description,
-      ARRAY_AGG(
-        sub_agents IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
-      )[SAFE_OFFSET(0)] AS sub_agents,
-      ARRAY_AGG(
-        tool_declarations IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
-      )[SAFE_OFFSET(0)] AS tool_declarations
-    FROM
-      agent_rows
-    GROUP BY
-      {scope_columns},
-      agent_id
-  ),
-  agent_tool_declarations AS (
-    SELECT
-      {scope_columns},
-      agent_id,
-      ARRAY_AGG(
-        IF(
-          JSON_TYPE(JSON_QUERY(declaration, '$.parameters')) = 'object',
-          JSON_OBJECT(
-            'name', JSON_VALUE(declaration, '$.name'),
-            'description',
-            COALESCE(JSON_VALUE(declaration, '$.description'), ''),
-            'parameters_json_schema', JSON_QUERY(declaration, '$.parameters')
-          ),
-          JSON_OBJECT(
-            'name', JSON_VALUE(declaration, '$.name'),
-            'description',
-            COALESCE(JSON_VALUE(declaration, '$.description'), '')
-          )
-        )
-        ORDER BY declaration_offset
-      ) AS function_declarations
-    FROM
-      agent_latest,
-      UNNEST(JSON_QUERY_ARRAY(tool_declarations)) AS declaration
-        WITH OFFSET AS declaration_offset
-    WHERE
-      JSON_VALUE(declaration, '$.name') IS NOT NULL
-    GROUP BY
-      {scope_columns},
-      agent_id
-  ),
-  session_agent_prompts AS (
-    SELECT
-      session_id,
-      agent AS agent_id,
-      ARRAY_AGG(
-        IF(
-          JSON_TYPE(JSON_QUERY(content, '$.system_prompt')) = 'string'
-            AND TRIM(JSON_VALUE(content, '$.system_prompt')) != '',
-          JSON_VALUE(content, '$.system_prompt'),
-          NULL
-        )
-        IGNORE NULLS
-        ORDER BY timestamp, event_id
-        LIMIT 1
-      )[SAFE_OFFSET(0)] AS logged_system_prompt
-    FROM
-      raw_events
-    WHERE
-      event_type = 'LLM_REQUEST'
-      AND agent IS NOT NULL
-    GROUP BY
-      session_id,
-      agent
-  ),
-  agent_configs AS (
-    SELECT
-      {scope_columns},
-      agent_id,
-      JSON_OBJECT(
-        'agent_id', agent_id,
-        'instruction',
-        COALESCE(NULLIF(instruction, ''), logged_system_prompt, ''),
-        'description', COALESCE(description, ''),
-        'sub_agents', COALESCE(sub_agents, JSON_ARRAY()),
-        'tools', IF(
-          function_declarations IS NULL,
-          JSON_ARRAY(),
-          JSON_ARRAY(
-            JSON_OBJECT(
-              'function_declarations', TO_JSON(function_declarations)
-            )
-          )
-        )
-      ) AS agent_config
-    FROM
-      agent_latest
-    LEFT JOIN
-      session_agent_prompts
-      USING (session_id, agent_id)
-    LEFT JOIN
-      agent_tool_declarations
-      USING ({scope_columns}, agent_id)
-  ),
-  agent_maps AS (
-    SELECT
-      {scope_columns},
-      JSON_OBJECT(
-        ARRAY_AGG(agent_id ORDER BY agent_id),
-        ARRAY_AGG(agent_config ORDER BY agent_id)
-      ) AS agents
-    FROM
-      agent_configs
-    GROUP BY
-      {scope_columns}
-  )"""
-
-_EVAL_SESSION_VIEW_SQL_TEMPLATE = """\
-CREATE OR REPLACE VIEW `{view_ref}` AS
-{ctes},
-  session_rollup AS (
-    SELECT
-      session_id,
-      ARRAY_AGG(
-        user_id IGNORE NULLS ORDER BY turn_start_timestamp LIMIT 1
-      )[SAFE_OFFSET(0)] AS user_id,
-      COALESCE(
-        ARRAY_AGG(
-          first_root_agent_name IGNORE NULLS
-          ORDER BY turn_start_timestamp
-          LIMIT 1
-        )[SAFE_OFFSET(0)],
-        ARRAY_AGG(
-          first_agent IGNORE NULLS ORDER BY turn_start_timestamp LIMIT 1
-        )[SAFE_OFFSET(0)]
-      ) AS root_agent,
-      MIN(turn_start_timestamp) AS session_start_timestamp,
-      MAX(turn_end_timestamp) AS session_end_timestamp,
-      COUNT(DISTINCT invocation_id) AS turn_count,
-      SUM(tool_call_count) AS tool_call_count,
-      SUM(tool_error_count) AS tool_error_count,
-      SUM(llm_error_count) AS llm_error_count,
-      SUM(agent_error_count) AS agent_error_count,
-      LOGICAL_OR(has_error) AS has_error,
-      LOGICAL_OR(has_truncated_content) AS has_truncated_content,
-      LOGICAL_OR(has_tool_loop) AS has_tool_loop,
-      MAX(max_consecutive_identical_tool_calls)
-        AS max_consecutive_identical_tool_calls,
-      ARRAY_CONCAT_AGG(distinct_tools_used) AS tools_used_by_turn,
-      SUM(total_prompt_tokens) AS total_prompt_tokens,
-      SUM(total_completion_tokens) AS total_completion_tokens,
-      SUM(total_tokens) AS total_tokens,
-      SUM(turn_latency_ms) AS total_latency_ms,
-      LOGICAL_AND(session_turn_eval_ready) AS eval_ready,
-      ARRAY_AGG(
-        JSON_OBJECT(
-          'turn_index', turn_index,
-          'turn_id', invocation_id,
-          'events', events_json
-        )
-        ORDER BY turn_index
-      ) AS turn_traces
-    FROM
-      turns
-    GROUP BY
-      session_id
-  )
-SELECT
-  s.session_id AS session_id,
-  s.user_id AS user_id,
-  s.root_agent AS root_agent,
-  s.session_start_timestamp AS session_start_timestamp,
-  s.session_end_timestamp AS session_end_timestamp,
-  s.turn_count AS turn_count,
-  s.tool_call_count AS tool_call_count,
-  s.tool_error_count AS tool_error_count,
-  s.llm_error_count AS llm_error_count,
-  s.agent_error_count AS agent_error_count,
-  s.has_error AS has_error,
-  s.has_truncated_content AS has_truncated_content,
-  s.has_tool_loop AS has_tool_loop,
-  s.max_consecutive_identical_tool_calls
-    AS max_consecutive_identical_tool_calls,
-  ARRAY(
-    SELECT DISTINCT tool FROM UNNEST(s.tools_used_by_turn) AS tool ORDER BY tool
-  ) AS distinct_tools_used,
-  s.total_prompt_tokens AS total_prompt_tokens,
-  s.total_completion_tokens AS total_completion_tokens,
-  s.total_tokens AS total_tokens,
-  s.total_latency_ms AS total_latency_ms,
-  s.eval_ready AS eval_ready,
-  JSON_OBJECT(
-    'agents', COALESCE(m.agents, JSON_OBJECT()),
-    'turns', TO_JSON(s.turn_traces)
-  ) AS trace
-FROM
-  session_rollup AS s
-LEFT JOIN
-  agent_maps AS m
-  ON m.session_id = s.session_id
-"""
-
-_EVAL_TURN_VIEW_SQL_TEMPLATE = """\
-CREATE OR REPLACE VIEW `{view_ref}` AS
-{ctes}
-SELECT
-  t.session_id AS session_id,
-  t.invocation_id AS invocation_id,
-  t.turn_index AS turn_index,
-  t.user_id AS user_id,
-  t.root_agent AS root_agent,
-  t.turn_start_timestamp AS turn_start_timestamp,
-  t.turn_end_timestamp AS turn_end_timestamp,
-  t.tool_call_count AS tool_call_count,
-  t.tool_error_count AS tool_error_count,
-  t.llm_error_count AS llm_error_count,
-  t.agent_error_count AS agent_error_count,
-  t.has_error AS has_error,
-  t.has_truncated_content AS has_truncated_content,
-  t.has_tool_loop AS has_tool_loop,
-  t.max_consecutive_identical_tool_calls
-    AS max_consecutive_identical_tool_calls,
-  t.distinct_tools_used AS distinct_tools_used,
-  t.total_prompt_tokens AS total_prompt_tokens,
-  t.total_completion_tokens AS total_completion_tokens,
-  t.total_tokens AS total_tokens,
-  t.turn_latency_ms AS turn_latency_ms,
-  t.eval_ready AS eval_ready,
-  JSON_OBJECT(
-    'agents', COALESCE(m.agents, JSON_OBJECT()),
-    'turns', JSON_ARRAY(
-      JSON_OBJECT(
-        'turn_index', 0,
-        'turn_id', t.invocation_id,
-        'events', t.events_json
-      )
-    )
-  ) AS trace
-FROM
-  turns AS t
-LEFT JOIN
-  agent_maps AS m
-  ON m.session_id = t.session_id AND m.invocation_id = t.invocation_id
-"""
-
-
-def _eval_view_dataset_ref(
-    full_table_id: str, denied_columns: frozenset[str]
-) -> str:
-  """Validates the eval view inputs and returns the table's dataset ref."""
-  if "content" in denied_columns:
-    raise ValueError(
-        "Cannot build eval view SQL when 'content' is in"
-        " payload_column_denylist."
-    )
-  dataset_ref, _, table = full_table_id.rpartition(".")
-  if not dataset_ref or not table:
-    raise ValueError(
-        "full_table_id must be a dataset-qualified table name such as"
-        f" 'project.dataset.table'; got {full_table_id!r}."
-    )
-  return dataset_ref
-
-
-def _build_eval_view_ctes(
-    full_table_id: str, denied_columns: frozenset[str], scope_columns: str
-) -> str:
-  """Returns the CTE chain shared by the eval session and turn views.
-
-  Args:
-    full_table_id: The events table.
-    denied_columns: Payload columns projected out of the table.  A denied
-      ``content_parts``, ``attributes``, or ``latency_ms`` column reads as an
-      empty array or NULL JSON, so the SQL never references it.
-    scope_columns: The columns that scope ``trace.agents``: ``session_id``
-      for the session view, ``session_id, invocation_id`` for the turn view.
-  """
-  return _EVAL_VIEW_CTES_SQL.format(
-      full_table_id=full_table_id,
-      content_parts_column=(
-          "ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
-          " part_attributes STRING, storage_mode STRING>>[] AS content_parts"
-          if "content_parts" in denied_columns
-          else "content_parts"
-      ),
-      attributes_column=(
-          "CAST(NULL AS JSON) AS attributes"
-          if "attributes" in denied_columns
-          else "attributes"
-      ),
-      latency_ms_column=(
-          "CAST(NULL AS JSON) AS latency_ms"
-          if "latency_ms" in denied_columns
-          else "latency_ms"
-      ),
-      scope_columns=scope_columns,
-  )
-
-
-def _build_eval_session_view_sql(
-    full_table_id: str,
-    view_prefix: str = "v",
-    denied_columns: frozenset[str] = frozenset(),
-) -> str:
-  """Builds the ``{view_prefix}_eval_session`` view DDL.
-
-  The view has one row per session.  Its ``trace`` column is an ``AgentData``
-  object holding every turn of the session, numbered from 0 in start order.
-
-  Args:
-    full_table_id: The events table as ``project.dataset.table``.  The view is
-      created in the same dataset.
-    view_prefix: Prefix for the view name.
-    denied_columns: Payload columns projected out of the table.
-
-  Returns:
-    A ``CREATE OR REPLACE VIEW`` statement.
-
-  Raises:
-    ValueError: ``content`` is denied, or ``full_table_id`` has no dataset.
-  """
-  dataset_ref = _eval_view_dataset_ref(full_table_id, denied_columns)
-  return _EVAL_SESSION_VIEW_SQL_TEMPLATE.format(
-      view_ref=f"{dataset_ref}.{view_prefix}_eval_session",
-      ctes=_build_eval_view_ctes(full_table_id, denied_columns, "session_id"),
-  )
-
-
-def _build_eval_turn_view_sql(
-    full_table_id: str,
-    view_prefix: str = "v",
-    denied_columns: frozenset[str] = frozenset(),
-) -> str:
-  """Builds the ``{view_prefix}_eval_turn`` view DDL.
-
-  The view has one row per ``(session_id, invocation_id)`` turn.  Its
-  ``trace`` column is an ``AgentData`` object whose ``turns`` array holds only
-  that turn, with ``turn_index`` 0 as single-turn metrics require; the
-  ``turn_index`` column keeps the turn's position in its session.
-
-  Args:
-    full_table_id: The events table as ``project.dataset.table``.  The view is
-      created in the same dataset.
-    view_prefix: Prefix for the view name.
-    denied_columns: Payload columns projected out of the table.
-
-  Returns:
-    A ``CREATE OR REPLACE VIEW`` statement.
-
-  Raises:
-    ValueError: ``content`` is denied, or ``full_table_id`` has no dataset.
-  """
-  dataset_ref = _eval_view_dataset_ref(full_table_id, denied_columns)
-  return _EVAL_TURN_VIEW_SQL_TEMPLATE.format(
-      view_ref=f"{dataset_ref}.{view_prefix}_eval_turn",
-      ctes=_build_eval_view_ctes(
-          full_table_id, denied_columns, "session_id, invocation_id"
-      ),
-  )
 
 
 # ==============================================================================
@@ -6821,9 +6019,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       else:
         logger.warning(f"Unknown configuration parameter: {key}")
 
-    if not self.config.view_prefix:
-      raise ValueError("view_prefix must be a non-empty string.")
-
     # Pre-parse the custom_metadata allowlist into exact keys + prefixes.
     self._custom_metadata_exact, self._custom_metadata_prefixes = (
         _parse_custom_metadata_allowlist(self.config.custom_metadata_allowlist)
@@ -6851,6 +6046,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       self._validate_eval_view_config(from_init=True)
 
     self.table_id = table_id or self.config.table_id
+    for name, value in (
+        ("project_id", self.project_id),
+        ("dataset_id", self.dataset_id),
+        ("table_id", self.table_id),
+        ("view_prefix", self.config.view_prefix),
+    ):
+      if not value or _EVAL_TABLE_ID_UNQUOTABLE_RE.search(value):
+        raise ValueError(
+            f"{name} must be a non-empty string without a backtick, backslash,"
+            f" control or line-break character; got {value!r}."
+        )
     self.location = location
 
     self._surface = _get_telemetry_surface()
@@ -6907,6 +6113,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # client and the executor it is not invalidated by shutdown, fork, or
     # pickling, and the check is not repeated once it has passed.
     self._schema_ready = False
+    self._offload_disabled_warned = False
     # Workflow observation segments of the runner calls in flight, keyed by
     # invocation ID: before_run_callback opens a call's segment, and
     # after_run_callback or on_run_error_callback closes it. A nested runner
@@ -6918,6 +6125,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._workflow_segments_guard = threading.Lock()
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
+
+  def _content_parts_persisted(self) -> bool:
+    """Returns True when ``content_parts`` is persisted on the row."""
+    return bool(
+        self.config.log_multi_modal_content
+        and "content_parts" not in self._denied_columns
+    )
 
   def _get_bg_loop_key(self) -> tuple[str, Any]:
     """Returns the cache key for shared background-loop states."""
@@ -7685,19 +6899,35 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
-        if "content_parts" in self._denied_columns:
+        if not self._content_parts_persisted():
           # GCS offload stores its object reference in the
-          # ``content_parts`` column. With ``content_parts`` projected out,
-          # an upload would be orphaned -- payload leaks to GCS and incurs
-          # cost with no retained reference. Disable offload and keep
-          # content inline (truncated) instead.
-          logger.warning(
-              "GCS offload disabled: payload_column_denylist drops"
-              " 'content_parts', which holds the offloaded object reference;"
-              " large/binary content is kept inline (truncated) instead of"
-              " being uploaded to %s.",
-              self.config.gcs_bucket_name,
-          )
+          # ``content_parts`` column. When ``content_parts`` is projected
+          # out by ``payload_column_denylist`` or cleared to ``[]`` because
+          # ``log_multi_modal_content`` is False, an upload would be
+          # orphaned -- payload leaks to GCS, incurs cost, and large text is
+          # omitted from ``content`` with no retained reference. Disable
+          # offload so large text is kept inline (truncated) in ``content``
+          # and binary parts are not stored.
+          if not self._offload_disabled_warned:
+            if "content_parts" in self._denied_columns:
+              reason = (
+                  "payload_column_denylist drops 'content_parts', which"
+                  " holds the offloaded object reference"
+              )
+            else:
+              reason = (
+                  "log_multi_modal_content is False, so 'content_parts'"
+                  " (which holds the offloaded object reference) is not"
+                  " persisted"
+              )
+            logger.warning(
+                "GCS offload disabled: %s; large text is kept inline"
+                " (truncated) in 'content' and binary parts are not"
+                " stored instead of being uploaded to %s.",
+                reason,
+                self.config.gcs_bucket_name,
+            )
+            self._offload_disabled_warned = True
         else:
           self.offloader = GCSOffloader(
               self.project_id,
@@ -8179,14 +7409,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     The views rebuild ``AgentData`` traces from ``content``.  When
     ``config.eval_view_mode`` is ``"full"`` (default), they require
     ``USER_MESSAGE_RECEIVED``, ``AGENT_STARTING``, ``LLM_REQUEST``,
-    ``TOOL_STARTING``, ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
-    ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
-    ``HITL_*_REQUEST_COMPLETED`` events; when ``config.eval_view_mode`` is
-    ``"conversation_only"``, they require only the three core conversation
-    events (``USER_MESSAGE_RECEIVED``, ``AGENT_RESPONSE``, and
-    ``INVOCATION_COMPLETED``).  Any custom ``content_formatter`` must preserve
-    ``$.text_summary``, ``$.response``, ``$.system_prompt``, ``$.tool``,
-    ``$.args``, and ``$.result``.
+    ``TOOL_STARTING``, ``TOOL_COMPLETED``, ``TOOL_ERROR``, ``TOOL_PAUSED``,
+    ``AGENT_TRANSFER``, ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``,
+    ``HITL_*_REQUEST``, and ``HITL_*_REQUEST_COMPLETED`` events; when
+    ``config.eval_view_mode`` is ``"conversation_only"``, they require only
+    the three core conversation events (``USER_MESSAGE_RECEIVED``,
+    ``AGENT_RESPONSE``, and ``INVOCATION_COMPLETED``).  Any custom
+    ``content_formatter`` must preserve ``$.text_summary``, ``$.response``,
+    ``$.system_prompt``, ``$.tool``, ``$.args``, and ``$.result``.
 
     The views aggregate per session or turn, so a filter on their
     ``session_start_timestamp`` or ``turn_start_timestamp`` column does not
@@ -8671,6 +7901,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
     state.setdefault("_schema_ready", False)
+    state.setdefault("_offload_disabled_warned", False)
     state.setdefault("_loop_state_futures", {})
     state.setdefault("_builder_waiters", {})
     # Migrate the legacy _visual_builder flag onto _surface. Handle an
@@ -9717,13 +8948,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Parser not initialized; skipping event %s.", event_type)
       return False
 
-    # When both payload columns are projected out, skip content parsing
-    # entirely -- no inline summary, no parts, and (critically) no GCS offload
-    # work for a row that retains neither payload column.
+    # When neither payload column will store parsed output (``content`` is
+    # projected out and ``content_parts`` is either projected out or disabled
+    # via ``log_multi_modal_content=False``), skip content parsing entirely
+    # -- no inline summary, no parts, and no GCS offload work.
+    content_parts_persisted = self._content_parts_persisted()
     content_json: Any
     content_parts: list[dict[str, Any]]
     parser_truncated: bool
-    if {"content", "content_parts"} <= self._denied_columns:
+    if "content" in self._denied_columns and not content_parts_persisted:
       content_json, content_parts, parser_truncated = None, [], False
     else:
       # Pass trace/span per call: the parser instance is shared, so storing
@@ -9734,6 +8967,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             raw_content,
             trace_id=trace_id or "no_trace",
             span_id=span_id or "no_span",
+            offload=content_parts_persisted,
         )
         # Normalize the parser OUTPUT to strictly JSON-native values
         # inside the same boundary: a nested
@@ -9839,9 +9073,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "span_id": span_id,
         "parent_span_id": parent_span_id,
         "content": content_json,
-        "content_parts": (
-            content_parts if self.config.log_multi_modal_content else []
-        ),
+        "content_parts": content_parts if content_parts_persisted else [],
         "attributes": attributes_json,
         "latency_ms": latency_json,
         "status": event_data.status,

@@ -37,6 +37,7 @@ from google.adk.runners import InMemoryRunner
 from google.genai import Client
 from google.genai import interactions
 from google.genai import types
+from google.genai import version as genai_version
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionResultStep
@@ -381,6 +382,191 @@ class TestConvertPartToInteractionContent:
         'temperature': 20,
         'condition': 'sunny',
     }
+
+  @pytest.mark.parametrize(
+      ('mime_type', 'content_type'),
+      [
+          ('image/png', 'image'),
+          ('audio/wav', 'audio'),
+          ('video/mp4', 'video'),
+          ('application/pdf', 'document'),
+      ],
+  )
+  def test_function_response_with_media(
+      self, monkeypatch, mime_type, content_type
+  ):
+    """Media a tool attached to its response is sent after its JSON."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'media-bytes', mime_type=mime_type
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': content_type,
+                'data': base64.b64encode(b'media-bytes').decode(),
+                'mime_type': mime_type,
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_with_media_uri(self, monkeypatch):
+    """Media a tool returned as a uri is sent by uri."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='fetch_report',
+            response={'pages': 2},
+            parts=[
+                types.FunctionResponsePart.from_uri(
+                    file_uri='gs://bucket/report.pdf',
+                    mime_type='application/pdf',
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='fetch_report',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"pages": 2}'},
+            {
+                'type': 'document',
+                'uri': 'gs://bucket/report.pdf',
+                'mime_type': 'application/pdf',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_drops_only_the_media_the_client_cannot_send(
+      self, monkeypatch
+  ):
+    """Media the client can send still goes out after a part it cannot."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                ),
+                types.FunctionResponsePart.from_bytes(
+                    data=b'png-bytes', mime_type='image/png'
+                ),
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': 'image',
+                'data': base64.b64encode(b'png-bytes').decode(),
+                'mime_type': 'image/png',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_media_the_client_cannot_send_is_dropped(
+      self, monkeypatch, caplog
+  ):
+    """Media the client cannot send is dropped, warned about once."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='record_audio',
+            response={'duration': 3},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                )
+            ],
+        )
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils._convert_part_to_interaction_content(part)
+      # History is reconverted every turn; the drop is reported only once.
+      interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='record_audio',
+        call_id='call_123',
+        result={'duration': 3},
+        is_error=False,
+    )
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert warnings == [
+        'Dropping tool result media of type audio/wav, which the installed'
+        ' google-genai cannot send in a function result; google-genai 2.33'
+        ' and later can.'
+    ]
+
+  def test_function_response_media_types_follow_the_client_release(self):
+    """google-genai 2.33 added audio, video and document to image."""
+    release = tuple(int(n) for n in genai_version.__version__.split('.')[:2])
+    expected = (
+        {'image', 'audio', 'video', 'document'}
+        if release >= (2, 33)
+        else {'image'}
+    )
+    assert interactions_utils._FUNCTION_RESULT_MEDIA_TYPES == expected
 
   def test_function_response_simple(self):
     """Test converting a function response Part with simple response."""
@@ -1388,7 +1574,7 @@ class TestConvertInteractionToLlmResponse:
     assert result.usage_metadata.total_token_count == 120
     assert result.model_version == 'gemini-2.5-flash'
 
-  def test_failed_response(self):
+  def test_failed_response(self) -> None:
     """Test converting a failed response."""
     interaction = Interaction(
         id='interaction_123',
@@ -1396,14 +1582,79 @@ class TestConvertInteractionToLlmResponse:
         created=datetime.now(timezone.utc).isoformat(),
         updated=datetime.now(timezone.utc).isoformat(),
         steps=[],
+        errors=[
+            interactions.Error(code='INVALID_REQUEST', message='Bad request')
+        ],
     )
-    interaction.error = MagicMock(code='INVALID_REQUEST', message='Bad request')
 
     result = interactions_utils.convert_interaction_to_llm_response(interaction)
 
     assert result.interaction_id == 'interaction_123'
     assert result.error_code == 'INVALID_REQUEST'
     assert result.error_message == 'Bad request'
+
+  @pytest.mark.parametrize(
+      ('errors', 'expected_code', 'expected_message'),
+      [
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='RESOURCE_EXHAUSTED',
+                      message='Quota exceeded for model',
+                  ),
+                  interactions.Error(
+                      code='INVALID_ARGUMENT',
+                      message='Retry after quota reset',
+                  ),
+              ],
+              'RESOURCE_EXHAUSTED',
+              'Quota exceeded for model; Retry after quota reset',
+              id='multiple_errors_uses_first_code_and_joins_messages',
+          ),
+          pytest.param(
+              [
+                  interactions.Error(message='First detail'),
+                  interactions.Error(code='PERMISSION_DENIED'),
+              ],
+              'PERMISSION_DENIED',
+              'First detail',
+              id='partial_error_fields',
+          ),
+          pytest.param(
+              [interactions.Error()],
+              'UNKNOWN_ERROR',
+              'Unknown error',
+              id='empty_error_fields',
+          ),
+          pytest.param(
+              None,
+              'UNKNOWN_ERROR',
+              'Unknown error',
+              id='no_errors',
+          ),
+      ],
+  )
+  def test_failed_response_error_variants(
+      self,
+      errors: list[interactions.Error] | None,
+      expected_code: str,
+      expected_message: str,
+  ) -> None:
+    """Failed interactions surface SDK errors and fall back cleanly."""
+    interaction = Interaction(
+        id='interaction_err',
+        status='failed',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[],
+        errors=errors,
+    )
+
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.interaction_id == 'interaction_err'
+    assert result.error_code == expected_code
+    assert result.error_message == expected_message
 
   def test_requires_action_response(self):
     """Test converting a requires_action response (function call)."""
@@ -1531,6 +1782,21 @@ class TestBuildGenerationConfig:
     result = interactions_utils.build_generation_config(config)
     assert result == {}
 
+  @pytest.mark.parametrize(
+      ('level', 'expected'),
+      [
+          (types.ThinkingLevel.HIGH, {'thinking_level': 'high'}),
+          (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, {}),
+      ],
+  )
+  def test_thinking_level(self, level, expected):
+    """A thinking level is sent in lowercase; an unspecified one is not."""
+    config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_level=level)
+    )
+
+    assert interactions_utils.build_generation_config(config) == expected
+
   def test_every_key_is_a_real_generation_config_field(self):
     """Against the installed client, exactly its declared keys are sent.
 
@@ -1546,13 +1812,19 @@ class TestBuildGenerationConfig:
         presence_penalty=0.5,
         frequency_penalty=0.3,
         seed=7,
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW
+        ),
     )
     result = interactions_utils.build_generation_config(config)
     supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
     sampling = {'temperature', 'top_p', 'top_k'}
-    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'} | (
-        sampling & supported
-    )
+    assert set(result) == {
+        'max_output_tokens',
+        'stop_sequences',
+        'seed',
+        'thinking_level',
+    } | (sampling & supported)
     assert set(result) <= supported
 
   def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
@@ -3959,6 +4231,47 @@ class TestBuildInteractionsResponseLog:
     log = interactions_utils.build_interactions_response_log(interaction)
 
     assert '  function_call: get_weather({"city": "London"})' in log
+
+  @pytest.mark.parametrize(
+      ('errors', 'expected_error_section'),
+      [
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='RESOURCE_EXHAUSTED',
+                      message='Quota exceeded for model',
+                  )
+              ],
+              'Error:\nRESOURCE_EXHAUSTED: Quota exceeded for model\n',
+              id='single_error',
+          ),
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='INVALID_ARGUMENT', message='Bad field'
+                  ),
+                  interactions.Error(),
+              ],
+              'Error:\nINVALID_ARGUMENT: Bad field\nunknown: unknown\n',
+              id='multiple_and_unset_error_fields',
+          ),
+      ],
+  )
+  def test_failed_interaction_logs_errors(
+      self,
+      errors: list[interactions.Error],
+      expected_error_section: str,
+  ) -> None:
+    """Recorded interaction errors are rendered in the Error log section."""
+    interaction = Interaction(
+        id='interaction_failed',
+        status='failed',
+        errors=errors,
+    )
+
+    log = interactions_utils.build_interactions_response_log(interaction)
+
+    assert expected_error_section in log
 
 
 class TestBuildInteractionsEventLog:

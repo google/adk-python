@@ -19,8 +19,6 @@ import inspect
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import List
-from typing import Optional
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
@@ -88,11 +86,11 @@ async def run_workflow(wf, message='start', *, check_invariants: bool = True):
 class TestingNode(BaseNode):
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
-  output: Optional[Any] = None
+  output: Any | None = None
   route: (
       RouteValue | list[RouteValue] | Callable[[Context, Any], Any] | None
   ) = None
-  received_inputs: List[Any] = Field(default_factory=list)
+  received_inputs: list[Any] = Field(default_factory=list)
 
   @override
   async def _run_impl(
@@ -122,8 +120,8 @@ class TestingNodeWithIntermediateContent(BaseNode):
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
   intermediate_content: list[types.Content] = Field(default_factory=list)
-  output: Optional[Any] = None
-  route: Optional[str] = None
+  output: Any | None = None
+  route: str | None = None
 
   @override
   async def _run_impl(
@@ -151,7 +149,7 @@ class InputCapturingNode(BaseNode):
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
-  received_inputs: List[Any] = Field(default_factory=list)
+  received_inputs: list[Any] = Field(default_factory=list)
 
   @override
   async def _run_impl(
@@ -172,7 +170,7 @@ class RequestInputNode(BaseNode):
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
   message: str = Field(default='')
-  response_schema: Optional[dict[str, Any]] = None
+  response_schema: dict[str, Any] | None = None
 
   @override
   async def _run_impl(
