@@ -1265,18 +1265,13 @@ class Runner:
     async def _run_with_trace(
         new_message: types.Content | None = None,
         invocation_id: str | None = None,
+        session: Session | None = None,
     ) -> AsyncGenerator[Event, None]:
-      session = await self._get_or_create_session(
-          user_id=user_id,
-          session_id=session_id,
-          get_session_config=run_config.get_session_config,
-      )
-
-      if not invocation_id and new_message is None and not session.events:
-        raise ValueError(
-            'Running an agent requires either a new_message or an '
-            'invocation_id to resume a previous invocation. '
-            f'Session: {session_id}, User: {user_id}'
+      if session is None:
+        session = await self._get_or_create_session(
+            user_id=user_id,
+            session_id=session_id,
+            get_session_config=run_config.get_session_config,
         )
 
       is_resumable = (
@@ -1390,7 +1385,7 @@ class Runner:
       async with aclosing(
           _instrumentation.stream_in_scope(
               invocation_otel_context,
-              _run_with_trace(new_message, invocation_id),
+              _run_with_trace(new_message, invocation_id, session=session),
           )
       ) as agen:
         async for event in agen:
