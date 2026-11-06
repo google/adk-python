@@ -1287,6 +1287,70 @@ def test_to_agent_engine_triggers_onboarding(
   assert "api_key" not in kwargs or kwargs.get("api_key") is None
 
 
+class _ClientCreated(Exception):
+  """Stops to_agent_engine once the Agent Platform client is created."""
+
+
+@pytest.mark.parametrize(
+    "env_text, expected_kwargs",
+    [
+        (
+            (
+                "GOOGLE_CLOUD_PROJECT=env-project\n"
+                "GOOGLE_CLOUD_LOCATION=us-central1\n"
+            ),
+            {"project": "env-project", "location": "us-central1"},
+        ),
+        (
+            "GOOGLE_CLOUD_LOCATION=us-central1\n",
+            {"project": "gcloud-default", "location": "us-central1"},
+        ),
+        (
+            "GOOGLE_API_KEY=env-key\n",
+            {"api_key": "env-key"},
+        ),
+    ],
+)
+def test_to_agent_engine_prefers_env_over_gcloud_default_project(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    env_text: str,
+    expected_kwargs: Dict[str, str],
+) -> None:
+  """The .env project or API key wins over the gcloud default project."""
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(stdout="gcloud-default\n"),
+  )
+
+  client_kwargs: Dict[str, Any] = {}
+
+  def create_client(**kwargs: Any) -> None:
+    client_kwargs.update(kwargs)
+    raise _ClientCreated()
+
+  fake_agentplatform = types.ModuleType("agentplatform")
+  fake_agentplatform.Client = create_client
+  monkeypatch.setitem(sys.modules, "agentplatform", fake_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      fake_agentplatform,
+  )
+
+  src_dir = agent_dir(False, False)
+  (src_dir / ".env").write_text(env_text)
+
+  with pytest.raises(_ClientCreated):
+    cli_deploy.to_agent_engine(agent_folder=str(src_dir))
+
+  assert {
+      key: client_kwargs[key]
+      for key in ("project", "location", "api_key")
+      if client_kwargs.get(key) is not None
+  } == expected_kwargs
+
+
 def test_cli_deploy_agent_engine_trigger_sources(tmp_path: Path):
   """Tests that --trigger_sources is passed to to_agent_engine."""
   agent_dir = tmp_path / "my_agent"
