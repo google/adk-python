@@ -32,7 +32,6 @@ from datetime import timezone
 import decimal
 import enum
 import functools
-import importlib.resources
 import inspect
 import json
 import logging
@@ -111,6 +110,10 @@ from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
+from ._bigquery_agent_analytics_eval_sql import _build_eval_session_view_sql
+from ._bigquery_agent_analytics_eval_sql import _build_eval_turn_view_sql
+from ._bigquery_agent_analytics_eval_sql import _EVAL_TABLE_ID_UNQUOTABLE_RE
+from ._bigquery_agent_analytics_eval_sql import _validate_payload_column_denylist
 from ._callback_helpers import _classify_tool_result_error
 from ._callback_helpers import _imported_types
 from ._callback_helpers import _is_durable_node_error
@@ -125,10 +128,28 @@ if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
   from ..events.event import Event
 
-# Defined in _callback_helpers, which the observability plugins share, and
-# still importable from this module: _LLM_RESPONSE_ERROR_CODES was defined
-# here, and ToolResultClassification is what a tool_result_classifier returns.
+# Defined elsewhere and still importable from this module.  The names of
+# _bigquery_agent_analytics_eval_sql were defined here: that module builds the
+# eval SQL with the standard library alone, so a caller can build the eval
+# queries without this module's pyarrow and BigQuery Storage imports.
+# _callback_helpers is shared with the observability plugins:
+# _LLM_RESPONSE_ERROR_CODES was defined here, and ToolResultClassification is
+# what a tool_result_classifier returns.
 # pylint: disable=unused-import
+from ._bigquery_agent_analytics_eval_sql import _blank_eval_sql_comments  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _build_eval_view_ctes  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_DIRNAME  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_LEADING_WHERE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_OPENING_QUOTE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _eval_view_dataset_ref  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_outer_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_raw_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _load_eval_sql_template  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _normalize_eval_where_condition  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _PROJECTABLE_PAYLOAD_COLUMNS  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _read_eval_sql_file  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql  # noqa: F401
 from ._callback_helpers import _LLM_RESPONSE_ERROR_CODES  # noqa: F401
 from ._callback_helpers import ToolResultClassification  # noqa: F401
 
@@ -2479,7 +2500,11 @@ class BigQueryLoggerConfig:
       max_content_length: Max length for text content before truncation.
       table_id: BigQuery table ID.
       clustering_fields: Fields to cluster the table by.
-      log_multi_modal_content: Whether to log detailed content parts.
+      log_multi_modal_content: Whether to log detailed content parts in
+        the ``content_parts`` column. When ``False``, ``content_parts`` is
+        written as ``[]`` and GCS offloading (``gcs_bucket_name``) is disabled
+        so large text remains inline (truncated at ``max_content_length``) in
+        ``content`` and binary parts are not stored.
       retry_config: Retry configuration for writes.
       batch_size: Number of rows per batch.
       batch_flush_interval: Max time to wait before flushing a batch.
@@ -2521,7 +2546,13 @@ class BigQueryLoggerConfig:
         SDK queries such as ``ERROR_SQL_PREDICATE`` treat any non-null
         ``error_message`` as an error, so such a row still marks its session
         ``has_error``.
-      gcs_bucket_name: GCS bucket for offloading large content.
+      gcs_bucket_name: GCS bucket for offloading large text and binary content.
+        Offloading only runs when ``content_parts`` is persisted
+        (``log_multi_modal_content=True`` and ``"content_parts"`` not in
+        ``payload_column_denylist``); otherwise ``GCSOffloader`` is not
+        created, a warning is logged once per plugin instance, large text is
+        kept inline (truncated) in ``content``, and binary parts are not
+        stored.
       connection_id: BigQuery connection ID for ObjectRef columns.
       log_session_metadata: Whether to log session metadata.
       custom_tags: Static custom tags to attach to every event.
@@ -2637,6 +2668,15 @@ class BigQueryLoggerConfig:
         a ``HITL_*_REQUEST`` event and ``INVOCATION_COMPLETED`` without
         ``AGENT_RESPONSE`` text) followed by the ``function_response`` turn that
         resumes it needs no reply, and that resumption turn needs no user text.
+        No turn with ``has_truncated_content`` is ready, as a row flagged
+        ``is_truncated`` that puts an event in its trace left the trace
+        without part of a payload. No other row counts: an ``LLM_REQUEST``
+        row repeats the conversation so far, so one oversized message would
+        hold back every later turn of its session.
+        ``has_truncated_content`` tells a caller that truncation keeps a turn
+        from being ready, but not whether it is the only reason: no column
+        of the views holds the other conditions of ``eval_ready``, so a
+        truncated turn may also be unfinished or lack user text.
         Each agent's ``instruction`` in the trace is the one logged by
         ``AGENT_STARTING``; when none was logged (for example a callable
         ``InstructionProvider``), it falls back to the earliest non-empty
@@ -2648,7 +2688,7 @@ class BigQueryLoggerConfig:
         ``content`` column and, with the default ``eval_view_mode`` of
         ``"full"``, require ``USER_MESSAGE_RECEIVED``,
         ``AGENT_STARTING``, ``LLM_REQUEST``, ``TOOL_STARTING``,
-        ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
+        ``TOOL_COMPLETED``, ``TOOL_ERROR``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
         ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
         ``HITL_*_REQUEST_COMPLETED`` events, so denying ``content`` via
         ``payload_column_denylist`` or filtering out any of those events via
@@ -2745,7 +2785,8 @@ class BigQueryLoggerConfig:
   shutdown_timeout: float = 10.0
   queue_max_size: int = 10000
   content_formatter: Optional[Callable[[Any, str], Any]] = None
-  # If provided, large content (images, audio, video, large text) will be offloaded to this GCS bucket.
+  # If provided and content_parts is persisted, large content (images, audio,
+  # video, large text) is offloaded to this GCS bucket.
   gcs_bucket_name: Optional[str] = None
   # If provided, this connection ID will be used as the authorizer for ObjectRef columns.
   # Format: "location.connection_id" (e.g. "us.my-connection")
@@ -4257,7 +4298,13 @@ class GCSOffloader:
 
 
 class HybridContentParser:
-  """Parses content and offloads large/binary parts to GCS."""
+  """Parses content and offloads large/binary parts to GCS.
+
+  GCS offloading runs when an offloader is configured and ``offload=True``
+  (the default). When ``offload=False``, binary parts stay inline with
+  ``"[BINARY DATA]"`` and oversized text parts stay inline (truncated at
+  ``max_length``) regardless of whether an offloader is present.
+  """
 
   def __init__(
       self,
@@ -4474,6 +4521,7 @@ class HybridContentParser:
       span_id: Optional[str] = None,
       parse_uid: str = "",
       content_ordinal: int = 0,
+      offload: bool = True,
   ) -> tuple[str, list[dict[str, Any]], bool]:
     """Parses a Content or Part object into summary text and content parts.
 
@@ -4486,6 +4534,11 @@ class HybridContentParser:
     message index within a multi-content request) disambiguate GCS object
     names: the part index alone restarts per Content, so two messages in
     one request would otherwise collide at the same part ordinal.
+
+    ``offload`` controls GCS offloading. When ``False``, ``self.offloader``
+    is ignored: binary parts stay inline with ``"[BINARY DATA]"`` and
+    oversized text parts stay inline (truncated at ``max_length``) in
+    ``part_data["text"]`` and ``summary_text``.
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
@@ -4532,7 +4585,8 @@ class HybridContentParser:
       elif part.inline_data:
         inline_data = part.inline_data
         mime_type = inline_data.mime_type or "application/octet-stream"
-        if self.offloader:
+        part_data["mime_type"] = mime_type
+        if self.offloader and offload:
           ext = mimetypes.guess_extension(mime_type) or ".bin"
           path = (
               f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
@@ -4553,7 +4607,6 @@ class HybridContentParser:
                 ),
             }
             part_data["object_ref"] = object_ref
-            part_data["mime_type"] = mime_type
             part_data["text"] = "[MEDIA OFFLOADED]"
           except Exception as e:
             logger.warning("Failed to offload content to GCS: %s", e)
@@ -4577,7 +4630,11 @@ class HybridContentParser:
             self.max_length != -1 and char_len > self.max_length
         )
 
-        if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
+        if (
+            self.offloader
+            and offload
+            and (exceeds_inline_byte_limit or exceeds_char_limit)
+        ):
           # Text is too big, treat as file
           path = (
               f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
@@ -4608,7 +4665,7 @@ class HybridContentParser:
             part_data["text"] = clean_text
             summary_text.append(clean_text)
         else:
-          # Text is small or no offloader, keep inline
+          # Text is small or offloading is disabled, keep inline
           clean_text, truncated = self._truncate(safe_text)
           if truncated:
             is_truncated = True
@@ -4694,6 +4751,7 @@ class HybridContentParser:
       *,
       trace_id: Optional[str] = None,
       span_id: Optional[str] = None,
+      offload: bool = True,
   ) -> tuple[Any, list[dict[str, Any]], bool]:
     """Parses content into JSON payload and content parts, potentially offloading to GCS.
 
@@ -4702,6 +4760,10 @@ class HybridContentParser:
     events, so relying on the mutable instance fields lets one event's await
     resume with another event's identity and overwrite its objects. The instance
     fields remain only as a backward-compatible default.
+
+    ``offload`` controls whether eligible binary and oversized text parts are
+    uploaded via ``self.offloader``. When ``False``, parts stay inline
+    (``"[BINARY DATA]"`` for binary parts and truncated text for text parts).
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
@@ -4731,6 +4793,7 @@ class HybridContentParser:
             span_id=span_id,
             parse_uid=parse_uid,
             content_ordinal=content_idx,
+            offload=offload,
         )
         if trunc:
           is_truncated = True
@@ -4755,6 +4818,7 @@ class HybridContentParser:
               span_id=span_id,
               parse_uid=parse_uid,
               content_ordinal=len(contents),
+              offload=offload,
           )
           if trunc:
             is_truncated = True
@@ -4767,6 +4831,7 @@ class HybridContentParser:
           trace_id=trace_id,
           span_id=span_id,
           parse_uid=parse_uid,
+          offload=offload,
       )
       return {"text_summary": summary}, parts, trunc
 
@@ -5039,39 +5104,6 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           ),
       ),
   ]
-
-
-# Payload columns eligible for physical projection.  Every other
-# schema column is an identity / correlation / view-critical column and is
-# *protected* — it cannot be projected out, because the BQAA execution tree
-# and the per-event views depend on it.
-_PROJECTABLE_PAYLOAD_COLUMNS = frozenset(
-    {"content", "content_parts", "attributes", "latency_ms"}
-)
-
-
-def _validate_payload_column_denylist(
-    denylist: Optional[list[str]],
-) -> frozenset[str]:
-  """Validates ``payload_column_denylist`` and returns the denied set.
-
-  Only the projectable payload columns may be denied.  Anything else —
-  an identity/correlation column or an unknown name — is a hard error,
-  so a typo or an attempt to drop a join key fails loudly at construction
-  rather than producing malformed rows or broken views.
-  """
-  denied = frozenset(denylist or ())
-  invalid = denied - _PROJECTABLE_PAYLOAD_COLUMNS
-  if invalid:
-    raise ValueError(
-        "payload_column_denylist may only contain projectable payload"
-        f" columns {sorted(_PROJECTABLE_PAYLOAD_COLUMNS)}; got"
-        f" {sorted(invalid)}. Identity/correlation columns (timestamp,"
-        " event_type, session_id, invocation_id, trace_id, span_id,"
-        " parent_span_id, is_truncated, ...) are protected and cannot be"
-        " projected out."
-    )
-  return denied
 
 
 def _project_schema(
@@ -5431,9 +5463,20 @@ WHERE
 # - USER_MESSAGE_RECEIVED becomes user text; TOOL_STARTING and HITL_*_REQUEST
 #   a function_call; AGENT_TRANSFER a ``transfer_to_agent`` function_call; and
 #   TOOL_COMPLETED and HITL_*_REQUEST_COMPLETED a function_response whose
-#   non-object result is wrapped as ``{"result": ...}``.  The transfer and
-#   ``adk_request_*`` HITL tools' own TOOL_STARTING and TOOL_COMPLETED rows
-#   are skipped: AGENT_TRANSFER, logged after both, carries the handoff, and
+#   non-object result is wrapped as ``{"result": ...}``.  TOOL_ERROR, which is
+#   logged instead of TOOL_COMPLETED when a tool raises, becomes a
+#   function_response of ``{"error": ...}`` holding the error message (or
+#   ``Tool execution failed`` when it has none), so every tool call that
+#   completes or raises has a response.  ``after_tool_callback`` also logs
+#   TOOL_ERROR, for a result that reports a failure: that row records the
+#   error message it synthesized and leaves out the result the model saw, so
+#   the response holds that message, not the result.  A TOOL_STARTING,
+#   TOOL_COMPLETED or TOOL_ERROR row that names no tool, as when a custom
+#   ``content_formatter`` fails, adds no event, and a HITL row that names none
+#   gets the name ``""``.
+#   The transfer and ``adk_request_*`` HITL tools' own
+#   TOOL_STARTING, TOOL_COMPLETED and TOOL_ERROR rows are skipped:
+#   AGENT_TRANSFER, logged after them, carries the handoff, and
 #   HITL_*_REQUEST and HITL_*_REQUEST_COMPLETED carry the HITL request and
 #   the completion that resumes it.
 # - Model text comes from AGENT_RESPONSE (which strips thought parts).
@@ -5462,12 +5505,18 @@ WHERE
 #   proto field names only, because unknown fields are rejected.
 # - No output column is named ``status``, avoiding collisions with
 #   downstream evaluation output schemas.
-# - Tool metrics (``tool_call_count``, ``distinct_tools_used`` and the
-#   consecutive-call columns) skip the ``transfer_to_agent`` tool, whose
-#   handoff the trace carries as the AGENT_TRANSFER function_call.  Two calls
+# - Tool metrics (``tool_call_count``, ``tool_error_count``,
+#   ``distinct_tools_used`` and the consecutive-call columns) skip the
+#   ``transfer_to_agent`` tool, whose handoff the trace carries as the
+#   AGENT_TRANSFER function_call, and the ``adk_request_credential``,
+#   ``adk_request_confirmation`` and ``adk_request_input`` tools, which the
+#   framework calls to pause for a credential, a confirmation or the user's
+#   input.  A TOOL_STARTING row that names no tool is not a tool call, though
+#   a TOOL_ERROR row that names none still counts as a tool error.  Two calls
 #   are identical when their tool name and args match; ``tool_call_island``
 #   numbers each run of consecutive identical calls, and ``has_tool_loop``
-#   means a run of 3 or more.
+#   means a run of 3 or more.  A HITL request ends a run, even though the turn
+#   that resumes after it keeps its invocation_id.
 # - ``eval_ready`` needs user text, a finished turn and at least one trace
 #   event: user input with no text (image-only or offloaded to GCS) leaves
 #   the judge without a prompt. In ``eval_session``, a paused turn (one that
@@ -5476,8 +5525,26 @@ WHERE
 #   ``function_response`` turn that resumes it in the next invocation also
 #   satisfy ``session_turn_eval_ready``; a turn that merely ended without a
 #   reply is not paused.
-# - Every column is aggregated per session or turn, so filters on the output
-#   timestamps cannot prune the events table's ``timestamp`` partitions.
+# - Neither ``eval_ready`` nor ``session_turn_eval_ready`` holds for a turn
+#   with ``has_truncated_content``: a row that puts an event in the trace and
+#   is flagged ``is_truncated`` leaves the trace without part of its payload.
+#   No other row counts: an ``LLM_REQUEST`` row repeats the conversation so
+#   far, so one oversized message would hold back every later turn of its
+#   session.  ``has_truncated_content`` tells a caller that truncation keeps a
+#   turn from being ready, but not whether it is the only reason: no column of
+#   the views holds the other conditions of ``eval_ready``, such as
+#   ``has_user_message`` and ``is_complete``, so a truncated turn may also be
+#   unfinished or lack user text.
+#   ``is_truncated`` is a protected column, so the builders reject it in
+#   ``denied_columns``: read as FALSE, it would mark truncated turns eval
+#   ready.
+# - Every column is aggregated per session or turn, so a filter on the views'
+#   output timestamps cannot prune the events table's ``timestamp``
+#   partitions.  The query builders, ``build_eval_session_query_sql`` and
+#   ``build_eval_turn_query_sql``, take a ``raw_where_clause`` for that, a
+#   lookback on ``timestamp`` that keeps every event of the sessions to read,
+#   and a ``where_clause`` that then picks output rows, such as those of a
+#   time window, without dropping the earlier events that they need.
 # - ``eval_view_mode`` picks the events that must be logged for the views to be
 #   created (``_EVAL_VIEW_EVENTS_BY_MODE``): all of
 #   ``_EVAL_VIEW_REQUIRED_EVENTS`` for ``"full"``, but only
@@ -5489,6 +5556,7 @@ _EVAL_VIEW_REQUIRED_EVENTS = frozenset({
     "LLM_REQUEST",
     "TOOL_STARTING",
     "TOOL_COMPLETED",
+    "TOOL_ERROR",
     "TOOL_PAUSED",
     "AGENT_TRANSFER",
     "HITL_CREDENTIAL_REQUEST",
@@ -5510,249 +5578,6 @@ _EVAL_VIEW_EVENTS_BY_MODE = {
     "full": _EVAL_VIEW_REQUIRED_EVENTS,
     "conversation_only": _EVAL_VIEW_CORE_EVENTS,
 }
-
-# The eval SQL templates live in ``bigquery_agent_analytics_sql/``, the one
-# copy of that SQL, which services that cannot import this module embed and
-# run too.  Each file is a block of ``--`` comment lines (the license and the
-# substitution contract), a blank line, and then the template, which has
-# ``{name}`` placeholders and no doubled braces, so ``str.format`` and any
-# other textual replacement give the same SQL.  The builders below load a
-# template with ``_load_eval_sql_template``, which drops the header, and
-# format it.
-_EVAL_SQL_DIRNAME = "bigquery_agent_analytics_sql"
-
-
-def _read_eval_sql_file(filename: str) -> str:
-  """Reads a file of ``bigquery_agent_analytics_sql/`` beside this module.
-
-  The directory is looked up beside this file's unresolved path first: a build
-  may link this file and the templates into one tree, as Blaze does with
-  runfiles that point into its content-addressed cache, and the target of a
-  link has no neighbours there.  It is then looked up beside the resolved
-  path, for a checkout that links this file alone, and last among the
-  package's resources, for an install that keeps them in an archive.
-
-  Args:
-    filename: The bare file name.
-
-  Returns:
-    The text of the file.  It is read in text mode, which turns the CRLF line
-    breaks of a Windows checkout into newlines.
-
-  Raises:
-    OSError: The file cannot be found or read.
-  """
-  module_path = pathlib.Path(os.path.abspath(__file__))
-  for directory in (module_path.parent, module_path.resolve().parent):
-    path = directory / _EVAL_SQL_DIRNAME / filename
-    if path.is_file():
-      return path.read_text(encoding="utf-8")
-  resource = (
-      importlib.resources.files(__package__ or "google.adk.plugins")
-      .joinpath(_EVAL_SQL_DIRNAME)
-      .joinpath(filename)
-  )
-  if resource.is_file():
-    return resource.read_text(encoding="utf-8")
-  raise FileNotFoundError(
-      f"Cannot find {_EVAL_SQL_DIRNAME}/{filename} beside {__file__} or among"
-      " the package's resources."
-  )
-
-
-@functools.lru_cache(maxsize=None)
-def _load_eval_sql_template(filename: str) -> str:
-  """Loads an eval SQL template of ``bigquery_agent_analytics_sql/``.
-
-  A template file is a block of ``--`` comment lines (the license and the
-  substitution contract), a blank line, and then the template.  The header is
-  dropped: it names the placeholders, so it must not be formatted.  Each file
-  is read once.
-
-  Args:
-    filename: The bare file name, such as ``eval_view_ctes_v1.sql``.
-
-  Returns:
-    The template text that follows the header.
-
-  Raises:
-    OSError: The file cannot be found or read.
-    ValueError: ``filename`` is not a bare file name, or the file does not
-      begin with a block of ``--`` comment lines and a blank line.
-  """
-  if (
-      not filename
-      or filename in {".", ".."}
-      or pathlib.PurePath(filename).name != filename
-  ):
-    raise ValueError(f"filename must be a bare file name; got {filename!r}.")
-  text = _read_eval_sql_file(filename)
-  header, separator, template = text.partition("\n\n")
-  header_lines = header.splitlines()
-  if not (
-      separator
-      and header_lines
-      and all(line.startswith("--") for line in header_lines)
-  ):
-    raise ValueError(
-        f"{filename} must begin with a block of '--' comment lines (the"
-        " license header) and a blank line."
-    )
-  return template
-
-
-# A character that cannot be part of the table name that the eval SQL quotes in
-# backticks: a backtick would end the name early, a backslash would start an
-# escape sequence, and a control or line-break character would split it.  A
-# space is legal: BigQuery allows one in a table name.
-_EVAL_TABLE_ID_UNQUOTABLE_RE = re.compile(
-    r"[`\\\x00-\x1f\x7f-\x9f\u2028\u2029]"
-)
-
-
-def _eval_view_dataset_ref(
-    full_table_id: str,
-    denied_columns: frozenset[str],
-    view_prefix: str = "v",
-) -> str:
-  """Validates the eval view inputs and returns the table's dataset ref."""
-  if "content" in denied_columns:
-    raise ValueError(
-        "Cannot build eval view SQL when 'content' is in"
-        " payload_column_denylist."
-    )
-  dataset_ref, _, table = full_table_id.rpartition(".")
-  if not dataset_ref or not table:
-    raise ValueError(
-        "full_table_id must be a dataset-qualified table name such as"
-        f" 'project.dataset.table'; got {full_table_id!r}."
-    )
-  if _EVAL_TABLE_ID_UNQUOTABLE_RE.search(full_table_id):
-    raise ValueError(
-        "full_table_id must not contain a backtick, backslash, control or"
-        " line-break character, because the SQL quotes it in backticks; got"
-        f" {full_table_id!r}."
-    )
-  if not view_prefix or _EVAL_TABLE_ID_UNQUOTABLE_RE.search(view_prefix):
-    raise ValueError(
-        "view_prefix must be a non-empty string without a backtick, backslash,"
-        f" control or line-break character; got {view_prefix!r}."
-    )
-  return dataset_ref
-
-
-def _build_eval_view_ctes(
-    full_table_id: str, denied_columns: frozenset[str], scope_columns: str
-) -> str:
-  """Returns the CTE chain shared by the eval session and turn views.
-
-  Args:
-    full_table_id: The events table.
-    denied_columns: Payload columns projected out of the table.  A denied
-      ``content_parts``, ``attributes``, or ``latency_ms`` column reads as an
-      empty array or NULL JSON, so the SQL never references it.
-    scope_columns: The columns that scope ``trace.agents``: ``session_id``
-      for the session view, ``session_id, invocation_id`` for the turn view.
-
-  Returns:
-    The ``WITH`` clause, without a trailing newline.
-
-  Raises:
-    OSError: The template file cannot be found or read.
-  """
-  ctes = _load_eval_sql_template("eval_view_ctes_v1.sql").format(
-      full_table_id=full_table_id,
-      content_parts_column=(
-          "ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
-          " part_attributes STRING, storage_mode STRING>>[] AS content_parts"
-          if "content_parts" in denied_columns
-          else "content_parts"
-      ),
-      attributes_column=(
-          "CAST(NULL AS JSON) AS attributes"
-          if "attributes" in denied_columns
-          else "attributes"
-      ),
-      latency_ms_column=(
-          "CAST(NULL AS JSON) AS latency_ms"
-          if "latency_ms" in denied_columns
-          else "latency_ms"
-      ),
-      scope_columns=scope_columns,
-  )
-  # The template ends in a newline, as its file does; the view templates
-  # continue the chain after it.
-  return ctes.rstrip("\n")
-
-
-def _build_eval_session_view_sql(
-    full_table_id: str,
-    view_prefix: str = "v",
-    denied_columns: frozenset[str] = frozenset(),
-) -> str:
-  """Builds the ``{view_prefix}_eval_session`` view DDL.
-
-  The view has one row per session.  Its ``trace`` column is an ``AgentData``
-  object holding every turn of the session, numbered from 0 in start order.
-
-  Args:
-    full_table_id: The events table as ``project.dataset.table``.  The view is
-      created in the same dataset.
-    view_prefix: Prefix for the view name.
-    denied_columns: Payload columns projected out of the table.
-
-  Returns:
-    A ``CREATE OR REPLACE VIEW`` statement.
-
-  Raises:
-    ValueError: ``content`` is denied, ``full_table_id`` has no dataset or
-      has a backtick, backslash, control or line-break character, or
-      ``view_prefix`` is empty or has one of those characters.
-  """
-  dataset_ref = _eval_view_dataset_ref(
-      full_table_id, denied_columns, view_prefix
-  )
-  return _load_eval_sql_template("eval_session_view_v1.sql").format(
-      view_ref=f"{dataset_ref}.{view_prefix}_eval_session",
-      ctes=_build_eval_view_ctes(full_table_id, denied_columns, "session_id"),
-  )
-
-
-def _build_eval_turn_view_sql(
-    full_table_id: str,
-    view_prefix: str = "v",
-    denied_columns: frozenset[str] = frozenset(),
-) -> str:
-  """Builds the ``{view_prefix}_eval_turn`` view DDL.
-
-  The view has one row per ``(session_id, invocation_id)`` turn.  Its
-  ``trace`` column is an ``AgentData`` object whose ``turns`` array holds only
-  that turn, with ``turn_index`` 0 as single-turn metrics require; the
-  ``turn_index`` column keeps the turn's position in its session.
-
-  Args:
-    full_table_id: The events table as ``project.dataset.table``.  The view is
-      created in the same dataset.
-    view_prefix: Prefix for the view name.
-    denied_columns: Payload columns projected out of the table.
-
-  Returns:
-    A ``CREATE OR REPLACE VIEW`` statement.
-
-  Raises:
-    ValueError: ``content`` is denied, ``full_table_id`` has no dataset or
-      has a backtick, backslash, control or line-break character, or
-      ``view_prefix`` is empty or has one of those characters.
-  """
-  dataset_ref = _eval_view_dataset_ref(
-      full_table_id, denied_columns, view_prefix
-  )
-  return _load_eval_sql_template("eval_turn_view_v1.sql").format(
-      view_ref=f"{dataset_ref}.{view_prefix}_eval_turn",
-      ctes=_build_eval_view_ctes(
-          full_table_id, denied_columns, "session_id, invocation_id"
-      ),
-  )
 
 
 # ==============================================================================
@@ -6041,6 +5866,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # client and the executor it is not invalidated by shutdown, fork, or
     # pickling, and the check is not repeated once it has passed.
     self._schema_ready = False
+    self._offload_disabled_warned = False
     # Workflow observation segments of the runner calls in flight, keyed by
     # invocation ID: before_run_callback opens a call's segment, and
     # after_run_callback or on_run_error_callback closes it. A nested runner
@@ -6052,6 +5878,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._workflow_segments_guard = threading.Lock()
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
+
+  def _content_parts_persisted(self) -> bool:
+    """Returns True when ``content_parts`` is persisted on the row."""
+    return bool(
+        self.config.log_multi_modal_content
+        and "content_parts" not in self._denied_columns
+    )
 
   def _get_bg_loop_key(self) -> tuple[str, Any]:
     """Returns the cache key for shared background-loop states."""
@@ -6819,19 +6652,35 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
-        if "content_parts" in self._denied_columns:
+        if not self._content_parts_persisted():
           # GCS offload stores its object reference in the
-          # ``content_parts`` column. With ``content_parts`` projected out,
-          # an upload would be orphaned -- payload leaks to GCS and incurs
-          # cost with no retained reference. Disable offload and keep
-          # content inline (truncated) instead.
-          logger.warning(
-              "GCS offload disabled: payload_column_denylist drops"
-              " 'content_parts', which holds the offloaded object reference;"
-              " large/binary content is kept inline (truncated) instead of"
-              " being uploaded to %s.",
-              self.config.gcs_bucket_name,
-          )
+          # ``content_parts`` column. When ``content_parts`` is projected
+          # out by ``payload_column_denylist`` or cleared to ``[]`` because
+          # ``log_multi_modal_content`` is False, an upload would be
+          # orphaned -- payload leaks to GCS, incurs cost, and large text is
+          # omitted from ``content`` with no retained reference. Disable
+          # offload so large text is kept inline (truncated) in ``content``
+          # and binary parts are not stored.
+          if not self._offload_disabled_warned:
+            if "content_parts" in self._denied_columns:
+              reason = (
+                  "payload_column_denylist drops 'content_parts', which"
+                  " holds the offloaded object reference"
+              )
+            else:
+              reason = (
+                  "log_multi_modal_content is False, so 'content_parts'"
+                  " (which holds the offloaded object reference) is not"
+                  " persisted"
+              )
+            logger.warning(
+                "GCS offload disabled: %s; large text is kept inline"
+                " (truncated) in 'content' and binary parts are not"
+                " stored instead of being uploaded to %s.",
+                reason,
+                self.config.gcs_bucket_name,
+            )
+            self._offload_disabled_warned = True
         else:
           self.offloader = GCSOffloader(
               self.project_id,
@@ -7313,14 +7162,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     The views rebuild ``AgentData`` traces from ``content``.  When
     ``config.eval_view_mode`` is ``"full"`` (default), they require
     ``USER_MESSAGE_RECEIVED``, ``AGENT_STARTING``, ``LLM_REQUEST``,
-    ``TOOL_STARTING``, ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
-    ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
-    ``HITL_*_REQUEST_COMPLETED`` events; when ``config.eval_view_mode`` is
-    ``"conversation_only"``, they require only the three core conversation
-    events (``USER_MESSAGE_RECEIVED``, ``AGENT_RESPONSE``, and
-    ``INVOCATION_COMPLETED``).  Any custom ``content_formatter`` must preserve
-    ``$.text_summary``, ``$.response``, ``$.system_prompt``, ``$.tool``,
-    ``$.args``, and ``$.result``.
+    ``TOOL_STARTING``, ``TOOL_COMPLETED``, ``TOOL_ERROR``, ``TOOL_PAUSED``,
+    ``AGENT_TRANSFER``, ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``,
+    ``HITL_*_REQUEST``, and ``HITL_*_REQUEST_COMPLETED`` events; when
+    ``config.eval_view_mode`` is ``"conversation_only"``, they require only
+    the three core conversation events (``USER_MESSAGE_RECEIVED``,
+    ``AGENT_RESPONSE``, and ``INVOCATION_COMPLETED``).  Any custom
+    ``content_formatter`` must preserve ``$.text_summary``, ``$.response``,
+    ``$.system_prompt``, ``$.tool``, ``$.args``, and ``$.result``.
 
     The views aggregate per session or turn, so a filter on their
     ``session_start_timestamp`` or ``turn_start_timestamp`` column does not
@@ -7788,6 +7637,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
     state.setdefault("_schema_ready", False)
+    state.setdefault("_offload_disabled_warned", False)
     state.setdefault("_loop_state_futures", {})
     state.setdefault("_builder_waiters", {})
     # Migrate the legacy _visual_builder flag onto _surface. Handle an
@@ -8823,13 +8673,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Parser not initialized; skipping event %s.", event_type)
       return
 
-    # When both payload columns are projected out, skip content parsing
-    # entirely -- no inline summary, no parts, and (critically) no GCS offload
-    # work for a row that retains neither payload column.
+    # When neither payload column will store parsed output (``content`` is
+    # projected out and ``content_parts`` is either projected out or disabled
+    # via ``log_multi_modal_content=False``), skip content parsing entirely
+    # -- no inline summary, no parts, and no GCS offload work.
+    content_parts_persisted = self._content_parts_persisted()
     content_json: Any
     content_parts: list[dict[str, Any]]
     parser_truncated: bool
-    if {"content", "content_parts"} <= self._denied_columns:
+    if "content" in self._denied_columns and not content_parts_persisted:
       content_json, content_parts, parser_truncated = None, [], False
     else:
       # Pass trace/span per call: the parser instance is shared, so storing
@@ -8840,6 +8692,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             raw_content,
             trace_id=trace_id or "no_trace",
             span_id=span_id or "no_span",
+            offload=content_parts_persisted,
         )
         # Normalize the parser OUTPUT to strictly JSON-native values
         # inside the same boundary: a nested
@@ -8925,9 +8778,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "span_id": span_id,
         "parent_span_id": parent_span_id,
         "content": content_json,
-        "content_parts": (
-            content_parts if self.config.log_multi_modal_content else []
-        ),
+        "content_parts": content_parts if content_parts_persisted else [],
         "attributes": attributes_json,
         "latency_ms": latency_json,
         "status": event_data.status,

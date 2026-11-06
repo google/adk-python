@@ -20,7 +20,6 @@ import logging
 from typing import Any
 from typing import Awaitable
 from typing import Callable
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -105,8 +104,8 @@ async def compute_artifact_delta_for_rewind(
     session: Session,
     rewind_event_index: int,
     *,
-    artifact_service: Optional[BaseArtifactService] = None,
-    app_name: Optional[str] = None,
+    artifact_service: BaseArtifactService | None = None,
+    app_name: str | None = None,
 ) -> dict[str, int]:
   """Computes the artifact delta to reverse changes."""
   if not artifact_service:
@@ -179,14 +178,14 @@ async def rewind_session(
     session_service: BaseSessionService,
     session: Session,
     rewind_before_invocation_id: str,
-    artifact_service: Optional[BaseArtifactService] = None,
-    app_name: Optional[str] = None,
-    compute_state_delta: Optional[
-        Callable[[Session, int], Awaitable[dict[str, Any]]]
-    ] = None,
-    compute_artifact_delta: Optional[
-        Callable[[Session, int], Awaitable[dict[str, int]]]
-    ] = None,
+    artifact_service: BaseArtifactService | None = None,
+    app_name: str | None = None,
+    compute_state_delta: (
+        Callable[[Session, int], Awaitable[dict[str, Any]]] | None
+    ) = None,
+    compute_artifact_delta: (
+        Callable[[Session, int], Awaitable[dict[str, int]]] | None
+    ) = None,
 ) -> None:
   """Rewinds the session to before the specified invocation."""
   rewind_event_index = -1

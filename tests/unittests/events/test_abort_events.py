@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Optional
 
 from google.adk.events._abort_events import _build_abort_events
 from google.adk.events._abort_events import _is_abort_event
@@ -26,7 +25,7 @@ _ABORT_MESSAGE = "Invocation was aborted by client."
 
 def _fc_event(
     author: str,
-    *call_ids: Optional[str],
+    *call_ids: str | None,
     invocation_id: str = _INVOCATION_ID,
     **kwargs: Any,
 ) -> Event:
@@ -65,7 +64,7 @@ def _fr_event(call_id: str, invocation_id: str = _INVOCATION_ID) -> Event:
   )
 
 
-def _build(events: list[Event], branch: Optional[str] = None) -> list[Event]:
+def _build(events: list[Event], branch: str | None = None) -> list[Event]:
   return _build_abort_events(
       events,
       invocation_id=_INVOCATION_ID,

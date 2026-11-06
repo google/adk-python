@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import re
+import sys
 import threading
 from typing import Any
 from unittest import mock
@@ -41,6 +42,8 @@ from google.adk.models.anthropic_llm import to_google_genai_finish_reason
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.function_tool import FunctionTool
+from google.api_core import exceptions as google_exceptions
+from google.auth import exceptions as google_auth_exceptions
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -1580,6 +1583,480 @@ def test_part_to_message_block_rejects_unsupported_image_mime_type():
 
   with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
     part_to_message_block(part)
+
+
+def test_part_to_message_block_with_gcs_pdf_document():
+  """A gs:// PDF file part downloads the object and sends it inline."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch(
+      "google.cloud.storage.Client", return_value=client
+  ) as client_cls:
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
+
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+  client_cls.assert_called_once_with(project=None)
+  client.close.assert_called_once_with()
+  client.bucket.assert_called_once_with("my-bucket")
+  client.bucket.return_value.get_blob.assert_called_once_with("reports/q4.pdf")
+
+
+def test_part_to_message_block_rejects_oversized_gcs_file():
+  """A gs:// object over the size cap raises before it is downloaded."""
+  blob = MagicMock(size=anthropic_llm._MAX_FILE_DATA_SIZE + 1)
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(ValueError, match="too large"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/big.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+  blob.download_as_bytes.assert_not_called()
+
+
+def test_part_to_message_block_rejects_unsupported_gcs_file_type():
+  """A gs:// object Claude cannot carry inline raises NotImplementedError."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = MagicMock(size=10)
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(NotImplementedError, match="Not supported yet"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/clip.mp4",
+                  mime_type="video/mp4",
+              )
+          )
+      )
+
+
+def test_part_to_message_block_missing_gcs_dependency(monkeypatch):
+  """Without google-cloud-storage, the error names the extra to install."""
+  # None in sys.modules makes the import itself raise ImportError.
+  monkeypatch.setitem(sys.modules, "google.cloud", None)
+  monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+
+  with pytest.raises(ImportError, match=r"google-adk\[gcp\]"):
+    part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
+
+
+@pytest.mark.parametrize("mime_type", ["image/png", "image/PNG", "IMAGE/PNG"])
+def test_part_to_message_block_with_gcs_image(mime_type):
+  """A gs:// image part is sent inline with its MIME type lowercased."""
+  image_data = b"\x89PNG fake image content"
+  blob = MagicMock(size=len(image_data))
+  blob.download_as_bytes.return_value = image_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/photo.png",
+                mime_type=mime_type,
+            )
+        )
+    )
+
+  assert result == {
+      "type": "image",
+      "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": base64.b64encode(image_data).decode(),
+      },
+  }
+
+
+def test_part_to_message_block_gcs_pdf_mime_type_normalized():
+  """A padded, uppercase PDF MIME type still yields a document block."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type=" APPLICATION/PDF",
+            )
+        )
+    )
+
+  assert result["type"] == "document"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+def test_part_to_message_block_rejects_non_gcs_file_uri():
+  """A non-gs:// file URI on a user turn raises without downloading."""
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    with pytest.raises(NotImplementedError, match="Not supported yet"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="https://example.com/q4.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_missing_gcs_object():
+  """A gs:// URI naming a missing object raises ValueError."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = None
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(ValueError, match="not found: gs://my-bucket/gone.pdf"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/gone.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+
+@pytest.mark.parametrize(
+    "uri", ["gs://bucket-only", "gs:///reports/q4.pdf", "gs://bucket/"]
+)
+def test_part_to_message_block_rejects_gcs_uri_without_bucket_or_object(uri):
+  """A gs:// URI without a bucket or object raises before any download."""
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    with pytest.raises(ValueError, match="must name a bucket and an object"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri=uri, mime_type="application/pdf"
+              )
+          )
+      )
+
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_rejects_unsupported_gcs_image_before_download():
+  """An unsupported image type raises before the object is downloaded."""
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/scan.tiff", mime_type="image/tiff"
+              )
+          )
+      )
+
+  client_cls.assert_not_called()
+
+
+def test_content_to_message_param_skips_gcs_file_on_assistant_turn():
+  """A file_data part on an assistant turn is dropped, not downloaded."""
+  content = Content(
+      role="model",
+      parts=[
+          Part.from_text(text="Here is the report."),
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/reports/q4.pdf",
+                  mime_type="application/pdf",
+              )
+          ),
+      ],
+  )
+
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    result = content_to_message_param(content)
+
+  assert result["content"] == [{"type": "text", "text": "Here is the report."}]
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_tool_result_with_gcs_image():
+  """A gs:// image a tool attaches is sent in the tool result."""
+  image_data = b"\x89PNG chart"
+  blob = MagicMock(size=len(image_data))
+  blob.download_as_bytes.return_value = image_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+  part = types.Part.from_function_response(
+      name="draw_chart",
+      response={},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/chart.png", mime_type="image/png"
+          )
+      ],
+  )
+  part.function_response.id = "call_5"
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(part)
+
+  assert result["content"] == [{
+      "type": "image",
+      "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": base64.b64encode(image_data).decode(),
+      },
+  }]
+  client.bucket.return_value.get_blob.assert_called_once_with("chart.png")
+
+
+def test_part_to_message_block_tool_result_drops_non_gcs_file(caplog):
+  """A non-gs:// file a tool attaches is dropped with a warning."""
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="https://example.com/report.pdf",
+              mime_type="application/pdf",
+          )
+      ],
+  )
+  part.function_response.id = "call_9"
+
+  with (
+      mock.patch("google.cloud.storage.Client") as client_cls,
+      caplog.at_level("WARNING"),
+  ):
+    result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+  assert "only gs:// URIs can be sent" in caplog.text
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_tool_result_drops_missing_gcs_file():
+  """A missing gs:// object a tool attaches is dropped from the result."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = None
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/gone.pdf", mime_type="application/pdf"
+          )
+      ],
+  )
+  part.function_response.id = "call_6"
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        google_exceptions.Forbidden("denied"),
+        google_auth_exceptions.DefaultCredentialsError("no credentials"),
+        ConnectionError("network unreachable"),
+    ],
+    ids=["forbidden", "no_adc", "network"],
+)
+def test_part_to_message_block_tool_result_drops_gcs_file_on_download_error(
+    error,
+):
+  """A download error drops the tool's gs:// file instead of raising."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.side_effect = error
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/report.pdf", mime_type="application/pdf"
+          )
+      ],
+  )
+  part.function_response.id = "call_7"
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+
+
+def test_part_to_message_block_tool_result_drops_gcs_file_without_storage(
+    monkeypatch,
+):
+  """Without google-cloud-storage, the tool's gs:// file is dropped."""
+  monkeypatch.setitem(sys.modules, "google.cloud", None)
+  monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/report.pdf", mime_type="application/pdf"
+          )
+      ],
+  )
+  part.function_response.id = "call_8"
+
+  result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_downloads_gcs_file_off_event_loop(
+    generate_content_response,
+):
+  """The gs:// download runs in a worker thread, not on the event loop."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  download_threads = []
+
+  def download_as_bytes():
+    download_threads.append(threading.get_ident())
+    return pdf_data
+
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.side_effect = download_as_bytes
+  storage_client = MagicMock()
+  storage_client.bucket.return_value.get_blob.return_value = blob
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part(
+                      file_data=types.FileData(
+                          file_uri="gs://my-bucket/reports/q4.pdf",
+                          mime_type="application/pdf",
+                      )
+                  ),
+                  Part.from_text(text="Summarize this"),
+              ],
+          )
+      ],
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=generate_content_response
+  )
+
+  with (
+      mock.patch("google.cloud.storage.Client", return_value=storage_client),
+      mock.patch.object(llm, "_anthropic_client", mock_client),
+  ):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert download_threads
+  assert threading.get_ident() not in download_threads
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["messages"][0]["content"][0] == {
+      "type": "document",
+      "source": {
+          "type": "base64",
+          "media_type": "application/pdf",
+          "data": base64.b64encode(pdf_data).decode(),
+      },
+  }
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_downloads_each_gcs_uri_once(
+    generate_content_response,
+):
+  """A gs:// URI repeated across turns is downloaded once per request."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  storage_client = MagicMock()
+  storage_client.bucket.return_value.get_blob.return_value = blob
+  file_part = Part(
+      file_data=types.FileData(
+          file_uri="gs://my-bucket/reports/q4.pdf",
+          mime_type="application/pdf",
+      )
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[
+          Content(role="user", parts=[file_part]),
+          Content(role="model", parts=[Part.from_text(text="Read it.")]),
+          Content(role="user", parts=[file_part]),
+      ],
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=generate_content_response
+  )
+
+  with (
+      mock.patch(
+          "google.cloud.storage.Client", return_value=storage_client
+      ) as client_cls,
+      mock.patch.object(llm, "_anthropic_client", mock_client),
+  ):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  client_cls.assert_called_once()
+  blob.download_as_bytes.assert_called_once_with()
+  _, kwargs = mock_client.messages.create.call_args
+  expected_block = {
+      "type": "document",
+      "source": {
+          "type": "base64",
+          "media_type": "application/pdf",
+          "data": base64.b64encode(pdf_data).decode(),
+      },
+  }
+  assert kwargs["messages"][0]["content"] == [expected_block]
+  assert kwargs["messages"][2]["content"] == [expected_block]
 
 
 content_to_message_param_test_cases = [
@@ -3249,10 +3726,11 @@ async def test_streaming_sets_model_version():
   assert final_response.model_version == "claude-sonnet-4-20250514"
 
 
-def test_part_to_message_block_thinking_roundtrip():
+@pytest.mark.parametrize("thinking_text", ["My reasoning steps.", ""])
+def test_part_to_message_block_thinking_roundtrip(thinking_text):
   """Part with thought=True and signature creates ThinkingBlockParam."""
   part = Part(
-      text="My reasoning steps.",
+      text=thinking_text,
       thought=True,
       thought_signature=b"roundtrip_sig",
   )
@@ -3261,7 +3739,7 @@ def test_part_to_message_block_thinking_roundtrip():
 
   assert isinstance(result, dict)
   assert result["type"] == "thinking"
-  assert result["thinking"] == "My reasoning steps."
+  assert result["thinking"] == thinking_text
   assert result["signature"] == "roundtrip_sig"
 
 
@@ -3563,7 +4041,8 @@ async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
 
 
 @pytest.mark.asyncio
-async def test_streaming_thinking_captures_signature_delta():
+@pytest.mark.parametrize("thinking_deltas", [["Reason."], []])
+async def test_streaming_thinking_captures_signature_delta(thinking_deltas):
   """A streamed signature_delta must land on the final thinking Part.
 
   Without this the aggregated thinking Part has no ``thought_signature`` and
@@ -3587,13 +4066,16 @@ async def test_streaming_thinking_captures_signature_delta():
               thinking="", signature="", type="thinking"
           ),
       ),
-      MagicMock(
-          type="content_block_delta",
-          index=0,
-          delta=anthropic_types.ThinkingDelta(
-              thinking="Reason.", type="thinking_delta"
-          ),
-      ),
+      *[
+          MagicMock(
+              type="content_block_delta",
+              index=0,
+              delta=anthropic_types.ThinkingDelta(
+                  thinking=text, type="thinking_delta"
+              ),
+          )
+          for text in thinking_deltas
+      ],
       MagicMock(
           type="content_block_delta",
           index=0,
@@ -3631,15 +4113,20 @@ async def test_streaming_thinking_captures_signature_delta():
   assert not final.partial
   thinking_part = final.content.parts[0]
   assert thinking_part.thought
-  assert thinking_part.text == "Reason."
+  assert thinking_part.text == "".join(thinking_deltas)
   assert thinking_part.thought_signature == b"sig_stream_123"
 
-  # The aggregated Part must round-trip back to a valid Anthropic thinking
-  # block -- this is exactly what fails today (missing signature) on a
-  # tool-call turn.
+  # Preserve the thinking block on the follow-up request, including when
+  # the stream contains a signature without any thinking text deltas.
   block = part_to_message_block(thinking_part)
   assert block["type"] == "thinking"
+  assert block["thinking"] == "".join(thinking_deltas)
   assert block["signature"] == "sig_stream_123"
+  assert final.content is not None
+  assert content_to_message_param(final.content) == {
+      "role": "assistant",
+      "content": [block],
+  }
 
 
 @pytest.mark.asyncio
@@ -5044,10 +5531,11 @@ async def test_cache_breakpoint_skips_a_reasoning_block(
 
   kwargs = await _sent_anthropic_kwargs(request)
 
-  blocks = kwargs["messages"][-1]["content"]
+  blocks = kwargs["messages"][1]["content"]
   assert blocks[-1]["type"] == expected_block_type
   assert "cache_control" not in blocks[-1]
   assert blocks[-2]["cache_control"] == _EPHEMERAL
+  assert "cache_control" not in kwargs["messages"][-1]["content"][0]
 
 
 @pytest.mark.asyncio
@@ -5078,6 +5566,61 @@ async def test_cache_breakpoint_skips_a_turn_left_with_no_blocks():
       "tools[1]": _EPHEMERAL,
       "messages[0][0]": _EPHEMERAL,
   }
+
+
+_HAIKU_USER = Content(role="user", parts=[Part.from_text(text="Write a haiku")])
+_HAIKU_MODEL = Content(
+    role="model", parts=[Part.from_text(text="An old silent pond")]
+)
+_CONTINUE_TEXT = (
+    "Continue processing previous requests as instructed."
+    " Exit or provide a summary if no more outputs are needed."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "contents,expected_roles,expected_text",
+    [
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="ends_on_assistant",
+        ),
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL, Content(role="user", parts=[])],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="trailing_user_turn_dropped",
+        ),
+        pytest.param(
+            [],
+            ["user"],
+            "Handle the requests as specified in the System Instruction.",
+            id="no_contents",
+        ),
+        pytest.param(
+            [_HAIKU_USER],
+            ["user"],
+            "Write a haiku",
+            id="ends_on_user",
+        ),
+    ],
+)
+async def test_request_ends_on_a_user_turn(
+    contents, expected_roles, expected_text, stream
+):
+  """Claude reads a trailing assistant turn as prefill, which 4.6+ rejects."""
+  request = LlmRequest(model="claude-sonnet-4-20250514", contents=contents)
+
+  kwargs = await _sent_anthropic_kwargs(request, stream=stream)
+
+  assert [m["role"] for m in kwargs["messages"]] == expected_roles
+  assert kwargs["messages"][-1]["content"] == [
+      {"type": "text", "text": expected_text}
+  ]
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@
 --
 -- Shared CTE chain of the BigQuery Agent Analytics eval session and eval turn
 -- views.  It rebuilds the events of each session or turn into an AgentData
--- trace and the metrics beside it; the view templates continue it.
+-- trace and the metrics beside it; the query templates continue it.
 --
 -- Substitution contract: strip this header (everything up to the first blank
 -- line), then replace each placeholder named below, a name in single braces,
@@ -40,6 +40,42 @@
 -- {scope_columns}
 --     session_id for one trace per session, or session_id, invocation_id for
 --     one trace per turn.
+-- {raw_where_clause}
+--     Empty, or a trusted condition that narrows the events table's rows
+--     that every CTE reads.  The template puts it right after the last
+--     filter, so it starts with a newline and has this shape, with the closing
+--     parenthesis on a line of its own so that a trailing line comment in the
+--     condition cannot swallow it:
+--
+--       AND (
+--         condition
+--       )
+--
+--     The condition:
+--     * is SQL: bind its values as query parameters that the running job
+--       supplies, and never splice in untrusted text;
+--     * must keep every event of each session or turn to read: its lower
+--       bound is no later than the first event of any such session, and its
+--       upper bound is after the last event of those sessions plus the delay
+--       before the plugin's writes are readable, or the session or turn comes
+--       out partial;
+--     * never filters on a column that varies within a session, such as agent
+--       or event_type.
+--     A lookback on timestamp, one that starts well before the window to
+--     read, lets BigQuery prune the table's partitions.  To pick the sessions
+--     or turns of a time window, keep this lookback wide and filter the
+--     output columns with the where_clause of the query templates instead.
+--
+-- Truncated content: a row that has is_truncated set lacks part of its
+-- payload.  When the row puts an event in the trace, has_truncated_content
+-- holds for its turn, and neither eval_ready nor session_turn_eval_ready
+-- does.  No other row counts, such as an LLM_REQUEST row: it repeats the
+-- conversation so far, so one oversized message would hold back every later
+-- turn of its session.  has_truncated_content tells a caller that truncation
+-- keeps a turn from being ready, but not whether it is the only reason: no
+-- column of the views holds the other conditions of eval_ready, such as
+-- has_user_message and is_complete, so a truncated turn may also be
+-- unfinished or lack user text.
 --
 -- Versioning: the _v1 in the file name is the version of this contract.  A
 -- backward-compatible fix, which keeps the placeholders and the output
@@ -68,11 +104,12 @@ WITH
       `{full_table_id}`
     WHERE
       session_id IS NOT NULL
-      AND invocation_id IS NOT NULL
+      AND invocation_id IS NOT NULL{raw_where_clause}
   ),
   -- Each event with the fields that later steps read parsed out of its JSON
-  -- payload: its author, the tool name and args, the user text, the model
-  -- response before it is unwrapped, and the token and latency numbers.
+  -- payload: its author, the tool name and args, whether the tool is a
+  -- framework tool, the user text, the model response before it is unwrapped,
+  -- and the token and latency numbers.
   TypedEvents AS (
     SELECT
       *,
@@ -80,6 +117,16 @@ WITH
         agent, JSON_VALUE(attributes, '$.root_agent_name'), 'root_agent'
       ) AS author,
       JSON_VALUE(content, '$.tool') AS tool_name,
+      -- The framework tools are the transfer and the tools that pause the turn
+      -- for a credential, a confirmation or input from the user.  The trace
+      -- shows their AGENT_TRANSFER and HITL rows instead of their tool rows.
+      -- A row that names no tool is not a framework tool.
+      COALESCE(JSON_VALUE(content, '$.tool'), '') IN (
+        'transfer_to_agent',
+        'adk_request_credential',
+        'adk_request_confirmation',
+        'adk_request_input'
+      ) AS is_framework_tool,
       TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json,
       CASE
         WHEN event_type != 'USER_MESSAGE_RECEIVED' THEN NULL
@@ -167,15 +214,34 @@ WITH
     FROM
       RawEvents
   ),
-  -- Marks the real tool calls and unwraps the text of each model response.
-  -- A transfer is not a tool call.
+  -- Marks the real tool calls, the calls of tools other than the framework
+  -- tools, and unwraps the text of each model response.  It also counts the
+  -- HITL requests so far in each turn.
   ResponseEvents AS (
     SELECT
       *,
+      -- A TOOL_STARTING row that names no tool, as when a custom
+      -- content_formatter fails, is not a tool call, since the trace could not
+      -- pair it with its response.
       (
         event_type = 'TOOL_STARTING'
-        AND COALESCE(tool_name, '') != 'transfer_to_agent'
+        AND NULLIF(tool_name, '') IS NOT NULL
+        AND NOT is_framework_tool
       ) AS is_tool_call,
+      -- The number of HITL requests so far in the turn.  A turn that resumes
+      -- after one keeps its invocation_id, so the count tells the calls before
+      -- a pause from the calls after it.
+      COUNTIF(
+        event_type IN (
+          'HITL_CREDENTIAL_REQUEST',
+          'HITL_CONFIRMATION_REQUEST',
+          'HITL_INPUT_REQUEST'
+        )
+      ) OVER (
+        PARTITION BY session_id, invocation_id
+        ORDER BY timestamp, event_id
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS hitl_request_count,
       -- The text parts that _format_content renders become plain text, and a
       -- response with any other part has no text.
       CASE
@@ -210,7 +276,9 @@ WITH
   ),
   -- Adds two marks to each event: whether its turn has a final model
   -- response, which picks the rows that count tokens, and the island number
-  -- that a run of consecutive identical tool calls shares.
+  -- that a run of consecutive identical tool calls shares.  The second
+  -- ROW_NUMBER restarts after each HITL request, so the request ends a run,
+  -- as a different call does.
   AnnotatedEvents AS (
     SELECT
       *,
@@ -222,7 +290,12 @@ WITH
         ORDER BY timestamp, event_id
       ) - ROW_NUMBER() OVER (
         PARTITION BY
-          session_id, invocation_id, is_tool_call, tool_name, tool_args_json
+          session_id,
+          invocation_id,
+          is_tool_call,
+          tool_name,
+          tool_args_json,
+          hitl_request_count
         ORDER BY timestamp, event_id
       ) AS tool_call_island
     FROM
@@ -248,7 +321,8 @@ WITH
       response_text,
       is_function_response,
       is_tool_call,
-      IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name,
+      is_framework_tool,
+      IF(is_tool_call, tool_name, NULL) AS invoked_tool_name,
       IF(
         is_tool_call,
         COUNT(*) OVER (
@@ -286,6 +360,7 @@ WITH
         WHEN
           event_type IN (
             'TOOL_COMPLETED',
+            'TOOL_ERROR',
             'HITL_CREDENTIAL_REQUEST_COMPLETED',
             'HITL_CONFIRMATION_REQUEST_COMPLETED',
             'HITL_INPUT_REQUEST_COMPLETED'
@@ -306,14 +381,7 @@ WITH
             'parts', JSON_ARRAY(JSON_OBJECT('text', message_text))
           )
         WHEN
-          (
-            is_tool_call
-            AND COALESCE(tool_name, '') NOT IN (
-              'adk_request_credential',
-              'adk_request_confirmation',
-              'adk_request_input'
-            )
-          )
+          is_tool_call
           OR event_type IN (
             'HITL_CREDENTIAL_REQUEST',
             'HITL_CONFIRMATION_REQUEST',
@@ -352,12 +420,8 @@ WITH
         WHEN
           (
             event_type = 'TOOL_COMPLETED'
-            AND COALESCE(tool_name, '') NOT IN (
-              'transfer_to_agent',
-              'adk_request_credential',
-              'adk_request_confirmation',
-              'adk_request_input'
-            )
+            AND NULLIF(tool_name, '') IS NOT NULL
+            AND NOT is_framework_tool
           )
           OR event_type IN (
             'HITL_CREDENTIAL_REQUEST_COMPLETED',
@@ -374,6 +438,24 @@ WITH
                     JSON_TYPE(JSON_QUERY(content, '$.result')) = 'object',
                     JSON_QUERY(content, '$.result'),
                     JSON_OBJECT('result', JSON_QUERY(content, '$.result'))
+                  )
+                )
+              )
+            )
+          )
+        WHEN
+          event_type = 'TOOL_ERROR'
+          AND NULLIF(tool_name, '') IS NOT NULL
+          AND NOT is_framework_tool
+          THEN JSON_OBJECT(
+            'role', 'user',
+            'parts', JSON_ARRAY(
+              JSON_OBJECT(
+                'function_response', JSON_OBJECT(
+                  'name', tool_name,
+                  'response', JSON_OBJECT(
+                    'error',
+                    COALESCE(NULLIF(error_message, ''), 'Tool execution failed')
                   )
                 )
               )
@@ -408,7 +490,8 @@ WITH
       MIN(timestamp) AS turn_start_timestamp,
       MAX(timestamp) AS turn_end_timestamp,
       COUNTIF(is_tool_call) AS tool_call_count,
-      COUNTIF(event_type = 'TOOL_ERROR') AS tool_error_count,
+      COUNTIF(event_type = 'TOOL_ERROR' AND NOT is_framework_tool)
+        AS tool_error_count,
       COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count,
       COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count,
       COALESCE(
@@ -419,7 +502,13 @@ WITH
         ),
         FALSE
       ) AS has_error,
-      LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content,
+      -- Whether any row that puts an event in the trace, one with an
+      -- event_content, has is_truncated set.  No other row counts: an
+      -- LLM_REQUEST row repeats the conversation so far, so one oversized
+      -- message would flag it in every later turn, though the events that
+      -- the trace takes from that turn are whole.
+      LOGICAL_OR(event_content IS NOT NULL AND COALESCE(is_truncated, FALSE))
+        AS has_truncated_content,
       COALESCE(MAX(tool_call_run_length), 0) >= 3 AS has_tool_loop,
       COALESCE(MAX(tool_call_run_length), 0)
         AS max_consecutive_identical_tool_calls,
@@ -511,6 +600,7 @@ WITH
       (
         has_user_message
         AND is_complete
+        AND NOT has_truncated_content
         AND COALESCE(ARRAY_LENGTH(events), 0) > 0
       ) AS eval_ready,
       -- In a session, a paused turn and the function response turn that
@@ -542,6 +632,7 @@ WITH
             )
           )
         )
+        AND NOT has_truncated_content
         AND COALESCE(ARRAY_LENGTH(events), 0) > 0
       ) AS session_turn_eval_ready
     FROM

@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import tempfile
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -172,11 +171,11 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
   def __init__(
       self,
-      rag_corpus: Optional[str] = None,
-      similarity_top_k: Optional[int] = None,
+      rag_corpus: str | None = None,
+      similarity_top_k: int | None = None,
       vector_distance_threshold: float = 10,
-      project: Optional[str] = None,
-      location: Optional[str] = None,
+      project: str | None = None,
+      location: str | None = None,
   ):
     """Initializes a VertexAiRagMemoryService.
 

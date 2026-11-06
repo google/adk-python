@@ -1478,6 +1478,7 @@ def cli_eval(
     import importlib  # noqa: F401
 
     from ..evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
+    from ..evaluation._eval_case_result_multi_run_aggregator import check_pass_k_criteria_against_num_runs
     from ..evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
     from ..evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
     from ..evaluation.base_eval_service import InferenceConfig
@@ -1535,6 +1536,14 @@ def cli_eval(
     num_runs = eval_config.multi_run_config.num_runs
   if num_runs is None:
     num_runs = 1
+  # A pass@k criterion's k is checked against the number of runs only now,
+  # once `--num_runs` has overridden the config, and before any inference.
+  try:
+    check_pass_k_criteria_against_num_runs(
+        eval_config.multi_run_config, num_runs
+    )
+  except ValueError as e:
+    raise click.UsageError(str(e)) from e
 
   # The `--parallelism` flag overrides the eval config. If neither sets
   # parallelism, the eval service uses its own default.

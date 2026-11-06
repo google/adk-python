@@ -13,8 +13,6 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Dict
-from typing import Optional
 
 from adk_answering_agent.settings import OWNER
 from adk_answering_agent.settings import REPO
@@ -215,7 +213,7 @@ def add_label_to_discussion(
     return error_response(str(e))
 
 
-def convert_gcs_links_to_https(gcs_uris: list[str]) -> Dict[str, Optional[str]]:
+def convert_gcs_links_to_https(gcs_uris: list[str]) -> dict[str, str | None]:
   """Converts GCS files link into publicly accessible HTTPS links.
 
   Args:

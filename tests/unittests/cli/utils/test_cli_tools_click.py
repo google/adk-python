@@ -3092,6 +3092,93 @@ def test_cli_eval_rejects_parallelism_below_one(
   assert "Invalid value for '--parallelism'" in result.output
 
 
+def test_cli_eval_fails_before_inference_when_k_exceeds_the_num_runs_flag(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """A pass@k criterion's k is checked against the runs that --num_runs sets.
+
+  Setup: the eval config sets no num_runs and asks for pass^4, and
+    `--num_runs 2` runs each case twice.
+  Assert: the command fails with a usage error naming the criterion, and no
+    inference was requested.
+  """
+  eval_set_id = "test_eval_set_k_above_flag"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_k_above_flag", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "cross_run_criteria": [{"method": "pass_hat_k", "k": 4}]
+          },
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(monkeypatch, [])
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "2",
+      ],
+  )
+
+  assert result.exit_code != 0
+  assert "cross_run_criteria[0]: k=4 is more than the 2 run" in result.output
+  assert not inference_configs
+
+
+def test_cli_eval_accepts_k_within_a_num_runs_flag_above_the_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """--num_runs can raise the runs above the config's, which k then fits."""
+  eval_set_id = "test_eval_set_k_within_flag"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_k_within_flag", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "num_runs": 2,
+              "cross_run_criteria": [{"method": "pass_hat_k", "k": 4}],
+          },
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "5",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [5]
+
+
 def test_cli_create_eval_set(tmp_path: Path):
   app_name = "test_app"
   eval_set_id = "test_eval_set"

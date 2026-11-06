@@ -274,14 +274,13 @@ class AgentTool(BaseTool):
       except ValidationError as e:
         return _arg_validation_error(self.name, e)
       # The text must stay a bare JSON document: the node runtime re-validates
-      # it against this same schema, so any prose here fails that parse.
+      # it against this same schema, so any prose here fails that parse. It
+      # validates by field name, so by_alias=False overrides a schema's
+      # serialize_by_alias.
+      text = input_value.model_dump_json(exclude_none=True, by_alias=False)
       content = types.Content(
           role='user',
-          parts=[
-              types.Part.from_text(
-                  text=input_value.model_dump_json(exclude_none=True)
-              )
-          ],
+          parts=[types.Part.from_text(text=text)],
       )
     else:
       if 'request' in args:
@@ -458,34 +457,35 @@ class AgentTool(BaseTool):
     # input_required pauses do not, so only a call id that is *never* answered
     # by a function response before the run ends is actually still pending.
     pending_tool_ids: set[str] = set()
-    async with Aclosing(
-        runner.run_async(
-            user_id=session.user_id,
-            session_id=session.id,
-            new_message=content,
-            state_delta=temp_state or None,
-            run_config=nested_run_config,
-            abort_signal=abort_signal,
-        )
-    ) as agen:
-      async for event in agen:
-        # Forward state delta to parent session.
-        if event.actions.state_delta:
-          tool_context.state.update(event.actions.state_delta)
-        if event.error_message:
-          last_error_message = event.error_message
-        if event.long_running_tool_ids:
-          pending_tool_ids |= event.long_running_tool_ids
-        if event.content:
-          last_content = event.content
-          last_grounding_metadata = event.grounding_metadata
-          pending_tool_ids -= {
-              fr.id for fr in event.get_function_responses() if fr.id
-          }
-
-    # Clean up runner resources (especially MCP sessions)
-    # to avoid "Attempted to exit cancel scope in a different task" errors
-    await runner.close()
+    try:
+      async with Aclosing(
+          runner.run_async(
+              user_id=session.user_id,
+              session_id=session.id,
+              new_message=content,
+              state_delta=temp_state or None,
+              run_config=nested_run_config,
+              abort_signal=abort_signal,
+          )
+      ) as agen:
+        async for event in agen:
+          # Forward state delta to parent session.
+          if event.actions.state_delta:
+            tool_context.state.update(event.actions.state_delta)
+          if event.error_message:
+            last_error_message = event.error_message
+          if event.long_running_tool_ids:
+            pending_tool_ids |= event.long_running_tool_ids
+          if event.content:
+            last_content = event.content
+            last_grounding_metadata = event.grounding_metadata
+            pending_tool_ids -= {
+                fr.id for fr in event.get_function_responses() if fr.id
+            }
+    finally:
+      # Clean up runner resources (especially MCP sessions)
+      # to avoid "Attempted to exit cancel scope in a different task" errors
+      await runner.close()
 
     if pending_tool_ids:
       tool_context.actions.skip_summarization = False

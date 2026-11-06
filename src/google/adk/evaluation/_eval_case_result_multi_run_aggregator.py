@@ -34,6 +34,7 @@ from ._multi_run_aggregation_methods import min_over_runs
 from ._multi_run_aggregation_methods import RunResult
 from .eval_config import MultiRunConfig
 from .eval_config import MultiRunCriterion
+from .eval_config import PassKMultiRunCriterion
 from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import EvalMetricResultDetails
@@ -62,7 +63,8 @@ class MethodResult:
 
   The value passes at or above the threshold, or at or below it for a metric
   whose evaluator treats lower scores as better. NOT_EVALUATED when there is
-  no value, and INFORMATIONAL for a metric that never passes or fails.
+  no value, and INFORMATIONAL for a metric that never passes or fails, or for
+  a cross-run criterion without a threshold, which only reports its value.
   """
 
   note: str | None = None
@@ -172,7 +174,8 @@ def has_pass_count_rules(multi_run_config: MultiRunConfig | None) -> bool:
 
   Such a rule is given as an object: as a metric's rule, or in
   `cross_run_criteria`. It judges a case run once as well, so that run is
-  judged by the config rather than reported as it is.
+  judged by the config rather than reported as it is. A cross-run criterion
+  without a threshold only reports a value, so it does not count.
 
   Args:
     multi_run_config: The multi-run config, or None if there is none.
@@ -183,9 +186,38 @@ def has_pass_count_rules(multi_run_config: MultiRunConfig | None) -> bool:
       multi_run_config.cross_run_scoring,
       *(multi_run_config.cross_run_scoring_by_metric or {}).values(),
   ]
-  return bool(multi_run_config.cross_run_criteria) or any(
-      isinstance(rule, MultiRunCriterion) for rule in metric_rules
-  )
+  return any(
+      criterion.threshold is not None
+      for criterion in multi_run_config.cross_run_criteria or []
+  ) or any(isinstance(rule, MultiRunCriterion) for rule in metric_rules)
+
+
+def check_pass_k_criteria_against_num_runs(
+    multi_run_config: MultiRunConfig | None, num_runs: int
+) -> None:
+  """Raises if a pass@k or pass^k criterion looks at more runs than there are.
+
+  `num_runs` is the number of runs each eval case actually gets, after
+  `adk eval --num_runs` overrides `multi_run_config.num_runs`. That is only
+  known once the eval starts, so this is checked then, before any inference,
+  rather than when the config is read.
+
+  Args:
+    multi_run_config: The multi-run config, or None if there is none.
+    num_runs: How many times each eval case will be run.
+
+  Raises:
+    ValueError: If a criterion's `k` is more than `num_runs`.
+  """
+  if multi_run_config is None:
+    return
+  for index, criterion in enumerate(multi_run_config.cross_run_criteria or []):
+    if isinstance(criterion, PassKMultiRunCriterion) and criterion.k > num_runs:
+      raise ValueError(
+          f"multi_run_config.cross_run_criteria[{index}]: k={criterion.k} is"
+          f" more than the {num_runs} run(s) of each eval case. Lower k, or"
+          " raise num_runs in the eval config or with --num_runs."
+      )
 
 
 def load_aggregation_methods(
@@ -571,8 +603,9 @@ def _judge_cross_run_criteria(
   """Returns how each cross-run criterion judged the runs, each as a whole.
 
   Each run's status is `get_run_status`, so a run that crashed is undecided; a
-  whole run has no score. `methods` holds every method a criterion can name,
-  keyed by name.
+  whole run has no score. A criterion without a threshold only reports its
+  value, so its status is INFORMATIONAL. `methods` holds every method a
+  criterion can name, keyed by name.
   """
   statuses = [get_run_status(run) for run in runs]
   crashed = count_runs_failed_without_metric_results(runs)
@@ -580,13 +613,19 @@ def _judge_cross_run_criteria(
   method_results = []
   for criterion in cross_run_criteria:
     method = methods[criterion.method]
+    if isinstance(criterion, PassKMultiRunCriterion):
+      method = method.with_k(criterion.k)
     value = method.compute(run_results)
     method_results.append(
         MethodResult(
             name=method.name,
             value=value,
             threshold=criterion.threshold,
-            status=_compare(value, criterion.threshold),
+            status=(
+                EvalStatus.INFORMATIONAL
+                if criterion.threshold is None
+                else _compare(value, criterion.threshold)
+            ),
             note=_pass_count_note(statuses, value, crashed=crashed),
         )
     )

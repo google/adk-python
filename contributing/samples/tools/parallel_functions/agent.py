@@ -16,7 +16,6 @@
 
 import asyncio
 import time
-from typing import List
 
 from google.adk import Agent
 from google.adk.tools.tool_context import ToolContext
@@ -171,7 +170,7 @@ async def calculate_distance(
   }
 
 
-async def get_population(cities: List[str], tool_context: ToolContext) -> dict:
+async def get_population(cities: list[str], tool_context: ToolContext) -> dict:
   """Get population information for multiple cities.
 
   Args:

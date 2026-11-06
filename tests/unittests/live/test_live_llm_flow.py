@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from typing import AsyncGenerator
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -33,12 +35,15 @@ from google.adk.live._visual_frames import unpack_visual_frames
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from google.genai import errors
 from google.genai import types
 from pydantic import BaseModel
 import pytest
+from websockets.exceptions import ConnectionClosed
 
 from .. import testing_utils
 
@@ -183,11 +188,21 @@ async def test_postprocess_live_flow_skips_empty_response():
   assert events == []
 
 
-@pytest.mark.parametrize('control', ['turn_complete', 'interrupted'])
-async def test_postprocess_live_flow_yields_control_event_after_flushed_audio(
-    control,
+@pytest.mark.parametrize(
+    'control, expected_ids',
+    [
+        pytest.param(
+            'turn_complete', ['flushed-event', 'ev-1'], id='turn_complete'
+        ),
+        pytest.param(
+            'interrupted', ['ev-1', 'flushed-event'], id='interrupted'
+        ),
+    ],
+)
+async def test_postprocess_live_flow_orders_control_event_with_flushed_audio(
+    control, expected_ids
 ):
-  """Flushing saved audio still yields the control event that triggered it."""
+  """turn_complete is yielded after the flushed audio, interrupted before it."""
   flow = _TestBaseLlmFlow()
   context = _create_test_context(
       live_request_queue=LiveRequestQueue(),
@@ -212,9 +227,172 @@ async def test_postprocess_live_flow_yields_control_event_after_flushed_audio(
         )
     ]
 
-  assert len(events) == 2
-  assert events[0] is flushed
-  assert getattr(events[1], control) is True
+  assert [e.id for e in events] == expected_ids
+  assert getattr(events[expected_ids.index('ev-1')], control) is True
+
+
+def _save_live_blob_context() -> InvocationContext:
+  """Returns a save_live_blob context with an in-memory artifact service."""
+  context = _create_test_context(
+      live_request_queue=LiveRequestQueue(),
+      run_config=RunConfig(save_live_blob=True),
+  )
+  context.artifact_service = InMemoryArtifactService()
+  return context
+
+
+def _cache_turn_audio(flow: BaseLlmFlow, context: InvocationContext) -> None:
+  """Caches a chunk of user audio and a chunk of model audio."""
+  manager = flow._realtime_cache_manager
+  manager.cache_blob(
+      context, types.Blob(mime_type='audio/pcm', data=b'user_audio'), 'input'
+  )
+  manager.cache_blob(
+      context, types.Blob(mime_type='audio/pcm', data=b'model_audio'), 'output'
+  )
+
+
+def _postprocess_stream(
+    flow: BaseLlmFlow, context: InvocationContext, response: LlmResponse
+) -> AsyncGenerator[Event, None]:
+  """Returns `postprocess_live_flow`'s event stream for one response."""
+  event = Event(
+      id='ev-1', invocation_id=context.invocation_id, author='test_agent'
+  )
+  return _live_llm_flow.postprocess_live_flow(
+      flow, context, LlmRequest(), response, event
+  )
+
+
+def _kind(event: Event) -> str:
+  """Names an event by what it carries, to check the order of events."""
+  part = (
+      event.content.parts[0] if event.content and event.content.parts else None
+  )
+  if part and part.file_data:
+    return f'saved:{event.author}'
+  if event.turn_complete:
+    return 'turn_complete'
+  if event.interrupted:
+    return 'interrupted'
+  if part and part.inline_data:
+    return 'audio'
+  return 'other'
+
+
+async def test_postprocess_live_flow_yields_interrupted_before_save_finishes():
+  """interrupted reaches the caller while the model's audio is still saving."""
+  save_can_finish = asyncio.Event()
+
+  class _SlowArtifactService(InMemoryArtifactService):
+
+    async def save_artifact(self, **kwargs):
+      await save_can_finish.wait()
+      return await super().save_artifact(**kwargs)
+
+  flow = _TestBaseLlmFlow()
+  context = _save_live_blob_context()
+  context.artifact_service = _SlowArtifactService()
+  _cache_turn_audio(flow, context)
+  events = _postprocess_stream(flow, context, LlmResponse(interrupted=True))
+
+  first = await asyncio.wait_for(anext(events), timeout=1)
+  save_can_finish.set()
+  rest = [e async for e in events]
+
+  assert first.interrupted is True
+  assert [_kind(e) for e in rest] == ['saved:test_agent']
+
+
+async def test_postprocess_live_flow_skips_save_when_closed_at_interrupted():
+  """A caller that stops at interrupted leaves the model's audio unsaved."""
+  flow = _TestBaseLlmFlow()
+  context = _save_live_blob_context()
+  _cache_turn_audio(flow, context)
+  events = _postprocess_stream(flow, context, LlmResponse(interrupted=True))
+
+  first = await anext(events)
+  await events.aclose()
+
+  assert first.interrupted is True
+  assert [e.data.data for e in context.output_realtime_cache] == [
+      b'model_audio'
+  ]
+  assert not await context.artifact_service.list_artifact_keys(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+  )
+
+
+async def test_postprocess_live_flow_saves_before_interrupted_turn_complete():
+  """A turn_complete that is also interrupted saves first, like a turn end."""
+  flow = _TestBaseLlmFlow()
+  context = _save_live_blob_context()
+  _cache_turn_audio(flow, context)
+  response = LlmResponse(turn_complete=True, interrupted=True)
+
+  events = [e async for e in _postprocess_stream(flow, context, response)]
+
+  assert [_kind(e) for e in events] == ['saved:test_agent', 'turn_complete']
+  assert events[-1].interrupted is True
+
+
+async def test_receive_from_model_saves_audio_with_interrupted_in_one_clip():
+  """Audio that arrives with interrupted is saved with the audio before it."""
+  flow = _TestBaseLlmFlow()
+  context = _save_live_blob_context()
+  calls = 0
+
+  def _audio(data: bytes, **kwargs) -> LlmResponse:
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(mime_type='audio/pcm', data=data)
+                )
+            ],
+        ),
+        **kwargs,
+    )
+
+  async def _receive():
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      # GeminiLlmConnection turns a message with audio and `interrupted` into
+      # the audio with `interrupted`, then a standalone `interrupted`.
+      yield _audio(b'A')
+      yield _audio(b'B', interrupted=True)
+      yield LlmResponse(interrupted=True)
+
+  connection = mock.MagicMock(receive=_receive)
+  events = [
+      event
+      async for event in _live_llm_flow.receive_from_model(
+          flow, connection, context, LlmRequest()
+      )
+  ]
+
+  assert [_kind(e) for e in events] == [
+      'audio',
+      'interrupted',
+      'saved:test_agent',
+      'interrupted',
+  ]
+  (filename,) = await context.artifact_service.list_artifact_keys(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+  )
+  clip = await context.artifact_service.load_artifact(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+      filename=filename,
+  )
+  assert clip.inline_data.data == b'AB'
 
 
 async def test_handle_control_event_flush_on_interrupted():
@@ -545,6 +723,177 @@ async def test_receive_from_model_keeps_non_audio_blobs_out_of_audio_cache():
   assert [entry.data.data for entry in context.output_realtime_cache] == [
       b'model_audio'
   ]
+
+
+@pytest.mark.parametrize(
+    'update_without_handle',
+    [
+        types.LiveServerSessionResumptionUpdate(resumable=False),
+        types.LiveServerSessionResumptionUpdate(
+            last_consumed_client_message_index=7
+        ),
+    ],
+    ids=['not_resumable', 'consumed_index_only'],
+)
+async def test_receive_from_model_keeps_the_last_handle_the_server_offered(
+    update_without_handle: types.LiveServerSessionResumptionUpdate,
+) -> None:
+  """An update that carries no handle does not erase the one held.
+
+  While the model is generating or a tool call is in flight, the server reports
+  the session as not resumable with an update that has no handle. The handle a
+  reconnect resumes with must stay the latest one the server actually offered.
+  """
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context()
+  calls = 0
+
+  async def _receive() -> AsyncGenerator[LlmResponse, None]:
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      for update in (
+          types.LiveServerSessionResumptionUpdate(
+              new_handle='handle-1', resumable=True
+          ),
+          update_without_handle,
+          types.LiveServerSessionResumptionUpdate(
+              new_handle='handle-2', resumable=True
+          ),
+          update_without_handle,
+      ):
+        yield LlmResponse(live_session_resumption_update=update)
+
+  connection = mock.MagicMock(receive=_receive)
+
+  async for _ in _live_llm_flow.receive_from_model(
+      flow, connection, context, LlmRequest()
+  ):
+    pass
+
+  assert context.live_session_resumption_handle == 'handle-2'
+
+
+@pytest.mark.parametrize(
+    'interruption',
+    [
+        LlmResponse(go_away=types.LiveServerGoAway(time_left='10s')),
+        errors.APIError(1006, {}),
+        errors.APIError(1011, {}),
+        ConnectionClosed(None, None),
+    ],
+    ids=['go_away', 'abnormal_closure', 'internal_error', 'connection_closed'],
+)
+async def test_run_live_resumes_a_connection_lost_while_not_resumable(
+    interruption: LlmResponse | Exception,
+) -> None:
+  """A connection lost while the model is answering still resumes the session.
+
+  Setup: the server offers a handle, then reports the session as not resumable
+    because the model has started answering, and then the connection goes: a
+    GoAway, or a connection that drops.
+  Act: run the live session through `Runner.run_live`.
+  Assert: the run reconnects with the handle the server offered, and does not
+    replay the conversation history that the resumed session already holds.
+  """
+
+  class _ScriptedConnection(testing_utils.MockLlmConnection):
+    """Plays one connection's script once, raising the exceptions in it."""
+
+    def __init__(self, script: list[LlmResponse | Exception]):
+      super().__init__(llm_responses=[])
+      self.script = script
+      self.history: list[types.Content] | None = None
+
+    async def send_history(self, history: list[types.Content]) -> None:
+      self.history = history
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      while self.script:
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+          raise item
+        yield item
+
+  class _ScriptedModel(testing_utils.MockModel):
+    """Opens the next scripted connection on each connect."""
+
+    scripts: list[list[LlmResponse | Exception]]
+    connections: list[_ScriptedConnection] = []
+    handles: list[str | None] = []
+
+    # MockModel.connect is annotated as returning the connection itself, so
+    # mypy reads its yield type as Never and rejects any typed override.
+    @contextlib.asynccontextmanager
+    async def connect(  # type: ignore[override]
+        self, llm_request: LlmRequest
+    ) -> AsyncGenerator[_ScriptedConnection, None]:
+      resumption = llm_request.live_connect_config.session_resumption
+      self.handles.append(resumption.handle if resumption else None)
+      connection = _ScriptedConnection(self.scripts[len(self.connections)])
+      self.connections.append(connection)
+      yield connection
+
+  def _resumption_update(
+      *, new_handle: str | None = None, resumable: bool
+  ) -> LlmResponse:
+    return LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle=new_handle, resumable=resumable
+        )
+    )
+
+  model = _ScriptedModel(
+      responses=[],
+      scripts=[
+          [
+              _resumption_update(new_handle='handle-1', resumable=True),
+              _resumption_update(resumable=False),
+              interruption,
+          ],
+          # The resumed connection has nothing more to send, which ends the
+          # run.
+          [],
+      ],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  # An earlier turn, which a session started from scratch replays.
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id='earlier',
+          author='user',
+          content=types.UserContent('Book a table for two.'),
+      ),
+  )
+  runner = Runner(
+      app_name='app',
+      agent=LlmAgent(name='root_agent', model=model),
+      session_service=session_service,
+  )
+
+  async def _run_to_end() -> None:
+    async with contextlib.aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=LiveRequestQueue(),
+            run_config=RunConfig(
+                session_resumption=types.SessionResumptionConfig()
+            ),
+        )
+    ) as events:
+      async for _ in events:
+        pass
+
+  await asyncio.wait_for(_run_to_end(), timeout=5)
+
+  assert model.handles == [None, 'handle-1']
+  # The first connection started the session and replayed the earlier turn;
+  # the resumed one must not replay it into the session that already has it.
+  assert model.connections[0].history
+  assert model.connections[1].history is None
 
 
 async def test_turn_complete_saves_image_frames_sent_to_the_model():
