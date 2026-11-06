@@ -52,7 +52,7 @@ from google.adk.models import google_llm
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
 from google.adk.platform import thread as platform_thread
-from google.adk.plugins import _bigquery_agent_analytics_sql_utils
+from google.adk.plugins import _bigquery_agent_analytics_eval_sql
 from google.adk.plugins import _callback_helpers
 from google.adk.plugins import bigquery_agent_analytics_plugin
 from google.adk.plugins import plugin_manager as plugin_manager_lib
@@ -16407,7 +16407,7 @@ class TestEvalViews:
 
     # The builders look _build_eval_view_ctes up in the module they live in.
     with mock.patch.object(
-        _bigquery_agent_analytics_sql_utils,
+        _bigquery_agent_analytics_eval_sql,
         "_build_eval_view_ctes",
         return_value=ctes,
     ):
@@ -17223,9 +17223,9 @@ class TestEvalViews:
     sql_dir = tmp_path / "plugins" / "bigquery_agent_analytics_sql"
     sql_dir.mkdir(parents=True)
     monkeypatch.setattr(
-        _bigquery_agent_analytics_sql_utils,
+        _bigquery_agent_analytics_eval_sql,
         "__file__",
-        str(sql_dir.parent / "_bigquery_agent_analytics_sql_utils.py"),
+        str(sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py"),
     )
     bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
     yield sql_dir
@@ -17331,7 +17331,7 @@ class TestEvalViews:
     target_sql_dir.mkdir(parents=True)
     target = target_sql_dir.parent / "0123abcd"
     target.write_text("# The SQL module.\n", encoding="utf-8")
-    (eval_sql_dir.parent / "_bigquery_agent_analytics_sql_utils.py").symlink_to(
+    (eval_sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py").symlink_to(
         target
     )
     for sql_dir, place in [(eval_sql_dir, "link"), (target_sql_dir, "target")]:
@@ -17352,13 +17352,13 @@ class TestEvalViews:
       monkeypatch: pytest.MonkeyPatch,
   ) -> None:
     """A link to the module, alone in its directory, finds its target's SQL."""
-    module = eval_sql_dir.parent / "_bigquery_agent_analytics_sql_utils.py"
+    module = eval_sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py"
     module.write_text("# The SQL module.\n", encoding="utf-8")
-    link = tmp_path / "checkout" / "_bigquery_agent_analytics_sql_utils.py"
+    link = tmp_path / "checkout" / "_bigquery_agent_analytics_eval_sql.py"
     link.parent.mkdir()
     link.symlink_to(module)
     monkeypatch.setattr(
-        _bigquery_agent_analytics_sql_utils, "__file__", str(link)
+        _bigquery_agent_analytics_eval_sql, "__file__", str(link)
     )
     (eval_sql_dir / "test_target.sql").write_text(
         "-- License.\n\nSELECT 'beside the target'\n", encoding="utf-8"

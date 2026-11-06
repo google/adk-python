@@ -110,10 +110,10 @@ from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
-from ._bigquery_agent_analytics_sql_utils import _build_eval_session_view_sql
-from ._bigquery_agent_analytics_sql_utils import _build_eval_turn_view_sql
-from ._bigquery_agent_analytics_sql_utils import _EVAL_TABLE_ID_UNQUOTABLE_RE
-from ._bigquery_agent_analytics_sql_utils import _validate_payload_column_denylist
+from ._bigquery_agent_analytics_eval_sql import _build_eval_session_view_sql
+from ._bigquery_agent_analytics_eval_sql import _build_eval_turn_view_sql
+from ._bigquery_agent_analytics_eval_sql import _EVAL_TABLE_ID_UNQUOTABLE_RE
+from ._bigquery_agent_analytics_eval_sql import _validate_payload_column_denylist
 from ._callback_helpers import _classify_tool_result_error
 from ._callback_helpers import _imported_types
 from ._callback_helpers import _is_durable_node_error
@@ -129,27 +129,27 @@ if TYPE_CHECKING:
   from ..events.event import Event
 
 # Defined elsewhere and still importable from this module.  The names of
-# _bigquery_agent_analytics_sql_utils were defined here: that module builds the
+# _bigquery_agent_analytics_eval_sql were defined here: that module builds the
 # eval SQL with the standard library alone, so a caller can build the eval
 # queries without this module's pyarrow and BigQuery Storage imports.
 # _callback_helpers is shared with the observability plugins:
 # _LLM_RESPONSE_ERROR_CODES was defined here, and ToolResultClassification is
 # what a tool_result_classifier returns.
 # pylint: disable=unused-import
-from ._bigquery_agent_analytics_sql_utils import _blank_eval_sql_comments  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _build_eval_view_ctes  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _EVAL_SQL_DIRNAME  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _EVAL_SQL_LEADING_WHERE_RE  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _EVAL_SQL_OPENING_QUOTE_RE  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _eval_view_dataset_ref  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _format_eval_outer_where_clause  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _format_eval_raw_where_clause  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _load_eval_sql_template  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _normalize_eval_where_condition  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _PROJECTABLE_PAYLOAD_COLUMNS  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import _read_eval_sql_file  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import build_eval_session_query_sql  # noqa: F401
-from ._bigquery_agent_analytics_sql_utils import build_eval_turn_query_sql  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _blank_eval_sql_comments  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _build_eval_view_ctes  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_DIRNAME  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_LEADING_WHERE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_OPENING_QUOTE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _eval_view_dataset_ref  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_outer_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_raw_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _load_eval_sql_template  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _normalize_eval_where_condition  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _PROJECTABLE_PAYLOAD_COLUMNS  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _read_eval_sql_file  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql  # noqa: F401
 from ._callback_helpers import _LLM_RESPONSE_ERROR_CODES  # noqa: F401
 from ._callback_helpers import ToolResultClassification  # noqa: F401
 

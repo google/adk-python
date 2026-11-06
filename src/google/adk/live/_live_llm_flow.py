@@ -439,8 +439,15 @@ async def postprocess_live_flow(
     yield model_response_event
     return
 
-  # Flush audio caches based on control events using configurable settings
-  if run_config.save_live_blob:
+  # With save_live_blob, a turn end or an interruption also saves the cached
+  # live blobs. On a barge-in, `interrupted` goes out before the model's output
+  # is saved, so the caller can drop queued playback right away. Otherwise the
+  # blobs are saved first, so a caller that stops reading at `turn_complete`
+  # still has the turn saved.
+  is_barge_in = bool(
+      llm_response.interrupted and not llm_response.turn_complete
+  )
+  if run_config.save_live_blob and not is_barge_in:
     flushed_events = await handle_control_event_flush(
         flow, invocation_context, llm_response
     )
@@ -452,6 +459,13 @@ async def postprocess_live_flow(
       llm_request, llm_response, model_response_event
   )
   yield model_response_event
+
+  if run_config.save_live_blob and is_barge_in:
+    flushed_events = await handle_control_event_flush(
+        flow, invocation_context, llm_response
+    )
+    for event in flushed_events:
+      yield event
 
   # Handles function calls.
   if model_response_event.get_function_calls():

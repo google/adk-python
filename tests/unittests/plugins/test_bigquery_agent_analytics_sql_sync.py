@@ -35,7 +35,7 @@ import string
 import pytest
 
 # The plugin's module that loads the templates, beside its SQL directory.
-_LOADER_FILE = "_bigquery_agent_analytics_sql_utils.py"
+_LOADER_FILE = "_bigquery_agent_analytics_eval_sql.py"
 _SQL_DIR = "bigquery_agent_analytics_sql"
 _CTE_FILE = "eval_view_ctes_v1.sql"
 

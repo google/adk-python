@@ -14,10 +14,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from collections.abc import Iterable
 import enum
 import statistics
 from typing import Any
 from typing import Optional
+from typing import TypeVar
 from typing import Union
 
 from google.genai import types as genai_types
@@ -31,6 +35,8 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import RubricScore
 from .evaluator import EvalStatus
+
+_T = TypeVar("_T")
 
 
 @enum.unique
@@ -256,3 +262,18 @@ def get_grounding_metadata_as_json_str(
       exclude_defaults=True,
       exclude_none=True,
   )
+
+
+async def gather_cancelling_on_error(
+    coros: Iterable[Coroutine[object, object, _T]],
+) -> list[_T]:
+  """Runs coroutines concurrently, cancelling and draining siblings on error."""
+  tasks = [asyncio.create_task(coro) for coro in coros]
+  try:
+    return list(await asyncio.gather(*tasks))
+  except BaseException:
+    for task in tasks:
+      if not task.done():
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise
