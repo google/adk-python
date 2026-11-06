@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from typing import cast
 import uuid
+import warnings
 
 import kubernetes as k8s
 from kubernetes.watch import Watch
@@ -64,13 +66,13 @@ class GkeCodeExecutor(BaseCodeExecutor):
   kernel.
 
   Sandbox Mode:
-  Executes code using the Agent Sandbox Client. The Pod is created from a
-  sandbox template already installed in the cluster, so its runtime class and
-  security context come from that template rather than from this executor.
-  This mode requires additional infrastructure to be deployed in the cluster,
-  specifically:
-  - Agent-sandbox controller
-  - Sandbox templates (e.g., python-sandbox-template)
+  Executes code using the Agent Sandbox Client. The Pod is claimed from a
+  sandbox warm pool already installed in the cluster, so its runtime class and
+  security context come from the pool's template rather than from this
+  executor. This mode requires additional infrastructure to be deployed in the
+  cluster, specifically:
+  - Agent-sandbox controller with the extensions enabled
+  - A sandbox template and a warm pool that uses it (e.g., python-sandbox-pool)
   - Sandbox router and gateway
 
   Key Features:
@@ -115,6 +117,9 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
   # Sandbox constants
   sandbox_gateway_name: str | None = None
+  sandbox_warmpool: str = "python-sandbox-pool"
+  # Deprecated and unused: k8s-agent-sandbox 0.5.0 replaced claiming from a
+  # template with claiming from a warm pool. Use `sandbox_warmpool` instead.
   sandbox_template: str | None = "python-sandbox-template"
 
   _batch_v1: k8s.client.BatchV1Api
@@ -134,6 +139,13 @@ class GkeCodeExecutor(BaseCodeExecutor):
     3. Automatically via the default local kubeconfig file (~/.kube/config).
     """
     super().__init__(**data)
+    if "sandbox_template" in self.model_fields_set:
+      warnings.warn(
+          "`sandbox_template` is ignored: k8s-agent-sandbox claims sandboxes"
+          " from a warm pool. Set `sandbox_warmpool` instead.",
+          DeprecationWarning,
+          stacklevel=2,
+      )
     self.kubeconfig_path = kubeconfig_path
     self.kubeconfig_context = kubeconfig_context
 
@@ -187,21 +199,32 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
   def _execute_in_sandbox(self, code: str) -> CodeExecutionResult:
     """Executes code using Agent Sandbox Client."""
-    try:
-      with SandboxClient(
-          template_name=self.sandbox_template,
-          gateway_name=self.sandbox_gateway_name,
-          namespace=self.namespace,
-      ) as sandbox:
-        # Execute the code as a python script
-        sandbox.write("script.py", code)
-        result = sandbox.run("python3 script.py")
+    connection_config = None
+    if self.sandbox_gateway_name:
+      from k8s_agent_sandbox.models import SandboxGatewayConnectionConfig
 
-        return CodeExecutionResult(
-            stdout=result.stdout,
-            stderr=result.stderr,
-            exit_code=result.exit_code,
-        )
+      connection_config = SandboxGatewayConnectionConfig(
+          gateway_name=self.sandbox_gateway_name
+      )
+    try:
+      sandbox_client: SandboxClient[Any] = SandboxClient(
+          connection_config=connection_config
+      )
+      sandbox = sandbox_client.create_sandbox(
+          warmpool=self.sandbox_warmpool, namespace=self.namespace
+      )
+      try:
+        # Execute the code as a python script
+        sandbox.files.write("script.py", code)
+        result = sandbox.commands.run("python3 script.py")
+      finally:
+        sandbox.terminate()
+
+      return CodeExecutionResult(
+          stdout=result.stdout,
+          stderr=result.stderr,
+          exit_code=result.exit_code,
+      )
     except RuntimeError as e:
       logger.error(
           "SandboxClient failed to initialize or find gateway", exc_info=True
