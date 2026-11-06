@@ -28,6 +28,7 @@ from google.adk.labs.classifiers import ChoiceAnswer
 from google.adk.labs.classifiers import RefusalAnswer
 from google.adk.labs.classifiers import Score
 from google.adk.labs.classifiers import ScoreAnswer
+from google.adk.utils._client_labels_utils import classifier_client_label
 from google.genai import types
 import httpx
 import openai
@@ -883,3 +884,13 @@ async def test_probabilities_must_match_the_options(question, raw):
 
   with pytest.raises(ValueError, match="probabilities for .* in 'q', expected"):
     await _classifier(server).classify(input='hi', questions={'q': question})
+
+
+async def test_user_agent_names_adk_and_the_classifier():
+  server = _Server(_ok(_predicate('urgent', 0.1)))
+
+  await _classifier(server).classify(input='hi', questions={'urgent': _URGENT})
+
+  user_agent = server.requests[0].headers['user-agent'].split(' ')
+  assert user_agent[0].startswith('google-adk/')
+  assert user_agent[-1] == classifier_client_label('openai')

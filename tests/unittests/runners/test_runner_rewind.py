@@ -16,8 +16,6 @@
 
 import logging
 from typing import Any
-from typing import Optional
-from typing import Union
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
@@ -42,9 +40,9 @@ class _NoFileDataArtifactService(InMemoryArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      artifact: types.Part | dict[str, Any],
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     artifact = ensure_part(artifact)
     if artifact.file_data:

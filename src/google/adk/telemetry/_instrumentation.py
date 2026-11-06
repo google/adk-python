@@ -580,12 +580,19 @@ class InferenceScope:
       self, invocation_context: InvocationContext, response: LlmResponse
   ) -> None:
     self._llm_responses.append(response)
-    # Anything after the span ended (a stream's aggregate, a second complete
-    # response) is neither traced nor timed, but still counts for the metrics.
+    # Anything after the span ended (a second complete response) is neither
+    # traced nor timed, but still counts for the metrics.
     if self._inference_span_ended:
       return
 
-    self._record_chunk_timing(response)
+    # A stream's aggregate (`partial=False`) is assembled by ADK rather than
+    # waited for, so only the chunks are timed.
+    if response.partial is not False:
+      self._record_chunk_timing(response)
+    # A `partial` chunk is not traced: its aggregator yields the whole answer
+    # after it, with `partial=False`.
+    if response.partial:
+      return
     tracing.trace_inference_result(invocation_context, self.span, response)
     # The inference ends at the response that says why generation stopped. End
     # the span there, before the response is handed back to the caller, so what

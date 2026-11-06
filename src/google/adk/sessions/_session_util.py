@@ -22,9 +22,11 @@ from typing import Iterable
 from typing import TypeVar
 
 from pydantic import BaseModel
+from pydantic_core import PydanticSerializationError
 from pydantic_core import to_jsonable_python
 
 from ..events.event import Event
+from ..events.event_actions import _coerce_non_utf8_bytes
 from ..events.event_actions import _make_json_serializable
 from .state import State
 
@@ -71,13 +73,21 @@ def extract_state_delta(
 def make_json_safe_state(state: dict[str, Any]) -> dict[str, Any]:
   """Coerces a state dictionary into a JSON-serializable form.
 
-  Rich types such as datetimes and Pydantic models are serialized faithfully.
-  Only when that fails is the dictionary re-serialized with the offending values
-  (e.g. callables) replaced by their string representation, and a warning
-  logged, so that a lossy write is diagnosable rather than silent.
+  Rich types such as datetimes, bytes, and Pydantic models are serialized
+  faithfully. Non-UTF-8 `bytes` values are encoded as base64 strings and are not
+  restored to `bytes` on read. Only when serialization fails is the dictionary
+  re-serialized with the offending values (e.g. callables) replaced by their
+  string representation, and a warning logged, so that a lossy write is
+  diagnosable rather than silent.
   """
   try:
-    return cast(dict[str, Any], to_jsonable_python(state))
+    try:
+      return cast(dict[str, Any], to_jsonable_python(state))
+    except (PydanticSerializationError, UnicodeDecodeError):
+      return cast(
+          dict[str, Any],
+          to_jsonable_python(_coerce_non_utf8_bytes(state)),
+      )
   except Exception:  # pylint: disable=broad-except
     logger.warning(
         "Failed to serialize session state; some values are not"

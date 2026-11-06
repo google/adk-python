@@ -261,6 +261,27 @@ async def test_partial_event_preserves_filtered_history(session_service):
 
 
 @pytest.mark.asyncio
+async def test_partial_event_writes_nothing(session_service, fake_redis):
+  """A partial event leaves session, app state and user state untouched."""
+  session = await session_service.create_session(app_name="app1", user_id="u1")
+  stored_before = dict(fake_redis._store)
+  last_update_time_before = session.last_update_time
+  partial = Event(
+      author="agent",
+      partial=True,
+      timestamp=last_update_time_before + 100,
+      actions=EventActions(
+          state_delta={"count": 1, "user:score": 100, "app:status": "active"}
+      ),
+  )
+
+  assert await session_service.append_event(session, partial) is partial
+
+  assert session.last_update_time == last_update_time_before
+  assert fake_redis._store == stored_before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["append", "delete", "expire"])
 async def test_append_event_retries_storage_changes(
     session_service, fake_redis, monkeypatch, change
@@ -808,6 +829,110 @@ async def test_cumulative_user_state_creation(session_service):
       user_id="u1",
   )
   assert user_state == {"theme": "dark", "lang": "en"}
+
+
+@pytest.mark.asyncio
+async def test_create_session_keeps_user_state_written_while_it_merges(
+    session_service, fake_redis, monkeypatch
+):
+  """Initial user state merges with a write landing between read and write.
+
+  Setup: another session of the user appends a user: key right after
+    create_session reads the user's state.
+  Act: create a session whose initial state carries a different user: key.
+  Assert: the user's state keeps both keys.
+  """
+  other = await session_service.create_session(
+      app_name="app1", user_id="u1", session_id="other"
+  )
+  user_key = session_service._user_state_key("app1", "u1")
+  original_get = fake_redis.get
+  wrote_concurrently = False
+
+  async def get_then_write_concurrently(read_key):
+    nonlocal wrote_concurrently
+    raw = await original_get(read_key)
+    if read_key == user_key and not wrote_concurrently:
+      wrote_concurrently = True
+      await session_service.append_event(
+          other,
+          Event(
+              author="user",
+              invocation_id="other",
+              actions=EventActions(state_delta={"user:theme": "dark"}),
+          ),
+      )
+    return raw
+
+  monkeypatch.setattr(fake_redis, "get", get_then_write_concurrently)
+  await session_service.create_session(
+      app_name="app1",
+      user_id="u1",
+      session_id="new",
+      state={"user:lang": "en"},
+  )
+
+  assert await session_service.get_user_state(
+      app_name="app1", user_id="u1"
+  ) == {"theme": "dark", "lang": "en"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["app:", "user:"])
+async def test_append_event_keeps_scoped_state_written_while_it_merges(
+    session_service, fake_redis, monkeypatch, prefix
+):
+  """A scoped delta merges with a write landing between read and write.
+
+  Setup: another session of the user appends a `prefix` key right after
+    append_event reads that scope's state.
+  Act: append an event whose delta carries a different `prefix` key.
+  Assert: the scope keeps both keys.
+  """
+  other = await session_service.create_session(
+      app_name="app1", user_id="u1", session_id="other"
+  )
+  session = await session_service.create_session(
+      app_name="app1", user_id="u1", session_id="mine"
+  )
+  scope_key = (
+      session_service._app_state_key("app1")
+      if prefix == "app:"
+      else session_service._user_state_key("app1", "u1")
+  )
+  original_get = fake_redis.get
+  wrote_concurrently = False
+
+  async def get_then_write_concurrently(read_key):
+    nonlocal wrote_concurrently
+    raw = await original_get(read_key)
+    if read_key == scope_key and not wrote_concurrently:
+      wrote_concurrently = True
+      await session_service.append_event(
+          other,
+          Event(
+              author="user",
+              invocation_id="other",
+              actions=EventActions(state_delta={f"{prefix}theme": "dark"}),
+          ),
+      )
+    return raw
+
+  monkeypatch.setattr(fake_redis, "get", get_then_write_concurrently)
+  await session_service.append_event(
+      session,
+      Event(
+          author="user",
+          invocation_id="mine",
+          actions=EventActions(state_delta={f"{prefix}lang": "en"}),
+      ),
+  )
+
+  assert wrote_concurrently
+  assert json.loads(await original_get(scope_key)) == {
+      "theme": "dark",
+      "lang": "en",
+  }
 
 
 @pytest.mark.asyncio

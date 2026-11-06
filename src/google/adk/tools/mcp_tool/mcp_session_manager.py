@@ -49,6 +49,9 @@ if TYPE_CHECKING:
   from google.auth.aio.credentials import Credentials as AsyncCredentials
   from google.auth.aio.transport.sessions import AsyncAuthorizedSession
 
+  from ...dependencies._mcp import McpHttpClient as _McpHttpClient
+  from ...dependencies._mcp import McpHttpClientFactory as _McpHttpClientFactory
+
   _AIO_SUPPORTED: bool
 else:
   try:
@@ -140,7 +143,9 @@ def create_mcp_http_client(
     auth: httpx.Auth | None = None,
 ) -> httpx.AsyncClient:
   """Creates MCP HTTP client and instruments it when OTel is available."""
-  client = _create_mcp_http_client(
+  # `_httpx` binds the httpx major the installed SDK takes; mypy sees `httpx`.
+  sdk_factory = cast(CheckableMcpHttpClientFactory, _create_mcp_http_client)  # type: ignore[redundant-cast]  # redundant on mcp 1.x, which takes httpx
+  client = sdk_factory(
       headers=headers,
       timeout=timeout,
       auth=auth,
@@ -209,7 +214,8 @@ class _StreamableHttpClientWrapper:
     self.terminate_on_close = terminate_on_close
     self.ctx_mgr = streamable_http_client(
         url=url,
-        http_client=http_client,
+        # `_httpx` binds the httpx major the installed SDK takes.
+        http_client=cast('_McpHttpClient', http_client),
         terminate_on_close=terminate_on_close,
     )
 
@@ -359,14 +365,14 @@ class CheckableMcpHttpClientFactory(Protocol):
   Protocol-annotated field into an `is-instance` validator, and that validator
   cannot be built against a protocol without the decorator.
 
-  This copies the SDK's `McpHttpClientFactory` instead of subclassing it,
-  because that protocol lives in the private `mcp.shared._httpx_utils`.
-  Structural typing means a factory written against either one satisfies both.
+  This mirrors the SDK's `McpHttpClientFactory` with the types from `_httpx`.
+  A type checker always sees those as `httpx`, while SDK 2.x types its protocol
+  against `httpx2`, so to a checker the two only match on 1.x. At runtime
+  `_httpx` binds whichever library the installed SDK takes.
 
-  The signature stays identical to the SDK's for two reasons.
-  `_DebugHttpxClientFactory` wraps the given factory and calls it by keyword,
-  and that wrapper is what `sse_client` receives, typed there with the SDK's
-  own protocol.
+  The parameter names and defaults stay identical to the SDK's because
+  `_DebugHttpxClientFactory` wraps the given factory, calls it by keyword, and
+  is itself what `sse_client` receives.
   """
 
   def __call__(
@@ -1391,7 +1397,8 @@ class MCPSessionManager:
           headers=merged_headers,
           timeout=self._connection_params.timeout,
           sse_read_timeout=self._connection_params.sse_read_timeout,
-          httpx_client_factory=debug_factory,
+          # `_httpx` binds the httpx major the installed SDK takes.
+          httpx_client_factory=cast('_McpHttpClientFactory', debug_factory),
           on_session_created=on_session_created,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):

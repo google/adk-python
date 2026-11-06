@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -44,6 +45,7 @@ from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 from .llm_as_judge_utils import build_judge_request_config
+from .llm_as_judge_utils import gather_cancelling_on_error
 from .llm_as_judge_utils import get_eval_status
 from .llm_as_judge_utils import get_grounding_metadata_as_json_str
 from .llm_as_judge_utils import get_text_from_content
@@ -724,6 +726,50 @@ class HallucinationsV1Evaluator(Evaluator):
         per_invocation_results=per_invocation_results,
     )
 
+  async def _evaluate_invocation(
+      self,
+      *,
+      actual: Invocation,
+      expected: Invocation | None,
+      semaphore: asyncio.Semaphore,
+  ) -> PerInvocationResult:
+    """Evaluates all natural language steps within a single invocation."""
+    step_evaluations = self._get_steps_to_evaluate(actual)
+
+    if not step_evaluations:
+      return PerInvocationResult(
+          actual_invocation=actual,
+          expected_invocation=expected,
+          score=None,
+          eval_status=EvalStatus.NOT_EVALUATED,
+          rubric_scores=[],
+      )
+
+    async def _evaluate_step(step: EvaluationStep) -> tuple[float | None, str]:
+      async with semaphore:
+        return await self._evaluate_nl_response(step.nl_response, step.context)
+
+    step_results = await gather_cancelling_on_error(
+        _evaluate_step(step) for step in step_evaluations
+    )
+    scores_per_step = [
+        fs_score for fs_score, _ in step_results if fs_score is not None
+    ]
+
+    invocation_score = (
+        statistics.mean(scores_per_step) if scores_per_step else None
+    )
+
+    return PerInvocationResult(
+        actual_invocation=actual,
+        expected_invocation=expected,
+        score=invocation_score,
+        eval_status=get_eval_status(
+            invocation_score, self._criterion.threshold
+        ),
+        rubric_scores=[],
+    )
+
   @override
   async def evaluate_invocations(
       self,
@@ -742,47 +788,15 @@ class HallucinationsV1Evaluator(Evaluator):
         else list(expected_invocations)
     )
 
-    per_invocation_results = []
-    for actual, expected in zip(
-        actual_invocations, expected_by_invocation, strict=True
-    ):
-      step_evaluations = self._get_steps_to_evaluate(actual)
-
-      if not step_evaluations:
-        per_invocation_results.append(
-            PerInvocationResult(
-                actual_invocation=actual,
-                expected_invocation=expected,
-                score=None,
-                eval_status=EvalStatus.NOT_EVALUATED,
-                rubric_scores=[],
-            )
+    semaphore = asyncio.Semaphore(self._judge_model_options.parallelism_limit)
+    per_invocation_results = await gather_cancelling_on_error(
+        self._evaluate_invocation(
+            actual=actual, expected=expected, semaphore=semaphore
         )
-        continue
-
-      scores_per_step = []
-      for step in step_evaluations:
-        fs_score, _ = await self._evaluate_nl_response(
-            step.nl_response, step.context
+        for actual, expected in zip(
+            actual_invocations, expected_by_invocation, strict=True
         )
-        if fs_score is not None:
-          scores_per_step.append(fs_score)
-
-      invocation_score = (
-          statistics.mean(scores_per_step) if scores_per_step else None
-      )
-
-      per_invocation_results.append(
-          PerInvocationResult(
-              actual_invocation=actual,
-              expected_invocation=expected,
-              score=invocation_score,
-              eval_status=get_eval_status(
-                  invocation_score, self._criterion.threshold
-              ),
-              rubric_scores=[],
-          )
-      )
+    )
 
     if per_invocation_results:
       return self._aggregate_invocation_results(per_invocation_results)

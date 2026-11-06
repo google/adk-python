@@ -28,6 +28,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import httpx
+from pydantic import BaseModel
 import pytest
 
 
@@ -116,6 +117,106 @@ async def test_construct_payload_with_config(client, llm_request):
     assert payload['seed'] == 42
     assert payload['n'] == 2
     assert payload['response_format'] == {'type': 'json_object'}
+
+
+@pytest.mark.parametrize(
+    ('model', 'expected_token_key'),
+    [
+        ('apigee/openai/gpt-5-mini', 'max_completion_tokens'),
+        ('apigee/openai/o3', 'max_completion_tokens'),
+        ('apigee/openai/o4-mini', 'max_completion_tokens'),
+        ('apigee/openai/gpt-4o', 'max_tokens'),
+        ('apigee/openai/gpt-5-chat-latest', 'max_tokens'),
+        ('apigee/openai/qwen3', 'max_tokens'),
+    ],
+)
+@pytest.mark.parametrize('max_output_tokens', [None, 0, 1024])
+async def test_token_limit_uses_supported_parameter(
+    client: CompletionsHTTPClient,
+    llm_request: LlmRequest,
+    model: str,
+    expected_token_key: str,
+    max_output_tokens: int | None,
+) -> None:
+  """Requests use the token-limit parameter accepted by the model."""
+  llm_request.model = model
+  llm_request.config = types.GenerateContentConfig(
+      max_output_tokens=max_output_tokens
+  )
+  response = mock.Mock(spec=httpx.Response)
+  response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': 'Hi'}}]
+  }
+
+  with mock.patch.object(
+      httpx.AsyncClient,
+      'post',
+      new_callable=mock.AsyncMock,
+      return_value=response,
+  ) as post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  post.assert_called_once()
+  payload = post.call_args.kwargs['json']
+  token_limits = {
+      key: payload[key]
+      for key in ('max_tokens', 'max_completion_tokens')
+      if key in payload
+  }
+  expected = (
+      {}
+      if max_output_tokens is None
+      else {expected_token_key: max_output_tokens}
+  )
+  assert token_limits == expected
+
+
+@pytest.mark.parametrize(
+    ('model', 'expected_sampling'),
+    [
+        ('apigee/openai/gpt-5-mini', {'top_p': 1.0}),
+        ('apigee/openai/o3', {'top_p': 1.0}),
+        ('apigee/openai/gpt-4o', {'temperature': 0.5, 'top_p': 1.0}),
+        (
+            'apigee/openai/gpt-5-chat-latest',
+            {'temperature': 0.5, 'top_p': 1.0},
+        ),
+    ],
+)
+async def test_reasoning_model_drops_non_default_sampling_params(
+    client: CompletionsHTTPClient,
+    llm_request: LlmRequest,
+    model: str,
+    expected_sampling: dict[str, float],
+) -> None:
+  """Reasoning models get only the default temperature/top_p."""
+  llm_request.model = model
+  llm_request.config = types.GenerateContentConfig(temperature=0.5, top_p=1.0)
+  response = mock.Mock(spec=httpx.Response)
+  response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': 'Hi'}}]
+  }
+
+  with mock.patch.object(
+      httpx.AsyncClient,
+      'post',
+      new_callable=mock.AsyncMock,
+      return_value=response,
+  ) as post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  post.assert_called_once()
+  payload = post.call_args.kwargs['json']
+  sampling = {
+      key: payload[key] for key in ('temperature', 'top_p') if key in payload
+  }
+  assert sampling == expected_sampling
 
 
 @pytest.mark.asyncio
@@ -325,8 +426,11 @@ async def test_generate_content_async_function_call_response(
             {
                 'type': 'json_schema',
                 'json_schema': {
-                    'type': 'object',
-                    'properties': {'name': {'type': 'string'}},
+                    'name': 'response',
+                    'schema': {
+                        'type': 'object',
+                        'properties': {'name': {'type': 'string'}},
+                    },
                 },
             },
         ),
@@ -337,8 +441,11 @@ async def test_generate_content_async_function_call_response(
             {
                 'type': 'json_schema',
                 'json_schema': {
-                    'type': 'object',
-                    'properties': {'name': {'type': 'string'}},
+                    'name': 'response',
+                    'schema': {
+                        'type': 'object',
+                        'properties': {'name': {'type': 'string'}},
+                    },
                 },
             },
         ),
@@ -347,6 +454,58 @@ async def test_generate_content_async_function_call_response(
             None,
             'application/json',
             {'type': 'json_object'},
+        ),
+        (
+            {
+                'name': 'weather',
+                'description': 'Forecast',
+                'strict': True,
+                'schema': {'type': 'object', 'properties': {}},
+            },
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'weather',
+                    'description': 'Forecast',
+                    'strict': True,
+                    'schema': {'type': 'object', 'properties': {}},
+                },
+            },
+        ),
+        (
+            {'title': 'Daily weather!', 'type': 'object', 'properties': {}},
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'Daily_weather_',
+                    'schema': {
+                        'title': 'Daily weather!',
+                        'type': 'object',
+                        'properties': {},
+                    },
+                },
+            },
+        ),
+        (
+            {},
+            'application/json',
+            {
+                'type': 'json_schema',
+                'json_schema': {'name': 'response', 'schema': {}},
+            },
+        ),
+        (
+            {'title': 'a' * 70, 'type': 'object'},
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'a' * 64,
+                    'schema': {'title': 'a' * 70, 'type': 'object'},
+                },
+            },
         ),
     ],
 )
@@ -379,6 +538,116 @@ async def test_construct_payload_response_format(
     payload = mock_post.call_args[1]['json']
 
     assert payload['response_format'] == expected_response_format
+
+
+@pytest.mark.asyncio
+async def test_output_schema_model_is_sent_to_chat_completions(
+    client, llm_request
+):
+  class Weather(BaseModel):
+    city: str
+
+  llm_request.set_output_schema(Weather)
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'Weather', 'schema': Weather.model_json_schema()},
+  }
+
+
+@pytest.mark.asyncio
+async def test_response_json_schema_takes_precedence_over_output_schema(
+    client, llm_request
+):
+  llm_request.config = types.GenerateContentConfig(
+      response_schema={'type': 'object', 'title': 'Ignored'},
+      response_json_schema={},
+      response_mime_type='application/json',
+  )
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'response', 'schema': {}},
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('schema', 'expected_schema'),
+    [
+        (
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={'city': types.Schema(type=types.Type.STRING)},
+            ),
+            {'type': 'object', 'properties': {'city': {'type': 'string'}}},
+        ),
+        (
+            {
+                'type': 'OBJECT',
+                'properties': {'city': {'type': 'STRING'}},
+                'default': {'type': 'EXAMPLE'},
+            },
+            {
+                'type': 'object',
+                'properties': {'city': {'type': 'string'}},
+                'default': {'type': 'EXAMPLE'},
+            },
+        ),
+        (list[str], {'items': {'type': 'string'}, 'type': 'array'}),
+    ],
+)
+async def test_output_schema_formats_supported_types(
+    client, llm_request, schema, expected_schema
+):
+  llm_request.set_output_schema(schema)
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'response', 'schema': expected_schema},
+  }
+  if isinstance(schema, dict):
+    assert schema['type'] == 'OBJECT'
+    assert schema['properties']['city']['type'] == 'STRING'
 
 
 @pytest.mark.asyncio
