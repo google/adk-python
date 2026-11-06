@@ -37,6 +37,7 @@ from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.auth_credential import _redact_credential_secrets
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
@@ -854,6 +855,151 @@ def test_api_server_get_runner_async_rejects_internal_special_agent_name(
       "Access to internal special agents is disabled in API server mode"
       in exc_info.value.detail
   )
+
+
+_NO_EVAL_SETS_MANAGER = "Eval sets manager is not configured"
+_NO_EVAL_SET_RESULTS_MANAGER = "Eval set results manager is not configured"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "detail"),
+    [
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets",
+            {"eval_set": {"eval_set_id": "s", "eval_cases": []}},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        ("GET", "/dev/apps/test_app/eval-sets", None, _NO_EVAL_SETS_MANAGER),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/add-session",
+            {"eval_id": "e", "session_id": "session", "user_id": "user"},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_sets/s/evals",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "PUT",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            {"eval_id": "e", "conversation": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "DELETE",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/run",
+            {"eval_ids": [], "eval_metrics": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+    ],
+)
+async def test_eval_endpoints_without_eval_managers_return_500(
+    method,
+    path,
+    body,
+    detail,
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+
+  await mock_session_service.create_session(
+      app_name="test_app", user_id="user", session_id="session"
+  )
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.request(method, path, json=body)
+
+  assert response.status_code == 500
+  assert response.json() == {"detail": detail}
+
+
+def test_run_eval_without_eval_set_results_manager_succeeds(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set("test_app", "s")
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=eval_sets_manager,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.post(
+      "/dev/apps/test_app/eval-sets/s/run",
+      json={"eval_ids": [], "eval_metrics": []},
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {"runEvalResults": []}
 
 
 @pytest.mark.parametrize(
