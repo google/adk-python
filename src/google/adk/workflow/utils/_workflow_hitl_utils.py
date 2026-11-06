@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 
+from ...agents._caller_principal import caller_may_confirm
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_credential import OAuth2Auth
@@ -74,11 +75,22 @@ def parse_tool_confirmation(response: Any) -> ToolConfirmation:
 
 
 def apply_confirmation_resume(ctx: Context) -> bool:
-  """Applies resumed tool confirmation input onto ctx if present."""
+  """Applies resumed tool confirmation input onto ctx if present.
+
+  An answer from a caller the serving layer could not authenticate is stored
+  as a rejection, the same decision the agent pipeline makes for a
+  confirmation carried in a user event. It is made here, before the answer is
+  stored on the context, because tools such as `ExecuteBashTool` read
+  `tool_confirmation` themselves rather than through
+  `apply_confirmation_gate`.
+  """
   response = ctx.resume_inputs.get(confirmation_interrupt_id(ctx.node_path))
   if response is None:
     return False
-  ctx.tool_confirmation = parse_tool_confirmation(response)
+  confirmation = parse_tool_confirmation(response)
+  if not caller_may_confirm(ctx.get_invocation_context().caller_principal):
+    confirmation = confirmation.model_copy(update={'confirmed': False})
+  ctx.tool_confirmation = confirmation
   return True
 
 
