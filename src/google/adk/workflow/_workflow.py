@@ -99,6 +99,11 @@ class _LoopState(DynamicNodeState):
   is a predecessor the node cannot reach by following edges, such as a setup
   step before the loop: the loop does not run it again, so its arrival stays
   recorded.
+
+  An arrival is dropped (and any prior one for that predecessor cleared) when
+  a newer run of the predecessor is already buffered, so a loop restart that
+  re-triggers a still-running branch cannot mix that branch's old completion
+  with a newer sibling.
   """
 
   descendants: dict[str, frozenset[str]] = field(default_factory=dict)
@@ -894,6 +899,18 @@ class Workflow(BaseNode):
         )
     )
 
+  def _invalidate_join_arrivals_for(
+      self, loop_state: _LoopState, predecessor_name: str
+  ) -> None:
+    """Drop a predecessor's unconsumed arrivals from every wait-for-all node.
+
+    Called when a newer run of ``predecessor_name`` is buffered, so a join
+    cannot later combine that predecessor's previous completion with outputs
+    from a newer iteration of its siblings.
+    """
+    for arrivals in loop_state.join_arrivals.values():
+      arrivals.discard(predecessor_name)
+
   def _buffer_downstream_triggers(
       self,
       loop_state: _LoopState,
@@ -914,10 +931,22 @@ class Workflow(BaseNode):
       target_node = self._get_static_node_by_name(target_name)
 
       if target_node._requires_all_predecessors:
-        loop_state.join_arrivals.setdefault(target_name, set()).add(node_name)
-        self._buffer_barrier_trigger(loop_state, target_name, ctx)
+        # A completion that still has another run of the same node queued is
+        # from an abandoned iteration: the loop head restarted and re-triggered
+        # this branch while it was in flight. Drop it so the join waits for
+        # the newer run instead of mixing iterations.
+        if loop_state.trigger_buffer.get(node_name):
+          logger.debug(
+              "Dropping join arrival from %s for %s; a newer run is buffered",
+              node_name,
+              target_name,
+          )
+        else:
+          loop_state.join_arrivals.setdefault(target_name, set()).add(node_name)
+          self._buffer_barrier_trigger(loop_state, target_name, ctx)
       else:
-        # Normal node logic
+        # A newer run of this node supersedes any arrival it already recorded.
+        self._invalidate_join_arrivals_for(loop_state, target_name)
         loop_state.trigger_buffer.setdefault(target_name, []).append(
             Trigger(
                 input=output,

@@ -691,3 +691,55 @@ async def test_join_node_waits_for_retriggered_in_flight_predecessor(
   await runner.run_async('start')
 
   assert capture.received_inputs == [{'node_a': 'A2', 'node_b': 'B2'}]
+
+
+@pytest.mark.asyncio
+async def test_join_node_in_loop_drops_stale_arrival_when_branch_retriggered(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode drops a late arrival from an abandoned loop iteration.
+
+  When a loop head restarts and re-triggers a branch that is still running,
+  that branch's old completion must not combine with the new iteration's
+  sibling at the join. The join should fire once with both outputs from the
+  new iteration.
+  """
+  iteration = 0
+  join_inputs: list[dict[str, str]] = []
+
+  def loop_head(node_input: str) -> str:
+    nonlocal iteration
+    iteration += 1
+    return f'iter{iteration}'
+
+  async def slow_a(node_input: str) -> str:
+    await asyncio.sleep(0.05)
+    return f'a<{node_input}>'
+
+  def node_b(node_input: str) -> Event:
+    return Event(
+        output=f'b<{node_input}>',
+        route='retry' if node_input == 'iter1' else 'go',
+    )
+
+  def capture(node_input: dict[str, str]) -> None:
+    join_inputs.append(node_input)
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, loop_head),
+          (loop_head, slow_a, join),
+          (loop_head, node_b),
+          (node_b, {'retry': loop_head, 'go': join}),
+          (join, capture),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('go')
+
+  assert join_inputs == [{'node_b': 'b<iter2>', 'slow_a': 'a<iter2>'}]
