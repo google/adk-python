@@ -421,12 +421,10 @@ class NodeRunner:
         await self._run_node_loop_with_timeout(ctx, node_input, timeout)
       else:
         await self._run_node_loop(ctx, node_input)
-    except NodeInterruptedError:
+    except NodeInterruptedError as exc:
       # A dynamic child interrupted via ctx.run_node().
-      # The child's interrupt_ids are already on ctx
-      # (set by the schedule callback). Nothing more to do —
-      # the caller reads ctx.interrupt_ids.
-      pass
+      # Tool calls have their own Context, so copy their interrupt IDs too.
+      ctx._interrupt_ids.update(exc.interrupt_ids)
 
   async def _run_node_loop(self, ctx: Context, node_input: Any) -> None:
     """Iterate node.run(), track events in context, and enqueue them."""

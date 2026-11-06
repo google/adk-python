@@ -57,6 +57,7 @@ from typing_extensions import Required
 from . import _prompt_cache
 from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import enforce_strict_openai_schema
 from ..utils._schema_utils import lowercase_schema_types
 from ..utils.model_name_utils import is_gemini_model
 from ._capabilities import LlmCapabilities
@@ -145,6 +146,10 @@ _FINISH_REASON_MAPPING = {
     "function_call": types.FinishReason.STOP,  # Legacy function call variant
     "content_filter": types.FinishReason.SAFETY,
 }
+
+# Unmapped on purpose: a text or reasoning stream that ended without a
+# finish_reason chunk maps to FinishReason.OTHER and carries an error_code.
+_STREAM_ENDED_WITHOUT_FINISH_REASON = "stream_ended_without_finish_reason"
 
 
 def _quote_unquoted_json_object_keys(value: str) -> str:
@@ -1018,7 +1023,9 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
-_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset(
+    {"openai", "azure", "lm_studio", "vertex_ai"}
+)
 
 
 def _is_gemma4_model(
@@ -1035,8 +1042,9 @@ def _is_gemma4_model(
   results.
 
   OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
-  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
-  excluded.
+  "lm_studio/google/gemma-4-e4b", or Vertex AI Model Garden MaaS
+  "vertex_ai/google/gemma-4-26b-a4b-it-maas") require the standard role='tool'
+  and are excluded.
 
   Args:
     model: The model name to check.
@@ -1673,8 +1681,9 @@ async def _content_to_message_param(
       )
       # gemma4 requires role='tool_responses' for recognizing function_response
       # parts as responses from the tool call, except on OpenAI-compatible
-      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
-      # role. Earlier Gemma versions before version 4 do not support tool use.
+      # endpoints (openai, azure, lm_studio, vertex_ai) which require the
+      # standard 'tool' role. Earlier Gemma versions before version 4 do not
+      # support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
           "tool_responses"
           if _is_gemma4_model(
@@ -3619,12 +3628,7 @@ def _model_response_to_generate_content_response(
         model_version=response.model,
     )
 
-  mapped_finish_reason = _map_finish_reason(finish_reason)
-  if mapped_finish_reason and not _malformed_args_outrank_provider(
-      response_finish_reason=llm_response.finish_reason,
-      provider_finish_reason=mapped_finish_reason,
-  ):
-    _apply_provider_finish_reason(llm_response, mapped_finish_reason)
+  _stamp_finish_reason(llm_response, finish_reason)
   if response.get("usage", None):
     usage_dict = response["usage"]
     reasoning_tokens = _extract_reasoning_tokens(usage_dict)
@@ -3819,52 +3823,22 @@ def _apply_provider_finish_reason(
     llm_response.error_message += ". " + malformed_args_message
 
 
-def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
-  """Recursively transforms a JSON schema for OpenAI strict structured outputs.
-
-  OpenAI strict mode requires:
-  1. additionalProperties: false on all object schemas (including nested/$defs).
-  2. All properties listed in 'required' (no optional omissions).
-  3. $ref nodes must have no sibling keywords (e.g., no 'description' next to
-     '$ref').
-
-  This function mutates the schema dict in place.
-
-  Args:
-    schema: A JSON schema dictionary to transform.
-  """
-  if not isinstance(schema, dict):
+def _stamp_finish_reason(
+    llm_response: LlmResponse, finish_reason: str | None
+) -> None:
+  """Stamps the provider's finish reason unless malformed args outrank it."""
+  mapped_finish_reason = _map_finish_reason(finish_reason)
+  if mapped_finish_reason is None or _malformed_args_outrank_provider(
+      response_finish_reason=llm_response.finish_reason,
+      provider_finish_reason=mapped_finish_reason,
+  ):
     return
-
-  # Strip sibling keywords from $ref nodes (OpenAI rejects them).
-  if "$ref" in schema:
-    for key in list(schema.keys()):
-      if key != "$ref":
-        del schema[key]
-    return
-
-  # Ensure all object schemas have additionalProperties: false and list every
-  # property as required.
-  if schema.get("type") == "object" and "properties" in schema:
-    schema["additionalProperties"] = False
-    schema["required"] = sorted(schema["properties"].keys())
-
-  # Recurse into $defs (Pydantic's nested model definitions).
-  for defn in schema.get("$defs", {}).values():
-    _enforce_strict_openai_schema(defn)
-
-  # Recurse into property schemas.
-  for prop in schema.get("properties", {}).values():
-    _enforce_strict_openai_schema(prop)
-
-  # Recurse into combinators.
-  for key in ("anyOf", "oneOf", "allOf"):
-    for item in schema.get(key, []):
-      _enforce_strict_openai_schema(item)
-
-  # Recurse into array item schemas.
-  if "items" in schema and isinstance(schema["items"], dict):
-    _enforce_strict_openai_schema(schema["items"])
+  _apply_provider_finish_reason(llm_response, mapped_finish_reason)
+  if finish_reason == _STREAM_ENDED_WITHOUT_FINISH_REASON:
+    llm_response.error_message = (
+        "The stream ended without a finish reason; the response may be"
+        " truncated."
+    )
 
 
 def _to_litellm_response_format(
@@ -3935,7 +3909,7 @@ def _to_litellm_response_format(
   # https://docs.litellm.ai/docs/completion/json_mode
   if isinstance(schema_dict, dict):
     lowercase_schema_types(schema_dict)
-    _enforce_strict_openai_schema(schema_dict)
+    enforce_strict_openai_schema(schema_dict)
 
   return {
       "type": "json_schema",
@@ -5002,14 +4976,7 @@ class LiteLlm(BaseLlm):
                 has_tool_calls=bool(tool_calls)
             ),
         )
-        mapped_finish_reason = _map_finish_reason(finish_reason)
-        if _malformed_args_outrank_provider(
-            response_finish_reason=llm_response.finish_reason,
-            provider_finish_reason=mapped_finish_reason,
-        ):
-          return llm_response
-
-        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
+        _stamp_finish_reason(llm_response, finish_reason)
         return llm_response
 
       def _finalize_text_response(
@@ -5024,14 +4991,7 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=_finalized_thought_parts(has_tool_calls=False),
         )
-        mapped_finish_reason = _map_finish_reason(finish_reason)
-        if _malformed_args_outrank_provider(
-            response_finish_reason=llm_response.finish_reason,
-            provider_finish_reason=mapped_finish_reason,
-        ):
-          return llm_response
-
-        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
+        _stamp_finish_reason(llm_response, finish_reason)
         return llm_response
 
       def _reset_stream_buffers() -> None:
@@ -5312,6 +5272,8 @@ class LiteLlm(BaseLlm):
       if (
           function_calls or _has_held_back_tool_calls()
       ) and not aggregated_llm_response_with_tool_call:
+        # Parseable arguments mark a tool call complete, so a missing terminal
+        # chunk alone does not make it truncated.
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=resolved_model_version,
             finish_reason=last_finish_reason or "tool_calls",
@@ -5333,7 +5295,9 @@ class LiteLlm(BaseLlm):
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
             model_version=resolved_model_version,
-            finish_reason=last_finish_reason or "stop",
+            finish_reason=(
+                last_finish_reason or _STREAM_ENDED_WITHOUT_FINISH_REASON
+            ),
         )
         _reset_stream_buffers()
       elif (
@@ -5345,6 +5309,7 @@ class LiteLlm(BaseLlm):
         # normal stop/tool_calls/function_call/EOF with empty deltas). Finalize
         # an empty response so the finish_reason, error, and usage are
         # preserved rather than ending the generator having yielded nothing.
+        # With nothing buffered there is no partial answer, so "stop" stays.
         aggregated_llm_response = _finalize_text_response(
             model_version=resolved_model_version,
             finish_reason=last_finish_reason or "stop",

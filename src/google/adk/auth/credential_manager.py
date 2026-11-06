@@ -38,6 +38,7 @@ from .base_auth_provider import BaseAuthProvider
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
+from .refresher.base_credential_refresher import _CredentialRevokedError
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -331,7 +332,53 @@ class CredentialManager:
       # Step 7: Refresh credential if expired
       was_refreshed = False
       if not was_exchanged:
-        credential, was_refreshed = await self._refresh_credential(credential)
+        try:
+          credential, was_refreshed = await self._refresh_credential(credential)
+        except _CredentialRevokedError:
+          logger.warning(
+              "The refresh token for auth scheme %s was rejected.",
+              type(self._auth_config.auth_scheme).__name__,
+          )
+          if was_from_auth_response:
+            return None
+          revoked_credential = credential
+          # Evict the dead stored credential so later turns load the user's
+          # new authorization instead of refreshing it again.
+          try:
+            await self._save_credential(context, None)
+          except Exception:  # pylint: disable=broad-exception-caught
+            # A failed eviction only costs one more rejected refresh next turn.
+            logger.warning(
+                "Failed to remove the revoked credential for auth scheme %s.",
+                type(self._auth_config.auth_scheme).__name__,
+                exc_info=True,
+            )
+          # A stored dead credential must not shadow a fresh auth response.
+          credential = await self._load_from_auth_response(context)
+          revoked_oauth2 = revoked_credential.oauth2
+          new_oauth2 = credential.oauth2 if credential else None
+          if (
+              not credential
+              or credential == revoked_credential
+              or (
+                  revoked_oauth2
+                  and new_oauth2
+                  and revoked_oauth2.refresh_token
+                  and new_oauth2.refresh_token == revoked_oauth2.refresh_token
+              )
+          ):
+            return None
+          was_from_auth_response = True
+          credential, was_exchanged = await self._exchange_credential(
+              credential
+          )
+          if not was_exchanged:
+            try:
+              credential, was_refreshed = await self._refresh_credential(
+                  credential
+              )
+            except _CredentialRevokedError:
+              return None
 
       if _has_unredeemed_auth_code(credential):
         logger.warning(
@@ -432,9 +479,24 @@ class CredentialManager:
         if was_exchanged:
           return new_credential, True
         return credential, False
-      refreshed_credential = await refresher.refresh(
-          credential, self._auth_config.auth_scheme
-      )
+      try:
+        refreshed_credential = await refresher.refresh(
+            credential, self._auth_config.auth_scheme
+        )
+      except _CredentialRevokedError:
+        if (
+            raw_auth_credential is None
+            or not self._is_client_credentials_flow()
+        ):
+          raise
+        # A client credentials flow can get a new token without the user. Copy
+        # the raw credential so the exchange does not mutate the shared config.
+        new_credential, was_exchanged = await self._exchange_credential(
+            raw_auth_credential.model_copy(deep=True)
+        )
+        if not was_exchanged:
+          raise
+        return new_credential, True
       return refreshed_credential, True
 
     return credential, False
@@ -488,9 +550,9 @@ class CredentialManager:
     # Additional validation can be added here
 
   async def _save_credential(
-      self, context: CallbackContext, credential: AuthCredential
+      self, context: CallbackContext, credential: AuthCredential | None
   ) -> None:
-    """Save credential to credential service if available."""
+    """Save credential to credential service if available; None removes it."""
     credential_service = context._invocation_context.credential_service
     if credential_service:
       auth_config_to_save = self._auth_config.model_copy(deep=True)

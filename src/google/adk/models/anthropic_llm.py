@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import copy
 import dataclasses
 from functools import cached_property
@@ -51,6 +52,7 @@ from typing_extensions import override
 from . import _prompt_cache
 from ..utils import _json_utils
 from ..utils import streaming_utils
+from ..utils._dependency import missing_extra
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
@@ -73,6 +75,53 @@ _ImageMediaType: TypeAlias = Literal[
     "image/webp",
 ]
 _ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset[str](get_args(_ImageMediaType))
+
+# Base64 grows a file by 4/3, so 21 MiB encodes to under 30 MB, the smallest
+# whole-request cap (Claude on Vertex AI). A coarse per-file guard: several
+# files in one request can still exceed it together.
+_MAX_FILE_DATA_SIZE = 21 * 1024 * 1024
+
+
+def _download_gcs_uri(uri: str, downloads: dict[str, bytes]) -> bytes:
+  """Downloads the object a gs:// file_data URI points at.
+
+  Claude accepts only inline base64 sources, so the bytes travel in the
+  request itself. The part stays a gs:// reference in session history, so the
+  object is fetched again on every later turn and must stay readable for the
+  life of the session. `downloads` caches objects by URI for one request.
+  Raises ValueError when the object exceeds `_MAX_FILE_DATA_SIZE`, or when the
+  URI does not name a bucket and an object.
+  """
+  if uri in downloads:
+    return downloads[uri]
+  bucket_name, _, object_name = uri.removeprefix("gs://").partition("/")
+  if not bucket_name or not object_name:
+    raise ValueError(f"gs:// URI must name a bucket and an object: {uri}")
+  try:
+    from google.cloud.storage import Client
+  except ImportError as e:
+    raise missing_extra("google-cloud-storage", "gcp") from e
+  # project=None skips project inference, which raises OSError under ADC
+  # without a project; reading an object needs no project.
+  with contextlib.closing(Client(project=None)) as client:
+    blob = client.bucket(bucket_name).get_blob(object_name)
+    if blob is None:
+      raise ValueError(f"gs:// object not found: {uri}")
+    size = blob.size
+    if size is not None and size > _MAX_FILE_DATA_SIZE:
+      raise ValueError(
+          f"gs:// object too large: {uri} is {size} bytes, over ADK's inline"
+          f" file size cap ({_MAX_FILE_DATA_SIZE} bytes)."
+      )
+    data: bytes = blob.download_as_bytes()
+  if len(data) > _MAX_FILE_DATA_SIZE:
+    raise ValueError(
+        f"gs:// object too large: {uri} is {len(data)} bytes, over ADK's"
+        f" inline file size cap ({_MAX_FILE_DATA_SIZE} bytes)."
+    )
+  downloads[uri] = data
+  return data
+
 
 _MessageBlockParam: TypeAlias = (
     anthropic_types.TextBlockParam
@@ -490,6 +539,7 @@ def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
 
 def _function_response_media_blocks(
     function_response: types.FunctionResponse,
+    downloads: dict[str, bytes],
 ) -> list[_ToolResultContentBlockParam]:
   """Converts media a tool attached to its response into tool result blocks.
 
@@ -501,10 +551,40 @@ def _function_response_media_blocks(
   blocks: list[_ToolResultContentBlockParam] = []
   for response_part in function_response.parts or []:
     blob = response_part.inline_data
-    if blob is None or blob.data is None or not blob.mime_type:
+    file_data = response_part.file_data
+    raw: bytes | None
+    uri = ""
+    if blob is not None and blob.data is not None and blob.mime_type:
+      mime_type, raw = blob.mime_type, blob.data
+    elif file_data is not None and file_data.file_uri and file_data.mime_type:
+      mime_type, uri, raw = file_data.mime_type, file_data.file_uri, None
+    else:
       continue
-    media_type = blob.mime_type.split(";", 1)[0].strip().lower()
-    data = base64.b64encode(blob.data).decode()
+    media_type = mime_type.split(";", 1)[0].strip().lower()
+    if (
+        media_type not in _ANTHROPIC_IMAGE_MEDIA_TYPES
+        and media_type != "application/pdf"
+    ):
+      logger.warning(
+          "Dropping tool result media of type %s, which Claude cannot receive"
+          " in a tool result.",
+          media_type,
+      )
+      continue
+    if raw is None:
+      if not uri.startswith("gs://"):
+        logger.warning(
+            "Dropping tool result file %s; only gs:// URIs can be sent.", uri
+        )
+        continue
+      try:
+        raw = _download_gcs_uri(uri, downloads)
+      # Auth, network and missing-extra errors are dropped too: the part stays
+      # in history, so raising would fail every later turn.
+      except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Dropping tool result file %s: %s", uri, e)
+        continue
+    data = base64.b64encode(raw).decode()
     if media_type in _ANTHROPIC_IMAGE_MEDIA_TYPES:
       blocks.append(
           anthropic_types.ImageBlockParam(
@@ -517,7 +597,7 @@ def _function_response_media_blocks(
               ),
           )
       )
-    elif media_type == "application/pdf":
+    else:
       blocks.append(
           anthropic_types.DocumentBlockParam(
               type="document",
@@ -527,12 +607,6 @@ def _function_response_media_blocks(
                   data=data,
               ),
           )
-      )
-    else:
-      logger.warning(
-          "Dropping tool result media of type %s, which Claude cannot receive"
-          " in a tool result.",
-          media_type,
       )
   return blocks
 
@@ -596,8 +670,9 @@ class _ToolUseIdSanitizer:
 def _part_to_message_block(
     part: types.Part,
     sanitizer: _ToolUseIdSanitizer,
+    downloads: dict[str, bytes],
 ) -> _MessageBlockParam:
-  if part.thought and part.text:
+  if part.thought and part.text is not None:
     signature = ""
     if part.thought_signature:
       signature = part.thought_signature.decode("utf-8")
@@ -677,7 +752,7 @@ def _part_to_message_block(
     # A tool can attach media alongside the serializable part of its result.
     # It travels in a dedicated field, so it has to be mapped over explicitly
     # or the model never sees it.
-    media_blocks = _function_response_media_blocks(function_response)
+    media_blocks = _function_response_media_blocks(function_response, downloads)
     tool_result_content: str | list[_ToolResultContentBlockParam]
     if media_blocks:
       leading_text: list[_ToolResultContentBlockParam] = (
@@ -737,6 +812,36 @@ def _part_to_message_block(
         type="document",
         source=pdf_source,
     )
+  elif part.file_data:
+    file_data = part.file_data
+    uri = file_data.file_uri or ""
+    mime_type = (file_data.mime_type or "").split(";", 1)[0].strip().lower()
+    # Claude rejects URL sources upstream, so gs:// objects are downloaded
+    # and sent inline as base64. Any other URI scheme stays unsupported.
+    if not uri.startswith("gs://"):
+      raise NotImplementedError(f"Not supported yet: {part}")
+    is_pdf = mime_type == "application/pdf"
+    if not is_pdf and not mime_type.startswith("image/"):
+      raise NotImplementedError(f"Not supported yet: {part}")
+    if is_pdf:
+      return anthropic_types.DocumentBlockParam(
+          type="document",
+          source=anthropic_types.Base64PDFSourceParam(
+              type="base64",
+              media_type="application/pdf",
+              data=base64.b64encode(_download_gcs_uri(uri, downloads)).decode(),
+          ),
+      )
+    # Validated before the download so an unsupported image is never fetched.
+    media_type = _normalize_image_media_type(mime_type)
+    return anthropic_types.ImageBlockParam(
+        type="image",
+        source=anthropic_types.Base64ImageSourceParam(
+            type="base64",
+            media_type=media_type,
+            data=base64.b64encode(_download_gcs_uri(uri, downloads)).decode(),
+        ),
+    )
   elif part.executable_code:
     return anthropic_types.TextBlockParam(
         type="text",
@@ -756,6 +861,7 @@ def _part_to_message_block(
 def _content_to_message_param(
     content: types.Content,
     sanitizer: _ToolUseIdSanitizer,
+    downloads: dict[str, bytes],
 ) -> anthropic_types.MessageParam:
   message_block = []
   had_empty_text = False
@@ -772,6 +878,14 @@ def _content_to_message_param(
       logger.warning("PDF data is not supported in Claude for assistant turns.")
       continue
 
+    # Claude takes no image or document block on an assistant turn, so file
+    # media there would fail the whole request.
+    if content.role != "user" and part.file_data:
+      logger.warning(
+          "File data is not supported in Claude for assistant turns."
+      )
+      continue
+
     # A signature with nothing to send beside it: there is no block to build
     # from it, and it used to raise and wedge the session for good.
     if _is_content_free_signature(part):
@@ -785,7 +899,7 @@ def _content_to_message_param(
       had_empty_text = True
       continue
 
-    message_block.append(_part_to_message_block(part, sanitizer))
+    message_block.append(_part_to_message_block(part, sanitizer, downloads))
 
   # Anthropic rejects empty text blocks, but dropping a turn whose only part
   # was empty text causes problems: e.g. code execution with no output produces
@@ -807,13 +921,13 @@ def _content_to_message_param(
 def part_to_message_block(
     part: types.Part,
 ) -> _MessageBlockParam:
-  return _part_to_message_block(part, _ToolUseIdSanitizer())
+  return _part_to_message_block(part, _ToolUseIdSanitizer(), {})
 
 
 def content_to_message_param(
     content: types.Content,
 ) -> anthropic_types.MessageParam:
-  return _content_to_message_param(content, _ToolUseIdSanitizer())
+  return _content_to_message_param(content, _ToolUseIdSanitizer(), {})
 
 
 def content_block_to_part(
@@ -1190,6 +1304,33 @@ def _apply_cache_breakpoints(
   return system
 
 
+def _ensure_messages_end_with_user(
+    messages: list[anthropic_types.MessageParam],
+) -> None:
+  """Appends a user turn when the conversation does not end on one.
+
+  Claude treats a final assistant message as prefill: Claude 4.6 and later
+  reject it with a 400, and older models continue the previous reply instead
+  of answering again. The texts match `BaseLlm._maybe_append_user_content`,
+  which the other model classes call on `llm_request.contents`. This runs on
+  the converted messages instead, so that a turn dropped for having no content
+  is accounted for and the synthetic turn stays outside the cached prefix.
+  """
+  if messages and messages[-1]["role"] == "user":
+    return
+  if messages:
+    text = (
+        "Continue processing previous requests as instructed."
+        " Exit or provide a summary if no more outputs are needed."
+    )
+  else:
+    text = "Handle the requests as specified in the System Instruction."
+  messages.append({
+      "role": "user",
+      "content": [anthropic_types.TextBlockParam(type="text", text=text)],
+  })
+
+
 class AnthropicLlm(BaseLlm):
   """Integration with Claude models via the Anthropic API.
 
@@ -1265,6 +1406,9 @@ class AnthropicLlm(BaseLlm):
           tools=tools,
       )
 
+    # After the cache breakpoints, so the synthetic turn is never cached.
+    _ensure_messages_end_with_user(messages)
+
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
         "model": model_to_use,
@@ -1321,18 +1465,24 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     sanitizer = _ToolUseIdSanitizer()
+    downloads: dict[str, bytes] = {}
+
     # A turn whose parts are all dropped above leaves no blocks behind, and
     # Anthropic rejects a message with empty content. Sending one re-wedges the
     # session exactly as the NotImplementedError did: the offending part stays
     # in history, so every later turn fails the same way.
-    messages = [
-        message
-        for message in (
-            _content_to_message_param(content, sanitizer)
-            for content in llm_request.contents or []
-        )
-        if message["content"]
-    ]
+    def _build_messages() -> list[anthropic_types.MessageParam]:
+      return [
+          message
+          for message in (
+              _content_to_message_param(content, sanitizer, downloads)
+              for content in llm_request.contents or []
+          )
+          if message["content"]
+      ]
+
+    # Converting a gs:// file part downloads it, which would block the loop.
+    messages = await asyncio.to_thread(_build_messages)
     tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
     function_declarations: list[types.FunctionDeclaration] = []
     if llm_request.config and llm_request.config.tools:

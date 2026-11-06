@@ -48,6 +48,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 
+_BUSY_TIMEOUT_SECONDS = 30.0
+
 # Merges {delta} into {state} with dict.update() semantics: keys in the delta
 # always win with their delta value (including SQL NULL / JSON null), unlike
 # json_patch() which deep-merges dict values and treats null as "delete key".
@@ -594,7 +596,9 @@ class SqliteSessionService(BaseSessionService):
           raise
     else:
       async with aiosqlite.connect(
-          self._db_connect_path, uri=self._db_connect_uri
+          self._db_connect_path,
+          uri=self._db_connect_uri,
+          timeout=_BUSY_TIMEOUT_SECONDS,
       ) as db:
         db.row_factory = aiosqlite.Row
         await db.execute(PRAGMA_FOREIGN_KEYS)

@@ -96,9 +96,10 @@ Orchestrator
 - When retries are exhausted, the error is recorded on `ctx.error` and
   `ctx.error_node_path` and the Context is returned normally — NodeRunner does
   not re-raise to the orchestrator.
-- `NodeInterruptedError` from a dynamic child is swallowed here: the child's
-  interrupt IDs are already on `ctx`, so the caller just reads
-  `ctx.interrupt_ids`.
+- `NodeInterruptedError` from a dynamic child is swallowed here, and the
+  interrupt IDs it carries are merged into `ctx`. `ctx.run_node()` writes them
+  only onto the context it was called on, which is a separate `ToolContext`
+  when the child runs from a tool, so `ctx` may not have them yet.
 - When `abort_signal` is triggered (`ic.is_aborted` is `True`), active node
   tasks are cancelled without retrying. In `_node_runner_utils`, the outer
   workflow runner loop catches the cancellation, calls

@@ -30,6 +30,8 @@ from typing import Generator
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
+from ..errors._stale_session_error import StaleSessionError
+
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
   from ..plugins.plugin_manager import PluginManager
@@ -118,6 +120,29 @@ async def _notify_run_error(
     )
 
 
+async def _seal_aborted_invocation(
+    invocation_context: InvocationContext,
+    synthesize_abort_events: Callable[[InvocationContext], Awaitable[Any]],
+) -> None:
+  """Seals dangling calls on abort, skipping if a newer turn updated session."""
+  try:
+    await synthesize_abort_events(invocation_context)
+  except StaleSessionError:
+    # Match Runner._run_post_invocation_compaction: if a newer turn has already
+    # updated the session while the aborted turn wound down, skip sealing.
+    logger.info(
+        "Skipping abort seal for invocation %s; a newer turn updated the"
+        " session before abort cleanup completed.",
+        invocation_context.invocation_id,
+    )
+  except Exception:  # pylint: disable=broad-exception-caught
+    logger.error(
+        "Failed to seal aborted invocation %s.",
+        invocation_context.invocation_id,
+        exc_info=True,
+    )
+
+
 @contextlib.asynccontextmanager
 async def _run_invocation_lifecycle(
     *,
@@ -143,6 +168,8 @@ async def _run_invocation_lifecycle(
     - `Exception`: runs `on_run_error_callback`, seals if aborted, no
       `after_run_callback`.
     - Other `BaseException`: seals if aborted, no `after_run_callback`.
+  If sealing raises `StaleSessionError` because a newer turn updated the
+  session while the aborted turn wound down, sealing is skipped at `INFO`.
 
   Args:
     invocation_context: Active invocation context for the run.
@@ -186,14 +213,9 @@ async def _run_invocation_lifecycle(
     raise
   finally:
     if not is_live_call and invocation_context.is_aborted:
-      try:
-        await synthesize_abort_events(invocation_context)
-      except Exception:  # pylint: disable=broad-exception-caught
-        logger.error(
-            "Failed to seal aborted invocation %s.",
-            invocation_context.invocation_id,
-            exc_info=True,
-        )
+      await _seal_aborted_invocation(
+          invocation_context, synthesize_abort_events
+      )
     if run_error is None:
       try:
         await plugin_manager.run_after_run_callback(

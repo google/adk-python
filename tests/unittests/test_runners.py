@@ -45,6 +45,7 @@ from google.adk.apps.app import ResumabilityConfig
 from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.errors import StaleSessionError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
@@ -5965,10 +5966,33 @@ async def test_run_async_aborted_then_closed_seals_dangling_call(make_agent):
 @pytest.mark.parametrize(
     "make_agent", [_legacy_tool_agent, _llm_tool_agent], ids=["legacy", "llm"]
 )
-async def test_run_async_aborted_then_closed_seal_failure_is_logged(
-    make_agent, caplog
+@pytest.mark.parametrize(
+    ("error", "expected_level", "expected_msg", "unexpected_msg"),
+    [
+        (
+            RuntimeError("Simulated DB failure on abort event"),
+            logging.ERROR,
+            "Failed to seal aborted invocation",
+            "Skipping abort seal for invocation",
+        ),
+        (
+            StaleSessionError("Session modified by newer turn"),
+            logging.INFO,
+            "Skipping abort seal for invocation",
+            "Failed to seal aborted invocation",
+        ),
+    ],
+    ids=["runtime_error", "stale_session"],
+)
+async def test_run_async_aborted_then_closed_seal_error_is_logged_or_skipped(
+    make_agent,
+    error: Exception,
+    expected_level: int,
+    expected_msg: str,
+    unexpected_msg: str,
+    caplog,
 ):
-  """Sealing after an early close is best-effort: a failure is logged and after_run still runs."""
+  """Sealing after early close logs errors or skips stale sessions."""
   after_run_calls = []
 
   class _AfterRunPlugin(BasePlugin):
@@ -5981,7 +6005,7 @@ async def test_run_async_aborted_then_closed_seal_failure_is_logged(
 
   async def failing_append(session, event):
     if event.error_code == "INVOCATION_ABORTED":
-      raise RuntimeError("Simulated DB failure on abort event")
+      raise error
     return await orig_append(session=session, event=event)
 
   session_service.append_event = failing_append
@@ -5991,10 +6015,14 @@ async def test_run_async_aborted_then_closed_seal_failure_is_logged(
       session_service=session_service,
   )
 
-  with caplog.at_level(logging.ERROR):
+  with caplog.at_level(logging.INFO):
     await _run_turn(runner, "s", "Run", abort_when=_has_fc, close_on_abort=True)
 
-  assert "Failed to seal aborted invocation" in caplog.text
+  assert unexpected_msg not in caplog.text
+  assert any(
+      r.levelno == expected_level and expected_msg in r.getMessage()
+      for r in caplog.records
+  )
   assert len(after_run_calls) == 1
 
 
