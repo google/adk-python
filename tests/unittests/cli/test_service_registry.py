@@ -13,9 +13,11 @@
 # limitations under the License.
 
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import patch
+from urllib.parse import quote
 
 from google.adk.cli import service_registry
 from google.adk.events.event import Event
@@ -71,7 +73,9 @@ def registry():
 # Session Service Tests
 def test_create_session_service_sqlite(registry, mock_services):
   registry.create_session_service("sqlite:///test.db")
-  mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
+  mock_services["sqlite_session"].assert_called_once_with(
+      db_path="sqlite:///test.db"
+  )
 
 
 @pytest.mark.parametrize(
@@ -146,6 +150,63 @@ async def test_sqlite_file_session_uri_persists_sessions(
   ]
 
 
+async def test_sqlite_session_uri_preserves_read_only_mode(
+    registry: service_registry.ServiceRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+  """A SQLite URI's read-only option reaches the database connection."""
+  monkeypatch.setattr(
+      "google.adk.sessions.sqlite_session_service.SqliteSessionService",
+      SqliteSessionService,
+  )
+  db_path = tmp_path / "sessions.db"
+  writable_service = SqliteSessionService(str(db_path))
+  await writable_service.create_session(app_name="app", user_id="user")
+  await writable_service.close()
+
+  session_service = registry.create_session_service(
+      f"sqlite:///{db_path.as_posix()}?mode=ro"
+  )
+  assert isinstance(session_service, SqliteSessionService)
+  try:
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+      await session_service.create_session(app_name="app", user_id="user")
+  finally:
+    await session_service.close()
+
+
+async def test_sqlite_session_uri_decodes_database_path(
+    registry: service_registry.ServiceRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+  """An encoded SQLite URI opens the existing database at its decoded path."""
+  monkeypatch.setattr(
+      "google.adk.sessions.sqlite_session_service.SqliteSessionService",
+      SqliteSessionService,
+  )
+  db_path = tmp_path / "sessions #1.db"
+  writable_service = SqliteSessionService(str(db_path))
+  session = await writable_service.create_session(
+      app_name="app", user_id="user", state={"count": 1}
+  )
+  await writable_service.close()
+
+  session_service = registry.create_session_service(
+      f"sqlite:///{quote(db_path.as_posix())}"
+  )
+  assert isinstance(session_service, SqliteSessionService)
+  try:
+    stored_session = await session_service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+    assert stored_session is not None
+    assert stored_session.state == {"count": 1}
+  finally:
+    await session_service.close()
+
+
 def test_create_session_service_sqlite_ignores_unsupported_kwargs(
     registry, mock_services, caplog
 ):
@@ -158,7 +219,9 @@ def test_create_session_service_sqlite_ignores_unsupported_kwargs(
     )
 
   # SqliteSessionService should only receive db_path, not pool_size
-  mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
+  mock_services["sqlite_session"].assert_called_once_with(
+      db_path="sqlite:///test.db"
+  )
 
   # Verify warning was logged about ignored kwargs
   assert (
