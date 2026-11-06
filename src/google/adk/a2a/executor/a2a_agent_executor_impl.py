@@ -39,6 +39,7 @@ from ..converters.from_adk_event import create_error_status_event
 from ..converters.long_running_functions import handle_user_input
 from ..converters.long_running_functions import LongRunningFunctions
 from ..converters.request_converter import AgentRunRequest
+from ..converters.request_converter import build_caller_principal
 from ..converters.utils import _get_adk_metadata_key
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
@@ -111,6 +112,11 @@ class _A2aAgentExecutor(AgentExecutor):
           context,
           self._config.a2a_part_converter,
       )
+      # The request converter is pluggable, so the principal is re-derived
+      # here from the RequestContext the A2A server handed us. A custom
+      # converter must not be able to drop the principal, and must not be
+      # able to assert one the server never established.
+      run_request.caller_principal = build_caller_principal(context)
       session_id = await self._resolve_session(run_request, runner)
 
       executor_context = ExecutorContext(
