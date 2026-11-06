@@ -141,6 +141,7 @@ def _remove_any_of(schema: _JsonSchema) -> None:
       for type_ in union_types:
         if type_.get('type') != 'null':
           property_schema.update(type_)
+          break
 
 
 def _remove_default(schema: _JsonSchema) -> None:
