@@ -23,6 +23,7 @@ from typing import Literal
 from typing import NamedTuple
 from typing import Optional
 
+from fastapi.openapi.models import OAuth2
 from pydantic import BaseModel
 
 from ....auth.auth_credential import AuthCredential
@@ -31,6 +32,8 @@ from ....auth.auth_schemes import AuthScheme
 from ....auth.auth_schemes import AuthSchemeType
 from ....auth.auth_tool import _stable_model_digest
 from ....auth.auth_tool import AuthConfig
+from ....auth.exchanger.base_credential_exchanger import CredentialExchangeError
+from ....auth.exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 from ....auth.refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 from ...tool_context import ToolContext
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
@@ -591,6 +594,10 @@ class ToolAuthHandler:
       requested but this credential has spent its budget; "failed" if no
       recovery was possible.
     """
+    if self._is_client_credentials_only():
+      self._evict_credentials()
+      return "failed"
+
     # Budget bookkeeping needs the store to name the credential and the context
     # to read and write the counts. Without both there is nowhere to record an
     # attempt, so the budgets are skipped rather than silently reset to zero on
@@ -727,6 +734,54 @@ class ToolAuthHandler:
         and not credential.oauth2.access_token
     )
 
+  def _is_client_credentials_only(self) -> bool:
+    if not isinstance(self.auth_scheme, OAuth2):
+      return False
+    flows = self.auth_scheme.flows
+    return bool(
+        flows.clientCredentials
+        and not (flows.authorizationCode or flows.implicit or flows.password)
+    )
+
+  async def _prepare_client_credentials(
+      self, raw_credential: AuthCredential
+  ) -> AuthPreparationResult:
+    credential = (
+        self.credential_store.get_credential(
+            self.auth_scheme, self.auth_credential
+        )
+        if self.credential_store
+        else None
+    ) or raw_credential.model_copy(deep=True)
+    if not (
+        credential
+        and credential.oauth2
+        and credential.oauth2.access_token
+        and not await OAuth2CredentialRefresher().is_refresh_needed(credential)
+    ):
+      credential = raw_credential.model_copy(deep=True)
+      assert credential.oauth2 is not None
+      credential.oauth2.access_token = None
+      credential.oauth2.expires_at = None
+      credential.oauth2.expires_in = None
+      result = await OAuth2CredentialExchanger().exchange(
+          credential, self.auth_scheme
+      )
+      credential = result.credential
+      if not (credential.oauth2 and credential.oauth2.access_token):
+        raise CredentialExchangeError(
+            "Client credentials exchange did not return an access token."
+        )
+      # The token cache is session state, which must not hold the client secret.
+      credential.oauth2.client_secret = None
+      self._store_credential(credential)
+
+    return AuthPreparationResult(
+        state="done",
+        auth_scheme=self.auth_scheme,
+        auth_credential=self._exchange_credential(credential),
+    )
+
   async def prepare_auth_credentials(
       self,
   ) -> AuthPreparationResult:
@@ -735,6 +790,13 @@ class ToolAuthHandler:
     # no auth is needed
     if not self.auth_scheme:
       return AuthPreparationResult(state="done")
+
+    if (
+        self._is_client_credentials_only()
+        and self.auth_credential
+        and self.auth_credential.oauth2
+    ):
+      return await self._prepare_client_credentials(self.auth_credential)
 
     # Check for existing credential.
     existing_credential = await self._get_existing_credential()
