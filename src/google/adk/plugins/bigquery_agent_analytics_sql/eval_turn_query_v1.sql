@@ -38,7 +38,7 @@
 --     query parameters the running job supplies.
 -- {where_clause}
 --     Empty, or a trusted condition on the output columns that picks the rows
---     to return, such as the turns that started in a time window.  It filters
+--     to return, such as the turns that ended in a time window.  It filters
 --     whole turns after they are rebuilt, so it drops no event that a turn it
 --     keeps needs.  The template puts it right after the last source, so it
 --     starts with a newline and has this shape, here indented, with WHERE at

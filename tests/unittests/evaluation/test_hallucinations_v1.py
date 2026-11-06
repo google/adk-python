@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 
 from google.adk.evaluation.app_details import AgentDetails
@@ -26,6 +27,7 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.hallucinations_v1 import _parse_sentences
 from google.adk.evaluation.hallucinations_v1 import _parse_validation_results
 from google.adk.evaluation.hallucinations_v1 import HallucinationsV1Evaluator
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
 import pytest
 
@@ -36,8 +38,9 @@ def mock_llm_registry(mocker):
   MockLLMRegistry = mocker.patch(
       "google.adk.evaluation.hallucinations_v1.LLMRegistry"
   )
-  MockLLMRegistry.return_value.resolve.return_value = mocker.MagicMock()
-  yield
+  mock_llm_cls = mocker.MagicMock()
+  MockLLMRegistry.return_value.resolve.return_value = mock_llm_cls
+  yield mock_llm_cls.return_value
 
 
 @pytest.fixture
@@ -1718,3 +1721,202 @@ async def test_evaluate_nl_response_judge_request_disables_afc(
   for request in captured_requests:
     assert request.config.automatic_function_calling is not None
     assert request.config.automatic_function_calling.disable is True
+
+
+async def test_evaluate_invocations_runs_judge_calls_up_to_parallelism_limit(
+    mock_llm_registry,
+):
+  """Judge calls run concurrently, never more than parallelism_limit at once.
+
+  Setup: parallelism_limit=3 and four single-response invocations. Each judge
+    call holds its slot until three calls are in flight.
+  Act: Evaluate the invocations.
+  Assert: The most judge calls in flight at once is three.
+  """
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1",
+          threshold=0.5,
+          criterion=HallucinationsCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash", parallelism_limit=3
+              ),
+          ),
+      )
+  )
+  in_flight = 0
+  max_in_flight = 0
+  all_slots_filled = asyncio.Event()
+
+  async def mock_generate(llm_request):
+    del llm_request
+    nonlocal in_flight, max_in_flight
+    in_flight += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    if in_flight == 3:
+      all_slots_filled.set()
+    try:
+      await asyncio.wait_for(all_slots_filled.wait(), timeout=1.0)
+      # Yield so a call beyond the limit, if unbounded, would start now.
+      await asyncio.sleep(0.01)
+      yield LlmResponse(
+          content=genai_types.Content(
+              parts=[genai_types.Part(text="<sentence>s</sentence>")]
+          )
+      )
+    finally:
+      in_flight -= 1
+
+  mock_llm_registry.generate_content_async = mock_generate
+  invocations = [
+      Invocation(
+          invocation_id=f"inv_{i}",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text=f"answer {i}")]
+          ),
+      )
+      for i in range(4)
+  ]
+
+  await metric.evaluate_invocations(invocations)
+
+  assert max_in_flight == 3
+
+
+async def test_evaluate_invocations_keeps_input_order_on_out_of_order_finish(
+    mock_llm_registry,
+):
+  """Results keep input order when a later invocation finishes first.
+
+  Setup: parallelism_limit=3 and three single-sentence invocations. The first
+    invocation's validator call waits until the other two validators finish.
+    The first answer is supported; the other two are contradictory.
+  Act: Evaluate the invocations.
+  Assert: The first invocation finished last, yet results are in input order,
+    each with its own score.
+  """
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1",
+          threshold=0.5,
+          criterion=HallucinationsCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash", parallelism_limit=3
+              ),
+          ),
+      )
+  )
+  labels = {
+      "answer_alpha": "supported",
+      "answer_bravo": "contradictory",
+      "answer_charlie": "contradictory",
+  }
+  finished = []
+  others_finished = asyncio.Event()
+
+  async def mock_generate(llm_request):
+    prompt = llm_request.contents[0].parts[0].text
+    sentence = next(s for s in labels if s in prompt)
+    if "**Your Sentence Segmentation Output:**" in prompt:
+      text = f"<sentence>{sentence}</sentence>"
+    else:
+      if sentence == "answer_alpha":
+        await asyncio.wait_for(others_finished.wait(), timeout=1.0)
+      finished.append(sentence)
+      if len(finished) == 2:
+        others_finished.set()
+      text = (
+          f"sentence: {sentence}\n"
+          f"label: {labels[sentence]}\n"
+          "rationale: test rationale\n"
+          "supporting_excerpt: excerpt\n"
+          "contradicting_excerpt: null"
+      )
+    yield LlmResponse(
+        content=genai_types.Content(parts=[genai_types.Part(text=text)])
+    )
+
+  mock_llm_registry.generate_content_async = mock_generate
+  invocations = [
+      Invocation(
+          invocation_id=sentence,
+          user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text=sentence)]
+          ),
+      )
+      for sentence in labels
+  ]
+
+  result = await metric.evaluate_invocations(invocations)
+
+  assert finished[-1] == "answer_alpha"
+  assert [
+      r.actual_invocation.invocation_id for r in result.per_invocation_results
+  ] == ["answer_alpha", "answer_bravo", "answer_charlie"]
+  assert [r.score for r in result.per_invocation_results] == [1.0, 0.0, 0.0]
+
+
+async def test_evaluate_invocations_cancels_in_flight_judge_calls_on_error(
+    mock_llm_registry, mocker
+):
+  """An invocation that raises cancels judge calls still in flight.
+
+  Setup: parallelism_limit=2. The first invocation's judge call blocks, and
+    collecting the steps of the second invocation raises.
+  Act: Evaluate the invocations.
+  Assert: The error propagates and the blocked judge call was cancelled.
+  """
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1",
+          threshold=0.5,
+          criterion=HallucinationsCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash", parallelism_limit=2
+              ),
+          ),
+      )
+  )
+  cancelled = False
+
+  async def mock_generate(llm_request):
+    del llm_request
+    nonlocal cancelled
+    try:
+      await asyncio.wait_for(asyncio.Event().wait(), timeout=2.0)
+      yield LlmResponse()
+    except asyncio.CancelledError:
+      cancelled = True
+      raise
+
+  mock_llm_registry.generate_content_async = mock_generate
+  get_steps_to_evaluate = metric._get_steps_to_evaluate
+
+  def get_steps_or_raise(actual):
+    if actual.invocation_id == "broken":
+      raise RuntimeError("bad invocation")
+    return get_steps_to_evaluate(actual)
+
+  mocker.patch.object(
+      metric, "_get_steps_to_evaluate", side_effect=get_steps_or_raise
+  )
+  invocations = [
+      Invocation(
+          invocation_id=invocation_id,
+          user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="answer")]
+          ),
+      )
+      for invocation_id in ["blocked", "broken"]
+  ]
+
+  with pytest.raises(RuntimeError, match="bad invocation"):
+    await metric.evaluate_invocations(invocations)
+
+  assert cancelled
