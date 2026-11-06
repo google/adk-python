@@ -1856,7 +1856,16 @@ async def _content_to_message_param(
           tool_calls=tool_calls or None,
       )
 
-    reasoning_content = _merge_reasoning_texts(reasoning_parts)
+    # Groq strictly rejects 'reasoning_content' in inbound assistant history
+    # messages during chat completions:
+    # "for 'role:assistant' property 'reasoning_content' is unsupported"
+    is_groq = (
+        (provider and provider.strip().lower() == "groq")
+        or (custom_llm_provider and custom_llm_provider.strip().lower() == "groq")
+        or (model and model.strip().lower().startswith("groq/"))
+    )
+
+    reasoning_content = None if is_groq else _merge_reasoning_texts(reasoning_parts)
     return _assistant_message(
         content=final_content,
         tool_calls=tool_calls or None,
