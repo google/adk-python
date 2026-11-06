@@ -2364,6 +2364,92 @@ def test_to_agent_engine_env_vars_override_reports_names_only(
   assert captured[0]["env_vars"]["GOOGLE_API_KEY"] == "secret-key-value"
 
 
+@pytest.mark.parametrize(
+    "dotenv, config_env_vars, expected_env_vars",
+    [
+        pytest.param(
+            None,
+            {"MY_SETTING": "keep-me"},
+            {
+                "MY_SETTING": "keep-me",
+                "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
+                "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false",
+            },
+            id="keeps_config_env_vars",
+        ),
+        pytest.param(
+            None,
+            {
+                "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "false",
+                "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "true",
+            },
+            {
+                "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
+                "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "true",
+            },
+            id="flag_sets_telemetry_on_and_keeps_capture_setting",
+        ),
+        pytest.param(
+            None,
+            None,
+            {
+                "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
+                "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false",
+            },
+            id="null_config_env_vars",
+        ),
+        pytest.param(
+            'FROM_DOTENV="1"\n',
+            {"FROM_CONFIG": "replaced-by-dotenv"},
+            {
+                "FROM_DOTENV": "1",
+                "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
+                "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false",
+            },
+            id="dotenv_takes_precedence_over_config",
+        ),
+    ],
+)
+def test_to_agent_engine_otel_to_cloud_adds_to_deployed_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    dotenv: Optional[str],
+    config_env_vars: Optional[Dict[str, str]],
+    expected_env_vars: Dict[str, str],
+) -> None:
+  """`--otel_to_cloud` adds its variables to the env_vars it deploys.
+
+  Those env_vars come from `.env` when it has any, else from the config file.
+  The flag turns its own GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY switch on
+  and keeps a content-capture setting the user chose.
+  """
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  if dotenv is not None:
+    (src_dir / ".env").write_text(dotenv)
+  config_file = src_dir.parent / "config.json"
+  config_file.write_text(json.dumps({"env_vars": config_env_vars}))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      agent_engine_config_file=str(config_file),
+      otel_to_cloud=True,
+  )
+
+  assert captured[0]["env_vars"] == expected_env_vars
+
+
 # _robust_rmtree / _on_rm_error tests
 
 
