@@ -345,6 +345,26 @@ def test_cross_turn_no_outcome_static_vs_dynamic_run(
   assert dynamic_result.should_run
 
 
+def test_cross_turn_dynamic_run_recorded_completed_fast_forwards():
+  """Case 6 replays a dynamic run whose completion marker was recorded."""
+  recovered = _ChildScanState(run_id='1', completed=True)
+  node = BaseNode(name='node', rerun_on_resume=False, wait_for_output=False)
+  dynamic_run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=False,
+  )
+
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=dynamic_run,
+  )
+
+  assert not result.should_run
+  assert result.output is None
+
+
 # --- create_mock_context ---
 
 
