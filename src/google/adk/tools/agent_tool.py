@@ -274,14 +274,13 @@ class AgentTool(BaseTool):
       except ValidationError as e:
         return _arg_validation_error(self.name, e)
       # The text must stay a bare JSON document: the node runtime re-validates
-      # it against this same schema, so any prose here fails that parse.
+      # it against this same schema, so any prose here fails that parse. It
+      # validates by field name, so by_alias=False overrides a schema's
+      # serialize_by_alias.
+      text = input_value.model_dump_json(exclude_none=True, by_alias=False)
       content = types.Content(
           role='user',
-          parts=[
-              types.Part.from_text(
-                  text=input_value.model_dump_json(exclude_none=True)
-              )
-          ],
+          parts=[types.Part.from_text(text=text)],
       )
     else:
       if 'request' in args:
