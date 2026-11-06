@@ -83,7 +83,7 @@ def _read_bytes_if_present(path: Path) -> bytes | None:
 
 
 def _read_text_if_present(path: Path) -> str | None:
-  """Reads a UTF-8 text payload from disk.
+  """Reads a UTF-8 text payload with its original line endings.
 
   Args:
     path: Location of the payload.
@@ -92,7 +92,7 @@ def _read_text_if_present(path: Path) -> str | None:
     The decoded file contents, or None if it is not a readable file.
   """
   try:
-    return path.read_text(encoding="utf-8")
+    return path.read_bytes().decode("utf-8")
   except FileNotFoundError:
     return None
   except (OSError, UnicodeDecodeError) as exc:
@@ -560,7 +560,7 @@ class FileArtifactService(BaseArtifactService):
         )
         display_name = artifact.inline_data.display_name
       elif artifact.text is not None:
-        content_path.write_text(artifact.text, encoding="utf-8")
+        content_path.write_bytes(artifact.text.encode("utf-8"))
         mime_type = None
       else:
         raise InputValidationError(
