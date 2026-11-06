@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from . import _toolset_auth
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
@@ -359,6 +360,9 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     # resolution, which can be a remote call for e.g. MCP toolsets.
     tools_dict = {}
     if agent is not None and hasattr(agent, "canonical_tools"):
+      # This processor runs before `toolset_auth`, and an authenticated
+      # toolset lists its tools with the credential that resolves.
+      await _toolset_auth.resolve_toolset_credentials(invocation_context, agent)
       tools_dict = {
           tool.name: tool
           for tool in await cast("LlmAgent", agent).canonical_tools(

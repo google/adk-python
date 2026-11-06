@@ -20,24 +20,42 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from fastapi.openapi.models import APIKey
+from fastapi.openapi.models import APIKeyIn
+from fastapi.openapi.models import HTTPBearer
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _resolve_toolset_auth
 from google.adk.flows.llm_flows.base_llm_flow import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX as FLOW_PREFIX
 from google.adk.flows.llm_flows.functions import build_auth_request_event
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.tools import _toolset_auth
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_context import ToolContext
+from google.genai import types
 import pytest
+
+from .. import testing_utils
 
 
 class MockToolset(BaseToolset):
@@ -303,6 +321,195 @@ class TestResolveToolsetAuth:
     # and only one will be in pending_auth_requests (dict overwrites)
     assert len(events) == 1
     assert mock_invocation_context.end_invocation is True
+
+  @pytest.mark.asyncio
+  async def test_resolving_credentials_requests_nothing(
+      self, mock_invocation_context, mock_agent
+  ):
+    """Credentials can be resolved without asking the user for the rest."""
+    signed_in_config = create_oauth2_auth_config()
+    signed_in_config.credential_key = "signed_in"
+    signed_out_config = create_oauth2_auth_config()
+    signed_out_config.credential_key = "signed_out"
+
+    class SignedOutToolset(MockToolset):
+      pass
+
+    mock_agent.tools = [
+        MockToolset(auth_config=signed_in_config),
+        SignedOutToolset(auth_config=signed_out_config),
+    ]
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token="test-token"),
+    )
+
+    def create_mock_cm(cfg):
+      manager = AsyncMock()
+      manager.get_auth_credential = AsyncMock(
+          return_value=credential if cfg.credential_key == "signed_in" else None
+      )
+      return manager
+
+    with patch(
+        "google.adk.auth.credential_manager.CredentialManager",
+        side_effect=create_mock_cm,
+    ):
+      pending = await _toolset_auth.resolve_toolset_credentials(
+          mock_invocation_context, mock_agent
+      )
+
+    assert mock_invocation_context.credential_by_key == {
+        "signed_in": credential
+    }
+    assert list(pending) == [
+        f"{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}SignedOutToolset"
+    ]
+    assert mock_invocation_context.end_invocation is False
+
+
+class _BearerTokenToolset(BaseToolset):
+  """A toolset that lists its tools only to a caller holding its token."""
+
+  def __init__(self, tools: list[BaseTool]):
+    super().__init__()
+    self._auth_config = AuthConfig(
+        auth_scheme=HTTPBearer(), credential_key="reports_api"
+    )
+    self._tools = tools
+
+  def get_auth_config(self) -> AuthConfig:
+    return self._auth_config
+
+  async def get_tools(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> list[BaseTool]:
+    if readonly_context is None or not readonly_context.get_credential(
+        "reports_api"
+    ):
+      raise PermissionError("HTTP 401: the reports API requires a bearer token")
+    return self._tools
+
+
+class TestToolsetCredentialOnAuthResume:
+  """A tool that asks for a credential of its own resumes with its toolset's."""
+
+  async def _run(
+      self, runner: Runner, session: Session, part: types.Part
+  ) -> list[Event]:
+    return [
+        event
+        async for event in runner.run_async(
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=types.Content(role="user", parts=[part]),
+        )
+    ]
+
+  def _auth_answer(
+      self, events: list[Event], credential: AuthCredential
+  ) -> types.Part:
+    auth_call = next(
+        function_call
+        for event in events
+        for function_call in event.get_function_calls()
+        if function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
+    )
+    auth_config = AuthConfig.model_validate(auth_call.args["authConfig"])
+    auth_config.exchanged_auth_credential = credential
+    return types.Part(
+        function_response=types.FunctionResponse(
+            id=auth_call.id,
+            name=REQUEST_EUC_FUNCTION_CALL_NAME,
+            response=auth_config.model_dump(exclude_none=True, by_alias=True),
+        )
+    )
+
+  @pytest.mark.asyncio
+  async def test_answer_served_by_another_process_resumes_the_call(self):
+    """The resumed call is found and run, not reported as an unknown tool."""
+    export_auth = AuthConfig(
+        auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Export-Key"}),
+        credential_key="export_bucket",
+    )
+    exported = []
+
+    def export_report(tool_context: ToolContext) -> dict[str, str]:
+      if not tool_context.get_auth_response(export_auth):
+        tool_context.request_credential(export_auth)
+        return {"status": "pending_auth"}
+      exported.append(tool_context.function_call_id)
+      return {"result": "exported"}
+
+    session_service = InMemorySessionService()
+    credential_service = InMemoryCredentialService()
+
+    def make_runner(*responses) -> Runner:
+      # A fresh agent and toolset per runner, the way a new process serving
+      # the same sessions and credentials would build them.
+      agent = LlmAgent(
+          name="reports_agent",
+          model=testing_utils.MockModel.create(responses=list(responses)),
+          tools=[_BearerTokenToolset([FunctionTool(func=export_report)])],
+      )
+      return Runner(
+          app_name="reports_app",
+          agent=agent,
+          session_service=session_service,
+          credential_service=credential_service,
+      )
+
+    session = await session_service.create_session(
+        app_name="reports_app", user_id="user"
+    )
+    paused_runner = make_runner(
+        types.Part(
+            function_call=types.FunctionCall(name="export_report", args={})
+        )
+    )
+    events = await self._run(
+        paused_runner, session, types.Part(text="export the report")
+    )
+    events = await self._run(
+        paused_runner,
+        session,
+        self._auth_answer(
+            events,
+            AuthCredential(
+                auth_type=AuthCredentialTypes.HTTP,
+                http=HttpAuth(
+                    scheme="bearer",
+                    credentials=HttpCredentials(token="reports-token"),
+                ),
+            ),
+        ),
+    )
+    export_call = next(
+        function_call
+        for event in events
+        for function_call in event.get_function_calls()
+        if function_call.name == "export_report"
+    )
+
+    resuming_runner = make_runner("report exported")
+    events = await self._run(
+        resuming_runner,
+        session,
+        self._auth_answer(
+            events,
+            AuthCredential(
+                auth_type=AuthCredentialTypes.API_KEY, api_key="export-key"
+            ),
+        ),
+    )
+
+    assert exported == [export_call.id]
+    assert [
+        function_response.response
+        for event in events
+        for function_response in event.get_function_responses()
+        if function_response.name == "export_report"
+    ] == [{"result": "exported"}]
 
 
 class TestAuthPreprocessorToolsetAuthSkip:
