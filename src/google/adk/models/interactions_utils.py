@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import dataclasses
 import json
 import logging
@@ -85,6 +86,7 @@ from google.genai.interactions import TextAnnotationDelta
 from google.genai.interactions import TextContent
 from google.genai.interactions import TextContentParam
 from google.genai.interactions import TextDelta
+from google.genai.interactions import TextResponseFormatParam
 from google.genai.interactions import ThoughtSignatureDelta
 from google.genai.interactions import ThoughtStep
 from google.genai.interactions import ThoughtStepParam
@@ -119,6 +121,8 @@ else:
   from google.genai.interactions import Interaction
 
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
+from ..utils._schema_utils import schema_to_json_schema
 from ._service_tier import ServiceTier
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -1497,6 +1501,65 @@ def build_generation_config(
   return generation_config
 
 
+def _without_false_nullable(schema: types.Schema) -> types.Schema:
+  """Return a copy of the schema with every ``nullable=False`` unset.
+
+  ``Schema.json_schema`` adds ``null`` to a field's types for any ``nullable``
+  value, false included, while an unset ``nullable`` keeps the field non-null.
+  """
+  update: dict[str, Any] = {}
+  if schema.nullable is False:
+    update['nullable'] = None
+  if schema.items is not None:
+    update['items'] = _without_false_nullable(schema.items)
+  if schema.any_of is not None:
+    update['any_of'] = [_without_false_nullable(s) for s in schema.any_of]
+  if schema.properties is not None:
+    update['properties'] = {
+        name: _without_false_nullable(s)
+        for name, s in schema.properties.items()
+    }
+  return schema.model_copy(update=update)
+
+
+def _build_response_format(
+    config: types.GenerateContentConfig,
+) -> TextResponseFormatParam | None:
+  """Build the JSON response format carrying the config's output schema.
+
+  The interactions API takes the schema as a response format rather than from
+  ``response_schema`` or ``response_json_schema`` on the config.
+
+  Args:
+    config: The GenerateContentConfig to read the output schema from.
+
+  Returns:
+    A JSON text response format carrying the schema, or None when the config
+    sets no schema.
+  """
+  if config.response_json_schema is not None:
+    schema = config.response_json_schema
+  elif config.response_schema is not None:
+    schema = config.response_schema
+  else:
+    return None
+
+  if isinstance(schema, types.Schema):
+    json_schema = _without_false_nullable(schema).json_schema.model_dump(
+        by_alias=True, exclude_none=True, mode='json'
+    )
+  else:
+    # A schema dict may use the uppercase type names of ``types.Schema``,
+    # which JSON Schema doesn't accept.
+    json_schema = copy.deepcopy(schema_to_json_schema(schema))
+    lowercase_schema_types(json_schema)
+  return {
+      'type': 'text',
+      'mime_type': 'application/json',
+      'schema_': json_schema,
+  }
+
+
 def extract_system_instruction(
     config: types.GenerateContentConfig,
 ) -> str | None:
@@ -1975,6 +2038,7 @@ async def generate_content_via_interactions(
   )
   system_instruction = extract_system_instruction(llm_request.config)
   generation_config = build_generation_config(llm_request.config)
+  response_format = _build_response_format(llm_request.config)
 
   # Get previous interaction ID for stateful conversations
   previous_interaction_id = llm_request.previous_interaction_id
@@ -2010,6 +2074,11 @@ async def generate_content_via_interactions(
       'generation_config': generation_config if generation_config else None,
       'previous_interaction_id': previous_interaction_id,
   }
+
+  if response_format:
+    create_kwargs['response_format'] = response_format
+    # The API requires the response MIME type alongside a response format.
+    create_kwargs['response_mime_type'] = 'application/json'
 
   if service_tier:
     create_kwargs['service_tier'] = service_tier
