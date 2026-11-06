@@ -427,7 +427,8 @@ def validate_node_data(
     return val
 
   def _validate_python_object(val: Any) -> Any:
-    validated: Any = TypeAdapter(schema).validate_python(val)
+    # by_name accepts data a model dumped by field name, e.g. AgentTool input.
+    validated: Any = TypeAdapter(schema).validate_python(val, by_name=True)
     return _to_serializable(validated)
 
   if isinstance(data, types.Content):
