@@ -371,6 +371,75 @@ contradicting_excerpt: e2
     )
     assert score is None
 
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_a_sentence_is_repeated(
+      self, hallucinations_metric, mocker
+  ):
+    """A duplicate block for one sentence must not stand in for another."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_sentence_not_segmented(
+      self, hallucinations_metric, mocker
+  ):
+    """A block for a sentence that was not segmented is not counted."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S3.
+label: supported
+rationale: r3
+supporting_excerpt: e3
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_matches_sentences_ignoring_spacing(
+      self, hallucinations_metric, mocker
+  ):
+    """Whitespace and case differences in a copied sentence still match."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence:   s1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: contradictory
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score == 0.5
+
 
 @pytest.fixture
 def create_context_data():

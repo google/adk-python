@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
 import logging
@@ -225,6 +226,15 @@ class EvaluationStep:
 def _parse_sentences(response_text: str) -> list[str]:
   """Parses sentences from LLM response."""
   return re.findall(r"<sentence>(.*?)</sentence>", response_text, re.DOTALL)
+
+
+def _normalize_sentence(sentence: Optional[str]) -> str:
+  """Normalizes a sentence for matching validator blocks to segments.
+
+  Collapses whitespace and case only; the validator is asked to copy each
+  sentence as given.
+  """
+  return " ".join((sentence or "").split()).casefold()
 
 
 def _parse_validation_results(
@@ -577,6 +587,7 @@ class HallucinationsV1Evaluator(Evaluator):
       return None, f"Error during sentence validation: {e}"
 
     scores = []
+    labelled_sentences = []
     for result in validation_results:
       label = result.get("label")
       if label is None:
@@ -592,19 +603,28 @@ class HallucinationsV1Evaluator(Evaluator):
         scores.append(0)
       else:
         logger.debug("Unexpected label: %s", label)
+        continue
+      labelled_sentences.append(_normalize_sentence(result.get("sentence")))
 
-    # A sentence left without a usable label (omitted by the validator, given
-    # a label outside the label set, or merged into a neighbouring block when
-    # a line is missing) would drop out of the average and inflate the score,
-    # so the response is not scored, as in rubric_based_evaluator.
-    num_sentences = len(sentences)
-    if len(validation_results) != num_sentences or len(scores) != num_sentences:
+    # Every segmented sentence must get exactly one usable label. A sentence
+    # left without one (omitted by the validator, given a label outside the
+    # label set, merged into a neighbouring block when a line is missing, or
+    # replaced by a duplicate block for another sentence) would drop out of
+    # the average and inflate the score, so the response is not scored, as in
+    # rubric_based_evaluator.
+    segmented_sentences = collections.Counter(
+        _normalize_sentence(s) for s in sentences
+    )
+    if len(validation_results) != len(sentences) or (
+        collections.Counter(labelled_sentences) != segmented_sentences
+    ):
       logger.warning(
-          "Sentence validator returned %d usable labels in %d blocks for %d"
-          " sentences; this response will not be scored.",
+          "Sentence validator returned %d usable labels in %d blocks that do"
+          " not match the %d segmented sentences; this response will not be"
+          " scored.",
           len(scores),
           len(validation_results),
-          num_sentences,
+          len(sentences),
       )
       return None, json.dumps(validation_results, indent=2)
 
