@@ -855,6 +855,18 @@ class SearchSkillsTool(BaseTool):
       }
 
 
+def _list_skill_resources(skill: models.Skill) -> list[str]:
+  """Returns the relative resource paths bundled with a skill."""
+  resources = skill.resources
+  if resources is None:
+    return []
+  return [
+      *(f"references/{name}" for name in resources.list_references()),
+      *(f"assets/{name}" for name in resources.list_assets()),
+      *(f"scripts/{name}" for name in resources.list_scripts()),
+  ]
+
+
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
@@ -940,6 +952,8 @@ class LoadSkillTool(BaseTool):
         "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
+    if resources := _list_skill_resources(skill):
+      result["resources"] = resources
     if evicted:
       # Tell the model, rather than letting the declarations quietly vanish.
       result["unloaded_skills"] = evicted
