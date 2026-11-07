@@ -1439,6 +1439,72 @@ class TestMCPSessionManager:
     )
 
   @pytest.mark.asyncio
+  async def test_cancelled_create_session_leaves_no_connection_open(self):
+    """Cancelling create_session mid-handshake must not orphan the connection.
+
+    The session never reaches the pool, so close() has no way to reach it if
+    the connect is left to finish on its own.
+    """
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="http://example.com/mcp", timeout=5.0
+        )
+    )
+    handshake_started = asyncio.Event()
+    release_handshake = asyncio.Event()
+    transport = {"opened": 0, "closed": 0}
+
+    class _CountingClient:
+
+      async def __aenter__(self):
+        transport["opened"] += 1
+        return ("read_stream", "write_stream")
+
+      async def __aexit__(self, exc_type, exc_val, exc_tb):
+        transport["closed"] += 1
+        return False
+
+    class _SlowHandshakeSession:
+
+      def __init__(self, *args, **kwargs):
+        pass
+
+      async def __aenter__(self):
+        return self
+
+      async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+      async def initialize(self):
+        handshake_started.set()
+        await release_handshake.wait()
+
+    with (
+        patch.object(
+            manager, "_get_mtls_transport", AsyncMock(return_value=None)
+        ),
+        patch.object(manager, "_create_client", return_value=_CountingClient()),
+        patch(
+            "google.adk.tools.mcp_tool.session_context.ClientSession",
+            _SlowHandshakeSession,
+        ),
+    ):
+      caller = asyncio.ensure_future(manager.create_session())
+      await handshake_started.wait()
+      caller.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await caller
+
+      # A connect still running would complete here.
+      release_handshake.set()
+      for _ in range(5):
+        await asyncio.sleep(0)
+      await manager.close()
+
+    assert transport == {"opened": 1, "closed": 1}
+    assert not manager._sessions
+
+  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup of all sessions."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
