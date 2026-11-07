@@ -36,6 +36,7 @@ from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
 from ..utils._event_loop_cache import per_loop_value
+from ..utils._google_client_headers import merge_tracking_http_options
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -627,15 +628,18 @@ class VertexAiSessionService(BaseSessionService):
     """
     from ..dependencies._agentplatform import agentplatform
 
+    http_options = merge_tracking_http_options(
+        self._api_client_http_options_override()
+    )
     if self._express_mode_api_key:
       return agentplatform.Client(
-          http_options=self._api_client_http_options_override(),
+          http_options=http_options,
           api_key=self._express_mode_api_key,
       ).aio
     return agentplatform.Client(
         project=self._project,
         location=self._location,
-        http_options=self._api_client_http_options_override(),
+        http_options=http_options,
     ).aio
 
 

@@ -28,6 +28,7 @@ from ..agents.callback_context import CallbackContext
 from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
+from .auth_handler import AuthHandler
 from .auth_provider_registry import AuthProviderRegistry
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import CustomAuthScheme
@@ -427,7 +428,9 @@ class CredentialManager:
       self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load credential from auth response in context."""
-    return context.get_auth_response(self._auth_config)
+    return await AuthHandler(self._auth_config)._get_auth_response_async(
+        context.state
+    )
 
   async def _exchange_credential(
       self, credential: AuthCredential

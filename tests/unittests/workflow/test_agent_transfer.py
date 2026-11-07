@@ -16,8 +16,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from typing import Any
 
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.loop_agent import LoopAgentState
@@ -26,11 +30,14 @@ from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.exit_loop_tool import exit_loop
 from google.adk.tools.tool_context import ToolContext
+from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 from google.genai import errors
+from google.genai import types
 from google.genai.types import Part
 import pytest
 
@@ -1512,3 +1519,169 @@ async def test_transfer_target_failing_before_first_event_owns_next_turn(
         ('sub_agent_1', END_OF_AGENT),
     ]
   assert len(root_model.requests) == 1
+
+
+@pytest.mark.parametrize('is_resumable', [True, False])
+@pytest.mark.parametrize(
+    'with_mid_agent, interrupt_path',
+    [
+        (False, 'root_agent@1/approver@1'),
+        (True, 'root_agent@1/mid_agent@1/approver@1'),
+    ],
+)
+async def test_resumed_sub_agent_replays_its_answered_interrupt(
+    is_resumable: bool,
+    with_mid_agent: bool,
+    interrupt_path: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A sub-agent resumed by a function response is rehydrated from its run.
+
+  approver does not rerun on resume, so once its interrupt is answered the
+  scheduler completes it with the answer instead of running it again. That
+  needs the run turn 2 resumes to be found under the path turn 1 recorded,
+  which for a grandchild includes every ancestor on the static agent tree.
+  """
+  # Arrange
+  runs: list[str] = []
+  step_outputs: list[tuple[str, Any]] = []
+  execute_step = DynamicNodeScheduler._execute_step  # pylint: disable=protected-access
+
+  async def _record_step_output(self, *args, **kwargs):
+    child_ctx = await execute_step(self, *args, **kwargs)
+    step_outputs.append((child_ctx.node_path, child_ctx.output))
+    return child_ctx
+
+  monkeypatch.setattr(
+      DynamicNodeScheduler, '_execute_step', _record_step_output
+  )
+
+  class _ApprovalAgent(BaseAgent):
+    """Asks for approval once and waits for the answer."""
+
+    wait_for_output: bool = True
+    rerun_on_resume: bool = False
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      runs.append(ctx.invocation_id)
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role='model',
+              parts=[
+                  Part(
+                      function_call=types.FunctionCall(
+                          name='approve', args={}, id='fc-approve'
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'fc-approve'},
+      )
+
+  approver: BaseAgent = _ApprovalAgent(name='approver')
+  root_child = approver
+  if with_mid_agent:
+    root_child = Agent(
+        name='mid_agent',
+        model=testing_utils.MockModel.create(
+            responses=[transfer_call_part('approver')]
+        ),
+        sub_agents=[approver],
+    )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[transfer_call_part(root_child.name)]
+      ),
+      sub_agents=[root_child],
+  )
+  app = App(
+      name='test_app',
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act: Turn 1 transfers to approver, which asks for approval.
+  events1 = await runner.run_async('test1')
+  step_outputs.clear()
+  # Turn 2 answers it; the runner resumes approver.
+  events2 = await runner.run_async(
+      types.Content(
+          role='user',
+          parts=[
+              Part(
+                  function_response=types.FunctionResponse(
+                      id='fc-approve',
+                      name='approve',
+                      response={'approved': True},
+                  )
+              )
+          ],
+      )
+  )
+
+  # Assert
+  assert [e.node_info.path for e in events1 if e.long_running_tool_ids] == [
+      interrupt_path
+  ]
+  assert len(runs) == 1
+  assert not [e for e in events2 if e.long_running_tool_ids]
+  # Replay completes approver's run with the answer as its output, without
+  # running approver again.
+  assert step_outputs == [(interrupt_path, {'approved': True})]
+
+
+@pytest.mark.parametrize('is_resumable', [True, False])
+async def test_continued_invocation_resumes_sub_agent_where_it_replied(
+    is_resumable: bool,
+):
+  """Continuing an invocation in a sub-agent replays its runs there.
+
+  In turn 1, sub_agent_1's first run (root_agent@1/sub_agent_1@1) transfers
+  back to root_agent, which transfers to it again (root_agent@2/sub_agent_1@1)
+  and it replies there. When the caller continues that invocation, the runner
+  resumes sub_agent_1 at root_agent@1/sub_agent_1@1; replay fast-forwards that
+  finished run and its transfers, and sub_agent_1 answers in the run where it
+  replied, rather than in a second run recorded under the first run's path.
+  """
+  # Arrange
+  response = [
+      transfer_call_part('sub_agent_1'),
+      transfer_call_part('root_agent'),
+      transfer_call_part('sub_agent_1'),
+      'response1',
+      'response2',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=response)
+  sub_agent_1 = Agent(name='sub_agent_1', model=mock_model)
+  root_agent = Agent(
+      name='root_agent', model=mock_model, sub_agents=[sub_agent_1]
+  )
+  app = App(
+      name='test_app',
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act
+  events1 = await runner.run_async('test1')
+  events2 = await runner.run_async(
+      'test2', invocation_id=events1[0].invocation_id
+  )
+
+  # Assert
+  assert [
+      (e.author, e.node_info.path)
+      for e in events1 + events2
+      if e.content and e.content.parts and e.content.parts[0].text
+  ] == [
+      ('sub_agent_1', 'root_agent@2/sub_agent_1@1'),
+      ('sub_agent_1', 'root_agent@2/sub_agent_1@1'),
+  ]
+  assert len(mock_model.requests) == 5
