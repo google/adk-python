@@ -2,7 +2,7 @@
 
 This example demonstrates how to use NVIDIA NIM (NVIDIA Inference Microservices) models with ADK through LiteLLM integration.
 
-For comprehensive information about using NVIDIA models with LiteLLM, refer to the [official LiteLLM documentation](https://github.com/BerriAI/litellm/blob/main/docs/my-website/docs/providers/nvidia_nim.md).
+For comprehensive information about using NVIDIA models with LiteLLM, refer to the [official LiteLLM documentation](https://docs.litellm.ai/docs/providers/nvidia_nim).
 
 ## Setup
 
