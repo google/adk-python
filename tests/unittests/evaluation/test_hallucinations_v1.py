@@ -529,6 +529,68 @@ tool_outputs:
     assert "recent AI news" in steps[1].context
     assert "Grounded sub-agent step." in steps[1].context
 
+  def test_create_context_for_step_skips_thought_parts(
+      self,
+      hallucinations_metric: HallucinationsV1Evaluator,
+      create_context_data: tuple[AppDetails, list[InvocationEvent], Invocation],
+  ) -> None:
+    """Thought parts of earlier events are not shown to the judge as context."""
+    app_details, events, invocation = create_context_data
+    thought_event = InvocationEvent(
+        author="root",
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(text="tool1 looks reliable.", thought=True),
+                genai_types.Part(text="tool1 answered."),
+            ]
+        ),
+    )
+
+    context = hallucinations_metric._create_context_for_step(
+        app_details, invocation, events + [thought_event]
+    )
+
+    assert "tool1 answered." in context
+    assert "tool1 looks reliable." not in context
+
+  def test_get_steps_to_evaluate_skips_thought_parts(
+      self, hallucinations_metric: HallucinationsV1Evaluator
+  ) -> None:
+    """Thought parts are not evaluated as NL responses."""
+    invocation = Invocation(
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="What's new in AI?")]
+        ),
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(
+                    author="root",
+                    content=genai_types.Content(
+                        parts=[
+                            genai_types.Part(
+                                text="I should search first.", thought=True
+                            ),
+                            genai_types.Part(text="Let me search."),
+                        ]
+                    ),
+                ),
+            ]
+        ),
+        final_response=genai_types.Content(
+            parts=[
+                genai_types.Part(text="Summarize the results.", thought=True),
+                genai_types.Part(text="Final response."),
+            ]
+        ),
+    )
+
+    steps = hallucinations_metric._get_steps_to_evaluate(invocation)
+
+    assert [step.nl_response for step in steps] == [
+        "Let me search.",
+        "Final response.",
+    ]
+
 
 @pytest.fixture
 def agent_tree_data():
