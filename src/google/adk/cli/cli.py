@@ -192,6 +192,19 @@ def _collect_pending_function_calls(
   return pending
 
 
+def _enable_line_editing() -> None:
+  """Enables arrow-key editing and history for input() when available.
+
+  input() only supports line editing once the readline module is imported.
+  readline is not available on Windows, where the console already provides
+  history.
+  """
+  try:
+    import readline  # noqa: F401
+  except ImportError:
+    pass
+
+
 def _is_positive_response(s: str) -> bool:
   """Returns True if the string is a positive response."""
   return s.strip().lower() in ('y', 'yes', 'true', 'confirm')
@@ -262,6 +275,7 @@ async def run_interactively(
     agent_loader: Optional[AgentLoader] = None,
     agent_folder_name: Optional[str] = None,
 ) -> None:
+  _enable_line_editing()
   app = _to_app(root_agent_or_app, session.app_name)
   runner = Runner(
       app=app,
