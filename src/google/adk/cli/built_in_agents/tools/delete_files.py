@@ -31,20 +31,18 @@ async def delete_files(
     file_paths: List[str],
     tool_context: ToolContext,
     create_backup: bool = False,
-    confirm_deletion: bool = True,
 ) -> Dict[str, Any]:
   """Delete multiple files with optional backup creation.
 
   This tool safely deletes multiple files with validation and optional backup
   creation.
   It's designed for cleaning up unused tool files when agent configurations
-  change.
+  change. Every call requires human confirmation, which the framework collects
+  before the tool runs; the model cannot supply an argument to skip it.
 
   Args:
     file_paths: List of absolute or relative paths to files to delete
     create_backup: Whether to create a backup before deletion (default: False)
-    confirm_deletion: Whether deletion was confirmed by user (default: True for
-      safety)
 
   Returns:
     Dict containing deletion operation results:
@@ -71,12 +69,6 @@ async def delete_files(
         "total_files": len(file_paths),
         "errors": [],
     }
-
-    # Safety check - only delete if user confirmed
-    if not confirm_deletion:
-      result["success"] = False
-      result["errors"].append("Deletion not confirmed by user")
-      return result
 
     for resolved_path in resolved_paths:
       file_path_obj = resolved_path.resolve()
