@@ -266,7 +266,7 @@ def _resolve_python_version_from_agent_config(
 
   Supports three sources, in increasing precedence:
 
-  1. The default, ``3.11``.
+  1. The default, ``3.12``.
   2. Top-level ``python_version`` in ``.agent_engine_config.json`` (popped so
      it is not forwarded to the Agent Engine API, which ignores it when the
      image is built from a Dockerfile).

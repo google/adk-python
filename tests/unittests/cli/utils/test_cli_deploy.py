@@ -3152,7 +3152,7 @@ def test_to_agent_engine_renders_python_version_and_pops_config_key(
   assert "python_version" not in captured[0]
 
 
-@pytest.mark.parametrize("cli_python_version", ["3.11", "3.13"])
+@pytest.mark.parametrize("cli_python_version", ["3.12", "3.13"])
 def test_to_agent_engine_cli_python_version_overrides_config_file(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
@@ -3160,7 +3160,7 @@ def test_to_agent_engine_cli_python_version_overrides_config_file(
 ) -> None:
   """An explicit python_version wins over .agent_engine_config.json.
 
-  Covers both the value that equals the built-in default (3.11) and a
+  Covers both the value that equals the built-in default (3.12) and a
   different one, so the override cannot depend on a default sentinel.
   """
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
@@ -3194,7 +3194,7 @@ def test_to_agent_engine_defaults_python_version_without_flag_or_config(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
 ) -> None:
-  """With neither the flag nor a config key, the image is built on 3.11."""
+  """With neither the flag nor a config key, the image is built on 3.12."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
   captured: List[Dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
@@ -3215,7 +3215,7 @@ def test_to_agent_engine_defaults_python_version_without_flag_or_config(
   )
 
   dockerfile_content = (tmp_dir / "Dockerfile").read_text()
-  assert "FROM python:3.11-slim" in dockerfile_content
+  assert "FROM python:3.12-slim" in dockerfile_content
 
 
 def test_to_agent_engine_rejects_non_string_python_version_in_config(
