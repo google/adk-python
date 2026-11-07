@@ -54,6 +54,9 @@ from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
+from pydantic.alias_generators import to_camel
 import pytest
 from pytest import mark
 
@@ -859,6 +862,88 @@ def test_custom_schema(env_variables):
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+class _AliasGeneratorInput(BaseModel):
+  model_config = ConfigDict(alias_generator=to_camel)
+  city_name: str
+
+
+class _ValidationAliasInput(BaseModel):
+  city_name: str = Field(validation_alias='cityName')
+
+
+class _SerializeByAliasInput(BaseModel):
+  model_config = ConfigDict(serialize_by_alias=True)
+  city_name: str = Field(serialization_alias='cityName')
+
+
+class _NestedAliasInput(BaseModel):
+  trip: _AliasGeneratorInput
+
+
+def _run_tool_agent(input_schema, args):
+  tool_agent_model = testing_utils.MockModel.create(responses=['sunny'])
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+      input_schema=input_schema,
+  )
+  function_call = Part.from_function_call(name='tool_agent', args=args)
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[function_call, 'done']),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  events = testing_utils.simplify_events(
+      testing_utils.InMemoryRunner(root_agent).run('test1')
+  )
+  assert events == [
+      ('root_agent', function_call),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='tool_agent', response={'result': 'sunny'}
+          ),
+      ),
+      ('root_agent', 'done'),
+  ]
+  return testing_utils.simplify_contents(tool_agent_model.requests[0].contents)
+
+
+@mark.parametrize(
+    'input_schema, args, expected',
+    [
+        (_ValidationAliasInput, {'cityName': 'Paris'}, '{"city_name":"Paris"}'),
+        (
+            _SerializeByAliasInput,
+            {'city_name': 'Paris'},
+            '{"city_name":"Paris"}',
+        ),
+        (
+            _NestedAliasInput,
+            {'trip': {'cityName': 'Paris'}},
+            '{"trip":{"city_name":"Paris"}}',
+        ),
+    ],
+)
+def test_input_schema_with_aliases(input_schema, args, expected):
+  """Tests that an aliased input_schema reaches the agent by field name."""
+
+  assert _run_tool_agent(input_schema, args) == [('user', expected)]
+
+
+def test_input_schema_sends_defaults_and_drops_none_defaults():
+  """Tests that aliased defaults are sent and None defaults are dropped."""
+
+  class TripInput(BaseModel):
+    city: str
+    num_days: int = Field(default=3, validation_alias='numDays')
+    hotel: str = None
+
+  assert _run_tool_agent(TripInput, {'city': 'Paris'}) == [
+      ('user', '{"city":"Paris","num_days":3}')
+  ]
 
 
 @mark.parametrize('skip_summarization', [False, True])

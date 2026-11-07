@@ -348,22 +348,23 @@ def _build_eval_view_ctes(
     denied_columns: Payload columns projected out of the table.  A denied
       ``content_parts``, ``attributes``, or ``latency_ms`` column reads as an
       empty array or NULL JSON, so the SQL never references it.
-    scope_columns: The columns that scope ``trace.agents``: ``session_id``
-      for the session view, ``session_id, invocation_id`` for the turn view.
-    raw_where_clause: A condition on the events table's columns, with or
-      without a leading ``WHERE``, that narrows the rows every CTE reads, such
-      as the lookback ``timestamp >= @lookback_start AND timestamp <
-      @window_end``, so that BigQuery can prune ``timestamp`` partitions.  It
-      is trusted SQL: pass values as query parameters, never splice in
-      untrusted text.  A session or turn with an event outside the condition
-      comes out partial, and loses the agent configuration that its earlier
-      events logged, so the lower bound must not be later than the first event
-      of any session to read, and the upper bound must come after the last
-      event of those sessions plus the delay before the plugin's writes are
-      readable.  Never filter on a column that varies within a session, such
-      as ``agent`` or ``event_type``.  To pick output rows, such as the
-      sessions of a time window, use the ``where_clause`` of the query
-      builders instead.
+    scope_columns: The columns that scope ``trace.agents``: ``session_id`` for
+      the session view, ``session_id, invocation_id`` for the turn view.
+    raw_where_clause: A condition on the events table's columns, with or without
+      a leading ``WHERE``, that narrows the rows every CTE reads, such as the
+      lookback ``timestamp >= @lookback_start``, so that BigQuery can prune
+      ``timestamp`` partitions.  It is trusted SQL: pass values as query
+      parameters, never splice in untrusted text.  A session or turn with an
+      event outside the condition comes out partial, and loses the agent
+      configuration that its earlier events logged, so the lower bound must not
+      be later than the first event of any session to read, and an upper bound,
+      if there is one, must come after the last event of those sessions plus the
+      delay before the plugin's writes are readable.  The end of the time window
+      to read is too early a bound: it cuts off a session that is still running
+      at that time, and the cut session passes for a finished one.  Never filter
+      on a column that varies within a session, such as ``agent`` or
+      ``event_type``.  To pick output rows, such as the sessions of a time
+      window, use the ``where_clause`` of the query builders instead.
 
   Returns:
     The ``WITH`` clause, without a trailing newline.
@@ -532,15 +533,17 @@ def build_eval_session_query_sql(
       ``session_end_timestamp >= @window_start AND session_end_timestamp <
       @window_end AND eval_ready``.  It filters whole sessions after they are
       rebuilt, so it drops no event that a session needs.
-    raw_where_clause: A trusted condition on the events table, with or
-      without a leading ``WHERE``, that lets BigQuery prune ``timestamp``
-      partitions, such as the lookback ``timestamp >= @lookback_start AND
-      timestamp < @window_end``.  A session that loses an event to it comes
-      out partial, so its lower bound must not be later than the first event
-      of any session to read, and its upper bound must come after the last
-      event of those sessions plus the delay before the plugin's writes are
-      readable.  Never filter on a column that varies within a session, such
-      as ``agent`` or ``event_type``.
+    raw_where_clause: A trusted condition on the events table, with or without a
+      leading ``WHERE``, that lets BigQuery prune ``timestamp`` partitions, such
+      as the lookback ``timestamp >= @lookback_start``.  A session that loses an
+      event to it comes out partial, so its lower bound must not be later than
+      the first event of any session to read, and an upper bound, if it has one,
+      must come after the last event of those sessions plus the delay before the
+      plugin's writes are readable.  The end of the time window that
+      ``where_clause`` picks is too early a bound: it cuts off a session that is
+      still running at that time, and the cut session passes for a finished one.
+      Never filter on a column that varies within a session, such as ``agent``
+      or ``event_type``.
 
   Returns:
     A ``WITH ... SELECT`` query, without a trailing semicolon.
@@ -598,19 +601,21 @@ def build_eval_turn_query_sql(
       none.
     where_clause: A trusted condition on the output columns, with or without a
       leading ``WHERE``, that picks the turns to return, such as
-      ``turn_start_timestamp >= @window_start AND turn_start_timestamp <
-      @window_end AND eval_ready``.  It filters whole turns after they are
-      rebuilt, so it drops no event that a turn needs: a turn keeps its
-      ``turn_index`` and the system prompt that its session logged first.
-    raw_where_clause: A trusted condition on the events table, with or
-      without a leading ``WHERE``, that lets BigQuery prune ``timestamp``
-      partitions, such as the lookback ``timestamp >= @lookback_start AND
-      timestamp < @window_end``.  A session that loses an event to it comes
-      out partial, so its lower bound must not be later than the first event
-      of any session to read, and its upper bound must come after the last
-      event of those sessions plus the delay before the plugin's writes are
-      readable.  Never filter on a column that varies within a session, such
-      as ``agent`` or ``event_type``.
+      ``turn_end_timestamp >= @window_start AND turn_end_timestamp < @window_end
+      AND eval_ready``.  It filters whole turns after they are rebuilt, so it
+      drops no event that a turn needs: a turn keeps its ``turn_index`` and the
+      system prompt that its session logged first.
+    raw_where_clause: A trusted condition on the events table, with or without a
+      leading ``WHERE``, that lets BigQuery prune ``timestamp`` partitions, such
+      as the lookback ``timestamp >= @lookback_start``.  A session that loses an
+      event to it comes out partial, so its lower bound must not be later than
+      the first event of any session to read, and an upper bound, if it has one,
+      must come after the last event of those sessions plus the delay before the
+      plugin's writes are readable.  The end of the time window that
+      ``where_clause`` picks is too early a bound: it cuts off a session that is
+      still running at that time, and the cut session passes for a finished one.
+      Never filter on a column that varies within a session, such as ``agent``
+      or ``event_type``.
 
   Returns:
     A ``WITH ... SELECT`` query, without a trailing semicolon.

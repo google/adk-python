@@ -30,6 +30,7 @@ from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
 from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DELEGATED_TASK_MODES
 from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
@@ -466,13 +467,15 @@ async def run_llm_agent_as_node(
 
   ic = agent_ctx.get_invocation_context()
   update: dict[str, object] = {'agent': effective_agent}
-  # Override ``user_content`` for task mode with this node's input.
-  # The content-builder uses it as the fallback first user turn when
-  # there is no originating delegation FC (the workflow-node task
-  # case).  For delegated tasks, the FC takes precedence and this
-  # override is unused.
-  if mode == AgentMode.TASK and node_input is not None:
+  # Populate ``user_content`` for ``task`` and ``single_turn`` nodes when
+  # ``node_input`` is provided (``_contents`` only falls back to it for
+  # ``task`` workflow nodes, since ``prepare_llm_agent_input`` seeds
+  # ``single_turn`` events). Clear inherited ``user_content`` for scoped
+  # ``single_turn`` nodes with ``node_input=None``.
+  if mode in DELEGATED_TASK_MODES and node_input is not None:
     update['user_content'] = to_user_content(node_input)
+  elif mode == AgentMode.SINGLE_TURN and ic.isolation_scope is not None:
+    update['user_content'] = None
   ic = ic.model_copy(update=update)
 
   from ..live.live_request_queue import LiveRequestQueue

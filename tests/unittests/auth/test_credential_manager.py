@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import threading
 import time
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
@@ -30,11 +31,13 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.auth import oauth2_credential_util
+from google.adk.auth._auth_resume import store_auth_response
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
+from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
 from google.adk.auth.auth_schemes import CustomAuthScheme
@@ -1230,6 +1233,98 @@ class TestCredentialManager:
     assert result is None
     mock_client.fetch_token.assert_called_once()
     manager._save_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_oauth_exchange_does_not_block_event_loop(
+      self, mocker
+  ):
+    """Redeeming an OAuth code from session state keeps the event loop responsive."""
+    auth_config = AuthConfig(
+        auth_scheme=_authorization_code_scheme(),
+        raw_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=OAuth2Auth(
+                client_id="test_client_id",
+                client_secret="test_client_secret",
+                redirect_uri="https://example.com/callback",
+            ),
+        ),
+    )
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app", user_id="user_a"
+    )
+    invocation_context = InvocationContext(
+        session_service=session_service,
+        invocation_id="invocation_a",
+        agent=Agent(
+            name="root_agent",
+            model=testing_utils.MockModel.create(responses=[]),
+            tools=[],
+        ),
+        session=session,
+        credential_service=None,
+    )
+    context = CallbackContext(invocation_context)
+
+    requested = AuthHandler(auth_config).generate_auth_request()
+    issued_oauth2 = requested.exchanged_auth_credential.oauth2
+    response = requested.model_dump(by_alias=True)
+    response["exchangedAuthCredential"]["oauth2"][
+        "authResponseUri"
+    ] = f"https://example.com/callback?code=auth-code&state={issued_oauth2.state}"
+    await store_auth_response(
+        requested=requested,
+        response=response,
+        state=session.state,
+        interrupt_id="call_1",
+    )
+
+    exchange_entered = threading.Event()
+    loop_progressed = threading.Event()
+    loop_ran_during_exchange: list[bool] = []
+
+    def slow_fetch_token(
+        *_args: object, **_kwargs: object
+    ) -> dict[str, object]:
+      exchange_entered.set()
+      loop_ran_during_exchange.append(loop_progressed.wait(timeout=5.0))
+      return {
+          "access_token": "exchanged-access-token",
+          "token_type": "bearer",
+          "expires_in": 3600,
+      }
+
+    mock_oauth2_session = mocker.patch.object(
+        oauth2_credential_util, "OAuth2Session", autospec=True
+    )
+    mock_client = mock_oauth2_session.return_value
+    mock_client.fetch_token.side_effect = slow_fetch_token
+
+    credential_task = asyncio.create_task(
+        CredentialManager(
+            auth_config.model_copy(deep=True)
+        ).get_auth_credential(context)
+    )
+    deadline = time.monotonic() + 2.0
+    while not exchange_entered.is_set():
+      assert time.monotonic() < deadline
+      await asyncio.sleep(0.005)
+    loop_progressed.set()
+
+    result = await credential_task
+
+    assert loop_ran_during_exchange == [True]
+    assert result is not None
+    assert result.oauth2 is not None
+    assert result.oauth2.access_token == "exchanged-access-token"
+
+    second_result = await CredentialManager(
+        auth_config.model_copy(deep=True)
+    ).get_auth_credential(context)
+    assert second_result is not None
+    assert second_result.oauth2.access_token == "exchanged-access-token"
+    mock_client.fetch_token.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_load_existing_credential_already_exchanged(self):

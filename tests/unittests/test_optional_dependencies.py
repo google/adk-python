@@ -218,12 +218,12 @@ def test_eval_query_builders_import_without_the_bigquery_analytics_extra():
       {"pyarrow": None, "google.cloud.bigquery_storage_v1": None},
   ):
     sys.modules.pop(
-        "google.adk.plugins._bigquery_agent_analytics_sql_utils", None
+        "google.adk.plugins._bigquery_agent_analytics_eval_sql", None
     )
     from google.adk.plugins import build_eval_session_query_sql
     from google.adk.plugins import build_eval_turn_query_sql
-    from google.adk.plugins._bigquery_agent_analytics_sql_utils import build_eval_session_query_sql as build_session_query
-    from google.adk.plugins._bigquery_agent_analytics_sql_utils import build_eval_turn_query_sql as build_turn_query
+    from google.adk.plugins._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql as build_session_query
+    from google.adk.plugins._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql as build_turn_query
 
     for build in (
         build_eval_session_query_sql,
@@ -240,11 +240,11 @@ def test_eval_query_builders_import_without_the_bigquery_analytics_extra():
         "from google.adk.plugins import build_eval_session_query_sql as build",
         "from google.adk.plugins import build_eval_turn_query_sql as build",
         (
-            "from google.adk.plugins._bigquery_agent_analytics_sql_utils"
+            "from google.adk.plugins._bigquery_agent_analytics_eval_sql"
             " import build_eval_session_query_sql as build"
         ),
         (
-            "from google.adk.plugins._bigquery_agent_analytics_sql_utils"
+            "from google.adk.plugins._bigquery_agent_analytics_eval_sql"
             " import build_eval_turn_query_sql as build"
         ),
     ],
