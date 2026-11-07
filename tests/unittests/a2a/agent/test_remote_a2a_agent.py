@@ -5309,6 +5309,27 @@ class TestRemoteA2aAgentExecution:
       assert events[2].actions.end_of_agent is True
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_task_mode_closes_at_error_event(self):
+    """Test _run_async_impl in task mode can be closed at its error event."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        mode="task",
+    )
+    self.mock_context.isolation_scope = "task-1"
+    self.mock_session.events = [_make_dummy_task_trigger_event()]
+
+    with patch.object(agent, "_ensure_resolved") as mock_ensure:
+      mock_ensure.side_effect = Exception("Init failed")
+      agen = agent._run_async_impl(self.mock_context)
+      event = await agen.__anext__()
+      assert "Failed to initialize remote A2A agent" in event.error_message
+
+      await agen.aclose()
+
+    self.mock_context.set_agent_state.assert_not_called()
+
+  @pytest.mark.asyncio
   async def test_run_async_impl_task_mode_releases_control_on_empty_parts(self):
     """Test _run_async_impl in task mode releases control when message parts are empty."""
     from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
@@ -9243,3 +9264,64 @@ async def test_after_request_metadata_overrides_are_preserved():
     assert turn[-1].custom_metadata["a2a:task_id"] == "caller-task"
     assert turn[-1].custom_metadata["a2a:context_id"] == "caller-context"
     assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
+
+
+async def test_stopping_run_at_task_error_closes_cleanly():
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.apps.app import App
+  from google.adk.plugins.base_plugin import BasePlugin
+  from google.adk.runners import InMemoryRunner
+
+  from tests.unittests import testing_utils
+
+  class RecordAgentErrors(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name="record_agent_errors")
+      self.errors = []
+
+    async def on_agent_error_callback(self, *, agent, callback_context, error):
+      self.errors.append(error)
+
+  remote = RemoteA2aAgent(
+      name="remote",
+      description="Remote agent",
+      agent_card=create_test_agent_card(),
+      mode="task",
+  )
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              genai_types.Part.from_function_call(name="remote", args={})
+          ]
+      ),
+      sub_agents=[remote],
+  )
+  plugin = RecordAgentErrors()
+  runner = InMemoryRunner(
+      app=App(name="app", root_agent=root, plugins=[plugin])
+  )
+  session = await runner.session_service.create_session(
+      app_name=runner.app_name, user_id="user"
+  )
+
+  async def run_until_remote_error():
+    async with Aclosing(
+        runner.run_async(
+            user_id="user",
+            session_id=session.id,
+            new_message=testing_utils.get_user_content("start"),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.author == "remote" and event.error_message:
+          return event
+
+  with patch.object(
+      RemoteA2aAgent, "_ensure_resolved", side_effect=Exception("Init failed")
+  ):
+    event = await asyncio.wait_for(run_until_remote_error(), timeout=5)
+
+  assert "Failed to initialize remote A2A agent" in event.error_message
+  assert not plugin.errors

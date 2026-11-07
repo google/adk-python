@@ -2242,6 +2242,11 @@ class RemoteA2aAgent(BaseAgent):
             custom_metadata=custom_metadata,
         )
 
+    except GeneratorExit:
+      # The caller closed the stream early. A closing generator cannot yield,
+      # so skip the release events below.
+      should_release_task_control = False
+      raise
     finally:
       if self.mode == AgentMode.TASK and should_release_task_control:
         if task_error_message is not None:
