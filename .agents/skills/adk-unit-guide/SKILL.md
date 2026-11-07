@@ -230,7 +230,7 @@ only record of the decision, so a waiver without one leaves nothing to review.
 ## Link related samples
 
 Link samples by repo-relative path from the guide, not by GitHub URL:
-`[Node Output](../../../../contributing/samples/workflows/node_output/agent.py)`.
+`[Node Output](../../../contributing/samples/workflows/node_output/agent.py)`.
 Confirm the file exists before linking it.
 
 ## Structure
