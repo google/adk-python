@@ -381,6 +381,75 @@ def test_to_agent_engine_raises_when_explicit_config_file_missing(
   assert expected_abs in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "cli_display_name, config_display_name, expected_display_name",
+    [
+        ("", "Name From Config", "Name From Config"),
+        ("Name From CLI", "Name From Config", "Name From CLI"),
+        ("", None, "agent"),
+        ("", "", "agent"),
+    ],
+)
+def test_to_agent_engine_display_name_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    cli_display_name: str,
+    config_display_name: Optional[str],
+    expected_display_name: str,
+) -> None:
+  """--display_name wins over the config file, which wins over the folder."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  update_recorder = _Recorder()
+
+  fake_agentplatform = types.ModuleType("agentplatform")
+
+  class _FakeRuntimes:
+
+    def create(self, **kwargs: Any) -> Any:
+      del kwargs
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      update_recorder(name=name, config=config)
+
+  class _FakeAgentPlatformClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.runtimes = _FakeRuntimes()
+
+  fake_agentplatform.Client = _FakeAgentPlatformClient
+  monkeypatch.setitem(sys.modules, "agentplatform", fake_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      fake_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  config: Dict[str, Any] = {}
+  if config_display_name is not None:
+    config["display_name"] = config_display_name
+  (src_dir / ".agent_engine_config.json").write_text(json.dumps(config))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      trace_to_cloud=True,
+      project="my-gcp-project",
+      region="us-central1",
+      display_name=cli_display_name,
+      adk_version="1.2.0",
+  )
+
+  assert len(update_recorder.calls) == 1
+  deployed_config = update_recorder.calls[0][1]["config"]
+  assert deployed_config["display_name"] == expected_display_name
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_gke_happy_path(
     monkeypatch: pytest.MonkeyPatch,
