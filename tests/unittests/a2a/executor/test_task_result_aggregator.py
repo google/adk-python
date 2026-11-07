@@ -296,6 +296,31 @@ class TestTaskResultAggregator:
     assert self.aggregator.task_state == _compat.TS_WORKING
     assert self.aggregator.task_status_message is None
 
+  def test_working_event_without_message_keeps_previous_message(self):
+    """A working update with no message does not replace the last result."""
+    result_message = create_test_message("Here is the answer")
+    self.aggregator.process_event(
+        _compat.make_task_status_update_event(
+            task_id="test-task",
+            context_id="test-context",
+            status=_compat.make_task_status(
+                _compat.TS_WORKING, message=result_message
+            ),
+            final=False,
+        )
+    )
+    self.aggregator.process_event(
+        _compat.make_task_status_update_event(
+            task_id="test-task",
+            context_id="test-context",
+            status=_compat.make_task_status(_compat.TS_WORKING),
+            final=False,
+        )
+    )
+
+    assert self.aggregator.task_state == _compat.TS_WORKING
+    assert self.aggregator.task_status_message == result_message
+
   def test_working_event_updates_message_regardless_of_state(self):
     """Test that working events update message only when current task state is working."""
     # First set auth_required state
