@@ -21,7 +21,6 @@ import inspect
 import logging
 from pathlib import Path
 import queue
-import threading
 from types import TracebackType
 from typing import Any
 from typing import AsyncGenerator
@@ -31,7 +30,6 @@ from typing import Generator
 from typing import Literal
 from typing import TYPE_CHECKING
 import warnings
-import weakref
 
 from google.genai import types
 from typing_extensions import Self
@@ -84,15 +82,6 @@ _EventQueueItem = tuple[object, asyncio.Event | None]
 
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
-
-# Active Runners holding each toolset, so Runner.close() only closes a toolset
-# when its last holder releases it. A Runner dropped without close() remains a
-# holder until the object is reclaimed (immediately on refcount zero, or on a
-# later cyclic GC pass if part of a reference cycle).
-_TOOLSET_HOLDERS: weakref.WeakKeyDictionary[
-    BaseToolset, weakref.WeakSet[Runner]
-] = weakref.WeakKeyDictionary()
-_TOOLSET_HOLDERS_LOCK = threading.Lock()
 
 
 def _find_active_task_scope(session: Session) -> tuple[str, str] | None:
@@ -328,8 +317,6 @@ class Runner:
     self._app_name_alignment_hint: str | None = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
-    self._held_toolsets: set[BaseToolset] = set()
-    self._acquire_toolsets()
 
   def _require_root_agent(self) -> BaseAgent:
     """Returns the root as an agent for agent-only execution paths."""
@@ -1181,7 +1168,6 @@ class Runner:
       ValueError: If the session is not found; If both invocation_id and
         new_message are None.
     """
-    self._acquire_toolsets()
     run_config = run_config or RunConfig()
 
     # An inbound message is always a user turn, whatever role the caller set,
@@ -1759,7 +1745,6 @@ class Runner:
     .. NOTE::
         Either `session` or both `user_id` and `session_id` must be provided.
     """
-    self._acquire_toolsets()
 
     from .live import _runner_utils as _live_runner_utils
 
@@ -2226,45 +2211,6 @@ class Runner:
             toolsets.add(tool_union)
     return toolsets
 
-  def _acquire_toolsets(self) -> None:
-    """Registers this runner as a holder of its agent's toolsets."""
-    if self.agent is None:
-      return
-    try:
-      toolsets = self._collect_toolset(self.agent)
-    except TypeError:
-      # Downstream tests often pass Mock(spec=BaseAgent) or sealed autospecs to
-      # Runner.__init__, where mocked _iter_static_children() or tools
-      # attributes return non-iterable Mock objects.
-      return
-    if not toolsets:
-      return
-    with _TOOLSET_HOLDERS_LOCK:
-      for toolset in toolsets:
-        holders = _TOOLSET_HOLDERS.get(toolset)
-        if holders is None:
-          holders = weakref.WeakSet()
-          _TOOLSET_HOLDERS[toolset] = holders
-        holders.add(self)
-      self._held_toolsets.update(toolsets)
-
-  def _release_toolsets(self) -> set[BaseToolset]:
-    """Releases held toolsets and returns those with no remaining holders."""
-    if not self._held_toolsets:
-      return set()
-    held_toolsets = self._held_toolsets
-    self._held_toolsets = set()
-    toolsets_to_close: set[BaseToolset] = set()
-    with _TOOLSET_HOLDERS_LOCK:
-      for toolset in held_toolsets:
-        holders = _TOOLSET_HOLDERS.get(toolset)
-        if holders is not None:
-          holders.discard(self)
-          if not holders:
-            _TOOLSET_HOLDERS.pop(toolset, None)
-            toolsets_to_close.add(toolset)
-    return toolsets_to_close
-
   async def _cleanup_toolsets(
       self, toolsets_to_close: set[BaseToolset]
   ) -> None:
@@ -2343,7 +2289,7 @@ class Runner:
     try:
       # Close Toolsets
       if self.agent is not None:
-        await self._cleanup_toolsets(self._release_toolsets())
+        await self._cleanup_toolsets(self._collect_toolset(self.agent))
     except asyncio.CancelledError as e:
       cancelled_error = e
 
@@ -2368,7 +2314,6 @@ class Runner:
 
   async def __aenter__(self) -> Self:
     """Async context manager entry."""
-    self._acquire_toolsets()
     return self
 
   async def __aexit__(
