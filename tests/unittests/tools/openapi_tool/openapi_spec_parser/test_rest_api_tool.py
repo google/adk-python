@@ -30,6 +30,7 @@ from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
+from fastapi.openapi.models import Response
 from fastapi.openapi.models import Schema as OpenAPISchema
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -323,6 +324,41 @@ class TestRestApiToolWithJsonSchema:
             "test_param": {"type": "string"},
         },
         "required": ["test_param"],
+    }
+
+  def test_get_declaration_includes_response_json_schema(self):
+    operation = Operation(
+        operationId="getPet",
+        responses={
+            "200": Response(
+                description="The pet.",
+                content={
+                    "application/json": MediaType(
+                        schema=OpenAPISchema(
+                            type="object",
+                            properties={"name": OpenAPISchema(type="string")},
+                        )
+                    )
+                },
+            )
+        },
+    )
+    tool = RestApiTool(
+        name="get_pet",
+        description="Get a pet.",
+        endpoint=OperationEndpoint(
+            base_url="https://petstore.example.com",
+            path="/pets/1",
+            method="GET",
+        ),
+        operation=operation,
+    )
+
+    declaration = tool._get_declaration()
+
+    assert declaration.response_json_schema == {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
     }
 
 

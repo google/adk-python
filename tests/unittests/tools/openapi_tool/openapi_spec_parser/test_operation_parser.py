@@ -466,6 +466,18 @@ def test_get_json_schema(sample_operation):
   assert 'required' not in json_schema or json_schema['required'] == []
 
 
+def test_get_response_json_schema(sample_operation):
+  parser = OperationParser(sample_operation)
+  assert parser.get_response_json_schema() == {'type': 'string'}
+
+
+def test_get_response_json_schema_without_2xx_schema():
+  parser = OperationParser(
+      Operation(responses={'400': Response(description='Client Error')})
+  )
+  assert parser.get_response_json_schema() is None
+
+
 def test_get_signature_parameters(sample_operation):
   """Test get_signature_parameters method."""
   parser = OperationParser(sample_operation)

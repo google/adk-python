@@ -355,6 +355,13 @@ class OperationParser:
         'type': 'object',
     }
 
+  def get_response_json_schema(self) -> Dict[str, Any] | None:
+    """Returns the JSON schema of the 2xx response, or None if undeclared."""
+    schema = jsonable_encoder(
+        self._require_return_value()._openapi_schema, exclude_none=True
+    )
+    return schema or None
+
   def get_signature_parameters(self) -> List[inspect.Parameter]:
     """Returns a list of inspect.Parameter objects for the function."""
     return [

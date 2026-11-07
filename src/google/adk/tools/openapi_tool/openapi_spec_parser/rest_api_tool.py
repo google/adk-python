@@ -372,6 +372,9 @@ class RestApiTool(BaseTool):
           name=self.name,
           description=self.description,
           parameters_json_schema=schema_dict,
+          response_json_schema=(
+              self._operation_parser.get_response_json_schema()
+          ),
       )
     else:
       parameters = _to_gemini_schema(schema_dict)
