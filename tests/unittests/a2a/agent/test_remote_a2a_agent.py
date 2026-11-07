@@ -8656,6 +8656,219 @@ async def test_user_input_resumes_paused_remote_task(
   assert not requests[2].task_id
 
 
+def _completed_peer_setup(
+    *, use_v2=False, output_schema=None, call_in_history=False, config=None
+):
+  """Create a paused delegation and its completed peer at the SDK boundary."""
+  from google.adk.sessions import InMemorySessionService
+
+  agent = RemoteA2aAgent(
+      name="currency",
+      mode="task",
+      output_schema=output_schema,
+      config=config,
+      agent_card=create_test_agent_card(name="currency"),
+      context_builder=lambda ctx, name, converter: (
+          [_compat.make_text_part("Continue")],
+          "context",
+      ),
+  )
+  session = Session(
+      id="session",
+      app_name="continuation",
+      user_id="user",
+      events=[
+          _make_dummy_task_trigger_event("delegation", "currency"),
+          Event(
+              author="currency",
+              isolation_scope="delegation",
+              custom_metadata={
+                  "a2a:task_id": "peer-task",
+                  "a2a:context_id": "context",
+                  "a2a:response": {
+                      "status": {"state": "input-required"},
+                  },
+              },
+          ),
+      ],
+  )
+  ctx = InvocationContext(
+      invocation_id="invocation",
+      session=session,
+      session_service=InMemorySessionService(),
+      agent=agent,
+      isolation_scope="delegation",
+  )
+  client = create_autospec(A2AClient, instance=True)
+
+  async def send_message(*args, **kwargs):
+    raise RuntimeError("The peer task is already completed")
+    yield
+
+  client.send_message = Mock(side_effect=send_message)
+  call = convert_genai_part_to_a2a_part(
+      genai_types.Part(
+          function_call=genai_types.FunctionCall(
+              id="finish", name="finish_task", args={"result": "17 CAD"}
+          )
+      )
+  )
+  response = convert_genai_part_to_a2a_part(
+      genai_types.Part(
+          function_response=genai_types.FunctionResponse(
+              id="finish",
+              name="finish_task",
+              response={"result": FINISH_TASK_SUCCESS_RESULT},
+          )
+      )
+  )
+  client.get_task.return_value = _compat.make_task(
+      id="peer-task",
+      context_id="context",
+      metadata=(
+          {remote_a2a_agent._NEW_A2A_ADK_INTEGRATION_EXTENSION: True}
+          if use_v2
+          else None
+      ),
+      status=_compat.make_task_status(
+          _compat.TS_COMPLETED,
+          message=_compat.make_message(
+              message_id="final",
+              role="agent",
+              parts=[response] if call_in_history else [call, response],
+          ),
+      ),
+      history=[
+          _compat.make_message(
+              message_id="finish-call", role="agent", parts=[call]
+          )
+      ]
+      if call_in_history
+      else [],
+  )
+
+  return agent, ctx, client
+
+
+@pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+@pytest.mark.parametrize("output_schema", [None, str])
+@pytest.mark.parametrize("call_in_history", [False, True])
+async def test_completed_peer_is_read_without_resending_input(
+    use_v2, output_schema, call_in_history
+):
+  """A peer completed out of band supplies the pending delegation's result."""
+  agent, ctx, client = _completed_peer_setup(
+      use_v2=use_v2,
+      output_schema=output_schema,
+      call_in_history=call_in_history,
+  )
+
+  with patch.object(agent, "_ensure_resolved", return_value=client):
+    events = [event async for event in agent.run_async(ctx)]
+
+  expected = "17 CAD" if output_schema is str else {"result": "17 CAD"}
+  assert [event.output for event in events if event.output is not None] == [
+      expected
+  ]
+  client.send_message.assert_not_called()
+  client.get_task.assert_awaited_once()
+  assert client.get_task.call_args.args[0].id == "peer-task"
+
+
+@pytest.mark.parametrize("field", ["id", "context_id"])
+async def test_completed_peer_from_another_task_is_not_used(field):
+  """A lookup for one delegation cannot supply another task's result."""
+  agent, ctx, client = _completed_peer_setup()
+  setattr(client.get_task.return_value, field, "different")
+
+  with patch.object(agent, "_ensure_resolved", return_value=client):
+    events = [event async for event in agent.run_async(ctx)]
+
+  assert not any(event.output is not None for event in events)
+  assert any(
+      "different task or context" in (event.error_message or "")
+      for event in events
+  )
+  client.send_message.assert_not_called()
+
+
+async def test_completed_peer_does_not_take_output_from_user_history():
+  """Only the peer's own finish_task call can supply the completed result."""
+  agent, ctx, client = _completed_peer_setup(call_in_history=True)
+  client.get_task.return_value.history[0].role = _compat.ROLE_USER
+
+  with patch.object(agent, "_ensure_resolved", return_value=client):
+    events = [event async for event in agent.run_async(ctx)]
+
+  assert not any(event.output is not None for event in events)
+  assert any(
+      "no matching finish_task call" in (event.error_message or "")
+      for event in events
+  )
+  client.send_message.assert_not_called()
+
+
+async def test_peer_lookup_failure_does_not_resend_input():
+  """An unsuccessful task lookup must not repeat a confirmation message."""
+  agent, ctx, client = _completed_peer_setup()
+  client.get_task.side_effect = RuntimeError("Task lookup unavailable")
+
+  with patch.object(agent, "_ensure_resolved", return_value=client):
+    events = [event async for event in agent.run_async(ctx)]
+
+  assert any(
+      "Task lookup unavailable" in (event.error_message or "")
+      for event in events
+  )
+  client.send_message.assert_not_called()
+
+
+async def test_peer_lookup_does_not_persist_private_task_history():
+  """Out-of-band user input stays out of the caller's persisted events."""
+  agent, ctx, client = _completed_peer_setup(call_in_history=True)
+  client.get_task.return_value.history.append(
+      _compat.make_message(
+          message_id="private",
+          role="user",
+          parts=[_compat.make_data_part(data={"token": "private-test-token"})],
+      )
+  )
+
+  with patch.object(agent, "_ensure_resolved", return_value=client):
+    events = [event async for event in agent.run_async(ctx)]
+
+  assert [event.output for event in events if event.output is not None] == [
+      {"result": "17 CAD"}
+  ]
+  assert all(
+      "private-test-token" not in event.model_dump_json() for event in events
+  )
+
+
+async def test_peer_lookup_keeps_the_before_request_call_context():
+  """The lookup carries the same caller context as a normal request."""
+  call_context = _compat.ClientCallContext(state={"request": "state"})
+
+  async def before_request(ctx, request, parameters):
+    return request, ParametersConfig(client_call_context=call_context)
+
+  agent, ctx, client = _completed_peer_setup(
+      config=A2aRemoteAgentConfig(
+          request_interceptors=[
+              RequestInterceptor(before_request=before_request)
+          ]
+      )
+  )
+
+  with patch.object(agent, "_ensure_resolved", return_value=client):
+    events = [event async for event in agent.run_async(ctx)]
+
+  assert [event.output for event in events if event.output is not None] == [
+      {"result": "17 CAD"}
+  ]
+  assert client.get_task.call_args.kwargs["context"] is call_context
+
+
 @pytest.mark.parametrize(
     "initial_state",
     [
@@ -8754,9 +8967,15 @@ async def test_remote_task_continuation_respects_latest_response_and_scope(
         )
     )
 
+  client = create_autospec(A2AClient, instance=True)
+  client.get_task.return_value = _compat.make_task(
+      id="current-task",
+      context_id="context",
+      status=_compat.make_task_status(_compat.TS_INPUT_REQUIRED),
+  )
   try:
     with (
-        patch.object(agent, "_ensure_resolved", return_value=object()),
+        patch.object(agent, "_ensure_resolved", return_value=client),
         patch.object(_compat, "send_message", side_effect=send_message),
     ):
       async for _ in agent.run_async(ctx):
@@ -8766,6 +8985,7 @@ async def test_remote_task_continuation_respects_latest_response_and_scope(
 
   assert len(requests) == 1
   assert (requests[0].task_id or None) == expected_task_id
+  assert client.get_task.await_count == (1 if expected_task_id else 0)
 
 
 def _bare_task_stream(
