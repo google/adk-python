@@ -63,6 +63,7 @@ from ...events.event import Event
 from ...flows.llm_flows.context._fencing import _is_other_agent_reply
 from ...flows.llm_flows.context._fencing import _present_other_agent_message
 from ...flows.llm_flows.context._fencing import quote_untrusted
+from ...flows.llm_flows.tools._functions import find_event_by_function_call_id
 from ...flows.llm_flows.tools._functions import find_matching_function_call
 from ...sessions.session import Session
 from ...utils import _mtls_utils
@@ -1331,11 +1332,56 @@ class RemoteA2aAgent(BaseAgent):
     """
     if not ctx.session.events or ctx.session.events[-1].author != "user":
       return None
-    function_call_event = find_matching_function_call(ctx.session.events)
-    if not function_call_event:
-      return None
 
     event = ctx.session.events[-1]
+    task_scope = ctx.isolation_scope if self.mode == AgentMode.TASK else None
+    peer_events = [
+        previous
+        for previous in ctx.session.events[:-1]
+        if self._is_relayed_peer_event(previous)
+        and (not task_scope or previous.isolation_scope == task_scope)
+    ]
+    function_call_event = None
+    for response in event.get_function_responses():
+      if response.id:
+        function_call_event = find_event_by_function_call_id(
+            peer_events, response.id
+        )
+        if function_call_event:
+          break
+    if function_call_event:
+      # A mixed user reply can answer both coordinator and peer tools. Only
+      # the peer's calls can resume its Runner; foreign responses stay in the
+      # coordinator's session rather than becoming invalid peer resume inputs.
+      metadata = function_call_event.custom_metadata or {}
+      call_events = [
+          previous
+          for previous in peer_events
+          if all(
+              (previous.custom_metadata or {}).get(A2A_METADATA_PREFIX + key)
+              == metadata.get(A2A_METADATA_PREFIX + key)
+              for key in ("task_id", "context_id")
+          )
+      ]
+      peer_call_ids = {
+          call.id
+          for previous in call_events
+          for call in previous.get_function_calls()
+          if call.id
+      }
+      event = event.model_copy(deep=True)
+      if event.content:
+        event.content.parts = [
+            part
+            for part in event.content.parts or []
+            if not part.function_response
+            or part.function_response.id in peer_call_ids
+        ]
+    else:
+      function_call_event = find_matching_function_call(ctx.session.events)
+      call_events = [function_call_event] if function_call_event else []
+    if not function_call_event:
+      return None
 
     # A pause the peer raised and relayed here is answered by resuming the peer.
     human_input_call_names = (
@@ -1348,12 +1394,13 @@ class RemoteA2aAgent(BaseAgent):
     # credential matching does not depend on the human-input set.
     trusted_call_names_by_id: dict[Optional[str], set[str]] = {}
     id_less_call_is_ambiguous = False
-    for fc in function_call_event.get_function_calls():
-      if fc.name is None:
-        continue
-      trusted_call_names_by_id.setdefault(fc.id, set()).add(fc.name)
-      if fc.id is None and fc.name not in human_input_call_names:
-        id_less_call_is_ambiguous = True
+    for call_event in call_events:
+      for fc in call_event.get_function_calls():
+        if fc.name is None:
+          continue
+        trusted_call_names_by_id.setdefault(fc.id, set()).add(fc.name)
+        if fc.id is None and fc.name not in human_input_call_names:
+          id_less_call_is_ambiguous = True
 
     event = _sanitize_user_function_response_event(
         event,
