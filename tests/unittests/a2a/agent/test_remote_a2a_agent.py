@@ -9243,3 +9243,158 @@ async def test_after_request_metadata_overrides_are_preserved():
     assert turn[-1].custom_metadata["a2a:task_id"] == "caller-task"
     assert turn[-1].custom_metadata["a2a:context_id"] == "caller-context"
     assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
+
+
+def _task_with_artifacts(*artifacts: tuple[str, list[str]], history=None):
+  return _compat.make_task(
+      id="task-1",
+      context_id="context-1",
+      status=_compat.make_task_status(_compat.TS_COMPLETED),
+      artifacts=[
+          _compat.make_artifact(
+              artifact_id=artifact_id,
+              parts=[_compat.make_text_part(text) for text in texts],
+          )
+          for artifact_id, texts in artifacts
+      ],
+      **({"history": history} if history else {}),
+  )
+
+
+def _context_after(*seen: tuple[str, list[str]]):
+  """A context whose session holds one earlier response of task-1."""
+  earlier = Event(
+      author="test_agent",
+      custom_metadata={
+          A2A_METADATA_PREFIX + "task_id": "task-1",
+          A2A_METADATA_PREFIX
+          + "response": _compat.a2a_to_dict(_task_with_artifacts(*seen)),
+      },
+  )
+  session = Mock(spec=Session)
+  session.events = [earlier]
+  context = Mock(spec=InvocationContext)
+  context.session = session
+  context.invocation_id = "invocation-1"
+  context.branch = "main"
+  return context
+
+
+def _earlier_message():
+  return _compat.make_message(
+      role=_compat.ROLE_AGENT,
+      parts=[_compat.make_text_part("earlier: please confirm")],
+      message_id="message-1",
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler", ["_handle_a2a_response", "_handle_a2a_response_v2"]
+)
+@pytest.mark.parametrize(
+    ("seen", "response", "expected"),
+    [
+        pytest.param(
+            [("artifact-1", ["turn one"])],
+            [("artifact-1", ["turn one"]), ("artifact-2", ["turn two"])],
+            ["turn two"],
+            id="earlier_turn_skipped",
+        ),
+        pytest.param(
+            [("artifact-1", ["first answer"])],
+            [("artifact-1", ["second answer"])],
+            ["second answer"],
+            id="replaced_artifact_kept",
+        ),
+        pytest.param(
+            [("artifact-1", ["turn one"])],
+            [("artifact-1", ["turn one"])],
+            [],
+            id="nothing_new_and_no_history_fallback",
+        ),
+    ],
+)
+async def test_a_resumed_task_converts_only_artifacts_not_seen_before(
+    handler, seen, response, expected
+):
+  """A resumed task's earlier artifacts are not converted a second time.
+
+  A non-streaming response is the whole task, so after a pause it carries what
+  the agent already received. The session records that in the earlier event's
+  task snapshot, and both handlers skip it, comparing content so an artifact
+  replaced under the same id still comes through. With nothing new, an earlier
+  message in the task history must not come back either.
+  """
+  agent = RemoteA2aAgent(name="test_agent", agent_card=create_test_agent_card())
+
+  event = await getattr(agent, handler)(
+      (_task_with_artifacts(*response, history=[_earlier_message()]), None),
+      _context_after(*seen),
+  )
+
+  texts = (
+      [part.text for part in event.content.parts]
+      if event and event.content and event.content.parts
+      else []
+  )
+  assert texts == expected
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_task_is_deduplicated_with_other_overrides():
+  """Custom message converters and after-request hooks keep the fix.
+
+  Snapshots are recorded after the hooks run, so neither can alter what was
+  already received. Only a custom task converter opts out; see below.
+  """
+
+  async def after_request(ctx, response, event):
+    return event
+
+  agent = RemoteA2aAgent(
+      name="test_agent",
+      agent_card=create_test_agent_card(),
+      config=A2aRemoteAgentConfig(
+          a2a_message_converter=lambda *args, **kwargs: None,
+          request_interceptors=[
+              RequestInterceptor(after_request=after_request)
+          ],
+      ),
+  )
+
+  event = await agent._handle_a2a_response_v2(
+      (
+          _task_with_artifacts(
+              ("artifact-1", ["turn one"]), ("artifact-2", ["turn two"])
+          ),
+          None,
+      ),
+      _context_after(("artifact-1", ["turn one"])),
+  )
+
+  assert [part.text for part in event.content.parts] == ["turn two"]
+
+
+@pytest.mark.asyncio
+async def test_a_custom_task_converter_still_gets_the_whole_task():
+  received = []
+
+  def task_converter(task, *args, **kwargs):
+    received.append(task)
+    return None
+
+  agent = RemoteA2aAgent(
+      name="test_agent",
+      agent_card=create_test_agent_card(),
+      config=A2aRemoteAgentConfig(a2a_task_converter=task_converter),
+  )
+  task = _task_with_artifacts(
+      ("artifact-1", ["turn one"]), ("artifact-2", ["turn two"])
+  )
+
+  await agent._handle_a2a_response_v2(
+      (task, None), _context_after(("artifact-1", ["turn one"]))
+  )
+
+  assert received == [task] and received[0] is task
