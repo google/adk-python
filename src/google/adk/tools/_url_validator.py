@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
+import re
 import socket
 from urllib.parse import ParseResult
 from urllib.parse import urlparse
@@ -105,6 +106,17 @@ def _parse_ip_literal(hostname: str) -> _ResolvedAddress | None:
   try:
     return ipaddress.ip_address(hostname)
   except ValueError:
+    # Browsers accept legacy IPv4 forms (octal, hex and abbreviated decimal).
+    # Parse these locally: getaddrinfo can interpret them differently, e.g.
+    # 0177.0.0.1 as public 177.0.0.1 instead of loopback 127.0.0.1.
+    if re.fullmatch(
+        r'(?:0[xX][0-9a-fA-F]+|[0-9]+)(?:\.(?:0[xX][0-9a-fA-F]+|[0-9]+)){0,3}\.?',
+        hostname,
+    ):
+      try:
+        return ipaddress.IPv4Address(socket.inet_aton(hostname.rstrip('.')))
+      except OSError:
+        pass
     return None
 
 
