@@ -24,6 +24,9 @@ import time
 import warnings
 import weakref
 
+from google.adk.utils import _event_loop_cache
+from google.adk.utils._event_loop_cache import clear_per_loop_value
+from google.adk.utils._event_loop_cache import per_loop_value
 from google.adk.utils._event_loop_cache import PerLoopCachedProperty
 import pytest
 
@@ -319,3 +322,219 @@ def test_a_used_owner_pickles_without_its_cached_values():
 
   assert not _cache(restored)
   assert restored.value is not original
+
+
+class _Clock:
+  """A settable stand-in for the clock entries are aged against."""
+
+  def __init__(self):
+    self.now = 1000.0
+
+  def __call__(self):
+    return self.now
+
+
+@pytest.fixture(name='clock')
+def _clock(monkeypatch):
+  clock = _Clock()
+  monkeypatch.setattr(_event_loop_cache, '_now', clock)
+  return clock
+
+
+class _AgingOwner(_Owner):
+  """An owner that asks for its values to be rebuilt after `max_age` seconds."""
+
+  def __init__(self, max_age=None):
+    super().__init__()
+    self._per_loop_max_age = max_age
+
+
+def test_without_a_max_age_a_value_never_expires(clock):
+  owner = _AgingOwner(max_age=None)
+  first = owner.value
+
+  clock.now += 10**9
+
+  assert owner.value is first
+  assert len(owner.builds) == 1
+
+
+def test_a_value_younger_than_max_age_is_reused(clock):
+  owner = _AgingOwner(max_age=60)
+  first = owner.value
+
+  clock.now += 59.999
+
+  assert owner.value is first
+  assert len(owner.builds) == 1
+
+
+def test_a_value_exactly_max_age_old_is_rebuilt(clock):
+  owner = _AgingOwner(max_age=60)
+  first = owner.value
+
+  clock.now += 60
+
+  second = owner.value
+  assert second is not first
+  assert owner.value is second
+  assert len(owner.builds) == 2
+
+
+def test_a_rebuilt_value_ages_from_its_own_build(clock):
+  owner = _AgingOwner(max_age=60)
+  _ = owner.value
+  clock.now += 60
+  second = owner.value
+
+  clock.now += 59
+
+  assert owner.value is second
+  clock.now += 1
+  assert owner.value is not second
+  assert len(owner.builds) == 3
+
+
+def test_age_is_counted_from_when_the_build_began(clock):
+  def slow_build():
+    clock.now += 50
+    return object()
+
+  owner = _AgingOwner(max_age=60)
+  owner._factory = slow_build
+  first = owner.value
+
+  clock.now += 10
+
+  assert owner.value is not first
+
+
+def test_max_age_can_change_between_reads(clock):
+  owner = _AgingOwner(max_age=None)
+  first = owner.value
+  clock.now += 100
+
+  assert owner.value is first
+  owner._per_loop_max_age = 50
+  assert owner.value is not first
+
+
+def test_expiry_in_one_loop_leaves_a_live_loop_untouched(clock):
+  owner = _AgingOwner(max_age=60)
+  results = {}
+
+  async def scenario():
+    loop_a_value = owner.value
+    results['a_before'] = loop_a_value
+
+    def read_in_other_loop():
+      async def read():
+        return owner.value
+
+      return asyncio.run(read())
+
+    other = await asyncio.get_running_loop().run_in_executor(
+        None, read_in_other_loop
+    )
+    results['other'] = other
+    assert owner.value is loop_a_value
+
+  asyncio.run(scenario())
+  assert results['other'] is not results['a_before']
+  assert len(owner.builds) == 2
+
+
+def test_an_expired_value_is_dropped_but_never_closed(clock):
+  class Closable:
+    closed = False
+
+    def close(self):
+      self.closed = True
+
+  owner = _AgingOwner(max_age=60)
+  owner._factory = Closable
+  first = owner.value
+  clock.now += 60
+
+  assert owner.value is not first
+  assert not first.closed
+
+
+def test_clear_drops_values_for_every_loop():
+  owner = _Owner()
+  in_loop = asyncio.run(_read(owner))
+  outside_loop = owner.value
+
+  clear_per_loop_value(owner, '_per_loop_value')
+
+  assert not _cache(owner)
+  assert owner.value is not outside_loop
+  assert asyncio.run(_read(owner)) is not in_loop
+
+
+def test_clear_before_any_read_is_a_no_op():
+  owner = _Owner()
+
+  clear_per_loop_value(owner, '_per_loop_value')
+
+  assert owner.builds == []
+  assert '_per_loop_value' not in owner.__dict__
+
+
+def test_clear_on_one_key_leaves_other_keys_alone():
+  owner = _Owner()
+  first = owner.value
+  other = per_loop_value(owner, 'other_key', object)
+
+  clear_per_loop_value(owner, '_per_loop_value')
+
+  assert per_loop_value(owner, 'other_key', object) is other
+  assert owner.value is not first
+
+
+def test_a_build_under_way_during_clear_is_returned_but_not_cached():
+  owner = _Owner()
+  seen = []
+
+  def build():
+    clear_per_loop_value(owner, '_per_loop_value')
+    value = object()
+    seen.append(value)
+    return value
+
+  owner._factory = build
+  owner.value  # Creates the cache, building across a clear of that cache.
+  owner._factory = object
+
+  assert not _cache(owner)
+  assert owner.value is not seen[0]
+
+
+def test_threads_reading_while_values_are_cleared_never_fail(clock):
+  owner = _AgingOwner(max_age=0.001)
+  stop = threading.Event()
+  errors = []
+
+  def read():
+    while not stop.is_set():
+      try:
+        owner.value
+      except BaseException as e:  # pylint: disable=broad-except
+        errors.append(e)
+        return
+
+  def clear():
+    while not stop.is_set():
+      clear_per_loop_value(owner, '_per_loop_value')
+      clock.now += 1
+
+  threads = [threading.Thread(target=read) for _ in range(4)]
+  threads.append(threading.Thread(target=clear))
+  for thread in threads:
+    thread.start()
+  time.sleep(0.3)
+  stop.set()
+  for thread in threads:
+    thread.join(timeout=10)
+
+  assert errors == []
