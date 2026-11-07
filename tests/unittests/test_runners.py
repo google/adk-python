@@ -7441,5 +7441,140 @@ async def test_run_async_post_invocation_compaction_aborts_inflight():
   assert not [e for e in session.events if e.actions.compaction]
 
 
+async def test_run_async_llm_agent_without_message_or_invocation_id_raises_value_error():
+  """Runner.run_async must raise ValueError when both new_message and invocation_id are None (#7934)."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="test_app",
+      agent=MockLlmAgent("test_agent"),
+      session_service=session_service,
+      auto_create_session=True,
+  )
+  with pytest.raises(
+      ValueError,
+      match=r"Running an agent requires either a new_message or an invocation_id",
+  ):
+    agen = runner.run_async(
+        user_id="u",
+        session_id="s",
+        new_message=None,
+        invocation_id=None,
+    )
+    async for _ in agen:
+      pass
+
+
+async def test_run_async_base_node_without_message_or_invocation_id_raises_value_error():
+  """Runner.run_async with BaseNode root must raise ValueError when both new_message and invocation_id are None (#7934)."""
+  from google.adk.workflow._base_node import BaseNode
+
+  session_service = InMemorySessionService()
+  node = BaseNode(name="test_node")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node),
+      session_service=session_service,
+      auto_create_session=True,
+  )
+  with pytest.raises(
+      ValueError,
+      match=r"Running an agent requires either a new_message or an invocation_id",
+  ):
+    agen = runner.run_async(
+        user_id="u",
+        session_id="s",
+        new_message=None,
+        invocation_id=None,
+    )
+    async for _ in agen:
+      pass
+
+
+async def test_run_async_with_existing_history_and_no_new_message_succeeds():
+  """Runner.run_async must succeed with new_message=None when session has history (#7934)."""
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  user_event = Event(
+      timestamp=1.0,
+      invocation_id="inv1",
+      author="user",
+      content=types.Content(
+          role="user", parts=[types.Part(text="hello previous")]
+      ),
+  )
+  await session_service.append_event(session=session, event=user_event)
+
+  mock_model = testing_utils.MockModel.create(responses=["ok"])
+  agent = LlmAgent(name="test_agent", model=mock_model)
+  runner = Runner(
+      app_name="test_app",
+      agent=agent,
+      session_service=session_service,
+  )
+
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id="u",
+          session_id="s",
+          new_message=None,
+          invocation_id=None,
+      )
+  ]
+  assert events
+  assert len(mock_model.requests) == 1
+  assert any(
+      any(part.text == "hello previous" for part in c.parts)
+      for c in mock_model.requests[0].contents
+      if c.role == "user"
+  )
+
+
+async def test_run_async_workflow_root_with_existing_history_and_no_new_message_succeeds():
+  """Runner.run_async with Workflow root must succeed with new_message=None when session has history (#7934)."""
+  from google.adk.workflow import START, Workflow
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  user_event = Event(
+      timestamp=1.0,
+      invocation_id="inv1",
+      author="user",
+      content=types.Content(
+          role="user", parts=[types.Part(text="hello previous")]
+      ),
+  )
+  await session_service.append_event(session=session, event=user_event)
+
+  mock_model = testing_utils.MockModel.create(responses=["workflow reply"])
+  agent = LlmAgent(name="test_agent", model=mock_model)
+  workflow = Workflow(name="test_wf", edges=[(START, agent)])
+  runner = Runner(
+      app_name="test_app",
+      agent=workflow,
+      session_service=session_service,
+  )
+
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id="u",
+          session_id="s",
+          new_message=None,
+          invocation_id=None,
+      )
+  ]
+  assert events
+  assert len(mock_model.requests) == 1
+  assert any(
+      any(part.text == "hello previous" for part in c.parts)
+      for c in mock_model.requests[0].contents
+      if c.role == "user"
+  )
+
+
 if __name__ == "__main__":
   pytest.main([__file__])
