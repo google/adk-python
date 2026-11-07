@@ -176,6 +176,56 @@ class TestSessionContext:
       assert session_context._ready_event.is_set()
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize('flag_on', [True, False])
+  async def test_start_closes_connection_when_caller_is_cancelled(
+      self, flag_on
+  ):
+    """A start abandoned mid-connect must not leave the connection open.
+
+    Nothing calls close() for a start that never returned, so a connect left
+    running would finish later and hold the transport with no owner.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+    handshake_started = asyncio.Event()
+    release_handshake = asyncio.Event()
+    mock_session = MockClientSession()
+
+    async def slow_initialize():
+      handshake_started.set()
+      await release_handshake.wait()
+
+    mock_session.initialize = slow_initialize
+
+    with (
+        temporary_feature_override(
+            FeatureName._MCP_GRACEFUL_ERROR_HANDLING, flag_on
+        ),
+        patch(
+            'google.adk.tools.mcp_tool.session_context.ClientSession'
+        ) as mock_session_class,
+    ):
+      mock_session_class.return_value = mock_session
+
+      caller = asyncio.create_task(session_context.start())
+      await handshake_started.wait()
+      caller.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await caller
+
+      # A connect still running would complete here.
+      release_handshake.set()
+      for _ in range(5):
+        await asyncio.sleep(0)
+
+      assert mock_client._entered
+      assert mock_client._exited
+      assert session_context._task.done()
+      assert session_context.session is None
+
+  @pytest.mark.asyncio
   async def test_close_cleans_up_task(self):
     """Test that close() properly cleans up the task."""
     mock_client = MockClient()
