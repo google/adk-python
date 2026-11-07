@@ -492,3 +492,56 @@ def test_get_all_usage_metadata():
       ),
   )
   assert get_all_usage_metadata(inv_events) == [usage1, usage2]
+
+
+@pytest.mark.parametrize(
+    'client_call_name',
+    ['adk_request_confirmation', 'adk_request_credential', 'adk_request_input'],
+)
+def test_get_all_tool_calls_excludes_client_function_calls(client_call_name):
+  """Framework-emitted client calls are not model tool calls (#8025)."""
+  invocation_events = InvocationEvents(
+      invocation_events=[
+          InvocationEvent(
+              author='agent',
+              content=genai_types.Content(
+                  parts=[
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(
+                              id='1', name='cancel_order', args={}
+                          )
+                      ),
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(
+                              id='2', name=client_call_name, args={}
+                          )
+                      ),
+                  ]
+              ),
+          ),
+          InvocationEvent(
+              author='user',
+              content=genai_types.Content(
+                  parts=[
+                      genai_types.Part(
+                          function_response=genai_types.FunctionResponse(
+                              id='1', name='cancel_order', response={}
+                          )
+                      ),
+                      genai_types.Part(
+                          function_response=genai_types.FunctionResponse(
+                              id='2', name=client_call_name, response={}
+                          )
+                      ),
+                  ]
+              ),
+          ),
+      ]
+  )
+
+  assert [c.name for c in get_all_tool_calls(invocation_events)] == [
+      'cancel_order'
+  ]
+  assert [r.name for r in get_all_tool_responses(invocation_events)] == [
+      'cancel_order'
+  ]
