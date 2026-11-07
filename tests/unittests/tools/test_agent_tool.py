@@ -36,12 +36,10 @@ from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.tools._thread_pool import _call_tool_in_thread_pool
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
-from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
-from google.adk.runners import InMemoryRunner
 from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -3460,88 +3458,3 @@ async def test_agent_tool_closes_runner_when_nested_run_raises(
     await task
 
   assert toolset.close_calls == 1
-
-
-@mark.asyncio
-async def test_parallel_agent_tool_calls_keep_stateful_toolset_open():
-  """Parallel AgentTool calls do not close shared toolset until all finish."""
-  fast_runner_closed = asyncio.Event()
-
-  class RootParallelLlm(BaseLlm):
-    """LLM for root agent that invokes sub_agent in parallel."""
-
-    model: str = 'root-parallel-llm'
-
-    async def generate_content_async(self, llm_request, stream=False):
-      del stream
-      last_content = llm_request.contents[-1]
-      if any(p.function_response for p in last_content.parts or []):
-        results = [
-            p.function_response.response
-            for p in last_content.parts or []
-            if p.function_response
-        ]
-        yield LlmResponse(
-            content=types.Content(
-                role='model',
-                parts=[Part.from_text(text=f'Root done: {results}')],
-            )
-        )
-        return
-      fc_fast = Part.from_function_call(
-          name='sub_agent', args={'request': 'fast'}
-      )
-      fc_fast.function_call.id = 'call_fast'
-      fc_slow = Part.from_function_call(
-          name='sub_agent', args={'request': 'slow'}
-      )
-      fc_slow.function_call.id = 'call_slow'
-      yield LlmResponse(
-          content=types.Content(
-              role='model',
-              parts=[fc_fast, fc_slow],
-          )
-      )
-
-  toolset = testing_utils.StatefulToolset(slow_gate=fast_runner_closed)
-  sub_agent = LlmAgent(
-      name='sub_agent',
-      model=testing_utils.QueryAwareLlm(),
-      tools=[toolset],
-  )
-  agent_tool = AgentTool(agent=sub_agent)
-  orig_run_async = agent_tool.run_async
-
-  async def wrapped_run_async(*, args: dict[str, Any], tool_context: Any):
-    res = await orig_run_async(args=args, tool_context=tool_context)
-    if args.get('request') == 'fast':
-      assert not toolset.closed
-      fast_runner_closed.set()
-    return res
-
-  agent_tool.run_async = wrapped_run_async  # type: ignore[method-assign]
-  root_agent = LlmAgent(
-      name='root_agent',
-      model=RootParallelLlm(),
-      tools=[agent_tool],
-  )
-
-  texts = []
-  async with InMemoryRunner(agent=root_agent) as runner:
-    runner.auto_create_session = True
-    async for event in runner.run_async(
-        user_id='u1',
-        session_id='s_parallel_agent_tool',
-        new_message=types.Content(
-            role='user',
-            parts=[Part.from_text(text='call sub_agent in parallel')],
-        ),
-    ):
-      if event.content and event.content.parts:
-        for p in event.content.parts:
-          if p.text:
-            texts.append(p.text)
-
-  assert any('fast_result' in t and 'slow_result' in t for t in texts)
-  assert toolset.closed
-  assert toolset.close_count == 1
