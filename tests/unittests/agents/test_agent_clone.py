@@ -18,11 +18,18 @@ from typing import Any
 from typing import cast
 from typing import Iterable
 
+from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.tools.agent_tool import _SingleTurnAgentTool
+from google.adk.tools.agent_tool import _TaskAgentTool
+from google.genai import types
+from pydantic import BaseModel
 import pytest
+
+from .. import testing_utils
 
 
 def test_llm_agent_clone():
@@ -629,6 +636,131 @@ def test_clone_keeps_callbacks_bound_to_another_object():
 
   assert cloned.before_agent_callback.__self__ is recorder
   assert len(recorder.contexts) == 1
+
+
+def _sub_agent_tools(agent: LlmAgent) -> list[Any]:
+  return [
+      tool
+      for tool in agent.tools
+      if isinstance(tool, (_SingleTurnAgentTool, _TaskAgentTool))
+  ]
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_wraps_its_own_sub_agents(mode: str):
+  """The clone's sub-agent tools run the clone's sub-agents."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+
+  cloned = original.clone()
+
+  assert [tool.agent for tool in _sub_agent_tools(cloned)] == [
+      cloned.sub_agents[0]
+  ]
+  assert cloned.sub_agents[0] is not original.sub_agents[0]
+  assert [tool.agent for tool in _sub_agent_tools(original)] == [
+      original.sub_agents[0]
+  ]
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_with_sub_agents_update_wraps_the_new_sub_agents(mode: str):
+  """Sub-agents passed in the update replace the original's sub-agent tools."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+  new_sub_agent = LlmAgent(name="other", description="Other", mode=mode)
+
+  cloned = original.clone(update={"sub_agents": [new_sub_agent]})
+
+  assert [tool.agent for tool in _sub_agent_tools(cloned)] == [new_sub_agent]
+
+
+def test_clone_with_tools_update_keeps_sub_agent_tools():
+  """Tools passed in the update are used alongside the sub-agent tools."""
+
+  def lookup() -> str:
+    return "found"
+
+  original = LlmAgent(
+      name="root",
+      sub_agents=[
+          LlmAgent(name="helper", description="Helps", mode="single_turn")
+      ],
+  )
+  tools = [lookup]
+
+  cloned = original.clone(update={"tools": tools})
+
+  assert cloned.tools[0] is lookup
+  assert [tool.agent for tool in _sub_agent_tools(cloned)] == [
+      cloned.sub_agents[0]
+  ]
+  assert tools == [lookup]
+
+
+def test_clone_with_mode_update_adds_or_removes_finish_task():
+  """finish_task follows the clone's mode."""
+  chat_agent = LlmAgent(name="agent")
+  task_agent = LlmAgent(name="agent", mode="task")
+
+  to_task = chat_agent.clone(update={"mode": "task"})
+  to_chat = task_agent.clone(update={"mode": "chat"})
+
+  assert [type(tool) for tool in to_task.tools] == [FinishTaskTool]
+  assert to_chat.tools == []
+
+
+def test_clone_with_output_schema_update_rebuilds_finish_task():
+  """finish_task validates against the clone's output schema."""
+
+  class _Output(BaseModel):
+    answer: str
+
+  original = LlmAgent(name="agent", mode="task")
+
+  cloned = original.clone(update={"output_schema": _Output})
+
+  assert [tool.output_schema for tool in cloned.tools] == [_Output]
+
+
+@pytest.mark.asyncio
+async def test_clone_delegates_to_its_own_single_turn_sub_agent():
+  """A single-turn call from a clone runs the clone's sub-agent."""
+  helper_model = testing_utils.MockModel.create(responses=["helped"])
+  original = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  types.Part.from_function_call(
+                      name="helper", args={"request": "help"}
+                  )
+              ],
+              "done",
+          ]
+      ),
+      sub_agents=[
+          LlmAgent(
+              name="helper",
+              description="Helps",
+              mode="single_turn",
+              instruction="original instruction",
+              model=helper_model,
+          )
+      ],
+  )
+  cloned = original.clone()
+  cloned.sub_agents[0].instruction = "cloned instruction"
+
+  await testing_utils.InMemoryRunner(root_agent=cloned).run_async("hi")
+
+  assert [
+      request.config.system_instruction for request in helper_model.requests
+  ] == ["cloned instruction"]
 
 
 if __name__ == "__main__":
