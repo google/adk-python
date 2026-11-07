@@ -27,6 +27,7 @@ from pydantic import model_validator
 
 from ..models.llm_response import LlmResponse
 from ..utils import _model_copy
+from ..utils._schema_utils import top_level_input_keys
 from ._node_path_builder import _NodePathBuilder
 from .event_actions import EventActions
 
@@ -201,10 +202,7 @@ class Event(LlmResponse):
       return data
 
     data = dict(data)
-    field_names: set[str] = set(cls.model_fields.keys())
-    for f in cls.model_fields.values():
-      if f.alias:
-        field_names.add(f.alias)
+    field_names = top_level_input_keys(cls.model_fields)
     message = None if 'message' in field_names else data.pop('message', None)
     state = None if 'state' in field_names else data.pop('state', None)
     route = None if 'route' in field_names else data.pop('route', None)

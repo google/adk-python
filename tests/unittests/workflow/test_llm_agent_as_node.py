@@ -1804,6 +1804,13 @@ async def test_three_layer_llm_agent_transfer_round_trip(
       if p.text
   ]
   assert any('Welcome back to child!' in t for t in content_texts2)
+  # The grandchild is resumed under its static path, so child_agent's run is
+  # numbered after the reserved child_agent@1 instead of reusing its path.
+  assert [
+      (e.author, e.node_info.path)
+      for e in events2
+      if e.content and e.content.parts and e.content.parts[0].text
+  ] == [('child_agent', 'root_agent@1/child_agent@2')]
 
   # Turn 3: Go back to root (Child -> Root -> Root speaks)
   events3 = await runner.run_async(
@@ -1820,6 +1827,11 @@ async def test_three_layer_llm_agent_transfer_round_trip(
       if p.text
   ]
   assert any('Welcome back to root!' in t for t in content_texts3)
+  assert [
+      (e.author, e.node_info.path)
+      for e in events3
+      if e.content and e.content.parts and e.content.parts[0].text
+  ] == [('root_agent', 'root_agent@2')]
 
 
 @pytest.mark.asyncio

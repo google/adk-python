@@ -1858,6 +1858,62 @@ def test_pass_k_criterion_without_enough_decided_runs_has_no_value():
 
 
 @pytest.mark.parametrize(
+    "runs",
+    [
+        [_judged_run(0, a=0.0), _judged_run(1, a=0.0)],
+        [_judged_run(0, a=1.0), _judged_run(1, a=None)],
+        [_crashed_run(session_id="s0"), _crashed_run(session_id="s1")],
+    ],
+    ids=["value_zero", "too_few_decided_runs", "all_runs_crashed"],
+)
+def test_pass_k_criterion_without_threshold_is_always_informational(runs):
+  """Without a threshold the criterion is INFORMATIONAL, with or without a value."""
+  multi_run_config = MultiRunConfig(
+      max_crashed_runs=2,
+      cross_run_criteria=[PassKMultiRunCriterion(method="pass_hat_k", k=2)],
+  )
+
+  (aggregated,) = aggregate_eval_case_results(
+      runs, multi_run_config=multi_run_config
+  )
+
+  assert aggregated.cross_run_results[0].status == EvalStatus.INFORMATIONAL
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected_status"),
+    [
+        ([_judged_run(0, a=1.0), _judged_run(1, a=1.0)], EvalStatus.PASSED),
+        ([_judged_run(0, a=0.0), _judged_run(1, a=0.0)], EvalStatus.FAILED),
+        (
+            [_judged_run(0, a=None), _judged_run(1, a=None)],
+            EvalStatus.NOT_EVALUATED,
+        ),
+    ],
+    ids=["metrics_pass", "metrics_fail", "metrics_not_evaluated"],
+)
+def test_pass_k_criterion_without_threshold_never_changes_the_verdict(
+    runs, expected_status
+):
+  """The case's verdict is the same with or without a report-only criterion."""
+  report_only = MultiRunConfig(
+      cross_run_criteria=[PassKMultiRunCriterion(method="pass_hat_k", k=2)]
+  )
+
+  (without_criterion,) = aggregate_eval_case_results(
+      runs, multi_run_config=MultiRunConfig()
+  )
+  (with_criterion,) = aggregate_eval_case_results(
+      runs, multi_run_config=report_only
+  )
+
+  assert (
+      without_criterion.final_eval_status,
+      with_criterion.final_eval_status,
+  ) == (expected_status, expected_status)
+
+
+@pytest.mark.parametrize(
     ("threshold", "expected"), [(None, False), (0.5, True)]
 )
 def test_has_pass_count_rules_ignores_report_only_criteria(threshold, expected):

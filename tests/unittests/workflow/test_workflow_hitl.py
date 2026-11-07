@@ -2704,3 +2704,189 @@ async def test_confirmation_after_parallel_agent_node_survives_resume(
 
   assert booked == ['trip']
   assert {e.branch for e in events1 + events2 if e.author == 'booker'} == {None}
+
+
+class _GatherNode(BaseNode):
+  """Collects inputs in state and emits every `batch` inputs.
+
+  This is the accumulate-then-emit pattern `wait_for_output` is meant for.
+  """
+
+  batch: int = 2
+  calls: list[Any] = Field(default_factory=list)
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.calls.append(node_input)
+    seen = list(ctx.state.get('seen') or []) + [node_input]
+    ctx.state['seen'] = seen
+    if len(seen) % self.batch == 0:
+      yield Event(output=seen[-self.batch :])
+
+
+def _gather_app(
+    request: pytest.FixtureRequest, agent: Workflow, resumable: bool
+) -> App:
+  return App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_resume_does_not_rerun_superseded_waiting_run(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """START -> A -> Gather, START -> B -> Gather, Gather -> Ask -> Done.
+
+  Gather waits after A's output (Gather@1) and emits after B's (Gather@2).
+  Answering Ask must not run Gather@1 again: Gather@2 already superseded it.
+  """
+  gather = _GatherNode(name='Gather', wait_for_output=True)
+  ask = RequestInputNode(name='Ask')
+  done = InputCapturingNode(name='Done')
+  agent = Workflow(
+      name='test_agent',
+      edges=[
+          (START, _TestingNode(name='A', message='a'), gather),
+          (START, _TestingNode(name='B', message='b'), gather),
+          (gather, ask, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=_gather_app(request, agent, resumable)
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+  assert sorted(gather.calls) == ['a', 'b']
+
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'yes': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert sorted(gather.calls) == ['a', 'b']
+  assert done.received_inputs == [{'yes': True}]
+  assert sorted(runner.session.state['seen']) == ['a', 'b']
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_resume_does_not_rerun_waiting_run_before_its_next_trigger(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """START -> A -> Gather, START -> Ask -> B -> Gather, Gather -> Done.
+
+  Gather waits after A's output while Ask pauses for the user. Answering Ask
+  must not run Gather again with A's output: it should stay waiting until B's
+  output arrives, then emit both.
+  """
+  gather = _GatherNode(name='Gather', wait_for_output=True)
+  ask = RequestInputNode(name='Ask')
+  done = InputCapturingNode(name='Done')
+  agent = Workflow(
+      name='test_agent',
+      edges=[
+          (START, _TestingNode(name='A', message='a'), gather),
+          (START, ask, _TestingNode(name='B', message='b'), gather),
+          (gather, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=_gather_app(request, agent, resumable)
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+  assert gather.calls == ['a']
+
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'yes': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert gather.calls == ['a', 'b']
+  assert done.received_inputs == [['a', 'b']]
+  assert runner.session.state['seen'] == ['a', 'b']
+
+
+class _LapRouterNode(BaseNode):
+  """Routes 'loop' until it has run `laps` times, then 'stop'."""
+
+  laps: int = 3
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    lap = (ctx.state.get('lap') or 0) + 1
+    ctx.state['lap'] = lap
+    yield Event(output=lap, route='loop' if lap < self.laps else 'stop')
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_resume_does_not_rerun_waiting_runs_from_earlier_loop_laps(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """START -> A -> Gather, A -> B -> Gather, Gather -> Router.
+
+  Router loops back to A twice, then routes to Ask -> Done. Each lap leaves
+  one waiting run of Gather. Answering Ask must not rerun them, which would
+  feed Gather extra inputs, run the loop again and ask a second time.
+  """
+  gather = _GatherNode(name='Gather', wait_for_output=True)
+  node_a = _TestingNode(name='A', message='a')
+  node_b = _TestingNode(name='B', message='b')
+  router = _LapRouterNode(name='Router')
+  ask = RequestInputNode(name='Ask')
+  done = InputCapturingNode(name='Done')
+  agent = Workflow(
+      name='test_agent',
+      edges=[
+          (START, node_a, gather),
+          (node_a, node_b, gather),
+          (gather, router),
+          (router, {'loop': node_a, 'stop': ask}),
+          (ask, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=_gather_app(request, agent, resumable)
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+  assert gather.calls == ['a', 'b'] * 3
+
+  events2 = await asyncio.wait_for(
+      runner.run_async(
+          new_message=testing_utils.UserContent(
+              create_request_input_response(interrupt_id, {'yes': True})
+          ),
+          invocation_id=events1[0].invocation_id,
+      ),
+      timeout=10,
+  )
+
+  assert gather.calls == ['a', 'b'] * 3
+  assert done.received_inputs == [{'yes': True}]
+  assert not workflow_testing_utils.get_request_input_events(events2)
+  assert runner.session.state['lap'] == 3
