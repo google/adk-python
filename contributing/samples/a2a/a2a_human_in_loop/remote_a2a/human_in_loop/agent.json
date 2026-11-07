@@ -6,7 +6,7 @@
   "defaultOutputModes": [
     "application/json"
   ],
-  "description": "A reimbursement agent that handles employee expense reimbursement requests. Automatically approves amounts under $100 and requires manager approval for larger amounts using long-running tools for human-in-the-loop workflows.",
+  "description": "A reimbursement agent that handles employee expense reimbursement requests. Automatically approves amounts under $100 and requires manager approval for amounts of $100 or more using long-running tools for human-in-the-loop workflows.",
   "name": "reimbursement_agent",
   "skills": [
     {
@@ -22,7 +22,7 @@
     {
       "id": "approval_workflow",
       "name": "Approval Workflow",
-      "description": "Request manager approval for reimbursements over $100 using long-running tools",
+      "description": "Request manager approval for reimbursements of $100 or more using long-running tools",
       "tags": [
         "approval",
         "workflow",

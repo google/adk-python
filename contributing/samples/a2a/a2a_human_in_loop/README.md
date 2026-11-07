@@ -30,7 +30,7 @@ The A2A Human-in-the-Loop sample consists of:
 
 ### 2. **Human-in-the-Loop Workflow**
 
-- Seamlessly escalates high-value requests (>$100) to remote approval agent
+- Seamlessly escalates high-value requests (≥$100) to remote approval agent
 - Remote approval agent uses long-running tools to surface approval requests back to the root agent
 - Human managers interact directly with the root agent to approve/reject requests
 
@@ -76,11 +76,11 @@ Agent: I'll process your reimbursement request for $50 for meals. Since this amo
 Agent: ✅ Reimbursement approved and processed: $50 for meals
 ```
 
-**Human Approval Required (Over $100):**
+**Human Approval Required (At Least $100):**
 
 ```
 User: Please reimburse $200 for conference travel
-Agent: I'll process your reimbursement request for $200 for conference travel. Since this amount exceeds $100, I need to get manager approval.
+Agent: I'll process your reimbursement request for $200 for conference travel. Since this amount is at least $100, I need to get manager approval.
 Agent: 🔄 Request submitted for approval (Ticket: reimbursement-ticket-001). Please wait for manager review.
 [Human manager approves the pending request from the ADK Web UI]
 Agent: ✅ Great news! Your reimbursement has been approved by the manager. Processing $200 for conference travel.
@@ -120,7 +120,7 @@ Agent: ✅ Great news! Your reimbursement has been approved by the manager. Proc
 
 The human-in-the-loop process follows this pattern:
 
-1. **Initial Call**: Root agent delegates approval request to remote approval agent for amounts >$100
+1. **Initial Call**: Root agent delegates approval request to remote approval agent for amounts ≥$100
 1. **Pending Response**: Remote approval agent returns immediate response with `status: "pending"` and ticket ID and surface the approval request to root agent
 1. **Agent Acknowledgment**: Root agent informs user about pending approval status
 1. **Human Interaction**: Human manager interacts with root agent to review and approve/reject the request
