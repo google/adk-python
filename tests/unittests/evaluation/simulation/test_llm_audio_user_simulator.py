@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import array
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.evaluation import _audio_utils as audio_utils
 from google.adk.evaluation import conversation_scenarios
 from google.adk.evaluation.simulation._llm_audio_user_simulator import _LlmAudioUserSimulator
@@ -78,7 +79,7 @@ def test_config_defaults():
   """A default config carries the expected discriminator and audio defaults."""
   config = LlmAudioUserSimulatorConfig()
   assert config.type == "llm_audio"
-  assert config.model == "gemini-2.5-flash"
+  assert config.model == LlmAgent.DEFAULT_MODEL
   assert config.audio_model == "cloud_tts"
   assert config.include_text_with_audio is True
 
