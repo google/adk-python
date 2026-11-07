@@ -12388,6 +12388,25 @@ async def test_content_to_message_param_bedrock_non_claude_no_thinking_blocks():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_groq_omits_reasoning_content():
+  """Groq strictly rejects reasoning_content in outbound assistant messages."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content,
+      provider="groq",
+      model="groq/openai/gpt-oss-120b",
+  )
+  assert result.get("reasoning_content") is None
+  assert result["content"] == "Answer"
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_bedrock_claude_embeds_thinking_blocks():
   """bedrock + Claude model embeds thinking blocks in the content list."""
   content = types.Content(
@@ -12432,6 +12451,25 @@ async def test_content_to_message_param_vertex_gemini_no_thinking_blocks():
       isinstance(body, list)
       and any(isinstance(b, dict) and b.get("type") == "thinking" for b in body)
   )
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_groq_omits_reasoning_content():
+  """Groq strictly rejects reasoning_content in outbound assistant messages."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content,
+      provider="groq",
+      model="groq/openai/gpt-oss-120b",
+  )
+  assert result.get("reasoning_content") is None
+  assert result["content"] == "Answer"
 
 
 @pytest.mark.asyncio
