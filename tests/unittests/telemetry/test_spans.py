@@ -2439,6 +2439,94 @@ async def test_generate_content_span_with_genai_instrumentation(
   assert USER_ID not in common_attributes
 
 
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.tracer')
+async def test_generate_content_span_with_inherited_non_gemini_model(
+    mock_tracer,
+    monkeypatch,
+):
+  """A sub-agent inheriting a non-Gemini model gets ADK's own span."""
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
+  agent = LlmAgent(name='test_agent')
+  LlmAgent(name='parent_agent', model='not-a-gemini-model', sub_agents=[agent])
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='not-a-gemini-model',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    pass
+
+  mock_tracer.start_as_current_span.assert_called_once_with(
+      'generate_content not-a-gemini-model'
+  )
+  assert gc_span.span is mock_span
+
+
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.tracer')
+@mock.patch(
+    'google.adk.telemetry.tracing._use_extra_generate_content_attributes'
+)
+async def test_generate_content_span_with_inherited_gemini_model(
+    mock_use_extra,
+    mock_tracer,
+    monkeypatch,
+):
+  """A sub-agent inheriting Gemini leaves its span to the instrumentor.
+
+  With a non-Gemini default model, the sub-agent used to resolve to the
+  default, so ADK recorded the inference itself, unlike the Gemini root's.
+  """
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
+  monkeypatch.setattr(LlmAgent, '_default_model', 'not-a-gemini-model')
+  agent = LlmAgent(name='test_agent')
+  LlmAgent(name='parent_agent', model='gemini-2.5-flash', sub_agents=[agent])
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='gemini-2.5-flash',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    pass
+
+  assert gc_span is None
+  mock_use_extra.assert_called_once()
+  mock_tracer.start_as_current_span.assert_not_called()
+
+
 def _mock_callable_tool():
   """Description of some tool."""
   return 'result'
