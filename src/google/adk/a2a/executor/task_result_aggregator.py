@@ -86,9 +86,11 @@ class TaskResultAggregator:
       # always working because other state may terminate the event aggregation
       # in a2a request handler
       elif self._task_state == _compat.TS_WORKING:
-        self._task_status_message = _compat.normalize_message(
-            event.status.message
-        )
+        message = _compat.normalize_message(event.status.message)
+        # A working update without a message (e.g. one that only reports a
+        # state or artifact delta) carries no result to replace the last one.
+        if message is not None:
+          self._task_status_message = message
       event.status.state = _compat.TS_WORKING
       # For backward compatibility with a2a v0.3 (a2a v1.0+ removes the `final`
       # attribute from TaskStatusUpdateEvent). If we mutate the intermediate
