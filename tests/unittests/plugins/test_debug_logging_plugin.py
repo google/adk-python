@@ -459,6 +459,37 @@ class TestDebugLoggingPluginFileOutput:
         len(data["entries"]) >= 2
     )  # At least invocation_start and user_message
 
+  async def test_on_run_error_callback_writes_to_file(
+      self, debug_output_file, mock_invocation_context
+  ):
+    """Test that on_run_error_callback writes the run error to file."""
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    await plugin.on_run_error_callback(
+        invocation_context=mock_invocation_context, error=ValueError("boom")
+    )
+
+    assert debug_output_file.exists()
+
+    with open(debug_output_file, "r") as f:
+      documents = list(yaml.safe_load_all(f))
+
+    assert len(documents) == 1
+    data = documents[0]
+    assert data["invocation_id"] == "test-invocation-id"
+    assert data["session_id"] == "test-session-id"
+    assert [e["entry_type"] for e in data["entries"]] == [
+        "invocation_start",
+        "invocation_error",
+        "session_state_snapshot",
+        "invocation_end",
+    ]
+    assert data["entries"][1]["data"] == {
+        "error_type": "ValueError",
+        "error_message": "boom",
+    }
+
   async def test_after_run_callback_includes_session_state(
       self, debug_output_file, mock_invocation_context
   ):
@@ -555,6 +586,20 @@ class TestDebugLoggingPluginFileOutput:
     assert (
         mock_invocation_context.invocation_id not in plugin._invocation_states
     )
+
+  async def test_on_run_error_callback_cleans_up_state(
+      self, debug_output_file, mock_invocation_context
+  ):
+    """Test that invocation state is cleaned up after a failed run."""
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    assert mock_invocation_context.invocation_id in plugin._invocation_states
+
+    await plugin.on_run_error_callback(
+        invocation_context=mock_invocation_context, error=ValueError("boom")
+    )
+    assert plugin._invocation_states == {}
 
 
 class TestDebugLoggingPluginSerialization:
