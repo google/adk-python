@@ -489,10 +489,11 @@ class HallucinationsV1Evaluator(Evaluator):
         context_parts.append(
             json.dumps(
                 [
-                    tool_call.model_dump(exclude_none=True)
+                    tool_call.model_dump(mode="json", exclude_none=True)
                     for tool_call in tool_calls
                 ],
                 indent=2,
+                ensure_ascii=False,
             )
             + "\n"
         )
@@ -501,10 +502,11 @@ class HallucinationsV1Evaluator(Evaluator):
         context_parts.append(
             json.dumps(
                 [
-                    tool_response.model_dump(exclude_none=True)
+                    tool_response.model_dump(mode="json", exclude_none=True)
                     for tool_response in tool_responses
                 ],
                 indent=2,
+                ensure_ascii=False,
             )
             + "\n"
         )
