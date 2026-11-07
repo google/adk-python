@@ -3361,11 +3361,14 @@ def _append_response_schema_to_description(
 
 def _function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
+    *,
+    model: str = "",
 ) -> dict[str, Any]:
   """Converts a types.FunctionDeclaration to an openapi spec dictionary.
 
   Args:
     function_declaration: The function declaration to convert.
+    model: The LiteLLM model used to select the schema dialect.
 
   Returns:
     The openapi spec dictionary representation of the function declaration.
@@ -3375,7 +3378,6 @@ def _function_declaration_to_tool_param(
 
   if function_declaration.parameters_json_schema:
     parameters = copy.deepcopy(function_declaration.parameters_json_schema)
-    lowercase_schema_types(parameters)
   elif function_declaration.parameters:
     parameters = _schema_to_dict(function_declaration.parameters)
     if "type" not in parameters:
@@ -3387,6 +3389,10 @@ def _function_declaration_to_tool_param(
         "type": "object",
         "properties": {},
     }
+
+  lowercase_schema_types(
+      parameters, convert_nullable=not _is_litellm_gemini_model(model)
+  )
 
   tool_params: dict[str, Any] = {
       "type": "function",
@@ -4043,7 +4049,7 @@ async def _get_completion_inputs(
         continue
       if tool.function_declarations:
         tools.extend(
-            _function_declaration_to_tool_param(func_decl)
+            _function_declaration_to_tool_param(func_decl, model=model)
             for func_decl in tool.function_declarations
         )
       else:

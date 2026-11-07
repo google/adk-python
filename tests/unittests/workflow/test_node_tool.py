@@ -2811,3 +2811,24 @@ async def test_node_tool_workflow_downstream_error_hits_on_tool_error(
 
   assert len(seen_errors) == 1
   assert _function_responses(events) == [{'handled_internal_error': True}]
+
+
+def test_node_tool_nullable_declaration_matches_gemini_schema():
+  """The shared declaration retains main's Gemini nullable/enum payload."""
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          'choice': types.Schema(
+              type=types.Type.STRING, nullable=True, enum=['x', 'y']
+          ),
+      },
+  )
+  tool = NodeTool(node=Workflow(name='lookup', edges=[], input_schema=schema))
+
+  declaration = tool._get_declaration()
+
+  assert declaration.model_dump_json(by_alias=True, exclude_none=True) == (
+      '{"description":"Executes the node: lookup","name":"lookup",'
+      '"parametersJsonSchema":{"properties":{"choice":{"enum":["x","y"],'
+      '"nullable":true,"type":"string"}},"type":"object"}}'
+  )
