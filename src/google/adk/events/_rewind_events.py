@@ -64,7 +64,13 @@ def _apply_rewinds(events: list[Event]) -> list[Event]:
       rewind_idx = first_idx_by_inv.get(
           event.actions.rewind_before_invocation_id
       )
-      if rewind_idx is not None and rewind_idx < i:
+      if rewind_idx is None:
+        # Target is not in `events` — either an unknown id, or the list was
+        # truncated by GetSessionConfig.num_recent_events / after_timestamp
+        # so the target fell outside the window. Everything earlier in this
+        # list belongs to the rewound span; stop so those events stay out.
+        break
+      if rewind_idx < i:
         i = rewind_idx
     else:
       kept.append(event)
