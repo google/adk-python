@@ -10,7 +10,7 @@ For comprehensive information about using NVIDIA models with LiteLLM, refer to t
 
 Use the following procedure to get an NVIDIA NIM API key.
 
-1. Sign up at [NVIDIA AI Foundation](https://www.nvidia.com/en-us/ai-data-science/cloud/)
+1. Sign up at [NVIDIA Build](https://build.nvidia.com/)
 1. Navigate to API section and generate an API key
 1. Copy your API key
 
