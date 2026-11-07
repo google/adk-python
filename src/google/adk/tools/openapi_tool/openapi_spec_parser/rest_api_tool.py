@@ -141,7 +141,11 @@ _DEFAULT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
 
 
 def _encode_path_param(*, name: str, value: str) -> str:
-  """Percent-encode a path parameter, rejecting RFC 3986 dot-segments.
+  """Percent-encode a path parameter, rejecting blank values and dot-segments.
+
+  A blank value would leave an empty path segment (for example
+  ``/pets//toys``), which servers answer with a redirect or an error that does
+  not name the parameter, so it is rejected like a missing one.
 
   ``quote(..., safe="")`` encodes reserved characters including ``/``, ``?``,
   and ``#``, but leaves ``.`` literal because it is unreserved. A value of
@@ -163,8 +167,11 @@ def _encode_path_param(*, name: str, value: str) -> str:
     The percent-encoded parameter value.
 
   Raises:
-    InputValidationError: If any path segment is ``.`` or ``..``.
+    InputValidationError: If the value is empty or whitespace-only, or any
+      path segment is ``.`` or ``..``.
   """
+  if not value.strip():
+    raise InputValidationError(f"Path parameter {name!r} must not be empty.")
   for segment in value.replace("\\", "/").split("/"):
     if segment in (".", ".."):
       raise InputValidationError(

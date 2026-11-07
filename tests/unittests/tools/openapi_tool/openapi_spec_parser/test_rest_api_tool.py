@@ -226,6 +226,12 @@ def oauth2_credential():
   )
 
 
+@pytest.mark.parametrize("value", ["", " ", "\t\n"])
+def test_encode_path_param_rejects_blank_values(value):
+  with pytest.raises(InputValidationError, match="'name' must not be empty"):
+    _encode_path_param(name="name", value=value)
+
+
 @pytest.mark.parametrize(
     "value",
     [".", "..", "../../admin/v1/tenants", "foo/../bar", r"..\admin", "./x"],
@@ -2434,6 +2440,42 @@ class TestRestApiTool:
     assert "parent-directory" in result["error"]
     assert not mock_request.called
     assert tool._detect_error_in_response(result) == "HTTP_ERROR"
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_rejects_blank_path_param(
+      self, mock_request, mock_tool_context
+  ):
+    """A blank path arg must return a retryable error without a request."""
+    tool = RestApiTool(
+        name="list_toys",
+        description="List a pet's toys.",
+        endpoint=OperationEndpoint(
+            base_url="https://petstore.example.com",
+            path="/pets/{petId}/toys",
+            method="GET",
+        ),
+        operation=Operation(
+            operationId="listToys",
+            parameters=[
+                OpenAPIParameter(**{
+                    "name": "petId",
+                    "in": "path",
+                    "required": True,
+                    "schema": OpenAPISchema(type="string"),
+                })
+            ],
+        ),
+    )
+
+    result = await tool.call(
+        args={"pet_id": "  "}, tool_context=mock_tool_context
+    )
+
+    assert "Path parameter 'petId' must not be empty." in result["error"]
+    assert not mock_request.called
 
   def test_prepare_request_params_header_param(
       self,
