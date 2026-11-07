@@ -14,12 +14,62 @@
 
 from unittest import mock
 
+from google.adk.events._internal_metadata import LIVE_USAGE_KEY
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
 
 MODEL_VERSION = 'gemini-2.5-pro'
+
+
+@pytest.mark.parametrize('backend', [*GoogleLLMVariant, 'VERTEX_AI', None])
+async def test_live_usage_identifies_each_connection_and_orders_snapshots(
+    backend,
+):
+  """Usage snapshots remain ordered across receives and resumed session IDs."""
+  session = mock.AsyncMock()
+  session.session_id = 'resumed-session'
+
+  async def receive():
+    for count in (12, 25, 4):
+      yield types.LiveServerMessage(
+          usage_metadata=types.UsageMetadata(
+              total_token_count=count, service_tier=types.ServiceTier.PRIORITY
+          ),
+          server_content=types.LiveServerContent(
+              model_turn=types.Content(parts=[types.Part(text='hello')])
+          ),
+      )
+
+  session.receive = mock.Mock(side_effect=receive)
+  connection = GeminiLlmConnection(session, api_backend=backend)
+  first = [response async for response in connection.receive()]
+  second = [response async for response in connection.receive()]
+  reconnected = GeminiLlmConnection(session, api_backend=backend)
+  third = [response async for response in reconnected.receive()]
+
+  first_keys = [
+      r.custom_metadata[LIVE_USAGE_KEY] for r in first if r.usage_metadata
+  ]
+  second_keys = [
+      r.custom_metadata[LIVE_USAGE_KEY] for r in second if r.usage_metadata
+  ]
+  third_keys = [
+      r.custom_metadata[LIVE_USAGE_KEY] for r in third if r.usage_metadata
+  ]
+  assert [key['sequence'] for key in first_keys] == [1, 2, 3]
+  assert [key['sequence'] for key in second_keys] == [4, 5, 6]
+  assert [key['sequence'] for key in third_keys] == [1, 2, 3]
+  assert len({key['connection_id'] for key in first_keys + second_keys}) == 1
+  assert third_keys[0]['connection_id'] != first_keys[0]['connection_id']
+  assert first_keys[0]['api_backend'] == getattr(backend, 'value', backend)
+  assert first_keys[0]['service_tier'] == 'priority'
+  assert [
+      r.usage_metadata.total_token_count for r in first if r.usage_metadata
+  ] == [12, 25, 4]
+  assert first[0].live_session_id == third[0].live_session_id
+  assert first[0].usage_metadata.total_token_count == 12
 
 
 @pytest.fixture

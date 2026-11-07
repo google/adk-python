@@ -20,6 +20,7 @@ import asyncio
 from collections.abc import Mapping
 from collections.abc import Sequence
 import contextlib
+import copy
 from typing import Any
 from typing import AsyncGenerator
 from typing import Iterator
@@ -32,6 +33,8 @@ from ....agents._callback_metadata import CallbackType
 from ....agents.callback_context import CallbackContext
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
+from ....events._internal_metadata import owned_internal_metadata
+from ....events._internal_metadata import restore_owned_metadata
 from ....events.event import Event
 from ....events.event import TOOL_DISPLAY_NAMES_METADATA_KEY
 from ....models.llm_request import LlmRequest
@@ -255,6 +258,10 @@ def _inherit_unset_model_fields(
 
   An explicitly set value on the replacement is always respected.
 
+  Unset model_version and live_session_id are inherited too. Provenance metadata
+  from the current response is merged into a copy, with original provenance
+  values taking precedence. The callback's replacement is never modified.
+
   Args:
     original: The response being replaced.
     replacement: The callback-provided response, if there is one.
@@ -279,6 +286,20 @@ def _inherit_unset_model_fields(
     updates['turn_complete'] = original.turn_complete
   if replacement.usage_metadata is None and original.usage_metadata is not None:
     updates['usage_metadata'] = original.usage_metadata
+  for field in ('model_version', 'live_session_id'):
+    if (
+        field not in replacement.model_fields_set
+        and getattr(original, field) is not None
+    ):
+      updates[field] = getattr(original, field)
+  if owned_metadata := owned_internal_metadata(original.custom_metadata):
+    existing = replacement.custom_metadata
+    metadata = {
+        **(existing if isinstance(existing, Mapping) else {}),
+        **owned_metadata,
+    }
+    if metadata != replacement.custom_metadata:
+      updates['custom_metadata'] = metadata
   if updates:
     return replacement.model_copy(update=updates)
   return replacement
@@ -304,6 +325,12 @@ async def handle_after_model_callback(
     An altered LlmResponse if a callback modifies it, else None.
   """
   agent = _as_llm_agent(invocation_context)
+  # Callbacks may replace the response or mutate its metadata in place.
+  owned_metadata = copy.deepcopy(
+      owned_internal_metadata(getattr(llm_response, 'custom_metadata', None))
+      if isinstance(llm_response, LlmResponse)
+      else {}
+  )
 
   # Add grounding metadata to the response if needed.
   # TODO: Remove this function once the workaround is no longer needed.
@@ -340,27 +367,29 @@ async def handle_after_model_callback(
             llm_response=llm_response,
         )
     )
-    if callback_response:
-      return _inherit_unset_model_fields(
-          llm_response,
-          await _maybe_add_grounding_metadata(callback_response),
-      )
-
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
-    callback_response = await _run_callbacks(
-        agent.canonical_after_model_callbacks,  # type: ignore[arg-type]
-        _stop_on_truthy,
-        callback_context=callback_context,
-        llm_response=llm_response,
-        callback_type=CallbackType.AFTER_MODEL,
-    )
-    if callback_response:
-      return _inherit_unset_model_fields(
-          llm_response,
-          await _maybe_add_grounding_metadata(callback_response),
-      )
-    return await _maybe_add_grounding_metadata()
+    if not callback_response:
+      for callback in agent.canonical_after_model_callbacks:
+        try:
+          callback_response = await _run_callbacks(
+              [callback],  # type: ignore[arg-type]
+              _stop_on_truthy,
+              callback_context=callback_context,
+              llm_response=llm_response,
+              callback_type=CallbackType.AFTER_MODEL,
+          )
+        finally:
+          if isinstance(llm_response, LlmResponse):
+            restore_owned_metadata(llm_response, owned_metadata)
+        if callback_response:
+          break
+    callback_response = await _maybe_add_grounding_metadata(callback_response)
+    if isinstance(llm_response, LlmResponse):
+      restore_owned_metadata(llm_response, owned_metadata)
+    if callback_response is llm_response:
+      return callback_response
+    return _inherit_unset_model_fields(llm_response, callback_response)
 
 
 @contextlib.contextmanager
