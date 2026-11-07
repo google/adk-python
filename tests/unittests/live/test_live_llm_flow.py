@@ -22,6 +22,7 @@ import logging
 from typing import AsyncGenerator
 from unittest import mock
 
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
@@ -894,6 +895,101 @@ async def test_run_live_resumes_a_connection_lost_while_not_resumable(
   # the resumed one must not replay it into the session that already has it.
   assert model.connections[0].history
   assert model.connections[1].history is None
+
+
+class _OpenUntilClosedConnection(testing_utils.MockLlmConnection):
+  """A connection the model keeps open, sending nothing, until it is closed."""
+
+  def __init__(self, *, close_suspends: bool):
+    super().__init__(llm_responses=[])
+    self.close_suspends = close_suspends
+
+  @property
+  def closed(self) -> bool:
+    return self._closed.is_set()
+
+  async def close(self) -> None:
+    await super().close()
+    if self.close_suspends:
+      # Like a websocket close handshake, return only after other tasks ran.
+      await asyncio.sleep(0)
+
+
+class _OpenUntilClosedModel(testing_utils.MockModel):
+  """Opens an `_OpenUntilClosedConnection` on each connect."""
+
+  close_suspends: bool = False
+  connections: list[_OpenUntilClosedConnection] = []
+
+  # MockModel.connect is annotated as returning the connection itself, so
+  # mypy reads its yield type as Never and rejects any typed override.
+  @contextlib.asynccontextmanager
+  async def connect(  # type: ignore[override]
+      self, llm_request: LlmRequest
+  ) -> AsyncGenerator[_OpenUntilClosedConnection, None]:
+    connection = _OpenUntilClosedConnection(close_suspends=self.close_suspends)
+    self.connections.append(connection)
+    yield connection
+
+
+@pytest.mark.parametrize(
+    'close_suspends', [False, True], ids=['close_returns', 'close_suspends']
+)
+async def test_run_live_raises_when_the_sender_fails(
+    close_suspends: bool,
+) -> None:
+  """A failure in the send half ends the run with that error.
+
+  Setup: a before_model_callback that raises on the user's message, which the
+    send half screens, and a model that keeps the connection open.
+  Act: send the message and run the live session through `Runner.run_live`.
+  Assert: the run raises the callback's error and closes the connection,
+    instead of waiting on a model that never hears from the send half again.
+    A close that suspends lets the run cancel the send half before the close
+    returns, and the error must survive that too.
+  """
+
+  def _fail_screening(
+      callback_context: CallbackContext, llm_request: LlmRequest
+  ) -> None:
+    raise RuntimeError('Screening failed.')
+
+  model = _OpenUntilClosedModel(responses=[], close_suspends=close_suspends)
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(
+      app_name='app',
+      agent=LlmAgent(
+          name='root_agent',
+          model=model,
+          before_model_callback=_fail_screening,
+      ),
+      session_service=session_service,
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_content(types.UserContent('Hello.'))
+
+  async def _run_to_end() -> None:
+    async with contextlib.aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+        )
+    ) as events:
+      async for _ in events:
+        pass
+
+  # Not `wait_for`: cancelling a stuck run would also surface the error.
+  run = asyncio.create_task(_run_to_end())
+  done, _ = await asyncio.wait({run}, timeout=5)
+  if not done:
+    run.cancel()
+    await asyncio.gather(run, return_exceptions=True)
+    pytest.fail('The run kept waiting on the open connection.')
+  with pytest.raises(RuntimeError, match='Screening failed.'):
+    run.result()
+  assert model.connections[0].closed
 
 
 async def test_turn_complete_saves_image_frames_sent_to_the_model():

@@ -208,6 +208,38 @@ async def send_to_model(
       await llm_connection._send_content(content, partial=live_request.partial)
 
 
+async def _send_to_model_or_close(
+    flow: BaseLlmFlow,
+    llm_connection: BaseLlmConnection,
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+) -> None:
+  """Runs `send_to_model`, closing the connection if it fails.
+
+  The send half is the only reader of the live request queue. Once it fails,
+  nothing reaches the model again, not even the caller's close request, and
+  the receive half would wait on the connection until the server ended the
+  session. Closing the connection ends the receive half now, and
+  `run_live_flow` raises the send half's error when it awaits this task.
+  """
+  try:
+    await send_to_model(flow, llm_connection, invocation_context, llm_request)
+  except Exception:
+    try:
+      await llm_connection.close()
+    except asyncio.CancelledError:
+      # The run cancels this task once the receive half ends, which this
+      # close can cause before it returns. The task must still end with the
+      # send half's error, or the run would read the close as a clean end.
+      pass
+    except Exception:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to close the live connection after the send half failed.',
+          exc_info=True,
+      )
+    raise
+
+
 async def receive_from_model(
     flow: BaseLlmFlow,
     llm_connection: BaseLlmConnection,
@@ -629,7 +661,7 @@ async def run_live_flow(
               )
 
           send_task = asyncio.create_task(
-              send_to_model(
+              _send_to_model_or_close(
                   flow, llm_connection, invocation_context, llm_request
               )
           )
