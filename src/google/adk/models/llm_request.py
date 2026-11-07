@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
+from typing import TYPE_CHECKING
 
 from google.genai import types
 from pydantic import BaseModel
@@ -27,6 +29,10 @@ from ..tools.base_tool import BaseTool
 from ..utils._schema_utils import SchemaType
 from ._service_tier import ServiceTier
 from .cache_metadata import CacheMetadata
+
+if TYPE_CHECKING:
+  from google.genai import Client
+  from google.genai._api_client import BaseApiClient
 
 
 def _find_tool_with_function_declarations(
@@ -405,3 +411,46 @@ class LlmRequest(BaseModel):
 
     self.config.response_schema = schema
     self.config.response_mime_type = "application/json"
+
+  def to_generate_content_body(
+      self,
+      *,
+      vertexai: bool | None = None,
+      api_client: Client | BaseApiClient | None = None,
+  ) -> dict[str, Any]:
+    """Returns this request as a ``generateContent`` request body.
+
+    ``config`` is one flat namespace, but its fields go to three different
+    places on the wire. Some sit at the top level, most belong inside
+    ``generationConfig``, and a few are consumed by the client library and
+    rejected by the endpoint. Getting that split wrong does not raise: bury
+    ``tools`` in ``generationConfig`` and the call returns 200 with no function
+    call in it, because none was ever offered.
+
+    Custom ``BaseLlm`` implementations that build their own request body should
+    use this rather than flattening ``config`` by hand.
+
+    Args:
+      vertexai: Whether the body is bound for Vertex AI rather than the Gemini
+        Developer API. Defaults to the backend ADK is configured for, which is
+        the Gemini Developer API unless ``GOOGLE_GENAI_USE_ENTERPRISE`` (or the
+        deprecated ``GOOGLE_GENAI_USE_VERTEXAI``) is enabled. Ignored when
+        ``api_client`` is given.
+      api_client: A genai ``Client`` or ``BaseApiClient``, if the caller has
+        one. Needed on Vertex AI to expand a short ``cached_content`` name.
+
+    Returns:
+      A JSON-serializable dict ready to send as the request body.
+
+    Raises:
+      ValueError: If a config field is not valid for the target API, or if
+        ``cached_content`` is a short name on Vertex AI and no ``api_client``
+        is given.
+    """
+    # Imported here rather than at module scope: this pulls in google.genai's
+    # model converters, which nothing else in this module needs.
+    from ._generate_content_body import to_generate_content_body
+
+    return to_generate_content_body(
+        self, vertexai=vertexai, api_client=api_client
+    )

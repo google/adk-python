@@ -34,6 +34,7 @@ from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 import pytest
 
 
@@ -958,6 +959,106 @@ class TestGetAuthResponse:
         mock_client.fetch_token.call_args.kwargs["code_verifier"]
         == "public-code-verifier"
     )
+
+  @pytest.mark.asyncio
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  async def test_async_exchange_does_not_use_the_sync_helper(
+      self,
+      mock_oauth2_session,
+      auth_config,
+      oauth2_credentials_with_auth_code,
+      monkeypatch,
+  ):
+    """The async path exchanges without the worker thread and nested loop."""
+    monkeypatch.setattr(
+        OAuth2CredentialExchanger,
+        "_exchange_sync",
+        Mock(side_effect=AssertionError("_exchange_sync must not be used")),
+    )
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.fetch_token.return_value = OAuth2Token(
+        {"access_token": "async_access_token"}
+    )
+    stored = oauth2_credentials_with_auth_code.model_copy(deep=True)
+    stored.oauth2.client_id = "client_supplied_id"
+    stored.oauth2.client_secret = None
+    state = MockState()
+    credential_key = "temp:" + auth_config.credential_key
+    state[credential_key] = stored
+
+    result = await AuthHandler(auth_config)._get_auth_response_async(state)
+
+    assert result.oauth2.access_token == "async_access_token"
+    # The stored response does not get to pick the OAuth2 client.
+    assert mock_oauth2_session.call_args[0][0] == "mock_client_id"
+    assert mock_oauth2_session.call_args[0][1] == "mock_client_secret"
+    # The exchanged token is kept, the secret that exchanged it is not.
+    assert state[credential_key].oauth2.access_token == "async_access_token"
+    assert state[credential_key].oauth2.client_secret is None
+
+  @pytest.mark.asyncio
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  async def test_async_exchanges_public_client(
+      self, mock_oauth2_session, oauth2_auth_scheme
+  ):
+    """Public clients exchange an auth code with client_id only."""
+    public = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="public-client",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+    stored = public.model_copy(deep=True)
+    stored.oauth2.auth_code = "public-auth-code"
+    stored.oauth2.auth_response_uri = (
+        "https://example.com/callback?code=public-auth-code"
+    )
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=public,
+        exchanged_auth_credential=stored,
+    )
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.fetch_token.return_value = OAuth2Token(
+        {"access_token": "public_access_token"}
+    )
+    state = MockState()
+    state["temp:" + config.credential_key] = stored
+
+    result = await AuthHandler(config)._get_auth_response_async(state)
+
+    assert result.oauth2.access_token == "public_access_token"
+    assert mock_oauth2_session.call_args[0][0] == "public-client"
+    assert mock_oauth2_session.call_args[0][1] is None
+    mock_client.fetch_token.assert_called_once()
+
+  @pytest.mark.asyncio
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  async def test_async_skips_exchange_when_token_already_present(
+      self, mock_oauth2_session, auth_config, oauth2_credentials_with_auth_code
+  ):
+    """A stored response that already holds a token is not exchanged again."""
+    stored = oauth2_credentials_with_auth_code.model_copy(deep=True)
+    stored.oauth2.access_token = "already_exchanged_token"
+    state = MockState()
+    state["temp:" + auth_config.credential_key] = stored
+
+    result = await AuthHandler(auth_config)._get_auth_response_async(state)
+
+    assert result.oauth2.access_token == "already_exchanged_token"
+    mock_oauth2_session.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_async_returns_none_when_no_response_stored(self, auth_config):
+    """Nothing stored means no credential and no exchange."""
+    result = await AuthHandler(auth_config)._get_auth_response_async(
+        MockState()
+    )
+
+    assert result is None
 
 
 class TestParseAndStoreAuthResponse:
