@@ -311,3 +311,39 @@ def test_behavior_defaults_to_none():
 
   t = SimpleTool(name='test', description='desc')
   assert t.behavior is None
+
+
+def _sample_approval_predicate(args: dict[str, Any]) -> bool:
+  return True
+
+
+def test_from_config_supports_require_confirmation_bool():
+  """A boolean ``require_confirmation`` arg in tool config is kept, not dropped."""
+  from google.adk.tools.function_tool import FunctionTool
+  from google.adk.tools.tool_configs import ToolArgsConfig
+
+  config_true = ToolArgsConfig(
+      func=f'{__name__}._sample_handler', require_confirmation=True
+  )
+  tool_true = FunctionTool.from_config(config_true, '')
+  assert tool_true._require_confirmation is True
+
+  config_false = ToolArgsConfig(
+      func=f'{__name__}._sample_handler', require_confirmation=False
+  )
+  tool_false = FunctionTool.from_config(config_false, '')
+  assert tool_false._require_confirmation is False
+
+
+def test_from_config_supports_require_confirmation_callable():
+  """A callable string ``require_confirmation`` arg in tool config is resolved."""
+  from google.adk.tools.function_tool import FunctionTool
+  from google.adk.tools.tool_configs import ToolArgsConfig
+
+  config = ToolArgsConfig(
+      func=f'{__name__}._sample_handler',
+      require_confirmation=f'{__name__}._sample_approval_predicate',
+  )
+  tool = FunctionTool.from_config(config, '')
+  assert tool._require_confirmation is _sample_approval_predicate
+
