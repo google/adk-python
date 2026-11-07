@@ -33,6 +33,7 @@ from contextlib import ExitStack
 import logging
 import os
 import re
+from types import TracebackType
 from typing import Any
 from typing import Final
 from typing import TYPE_CHECKING
@@ -1155,17 +1156,30 @@ async def use_inference_span(
             log_only_attributes=log_only_common_attributes,
         )
 
-      def _log_completion_details() -> None:
+      def _log_completion_details(
+          exc_type: type[BaseException] | None,
+          exc: BaseException | None,
+          tb: TracebackType | None,
+      ) -> bool:
+        common_attributes_for_log = gc_span.operation_details_common_attributes
+        # A failed call is reported on the completion event too, as on the span
+        # and the duration metric. `push` (unlike `callback`) hands the exit
+        # callback the exception that is unwinding through it.
+        if isinstance(exc, Exception):
+          common_attributes_for_log = dict(common_attributes_for_log) | {
+              ERROR_TYPE: resolve_error_type(exc)
+          }
         maybe_log_completion_details(
             gc_span.span,
             otel_logger,
             gc_span.operation_details_attributes,
-            gc_span.operation_details_common_attributes,
+            common_attributes_for_log,
             telemetry_config,
         )
+        return False
 
       # Registered last, so it unwinds first: while the span is still open.
-      _ = gc_span._exit_stack.callback(
+      _ = gc_span._exit_stack.push(
           _log_completion_details
       )  # pylint: disable=protected-access
       yield gc_span
