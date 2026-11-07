@@ -683,8 +683,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       # 3. It's not an internal parameter to ignore (e.g. tool_context, input_stream)
       #
       # For more refer to: https://docs.python.org/3/library/inspect.html#inspect.Parameter.kind
+      # Identity, not equality: a default that reports elementwise equality
+      # (a numpy array or a pandas Series, as a numeric tool parameter
+      # naturally has) makes `==` return a non-boolean, which either raises
+      # when tested for truth or marks an optional parameter as mandatory.
       if (
-          param.default == inspect.Parameter.empty
+          param.default is inspect.Parameter.empty
           and param.kind
           not in (
               inspect.Parameter.VAR_POSITIONAL,

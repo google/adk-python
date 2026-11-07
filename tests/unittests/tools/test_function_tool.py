@@ -837,6 +837,57 @@ async def test_run_async_with_streaming_tool_missing_mandatory_arg(
   assert "mandatory input parameters are not present" in result["error"]
 
 
+class _AmbiguousTruth:
+  """Stands in for the boolean array `numpy.ndarray == sentinel` returns."""
+
+  def __bool__(self) -> bool:
+    raise ValueError(
+        "The truth value of an array with more than one element is ambiguous."
+    )
+
+
+class _ElementwiseDefault:
+  """A default whose equality is elementwise, the way a numpy array's is."""
+
+  def __eq__(self, other: object) -> Any:
+    return _AmbiguousTruth()
+
+  __hash__ = None
+
+
+_WEIGHTS_DEFAULT = _ElementwiseDefault()
+
+
+def function_for_testing_with_elementwise_default(
+    text: str, weights: Any = _WEIGHTS_DEFAULT
+):
+  """Function whose optional parameter has an elementwise-equality default."""
+  return {"text": text, "weights_is_default": weights is _WEIGHTS_DEFAULT}
+
+
+@pytest.mark.asyncio
+async def test_optional_param_with_elementwise_equality_default_is_optional(
+    mock_tool_context,
+):
+  """A default is found by identity, not by testing its equality.
+
+  A default that reports elementwise equality, as a numeric array default in a
+  tool signature naturally does, turns `default == inspect.Parameter.empty`
+  into a non-boolean truthy value: the optional parameter was then reported as
+  mandatory, so every call that omitted it was answered with the missing
+  mandatory parameter error and its default was never used.
+  """
+  tool = FunctionTool(function_for_testing_with_elementwise_default)
+
+  assert tool._get_mandatory_args() == ["text"]
+
+  result = await tool.run_async(
+      args={"text": "hello"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"text": "hello", "weights_is_default": True}
+
+
 @pytest.mark.asyncio
 async def test_run_async_coerces_integral_float_to_int_param(mock_tool_context):
   """A proto Struct round-trip turns an int arg into a float; it is coerced back."""
