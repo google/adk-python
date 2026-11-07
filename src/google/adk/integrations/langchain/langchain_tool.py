@@ -87,7 +87,14 @@ class LangchainTool(FunctionTool):
             f' {type(tool)}'
         )
     if func is None:
-      if hasattr(tool, '_run') or hasattr(tool, 'run'):
+      if isinstance(tool, LangchainBaseTool) and type(tool)._arun not in (
+          LangchainBaseTool._arun,
+          Tool._arun,
+          StructuredTool._arun,
+      ):
+        # Prefer a native async implementation over the generic wrappers.
+        func = tool._arun
+      elif hasattr(tool, '_run') or hasattr(tool, 'run'):
         func = (
             getattr(tool, '_run')
             if hasattr(tool, '_run')
