@@ -352,10 +352,11 @@ class RestApiTool(BaseTool):
   def from_parsed_operation_str(
       cls, parsed_operation_str: str
   ) -> "RestApiTool":
-    """Initializes the RestApiTool from a dict.
+    """Initializes the RestApiTool from a JSON string.
 
     Args:
-        parsed: A dict representation of a ParsedOperation object.
+        parsed_operation_str: A JSON string representation of a
+          ParsedOperation object.
 
     Returns:
         A RestApiTool object.
