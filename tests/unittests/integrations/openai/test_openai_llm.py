@@ -1629,6 +1629,65 @@ async def test_response_schema_dict_becomes_json_schema_format():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_schema, expected_schema",
+    [
+        (
+            types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+            ),
+            {"type": "array", "items": {"type": "string"}},
+        ),
+        (
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "name": types.Schema(type=types.Type.STRING),
+                    "age": types.Schema(type=types.Type.INTEGER),
+                },
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "age": {"type": "integer"},
+                },
+                "additionalProperties": False,
+                "required": ["age", "name"],
+            },
+        ),
+    ],
+)
+async def test_response_schema_genai_schema_becomes_json_schema_format(
+    response_schema, expected_schema
+):
+  """A types.Schema response_schema is sent as the user's own schema.
+
+  Previously the BaseModel branch caught the types.Schema instance and sent
+  the JSON schema of the types.Schema class itself.
+  """
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(response_schema=response_schema),
+    )
+
+    create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  assert create_kwargs["response_format"] == {
+      "type": "json_schema",
+      "json_schema": {
+          "name": "response",
+          "strict": True,
+          "schema": expected_schema,
+      },
+  }
+
+
+@pytest.mark.asyncio
 async def test_response_mime_type_json_becomes_json_object_format():
   """response_mime_type application/json maps to a json_object format."""
   with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
