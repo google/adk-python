@@ -47,6 +47,26 @@ __all__ = ["OCIGenAILlm"]
 
 logger = logging.getLogger("google_adk." + __name__)
 
+# Maps OCI finish reasons as the other OpenAI-style adapters do. Stopping to
+# call tools is a normal stop.
+_FINISH_REASON_MAPPING: dict[str, types.FinishReason] = {
+    "stop": types.FinishReason.STOP,
+    "length": types.FinishReason.MAX_TOKENS,
+    "tool_calls": types.FinishReason.STOP,
+    "content_filter": types.FinishReason.SAFETY,
+}
+
+
+def _map_finish_reason(
+    finish_reason: Optional[str],
+) -> Optional[types.FinishReason]:
+  """Map an OCI finish reason string to a google.genai FinishReason."""
+  if not finish_reason:
+    return None
+  return _FINISH_REASON_MAPPING.get(
+      finish_reason, types.FinishReason.FINISH_REASON_UNSPECIFIED
+  )
+
 
 def _to_oci_role(role: Optional[str]) -> str:
   """Map ADK content role to OCI GenAI role string."""
@@ -273,6 +293,7 @@ def _oci_response_to_llm_response(response: Any) -> LlmResponse:
   input_tokens = 0
   output_tokens = 0
   reasoning_tokens = 0
+  finish_reason = None
 
   if hasattr(chat_response, "usage"):
     usage = chat_response.usage
@@ -284,6 +305,7 @@ def _oci_response_to_llm_response(response: Any) -> LlmResponse:
 
   if hasattr(chat_response, "choices") and chat_response.choices:
     choice = chat_response.choices[0]
+    finish_reason = getattr(choice, "finish_reason", None)
     message = getattr(choice, "message", None)
     if message:
       # Text content
@@ -314,6 +336,7 @@ def _oci_response_to_llm_response(response: Any) -> LlmResponse:
           total_token_count=input_tokens + output_tokens,
           thoughts_token_count=reasoning_tokens or None,
       ),
+      finish_reason=_map_finish_reason(finish_reason),
   )
 
 
@@ -623,8 +646,13 @@ class OCIGenAILlm(BaseLlm):
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
+    finish_reason: Optional[str] = None
 
     for chunk in chunks:
+      # The finish reason can come in a chunk that has no message.
+      if chunk.get("finishReason"):
+        finish_reason = chunk["finishReason"]
+
       # Usage chunk (camelCase per OCI GenAI /20231130/ schema).
       usage = chunk.get("usage")
       if usage:
@@ -688,5 +716,6 @@ class OCIGenAILlm(BaseLlm):
             total_token_count=input_tokens + output_tokens,
             thoughts_token_count=reasoning_tokens or None,
         ),
+        finish_reason=_map_finish_reason(finish_reason),
         partial=False,
     )

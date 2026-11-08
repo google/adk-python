@@ -49,6 +49,7 @@ def _make_oci_response(
     tool_calls: list = None,
     prompt_tokens: int = 10,
     completion_tokens: int = 5,
+    finish_reason: str = "stop",
 ) -> MagicMock:
   """Build a minimal MagicMock that mirrors the OCI GenAI chat response."""
   usage = MagicMock()
@@ -64,6 +65,7 @@ def _make_oci_response(
 
   choice = MagicMock()
   choice.message = message
+  choice.finish_reason = finish_reason
 
   chat_response = MagicMock()
   chat_response.choices = [choice]
@@ -409,6 +411,21 @@ def test_oci_response_to_llm_response_empty_text():
   assert llm_resp.content.parts == []
 
 
+@pytest.mark.parametrize(
+    ("oci_finish_reason", "expected"),
+    [
+        ("stop", types.FinishReason.STOP),
+        ("length", types.FinishReason.MAX_TOKENS),
+    ],
+)
+def test_oci_response_to_llm_response_finish_reason(
+    oci_finish_reason, expected
+):
+  response = _make_oci_response(finish_reason=oci_finish_reason)
+  llm_resp = _oci_response_to_llm_response(response)
+  assert llm_resp.finish_reason == expected
+
+
 # ---------------------------------------------------------------------------
 # _function_declaration_to_oci_tool
 # ---------------------------------------------------------------------------
@@ -543,6 +560,7 @@ def _make_sse_chunks(
     tool_calls: list[dict] | None = None,
     prompt_tokens: int = 10,
     completion_tokens: int = 5,
+    finish_reason: str = "stop",
 ) -> list[dict[str, Any]]:
   """Build SSE chunks matching the real OCI GenAI /20231130/ streaming schema.
 
@@ -581,7 +599,7 @@ def _make_sse_chunks(
         },
     })
 
-  chunks.append({"finishReason": "stop"})
+  chunks.append({"finishReason": finish_reason})
   chunks.append({
       "usage": {
           "promptTokens": prompt_tokens,
@@ -631,6 +649,31 @@ async def test_streaming_final_has_usage_metadata(oci_llm, llm_request):
   assert final.usage_metadata.prompt_token_count == 8
   assert final.usage_metadata.candidates_token_count == 3
   assert final.usage_metadata.total_token_count == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("oci_finish_reason", "expected"),
+    [
+        ("stop", types.FinishReason.STOP),
+        ("length", types.FinishReason.MAX_TOKENS),
+    ],
+)
+async def test_streaming_final_has_finish_reason(
+    oci_llm, llm_request, oci_finish_reason, expected
+):
+  """The finish reason chunk sets finish_reason on the final response."""
+  chunks = _make_sse_chunks(["Hi"], finish_reason=oci_finish_reason)
+
+  with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
+    responses = [
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  final = responses[-1]
+  assert not final.partial
+  assert final.finish_reason == expected
 
 
 @pytest.mark.asyncio
