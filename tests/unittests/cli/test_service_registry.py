@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
@@ -176,25 +177,51 @@ async def test_sqlite_session_uri_preserves_read_only_mode(
     await session_service.close()
 
 
-async def test_sqlite_session_uri_decodes_database_path(
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("mode", [None, "ro", "rw"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "sessions #1.db",
+        pytest.param(
+            "sessions ?1.db",
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="Question marks are not valid Windows filenames",
+            ),
+        ),
+        "sessions %23.db",
+        "sessions +&= ü.db",
+        "sessions.db",
+    ],
+)
+async def test_sqlite_session_uri_preserves_path_and_mode(
     registry: service_registry.ServiceRegistry,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    relative: bool,
+    mode: str | None,
+    filename: str,
 ) -> None:
-  """An encoded SQLite URI opens the existing database at its decoded path."""
+  """Encoded filenames select the same database and retain URI write permissions."""
+  monkeypatch.chdir(tmp_path)
   monkeypatch.setattr(
       "google.adk.sessions.sqlite_session_service.SqliteSessionService",
       SqliteSessionService,
   )
-  db_path = tmp_path / "sessions #1.db"
+  db_path = tmp_path / filename
   writable_service = SqliteSessionService(str(db_path))
-  session = await writable_service.create_session(
-      app_name="app", user_id="user", state={"count": 1}
-  )
-  await writable_service.close()
+  try:
+    session = await writable_service.create_session(
+        app_name="app", user_id="user", state={"count": 1}
+    )
+  finally:
+    await writable_service.close()
 
+  uri_path = filename if relative else db_path.as_posix()
+  query = f"?mode={mode}&cache=shared" if mode else ""
   session_service = registry.create_session_service(
-      f"sqlite:///{quote(db_path.as_posix())}"
+      f"sqlite:///{quote(uri_path)}{query}"
   )
   assert isinstance(session_service, SqliteSessionService)
   try:
@@ -203,8 +230,24 @@ async def test_sqlite_session_uri_decodes_database_path(
     )
     assert stored_session is not None
     assert stored_session.state == {"count": 1}
+    if mode == "ro":
+      with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        await session_service.create_session(app_name="app", user_id="user")
+    else:
+      await session_service.create_session(
+          app_name="app", user_id="user", session_id="new-session"
+      )
   finally:
     await session_service.close()
+
+  reopened_service = SqliteSessionService(str(db_path))
+  try:
+    added_session = await reopened_service.get_session(
+        app_name="app", user_id="user", session_id="new-session"
+    )
+    assert (added_session is None) == (mode == "ro")
+  finally:
+    await reopened_service.close()
 
 
 def test_create_session_service_sqlite_ignores_unsupported_kwargs(

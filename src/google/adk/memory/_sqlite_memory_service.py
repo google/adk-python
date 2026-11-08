@@ -28,6 +28,7 @@ from typing import Any
 from typing import Literal
 from typing import TYPE_CHECKING
 import unicodedata
+from urllib.parse import quote
 from urllib.parse import unquote
 from urllib.parse import urlparse
 
@@ -140,7 +141,9 @@ def _parse_db_path(db_path: str | Path) -> tuple[str, str, bool]:
 
   if parsed.query:
     # sqlite3 only treats the filename as a URI when it starts with `file:`.
-    return normalized_path, f"file:{normalized_path}?{parsed.query}", True
+    # Escape filename delimiters and literal percent escapes before URI parsing.
+    connect_uri = f"file:{quote(normalized_path)}?{parsed.query}"
+    return normalized_path, connect_uri, True
 
   return normalized_path, normalized_path, False
 
