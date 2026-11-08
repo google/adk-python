@@ -204,9 +204,9 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         tool_exception=TOOL_ERROR,
     ),
-    # The same turn streamed, its answer arriving in two chunks that leave
-    # `partial` unset: one inference span per turn either way, and a completion
-    # log holding the whole answer rather than whichever chunk arrived first.
+    # The same turn streamed through Gemini's aggregator, its answer arriving in
+    # two chunks: one inference span per turn either way, and a completion log
+    # holding the aggregated answer rather than the chunks.
     *semconv_matrix("streaming"),
     # Compaction scenarios. Both triggers, because they place the
     # `compact_events` span differently: token-threshold nests inside
@@ -414,4 +414,20 @@ MCP_HTTP_CASE = FunctionalTestCase(
             "content-type"
         ),
     },
+)
+
+# An agent whose final answer is grounded by a built-in search tool. Pins the
+# `adk.experimental.grounding.*` attributes across both model-call spans:
+# `call_llm` (legacy span content off) records the counts only, while
+# `generate_content` (experimental span content on) also records the queries
+# and distinct source URIs; the ungrounded tool-calling turn before it records
+# neither.
+GROUNDING_CASE = FunctionalTestCase(
+    test_id="grounding",
+    scenario="agent",
+    semconv_opt_in=EXPERIMENTAL_OPT_IN,
+    capture_content="span_and_event",
+    schema_version=1,
+    experimental_telemetry=True,
+    grounding=True,
 )

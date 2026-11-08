@@ -22,6 +22,7 @@ import re
 import threading
 from typing import Any
 from typing import Optional
+from typing import TypedDict
 
 from google.api_core import client_options
 from google.api_core.exceptions import GoogleAPICallError
@@ -101,13 +102,18 @@ def _get_api_endpoint(location: str) -> str:
   )
 
 
+class _ClientOptionsKwargs(TypedDict, total=False):
+  api_endpoint: str
+  quota_project_id: str
+
+
 def _build_client_options(
     resource_id: str,
     quota_project_id: Optional[str],
     location: Optional[str],
 ) -> Optional[client_options.ClientOptions]:
   """Builds client options for Discovery Engine requests."""
-  client_options_kwargs = {}
+  client_options_kwargs: _ClientOptionsKwargs = {}
   resolved_location = _resolve_location(resource_id, location)
 
   if resolved_location != _GLOBAL_LOCATION:
@@ -155,7 +161,8 @@ class DiscoveryEngineSearchTool(FunctionTool):
         of
         "projects/{project}/locations/{location}/collections/{collection}/dataStores/{dataStore}".
       data_store_specs: Specifications that define the specific DataStores to be
-        searched. It should only be set if engine is used.
+        searched. It should only be set if engine is used. Dicts in the
+        Discovery Engine DataStoreSpec shape are also accepted.
       search_engine_id: The Vertex AI search engine resource ID in the format of
         "projects/{project}/locations/{location}/collections/{collection}/engines/{engine}".
       filter: The filter to be applied to the search request. Default is None.
@@ -295,7 +302,14 @@ class DiscoveryEngineSearchTool(FunctionTool):
     )
 
     if self._data_store_specs:
-      request.data_store_specs = self._data_store_specs
+      request.data_store_specs = [
+          discoveryengine.SearchRequest.DataStoreSpec(
+              data_store=spec.data_store, filter=spec.filter
+          )
+          if isinstance(spec, types.VertexAISearchDataStoreSpec)
+          else spec
+          for spec in self._data_store_specs
+      ]
     if self._filter:
       request.filter = self._filter
     if self._max_results:

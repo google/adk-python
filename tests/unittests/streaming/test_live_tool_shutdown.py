@@ -347,7 +347,7 @@ async def test_streaming_tool_stops_when_its_agent_hands_off():
 async def test_handoff_stops_feeding_the_stopped_tools_stream():
   """A stopped tool's stream is dropped, not left collecting live input.
 
-  ``_send_to_model`` duplicates every live request into each registered
+  ``send_to_model`` duplicates every live request into each registered
   stream, so an entry left behind after the tool is gone grows for the rest of
   the session -- one entry per audio chunk the user speaks.
   """

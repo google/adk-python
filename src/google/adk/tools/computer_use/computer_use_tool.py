@@ -21,8 +21,6 @@ from typing import Callable
 
 from typing_extensions import override
 
-from ...features import experimental
-from ...features import FeatureName
 from ...models.llm_request import LlmRequest
 from ..function_tool import FunctionTool
 from ..tool_context import ToolContext
@@ -31,7 +29,6 @@ from .base_computer import ComputerState
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class ComputerUseTool(FunctionTool):
   """A tool that wraps computer control functions for use with LLMs.
 
@@ -177,6 +174,10 @@ class ComputerUseTool(FunctionTool):
       # Process the result if it's an EnvironmentState
       response = result
       if isinstance(result, ComputerState):
+        if result.screenshot is None:
+          raise ValueError(
+              "A computer action returned a state with no screenshot"
+          )
         response = {
             "image": {
                 "mimetype": "image/png",

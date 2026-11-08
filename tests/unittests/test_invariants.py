@@ -205,6 +205,42 @@ class TestCheckCallHasSingleResponse:
     assert check_call_has_single_response(records) == []
     assert check_no_duplicate_response_ids(records) == []
 
+  def test_lro_multiple_user_progress_updates_supersede_previous_passes(self):
+    records = [
+        EventRecord.from_event(
+            _make_fc_event(
+                event_id='ev_fc',
+                fc_id='lro_1',
+                long_running_tool_ids={'lro_1'},
+            ),
+            observed_invocation_id='inv_1',
+            turn_index=0,
+        ),
+        EventRecord.from_event(
+            _make_fr_event(
+                event_id='ev_fr_pending', author='agent_a', fr_id='lro_1'
+            ),
+            observed_invocation_id='inv_1',
+            turn_index=0,
+        ),
+        EventRecord.from_event(
+            _make_fr_event(
+                event_id='ev_fr_progress', author='user', fr_id='lro_1'
+            ),
+            observed_invocation_id='inv_1',
+            turn_index=0,
+        ),
+        EventRecord.from_event(
+            _make_fr_event(
+                event_id='ev_fr_final', author='user', fr_id='lro_1'
+            ),
+            observed_invocation_id='inv_1',
+            turn_index=1,
+        ),
+    ]
+    assert check_call_has_single_response(records) == []
+    assert check_no_duplicate_response_ids(records) == []
+
   def test_sequential_loop_reusing_same_interrupt_id_passes(self):
     records = [
         EventRecord.from_event(

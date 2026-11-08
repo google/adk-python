@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from google.adk.telemetry import _metrics
-from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
@@ -88,6 +87,26 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
         module=_metrics,
         attr="_client_token_usage",
         metric_name="gen_ai.client.token.usage",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_inference_operation_input_tokens",
+        metric_name="gen_ai.client.inference.operation.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_inference_operation_output_tokens",
+        metric_name="gen_ai.client.inference.operation.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_client_inference_time_to_first_chunk",
+        metric_name="gen_ai.client.inference.time_to_first_chunk",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_client_inference_time_per_output_chunk",
+        metric_name="gen_ai.client.inference.time_per_output_chunk",
     ),
     HistogramSpec(
         module=_metrics,
@@ -204,6 +223,31 @@ _PATCHED_COUNTERS: tuple[CounterSpec, ...] = (
         attr="_skill_loads",
         metric_name="adk.experimental.skill.loads",
     ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_input_tokens",
+        metric_name="gen_ai.client.inference.usage.input_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_output_tokens",
+        metric_name="gen_ai.client.inference.usage.output_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_cache_read_input_tokens",
+        metric_name="gen_ai.client.inference.usage.cache_read.input_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_cache_write_input_tokens",
+        metric_name="gen_ai.client.inference.usage.cache_write.input_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_reasoning_output_tokens",
+        metric_name="gen_ai.client.inference.usage.reasoning.output_tokens",
+    ),
 )
 
 
@@ -240,13 +284,12 @@ def install_telemetry(
   tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
   real_tracer = tracer_provider.get_tracer(__name__)
 
-  for module in (tracing, node_tracing):
-    monkeypatch.setattr(
-        module.tracer,
-        "start_as_current_span",
-        real_tracer.start_as_current_span,
-    )
-    monkeypatch.setattr(module.tracer, "start_span", real_tracer.start_span)
+  monkeypatch.setattr(
+      tracing.tracer,
+      "start_as_current_span",
+      real_tracer.start_as_current_span,
+  )
+  monkeypatch.setattr(tracing.tracer, "start_span", real_tracer.start_span)
 
   logger_provider = LoggerProvider()
   logger_provider.add_log_record_processor(

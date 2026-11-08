@@ -18,12 +18,12 @@ import logging
 from types import SimpleNamespace
 from typing import Any
 from typing import Iterable
-from typing import Optional
 from unittest import mock
 
 import agentplatform
 from agentplatform import types as agentplatform_types
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory import vertex_ai_memory_bank_service as memory_service_module
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
@@ -141,6 +141,35 @@ CREDENTIAL_EXCHANGE_EVENTS = [
     ),
 ]
 
+THOUGHT_TEXT = 'the user sounds anxious, keep the reply short'
+
+THOUGHT_EVENTS = [
+    Event(
+        id='901',
+        invocation_id='900',
+        author='agent',
+        timestamp=45678,
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(text=THOUGHT_TEXT, thought=True),
+                types.Part(text='Here is the answer.'),
+            ],
+        ),
+    ),
+    # Thought-only event, should be ignored
+    Event(
+        id='902',
+        invocation_id='900',
+        author='agent',
+        timestamp=45679,
+        content=types.Content(
+            role='model',
+            parts=[types.Part(text=THOUGHT_TEXT, thought=True)],
+        ),
+    ),
+]
+
 MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
     app_name=MOCK_APP_NAME,
     user_id=MOCK_USER_ID,
@@ -150,11 +179,11 @@ MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
 
 
 def mock_vertex_ai_memory_bank_service(
-    project: Optional[str] = 'test-project',
-    location: Optional[str] = 'test-location',
-    agent_engine_id: Optional[str] = '123',
-    express_mode_api_key: Optional[str] = None,
-    credentials: Optional[Credentials] = None,
+    project: str | None = 'test-project',
+    location: str | None = 'test-location',
+    agent_engine_id: str | None = '123',
+    express_mode_api_key: str | None = None,
+    credentials: Credentials | None = None,
 ):
   """Creates a mock Vertex AI Memory Bank service for testing."""
   return VertexAiMemoryBankService(
@@ -432,6 +461,7 @@ def test_get_api_client_passes_credentials_through():
       project='test-project',
       location='test-location',
       credentials=mock_credentials,
+      http_options=mock.ANY,
   )
 
 
@@ -445,6 +475,7 @@ def test_get_api_client_defaults_credentials_to_none():
       project='test-project',
       location='test-location',
       credentials=None,
+      http_options=mock.ANY,
   )
 
 
@@ -579,6 +610,76 @@ async def test_add_events_to_memory_via_generate_skips_credential_events(
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
   assert CREDENTIAL_TOKEN not in str(call_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_thought_parts(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='333',
+      last_update_time=22333,
+      events=THOUGHT_EVENTS,
+  )
+
+  await memory_service.add_session_to_memory(session)
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert [event.event_id for event in source.events] == ['901']
+  assert source.events[0].content.role == 'model'
+  assert [part.text for part in source.events[0].content.parts] == [
+      'Here is the answer.'
+  ]
+  assert THOUGHT_TEXT not in str(call_kwargs)
+  # The session's own events are left unchanged.
+  assert len(THOUGHT_EVENTS[0].content.parts) == 2
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_generate_skips_thought_parts(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=THOUGHT_EVENTS,
+      custom_metadata={'revision_ttl': '3600s'},
+  )
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert [part.text for part in source.events[0].content.parts] == [
+      'Here is the answer.'
+  ]
+  assert THOUGHT_TEXT not in str(call_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_generate_with_only_thoughts_skips_rpc(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[THOUGHT_EVENTS[1]],
+      custom_metadata={'revision_ttl': '3600s'},
+  )
+
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1765,3 +1866,81 @@ async def test_search_memory_returns_partial_results_on_iterator_error(
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'good fact'
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events(
+    mock_agentplatform_client,
+):
+  """Turns a rewind took back are not sent to Memory Bank."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='333',
+      last_update_time=22333,
+      events=[
+          MOCK_SESSION.events[0],
+          Event(
+              id='777',
+              invocation_id='789',
+              author='user',
+              timestamp=23456,
+              content=types.Content(parts=[types.Part(text='rewound')]),
+          ),
+          Event(
+              id='888',
+              invocation_id='999',
+              author='user',
+              timestamp=34567,
+              actions=EventActions(rewind_before_invocation_id='789'),
+          ),
+      ],
+  )
+
+  await memory_service.add_session_to_memory(session)
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert [event.event_id for event in source.events] == ['444']
+
+
+def test_get_api_client_attaches_tracking_headers():
+  """Tests that get_api_client attaches tracking headers."""
+  # pylint: disable=protected-access
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch('agentplatform.Client') as mock_client:
+    _ = memory_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']
+
+
+def test_get_api_client_merges_tracking_headers_with_http_options_override():
+  """Tests that get_api_client merges tracking headers with options override."""
+  # pylint: disable=protected-access
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with (
+      mock.patch.object(
+          memory_service,
+          '_api_client_http_options_override',
+          return_value=types.HttpOptions(base_url='https://example.com'),
+      ),
+      mock.patch('agentplatform.Client') as mock_client,
+  ):
+    _ = memory_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert http_options.base_url == 'https://example.com'
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']

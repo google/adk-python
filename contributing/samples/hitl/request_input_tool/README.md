@@ -42,7 +42,7 @@ This sample uses **Pattern B: Standalone Agents** with the `request_input` tool:
    root_agent = Agent(
        name="support_assistant_agent",
        tools=[create_support_ticket, request_input],
-       ...
+       # ...
    )
    ```
 

@@ -23,7 +23,6 @@ from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import OAuth2
 
 from ..utils import _mtls_utils
-from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_schemes import AuthScheme
 from .auth_schemes import OpenIdConnectWithConfig
@@ -104,7 +103,6 @@ def _with_configured_client(
   return restored
 
 
-@experimental
 def create_oauth2_session(
     auth_scheme: AuthScheme,
     auth_credential: AuthCredential,
@@ -200,7 +198,6 @@ def create_oauth2_session(
   return session, token_endpoint
 
 
-@experimental
 def update_credential_with_tokens(
     auth_credential: AuthCredential, tokens: OAuth2Token
 ) -> None:

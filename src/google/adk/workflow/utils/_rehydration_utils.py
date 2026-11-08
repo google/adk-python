@@ -16,10 +16,13 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from dataclasses import field
 import json
 import logging
+from types import UnionType
+import typing
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -32,7 +35,9 @@ from ...events._interrupts import extract_event_interrupt_ids
 from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
+from ...flows.llm_flows.tools._functions import _collect_function_call_ids
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils._schema_utils import _strip_json_code_fence
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
@@ -69,7 +74,7 @@ class _ChildScanState:
   """The route the child picked, or None if it picked none."""
 
   branch: str | None = None
-  """The branch carried by the output event, filled in alongside ``output``."""
+  """The branch seen on the child's own non-claimed events, if any."""
 
   isolation_scope: str | None = None
   """The isolation scope seen on the child's events, if any."""
@@ -140,6 +145,29 @@ def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
   return None
 
 
+def _is_bytes_hint(hint: object) -> bool:
+  """Returns whether the hint is ``bytes`` or ``Optional[bytes]``."""
+  if typing.get_origin(hint) in (typing.Union, UnionType):
+    non_none = [a for a in typing.get_args(hint) if a is not type(None)]
+    hint = non_none[0] if len(non_none) == 1 else None
+  return hint is bytes
+
+
+def _declares_bytes_output(node: BaseNode) -> bool:
+  """Returns whether the node declares its output as ``bytes``."""
+  from .._function_node import _GENERATOR_ORIGINS
+  from .._function_node import FunctionNode
+
+  if _is_bytes_hint(node.output_schema):
+    return True
+  if not isinstance(node, FunctionNode):
+    return False
+  return_hint = node._type_hints.get('return')
+  if typing.get_origin(return_hint) in _GENERATOR_ORIGINS:
+    return_hint = next(iter(typing.get_args(return_hint)), None)
+  return _is_bytes_hint(return_hint)
+
+
 def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   """Process rehydrated output from event.content using the node's output schema.
 
@@ -149,6 +177,12 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   configured.
   """
   if not isinstance(output, types.Content):
+    # Persisted sessions store bytes in Event.output as URL-safe base64 text.
+    if isinstance(output, str) and _declares_bytes_output(node):
+      try:
+        return base64.b64decode(output, altchars=b'-_', validate=True)
+      except ValueError:
+        return output
     return output
 
   from google.adk.utils.content_utils import extract_text_from_content
@@ -161,6 +195,8 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   if node.output_schema:
     if node.output_schema is str:
       return text
+    # The live path strips the fence in validate_schema; replay must match.
+    text = _strip_json_code_fence(text)
     try:
       validated: Any = TypeAdapter[Any](node.output_schema).validate_json(text)
       return node._to_serializable(validated)
@@ -292,6 +328,7 @@ def _reconstruct_node_states(
         return base_path
       return None
 
+  tool_call_ids = _collect_function_call_ids(events)
   for event in events:
     if invocation_id and event.invocation_id != invocation_id:
       continue
@@ -355,8 +392,8 @@ def _reconstruct_node_states(
       continue
 
     # 3. Initialize state for the owner if needed
+    owner_path_builder = _NodePathBuilder.from_string(owner_key)
     if owner_key not in scan_states:
-      owner_path_builder = _NodePathBuilder.from_string(owner_key)
       scan_states[owner_key] = _ChildScanState(run_id=owner_path_builder.run_id)
 
     # 4. Determine if event is direct child or delegated output
@@ -369,6 +406,31 @@ def _reconstruct_node_states(
     child = scan_states[owner_key]
     if is_direct and event.isolation_scope:
       child.isolation_scope = event.isolation_scope
+    has_claimed_branch = (
+        event.output is not None
+        and len(event.node_info.output_for or ()) > 1
+        and not event.get_function_responses()
+    )
+    is_tool_branch = bool(
+        event.branch
+        and _BranchPath.is_tool_branch(
+            event.branch, owner_path_builder.node_name, tool_call_ids
+        )
+    )
+    # Like NodeRunner._is_native_event: only the node's own events move its
+    # branch. A stored native event carries the node's name or one it inherits
+    # from an ancestor; a relayed one keeps its sub-agent's name.
+    is_native = not event.author or event.author in (
+        event_path_builder.static_path.split('/')
+    )
+    if (
+        is_direct
+        and is_native
+        and event.branch
+        and not has_claimed_branch
+        and not is_tool_branch
+    ):
+      child.branch = event.branch
 
     has_output = event.output is not None
     use_message_as_output = False
@@ -393,7 +455,13 @@ def _reconstruct_node_states(
     if is_direct or is_delegated:
       if event.output is not None:
         child.output = event.output
-        child.branch = event.branch
+        if (
+            is_direct
+            and is_native
+            and not has_claimed_branch
+            and not is_tool_branch
+        ):
+          child.branch = event.branch
       elif use_message_as_output:
         child.output = event.content
       if event.actions and event.actions.route is not None:
@@ -407,14 +475,9 @@ def _reconstruct_node_states(
       # node's output rides on the response event, which carries an error
       # code for any finish reason other than STOP, and that node did
       # produce a result.
-      has_result = has_output or (
-          event.actions is not None
-          and (
-              event.actions.route is not None
-              or event.actions.transfer_to_agent is not None
-          )
-      )
-      if has_result or (event.error_code is None and not event.partial):
+      if _event_has_result(event) or (
+          event.error_code is None and not event.partial
+      ):
         child.error_code = None
       elif event.error_code is not None:
         child.error_code = event.error_code
@@ -443,6 +506,25 @@ def _reconstruct_node_states(
       )
 
   return scan_states
+
+
+def _event_has_result(event: Event) -> bool:
+  """Returns whether ``event`` carries a node output, route, or transfer."""
+  return (
+      event.output is not None
+      or bool(
+          event.node_info
+          and event.node_info.message_as_output
+          and event.content is not None
+      )
+      or bool(
+          event.actions
+          and (
+              event.actions.route is not None
+              or event.actions.transfer_to_agent is not None
+          )
+      )
+  )
 
 
 def is_terminal_event(event: Event) -> bool:

@@ -5,7 +5,7 @@ and documentation.
 
 ## Deployment
 
-This agent is deployed to Google Could Run as an A2A agent, which is used by
+This agent is deployed to Google Cloud Run as an A2A agent, which is used by
 the parent ADK Agent Builder Assistant.
 
 Here are the steps to deploy the agent:

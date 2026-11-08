@@ -25,8 +25,12 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
+from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -331,3 +335,80 @@ async def test_run_node_async_rejects_responses_straddling_two_invocations():
         node=node_agent,
     ):
       pass
+
+
+async def test_run_node_async_early_close_runs_after_run_but_skips_compaction():
+  """Closing run_node_async early runs after_run but skips compaction."""
+
+  class _TwoEventNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield "first"
+      yield "second"
+
+  class _StubSummarizer(BaseEventsSummarizer):
+    """Summarizer stub that emits a synthetic compaction event."""
+
+    async def maybe_summarize_events(
+        self, *, events: list[Event]
+    ) -> Event | None:
+      compaction = EventCompaction(
+          start_timestamp=events[0].timestamp,
+          end_timestamp=events[-1].timestamp,
+          compacted_content=types.Content(
+              role="model", parts=[types.Part(text="summary")]
+          ),
+      )
+      return Event(
+          author="compactor",
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      )
+
+  after_run_called = False
+
+  class _AfterRunTrackingPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name="after_run_tracker")
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  session_service = InMemorySessionService()
+  node = _TwoEventNode(name="two_event_node")
+  app = App(
+      name="test_app",
+      root_agent=BaseAgent(name="root_agent"),
+      plugins=[_AfterRunTrackingPlugin()],
+      events_compaction_config=EventsCompactionConfig(
+          compaction_interval=1,
+          overlap_size=0,
+          summarizer=_StubSummarizer(),
+      ),
+  )
+  runner = Runner(app=app, session_service=session_service)
+
+  session = await session_service.create_session(
+      app_name="test_app", user_id="user_1", session_id="session_1"
+  )
+
+  async with aclosing(
+      _node_runner_utils.run_node_async(
+          runner,
+          user_id="user_1",
+          session_id="session_1",
+          node=node,
+          session=session,
+      )
+  ) as agen:
+    async for _ in agen:
+      break
+
+  assert after_run_called
+  assert not [e for e in session.events if e.actions and e.actions.compaction]

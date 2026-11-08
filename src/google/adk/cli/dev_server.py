@@ -97,6 +97,7 @@ from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._dev_deploy import register_dev_deploy_endpoints
 from .api_server import _is_local_client
+from .api_server import _reject_foreign_origin
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -108,6 +109,9 @@ from .utils.state import create_empty_state
 
 if TYPE_CHECKING:
   from opentelemetry.util.types import AttributeValue
+
+  from ..evaluation.eval_set_results_manager import EvalSetResultsManager
+  from ..evaluation.eval_sets_manager import EvalSetsManager
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -143,8 +147,10 @@ def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
 
   Raises:
     HTTPException: 403, if the caller is not on the loopback interface and
-      ``ADK_ALLOW_REMOTE_AGENT_BUILDER`` is not set.
+      ``ADK_ALLOW_REMOTE_AGENT_BUILDER`` is not set, or if a browser sent it
+      from a foreign origin.
   """
+  _reject_foreign_origin()
   if _is_local_client(request.scope):
     return
   if (
@@ -538,6 +544,20 @@ class DevServer(ApiServer):
       )
 
     return str(resolved_path)
+
+  def _get_eval_sets_manager(self) -> EvalSetsManager:
+    if self.eval_sets_manager is None:
+      raise HTTPException(
+          status_code=500, detail="Eval sets manager is not configured"
+      )
+    return self.eval_sets_manager
+
+  def _get_eval_set_results_manager(self) -> EvalSetResultsManager:
+    if self.eval_set_results_manager is None:
+      raise HTTPException(
+          status_code=500, detail="Eval set results manager is not configured"
+      )
+    return self.eval_set_results_manager
 
   def _load_initial_state(self, app_name: str) -> dict[str, Any]:
     """Reads the optional ``initial_state.json`` next to an agent.
@@ -1169,7 +1189,7 @@ class DevServer(ApiServer):
         app_name: str, create_eval_set_request: CreateEvalSetRequest
     ) -> EvalSet:
       try:
-        return self.eval_sets_manager.create_eval_set(
+        return self._get_eval_sets_manager().create_eval_set(
             app_name=app_name,
             eval_set_id=create_eval_set_request.eval_set.eval_set_id,
         )
@@ -1251,8 +1271,10 @@ class DevServer(ApiServer):
         eval_result_id: str,
     ) -> Response:
       try:
-        eval_set_result = self.eval_set_results_manager.get_eval_set_result(
-            app_name, eval_result_id
+        eval_set_result = (
+            self._get_eval_set_results_manager().get_eval_set_result(
+                app_name, eval_result_id
+            )
         )
         return JSONResponse(
             content=_redact_credential_secrets(
@@ -1287,9 +1309,9 @@ class DevServer(ApiServer):
     )
     async def list_eval_sets(app_name: str) -> ListEvalSetsResponse:
       """Lists all eval sets for the given app."""
-      eval_sets = []
+      eval_sets: list[str] = []
       try:
-        eval_sets = self.eval_sets_manager.list_eval_sets(app_name)
+        eval_sets = self._get_eval_sets_manager().list_eval_sets(app_name)
       except NotFoundError as e:
         logger.warning(e)
 
@@ -1339,7 +1361,7 @@ class DevServer(ApiServer):
       )
 
       try:
-        self.eval_sets_manager.add_eval_case(
+        self._get_eval_sets_manager().add_eval_case(
             app_name, eval_set_id, new_eval_case
         )
       except NotFoundError as nfe:
@@ -1357,7 +1379,9 @@ class DevServer(ApiServer):
         eval_set_id: str,
     ) -> list[str]:
       """Lists all evals in an eval set."""
-      eval_set_data = self.eval_sets_manager.get_eval_set(app_name, eval_set_id)
+      eval_set_data = self._get_eval_sets_manager().get_eval_set(
+          app_name, eval_set_id
+      )
 
       if not eval_set_data:
         raise HTTPException(
@@ -1382,7 +1406,7 @@ class DevServer(ApiServer):
         app_name: str, eval_set_id: str, eval_case_id: str
     ) -> Response:
       """Gets an eval case in an eval set."""
-      eval_case_to_find = self.eval_sets_manager.get_eval_case(
+      eval_case_to_find = self._get_eval_sets_manager().get_eval_case(
           app_name, eval_set_id, eval_case_id
       )
 
@@ -1437,7 +1461,7 @@ class DevServer(ApiServer):
       # field.
       updated_eval_case.eval_id = eval_case_id
       try:
-        self.eval_sets_manager.update_eval_case(
+        self._get_eval_sets_manager().update_eval_case(
             app_name, eval_set_id, updated_eval_case
         )
       except NotFoundError as nfe:
@@ -1457,7 +1481,7 @@ class DevServer(ApiServer):
         app_name: str, eval_set_id: str, eval_case_id: str
     ) -> None:
       try:
-        self.eval_sets_manager.delete_eval_case(
+        self._get_eval_sets_manager().delete_eval_case(
             app_name, eval_set_id, eval_case_id
         )
       except NotFoundError as nfe:
@@ -1482,7 +1506,8 @@ class DevServer(ApiServer):
         from .cli_eval import _collect_eval_results
         from .cli_eval import _collect_inferences
 
-        eval_set = self.eval_sets_manager.get_eval_set(app_name, eval_set_id)
+        eval_sets_manager = self._get_eval_sets_manager()
+        eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
         if not eval_set:
           raise HTTPException(
@@ -1508,7 +1533,7 @@ class DevServer(ApiServer):
 
         eval_service = LocalEvalService(
             root_agent=root_agent,
-            eval_sets_manager=self.eval_sets_manager,
+            eval_sets_manager=eval_sets_manager,
             eval_set_results_manager=self.eval_set_results_manager,
             session_service=self.session_service,
             artifact_service=self.artifact_service,
@@ -1580,8 +1605,10 @@ class DevServer(ApiServer):
     ) -> Response:
       """Gets the eval result for the given eval id."""
       try:
-        eval_set_result = self.eval_set_results_manager.get_eval_set_result(
-            app_name, eval_result_id
+        eval_set_result = (
+            self._get_eval_set_results_manager().get_eval_set_result(
+                app_name, eval_result_id
+            )
         )
         eval_result = EvalResult(**eval_set_result.model_dump())
         return JSONResponse(
@@ -1603,8 +1630,8 @@ class DevServer(ApiServer):
     )
     async def list_eval_results(app_name: str) -> ListEvalResultsResponse:
       """Lists all eval results for the given app."""
-      eval_result_ids = self.eval_set_results_manager.list_eval_set_results(
-          app_name
+      eval_result_ids = (
+          self._get_eval_set_results_manager().list_eval_set_results(app_name)
       )
       return ListEvalResultsResponse(eval_result_ids=eval_result_ids)
 

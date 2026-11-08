@@ -23,6 +23,7 @@ from unittest import mock
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -32,7 +33,9 @@ from google.adk.events.request_input import RequestInput
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils import _function_call_names
 from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
@@ -295,6 +298,85 @@ async def test_agent_node_that_spoke_before_pausing_reruns_on_resume(
   ]
   assert resumed_texts == ['Approved, so I sent it.']
   assert 'Waiting for you to approve.' not in [e.output for e in events2]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize(
+    'stored_as_message', [False, True], ids=['output_stored', 'message_only']
+)
+@pytest.mark.parametrize(
+    'reply',
+    [
+        '{"title": "Weekly", "bullets": ["one"]}',
+        '```json\n{"title": "Weekly", "bullets": ["one"]}\n```',
+    ],
+    ids=['unfenced', 'fenced'],
+)
+@pytest.mark.asyncio
+async def test_resume_replays_schema_agent_output_as_parsed_live(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+    stored_as_message: bool,
+    reply: str,
+):
+  """A finished schema agent replays on resume the output it parsed live.
+
+  The live path strips a Markdown fence before validating against
+  output_schema. Sessions saved by ADK 2.10 and earlier hold only the reply
+  text, so a resume rebuilds the output from that message.
+  """
+
+  class Digest(BaseModel):
+    title: str
+    bullets: list[str]
+
+  mock_model = testing_utils.MockModel.create(responses=[reply])
+  summarise = LlmAgent(name='summarise', model=mock_model, output_schema=Digest)
+
+  @node(rerun_on_resume=True)
+  def approve(ctx: Context, node_input: Any):
+    if 'approve' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='approve', message='Publish?')
+      return
+    yield Event(output={'digest': node_input, **ctx.resume_inputs['approve']})
+
+  publish = InputCapturingNode(name='publish')
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(
+          name='digest', edges=[(START, summarise, approve, publish)]
+      ),
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  assert workflow_testing_utils.get_request_input_events(events1)
+  if stored_as_message:
+    # How ADK 2.10 and earlier stored a schema agent's reply.
+    stored = runner.runner.session_service.sessions[runner.app_name][
+        'test_user'
+    ][runner.session_id].events
+    [agent_event] = [
+        e for e in stored if e.author == 'summarise' and e.output is not None
+    ]
+    agent_event.output = None
+    agent_event.node_info.message_as_output = True
+
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('approve', {'approved': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  # One model call: the resume replayed the agent instead of rerunning it.
+  assert len(mock_model.requests) == 1
+  assert publish.received_inputs == [
+      {'digest': {'title': 'Weekly', 'bullets': ['one']}, 'approved': True}
+  ]
 
 
 @pytest.mark.asyncio
@@ -1250,6 +1332,69 @@ async def test_rerun_on_resume_node_continues_with_first_answer(
   )
   assert not workflow_testing_utils.get_request_input_events(events2)
   assert capture.received_inputs == ['manual']
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_first_answer_node_not_rerun_by_later_resume(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+):
+  """A node that continued with the first answer stays done on later resumes."""
+  side_effects = []
+
+  @node(rerun_on_resume=True)
+  def wait_for_either(ctx: Context):
+    for interrupt_id in ('approval', 'takeover'):
+      if interrupt_id in ctx.resume_inputs:
+        side_effects.append(interrupt_id)
+        yield Event(output=ctx.resume_inputs[interrupt_id])
+        return
+    yield RequestInput(interrupt_id='approval', message='Approve?')
+    yield RequestInput(interrupt_id='takeover', message='Take over?')
+
+  @node(rerun_on_resume=True)
+  def confirm(node_input: str, ctx: Context):
+    if 'confirm' in ctx.resume_inputs:
+      yield Event(output={'confirmed': node_input})
+      return
+    yield RequestInput(interrupt_id='confirm', message='Confirm?')
+
+  agent = Workflow(
+      name='test_first_answer_later_resume',
+      edges=[(START, wait_for_either, confirm)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  inv_id = events1[0].invocation_id
+
+  # The approval interrupt is never answered.
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('takeover', {'result': 'manual'})
+      ),
+      invocation_id=inv_id,
+  )
+  assert side_effects == ['takeover']
+
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('confirm', {'ok': True})
+      ),
+      invocation_id=inv_id,
+  )
+
+  assert side_effects == ['takeover']
+  outputs = [e.output for e in events3 if e.output is not None]
+  assert outputs[-1] == {'confirmed': 'manual'}
 
 
 # ---------------------------------------------------------------------------
@@ -2485,3 +2630,263 @@ async def test_parallel_nested_workflows_with_hitl_resume_does_not_deadlock(
   assert workflow_testing_utils.get_request_input_events(events2) == []
   outputs2 = [e.output for e in events2 if e.output is not None]
   assert outputs2
+
+
+@pytest.mark.asyncio
+async def test_confirmation_after_parallel_agent_node_survives_resume(
+    request: pytest.FixtureRequest,
+):
+  """A HITL resume keeps a node after a ParallelAgent node on its branch.
+
+  On resume the ParallelAgent node is replayed from its stored events, which
+  include its sub-agents' relayed events. Its successor must resume on the
+  branch it paused on, not on whichever sub-branch spoke last, or it no
+  longer finds the confirmation it asked for and never runs the tool.
+  """
+  confirmation_name = (
+      _function_call_names.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  booked = []
+
+  def book() -> dict[str, str]:
+    """Books the trip."""
+    booked.append('trip')
+    return {'result': 'booked'}
+
+  research = ParallelAgent(
+      name='research',
+      sub_agents=[
+          LlmAgent(
+              name='researcher_a',
+              model=testing_utils.MockModel.create(responses=['from a']),
+          ),
+          LlmAgent(
+              name='researcher_b',
+              model=testing_utils.MockModel.create(responses=['from b']),
+          ),
+      ],
+  )
+  booker = LlmAgent(
+      name='booker',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='book', args={}),
+              'Booked.',
+          ]
+      ),
+      tools=[FunctionTool(func=book, require_confirmation=True)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='wf', edges=[(START, research, booker)]),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  confirmation_call = next(
+      part.function_call
+      for event in events1
+      for part in (event.content.parts if event.content else None) or []
+      if part.function_call and part.function_call.name == confirmation_name
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation_call.id,
+                  name=confirmation_name,
+                  response={'confirmed': True},
+              )
+          )
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert booked == ['trip']
+  assert {e.branch for e in events1 + events2 if e.author == 'booker'} == {None}
+
+
+class _GatherNode(BaseNode):
+  """Collects inputs in state and emits every `batch` inputs.
+
+  This is the accumulate-then-emit pattern `wait_for_output` is meant for.
+  """
+
+  batch: int = 2
+  calls: list[Any] = Field(default_factory=list)
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.calls.append(node_input)
+    seen = list(ctx.state.get('seen') or []) + [node_input]
+    ctx.state['seen'] = seen
+    if len(seen) % self.batch == 0:
+      yield Event(output=seen[-self.batch :])
+
+
+def _gather_app(
+    request: pytest.FixtureRequest, agent: Workflow, resumable: bool
+) -> App:
+  return App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_resume_does_not_rerun_superseded_waiting_run(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """START -> A -> Gather, START -> B -> Gather, Gather -> Ask -> Done.
+
+  Gather waits after A's output (Gather@1) and emits after B's (Gather@2).
+  Answering Ask must not run Gather@1 again: Gather@2 already superseded it.
+  """
+  gather = _GatherNode(name='Gather', wait_for_output=True)
+  ask = RequestInputNode(name='Ask')
+  done = InputCapturingNode(name='Done')
+  agent = Workflow(
+      name='test_agent',
+      edges=[
+          (START, _TestingNode(name='A', message='a'), gather),
+          (START, _TestingNode(name='B', message='b'), gather),
+          (gather, ask, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=_gather_app(request, agent, resumable)
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+  assert sorted(gather.calls) == ['a', 'b']
+
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'yes': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert sorted(gather.calls) == ['a', 'b']
+  assert done.received_inputs == [{'yes': True}]
+  assert sorted(runner.session.state['seen']) == ['a', 'b']
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_resume_does_not_rerun_waiting_run_before_its_next_trigger(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """START -> A -> Gather, START -> Ask -> B -> Gather, Gather -> Done.
+
+  Gather waits after A's output while Ask pauses for the user. Answering Ask
+  must not run Gather again with A's output: it should stay waiting until B's
+  output arrives, then emit both.
+  """
+  gather = _GatherNode(name='Gather', wait_for_output=True)
+  ask = RequestInputNode(name='Ask')
+  done = InputCapturingNode(name='Done')
+  agent = Workflow(
+      name='test_agent',
+      edges=[
+          (START, _TestingNode(name='A', message='a'), gather),
+          (START, ask, _TestingNode(name='B', message='b'), gather),
+          (gather, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=_gather_app(request, agent, resumable)
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+  assert gather.calls == ['a']
+
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'yes': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert gather.calls == ['a', 'b']
+  assert done.received_inputs == [['a', 'b']]
+  assert runner.session.state['seen'] == ['a', 'b']
+
+
+class _LapRouterNode(BaseNode):
+  """Routes 'loop' until it has run `laps` times, then 'stop'."""
+
+  laps: int = 3
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    lap = (ctx.state.get('lap') or 0) + 1
+    ctx.state['lap'] = lap
+    yield Event(output=lap, route='loop' if lap < self.laps else 'stop')
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_resume_does_not_rerun_waiting_runs_from_earlier_loop_laps(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """START -> A -> Gather, A -> B -> Gather, Gather -> Router.
+
+  Router loops back to A twice, then routes to Ask -> Done. Each lap leaves
+  one waiting run of Gather. Answering Ask must not rerun them, which would
+  feed Gather extra inputs, run the loop again and ask a second time.
+  """
+  gather = _GatherNode(name='Gather', wait_for_output=True)
+  node_a = _TestingNode(name='A', message='a')
+  node_b = _TestingNode(name='B', message='b')
+  router = _LapRouterNode(name='Router')
+  ask = RequestInputNode(name='Ask')
+  done = InputCapturingNode(name='Done')
+  agent = Workflow(
+      name='test_agent',
+      edges=[
+          (START, node_a, gather),
+          (node_a, node_b, gather),
+          (gather, router),
+          (router, {'loop': node_a, 'stop': ask}),
+          (ask, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=_gather_app(request, agent, resumable)
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+  assert gather.calls == ['a', 'b'] * 3
+
+  events2 = await asyncio.wait_for(
+      runner.run_async(
+          new_message=testing_utils.UserContent(
+              create_request_input_response(interrupt_id, {'yes': True})
+          ),
+          invocation_id=events1[0].invocation_id,
+      ),
+      timeout=10,
+  )
+
+  assert gather.calls == ['a', 'b'] * 3
+  assert done.received_inputs == [{'yes': True}]
+  assert not workflow_testing_utils.get_request_input_events(events2)
+  assert runner.session.state['lap'] == 3

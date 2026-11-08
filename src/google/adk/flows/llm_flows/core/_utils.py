@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
@@ -34,7 +33,7 @@ if TYPE_CHECKING:
 _ModelT = TypeVar('_ModelT', bound=BaseModel)
 
 
-def copy_or_none(model: Optional[_ModelT]) -> Optional[_ModelT]:
+def copy_or_none(model: _ModelT | None) -> _ModelT | None:
   """Returns a deep copy of a sub-model that request assembly then mutates."""
   return None if model is None else model.model_copy(deep=True)
 

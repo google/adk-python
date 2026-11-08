@@ -17,6 +17,7 @@ import dataclasses
 from enum import Enum
 import functools
 import inspect
+import logging
 from typing import Annotated
 from typing import Any
 from typing import Callable
@@ -915,6 +916,154 @@ async def test_run_async_leaves_bool_arg_for_int_param_alone(mock_tool_context):
   assert result == {"type": "bool"}
 
 
+class _Unit(Enum):
+  CELSIUS = "celsius"
+  FAHRENHEIT = "fahrenheit"
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_enum_value_to_member(mock_tool_context):
+  """The declaration advertises the enum values, so the model sends one back.
+
+  The function must receive the Enum member, not the raw value.
+  """
+
+  def tool_with_enum(unit: _Unit):
+    return {"type": type(unit).__name__, "value": unit.value}
+
+  tool = FunctionTool(tool_with_enum)
+  result = await tool.run_async(
+      args={"unit": "celsius"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"type": "_Unit", "value": "celsius"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_optional_enum_value_to_member(
+    mock_tool_context,
+):
+  """Optional[Enum] and Enum | None are unwrapped before the conversion."""
+
+  def tool_with_optional_enum(
+      unit: Optional[_Unit] = None, other: _Unit | None = None
+  ):
+    return {"unit": unit, "other": other}
+
+  tool = FunctionTool(tool_with_optional_enum)
+  result = await tool.run_async(
+      args={"unit": "fahrenheit", "other": "celsius"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"unit": _Unit.FAHRENHEIT, "other": _Unit.CELSIUS}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_none_optional_enum_without_warning(
+    mock_tool_context, caplog
+):
+  """None is a valid value for an Optional enum, so it is not warned about."""
+
+  def tool_with_optional_enum(
+      unit: Optional[_Unit] = None, other: _Unit | None = None
+  ):
+    return {"unit": unit, "other": other}
+
+  tool = FunctionTool(tool_with_optional_enum)
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    result = await tool.run_async(
+        args={"unit": None},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"unit": None, "other": None}
+  assert "is not a value of enum" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_int_enum_value_from_float(mock_tool_context):
+  """A proto Struct round-trip can turn an IntEnum value into a float."""
+
+  class Level(int, Enum):
+    LOW = 1
+    HIGH = 2
+
+  def tool_with_int_enum(level: Level):
+    return {"level": level, "type": type(level).__name__}
+
+  tool = FunctionTool(tool_with_int_enum)
+  result = await tool.run_async(
+      args={"level": 2.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"level": Level.HIGH, "type": "Level"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arg_validation", [False, True])
+async def test_run_async_converts_json_rendered_enum_value(
+    mock_tool_context, caplog, arg_validation
+):
+  """The legacy declaration lists non-str values as json strings."""
+
+  class Level(Enum):
+    LOW = 1
+    HIGH = 2
+
+  def tool_with_int_enum(level: Level):
+    return {"level": level}
+
+  tool = FunctionTool(tool_with_int_enum)
+  with (
+      temporary_feature_override(
+          FeatureName.FUNCTION_TOOL_ARG_VALIDATION, arg_validation
+      ),
+      caplog.at_level(logging.WARNING, logger="google_adk"),
+  ):
+    result = await tool.run_async(
+        args={"level": "2"},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"level": Level.HIGH}
+  assert "is not a value of enum" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_through_unknown_enum_value(
+    mock_tool_context, caplog
+):
+  """An out-of-range value is passed through unchanged, with a warning.
+
+  Rejecting it is the job of FUNCTION_TOOL_ARG_VALIDATION, which is off here.
+  """
+
+  def tool_with_enum(unit: _Unit):
+    return {"unit": unit}
+
+  tool = FunctionTool(tool_with_enum)
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    result = await tool.run_async(
+        args={"unit": "kelvin"},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"unit": "kelvin"}
+  assert "is not a value of enum" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_keeps_enum_member_arg(mock_tool_context):
+  """A value that already is the member is left as is."""
+
+  def tool_with_enum(unit: _Unit):
+    return {"unit": unit}
+
+  tool = FunctionTool(tool_with_enum)
+  result = await tool.run_async(
+      args={"unit": _Unit.CELSIUS},
+      tool_context=mock_tool_context,
+  )
+  assert result["unit"] is _Unit.CELSIUS
+
+
 def test_function_tool_init_type_hints():
   """Test that get_type_hints on FunctionTool.__init__ resolves without NameError."""
   from typing import get_type_hints
@@ -1472,6 +1621,177 @@ async def test_run_async_leaves_list_float_param_alone(mock_tool_context):
   assert result == {"types": ["float"]}
 
 
+class _Color(Enum):
+  RED = "red"
+  GREEN = "green"
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_list_enum_values_to_members(
+    mock_tool_context,
+):
+  """The declaration lists the enum's values, so each element is one of them.
+
+  The function must receive the Enum members, not the raw values.
+  """
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"colors": colors, "types": [type(c).__name__ for c in colors]}
+
+  tool = FunctionTool(tool_with_list_enum)
+  result = await tool.run_async(
+      args={"colors": ["red", "green"]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {
+      "colors": [_Color.RED, _Color.GREEN],
+      "types": ["_Color", "_Color"],
+  }
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_optional_list_enum_values_to_members(
+    mock_tool_context,
+):
+  """Optional[list[Enum]] is unwrapped before the check."""
+
+  async def tool_with_optional_list_enum(
+      colors: Optional[list[_Color]] = None,
+  ):
+    return {"colors": colors}
+
+  tool = FunctionTool(tool_with_optional_list_enum)
+  result = await tool.run_async(
+      args={"colors": ["green"]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"colors": [_Color.GREEN]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_none_optional_list_enum(mock_tool_context):
+  """None for an Optional[list[Enum]] stays None."""
+
+  async def tool_with_optional_list_enum(
+      colors: Optional[list[_Color]] = None,
+  ):
+    return {"colors": colors}
+
+  tool = FunctionTool(tool_with_optional_list_enum)
+  result = await tool.run_async(
+      args={"colors": None},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"colors": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arg_validation", [False, True])
+async def test_run_async_converts_json_rendered_list_enum_values(
+    mock_tool_context, caplog, arg_validation
+):
+  """The legacy declaration lists non-str item values as json strings."""
+
+  class Level(Enum):
+    LOW = 1
+    HIGH = 2
+
+  def tool_with_list_enum(levels: list[Level]):
+    return {"levels": levels}
+
+  tool = FunctionTool(tool_with_list_enum)
+  with (
+      temporary_feature_override(
+          FeatureName.FUNCTION_TOOL_ARG_VALIDATION, arg_validation
+      ),
+      caplog.at_level(logging.WARNING, logger="google_adk"),
+  ):
+    result = await tool.run_async(
+        args={"levels": ["2"]},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"levels": [Level.HIGH]}
+  assert "not members" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_list_int_enum_values_from_floats(
+    mock_tool_context,
+):
+  """A proto Struct round-trip can turn each IntEnum element into a float."""
+
+  class Level(int, Enum):
+    LOW = 1
+    HIGH = 2
+
+  async def tool_with_list_int_enum(levels: list[Level]):
+    return {"levels": levels, "types": [type(lv).__name__ for lv in levels]}
+
+  tool = FunctionTool(tool_with_list_int_enum)
+  result = await tool.run_async(
+      args={"levels": [2.0, 1]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"levels": [Level.HIGH, Level.LOW], "types": ["Level"] * 2}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_through_unknown_value_in_list_enum(
+    mock_tool_context,
+    caplog,
+):
+  """An element that is not a value of the enum is kept as is, with a warning.
+
+  Rejecting bad values stays the job of FUNCTION_TOOL_ARG_VALIDATION; the
+  other elements are still converted.
+  """
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"got": colors}
+
+  tool = FunctionTool(tool_with_list_enum)
+  with caplog.at_level("WARNING"):
+    result = await tool.run_async(
+        args={"colors": ["red", "purple"]},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"got": [_Color.RED, "purple"]}
+  assert "Argument 'colors'" in caplog.text
+  assert "purple" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_keeps_enum_members_in_list_enum(mock_tool_context):
+  """Elements that already are members are left alone."""
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"colors": colors}
+
+  tool = FunctionTool(tool_with_list_enum)
+  result = await tool.run_async(
+      args={"colors": [_Color.GREEN, "red"]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"colors": [_Color.GREEN, _Color.RED]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_leaves_non_list_arg_for_list_enum_param_alone(
+    mock_tool_context,
+):
+  """A value that is not a list is not iterated, so a string isn't split."""
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"got": colors}
+
+  tool = FunctionTool(tool_with_list_enum)
+  result = await tool.run_async(
+      args={"colors": "red"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"got": "red"}
+
+
 @pytest.mark.asyncio
 async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
   """A bare list annotation carries no element type, so nothing is coerced."""
@@ -1485,6 +1805,223 @@ async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
       tool_context=mock_tool_context,
   )
   assert result == {"types": ["float"]}
+
+
+class _Action(Enum):
+  READ = "read"
+  DELETE = "delete"
+
+
+class _StrAction(str, Enum):
+  READ = "read"
+  DELETE = "delete"
+
+
+def _manage_file_plain_enum(path: str, action: _Action):
+  return {"path": path, "action": action}
+
+
+def _manage_file_str_enum(path: str, action: _StrAction):
+  return {"path": path, "action": action}
+
+
+def _manage_file_optional_enum(path: str, action: Optional[_Action] = None):
+  return {"path": path, "action": action}
+
+
+def _manage_file_list_enum(path: str, action: list[_Action]):
+  return {"path": path, "action": action}
+
+
+def _confirmation_tool_context() -> ToolContext:
+  invocation_context = MagicMock(spec=InvocationContext)
+  invocation_context._state_schema = None
+  invocation_context.session = MagicMock(spec=Session)
+  invocation_context.session.state = MagicMock()
+  invocation_context.agent = MagicMock()
+  invocation_context.agent.name = "test_agent"
+  tool_context = ToolContext(invocation_context=invocation_context)
+  tool_context.function_call_id = "test_function_call_id"
+  return tool_context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "func, raw_action, expected_action",
+    [
+        (_manage_file_plain_enum, "delete", _Action.DELETE),
+        (_manage_file_str_enum, "delete", _StrAction.DELETE),
+        (_manage_file_optional_enum, "delete", _Action.DELETE),
+        (
+            _manage_file_list_enum,
+            ["read", "delete"],
+            [_Action.READ, _Action.DELETE],
+        ),
+    ],
+    ids=["enum", "str_enum", "optional_enum", "list_enum"],
+)
+async def test_require_confirmation_callable_receives_raw_enum_values(
+    func, raw_action, expected_action
+):
+  """A callable require_confirmation gets the values the model sent.
+
+  A predicate written against the raw value (`action == "delete"`) must still
+  pause the call; only the tool function gets the Enum members.
+  """
+  seen = []
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    if isinstance(action, list):
+      return "delete" in action
+    return action == "delete"
+
+  tool = FunctionTool(func, require_confirmation=needs_confirmation)
+  tool_context = _confirmation_tool_context()
+  args = {"path": "/etc/x", "action": raw_action}
+
+  result = await tool.run_async(args=args, tool_context=tool_context)
+
+  assert result == {
+      "error": "This tool call requires confirmation, please approve or reject."
+  }
+  assert seen == [raw_action]
+  if isinstance(raw_action, list):
+    assert [type(a) for a in seen[0]] == [str] * len(raw_action)
+  else:
+    assert type(seen[0]) is str
+
+  tool_context.tool_confirmation = ToolConfirmation(confirmed=True)
+  result = await tool.run_async(args=args, tool_context=tool_context)
+
+  assert result == {"path": "/etc/x", "action": expected_action}
+  if isinstance(expected_action, list):
+    assert all(isinstance(a, _Action) for a in result["action"])
+  else:
+    assert isinstance(result["action"], type(expected_action))
+
+
+@pytest.mark.asyncio
+async def test_check_require_confirmation_callable_receives_raw_enum_value(
+    mock_tool_context,
+):
+  """Calling check_require_confirmation directly also passes the raw value."""
+  seen = []
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    return action == "delete"
+
+  tool = FunctionTool(
+      _manage_file_plain_enum, require_confirmation=needs_confirmation
+  )
+
+  requires = await tool.check_require_confirmation(
+      args={"path": "/etc/x", "action": "delete"},
+      tool_context=mock_tool_context,
+  )
+
+  assert requires is True
+  assert seen == ["delete"]
+  assert type(seen[0]) is str
+
+
+@pytest.mark.asyncio
+async def test_require_confirmation_callable_raw_enum_with_subclass_preprocess(
+    mock_tool_context,
+):
+  """A subclass _preprocess_args that calls super() still shapes the input."""
+  seen = []
+
+  class RenamingTool(FunctionTool):
+
+    def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
+      args = dict(args)
+      if "op" in args:
+        args["action"] = args.pop("op")
+      return super()._preprocess_args(args)
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    return action == "delete"
+
+  tool = RenamingTool(
+      _manage_file_plain_enum, require_confirmation=needs_confirmation
+  )
+
+  requires = await tool.check_require_confirmation(
+      args={"path": "/etc/x", "op": "delete"},
+      tool_context=mock_tool_context,
+  )
+
+  assert requires is True
+  assert seen == ["delete"]
+  assert type(seen[0]) is str
+  # The function itself still gets the member.
+  assert tool._preprocess_args({"path": "/etc/x", "op": "delete"}) == {
+      "path": "/etc/x",
+      "action": _Action.DELETE,
+  }
+
+
+@pytest.mark.asyncio
+async def test_require_confirmation_callable_keeps_pydantic_model(
+    mock_tool_context,
+):
+  """Only top-level Enum values are passed raw; a model arg stays a model."""
+
+  class Request(pydantic.BaseModel):
+    action: _Action
+
+  seen = []
+
+  def needs_confirmation(request):
+    seen.append(request)
+    return request.action is _Action.DELETE
+
+  def manage_file(request: Request):
+    return request
+
+  tool = FunctionTool(manage_file, require_confirmation=needs_confirmation)
+
+  requires = await tool.check_require_confirmation(
+      args={"request": {"action": "delete"}},
+      tool_context=mock_tool_context,
+  )
+
+  assert requires is True
+  assert seen == [Request(action=_Action.DELETE)]
+
+
+@pytest.mark.asyncio
+async def test_require_confirmation_callable_gets_enum_member_with_arg_validation(
+    mock_tool_context,
+):
+  """With FUNCTION_TOOL_ARG_VALIDATION on, the validated member is passed.
+
+  Validation has always coerced the value to the member before the predicate
+  runs, so that path is unchanged.
+  """
+  seen = []
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    return action is _Action.DELETE
+
+  tool = FunctionTool(
+      _manage_file_plain_enum, require_confirmation=needs_confirmation
+  )
+
+  with temporary_feature_override(
+      FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True
+  ):
+    requires = await tool.check_require_confirmation(
+        args={"path": "/etc/x", "action": "delete"},
+        tool_context=mock_tool_context,
+    )
+
+  assert requires is True
+  assert seen == [_Action.DELETE]
 
 
 @pytest.mark.asyncio
@@ -2431,3 +2968,328 @@ def test_legacy_declaration_preserves_raw_routine_docstring():
     context_decl = FunctionTool(context_tool)._get_declaration()
     assert context_decl is not None
     assert context_decl.description == context_tool.__doc__
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_positional_only_arguments(mock_tool_context):
+  """FunctionTool invokes sync functions with positional-only arguments."""
+
+  def add_pos_only(x: int, /, y: int) -> int:
+    return x + y
+
+  tool = FunctionTool(add_pos_only)
+  result = await tool.run_async(
+      args={"x": 1, "y": 2},
+      tool_context=mock_tool_context,
+  )
+  assert result == 3
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_async_positional_only_arguments(
+    mock_tool_context,
+):
+  """FunctionTool invokes async functions with positional-only arguments."""
+
+  async def add_pos_only_async(x: int, /, y: int) -> int:
+    return x + y
+
+  tool = FunctionTool(add_pos_only_async)
+  result = await tool.run_async(
+      args={"x": 10, "y": 20},
+      tool_context=mock_tool_context,
+  )
+  assert result == 30
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_builtin_positional_only(mock_tool_context):
+  """FunctionTool invokes builtins with positional-only arguments."""
+  import math
+
+  tool = FunctionTool(math.pow)
+  result = await tool.run_async(
+      args={"x": 2.0, "y": 3.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == 8.0
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_defaults(mock_tool_context):
+  """FunctionTool handles default values on positional-only arguments."""
+
+  def greet(
+      name: str, greeting: str = "hello", punctuation: str = ".", /
+  ) -> str:
+    return f"{greeting}, {name}{punctuation}"
+
+  tool = FunctionTool(greet)
+  res1 = await tool.run_async(
+      args={"name": "Alice"},
+      tool_context=mock_tool_context,
+  )
+  assert res1 == "hello, Alice."
+
+  res2 = await tool.run_async(
+      args={"name": "Bob", "greeting": "hi"},
+      tool_context=mock_tool_context,
+  )
+  assert res2 == "hi, Bob."
+
+  res3 = await tool.run_async(
+      args={"name": "Cara", "punctuation": "!"},
+      tool_context=mock_tool_context,
+  )
+  assert res3 == "hello, Cara!"
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_thread_pool_runner(
+    mock_tool_context,
+):
+  """FunctionTool with positional-only args works via sync runner."""
+
+  def multiply(x: int, /, factor: int = 2) -> int:
+    return x * factor
+
+  async def dummy_sync_runner(target, call_args):
+    return target(**call_args)
+
+  tool = FunctionTool(multiply)
+  with _use_sync_callable_runner(dummy_sync_runner):
+    result = await tool.run_async(
+        args={"x": 5, "factor": 3},
+        tool_context=mock_tool_context,
+    )
+  assert result == 15
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_callable_object_positional_only(
+    mock_tool_context,
+):
+  """FunctionTool invokes callable objects with positional-only arguments."""
+
+  class Multiplier:
+
+    def __call__(self, x: int, /, y: int) -> int:
+      return x * y
+
+  tool = FunctionTool(Multiplier())
+  result = await tool.run_async(
+      args={"x": 4, "y": 5},
+      tool_context=mock_tool_context,
+  )
+  assert result == 20
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_injected_context(
+    mock_tool_context,
+):
+  """FunctionTool injects tool_context alongside positional-only args."""
+
+  def tool_with_ctx(val: int, /, tool_context: ToolContext) -> dict[str, Any]:
+    return {"val": val, "has_ctx": tool_context is not None}
+
+  tool = FunctionTool(tool_with_ctx)
+  result = await tool.run_async(
+      args={"val": 42},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"val": 42, "has_ctx": True}
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_confirmation_predicate(
+    mock_tool_context,
+):
+  """FunctionTool handles confirmation predicates with positional-only args."""
+
+  def add(x: int, /, y: int) -> int:
+    return x + y
+
+  def require_if_large(x: int, /, y: int) -> bool:
+    return (x + y) > 10
+
+  mock_tool_context.function_call_id = "call_123"
+  tool = FunctionTool(add, require_confirmation=require_if_large)
+  res_small = await tool.run_async(
+      args={"x": 2, "y": 3},
+      tool_context=mock_tool_context,
+  )
+  assert res_small == 5
+
+  res_large = await tool.run_async(
+      args={"x": 10, "y": 20},
+      tool_context=mock_tool_context,
+  )
+  assert "error" in res_large
+  assert "requires confirmation" in res_large["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_uses_func_reassigned_after_init(mock_tool_context):
+  """FunctionTool invokes tool.func as reassigned or patched after init."""
+
+  def original(x: int) -> str:
+    return f"original {x}"
+
+  tool = FunctionTool(original)
+  replacement = mock.MagicMock(return_value="patched")
+  with mock.patch.object(tool, "func", replacement):
+    result = await tool.run_async(
+        args={"x": 1},
+        tool_context=mock_tool_context,
+    )
+  assert result == "patched"
+  replacement.assert_called_once_with(x=1)
+
+  def pos_only_replacement(x: int, /) -> str:
+    return f"pos_only {x}"
+
+  tool.func = pos_only_replacement
+  result = await tool.run_async(
+      args={"x": 2},
+      tool_context=mock_tool_context,
+  )
+  assert result == "pos_only 2"
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_with_positional_only_arguments_runner():
+  """Generator tool with positional-only arguments runs through Runner."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  def count(n: int, /):
+    for i in range(n):
+      yield Event(message=f"step {i}")
+    yield {"count": n}
+
+  fc = types.Part.from_function_call(name="count", args={"n": 3})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[count])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("count to 3")
+
+  intermediate = [
+      e
+      for e in events
+      if e.author == "count"
+      and e.content
+      and e.content.parts
+      and e.content.parts[0].text in ("step 0", "step 1", "step 2")
+  ]
+  assert len(intermediate) == 3
+  assert all(
+      e.branch is not None and e.branch.startswith("count@")
+      for e in intermediate
+  )
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"count": 3}]
+
+
+@pytest.mark.asyncio
+async def test_async_generator_tool_with_positional_only_arguments_runner():
+  """Async generator tool with positional-only args runs through Runner."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def async_count(n: int, /):
+    for i in range(n):
+      yield Event(message=f"async_step {i}")
+    yield {"count": n}
+
+  fc = types.Part.from_function_call(name="async_count", args={"n": 2})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[async_count])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("count to 2")
+
+  intermediate = [
+      e
+      for e in events
+      if e.author == "async_count"
+      and e.content
+      and e.content.parts
+      and e.content.parts[0].text in ("async_step 0", "async_step 1")
+  ]
+  assert len(intermediate) == 2
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"count": 2}]
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_positional_only_defaults_runner():
+  """Generator tool with positional-only defaults runs through Runner."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  def count_default(n: int = 2, /):
+    for i in range(n):
+      yield Event(message=f"step {i}")
+    yield {"total": n}
+
+  fc = types.Part.from_function_call(name="count_default", args={})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[count_default])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("count default")
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"total": 2}]

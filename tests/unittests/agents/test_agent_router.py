@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.agents import _agent_router
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -29,6 +27,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.utils._agent_mode import AgentMode
 from google.genai import types
 import pytest
 
@@ -40,7 +39,7 @@ class _MockLlmAgent(LlmAgent):
       self,
       name: str,
       disallow_transfer_to_parent: bool = False,
-      parent_agent: Optional[BaseAgent] = None,
+      parent_agent: BaseAgent | None = None,
   ):
     super().__init__(name=name, model="gemini-1.5-pro", sub_agents=[])
     self.disallow_transfer_to_parent = disallow_transfer_to_parent
@@ -801,26 +800,35 @@ def test_find_agent_to_run_resolves_tool_sub_branch_pause_to_owning_agent(
 
 
 @pytest.mark.parametrize("user_answers_call", [False, True])
-def test_find_agent_to_run_routes_task_agent_to_its_delegator(
+@pytest.mark.parametrize("delegator_name", ["root_agent", "helper"])
+@pytest.mark.parametrize(
+    "mode",
+    ["task", "single_turn", AgentMode.SINGLE_TURN],
+    ids=["task", "single_turn_str", "single_turn_enum"],
+)
+def test_find_agent_to_run_routes_delegated_agent_to_its_delegator(
+    mode: str,
+    delegator_name: str,
     user_answers_call: bool,
 ):
-  """A turn left by a task-mode agent routes to the agent that delegated it."""
+  """A turn left by a task or single_turn agent routes to its delegator."""
   root = _MockLlmAgent("root_agent")
   helper = _MockLlmAgent("helper", parent_agent=root)
-  task_worker = _MockLlmAgent("task_worker", parent_agent=helper)
-  task_worker.mode = "task"
   root.sub_agents = [helper]
-  helper.sub_agents = [task_worker]
+  delegator = root if delegator_name == "root_agent" else helper
+  worker = _MockLlmAgent("worker", parent_agent=delegator)
+  worker.mode = mode
+  delegator.sub_agents = [*delegator.sub_agents, worker]
   events = [
       Event(
           invocation_id="inv1",
-          author="task_worker",
+          author="worker",
           content=types.Content(
               role="model",
               parts=[
                   types.Part(
                       function_call=types.FunctionCall(
-                          id="fc_1", name="confirm", args={}
+                          id="fc_1", name="adk_request_confirmation", args={}
                       )
                   )
               ],
@@ -837,7 +845,9 @@ def test_find_agent_to_run_routes_task_agent_to_its_delegator(
                 parts=[
                     types.Part(
                         function_response=types.FunctionResponse(
-                            id="fc_1", name="confirm", response={}
+                            id="fc_1",
+                            name="adk_request_confirmation",
+                            response={"confirmed": True},
                         )
                     )
                 ],
@@ -846,7 +856,7 @@ def test_find_agent_to_run_routes_task_agent_to_its_delegator(
     )
   session = Session(id="s1", app_name="app", user_id="u1", events=events)
 
-  assert _agent_router.find_agent_to_run(session, root) == helper
+  assert _agent_router.find_agent_to_run(session, root) == delegator
 
 
 def _transfer_events(

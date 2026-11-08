@@ -21,6 +21,7 @@ from dataclasses import field
 from typing import Any
 from typing import TYPE_CHECKING
 
+from ...agents.base_agent import BaseAgent
 from ...agents.context import Context
 from .._base_node import BaseNode
 from .._node_status import NodeStatus
@@ -63,22 +64,35 @@ def check_interception(
   """Determine if a node execution should be intercepted based on history."""
   from .._workflow import Workflow  # pylint: disable=g-import-not-at-top
 
-  # Case 1: Same-turn completed or waiting interception (dynamic nodes only).
-  # If a node already successfully executed or is currently blocked in the
-  # current turn, bypass execution and return its current turn results.
+  # Case 1: Same-turn completed, failed, or waiting interception.
+  # A dynamic run that already completed in the current turn is replayed with
+  # its output, route and transfer target instead of running again. A dynamic
+  # run that failed in the current turn is run again, with any interrupt
+  # responses already resolved for it; the recovered events the cases below
+  # look at were scanned before that failure, so they must not decide. A
+  # dynamic run still blocked on interrupts keeps waiting; a static one falls
+  # through.
   if current_run and not current_run.is_static:
     if current_run.state.status == NodeStatus.COMPLETED:
       return InterceptionResult(
           should_run=False,
           output=current_run.output,
+          route=current_run.route,
           transfer_to_agent=current_run.transfer_to_agent,
       )
-    if current_run.state.status == NodeStatus.WAITING:
-      if current_run.state.interrupts:
-        return InterceptionResult(
-            should_run=False,
-            interrupts=set(current_run.state.interrupts),
-        )
+    if current_run.state.status == NodeStatus.FAILED:
+      return InterceptionResult(
+          should_run=True,
+          resume_inputs=recovered.resolved_responses if recovered else None,
+      )
+    if (
+        current_run.state.status == NodeStatus.WAITING
+        and current_run.state.interrupts
+    ):
+      return InterceptionResult(
+          should_run=False,
+          interrupts=set(current_run.state.interrupts),
+      )
 
   if not recovered:
     return InterceptionResult(should_run=True)
@@ -101,9 +115,23 @@ def check_interception(
     # Case 2: Cross-turn unresolved interrupts remain.
     # Rerun natively with resolved inputs if the node supports rerun and some
     # progress was made; otherwise remain waiting and bubble unresolved interrupts.
+    # A node that already reran with the answered interrupts and finished chose
+    # to continue without the rest; fast-forward it so its side effects do not
+    # run again.
     if node.rerun_on_resume and recovered.resolved_ids:
-      should_run = True
-      resume_inputs = recovered.resolved_responses
+      has_result = (
+          recovered.output is not None
+          or recovered.route is not None
+          or recovered.transfer_to_agent is not None
+      )
+      if recovered.finished_after_resume and (
+          has_result or not node.wait_for_output
+      ):
+        output = _process_rehydrated_output(node, recovered.output)
+        route = recovered.route
+      else:
+        should_run = True
+        resume_inputs = recovered.resolved_responses
     else:
       interrupts = unresolved
 
@@ -145,7 +173,11 @@ def check_interception(
 
   else:
     # Case 6: Cross-turn no events, or events contain no output, route, or interrupts.
-    if node.wait_for_output:
+    if node.wait_for_output and _reruns_while_waiting(node):
+      # A waiting agent (task or chat mode) or rerun_on_resume node reruns to
+      # take new input. Other wait_for_output nodes fall through: their next
+      # trigger starts a new run, so rerunning this one would repeat its side
+      # effects.
       should_run = True
       resume_inputs = recovered.resolved_responses
     elif node.rerun_on_resume:
@@ -185,8 +217,8 @@ def create_mock_context(
 ) -> Context:
   """Build a Context with cached results (no execution)."""
   ic = parent_ctx._invocation_context  # pylint: disable=protected-access
-  if branch:
-    ic = ic.model_copy(update={"branch": branch})
+  if branch is not None:
+    ic = ic.model_copy(update={"branch": branch or None})
 
   mock_ctx = Context(
       ic,
@@ -208,3 +240,8 @@ def create_mock_context(
   mock_ctx._interrupt_ids = result.interrupts  # pylint: disable=protected-access
 
   return mock_ctx
+
+
+def _reruns_while_waiting(node: BaseNode) -> bool:
+  """Whether a wait_for_output node with no recorded outcome runs again."""
+  return node.rerun_on_resume or isinstance(node, BaseAgent)

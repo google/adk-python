@@ -14,15 +14,21 @@
 
 """Testings for the Workflow routes."""
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
+from google.adk.events.event import Event
+from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
+from google.adk.workflow import FunctionNode
+from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow._graph import DEFAULT_ROUTE
 from google.adk.workflow._graph import Graph
 from google.adk.workflow._join_node import JoinNode
+from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
 import pytest
 
@@ -772,3 +778,80 @@ async def test_fan_in_out_with_route(request: pytest.FixtureRequest):
 
   with pytest.raises(ValueError, match='multiple terminal nodes'):
     await runner.run_async(testing_utils.get_user_content('start'))
+
+
+@pytest.mark.parametrize('router_kind', ['event', 'deferred', 'delegated'])
+@pytest.mark.asyncio
+async def test_parent_retry_reruns_sub_workflow_along_recorded_route(
+    request: pytest.FixtureRequest,
+    router_kind: str,
+) -> None:
+  """A parent's retry reruns a sub-workflow along its recorded route."""
+  runs = {'router': 0, 'flaky_b': 0, 'node_c': 0}
+
+  def pick_route(ctx: Context, node_input: Any) -> str:
+    runs['router'] += 1
+    return 'go_b' if runs['router'] == 1 else 'go_c'
+
+  def flaky_b(node_input: Any) -> str:
+    runs['flaky_b'] += 1
+    if runs['flaky_b'] == 1:
+      raise ValueError('flaky_b failed')
+    return 'b_done'
+
+  def node_c(node_input: Any) -> str:
+    runs['node_c'] += 1
+    return 'c_done'
+
+  class DeferredRouter(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      ctx.output = 'routed'
+      ctx.route = pick_route(ctx, node_input)
+      ctx.state['route_visits'] = runs['router']
+      return
+      yield
+
+  def output_source() -> str:
+    return 'routed'
+
+  child = FunctionNode(func=output_source)
+
+  async def delegated_router(ctx: Context) -> Event:
+    output = await ctx.run_node(child, use_as_output=True)
+    return Event(output=output, route=pick_route(ctx, None))
+
+  if router_kind == 'deferred':
+    router = DeferredRouter(name='router')
+  elif router_kind == 'delegated':
+    router = FunctionNode(
+        name='router', func=delegated_router, rerun_on_resume=True
+    )
+  else:
+    router = TestingNode(name='router', output='routed', route=pick_route)
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, router), (router, {'go_b': flaky_b, 'go_c': node_c})],
+  )
+
+  @node(
+      rerun_on_resume=True,
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+  async def driver(ctx: Context) -> Any:
+    return await ctx.run_node(inner_wf)
+
+  outer_wf = Workflow(name='outer_wf', edges=[(START, driver)])
+  app = App(name=request.function.__name__, root_agent=outer_wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert runs == {'router': 1, 'flaky_b': 2, 'node_c': 0}
+  assert 'b_done' in [e.output for e in events if e.output is not None]
+  if router_kind == 'deferred':
+    assert runner.session.state['route_visits'] == 1
+  if router_kind == 'delegated':
+    assert sum(event.output == 'routed' for event in events) == 1

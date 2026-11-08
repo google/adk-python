@@ -46,6 +46,7 @@ from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import _live_llm_flow
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
@@ -568,6 +569,52 @@ class TestGenerateInferencesForSingleUserInvocation:
         session_id="test_session",
         new_message=user_content,
     )
+
+  @pytest.mark.asyncio
+  async def test_silent_turn_yields_user_event_with_fresh_invocation_id(
+      self, mocker
+  ):
+    """A silent runner turn yields the user event with a fresh invocation ID."""
+    runner = mocker.create_autospec(
+        evaluation_generator_module.Runner, instance=True
+    )
+
+    async def empty_run_async(*args, **kwargs):
+      del args, kwargs
+      return
+      yield
+
+    runner.run_async.side_effect = empty_run_async
+
+    first_query = types.Content(parts=[types.Part(text="First silent query")])
+    second_query = types.Content(parts=[types.Part(text="Second silent query")])
+
+    first_events = [
+        event
+        async for event in (
+            EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, "test_user", "test_session", first_query
+            )
+        )
+    ]
+    second_events = [
+        event
+        async for event in (
+            EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, "test_user", "test_session", second_query
+            )
+        )
+    ]
+
+    assert len(first_events) == 1
+    assert first_events[0].author == "user"
+    assert first_events[0].content == first_query
+    assert first_events[0].invocation_id
+    assert len(second_events) == 1
+    assert second_events[0].author == "user"
+    assert second_events[0].content == second_query
+    assert second_events[0].invocation_id
+    assert first_events[0].invocation_id != second_events[0].invocation_id
 
 
 class TestGenerateInferencesForSingleUserInvocationLive:
@@ -3043,8 +3090,8 @@ async def _live_receiver_count_events(messages):
   )
   return [
       event
-      async for event in BaseLlmFlow()._receive_from_model(
-          connection, context, LlmRequest()
+      async for event in _live_llm_flow.receive_from_model(
+          BaseLlmFlow(), connection, context, LlmRequest()
       )
   ]
 
@@ -3388,6 +3435,46 @@ def test_non_live_streamed_calls_close_on_contentless_final_usage():
   invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
 
   assert invocations[0].inference_call_count == 2
+
+
+def test_usage_batched_after_content_keeps_totals_without_extra_calls():
+  """Usage reported after all content keeps exact totals and adds no calls.
+
+  Nothing in the payload identifies the originating call, so which model event
+  carries each report is best effort and deliberately not asserted here.
+  """
+  events = [
+      Event(
+          author="agent",
+          invocation_id="inv1",
+          model_version="gemini-test",
+          content=types.Content(parts=[types.Part(text="response")]),
+      )
+      for _ in range(2)
+  ] + [
+      Event(
+          author="agent",
+          invocation_id="inv1",
+          model_version="gemini-test",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=tokens, total_token_count=tokens
+          ),
+      )
+      for tokens in [15, 28]
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert (
+      _TokenUsageV1Evaluator().evaluate_invocations(invocations).overall_score
+      == 43
+  )
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 2
+  )
 
 
 @pytest.mark.asyncio

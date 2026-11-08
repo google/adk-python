@@ -114,18 +114,6 @@
       {
         "path": [
           "attributes",
-          "error.type"
-        ],
-        "example_native_instrumentation_value": {
-          "missing_on_this_side": true
-        },
-        "example_otel_instrumentation_value": "ValueError",
-        "kind": "adk_bug",
-        "reason": "ADK reports a failed call on the enclosing spans and on the duration metric, but leaves `error.type` off the inference span itself."
-      },
-      {
-        "path": [
-          "attributes",
           "gen_ai.output.messages"
         ],
         "example_native_instrumentation_value": {
@@ -134,6 +122,60 @@
         "example_otel_instrumentation_value": [],
         "kind": "otel_bug",
         "reason": "A streamed chunk carries `FINISH_REASON_UNSPECIFIED`, which the instrumentor lumps in with `OTHER` and reports as `error`; ADK reports it as unfinished. Nothing failed, so calling the chunk an error is wrong."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.query_count"
+        ],
+        "example_native_instrumentation_value": 2,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.chunk_count"
+        ],
+        "example_native_instrumentation_value": 2,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.web_search_queries"
+        ],
+        "example_native_instrumentation_value": [
+          "adk release",
+          "google-adk pypi"
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.source_uris"
+        ],
+        "example_native_instrumentation_value": [
+          "https://a.test/1",
+          "https://b.test/2"
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
       }
     ]
   },
@@ -380,6 +422,56 @@
         },
         "kind": "otel_bug",
         "reason": "On a call that failed the instrumentor records a zeroed usage point; ADK records no usage at all."
+      }
+    ]
+  },
+  {
+    "owner_type": "metric",
+    "owner_name": "gen_ai.client.inference.time_per_output_chunk",
+    "affected_tests": "streaming/*",
+    "divergences": [
+      {
+        "path": [],
+        "example_native_instrumentation_value": [
+          {
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gemini",
+              "gen_ai.request.model": "gemini-2.5-flash"
+            },
+            "value": "PRESENT"
+          }
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor this suite pins predates chunk timing. Later releases time chunks too, but under `gen_ai.client.operation.*`, the names semantic-conventions-genai#521 replaced."
+      }
+    ]
+  },
+  {
+    "owner_type": "metric",
+    "owner_name": "gen_ai.client.inference.time_to_first_chunk",
+    "affected_tests": "streaming/*",
+    "divergences": [
+      {
+        "path": [],
+        "example_native_instrumentation_value": [
+          {
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gemini",
+              "gen_ai.request.model": "gemini-2.5-flash"
+            },
+            "value": "PRESENT"
+          }
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor this suite pins predates chunk timing. Later releases time chunks too, but under `gen_ai.client.operation.*`, the names semantic-conventions-genai#521 replaced."
       }
     ]
   }

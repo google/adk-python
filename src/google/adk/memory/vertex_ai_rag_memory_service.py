@@ -23,13 +23,13 @@ import json
 import logging
 import os
 import tempfile
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -171,11 +171,11 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
   def __init__(
       self,
-      rag_corpus: Optional[str] = None,
-      similarity_top_k: Optional[int] = None,
+      rag_corpus: str | None = None,
+      similarity_top_k: int | None = None,
       vector_distance_threshold: float = 10,
-      project: Optional[str] = None,
-      location: Optional[str] = None,
+      project: str | None = None,
+      location: str | None = None,
   ):
     """Initializes a VertexAiRagMemoryService.
 
@@ -233,13 +233,13 @@ class VertexAiRagMemoryService(BaseMemoryService):
       raise ValueError("rag_corpus must be set on every RAG resource.")
 
     output_lines = []
-    for event in session.events:
+    for event in _apply_rewinds(session.events):
       if not event.content or not event.content.parts:
         continue
       text_parts = [
           part.text.replace("\n", " ")
           for part in event.content.parts
-          if part.text
+          if part.text and not part.thought
       ]
       if text_parts:
         output_lines.append(

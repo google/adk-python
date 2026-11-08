@@ -697,6 +697,15 @@ class EvaluationGenerator:
 
         yield event
 
+    if invocation_id is None:
+      # A silent turn never exposes the Runner's invocation ID, so this
+      # synthetic one will not match the user event stored in the session.
+      yield Event(
+          content=user_content,
+          author=_USER_AUTHOR,
+          invocation_id=Event.new_id(),
+      )
+
   @staticmethod
   async def _generate_inferences_for_single_user_invocation_live(
       live_request_queue: LiveRequestQueue,
@@ -1076,9 +1085,56 @@ class EvaluationGenerator:
         ):
           events_to_add.append(event)
 
-      invocation_events = []
-      for e in events_to_add:
-        invocation_events.append(
+      # Pair each standalone usage report with a model event before building
+      # any `InvocationEvent`, so every record is constructed once with its
+      # final usage. Merging keeps the tokens without the report counting as
+      # a second model call. Nothing in the payload identifies the originating
+      # call, so the nearest unclaimed compatible event wins, earlier events
+      # first. Totals and call counts are exact; which event carries a report
+      # is best effort (e.g. `GeminiLlmConnection.receive` yields a message's
+      # usage before its content, so it can land on an earlier call).
+      # TODO: Index by author, model and Live session if long invocations
+      # make this quadratic search expensive.
+      merged_usage: dict[int, types.GenerateContentResponseUsageMetadata] = {}
+      merged_report_indices: set[int] = set()
+      for index, event in enumerate(events_to_add):
+        if (
+            (event.content and event.content.parts)
+            or event.grounding_metadata is not None
+            or event.usage_metadata is None
+        ):
+          continue
+        target_index = next(
+            (
+                candidate_index
+                for candidate_index in (
+                    *range(index - 1, -1, -1),
+                    *range(index + 1, len(events_to_add)),
+                )
+                if candidate_index not in merged_usage
+                and events_to_add[candidate_index].usage_metadata is None
+                and events_to_add[candidate_index].model_version is not None
+                and events_to_add[candidate_index].author == event.author
+                and events_to_add[candidate_index].live_session_id
+                == event.live_session_id
+                and (
+                    event.model_version is None
+                    or events_to_add[candidate_index].model_version
+                    == event.model_version
+                )
+            ),
+            None,
+        )
+        if target_index is not None:
+          merged_usage[target_index] = event.usage_metadata
+          merged_report_indices.add(index)
+
+      merged_events = []
+      merged_event_sources: list[Event] = []
+      for index, e in enumerate(events_to_add):
+        if index in merged_report_indices:
+          continue
+        merged_events.append(
             InvocationEvent(
                 author=e.author,
                 # The final response's text is already on
@@ -1091,46 +1147,11 @@ class EvaluationGenerator:
                     else None
                 ),
                 grounding_metadata=e.grounding_metadata,
-                usage_metadata=e.usage_metadata,
+                usage_metadata=merged_usage.get(index, e.usage_metadata),
                 model_version=e.model_version,
             )
         )
-      event_pairs = list(zip(events_to_add, invocation_events))
-      merged_events = []
-      merged_event_sources: list[Event] = []
-      for index, (event, invocation_event) in enumerate(event_pairs):
-        if (
-            not (event.content and event.content.parts)
-            and event.grounding_metadata is None
-            and event.usage_metadata is not None
-        ):
-          # Live usage can arrive before or after content. Merge into an event
-          # already counted as a model call, without changing the input events
-          # or overwriting usage reported by another call.
-          # TODO: Index by author, model and Live session if long invocations
-          # make this quadratic search expensive.
-          model_event = next(
-              (
-                  candidate
-                  for candidate_source, candidate in (
-                      event_pairs[:index][::-1] + event_pairs[index + 1 :]
-                  )
-                  if candidate_source.live_session_id == event.live_session_id
-                  and candidate.model_version is not None
-                  and candidate.author == event.author
-                  and candidate.usage_metadata is None
-                  and (
-                      event.model_version is None
-                      or candidate.model_version == event.model_version
-                  )
-              ),
-              None,
-          )
-          if model_event is not None:
-            model_event.usage_metadata = event.usage_metadata
-            continue
-        merged_events.append(invocation_event)
-        merged_event_sources.append(event)
+        merged_event_sources.append(e)
       invocations.append(
           Invocation(
               invocation_id=invocation_id,

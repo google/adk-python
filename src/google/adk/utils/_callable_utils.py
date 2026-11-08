@@ -25,11 +25,20 @@ import dataclasses
 import functools
 import inspect
 import logging
+import sys
+from types import UnionType
 import typing
 from typing import Any
 from typing import Callable
 from typing import cast
+from typing import ForwardRef
+from typing import get_args
+from typing import get_origin
+from typing import Literal
 from typing import TypeVar
+from typing import Union
+
+from typing_extensions import Annotated
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -117,6 +126,127 @@ def unwrap_callable(
   return func
 
 
+def get_callable_globals(func: Any) -> dict[str, Any]:
+  """Returns the module globals dict for a callable or class, if available."""
+  target = unwrap_callable(func, follow_wrapped=True)
+  if hasattr(target, "__wrapped__"):
+    target = unwrap_callable(inspect.unwrap(target), follow_wrapped=True)
+  func_globals = getattr(target, "__globals__", None)
+  if isinstance(func_globals, dict):
+    return func_globals
+  module_name = getattr(target, "__module__", None)
+  if isinstance(module_name, str):
+    module = sys.modules.get(module_name)
+    if module is not None:
+      return vars(module)
+  return {}
+
+
+def get_adk_context_localns(func: Any) -> dict[str, Any]:
+  """Returns fallback ADK context types absent from `func`'s own globals."""
+  from ..agents.callback_context import CallbackContext
+  from ..agents.context import Context
+  from ..agents.readonly_context import ReadonlyContext
+  from ..tools.tool_context import ToolContext
+
+  func_globals = get_callable_globals(func)
+  return {
+      name: cls
+      for name, cls in {
+          "CallbackContext": CallbackContext,
+          "Context": Context,
+          "ReadonlyContext": ReadonlyContext,
+          "ToolContext": ToolContext,
+      }.items()
+      if name not in func_globals
+  }
+
+
+def is_unresolvable(ann: Any) -> bool:
+  """Returns True if `ann` contains an unresolvable string or ForwardRef.
+
+  Paired with `resolve_annotation`; both functions must cover the same type
+  shapes (Annotated, containers/generics, ForwardRef, str).
+  """
+  if isinstance(ann, (str, ForwardRef)):
+    return True
+  origin = get_origin(ann)
+  if origin is not None:
+    if origin is Literal:
+      return False
+    args = get_args(ann)
+    if origin is Annotated:
+      return bool(args and is_unresolvable(args[0]))
+    return any(is_unresolvable(arg) for arg in args)
+  return False
+
+
+def resolve_annotation(
+    ann: Any,
+    globalns: dict[str, Any],
+    localns: dict[str, Any] | None = None,
+    *,
+    include_extras: bool = True,
+) -> Any:
+  """Resolves string, ForwardRef, and generic type annotations.
+
+  Paired with `is_unresolvable`; both functions must cover the same type
+  shapes (Annotated, containers/generics, ForwardRef, str).
+  """
+  if isinstance(ann, (str, ForwardRef)):
+    if not globalns and not localns:
+      return ann
+    holder = lambda: None
+    holder.__annotations__ = {"_ann": ann}
+    try:
+      resolved = typing.get_type_hints(
+          holder,
+          globalns=globalns,
+          localns=localns,
+          include_extras=include_extras,
+      )["_ann"]
+    except Exception:  # pylint: disable=broad-exception-caught
+      return ann
+    if resolved == ann:
+      return ann
+    return resolve_annotation(
+        resolved, globalns, localns, include_extras=include_extras
+    )
+
+  origin = get_origin(ann)
+  if origin is not None:
+    if origin is Literal:
+      return ann
+    args = get_args(ann)
+    if not args:
+      return ann
+    if origin is Annotated:
+      resolved_inner = resolve_annotation(
+          args[0], globalns, localns, include_extras=include_extras
+      )
+      if not include_extras:
+        return resolved_inner
+      if resolved_inner is not args[0]:
+        return Annotated[(resolved_inner, *args[1:])]
+      return ann
+    resolved_args = tuple(
+        resolve_annotation(
+            arg, globalns, localns, include_extras=include_extras
+        )
+        for arg in args
+    )
+    if resolved_args != args:
+      try:
+        if origin is Union or origin is UnionType:
+          return Union[resolved_args]
+        if len(resolved_args) == 1:
+          return origin[resolved_args[0]]
+        return origin[resolved_args]
+      except Exception:  # pylint: disable=broad-exception-caught
+        return ann
+  return ann
+
+
 @functools.lru_cache(maxsize=1024)
 def _get_type_hints_for_unwrapped(
     func: Callable[..., Any],
@@ -124,13 +254,88 @@ def _get_type_hints_for_unwrapped(
 ) -> dict[str, Any]:
   """Cached version of typing.get_type_hints for an unwrapped function.
 
-  Note: NameError is deliberately not caught here so that unresolved forward
-  references are not cached by lru_cache, allowing recovery once defined.
+  On NameError, retries once with fallback ADK context types in localns; any
+  remaining NameError propagates uncaught so unresolved forward references are
+  not cached by lru_cache, allowing recovery once defined.
   """
   try:
-    return typing.get_type_hints(func, include_extras=include_extras)
+    try:
+      return typing.get_type_hints(func, include_extras=include_extras)
+    except NameError:
+      return typing.get_type_hints(
+          func,
+          localns=get_adk_context_localns(func),
+          include_extras=include_extras,
+      )
   except (TypeError, AttributeError):
     return {}
+
+
+def _resolve_best_effort_annotations(
+    func: Callable[..., Any],
+    include_extras: bool = False,
+) -> dict[str, Any]:
+  """Resolves each annotation on `func` individually, skipping failures."""
+  target = unwrap_callable(func, follow_wrapped=True)
+  try:
+    raw_annotations = getattr(target, "__annotations__", None)
+  except Exception:  # pylint: disable=broad-exception-caught
+    raw_annotations = None
+  if not isinstance(raw_annotations, dict) or not raw_annotations:
+    if (
+        hasattr(func, "__call__")
+        and not _is_routine(func)
+        and not isinstance(func, type)
+    ):
+      target = func.__call__
+      try:
+        raw_annotations = getattr(target, "__annotations__", None)
+      except Exception:  # pylint: disable=broad-exception-caught
+        raw_annotations = None
+  if not isinstance(raw_annotations, dict) or not raw_annotations:
+    return {}
+
+  globalns = get_callable_globals(target)
+  localns = get_adk_context_localns(target)
+
+  holder = lambda: None
+  resolved: dict[str, Any] = {}
+  for name, ann in raw_annotations.items():
+    holder.__annotations__ = {name: ann}
+    try:
+      hint = typing.get_type_hints(
+          holder,
+          globalns=globalns,
+          localns=localns,
+          include_extras=include_extras,
+      )[name]
+    except Exception:  # pylint: disable=broad-exception-caught
+      continue
+    if is_unresolvable(hint):
+      hint = resolve_annotation(
+          hint, globalns, localns, include_extras=include_extras
+      )
+      if is_unresolvable(hint):
+        continue
+    resolved[name] = hint
+  return resolved
+
+
+def get_best_effort_type_hints(
+    func: Callable[..., Any],
+    include_extras: bool = False,
+) -> dict[str, Any]:
+  """Resolves callable type hints per parameter, skipping unresolvable annotations.
+
+  When `from __future__ import annotations` is active and a single parameter
+  references a `TYPE_CHECKING`-only symbol, `typing.get_type_hints` fails with
+  `NameError` for the entire function. This helper evaluates each annotation
+  individually against the callable's globals and ADK context types so that
+  resolvable sibling parameters still retain their type hints.
+  """
+  return get_type_hints_cached(
+      func, include_extras=include_extras
+  ) or _resolve_best_effort_annotations(func, include_extras=include_extras)
 
 
 def get_type_hints_cached(
@@ -214,6 +419,7 @@ class CallableSpec:
   _signature: inspect.Signature | None
   _has_signature: bool
   _type_hints: dict[str, Any] | None
+  _best_effort_type_hints: dict[str, Any] | None
 
   def __init__(self, func: Callable[..., Any] | None) -> None:
     if func is not None and not callable(func):
@@ -243,6 +449,7 @@ class CallableSpec:
       self._has_signature = False
 
     self._type_hints = None
+    self._best_effort_type_hints = None
 
   @property
   def has_signature(self) -> bool:
@@ -284,3 +491,23 @@ class CallableSpec:
       else:
         return hints
     return self._type_hints
+
+  def get_best_effort_type_hints(self) -> dict[str, Any]:
+    """Returns resolved type hints, memoizing per-parameter fallback evaluation.
+
+    Unlike `type_hints`, once the per-parameter fallback runs, its partial
+    dictionary is memoized on this `CallableSpec` instance to avoid repeating
+    per-parameter evaluation on every call when a `TYPE_CHECKING`-only symbol
+    remains permanently undefined at runtime.
+    """
+    if self.func is None:
+      return {}
+    if self._type_hints is not None:
+      return self._type_hints
+    if self._best_effort_type_hints is not None:
+      return self._best_effort_type_hints
+    hints = self.type_hints
+    if hints:
+      return hints
+    self._best_effort_type_hints = _resolve_best_effort_annotations(self.func)
+    return self._best_effort_type_hints
