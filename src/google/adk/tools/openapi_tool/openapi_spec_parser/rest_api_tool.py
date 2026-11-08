@@ -160,7 +160,7 @@ def _encode_path_param(*, name: str, value: str) -> str:
   valid.
 
   Args:
-    name: Original OpenAPI parameter name, used in the error message.
+    name: Parameter name the model sees, used in the error message.
     value: Raw path parameter value from the tool call.
 
   Returns:
@@ -516,7 +516,7 @@ class RestApiTool(BaseTool):
         # Reserved characters ('/', '?', '#') are still escaped so a
         # value cannot introduce a query string or fragment.
         path_params[original_k] = _encode_path_param(
-            name=original_k, value=_to_param_string(v)
+            name=param_k, value=_to_param_string(v)
         )
       elif param_location == "query":
         if v is not None:
