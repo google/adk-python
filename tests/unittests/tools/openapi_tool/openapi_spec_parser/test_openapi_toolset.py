@@ -262,6 +262,23 @@ def test_openapi_toolset_preserve_property_names(openapi_spec: Dict[str, Any]):
   assert "calendarId" in schema["properties"]
 
 
+@pytest.mark.parametrize("include_response_schema", [True, False])
+def test_openapi_toolset_include_response_schema(
+    openapi_spec: Dict[str, Any], include_response_schema: bool
+):
+  toolset = OpenAPIToolset(
+      spec_dict=openapi_spec, include_response_schema=include_response_schema
+  )
+  tool = toolset.get_tool("calendar_calendars_get")
+  assert tool is not None
+
+  declaration = tool._get_declaration()
+
+  assert (declaration.response_json_schema is not None) == (
+      include_response_schema
+  )
+
+
 def test_openapi_toolset_default_snake_case_conversion(
     openapi_spec: Dict[str, Any],
 ):

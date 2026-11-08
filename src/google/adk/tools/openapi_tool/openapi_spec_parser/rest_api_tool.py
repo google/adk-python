@@ -205,6 +205,7 @@ class RestApiTool(BaseTool):
       *,
       credential_key: Optional[str] = None,
       allow_private_network_access: bool = False,
+      include_response_schema: bool = False,
   ):
     """Initializes the RestApiTool with the given parameters.
 
@@ -261,6 +262,10 @@ class RestApiTool(BaseTool):
           ``*.local`` targets and return an error response. Set this to ``True``
           to allow requests to private networks, localhost, and custom non-DNS
           transports.
+        include_response_schema: If True, the function declaration includes
+          the operation's 2xx response schema as ``response_json_schema``, so
+          the model can see what the tool returns. This adds the schema to
+          every model request that includes the tool. Defaults to False.
     """
     # Gemini restrict the length of function name to be less than 64 characters
     self.name = name[:_MAX_TOOL_NAME_LENGTH]
@@ -289,6 +294,7 @@ class RestApiTool(BaseTool):
     self._httpx_client_factory = httpx_client_factory
     self._logger = logger
     self._allow_private_network_access = allow_private_network_access
+    self._include_response_schema = include_response_schema
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -303,6 +309,7 @@ class RestApiTool(BaseTool):
       httpx_client_factory: Optional[HttpxClientFactory] = None,
       *,
       allow_private_network_access: bool = False,
+      include_response_schema: bool = False,
   ) -> "RestApiTool":
     """Initializes the RestApiTool from a ParsedOperation object.
 
@@ -322,6 +329,8 @@ class RestApiTool(BaseTool):
           ``*.local`` targets and return an error response. Set this to ``True``
           to allow requests to private networks, localhost, and custom non-DNS
           transports.
+        include_response_schema: Whether the function declaration includes the
+          operation's 2xx response schema. See ``RestApiTool.__init__``.
 
     Returns:
         A RestApiTool object.
@@ -344,6 +353,7 @@ class RestApiTool(BaseTool):
         header_provider=header_provider,
         httpx_client_factory=httpx_client_factory,
         allow_private_network_access=allow_private_network_access,
+        include_response_schema=include_response_schema,
     )
     generated._operation_parser = operation_parser
     return generated
@@ -374,6 +384,8 @@ class RestApiTool(BaseTool):
           parameters_json_schema=schema_dict,
           response_json_schema=(
               self._operation_parser.get_response_json_schema()
+              if self._include_response_schema
+              else None
           ),
       )
     else:

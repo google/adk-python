@@ -326,7 +326,19 @@ class TestRestApiToolWithJsonSchema:
         "required": ["test_param"],
     }
 
-  def test_get_declaration_includes_response_json_schema(self):
+  @pytest.mark.parametrize(
+      "include_response_schema,expected",
+      [
+          (
+              True,
+              {"type": "object", "properties": {"name": {"type": "string"}}},
+          ),
+          (False, None),
+      ],
+  )
+  def test_get_declaration_response_json_schema(
+      self, include_response_schema, expected
+  ):
     operation = Operation(
         operationId="getPet",
         responses={
@@ -352,14 +364,12 @@ class TestRestApiToolWithJsonSchema:
             method="GET",
         ),
         operation=operation,
+        include_response_schema=include_response_schema,
     )
 
     declaration = tool._get_declaration()
 
-    assert declaration.response_json_schema == {
-        "type": "object",
-        "properties": {"name": {"type": "string"}},
-    }
+    assert declaration.response_json_schema == expected
 
 
 class TestRestApiTool:

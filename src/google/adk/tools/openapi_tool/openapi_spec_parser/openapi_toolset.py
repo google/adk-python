@@ -100,6 +100,7 @@ class OpenAPIToolset(BaseToolset):
       httpx_client_factory: Optional[HttpxClientFactory] = None,
       preserve_property_names: bool = False,
       allow_private_network_access: bool = False,
+      include_response_schema: bool = False,
   ) -> None:
     """Initializes the OpenAPIToolset.
 
@@ -172,6 +173,11 @@ class OpenAPIToolset(BaseToolset):
         ``*.local`` targets and return an error response. Set this to ``True``
         to allow requests to private networks, localhost, and custom non-DNS
         transports.
+      include_response_schema: If True, each generated tool's function
+        declaration includes the operation's 2xx response schema as
+        ``response_json_schema``, so the model can see what the tool returns.
+        This adds the schemas to every model request that includes the tools.
+        Defaults to False.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self._header_provider = header_provider
@@ -195,6 +201,7 @@ class OpenAPIToolset(BaseToolset):
     self._ssl_verify = ssl_verify
     self._httpx_client_factory = httpx_client_factory
     self._allow_private_network_access = allow_private_network_access
+    self._include_response_schema = include_response_schema
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
@@ -290,6 +297,7 @@ class OpenAPIToolset(BaseToolset):
             header_provider=self._header_provider,
             httpx_client_factory=self._httpx_client_factory,
             allow_private_network_access=self._allow_private_network_access,
+            include_response_schema=self._include_response_schema,
         )
         for o in operations
     ]
