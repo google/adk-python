@@ -35,6 +35,7 @@ from ..agents.context import _derive_node_path
 from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
 from ..events._node_path_builder import join_node_path
+from ..events._node_path_builder import parent_node_path
 from ..utils._agent_mode import AgentMode
 from ..utils._agent_mode import DefaultLlmNodeMode
 from ._base_node import BaseNode
@@ -414,27 +415,35 @@ class DynamicNodeScheduler:
     """
     curr_parent_path = ctx.node_path if ctx else ''
     target_node_name = node_name or node.name
+
+    # A sub-agent that runs with no parent context (the runner resumed it, or
+    # a transfer out of such an agent fell back to the root context) takes its
+    # Context path from the static agent tree, with every ancestor at run 1.
+    # Its run is keyed and numbered under that same parent path, so the key is
+    # the path its events carry and replay can find the run again.
+    run_parent_path = curr_parent_path
+    if self._enable_replay and not curr_parent_path:
+      run_parent_path = parent_node_path(
+          _derive_node_path(target_node_name, '1', None, None, node=node)[0]
+      )
+
     if not run_id:
       if self._enable_replay:
         run_id = self._state.next_run_id(
-            target_node_name, parent_path=curr_parent_path
+            target_node_name, parent_path=run_parent_path
         )
       else:
         run_id = '1'
 
+    node_path = join_node_path(run_parent_path, target_node_name, run_id)
+
     if self._enable_replay and not curr_parent_path:
-      # A sub-agent that starts the turn (the runner resumed it) has no parent
-      # context, so its Context takes its path from the static agent tree,
-      # with every ancestor at run 1. Reserve those run ids: otherwise a
+      # Reserve the run ids of every ancestor on that path: otherwise a
       # transfer to the parent and back to this agent is allocated that same
       # path again, and this run is fast-forwarded instead of the agent
       # running a second time.
-      derived_path, _ = _derive_node_path(
-          target_node_name, run_id, None, None, node=node
-      )
-      self._state.reserve_run_ids(derived_path)
+      self._state.reserve_run_ids(node_path)
 
-    node_path = join_node_path(curr_parent_path, target_node_name, run_id)
     if (
         override_isolation_scope is None
         and getattr(node, 'mode', None) == AgentMode.TASK
