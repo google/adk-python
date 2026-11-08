@@ -18,6 +18,7 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import ssl
+from string import Formatter
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -141,11 +142,7 @@ _DEFAULT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
 
 
 def _encode_path_param(*, name: str, value: str) -> str:
-  """Percent-encode a path parameter, rejecting blank values and dot-segments.
-
-  A blank value would leave an empty path segment (for example
-  ``/pets//toys``), which servers answer with a redirect or an error that does
-  not name the parameter, so it is rejected like a missing one.
+  """Percent-encode a path parameter, rejecting dot-segments.
 
   ``quote(..., safe="")`` encodes reserved characters including ``/``, ``?``,
   and ``#``, but leaves ``.`` literal because it is unreserved. A value of
@@ -167,11 +164,8 @@ def _encode_path_param(*, name: str, value: str) -> str:
     The percent-encoded parameter value.
 
   Raises:
-    InputValidationError: If the value is empty or whitespace-only, or any
-      path segment is ``.`` or ``..``.
+    InputValidationError: If any path segment is ``.`` or ``..``.
   """
-  if not value.strip():
-    raise InputValidationError(f"Path parameter {name!r} must not be empty.")
   for segment in value.replace("\\", "/").split("/"):
     if segment in (".", ".."):
       raise InputValidationError(
@@ -474,6 +468,7 @@ class RestApiTool(BaseTool):
       raise ValueError("Operation method not found.")
 
     path_params: Dict[str, Any] = {}
+    blank_path_params: dict[str, str] = {}
     query_params: Dict[str, Any] = {}
     spread_query_keys: set[str] = set()
     header_params: dict[str, str] = {}
@@ -515,9 +510,10 @@ class RestApiTool(BaseTool):
         # with this tool's configured auth -- onto an undeclared path.
         # Reserved characters ('/', '?', '#') are still escaped so a
         # value cannot introduce a query string or fragment.
-        path_params[original_k] = _encode_path_param(
-            name=param_k, value=_to_param_string(v)
-        )
+        value = _to_param_string(v)
+        if not value.strip():
+          blank_path_params[original_k] = param_k
+        path_params[original_k] = _encode_path_param(name=param_k, value=value)
       elif param_location == "query":
         if v is not None:
           serialized = _serialize_query_param(param_obj, v)
@@ -557,6 +553,22 @@ class RestApiTool(BaseTool):
               f"Missing required path parameter '{param.py_name}'."
           ) from e
       raise
+    if blank_path_params:
+      # Blank substitutions are safe when the segment still has content,
+      # such as the extension in /exports/{suffix}.csv.
+      path_template = self.endpoint.path.partition("?")[0].partition("#")[0]
+      for segment in path_template.split("/"):
+        parts = list(Formatter().parse(segment))
+        fields = [field for _, field, _, _ in parts if field is not None]
+        if not fields or any(
+            field not in blank_path_params for field in fields
+        ):
+          continue
+        if "".join(part[0] for part in parts) in ("", ".", ".."):
+          name = blank_path_params[fields[0]]
+          raise InputValidationError(
+              f"Path parameter {name!r} must not be empty."
+          )
     url = f"{base_url}{formatted_path}"
 
     # Move query params embedded in the path template itself (now that path
