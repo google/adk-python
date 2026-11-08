@@ -251,8 +251,8 @@ def test_process_request_body_one_of_schema_assigns_name():
   assert '' not in schema['properties']
 
 
-def test_process_request_body_empty_object():
-  """Test _process_request_body with a schema that is of type object but with no properties."""
+def test_process_request_body_open_object():
+  """An object allows arbitrary dictionary entries unless explicitly closed."""
   operation = Operation(
       requestBody=RequestBody(
           content={'application/json': MediaType(schema=Schema(type='object'))}
@@ -260,7 +260,7 @@ def test_process_request_body_empty_object():
   )
   parser = OperationParser(operation, should_parse=False)
   parser._process_request_body()
-  assert len(parser._params) == 0
+  assert [param.py_name for param in parser.get_parameters()] == ['body']
 
 
 def test_dedupe_param_names(sample_operation):

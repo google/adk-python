@@ -52,6 +52,16 @@ def _schema_from_openapi(value: object, *, context: str) -> Schema:
   raise TypeError(f'{context} must be an OpenAPI schema, got {type(value)!r}')
 
 
+def _is_dictionary_schema(value: object) -> bool:
+  """Returns whether an object accepts entries without named properties."""
+  return (
+      isinstance(value, Schema)
+      and value.type == 'object'
+      and not value.properties
+      and value.additionalProperties is not False
+  )
+
+
 def rename_python_keywords(s: str, prefix: str = 'param_') -> str:
   """Renames Python keywords by adding a prefix.
 
