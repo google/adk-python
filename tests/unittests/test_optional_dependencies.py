@@ -29,6 +29,7 @@ from unittest import mock
 
 import pytest
 
+from .isolated_import_utils import assert_modules_unloaded
 from .isolated_import_utils import REPO_ROOT as _REPO_ROOT
 
 # Check if we should run integration tests that require network/install
@@ -208,6 +209,63 @@ def test_bigquery_agent_analytics_plugin_fails_on_import_naming_its_extra():
     message = str(exc_info.value)
     assert "pyarrow" in message
     assert "pip install google-adk[bigquery-analytics]" in message
+
+
+def test_eval_query_builders_import_without_the_bigquery_analytics_extra():
+  """The eval query builders import and run without pyarrow or BQ Storage."""
+  with mock.patch.dict(
+      "sys.modules",
+      {"pyarrow": None, "google.cloud.bigquery_storage_v1": None},
+  ):
+    sys.modules.pop(
+        "google.adk.plugins._bigquery_agent_analytics_eval_sql", None
+    )
+    from google.adk.plugins import build_eval_session_query_sql
+    from google.adk.plugins import build_eval_turn_query_sql
+    from google.adk.plugins._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql as build_session_query
+    from google.adk.plugins._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql as build_turn_query
+
+    for build in (
+        build_eval_session_query_sql,
+        build_eval_turn_query_sql,
+        build_session_query,
+        build_turn_query,
+    ):
+      assert build("p.d.t", where_clause="eval_ready").startswith("WITH\n")
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "from google.adk.plugins import build_eval_session_query_sql as build",
+        "from google.adk.plugins import build_eval_turn_query_sql as build",
+        (
+            "from google.adk.plugins._bigquery_agent_analytics_eval_sql"
+            " import build_eval_session_query_sql as build"
+        ),
+        (
+            "from google.adk.plugins._bigquery_agent_analytics_eval_sql"
+            " import build_eval_turn_query_sql as build"
+        ),
+    ],
+    ids=["session", "turn", "session_from_module", "turn_from_module"],
+)
+def test_eval_query_builders_leave_the_bigquery_analytics_extra_unloaded(
+    statement,
+):
+  """Building an eval query loads neither the extra's packages nor the plugin.
+
+  The check runs in a fresh interpreter, where nothing that an earlier test
+  imported can satisfy the import.
+  """
+  assert_modules_unloaded(
+      f"{statement}\nbuild('p.d.t', where_clause='eval_ready')",
+      (
+          "pyarrow",
+          "google.cloud.bigquery_storage_v1",
+          "google.adk.plugins.bigquery_agent_analytics_plugin",
+      ),
+  )
 
 
 @pytest.mark.parametrize(

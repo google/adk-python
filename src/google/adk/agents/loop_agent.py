@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 from typing import AsyncGenerator
 from typing import ClassVar
-from typing import Optional
 import warnings
 
 from typing_extensions import deprecated
@@ -78,7 +77,7 @@ class LoopAgent(BaseAgent):
   version, along with the AgentConfig YAML loader.
   """
 
-  max_iterations: Optional[int] = None
+  max_iterations: int | None = None
   """The maximum number of iterations to run the loop agent.
 
   If not set, the loop agent will run indefinitely until a sub-agent
@@ -144,7 +143,7 @@ class LoopAgent(BaseAgent):
 
   def _get_start_state(
       self,
-      agent_state: Optional[LoopAgentState],
+      agent_state: LoopAgentState | None,
   ) -> tuple[int, int]:
     """Computes the start state of the loop agent from the agent state."""
     if not agent_state:

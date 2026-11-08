@@ -22,6 +22,7 @@ from collections.abc import Mapping
 import json
 import math
 from typing import Any
+from typing import ClassVar
 from typing import TypeVar
 
 from google.genai import types
@@ -52,6 +53,7 @@ from ...labs.classifiers._types import Question
 from ...labs.classifiers._types import RefusalAnswer
 from ...labs.classifiers._types import Score
 from ...labs.classifiers._types import ScoreAnswer
+from ...utils._client_labels_utils import get_client_labels
 from ._openai_common import build_api_key
 
 # The openai package versions ADK supports have no typed Decisions resource,
@@ -288,6 +290,8 @@ class OpenAIDecisionsClassifier(BaseClassifier):
       response.answers['department'].choice  # 'billing'
   """
 
+  _CLIENT_LABEL_KIND: ClassVar[str] = 'openai'
+
   model: str = 'gpt-6-luna'
   """The OpenAI model. ``gpt-6-luna`` is the only model the Decisions API
   supports today."""
@@ -372,7 +376,12 @@ class OpenAIDecisionsClassifier(BaseClassifier):
             for name, question in questions.items()
         ],
     }
-    data = await self._get_client().post(_PATH, cast_to=object, body=body)
+    data = await self._get_client().post(
+        _PATH,
+        cast_to=object,
+        body=body,
+        options={'headers': {'User-Agent': ' '.join(get_client_labels())}},
+    )
     if not isinstance(data, Mapping):
       raise ValueError('OpenAI did not return a JSON object.')
     raw_answers = data.get('answers')

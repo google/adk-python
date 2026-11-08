@@ -21,10 +21,10 @@ root. A plugin that reads ``trace.get_current_span()`` to stamp what it records
 relies on both.
 """
 
+import asyncio
 import collections
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
@@ -32,6 +32,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
@@ -66,7 +67,7 @@ class _SpanCapture:
   def __init__(self):
     self.span_id: int = _SPAN_ID_INVALID
     self.trace_id: int = 0
-    self.span: Optional[trace.Span] = None
+    self.span: trace.Span | None = None
 
   def capture(self):
     span = trace.get_current_span()
@@ -87,14 +88,14 @@ class SpanCapturingPlugin(BasePlugin):
     self.error_capture = _SpanCapture()
 
     self._short_circuit_before = False
-    self._short_circuit_response: Optional[LlmResponse] = None
+    self._short_circuit_response: LlmResponse | None = None
 
   async def before_model_callback(
       self,
       *,
       callback_context: CallbackContext,
       llm_request: LlmRequest,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     self.before_capture.capture()
     if self._short_circuit_before:
       return self._short_circuit_response
@@ -105,7 +106,7 @@ class SpanCapturingPlugin(BasePlugin):
       *,
       callback_context: CallbackContext,
       llm_response: LlmResponse,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     self.after_capture.capture()
     return None
 
@@ -115,7 +116,7 @@ class SpanCapturingPlugin(BasePlugin):
       callback_context: CallbackContext,
       llm_request: LlmRequest,
       error: Exception,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     self.error_capture.capture()
     # Return a response so the error doesn't propagate.
     return LlmResponse(
@@ -209,6 +210,60 @@ def test_before_and_error_callbacks_share_same_span():
   assert plugin.before_capture.span_id == plugin.error_capture.span_id, (
       'before_model_callback and on_model_error_callback saw different'
       f' spans: before={plugin.before_capture.span_id:#x},'
+      f' error={plugin.error_capture.span_id:#x}'
+  )
+
+
+class _BlockingLlm(BaseLlm):
+  """Test model that signals once entered and blocks until cancelled."""
+
+  started: asyncio.Event
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    del llm_request, stream
+    self.started.set()
+    await asyncio.Event().wait()
+    for response in ():
+      yield response
+
+
+@pytest.mark.asyncio
+async def test_before_and_cancelled_error_callbacks_share_same_span():
+  """Cancelled model calls run on_model_error_callback under call_llm span."""
+  plugin = SpanCapturingPlugin()
+  model_started = asyncio.Event()
+  model = _BlockingLlm(model='blocking-test-model', started=model_started)
+  agent = Agent(name='root_agent', model=model)
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+
+  async def _consume() -> None:
+    async with Aclosing(
+        runner.runner.run_async(
+            user_id=runner.session.user_id,
+            session_id=runner.session.id,
+            new_message=testing_utils.get_user_content('test'),
+        )
+    ) as agen:
+      async for _ in agen:
+        pass
+
+  run = asyncio.create_task(_consume())
+  await model_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+
+  assert (
+      plugin.before_capture.span_id != _SPAN_ID_INVALID
+  ), 'before_model_callback did not observe a valid span'
+  assert (
+      plugin.error_capture.span_id != _SPAN_ID_INVALID
+  ), 'on_model_error_callback did not observe a valid span on cancellation'
+  assert plugin.before_capture.span_id == plugin.error_capture.span_id, (
+      'before_model_callback and on_model_error_callback saw different'
+      f' spans on cancellation: before={plugin.before_capture.span_id:#x},'
       f' error={plugin.error_capture.span_id:#x}'
   )
 

@@ -201,6 +201,11 @@ stores ingested events in a local SQLite database file or `:memory:`. By default
 (`fts="auto"`), it uses SQLite FTS5 full-text indexing when available and falls
 back to token matching when FTS5 is unavailable (`fts="off"` forces token
 matching, while `fts="on"` requires FTS5 and raises `RuntimeError` if missing).
+FTS5 indexes a run of Chinese, Japanese, Korean or Thai text as one token, so a
+query containing a character from those scripts uses token matching even when
+FTS5 is on: a full scan of the user's rows that matches each query token as a
+substring and ranks by the number of tokens matched, then by recency, instead of
+by bm25.
 It implements `add_session_to_memory`, `add_events_to_memory`, `search_memory`,
 and `close()`. Re-ingesting events with the same ID within the same session
 updates the existing row in place rather than duplicating it (the unique key

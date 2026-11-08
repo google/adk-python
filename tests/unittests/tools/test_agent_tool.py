@@ -44,6 +44,7 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_configs import ToolArgsConfig
 from google.adk.tools.tool_context import ToolContext
@@ -53,6 +54,9 @@ from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
+from pydantic.alias_generators import to_camel
 import pytest
 from pytest import mark
 
@@ -858,6 +862,88 @@ def test_custom_schema(env_variables):
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+class _AliasGeneratorInput(BaseModel):
+  model_config = ConfigDict(alias_generator=to_camel)
+  city_name: str
+
+
+class _ValidationAliasInput(BaseModel):
+  city_name: str = Field(validation_alias='cityName')
+
+
+class _SerializeByAliasInput(BaseModel):
+  model_config = ConfigDict(serialize_by_alias=True)
+  city_name: str = Field(serialization_alias='cityName')
+
+
+class _NestedAliasInput(BaseModel):
+  trip: _AliasGeneratorInput
+
+
+def _run_tool_agent(input_schema, args):
+  tool_agent_model = testing_utils.MockModel.create(responses=['sunny'])
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+      input_schema=input_schema,
+  )
+  function_call = Part.from_function_call(name='tool_agent', args=args)
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[function_call, 'done']),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  events = testing_utils.simplify_events(
+      testing_utils.InMemoryRunner(root_agent).run('test1')
+  )
+  assert events == [
+      ('root_agent', function_call),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='tool_agent', response={'result': 'sunny'}
+          ),
+      ),
+      ('root_agent', 'done'),
+  ]
+  return testing_utils.simplify_contents(tool_agent_model.requests[0].contents)
+
+
+@mark.parametrize(
+    'input_schema, args, expected',
+    [
+        (_ValidationAliasInput, {'cityName': 'Paris'}, '{"city_name":"Paris"}'),
+        (
+            _SerializeByAliasInput,
+            {'city_name': 'Paris'},
+            '{"city_name":"Paris"}',
+        ),
+        (
+            _NestedAliasInput,
+            {'trip': {'cityName': 'Paris'}},
+            '{"trip":{"city_name":"Paris"}}',
+        ),
+    ],
+)
+def test_input_schema_with_aliases(input_schema, args, expected):
+  """Tests that an aliased input_schema reaches the agent by field name."""
+
+  assert _run_tool_agent(input_schema, args) == [('user', expected)]
+
+
+def test_input_schema_sends_defaults_and_drops_none_defaults():
+  """Tests that aliased defaults are sent and None defaults are dropped."""
+
+  class TripInput(BaseModel):
+    city: str
+    num_days: int = Field(default=3, validation_alias='numDays')
+    hotel: str = None
+
+  assert _run_tool_agent(TripInput, {'city': 'Paris'}) == [
+      ('user', '{"city":"Paris","num_days":3}')
+  ]
 
 
 @mark.parametrize('skip_summarization', [False, True])
@@ -3302,3 +3388,73 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
       event for event in runner.session.events if event.actions.compaction
   ]
   assert len(compactions) == 1
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('failure_mode', 'expected_exc'),
+    [
+        ('cancelled_error', asyncio.CancelledError),
+        ('runtime_error', RuntimeError),
+    ],
+    ids=['cancelled_error', 'runtime_error'],
+)
+async def test_agent_tool_closes_runner_when_nested_run_raises(
+    failure_mode: str,
+    expected_exc: type[BaseException],
+):
+  """The child runner and its toolsets are closed when the nested run raises."""
+
+  class _TrackingToolset(BaseToolset):
+
+    def __init__(self):
+      super().__init__()
+      self.close_calls = 0
+
+    async def get_tools(self, readonly_context=None):
+      del readonly_context
+      return []
+
+    async def close(self) -> None:
+      self.close_calls += 1
+
+  in_child = asyncio.Event()
+
+  async def fail_in_child(callback_context: CallbackContext):
+    del callback_context
+    if failure_mode == 'runtime_error':
+      raise RuntimeError('boom')
+    in_child.set()
+    await asyncio.Future()
+
+  toolset = _TrackingToolset()
+  tool_agent = LlmAgent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      tools=[toolset],
+      before_agent_callback=fail_in_child,
+  )
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      tools=[agent_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=root_agent
+  )
+
+  task = asyncio.create_task(
+      agent_tool.run_async(
+          args={'request': 'go'},
+          tool_context=ToolContext(invocation_context),
+      )
+  )
+  if failure_mode == 'cancelled_error':
+    await in_child.wait()
+    task.cancel()
+
+  with pytest.raises(expected_exc):
+    await task
+
+  assert toolset.close_calls == 1

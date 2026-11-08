@@ -565,6 +565,52 @@ class TestGenerateInferencesForSingleUserInvocation:
         new_message=user_content,
     )
 
+  @pytest.mark.asyncio
+  async def test_silent_turn_yields_user_event_with_fresh_invocation_id(
+      self, mocker
+  ):
+    """A silent runner turn yields the user event with a fresh invocation ID."""
+    runner = mocker.create_autospec(
+        evaluation_generator_module.Runner, instance=True
+    )
+
+    async def empty_run_async(*args, **kwargs):
+      del args, kwargs
+      return
+      yield
+
+    runner.run_async.side_effect = empty_run_async
+
+    first_query = types.Content(parts=[types.Part(text="First silent query")])
+    second_query = types.Content(parts=[types.Part(text="Second silent query")])
+
+    first_events = [
+        event
+        async for event in (
+            EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, "test_user", "test_session", first_query
+            )
+        )
+    ]
+    second_events = [
+        event
+        async for event in (
+            EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, "test_user", "test_session", second_query
+            )
+        )
+    ]
+
+    assert len(first_events) == 1
+    assert first_events[0].author == "user"
+    assert first_events[0].content == first_query
+    assert first_events[0].invocation_id
+    assert len(second_events) == 1
+    assert second_events[0].author == "user"
+    assert second_events[0].content == second_query
+    assert second_events[0].invocation_id
+    assert first_events[0].invocation_id != second_events[0].invocation_id
+
 
 class TestGenerateInferencesForSingleUserInvocationLive:
   """Test cases for EvaluationGenerator._generate_inferences_for_single_user_invocation_live method."""

@@ -208,15 +208,15 @@ def _pair_calls_and_responses(
       # pausing, then emits the real tool execution FR on resume.
       inst.effective_responses = [raw[1]]
     elif (
-        len(raw) == 2
+        len(raw) >= 2
         and fc_id in all_lro_ids
-        and raw[0].author != 'user'
-        and raw[1].author == 'user'
+        and all(r.author == 'user' for r in raw[1:])
     ):
-      # LongRunningFunctionTool that returns an intermediate dict on Turn 1
-      # emits an agent-authored intermediate FR, superseded by the Turn 2 user
-      # FR.
-      inst.effective_responses = [raw[1]]
+      # LongRunningFunctionTool may emit an initial agent-authored intermediate
+      # FR (or user-authored progress FR) followed by one or more user-authored
+      # progress/completion FRs under the same call id; each update supersedes
+      # the previous one.
+      inst.effective_responses = [raw[-1]]
     else:
       inst.effective_responses = list(raw)
 

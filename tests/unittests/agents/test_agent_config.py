@@ -19,7 +19,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 from typing import Literal
-from typing import Type
 from unittest import mock
 import warnings
 
@@ -190,7 +189,7 @@ sub_agents: []
     ],
 )
 def test_agent_config_discriminator_with_sub_agents(
-    agent_class_value: str, expected_agent_type: Type[BaseAgent], tmp_path: Path
+    agent_class_value: str, expected_agent_type: type[BaseAgent], tmp_path: Path
 ):
   # Create sub-agent config files
   sub_agent_dir = tmp_path / "sub_agents"
@@ -234,7 +233,7 @@ sub_agents:
     ],
 )
 def test_agent_config_discriminator_llm_agent_with_sub_agents(
-    agent_class_value: str, expected_agent_type: Type[BaseAgent], tmp_path: Path
+    agent_class_value: str, expected_agent_type: type[BaseAgent], tmp_path: Path
 ):
   # Create sub-agent config files
   sub_agent_dir = tmp_path / "sub_agents"
