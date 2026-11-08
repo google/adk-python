@@ -504,6 +504,8 @@ class RestApiTool(BaseTool):
       param_location = param_obj.param_location
 
       if param_location == "path":
+        if v is None:
+          continue  # Reported as a missing parameter when the URL is built.
         # Percent-encode path parameter values (including '/') before they
         # are substituted into the URL template below. Path parameter
         # values ultimately originate from the model's tool-call

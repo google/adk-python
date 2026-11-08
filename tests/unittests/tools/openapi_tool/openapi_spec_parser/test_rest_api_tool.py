@@ -1541,12 +1541,14 @@ class TestRestApiTool:
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
+  @pytest.mark.parametrize("args", [{}, {"user_id": None}])
   async def test_call_missing_required_path_param_returns_error(
       self,
       mock_request,
       mock_tool_context,
       sample_auth_scheme,
       sample_auth_credential,
+      args,
   ):
     """A required path param with no default and no value must not crash."""
     mock_operation = Operation(
@@ -1574,8 +1576,8 @@ class TestRestApiTool:
         auth_credential=sample_auth_credential,
     )
 
-    # Call without providing userId and without a default to fall back on.
-    result = await tool.call(args={}, tool_context=mock_tool_context)
+    # Call without a userId value and without a default to fall back on.
+    result = await tool.call(args=args, tool_context=mock_tool_context)
 
     assert not mock_request.called
     assert "error" in result
