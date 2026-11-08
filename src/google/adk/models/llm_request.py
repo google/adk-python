@@ -417,6 +417,7 @@ class LlmRequest(BaseModel):
       self.config.response_schema = None
       self.config.response_json_schema = schema_to_json_schema(schema)
     else:
+      self.config.response_json_schema = None
       self.config.response_schema = schema
     self.config.response_mime_type = "application/json"
 

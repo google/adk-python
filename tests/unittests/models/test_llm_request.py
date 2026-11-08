@@ -989,3 +989,43 @@ def test_set_output_schema_keeps_other_schema_types(schema):
   assert request.config.response_schema is schema
   assert request.config.response_json_schema is None
   assert request.config.response_mime_type == 'application/json'
+
+
+@pytest.mark.parametrize('alias_kind', ['literal', 'annotated'])
+@pytest.mark.parametrize('regular_kind', ['model', 'dict', 'schema'])
+@pytest.mark.parametrize('alias_first', [True, False])
+def test_set_output_schema_replaces_previous_schema(
+    alias_kind, regular_kind, alias_first
+):
+  """Replacing a schema keeps only the newly selected config field."""
+
+  class Answer(BaseModel):
+    text: str
+
+  alias = (
+      Literal['yes', 'no']
+      if alias_kind == 'literal'
+      else Annotated[Answer, Field(title='Answer')]
+  )
+  regular = {
+      'model': Answer,
+      'dict': {'type': 'string'},
+      'schema': types.Schema(type=types.Type.STRING),
+  }[regular_kind]
+  request = LlmRequest()
+  request.set_output_schema(alias if alias_first else regular)
+
+  request.set_output_schema(regular if alias_first else alias)
+
+  converted = _GenerateContentConfig_to_mldev(None, request.config)
+  if alias_first:
+    assert request.config.response_json_schema is None
+    assert request.config.response_schema is regular
+    assert 'responseJsonSchema' not in converted
+    assert 'responseSchema' in converted
+  else:
+    assert request.config.response_schema is None
+    assert request.config.response_json_schema == schema_to_json_schema(alias)
+    assert 'responseSchema' not in converted
+    assert converted['responseJsonSchema'] == schema_to_json_schema(alias)
+  assert request.config.response_mime_type == 'application/json'

@@ -5858,3 +5858,45 @@ async def test_output_schema_json_schema_fallback(
         "required": ["response"],
         "$defs": {"_Person": _Person.model_json_schema()},
     }
+
+
+@pytest.mark.parametrize("alias_kind", ["literal", "annotated"])
+@pytest.mark.parametrize("regular_kind", ["model", "dict", "schema"])
+@pytest.mark.parametrize("alias_first", [True, False])
+async def test_output_schema_fallback_uses_replacement_schema(
+    alias_kind, regular_kind, alias_first
+):
+  """Claude uses the latest schema after either direction of replacement."""
+  alias = (
+      Literal["a", "b"]
+      if alias_kind == "literal"
+      else Annotated[str, Field(description="An answer")]
+  )
+  regular = {
+      "model": _Person,
+      "dict": {"type": "string"},
+      "schema": types.Schema(type=types.Type.STRING),
+  }[regular_kind]
+  request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+  )
+  request.set_output_schema(alias if alias_first else regular)
+  request.set_output_schema(regular if alias_first else alias)
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  input_schema = kwargs["tools"][0]["input_schema"]
+  if alias_first and regular_kind == "model":
+    assert input_schema == _Person.model_json_schema()
+  else:
+    expected = {"type": "string"}
+    if not alias_first:
+      if alias_kind == "literal":
+        expected["enum"] = ["a", "b"]
+      else:
+        expected["description"] = "An answer"
+    assert input_schema == {
+        "type": "object",
+        "properties": {"response": expected},
+        "required": ["response"],
+    }
