@@ -26,6 +26,7 @@ from typing import Union
 
 from google.genai import types as genai_types
 
+from ..utils.content_utils import extract_text_from_content
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .eval_case import get_all_tool_calls_with_responses
@@ -60,6 +61,8 @@ def get_text_from_content(
   """Extracts text from a `Content` or an `Invocation`.
 
   When `content` is a `Content`, returns the concatenated text of its parts.
+  Thought parts (`Part.thought`) are skipped: they hold the model's internal
+  reasoning, which is not part of the response the user sees.
 
   When `content` is an `Invocation`, returns the text of the invocation's final
   response. If `include_intermediate_responses_in_final` is True, text from
@@ -92,7 +95,7 @@ def get_text_from_content(
     return "\n".join(parts) if parts else None
 
   if content and content.parts:
-    return "\n".join([p.text for p in content.parts if p.text])
+    return extract_text_from_content(content, splitter="\n")
 
   return None
 
