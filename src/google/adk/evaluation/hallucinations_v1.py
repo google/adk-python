@@ -30,6 +30,7 @@ from typing_extensions import override
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.registry import LLMRegistry
+from ..utils.content_utils import extract_text_from_content
 from ..utils.context_utils import Aclosing
 from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
@@ -479,10 +480,10 @@ class HallucinationsV1Evaluator(Evaluator):
           for part in event.content.parts
           if part.function_response
       ]
-      nl_responses = [part.text for part in event.content.parts if part.text]
+      nl_text = extract_text_from_content(event.content, splitter="\n")
 
-      if nl_responses:
-        context_parts.append("\n".join(nl_responses) + "\n")
+      if nl_text:
+        context_parts.append(nl_text + "\n")
 
       if tool_calls:
         context_parts.append("tool_calls:")
@@ -668,8 +669,10 @@ class HallucinationsV1Evaluator(Evaluator):
 
     if self._criterion.evaluate_intermediate_nl_responses:
       for event in all_events:
+        # Thought parts are the model's internal reasoning, not statements made
+        # to the user, so they are not checked for hallucinations.
         nl_parts = (
-            [p.text for p in event.content.parts if p.text]
+            [p.text for p in event.content.parts if p.text and not p.thought]
             if event.content and event.content.parts
             else []
         )
