@@ -150,9 +150,13 @@ class TrajectoryEvaluator(Evaluator):
       expected_invocation: Invocation,
   ) -> float:
     """Calculates tool use accuracy for a single invocation."""
-    actual_tool_uses = get_all_tool_calls(actual_invocation.intermediate_data)
+    actual_tool_uses = get_all_tool_calls(
+        actual_invocation.intermediate_data,
+        exclude_client_function_calls=True,
+    )
     expected_tool_uses = get_all_tool_calls(
-        expected_invocation.intermediate_data
+        expected_invocation.intermediate_data,
+        exclude_client_function_calls=True,
     )
 
     tool_use_match_status = False

@@ -161,7 +161,10 @@ class _ToolCallCountV1Evaluator(Evaluator):
     self._eval_metric = eval_metric
 
   def _compute_value(self, invocation: Invocation) -> Optional[float]:
-    return float(len(get_all_tool_calls(invocation.intermediate_data)))
+    tool_calls = get_all_tool_calls(
+        invocation.intermediate_data, exclude_client_function_calls=True
+    )
+    return float(len(tool_calls))
 
   @override
   def evaluate_invocations(

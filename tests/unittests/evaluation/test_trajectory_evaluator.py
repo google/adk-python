@@ -764,3 +764,47 @@ def test_ignore_args_with_camel_case_dict_config():
   )
   result = ev.evaluate_invocations([actual], [expected])
   assert result.overall_score == 1.0
+
+
+def test_evaluate_invocations_ignores_confirmation_request(
+    evaluator: TrajectoryEvaluator,
+):
+  """A confirmation-gated tool still matches its expected trajectory."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="orders_agent",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(
+                              function_call=genai_types.FunctionCall(
+                                  name=name, args={}
+                              )
+                          )
+                          for name in (
+                              "get_order",
+                              "cancel_order",
+                              "adk_request_confirmation",
+                          )
+                      ]
+                  ),
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="get_order", args={}),
+              genai_types.FunctionCall(name="cancel_order", args={}),
+          ]
+      ),
+  )
+
+  result = evaluator.evaluate_invocations([actual], [expected])
+
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED

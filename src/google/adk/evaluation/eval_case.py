@@ -239,12 +239,18 @@ class EvalCase(EvalBaseModel):
 
 def get_all_tool_calls(
     intermediate_data: Optional[IntermediateDataType],
+    *,
+    exclude_client_function_calls: bool = False,
 ) -> list[genai_types.FunctionCall]:
   """A utility method to retrieve tools calls from intermediate data.
 
-  Function calls that ADK itself emits to the client (for example
-  `adk_request_confirmation` for tools with `require_confirmation=True`) are
-  excluded, since the model did not choose them.
+  Args:
+    intermediate_data: The intermediate data to read tool calls from.
+    exclude_client_function_calls: If True, drop the function calls ADK itself
+      emits to the client (for example `adk_request_confirmation` for tools
+      with `require_confirmation=True`). The model did not choose these calls,
+      so evaluators that score the model's own trajectory should exclude them.
+      Defaults to False so that callers such as LLM judges still see them.
   """
   if not intermediate_data:
     return []
@@ -266,19 +272,19 @@ def get_all_tool_calls(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return [
-      call for call in tool_calls if call.name not in CLIENT_FUNCTION_CALL_NAMES
-  ]
+  if exclude_client_function_calls:
+    return [
+        call
+        for call in tool_calls
+        if call.name not in CLIENT_FUNCTION_CALL_NAMES
+    ]
+  return tool_calls
 
 
 def get_all_tool_responses(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[genai_types.FunctionResponse]:
-  """A utility method to retrieve tools responses from intermediate data.
-
-  Responses to ADK's own client function calls are excluded, matching
-  `get_all_tool_calls`.
-  """
+  """A utility method to retrieve tools responses from intermediate data."""
   if not intermediate_data:
     return []
 
@@ -299,11 +305,7 @@ def get_all_tool_responses(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return [
-      response
-      for response in tool_responses
-      if response.name not in CLIENT_FUNCTION_CALL_NAMES
-  ]
+  return tool_responses
 
 
 ToolCallAndResponse: TypeAlias = tuple[

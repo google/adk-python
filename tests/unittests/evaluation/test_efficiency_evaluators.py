@@ -847,3 +847,40 @@ def test_duration_score_is_still_the_total_after_adding_the_breakdown():
 
   assert result.overall_score == 2.844
   assert result.per_invocation_results[0].score == 2.844
+
+
+def test_tool_call_count_ignores_confirmation_request():
+  """ADK's own confirmation request is not counted as a tool call."""
+  evaluator = _ToolCallCountV1Evaluator(
+      eval_metric=EvalMetric(
+          metric_name=PrebuiltMetrics.TOOL_CALL_COUNT_V1.value
+      )
+  )
+  invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="orders_agent",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(
+                              function_call=genai_types.FunctionCall(
+                                  name=name, args={}
+                              )
+                          )
+                          for name in (
+                              "get_order",
+                              "cancel_order",
+                              "adk_request_confirmation",
+                          )
+                      ]
+                  ),
+              )
+          ]
+      ),
+  )
+
+  result = evaluator.evaluate_invocations([invocation])
+
+  assert result.per_invocation_results[0].score == 2.0
