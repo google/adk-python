@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import copy
 import logging
 import re
 from typing import Any
@@ -23,6 +24,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.models.llm_response import LlmResponse
+from google.adk.sessions.session import Session
 from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectedError
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
@@ -1084,3 +1086,94 @@ def test_engine_reused_across_event_loops(mock_analyzer):
   assert result_1 == {"from": values[-1]}
   assert result_2 == {"from": values[-1]}
   assert matcher._max_in_flight == _MAX_CONCURRENT_ARG_MATCHES
+
+
+class _RecordingStrategy:
+  """Records the state store each call sees, then creates one ticket."""
+
+  def __init__(self):
+    self.seen_state: list[dict[str, Any]] = []
+
+  async def mock(
+      self, tool, args, tool_context, connection_map, state_store, *_
+  ):
+    self.seen_state.append(copy.deepcopy(state_store))
+    ticket_id = f"T-{len(self.seen_state)}"
+    state_store.setdefault("ticket_id", {})[ticket_id] = {"id": ticket_id}
+    return {"ticket_id": ticket_id}
+
+
+def _tool_context(
+    app_name: str = "app", user_id: str = "user", session_id: str = "s1"
+) -> MagicMock:
+  tool_context = MagicMock()
+  tool_context.session = Session(
+      id=session_id, app_name=app_name, user_id=user_id
+  )
+  return tool_context
+
+
+def _create_ticket_tool() -> MagicMock:
+  tool = MagicMock()
+  tool.name = "create_ticket"
+  return tool
+
+
+@patch(
+    "google.adk.tools.environment_simulation.environment_simulation_engine.ToolConnectionAnalyzer"
+)
+@patch(
+    "google.adk.tools.environment_simulation.environment_simulation_engine._create_mock_strategy"
+)
+@pytest.mark.asyncio
+class TestEnvironmentSimulationEngineStateStore:
+  """The simulated state store is kept per session."""
+
+  @staticmethod
+  def _engine() -> EnvironmentSimulationEngine:
+    return EnvironmentSimulationEngine(
+        EnvironmentSimulationConfig(
+            tool_simulation_configs=[
+                ToolSimulationConfig(
+                    tool_name="create_ticket",
+                    mock_strategy_type=MockStrategy.MOCK_STRATEGY_TOOL_SPEC,
+                )
+            ],
+            simulation_model="test-model",
+        )
+    )
+
+  @pytest.mark.parametrize(
+      "other_session",
+      [
+          {"session_id": "s2"},
+          {"user_id": "other_user"},
+          {"app_name": "other_app"},
+      ],
+  )
+  async def test_new_session_starts_with_empty_state(
+      self, mock_create_strategy, mock_analyzer, other_session
+  ):
+    strategy = _RecordingStrategy()
+    mock_create_strategy.return_value = strategy
+    engine = self._engine()
+
+    await engine.simulate(_create_ticket_tool(), {}, _tool_context())
+    await engine.simulate(
+        _create_ticket_tool(), {}, _tool_context(**other_session)
+    )
+
+    assert strategy.seen_state == [{}, {}]
+
+  async def test_state_is_kept_across_turns_of_one_session(
+      self, mock_create_strategy, mock_analyzer
+  ):
+    strategy = _RecordingStrategy()
+    mock_create_strategy.return_value = strategy
+    engine = self._engine()
+
+    # Each turn runs in a new invocation with its own tool context.
+    await engine.simulate(_create_ticket_tool(), {}, _tool_context())
+    await engine.simulate(_create_ticket_tool(), {}, _tool_context())
+
+    assert strategy.seen_state == [{}, {"ticket_id": {"T-1": {"id": "T-1"}}}]
