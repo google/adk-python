@@ -128,6 +128,24 @@ class TestToolSimulationConfig:
 class TestEnvironmentSimulationConfig:
   """Tests for EnvironmentSimulationConfig.check_tool_simulation_configs."""
 
+  def test_unmocked_tool_policy_defaults_to_passthrough(self):
+    config = EnvironmentSimulationConfig()
+
+    assert config.unmocked_tool_policy == "passthrough"
+    assert config.allowed_real_tools == []
+
+  def test_strict_policy_loads_from_json(self):
+    config = EnvironmentSimulationConfig.model_validate_json(
+        '{"unmocked_tool_policy":"error","allowed_real_tools":["clock"]}'
+    )
+
+    assert config.unmocked_tool_policy == "error"
+    assert config.allowed_real_tools == ["clock"]
+
+  def test_invalid_unmocked_tool_policy_is_rejected(self):
+    with pytest.raises(ValidationError, match="unmocked_tool_policy"):
+      EnvironmentSimulationConfig(unmocked_tool_policy="ignore")
+
   def test_explicitly_empty_tool_simulation_configs_raises(self):
     with pytest.raises(
         ValidationError, match="tool_simulation_configs must be provided"

@@ -51,12 +51,18 @@ def _create_mock_strategy(
     mock_strategy_type: MockStrategyEnum,
     llm_name: str,
     llm_config: genai_types.GenerateContentConfig,
+    *,
+    raise_on_error: bool = False,
 ) -> base_mock_strategies.MockStrategy:
   """Creates a mock strategy based on the given type."""
   if mock_strategy_type == MockStrategyEnum.MOCK_STRATEGY_TOOL_SPEC:
-    return tool_spec_mock_strategy.ToolSpecMockStrategy(llm_name, llm_config)
+    return tool_spec_mock_strategy.ToolSpecMockStrategy(
+        llm_name, llm_config, raise_on_error=raise_on_error
+    )
   if mock_strategy_type == MockStrategyEnum.MOCK_STRATEGY_TRACING:
-    return base_mock_strategies.TracingMockStrategy(llm_name, llm_config)
+    return base_mock_strategies.TracingMockStrategy(
+        llm_name, llm_config, raise_on_error=raise_on_error
+    )
   raise ValueError(f"Unknown mock strategy type: {mock_strategy_type}")
 
 
@@ -85,6 +91,10 @@ def _with_default_semantic_model(
           },
       }
   )
+
+
+class UnmockedToolCallError(RuntimeError):
+  """A tool call was blocked because strict simulation could not handle it."""
 
 
 class EnvironmentSimulationEngine:
@@ -226,11 +236,29 @@ class EnvironmentSimulationEngine:
         task.cancel()
       await asyncio.gather(*pending_matches.values(), return_exceptions=True)
 
+  def _check_unmocked_tool(self, tool_name: str, reason: str) -> None:
+    """Allows passthrough or reports missing coverage without logging arguments."""
+    if (
+        self._config.unmocked_tool_policy == "error"
+        and tool_name not in self._config.allowed_real_tools
+    ):
+      raise UnmockedToolCallError(
+          f"Tool '{tool_name}' blocked by strict environment simulation:"
+          f" {reason}. Add a matching simulation or explicitly include the"
+          " tool name in allowed_real_tools to permit real execution."
+      )
+
   async def simulate(
       self, tool: BaseTool, args: Dict[str, Any], tool_context: Any
   ) -> Optional[Dict[str, Any]]:
-    """Simulates a tool call."""
+    """Simulates a tool call, returning None only when passthrough is allowed.
+
+    Raises:
+      UnmockedToolCallError: Strict mode has no simulation or allowed exception.
+      ValueError: A strict-mode mock strategy returned a non-dictionary response.
+    """
     if tool.name not in self._tool_sim_configs:
+      self._check_unmocked_tool(tool.name, "no tool simulation configuration")
       return None
 
     tool_sim_config = self._tool_sim_configs[tool.name]
@@ -289,9 +317,13 @@ class EnvironmentSimulationEngine:
         tool_sim_config.mock_strategy_type
         == MockStrategyEnum.MOCK_STRATEGY_UNSPECIFIED
     ):
+      self._check_unmocked_tool(
+          tool.name,
+          "no injection applied and no fallback mock strategy configured",
+      )
       environment_simulation_logger.warning(
           "Tool '%s' did not hit any injection config and has no mock strategy"
-          " configured. Returning no-op.",
+          " configured. Allowing real tool execution.",
           tool.name,
       )
       return None
@@ -300,8 +332,9 @@ class EnvironmentSimulationEngine:
         tool_sim_config.mock_strategy_type,
         self._config.simulation_model,
         self._config.simulation_model_configuration,
+        raise_on_error=self._config.unmocked_tool_policy == "error",
     )
-    return await mock_strategy.mock(
+    response = await mock_strategy.mock(
         tool,
         args,
         tool_context,
@@ -310,3 +343,11 @@ class EnvironmentSimulationEngine:
         self._environment_data,
         self._tracing,
     )
+    if self._config.unmocked_tool_policy == "error" and not isinstance(
+        response, dict
+    ):
+      raise ValueError(
+          f"Mock strategy for tool '{tool.name}' must return a dictionary;"
+          " real tool execution is not permitted after a simulation failure."
+      )
+    return response

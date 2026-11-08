@@ -64,6 +64,8 @@ from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.events.event import Event
 from google.adk.models.registry import LLMRegistry
+from google.adk.tools.environment_simulation import EnvironmentSimulationFactory
+from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.mcp_tool import mcp_toolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -79,6 +81,77 @@ from tests.unittests.testing_utils import MockModel
 @pytest.fixture
 def mock_eval_sets_manager(mocker):
   return mocker.create_autospec(EvalSetsManager)
+
+
+@pytest.mark.asyncio
+async def test_strict_simulation_reports_execution_failure(
+    mock_eval_sets_manager,
+):
+  """The real Runner-to-evaluation path preserves a blocked tool's reason."""
+  real_calls = []
+
+  def cancel_order() -> dict:
+    real_calls.append(True)
+    return {"cancelled": True}
+
+  agent = LlmAgent(
+      name="orders",
+      model=MockModel.create(
+          responses=[
+              genai_types.Part.from_function_call(name="cancel_order", args={}),
+              genai_types.Part.from_text(text="done"),
+          ]
+      ),
+      tools=[cancel_order],
+  )
+  app = App(
+      name="orders_app",
+      root_agent=agent,
+      plugins=[
+          EnvironmentSimulationFactory.create_plugin(
+              EnvironmentSimulationConfig(unmocked_tool_policy="error")
+          )
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="orders_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="blocked_case",
+              conversation=[
+                  Invocation(
+                      user_content=genai_types.Content(
+                          role="user",
+                          parts=[genai_types.Part.from_text(text="cancel")],
+                      ),
+                  )
+              ],
+          )
+      ],
+  )
+  service = LocalEvalService(
+      root_agent=agent, app=app, eval_sets_manager=mock_eval_sets_manager
+  )
+
+  results = [
+      result
+      async for result in service.perform_inference(
+          InferenceRequest(
+              app_name=app.name,
+              eval_set_id="orders_set",
+              inference_config=InferenceConfig(),
+          )
+      )
+  ]
+
+  assert real_calls == []
+  assert len(results) == 1
+  assert results[0].status == InferenceStatus.FAILURE
+  assert (
+      "cancel_order' blocked by strict environment simulation"
+      in results[0].error_message
+  )
+  assert "no tool simulation configuration" in results[0].error_message
 
 
 @pytest.fixture
