@@ -1634,10 +1634,22 @@ async def test_response_schema_dict_becomes_json_schema_format():
     [
         (
             types.Schema(
-                type=types.Type.ARRAY,
-                items=types.Schema(type=types.Type.STRING),
+                type=types.Type.OBJECT,
+                properties={
+                    "tags": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                },
             ),
-            {"type": "array", "items": {"type": "string"}},
+            {
+                "type": "object",
+                "properties": {
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "additionalProperties": False,
+                "required": ["tags"],
+            },
         ),
         (
             types.Schema(
