@@ -42,8 +42,8 @@ from google.adk.integrations.openai._openai_responses_llm import _serialize_syst
 from google.adk.integrations.openai._openai_responses_llm import _tool_choice
 from google.adk.integrations.openai._openai_responses_llm import AzureOpenAIResponsesLlm
 from google.adk.integrations.openai._openai_responses_llm import OpenAIResponsesLlm
-from google.adk.integrations.openai._openai_schema import enforce_strict_openai_schema
 from google.adk.models.llm_request import LlmRequest
+from google.adk.utils._schema_utils import enforce_strict_openai_schema
 from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam
 from openai.types.responses import FunctionToolParam

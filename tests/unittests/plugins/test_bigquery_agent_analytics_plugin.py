@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from collections.abc import Collection
 import concurrent.futures
 import contextlib
 import contextvars
@@ -51,6 +52,7 @@ from google.adk.models import google_llm
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
 from google.adk.platform import thread as platform_thread
+from google.adk.plugins import _bigquery_agent_analytics_eval_sql
 from google.adk.plugins import _callback_helpers
 from google.adk.plugins import bigquery_agent_analytics_plugin
 from google.adk.plugins import plugin_manager as plugin_manager_lib
@@ -12890,9 +12892,11 @@ class _EvalViewSqlEvaluator:
     ``[SAFE_OFFSET(n)]``, CAST to INT64 or JSON, SAFE_CAST, and
     ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and ``ARRAY(SELECT ...)`` over
     ``UNNEST``.
-  - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``;
-    ROW_NUMBER, LAG and LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``;
-    and the scalar functions in ``_call``.
+  - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``,
+    or, with ``ORDER BY ...``, over the frame
+    ``ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW``; ROW_NUMBER, LAG and
+    LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``; and the scalar
+    functions in ``_call``.
 
   SQL NULL is ``None``, and JSON values are Python dicts, lists and scalars.
   A JSON function reads a field of a ``str`` by parsing it as JSON text, as
@@ -13219,8 +13223,11 @@ class _EvalViewSqlEvaluator:
       if self._accept("PARTITION", "BY"):
         partition_by = self._parse_exprs()
       order_by = self._parse_order_by() if self._accept("ORDER", "BY") else []
+      running = self._accept(
+          "ROWS", "BETWEEN", "UNBOUNDED", "PRECEDING", "AND", "CURRENT", "ROW"
+      )
       self._expect(")")
-      return ("window", node, partition_by, order_by)
+      return ("window", node, partition_by, order_by, running)
     return node
 
   @classmethod
@@ -13442,8 +13449,12 @@ class _EvalViewSqlEvaluator:
         "SUM": sum,
     }[name](values)
 
-  def _window(self, row, rows, function, partition_by, order_by):
-    """Evaluates ``function`` over ``row``'s window partition of ``rows``."""
+  def _window(self, row, rows, function, partition_by, order_by, running):
+    """Evaluates ``function`` over ``row``'s window partition of ``rows``.
+
+    A ``running`` frame ends at ``row``; an aggregate without one reads the
+    whole partition.
+    """
     assert rows is not None, "A window function needs the input rows"
     key = [self._eval(node, row, None) for node in partition_by]
     partition = self._sorted(
@@ -13454,11 +13465,13 @@ class _EvalViewSqlEvaluator:
         ],
         order_by,
     )
-    if function[0] == "aggregate":
-      assert not order_by, "Only whole-partition aggregate frames are supported"
-      return self._aggregate(partition, *function[1:])
-    name, call_args = function[1:]
     index = next(i for i, other in enumerate(partition) if other is row)
+    if function[0] == "aggregate":
+      assert running or not order_by, "Unsupported aggregate window frame"
+      frame = partition[: index + 1] if running else partition
+      return self._aggregate(frame, *function[1:])
+    name, call_args = function[1:]
+    assert not running, f"{name} takes no window frame"
     if name == "ROW_NUMBER":
       return index + 1
     assert name in ("LAG", "LEAD"), f"Unsupported window function {name}"
@@ -13671,6 +13684,40 @@ class TestEvalViews:
         **columns,
     }
 
+  @staticmethod
+  def _finished_turn(
+      session_id: str, invocation_id: str, second: int, **reply_columns: Any
+  ) -> list[dict[str, Any]]:
+    """Returns the rows of a finished turn; the reply row has the columns."""
+    columns = {"session_id": session_id}
+    return [
+        TestEvalViews._event(
+            invocation_id,
+            second,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Hi"},
+            **columns,
+        ),
+        TestEvalViews._event(
+            invocation_id,
+            second + 1,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Done.'"},
+            **columns,
+            **reply_columns,
+        ),
+        TestEvalViews._event(
+            invocation_id, second + 2, "INVOCATION_COMPLETED", **columns
+        ),
+    ]
+
+  @staticmethod
+  def _condition_sql(param: str, condition: str) -> str:
+    """Returns the SQL that a query builder makes of a condition argument."""
+    if param == "raw_where_clause":
+      return f"\n      AND (\n        {condition}\n      )\n  ),"
+    return f"\nWHERE\n  (\n    {condition}\n  )\n"
+
   def test_config_create_eval_views_default_false(self):
     """Eval views are opt-in, so default setup only creates analytics views."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
@@ -13879,6 +13926,7 @@ class TestEvalViews:
         "LLM_REQUEST",
         "TOOL_STARTING",
         "TOOL_COMPLETED",
+        "TOOL_ERROR",
         "AGENT_TRANSFER",
         "AGENT_RESPONSE",
         "INVOCATION_COMPLETED",
@@ -13921,9 +13969,10 @@ class TestEvalViews:
       )
 
     # The trace carries a multi-agent handoff only as the AGENT_TRANSFER
-    # function_call, and a HITL pause and resumption only as the pause rows,
-    # so an allowlist without either is rejected too.
-    for missing_events in ({"AGENT_TRANSFER"}, pause_events):
+    # function_call, the response of a tool that raised only as TOOL_ERROR,
+    # and a HITL pause and resumption only as the pause rows, so an allowlist
+    # without any of them is rejected too.
+    for missing_events in ({"AGENT_TRANSFER"}, {"TOOL_ERROR"}, pause_events):
       with pytest.raises(
           ValueError, match=re.escape(f"missing: {sorted(missing_events)}.")
       ):
@@ -14099,12 +14148,11 @@ class TestEvalViews:
           "WHEN event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL"
           in sql
       )
-      trace_keys = [
-          line.strip().split(",", 1)[0]
-          for line in self._final_select(sql).splitlines()
-          if line.startswith("    '")
-      ]
-      assert trace_keys == ["'agents'", "'turns'"]
+      # The trace holds the AgentData fields and no others.
+      (row,) = _EvalViewSqlEvaluator(sql).run(
+          self._finished_turn("s1", "inv-1", 0)
+      )
+      assert list(row["trace"]) == ["agents", "turns"]
     # The turn view's trace holds its one turn re-indexed to 0; the turn's
     # position in the session is the turn_index column.
     assert "'turn_index', 0," in turn_sql
@@ -14118,26 +14166,46 @@ class TestEvalViews:
     """Guardrail columns follow the per-turn rules and roll up per session."""
     session_sql, turn_sql = self._normalized_view_sql()
     for sql in (session_sql, turn_sql):
+      # Tool metrics skip transfer_to_agent (AGENT_TRANSFER is the handoff)
+      # and the pseudo-tools that pause for a credential, a confirmation or
+      # the user's input, so a tool added to _HITL_EVENT_MAP must join them.
+      (framework_tools,) = re.findall(
+          r"COALESCE\(JSON_VALUE\(content, '\$\.tool'\), ''\) IN \(([^)]*)\)"
+          r" AS is_framework_tool",
+          sql,
+      )
+      assert set(re.findall(r"'(\w+)'", framework_tools)) == {
+          *bigquery_agent_analytics_plugin._HITL_EVENT_MAP,
+          "transfer_to_agent",
+      }
       for fragment in (
-          # Tool metrics skip transfer_to_agent; AGENT_TRANSFER is the handoff.
+          # A TOOL_STARTING row that names no tool is not a tool call.
           (
-              "( event_type = 'TOOL_STARTING' AND COALESCE(tool_name, '') !="
-              " 'transfer_to_agent' ) AS is_tool_call"
+              "( event_type = 'TOOL_STARTING' AND NULLIF(tool_name, '') IS NOT"
+              " NULL AND NOT is_framework_tool ) AS is_tool_call"
           ),
           "COUNTIF(is_tool_call) AS tool_call_count",
-          "IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name",
+          "IF(is_tool_call, tool_name, NULL) AS invoked_tool_name",
           (
               "ARRAY_AGG( DISTINCT invoked_tool_name IGNORE NULLS ORDER BY"
               " invoked_tool_name ), ARRAY<STRING>[] ) AS distinct_tools_used"
           ),
-          # Calls in a row with the same name and args share an island.
+          # Consecutive calls with the same name and args share an island,
+          # unless a HITL request comes between them.
           "TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json",
+          (
+              "COUNTIF( event_type IN ( 'HITL_CREDENTIAL_REQUEST',"
+              " 'HITL_CONFIRMATION_REQUEST', 'HITL_INPUT_REQUEST' ) ) OVER ("
+              " PARTITION BY session_id, invocation_id ORDER BY timestamp,"
+              " event_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) AS"
+              " hitl_request_count"
+          ),
           (
               "ROW_NUMBER() OVER ( PARTITION BY session_id, invocation_id,"
               " is_tool_call ORDER BY timestamp, event_id ) - ROW_NUMBER()"
               " OVER ( PARTITION BY session_id, invocation_id, is_tool_call,"
-              " tool_name, tool_args_json ORDER BY timestamp, event_id ) AS"
-              " tool_call_island"
+              " tool_name, tool_args_json, hitl_request_count ORDER BY"
+              " timestamp, event_id ) AS tool_call_island"
           ),
           (
               "COUNT(*) OVER ( PARTITION BY session_id, invocation_id,"
@@ -14150,7 +14218,13 @@ class TestEvalViews:
           ),
           "COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count",
           "COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count",
-          "LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content",
+          # Only a row that puts an event in the trace can mark its turn
+          # truncated, so an LLM_REQUEST row, which repeats the conversation,
+          # cannot hold back a later turn.
+          (
+              "LOGICAL_OR(event_content IS NOT NULL AND COALESCE(is_truncated,"
+              " FALSE)) AS has_truncated_content"
+          ),
           # Token totals count terminal LLM_RESPONSE rows when the turn has
           # any, so streamed usage is not counted twice.
           "JSON_VALUE(content, '$.usage.prompt') AS INT64) AS usage_prompt",
@@ -14663,6 +14737,7 @@ class TestEvalViews:
     # Free-form payloads inside FunctionCall.args and FunctionResponse.response.
     freeform_payload_key_tuples = {
         ("agent_name",),
+        ("error",),
         ("result",),
     }
 
@@ -15056,10 +15131,10 @@ class TestEvalViews:
         "inv-4": False,
         "inv-5": False,
     }
-    # request_input is a tool the model called, so tool metrics count it.
-    assert session_row["tool_call_count"] == 4
+    # request_input pauses the turn for the user's input, as the framework's
+    # HITL calls do, so tool metrics skip it.
+    assert session_row["tool_call_count"] == 3
     assert session_row["distinct_tools_used"] == [
-        "adk_request_input",
         "cancel_order",
         "lookup_order",
     ]
@@ -15516,8 +15591,781 @@ class TestEvalViews:
         "content"
     ]["parts"] == [{"text": "Fast-path answer."}]
 
+  def test_eval_tool_error_is_a_function_response_after_its_call(self) -> None:
+    """A TOOL_ERROR answers its function_call with the error message."""
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {"id": 1}, "tool_origin": "LOCAL"}
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        # The next three rows share a timestamp and the reply's event_id sorts
+        # first, so only event_seq puts the call, its error and the reply in
+        # that order.
+        event("inv-1", 1, "TOOL_STARTING", call, event_id="b-call"),
+        event(
+            "inv-1",
+            1,
+            "TOOL_ERROR",
+            call,
+            event_id="c-error",
+            status="ERROR",
+            error_message="Order 42 not found.",
+        ),
+        event(
+            "inv-1",
+            1,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Sorry.'"},
+            event_id="a-reply",
+        ),
+        event("inv-1", 2, "INVOCATION_COMPLETED"),
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    for row in (turn_row, session_row):
+      trace_parts = [
+          e["content"]["parts"] for e in row["trace"]["turns"][0]["events"]
+      ]
+      assert trace_parts == [
+          [{"text": "Hi"}],
+          [{"function_call": {"name": "lookup", "args": {"id": 1}}}],
+          [{
+              "function_response": {
+                  "name": "lookup",
+                  "response": {"error": "Order 42 not found."},
+              }
+          }],
+          [{"text": "Sorry."}],
+      ]
+      assert (row["tool_call_count"], row["tool_error_count"]) == (1, 1)
+      assert row["has_error"] is True
+
+  @pytest.mark.parametrize("error_message", [None, ""])
+  def test_eval_tool_error_without_a_message_reports_a_default_error(
+      self, error_message: str | None
+  ) -> None:
+    """A TOOL_ERROR with no message still answers its call with an error."""
+    _, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {}}
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-1", 1, "TOOL_STARTING", call),
+        event(
+            "inv-1",
+            2,
+            "TOOL_ERROR",
+            call,
+            status="ERROR",
+            error_message=error_message,
+        ),
+        event("inv-1", 3, "INVOCATION_COMPLETED"),
+    ]
+
+    (row,) = turn_view.run(rows)
+
+    response_event = row["trace"]["turns"][0]["events"][2]
+    assert response_event["content"]["parts"] == [{
+        "function_response": {
+            "name": "lookup",
+            "response": {"error": "Tool execution failed"},
+        }
+    }]
+
+  @pytest.mark.parametrize("content", [None, {"tool": "", "args": {}}])
+  def test_eval_tool_rows_without_a_tool_name_add_no_trace_event(
+      self, content: dict[str, Any] | None
+  ) -> None:
+    """A tool row that names no tool adds no event to the trace.
+
+    A custom content_formatter that fails leaves a row without its tool's
+    name, so the trace could not pair the call with its response.  Such a
+    TOOL_STARTING is not a tool call, but such a TOOL_ERROR still counts as a
+    tool error, and the turn still has an error.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-1", 1, "TOOL_STARTING", content),
+        event("inv-1", 2, "TOOL_COMPLETED", content),
+        event("inv-1", 3, "TOOL_STARTING", content),
+        event(
+            "inv-1",
+            4,
+            "TOOL_ERROR",
+            content,
+            status="ERROR",
+            error_message="boom",
+        ),
+        event("inv-1", 5, "INVOCATION_COMPLETED"),
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    for row in (turn_row, session_row):
+      trace_parts = [
+          e["content"]["parts"] for e in row["trace"]["turns"][0]["events"]
+      ]
+      assert trace_parts == [[{"text": "Hi"}]]
+      assert row["has_error"] is True
+      assert (row["tool_call_count"], row["tool_error_count"]) == (0, 1)
+      assert row["distinct_tools_used"] == []
+      assert row["max_consecutive_identical_tool_calls"] == 0
+
+  @pytest.mark.parametrize(
+      "failed_attempts, has_tool_loop", [(1, False), (2, True)]
+  )
+  def test_eval_tool_retries_pair_each_call_with_its_error_or_result(
+      self, failed_attempts: int, has_tool_loop: bool
+  ) -> None:
+    """A retried call is one function_call and one response per attempt.
+
+    Identical attempts count as consecutive identical calls whether or not an
+    error separates them, so the third attempt makes a tool loop.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {"id": 1}}
+    function_call = [{"function_call": {"name": "lookup", "args": {"id": 1}}}]
+    rows = [event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"})]
+    expected_parts = [[{"text": "Hi"}]]
+    for attempt in range(1, failed_attempts + 1):
+      message = f"Attempt {attempt} failed."
+      rows += [
+          event("inv-1", 2 * attempt - 1, "TOOL_STARTING", call),
+          event(
+              "inv-1",
+              2 * attempt,
+              "TOOL_ERROR",
+              call,
+              status="ERROR",
+              error_message=message,
+          ),
+      ]
+      expected_parts += [
+          function_call,
+          [{
+              "function_response": {
+                  "name": "lookup",
+                  "response": {"error": message},
+              }
+          }],
+      ]
+    last = 2 * failed_attempts + 1
+    rows += [
+        event("inv-1", last, "TOOL_STARTING", call),
+        event(
+            "inv-1",
+            last + 1,
+            "TOOL_COMPLETED",
+            {**call, "result": {"found": True}},
+        ),
+        event(
+            "inv-1",
+            last + 2,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Found it.'"},
+        ),
+        event("inv-1", last + 3, "INVOCATION_COMPLETED"),
+    ]
+    expected_parts += [
+        function_call,
+        [{
+            "function_response": {
+                "name": "lookup",
+                "response": {"found": True},
+            }
+        }],
+        [{"text": "Found it."}],
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    trace_parts = [
+        e["content"]["parts"] for e in turn_row["trace"]["turns"][0]["events"]
+    ]
+    assert trace_parts == expected_parts
+    for row in (turn_row, session_row):
+      assert row["tool_call_count"] == failed_attempts + 1
+      assert row["tool_error_count"] == failed_attempts
+      assert row["max_consecutive_identical_tool_calls"] == failed_attempts + 1
+      assert row["has_tool_loop"] is has_tool_loop
+
+  def test_eval_parallel_tool_calls_come_before_their_responses(self) -> None:
+    """Calls that start together all precede their results and errors.
+
+    The model's function_calls form one message and the responses follow it, so
+    the error of one call does not fall between the calls, even though its
+    event_id sorts before the other call's.
+    """
+    _, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        # The next four rows share a timestamp.
+        event(
+            "inv-1",
+            1,
+            "TOOL_STARTING",
+            {"tool": "lookup_a", "args": {}},
+            event_id="a-call",
+        ),
+        event(
+            "inv-1",
+            1,
+            "TOOL_ERROR",
+            {"tool": "lookup_a", "args": {}},
+            event_id="a-error",
+            status="ERROR",
+            error_message="A failed.",
+        ),
+        event(
+            "inv-1",
+            1,
+            "TOOL_STARTING",
+            {"tool": "lookup_b", "args": {}},
+            event_id="b-call",
+        ),
+        event(
+            "inv-1",
+            1,
+            "TOOL_COMPLETED",
+            {"tool": "lookup_b", "result": {"ok": True}},
+            event_id="b-done",
+        ),
+        event("inv-1", 2, "INVOCATION_COMPLETED"),
+    ]
+
+    (row,) = turn_view.run(rows)
+
+    # Skips the user message, which has a text part.
+    steps = []
+    for e in row["trace"]["turns"][0]["events"][1:]:
+      for part in e["content"]["parts"]:
+        steps.extend((kind, part[kind]["name"]) for kind in part)
+    assert steps == [
+        ("function_call", "lookup_a"),
+        ("function_call", "lookup_b"),
+        ("function_response", "lookup_a"),
+        ("function_response", "lookup_b"),
+    ]
+    assert (row["tool_call_count"], row["tool_error_count"]) == (2, 1)
+
+  @pytest.mark.parametrize(
+      "tool",
+      [
+          "transfer_to_agent",
+          "adk_request_credential",
+          "adk_request_confirmation",
+          "adk_request_input",
+      ],
+  )
+  def test_eval_tool_error_of_a_framework_tool_adds_no_trace_event(
+      self, tool: str
+  ) -> None:
+    """A framework tool's TOOL_ERROR adds no function_response.
+
+    The handoff and the HITL requests reach the trace as AGENT_TRANSFER and
+    HITL_* rows, so a function_response for their TOOL_ERROR would answer no
+    function_call.  Tool metrics skip it too, though the turn has an error.
+    """
+    _, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event(
+            "inv-1",
+            1,
+            "TOOL_ERROR",
+            {"tool": tool, "args": {}},
+            status="ERROR",
+            error_message="failed",
+        ),
+        event("inv-1", 2, "AGENT_RESPONSE", {"response": "text: 'Done.'"}),
+        event("inv-1", 3, "INVOCATION_COMPLETED"),
+    ]
+
+    (row,) = turn_view.run(rows)
+
+    trace_parts = [
+        e["content"]["parts"] for e in row["trace"]["turns"][0]["events"]
+    ]
+    assert trace_parts == [[{"text": "Hi"}], [{"text": "Done."}]]
+    assert (row["tool_call_count"], row["tool_error_count"]) == (0, 0)
+    assert row["has_error"] is True
+
+  def test_eval_hitl_request_tools_are_not_tool_calls(self) -> None:
+    """Tool metrics skip the pseudo-tools that pause the turn for the user.
+
+    adk_request_credential, adk_request_confirmation and adk_request_input
+    pause for a credential, a confirmation or the user's input, so repeating
+    them is not a tool loop.  Any other tool still counts.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    def turn(
+        invocation_id: str, second: int, tool: str
+    ) -> list[dict[str, Any]]:
+      """Returns a turn that calls ``tool`` three times with the same args."""
+      return [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+          ),
+          *(
+              event(
+                  invocation_id,
+                  second + n,
+                  "TOOL_STARTING",
+                  {"tool": tool, "args": {}},
+              )
+              for n in (1, 2, 3)
+          ),
+          event(invocation_id, second + 4, "INVOCATION_COMPLETED"),
+      ]
+
+    rows = [
+        *turn("inv-credential", 0, "adk_request_credential"),
+        *turn("inv-confirmation", 10, "adk_request_confirmation"),
+        *turn("inv-input", 20, "adk_request_input"),
+        *turn("inv-lookup", 30, "lookup"),
+    ]
+
+    metrics = {
+        row["invocation_id"]: (
+            row["tool_call_count"],
+            row["distinct_tools_used"],
+            row["max_consecutive_identical_tool_calls"],
+            row["has_tool_loop"],
+        )
+        for row in turn_view.run(rows)
+    }
+    assert metrics == {
+        "inv-credential": (0, [], 0, False),
+        "inv-confirmation": (0, [], 0, False),
+        "inv-input": (0, [], 0, False),
+        "inv-lookup": (3, ["lookup"], 3, True),
+    }
+    (session_row,) = session_view.run(rows)
+    assert session_row["tool_call_count"] == 3
+    assert session_row["distinct_tools_used"] == ["lookup"]
+
+  def test_eval_hitl_requests_end_runs_of_identical_tool_calls(self) -> None:
+    """A HITL request between identical tool calls ends their run.
+
+    A turn that resumes after a HITL request keeps its invocation_id, so
+    calling a tool again once the user has answered would otherwise look like
+    a tool loop.
+    """
+    _, turn_view = self._eval_views()
+    event = self._event
+    call = {"tool": "lookup", "args": {"id": 1}}
+
+    def turn(
+        invocation_id: str, second: int, tool: str | None
+    ) -> list[dict[str, Any]]:
+      """Returns a turn that calls lookup three times, pausing for ``tool``."""
+      rows = [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+          ),
+          event(invocation_id, second + 1, "TOOL_STARTING", call),
+      ]
+      for n in (2, 5):
+        if tool:
+          request = bigquery_agent_analytics_plugin._HITL_EVENT_MAP[tool]
+          rows += [
+              event(
+                  invocation_id,
+                  second + n,
+                  request,
+                  {"tool": tool, "args": {}},
+              ),
+              event(
+                  invocation_id,
+                  second + n + 1,
+                  f"{request}_COMPLETED",
+                  {"tool": tool, "result": {}},
+              ),
+          ]
+        rows.append(event(invocation_id, second + n + 2, "TOOL_STARTING", call))
+      rows.append(event(invocation_id, second + 8, "INVOCATION_COMPLETED"))
+      return rows
+
+    rows = [
+        *turn("inv-no-pause", 0, None),
+        *turn("inv-credential", 10, "adk_request_credential"),
+        *turn("inv-confirmation", 20, "adk_request_confirmation"),
+        *turn("inv-input", 30, "adk_request_input"),
+    ]
+
+    metrics = {
+        row["invocation_id"]: (
+            row["tool_call_count"],
+            row["max_consecutive_identical_tool_calls"],
+            row["has_tool_loop"],
+        )
+        for row in turn_view.run(rows)
+    }
+    assert metrics == {
+        "inv-no-pause": (3, 3, True),
+        "inv-credential": (3, 1, False),
+        "inv-confirmation": (3, 1, False),
+        "inv-input": (3, 1, False),
+    }
+
+  def test_eval_repeated_input_requests_are_not_a_tool_loop(self) -> None:
+    """Three requests in a row for the user's input count as no tool call.
+
+    request_input logs TOOL_STARTING as well as the HITL_INPUT_REQUEST that
+    the trace shows, so a turn that asks the user the same question three
+    times would otherwise look like a loop of three identical tool calls.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    ask = {"tool": "adk_request_input", "args": {"message": "Which order?"}}
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Help."})
+    ]
+    for second in (1, 3, 5):
+      rows += [
+          event("inv-1", second, "TOOL_STARTING", ask),
+          event("inv-1", second + 1, "HITL_INPUT_REQUEST", ask),
+      ]
+    rows += [
+        event("inv-1", 7, "TOOL_PAUSED", ask),
+        event("inv-1", 8, "INVOCATION_COMPLETED"),
+    ]
+
+    (turn_row,) = turn_view.run(rows)
+    (session_row,) = session_view.run(rows)
+
+    for row in (turn_row, session_row):
+      assert row["tool_call_count"] == 0
+      assert row["distinct_tools_used"] == []
+      assert row["max_consecutive_identical_tool_calls"] == 0
+      assert row["has_tool_loop"] is False
+    # The trace still shows each request, once, as a function_call.
+    calls = []
+    for e in turn_row["trace"]["turns"][0]["events"]:
+      calls.extend(
+          part["function_call"]["name"]
+          for part in e["content"]["parts"]
+          if "function_call" in part
+      )
+    assert calls == ["adk_request_input"] * 3
+
+  def test_eval_truncated_turns_are_not_eval_ready(self) -> None:
+    """A row flagged is_truncated makes its turn and session not eval ready.
+
+    The other turns of the session stay ready.
+    """
+    session_view, turn_view = self._eval_views()
+    finished_turn = self._finished_turn
+    rows = [
+        *finished_turn("s-clean", "inv-clean", 0),
+        *finished_turn("s-flagged", "inv-flagged", 0, is_truncated=True),
+        *finished_turn("s-flagged", "inv-after-flagged", 10),
+    ]
+
+    turn_states = {
+        row["invocation_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in turn_view.run(rows)
+    }
+    session_states = {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    }
+    assert turn_states == {
+        "inv-clean": (False, True),
+        "inv-flagged": (True, False),
+        "inv-after-flagged": (False, True),
+    }
+    # One truncated turn is enough to hold back the session.
+    assert session_states == {
+        "s-clean": (False, True),
+        "s-flagged": (True, False),
+    }
+
+  def test_eval_truncated_row_of_a_paused_session_is_not_eval_ready(
+      self,
+  ) -> None:
+    """A truncated row in a paused or resumed turn holds back its session.
+
+    A turn that paused for a HITL answer and the turn that resumes it count as
+    ready for their session, unless one of their rows is truncated.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    confirm = "adk_request_confirmation"
+    request = {"tool": confirm, "args": {}}
+    answer = {"tool": confirm, "result": {"confirmed": True}}
+
+    def paused_and_resumed(
+        session_id: str,
+        request_columns: dict[str, Any] | None = None,
+        answer_columns: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+      """Returns a turn paused for a confirmation, and the turn that resumes it.
+
+      Args:
+        session_id: The session of both turns.
+        request_columns: More columns of the paused turn's request row.
+        answer_columns: More columns of the resumed turn's answer row.
+      """
+      columns = {"session_id": session_id}
+      return [
+          event(
+              "inv-1",
+              0,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Delete it."},
+              **columns,
+          ),
+          event(
+              "inv-1",
+              1,
+              "HITL_CONFIRMATION_REQUEST",
+              request,
+              **columns,
+              **(request_columns or {}),
+          ),
+          event("inv-1", 2, "TOOL_PAUSED", request, **columns),
+          event("inv-1", 3, "INVOCATION_COMPLETED", **columns),
+          event(
+              "inv-2",
+              10,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": f"Function response: {confirm}"},
+              **columns,
+          ),
+          event(
+              "inv-2",
+              11,
+              "HITL_CONFIRMATION_REQUEST_COMPLETED",
+              answer,
+              **columns,
+              **(answer_columns or {}),
+          ),
+          event(
+              "inv-2",
+              12,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Deleted.'"},
+              **columns,
+          ),
+          event("inv-2", 13, "INVOCATION_COMPLETED", **columns),
+      ]
+
+    rows = [
+        *paused_and_resumed("s-clean"),
+        *paused_and_resumed(
+            "s-request", request_columns={"is_truncated": True}
+        ),
+        *paused_and_resumed("s-answer", answer_columns={"is_truncated": True}),
+    ]
+
+    # (has_truncated_content, session_turn_eval_ready) of each turn.
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_truncated_content"],
+            row["session_turn_eval_ready"],
+        )
+        for row in turn_view.run(rows, cte="Turns")
+    } == {
+        ("s-clean", "inv-1"): (False, True),
+        ("s-clean", "inv-2"): (False, True),
+        ("s-request", "inv-1"): (True, False),
+        ("s-request", "inv-2"): (False, True),
+        ("s-answer", "inv-1"): (False, True),
+        ("s-answer", "inv-2"): (True, False),
+    }
+    assert {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    } == {
+        "s-clean": (False, True),
+        "s-request": (True, False),
+        "s-answer": (True, False),
+    }
+
+  def test_eval_truncated_llm_request_does_not_hold_back_later_turns(
+      self,
+  ) -> None:
+    """A later turn stays ready when only its LLM_REQUEST row is truncated.
+
+    An LLM_REQUEST row logs the conversation so far, so one oversized message
+    flags the request of every later turn, though the events that those turns
+    take from their own rows are whole.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    def turn(
+        session_id: str,
+        invocation_id: str,
+        second: int,
+        *,
+        user_truncated: bool = False,
+        request_truncated: bool = False,
+    ) -> list[dict[str, Any]]:
+      """Returns the rows of a finished turn that sent one LLM_REQUEST."""
+      columns = {"session_id": session_id}
+      return [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+              is_truncated=user_truncated,
+              **columns,
+          ),
+          event(
+              invocation_id,
+              second + 1,
+              "LLM_REQUEST",
+              {"system_prompt": "Be brief."},
+              is_truncated=request_truncated,
+              **columns,
+          ),
+          event(
+              invocation_id,
+              second + 2,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Done.'"},
+              **columns,
+          ),
+          event(invocation_id, second + 3, "INVOCATION_COMPLETED", **columns),
+      ]
+
+    rows = [
+        # The first message is oversized, and every later request repeats it.
+        *turn(
+            "s-oversized",
+            "inv-1",
+            0,
+            user_truncated=True,
+            request_truncated=True,
+        ),
+        *turn("s-oversized", "inv-2", 10, request_truncated=True),
+        *turn("s-oversized", "inv-3", 20, request_truncated=True),
+        # Only a request is truncated.
+        *turn("s-request", "inv-1", 0, request_truncated=True),
+    ]
+
+    # (has_truncated_content, eval_ready) of each turn.
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_truncated_content"],
+            row["eval_ready"],
+        )
+        for row in turn_view.run(rows)
+    } == {
+        ("s-oversized", "inv-1"): (True, False),
+        ("s-oversized", "inv-2"): (False, True),
+        ("s-oversized", "inv-3"): (False, True),
+        ("s-request", "inv-1"): (False, True),
+    }
+    # The oversized message still holds back its own session.
+    assert {
+        row["session_id"]: (row["has_truncated_content"], row["eval_ready"])
+        for row in session_view.run(rows)
+    } == {
+        "s-oversized": (True, False),
+        "s-request": (False, True),
+    }
+
+  @pytest.mark.parametrize(
+      ("event_type", "content", "puts_event_in_trace"),
+      [
+          ("USER_MESSAGE_RECEIVED", {"text_summary": "More."}, True),
+          ("TOOL_STARTING", {"tool": "lookup", "args": {"q": "x"}}, True),
+          ("TOOL_COMPLETED", {"tool": "lookup", "result": {"n": 1}}, True),
+          ("TOOL_ERROR", {"tool": "lookup"}, True),
+          (
+              "AGENT_TRANSFER",
+              {"from_agent": "root_agent", "to_agent": "helper"},
+              True,
+          ),
+          ("AGENT_RESPONSE", {"response": "text: 'More.'"}, True),
+          ("LLM_REQUEST", {"system_prompt": "Be brief."}, False),
+          ("LLM_RESPONSE", {"response": "text: 'More.'"}, False),
+          ("AGENT_STARTING", {"text_summary": "Be brief."}, False),
+          # The trace shows a HITL row for a framework tool, not its own rows.
+          ("TOOL_STARTING", {"tool": "adk_request_input", "args": {}}, False),
+          # A tool row that names no tool puts no event in the trace.
+          ("TOOL_COMPLETED", {"result": {"n": 1}}, False),
+      ],
+      ids=[
+          "user_message",
+          "tool_call",
+          "tool_response",
+          "tool_error",
+          "agent_transfer",
+          "agent_response",
+          "llm_request",
+          "llm_response",
+          "agent_starting",
+          "framework_tool_call",
+          "unnamed_tool_response",
+      ],
+  )
+  def test_eval_truncated_row_counts_only_if_it_puts_an_event_in_the_trace(
+      self,
+      event_type: str,
+      content: dict[str, Any],
+      puts_event_in_trace: bool,
+  ) -> None:
+    """A truncated row counts only if it puts an event in the trace."""
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-1", 1, event_type, content, is_truncated=True),
+        event("inv-1", 2, "AGENT_RESPONSE", {"response": "text: 'Done.'"}),
+        event("inv-1", 3, "INVOCATION_COMPLETED"),
+    ]
+
+    # (has_truncated_content, eval_ready) of the one turn and session.
+    expected = (True, False) if puts_event_in_trace else (False, True)
+    for view in (turn_view, session_view):
+      assert [
+          (row["has_truncated_content"], row["eval_ready"])
+          for row in view.run(rows)
+      ] == [expected]
+
+  @pytest.mark.parametrize(
+      "build_view_sql",
+      [
+          bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+          bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      ],
+      ids=["session_view", "turn_view"],
+  )
+  def test_eval_views_reject_denying_is_truncated(
+      self, build_view_sql: Callable[..., str]
+  ) -> None:
+    """A protected is_truncated column cannot be projected out of the views.
+
+    Read as FALSE, a withheld is_truncated column would mark truncated turns
+    eval ready, so the builders fail closed.
+    """
+    with pytest.raises(ValueError, match=r"got \['is_truncated'\]"):
+      build_view_sql("p.d.t", denied_columns=frozenset({"is_truncated"}))
+
   def test_eval_view_ctes_end_without_a_newline(self) -> None:
-    """The shared CTEs end at the closing paren, for the view templates."""
+    """The shared CTEs end at the closing paren, for the query templates."""
     ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
         "p.d.t", frozenset(), "session_id"
     )
@@ -15546,8 +16394,10 @@ class TestEvalViews:
       [
           bigquery_agent_analytics_plugin._build_eval_session_view_sql,
           bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
       ],
-      ids=["session_view", "turn_view"],
+      ids=["session_view", "turn_view", "session_query", "turn_query"],
   )
   def test_eval_builders_substitute_the_ctes_only_once(
       self, build_sql: Callable[..., str]
@@ -15555,8 +16405,9 @@ class TestEvalViews:
     """Braces in the CTE text reach the statement as written."""
     ctes = "WITH x AS (SELECT r'\\d{4}', '{\"a\": {}}', '{x}', '{{}}', '{0}')"
 
+    # The builders look _build_eval_view_ctes up in the module they live in.
     with mock.patch.object(
-        bigquery_agent_analytics_plugin,
+        _bigquery_agent_analytics_eval_sql,
         "_build_eval_view_ctes",
         return_value=ctes,
     ):
@@ -15569,8 +16420,10 @@ class TestEvalViews:
       [
           bigquery_agent_analytics_plugin._build_eval_session_view_sql,
           bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
       ],
-      ids=["session_view", "turn_view"],
+      ids=["session_view", "turn_view", "session_query", "turn_query"],
   )
   @pytest.mark.parametrize(
       "full_table_id",
@@ -15651,19 +16504,728 @@ class TestEvalViews:
 
     assert f"\n      `{full_table_id}`\n" in sql
 
+  @pytest.mark.parametrize("raw_where_clause", ["", "  ", "\n\t "])
+  def test_eval_raw_where_clause_blank_adds_no_filter(
+      self, raw_where_clause: str
+  ) -> None:
+    """A blank raw_where_clause leaves the CTEs that the views read."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id", raw_where_clause
+    )
+
+    assert ctes == bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+  def test_eval_raw_where_clause_narrows_the_raw_event_filter(self) -> None:
+    """The condition is ANDed into the one filter on the events table."""
+    condition = "timestamp >= @lookback_start AND timestamp < @window_end"
+
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id", condition
+    )
+
+    raw_events = ctes.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
+    assert raw_events.endswith(
+        "      AND invocation_id IS NOT NULL\n"
+        "      AND (\n"
+        f"        {condition}\n"
+        "      )"
+    )
+    # Every other CTE reads RawEvents, so the condition appears only once.
+    assert ctes.count("@lookback_start") == 1
+    assert ctes.count("@window_end") == 1
+
+  def test_eval_raw_where_clause_with_a_top_level_or_keeps_the_event_filters(
+      self,
+  ) -> None:
+    """An OR in the condition cannot widen the session and invocation filter."""
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", session_id="s1"),
+        event("inv-2", 1, "USER_MESSAGE_RECEIVED", session_id="s2"),
+        # Outside the invocation filter, which an unparenthesized OR would let
+        # the condition's second branch skip.
+        event(None, 2, "USER_MESSAGE_RECEIVED", session_id="s2"),
+        event("inv-3", 3, "USER_MESSAGE_RECEIVED", session_id="s3"),
+    ]
+    query_sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", raw_where_clause="session_id = 's1' OR session_id = 's2'"
+    )
+
+    raw_events = _EvalViewSqlEvaluator(query_sql).run(rows, cte="RawEvents")
+
+    assert [
+        (row["session_id"], row["invocation_id"]) for row in raw_events
+    ] == [("s1", "inv-1"), ("s2", "inv-2")]
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause",
+      [
+          "WHERE session_id = 's1'",
+          "where session_id = 's1'",
+          "  WHERE\n  session_id = 's1'  \n",
+          "Where\tsession_id = 's1'",
+      ],
+  )
+  def test_eval_conditions_may_begin_with_the_where_keyword(
+      self, build_query_sql: Callable[..., str], param: str, clause: str
+  ) -> None:
+    """A leading WHERE keyword, in any case, is not part of a condition."""
+    bare = build_query_sql("p.d.t", **{param: "session_id = 's1'"})
+
+    sql = build_query_sql("p.d.t", **{param: clause})
+
+    assert sql == bare
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  def test_eval_conditions_keep_a_name_that_starts_with_where(
+      self, param: str
+  ) -> None:
+    """Only the WHERE keyword is dropped, not a word that begins with it."""
+    sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: "whereabouts = 'x'"}
+    )
+
+    assert self._condition_sql(param, "whereabouts = 'x'") in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause", ["WHERE", " where \n", "WHERE\t", "where\n\n"]
+  )
+  def test_eval_where_keyword_without_a_condition_is_rejected(
+      self, param: str, clause: str
+  ) -> None:
+    """The WHERE keyword alone is an error that names its argument."""
+    with pytest.raises(ValueError, match=f"^{param} has no condition"):
+      bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, condition",
+      [
+          ("eval_ready;", "eval_ready"),
+          ("WHERE eval_ready; ; ", "eval_ready"),
+          ("timestamp >= @lookback_start;", "timestamp >= @lookback_start"),
+          ("session_id = 's1' ;\n;\t", "session_id = 's1'"),
+      ],
+  )
+  def test_eval_conditions_drop_trailing_semicolons(
+      self,
+      build_query_sql: Callable[..., str],
+      param: str,
+      clause: str,
+      condition: str,
+  ) -> None:
+    """A semicolon that ends a condition stays out of its parentheses."""
+    bare = build_query_sql("p.d.t", **{param: condition})
+
+    sql = build_query_sql("p.d.t", **{param: clause})
+
+    assert sql == bare
+    assert self._condition_sql(param, condition) in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize("clause", [";", " ; ;\n", "WHERE ;", "where;"])
+  def test_eval_semicolons_without_a_condition_are_rejected(
+      self, param: str, clause: str
+  ) -> None:
+    """Only semicolons, after WHERE or not, are an error naming the argument."""
+    with pytest.raises(ValueError, match=f"^{param} has no condition"):
+      bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  def test_eval_condition_comment_does_not_swallow_the_closing_paren(
+      self, param: str
+  ) -> None:
+    """A trailing comment in a condition ends before the closing paren."""
+    condition = "session_id = 's1' -- only s1"
+
+    sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: condition}
+    )
+
+    assert self._condition_sql(param, condition) in sql
+    # The statement parses, so the comment ends at the end of its line.
+    _EvalViewSqlEvaluator(sql)
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, condition",
+      [
+          ("eval_ready; -- note", "eval_ready -- note"),
+          ("WHERE eval_ready;\n-- note", "eval_ready\n-- note"),
+          ("eval_ready; /* note */ ; # note", "eval_ready /* note */  # note"),
+          ("-- note\nWHERE eval_ready;", "-- note\neval_ready"),
+          ("/* note */ WHERE(eval_ready)", "/* note */ (eval_ready)"),
+      ],
+  )
+  def test_eval_conditions_find_where_and_semicolons_around_comments(
+      self,
+      build_query_sql: Callable[..., str],
+      param: str,
+      clause: str,
+      condition: str,
+  ) -> None:
+    """The WHERE keyword and the semicolons are found outside comments."""
+    sql = build_query_sql("p.d.t", **{param: clause})
+
+    assert self._condition_sql(param, condition) in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, condition",
+      [
+          ("session_id = 'a;' -- b;", "session_id = 'a;' -- b;"),
+          (
+              "session_id = '-- a' OR user_id = '# b';",
+              "session_id = '-- a' OR user_id = '# b'",
+          ),
+          (
+              "session_id = \"/* a */\" AND user_id = 'WHERE';",
+              "session_id = \"/* a */\" AND user_id = 'WHERE'",
+          ),
+          ("session_id = 'a\\' -- b';", "session_id = 'a\\' -- b'"),
+          ("session_id = '''a'; -- b''';", "session_id = '''a'; -- b'''"),
+          ("`session;id` = 'a';", "`session;id` = 'a'"),
+      ],
+  )
+  def test_eval_conditions_keep_what_is_inside_a_literal_or_identifier(
+      self, param: str, clause: str, condition: str
+  ) -> None:
+    """A semicolon or comment marker in a literal or identifier is kept."""
+    sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: clause}
+    )
+
+    assert self._condition_sql(param, condition) in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause",
+      [
+          "-- note",
+          "# note",
+          "WHERE -- todo",
+          "/* note */; -- todo",
+          "WHERE /* note */ ;\n# todo",
+      ],
+  )
+  def test_eval_conditions_with_only_comments_are_rejected(
+      self, param: str, clause: str
+  ) -> None:
+    """A condition needs SQL outside its comments besides WHERE and ';'."""
+    with pytest.raises(ValueError, match=f"^{param} has no condition"):
+      bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, token",
+      [
+          ("eval_ready /* note", "block comment"),
+          ("session_id = 's1", "string literal"),
+          ('session_id = "s1', "string literal"),
+          ("session_id = 's1\\'", "string literal"),
+          ("session_id = '''s1''", "string literal"),
+          ("`session_id = 's1'", "quoted identifier"),
+      ],
+  )
+  def test_eval_conditions_with_an_unclosed_token_are_rejected(
+      self, param: str, clause: str, token: str
+  ) -> None:
+    """An unclosed comment, literal or identifier would swallow the paren."""
+    with pytest.raises(
+        ValueError, match=f"^{param} has an unterminated {token}"
+    ):
+      bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  def test_eval_conditions_with_a_semicolon_before_a_comment_run(
+      self,
+  ) -> None:
+    """Such conditions leave statements that parse and filter as written."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0, is_truncated=True),
+        *self._finished_turn("s2", "inv-1", 10),
+        *self._finished_turn("s3", "inv-1", 20),
+    ]
+    session_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+            "p.d.t", where_clause="WHERE eval_ready; -- ready only"
+        )
+    )
+    turn_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+            "p.d.t", raw_where_clause="session_id = 's1'; -- one session"
+        )
+    )
+
+    assert sorted(row["session_id"] for row in session_query.run(rows)) == [
+        "s2",
+        "s3",
+    ]
+    assert [row["session_id"] for row in turn_query.run(rows)] == ["s1"]
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "condition",
+      [
+          "session_id != '{x}' AND user_id != '{{}}'",
+          "session_id != '{0}' AND user_id != '{}'",
+          "REGEXP_CONTAINS(session_id, r'^s\\d{2}$')",
+          "JSON_VALUE(attributes, '$.k') != '{\"a\": {}}'",
+      ],
+  )
+  def test_eval_conditions_are_not_formatted_again(
+      self, param: str, condition: str
+  ) -> None:
+    """Braces in a condition reach both queries' SQL as written."""
+    expected = self._condition_sql(param, condition)
+
+    session_query = (
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+            "p.d.t", **{param: condition}
+        )
+    )
+    turn_query = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: condition}
+    )
+
+    assert expected in session_query
+    assert expected in turn_query
+
+  @pytest.mark.parametrize(
+      "build_query_sql, cte",
+      [
+          (
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              "EvalSessions",
+          ),
+          (
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              "EvalTurns",
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_where_clause_filters_the_output_rows_last(
+      self, build_query_sql: Callable[..., str], cte: str
+  ) -> None:
+    """The where_clause follows the CTE of output rows that the query reads."""
+    sql = build_query_sql("p.d.t", where_clause="eval_ready")
+
+    assert sql.endswith(f"\nFROM\n  {cte}\nWHERE\n  (\n    eval_ready\n  )\n")
+    assert build_query_sql("p.d.t").endswith(f"\nFROM\n  {cte}\n")
+
+  @pytest.mark.parametrize(
+      "build_query_sql, columns, key_columns, expected_keys",
+      [
+          (
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              _SESSION_COLUMNS,
+              (
+                  "session_id",
+                  "turn_count",
+                  "has_truncated_content",
+                  "eval_ready",
+              ),
+              [("s1", 2, True, False), ("s2", 1, False, True)],
+          ),
+          (
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              _TURN_COLUMNS,
+              (
+                  "session_id",
+                  "invocation_id",
+                  "turn_index",
+                  "has_truncated_content",
+                  "eval_ready",
+              ),
+              [
+                  ("s1", "inv-1", 0, False, True),
+                  ("s1", "inv-2", 1, True, False),
+                  ("s2", "inv-1", 0, False, True),
+              ],
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_without_conditions_reads_the_view_rows(
+      self,
+      build_query_sql: Callable[..., str],
+      columns: list[str],
+      key_columns: tuple[str, ...],
+      expected_keys: list[tuple[Any, ...]],
+  ) -> None:
+    """With no condition, a query returns the rows and columns of its view."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0),
+        *self._finished_turn("s1", "inv-2", 10, is_truncated=True),
+        *self._finished_turn("s2", "inv-1", 20),
+    ]
+
+    query_sql = build_query_sql("p.d.t")
+
+    assert self._output_columns(query_sql) == columns
+    assert "@" not in query_sql
+    # Every session or turn comes out, the truncated one too, not eval ready.
+    assert (
+        sorted(
+            tuple(row[column] for column in key_columns)
+            for row in _EvalViewSqlEvaluator(query_sql).run(rows)
+        )
+        == expected_keys
+    )
+
+  @pytest.mark.parametrize(
+      "build_view_sql, build_query_sql, view_name",
+      [
+          (
+              bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              "x_eval_session",
+          ),
+          (
+              bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              "x_eval_turn",
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_view_sql_creates_a_view_of_its_query(
+      self,
+      build_view_sql: Callable[..., str],
+      build_query_sql: Callable[..., str],
+      view_name: str,
+  ) -> None:
+    """A view runs the SQL of its query builder, with no conditions."""
+    denied_columns = frozenset({"attributes"})
+
+    view_sql = build_view_sql(
+        "p.d.t", view_prefix="x", denied_columns=denied_columns
+    )
+
+    assert view_sql == (
+        f"CREATE OR REPLACE VIEW `p.d.{view_name}` AS\n"
+        + build_query_sql("p.d.t", denied_columns=denied_columns)
+    )
+
+  def test_eval_where_clause_picks_the_rebuilt_rows(self) -> None:
+    """The where_clause filters the output rows after they are rebuilt."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0),
+        *self._finished_turn("s1", "inv-2", 10, is_truncated=True),
+        *self._finished_turn("s2", "inv-1", 20),
+    ]
+    session_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+            "p.d.t", where_clause="eval_ready"
+        )
+    )
+    turn_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+            "p.d.t", where_clause="session_id = 's1' AND turn_index = 1"
+        )
+    )
+
+    assert [row["session_id"] for row in session_query.run(rows)] == ["s2"]
+    assert [
+        (row["invocation_id"], row["turn_index"])
+        for row in turn_query.run(rows)
+    ] == [("inv-2", 1)]
+
+  def test_eval_where_clause_keeps_the_context_that_raw_where_clause_drops(
+      self,
+  ) -> None:
+    """A row that the where_clause picks keeps its session's earlier turns.
+
+    The where_clause picks rows that are rebuilt from every event, so a turn
+    keeps its turn_index and the system prompt that its session logged first.
+    A raw_where_clause that drops the earlier turn's events rebuilds the
+    session without them.
+    """
+    event = self._event
+    rows = []
+    for turn_index, invocation_id in enumerate(["inv-0", "inv-1"]):
+      second = 10 * turn_index
+      rows += [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+          ),
+          # The instruction is a callable, so the event logs none.
+          event(invocation_id, second + 1, "AGENT_STARTING"),
+          event(
+              invocation_id,
+              second + 2,
+              "LLM_REQUEST",
+              {"system_prompt": f"Prompt of turn {turn_index}"},
+          ),
+          event(
+              invocation_id,
+              second + 3,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Done.'"},
+          ),
+          event(invocation_id, second + 4, "INVOCATION_COMPLETED"),
+      ]
+    second_turn = "invocation_id = 'inv-1'"
+
+    def only_row(sql: str, column: str) -> tuple[Any, Any]:
+      """Returns ``column`` and the root agent's instruction of the one row."""
+      (row,) = _EvalViewSqlEvaluator(sql).run(rows)
+      return row[column], row["trace"]["agents"]["root_agent"]["instruction"]
+
+    build_session_query = (
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql
+    )
+    build_turn_query = bigquery_agent_analytics_plugin.build_eval_turn_query_sql
+
+    assert only_row(
+        build_turn_query("p.d.t", where_clause=second_turn), "turn_index"
+    ) == (1, "Prompt of turn 0")
+    assert only_row(
+        build_turn_query("p.d.t", raw_where_clause=second_turn), "turn_index"
+    ) == (0, "Prompt of turn 1")
+    assert only_row(
+        build_session_query("p.d.t", where_clause="turn_count = 2"),
+        "turn_count",
+    ) == (2, "Prompt of turn 0")
+    assert only_row(
+        build_session_query("p.d.t", raw_where_clause=second_turn),
+        "turn_count",
+    ) == (1, "Prompt of turn 1")
+
+  @pytest.mark.parametrize(
+      "build_query_sql, window_column",
+      [
+          (
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              "session_end_timestamp",
+          ),
+          (
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              "turn_start_timestamp",
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_declares_only_the_parameters_of_its_conditions(
+      self, build_query_sql: Callable[..., str], window_column: str
+  ) -> None:
+    """The job supplies the parameters that the two conditions name."""
+    raw_where_clause = (
+        "timestamp >= @lookback_start AND timestamp < @window_end"
+    )
+    where_clause = (
+        f"{window_column} >= @window_start AND {window_column} < @window_end"
+    )
+
+    query_sql = build_query_sql(
+        "p.d.t", where_clause=where_clause, raw_where_clause=raw_where_clause
+    )
+
+    assert "@" not in build_query_sql("p.d.t")
+    assert query_sql.count("@lookback_start") == 1
+    assert query_sql.count("@window_start") == 1
+    assert query_sql.count("@window_end") == 2
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_applies_denied_columns(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """A query reads denied columns as the views do, without naming them."""
+    query_sql = build_query_sql(
+        "p.d.t",
+        denied_columns=frozenset({"content_parts", "attributes", "latency_ms"}),
+    )
+
+    assert (
+        "\n      ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
+        " part_attributes STRING, storage_mode STRING>>[] AS content_parts,\n"
+        "      CAST(NULL AS JSON) AS attributes,\n"
+        "      CAST(NULL AS JSON) AS latency_ms,\n"
+    ) in query_sql
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_rejects_invalid_arguments(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """The query builders validate as the view builders do, and the filters."""
+    with pytest.raises(ValueError, match="dataset-qualified"):
+      build_query_sql("agent_events")
+    with pytest.raises(ValueError, match="Cannot build eval view SQL"):
+      build_query_sql("p.d.t", denied_columns=frozenset({"content"}))
+    with pytest.raises(ValueError, match=r"got \['is_truncated'\]"):
+      build_query_sql("p.d.t", denied_columns=frozenset({"is_truncated"}))
+    with pytest.raises(ValueError, match=r"got \['is_truncated'\]"):
+      build_query_sql("p.d.t", denied_columns=["is_truncated"])
+    with pytest.raises(ValueError, match="^where_clause has no condition"):
+      build_query_sql("p.d.t", where_clause="WHERE")
+    with pytest.raises(ValueError, match="^raw_where_clause has no condition"):
+      build_query_sql("p.d.t", raw_where_clause="WHERE")
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_takes_only_the_table_id_by_position(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """Only the table id is positional, so the conditions cannot be swapped."""
+    with pytest.raises(TypeError, match="1 positional argument"):
+      build_query_sql("p.d.t", frozenset())
+    with pytest.raises(TypeError, match="1 positional argument"):
+      build_query_sql("p.d.t", frozenset(), "eval_ready", "TRUE")
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize(
+      "denied_columns",
+      [
+          ["attributes", "latency_ms"],
+          ("latency_ms", "attributes", "latency_ms"),
+          {"attributes": 0, "latency_ms": 0}.keys(),
+      ],
+      ids=["list", "tuple", "dict_keys"],
+  )
+  def test_eval_query_sql_takes_denied_columns_in_any_collection(
+      self,
+      build_query_sql: Callable[..., str],
+      denied_columns: Collection[str],
+  ) -> None:
+    """A list, such as a payload_column_denylist, denies what a set does."""
+    sql = build_query_sql("p.d.t", denied_columns=denied_columns)
+
+    assert sql == build_query_sql(
+        "p.d.t", denied_columns=frozenset({"attributes", "latency_ms"})
+    )
+    assert "      CAST(NULL AS JSON) AS attributes,\n" in sql
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_takes_the_default_payload_column_denylist(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """None, the default of payload_column_denylist, denies no column."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+
+    sql = build_query_sql(
+        "p.d.t", denied_columns=config.payload_column_denylist
+    )
+
+    assert config.payload_column_denylist is None
+    assert sql == build_query_sql("p.d.t")
+    assert build_query_sql("p.d.t", denied_columns=None) == sql
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("where_clause", ["", "eval_ready -- ready only"])
+  def test_eval_query_sql_lets_a_caller_append_to_it(
+      self, build_query_sql: Callable[..., str], where_clause: str
+  ) -> None:
+    """A query ends without a ';', so a caller can append ORDER BY to it."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0),
+        *self._finished_turn("s2", "inv-1", 10),
+        *self._finished_turn("s3", "inv-1", 20),
+    ]
+    query_sql = build_query_sql("p.d.t", where_clause=where_clause)
+
+    ordered = _EvalViewSqlEvaluator(f"{query_sql}ORDER BY session_id DESC\n")
+
+    assert ";" not in query_sql
+    assert query_sql.startswith("WITH\n")
+    assert [row["session_id"] for row in ordered.run(rows)] == [
+        "s3",
+        "s2",
+        "s1",
+    ]
+
   @pytest.fixture
   def eval_sql_dir(self, tmp_path, monkeypatch):
-    """Yields an empty SQL directory beside where the plugin module now is.
+    """Yields an empty SQL directory beside where the SQL module now is.
 
-    The module's ``__file__`` points into ``tmp_path``, and the loader's cache
-    is cleared before and after the test.
+    The ``__file__`` of the module that loads the templates points into
+    ``tmp_path``, and the loader's cache is cleared before and after the test.
     """
     sql_dir = tmp_path / "plugins" / "bigquery_agent_analytics_sql"
     sql_dir.mkdir(parents=True)
     monkeypatch.setattr(
-        bigquery_agent_analytics_plugin,
+        _bigquery_agent_analytics_eval_sql,
         "__file__",
-        str(sql_dir.parent / "bigquery_agent_analytics_plugin.py"),
+        str(sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py"),
     )
     bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
     yield sql_dir
@@ -15768,8 +17330,8 @@ class TestEvalViews:
     target_sql_dir = tmp_path / "cache" / "bigquery_agent_analytics_sql"
     target_sql_dir.mkdir(parents=True)
     target = target_sql_dir.parent / "0123abcd"
-    target.write_text("# The plugin module.\n", encoding="utf-8")
-    (eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py").symlink_to(
+    target.write_text("# The SQL module.\n", encoding="utf-8")
+    (eval_sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py").symlink_to(
         target
     )
     for sql_dir, place in [(eval_sql_dir, "link"), (target_sql_dir, "target")]:
@@ -15790,12 +17352,14 @@ class TestEvalViews:
       monkeypatch: pytest.MonkeyPatch,
   ) -> None:
     """A link to the module, alone in its directory, finds its target's SQL."""
-    module = eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py"
-    module.write_text("# The plugin module.\n", encoding="utf-8")
-    link = tmp_path / "checkout" / "bigquery_agent_analytics_plugin.py"
+    module = eval_sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py"
+    module.write_text("# The SQL module.\n", encoding="utf-8")
+    link = tmp_path / "checkout" / "_bigquery_agent_analytics_eval_sql.py"
     link.parent.mkdir()
     link.symlink_to(module)
-    monkeypatch.setattr(bigquery_agent_analytics_plugin, "__file__", str(link))
+    monkeypatch.setattr(
+        _bigquery_agent_analytics_eval_sql, "__file__", str(link)
+    )
     (eval_sql_dir / "test_target.sql").write_text(
         "-- License.\n\nSELECT 'beside the target'\n", encoding="utf-8"
     )
@@ -15812,12 +17376,11 @@ class TestEvalViews:
   ) -> None:
     """With no SQL beside the module, the package's resource is read."""
     template = bigquery_agent_analytics_plugin._load_eval_sql_template(
-        "eval_turn_view_v1.sql"
+        "eval_turn_query_v1.sql"
     )
 
-    assert template.startswith(
-        "CREATE OR REPLACE VIEW `{view_ref}` AS\n{ctes}\nSELECT\n"
-    )
+    assert template.startswith("{ctes},\n")
+    assert template.endswith("\nFROM\n  EvalTurns{where_clause}\n")
 
   def test_eval_view_evaluator_requires_an_else_in_every_case(self) -> None:
     """The evaluator rejects a CASE without an ELSE, as the SQL lint does."""

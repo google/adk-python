@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import collections
 import logging
 import re
+import time
 from typing import Any
 from typing import cast
 from typing import Protocol
@@ -35,6 +37,8 @@ except ImportError as e:
 logger = logging.getLogger("google_adk." + __name__)
 
 _SESSION_ID_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+_MAX_PROCESSED_EVENTS = 1024
+_PROCESSED_EVENT_TTL_SECONDS = 600.0
 
 
 def _sanitize_session_id(value: str) -> str:
@@ -58,7 +62,29 @@ class SlackRunner:
   ):
     self.runner = runner
     self.slack_app = slack_app
+    self._processed_events: collections.OrderedDict[tuple[str, str], float] = (
+        collections.OrderedDict()
+    )
     self._setup_handlers()
+
+  def _is_duplicate_event(self, channel_id: str, ts: str | None) -> bool:
+    """Records `(channel_id, ts)` and returns whether it was seen within the TTL."""
+    if not ts:
+      return False
+    now = time.monotonic()
+    expired_before = now - _PROCESSED_EVENT_TTL_SECONDS
+    while (
+        self._processed_events
+        and next(iter(self._processed_events.values())) < expired_before
+    ):
+      self._processed_events.popitem(last=False)
+    event_key = (channel_id, ts)
+    if event_key in self._processed_events:
+      return True
+    self._processed_events[event_key] = now
+    if len(self._processed_events) > _MAX_PROCESSED_EVENTS:
+      self._processed_events.popitem(last=False)
+    return False
 
   def _setup_handlers(self) -> None:
     """Sets up event handlers for Slack."""
@@ -87,6 +113,8 @@ class SlackRunner:
     thread_ts = event.get("thread_ts") or event.get("ts")
 
     if not text or not user_id or not channel_id:
+      return
+    if self._is_duplicate_event(channel_id, event.get("ts")):
       return
 
     # In Slack, we can use the channel_id (and optionally thread_ts) as a

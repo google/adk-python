@@ -265,7 +265,13 @@ def test_is_instrumented():
 
 @pytest.mark.parametrize(
     ("installed_version", "expected"),
-    [("0.7b1", True), ("0.7b0", True), ("1.0b0", False), ("1.2b0", False)],
+    [
+        ("0.7b2", True),
+        ("0.7b1", True),
+        ("0.7b0", True),
+        ("1.0b0", False),
+        ("1.2b0", False),
+    ],
 )
 def test_should_emit_inference_token_metrics_under_the_instrumentor(
     monkeypatch: pytest.MonkeyPatch, installed_version: str, expected: bool

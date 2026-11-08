@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import AsyncIterator
 import unittest
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -21,10 +22,34 @@ import pytest
 
 pytest.importorskip("slack_bolt")
 
+from google.adk.events.event import Event
+from google.adk.integrations.slack import slack_runner as slack_runner_module
 from google.adk.integrations.slack import SlackRunner
 from google.adk.runners import Runner
 from google.genai import types
 from slack_bolt.app.async_app import AsyncApp
+
+
+def _make_thread_event(
+    ts: str | None, channel: str = "C67890"
+) -> dict[str, str]:
+  event = {
+      "text": "<@UBOT> status?",
+      "user": "U12345",
+      "channel": channel,
+      "thread_ts": "1234567890.123456",
+      "channel_type": "channel",
+  }
+  if ts is not None:
+    event["ts"] = ts
+  return event
+
+
+async def _empty_run_async(
+    *args: object, **kwargs: object
+) -> AsyncIterator[Event]:
+  return
+  yield
 
 
 class TestSlackRunner(unittest.IsolatedAsyncioTestCase):
@@ -179,6 +204,59 @@ class TestSlackRunner(unittest.IsolatedAsyncioTestCase):
         "Sorry, I encountered an error",
         self.mock_slack_app.client.chat_update.call_args[1]["text"],
     )
+
+  async def test_event_delivered_as_app_mention_and_message_runs_once(
+      self,
+  ) -> None:
+    for order in (("app_mention", "message"), ("message", "app_mention")):
+      with self.subTest(order=order):
+        slack_app = MagicMock(spec=AsyncApp)
+        runner = MagicMock(spec=Runner)
+        runner.run_async.side_effect = _empty_run_async
+        SlackRunner(runner, slack_app)
+        names = [c.args[0] for c in slack_app.event.call_args_list]
+        handlers = [
+            c.args[0] for c in slack_app.event.return_value.call_args_list
+        ]
+        handler_by_name = dict(zip(names, handlers))
+        say = AsyncMock(return_value={})
+
+        for name in order:
+          await handler_by_name[name](
+              _make_thread_event("1234567899.000001"), say
+          )
+
+        runner.run_async.assert_called_once()
+
+  async def test_processed_events_expire_by_ttl_and_capacity(self) -> None:
+    self.mock_runner.run_async.side_effect = _empty_run_async
+    say = AsyncMock(return_value={})
+    mock_time = MagicMock()
+    mock_time.monotonic.return_value = 1000.0
+
+    async def handle(ts: str | None, channel: str = "C67890") -> int:
+      await self.slack_runner._handle_message(
+          _make_thread_event(ts, channel), say
+      )
+      return int(self.mock_runner.run_async.call_count)
+
+    with (
+        patch.object(slack_runner_module, "_MAX_PROCESSED_EVENTS", 2),
+        patch.object(slack_runner_module, "_PROCESSED_EVENT_TTL_SECONDS", 60.0),
+        patch.object(slack_runner_module, "time", mock_time),
+    ):
+      self.assertEqual(await handle("100.1"), 1)
+      self.assertEqual(await handle("100.1", channel="C11111"), 2)
+      mock_time.monotonic.return_value = 1050.0
+      self.assertEqual(await handle("100.1"), 2)
+      mock_time.monotonic.return_value = 1061.0
+      self.assertEqual(await handle("100.1"), 3)
+      self.assertEqual(await handle("100.2"), 4)
+      self.assertEqual(await handle("100.3"), 5)
+      self.assertEqual(await handle("100.3"), 5)
+      self.assertEqual(await handle("100.1"), 6)
+      self.assertEqual(await handle(None), 7)
+      self.assertEqual(await handle(None), 8)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 import functools
 import inspect
 import logging
@@ -50,6 +51,22 @@ if TYPE_CHECKING:
   from ..workflow._function_node import FunctionNode
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _enum_members_to_values(args: dict[str, Any]) -> dict[str, Any]:
+  """Returns args with each Enum member, alone or in a list, as its value."""
+
+  def to_value(value: Any) -> Any:
+    return value.value if isinstance(value, Enum) else value
+
+  return {
+      name: (
+          [to_value(item) for item in value]
+          if isinstance(value, list)
+          else to_value(value)
+      )
+      for name, value in args.items()
+  }
 
 
 @functools.lru_cache(maxsize=1024)
@@ -177,7 +194,8 @@ class FunctionTool(BaseTool):
       require_confirmation: Whether this tool requires confirmation. A boolean or
         a callable that takes the function's arguments and returns a boolean. If
         the callable returns True, the tool will require confirmation from the
-        user.
+        user. The callable gets Enum arguments as the values the model sent,
+        not as members, unless FUNCTION_TOOL_ARG_VALIDATION is on.
     """
     self._spec = CallableSpec(func)
     name = _function_tool_declarations.get_callable_name(func)
@@ -413,6 +431,12 @@ class FunctionTool(BaseTool):
     """Returns whether the tool requires confirmation for the given args."""
     if callable(self._require_confirmation):
       preprocessed_args, _ = self._preprocess_args_with_validation(args)
+      if not is_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION):
+        # Preprocessing turns the values the model sent for Enum, Optional[Enum]
+        # and list[Enum] parameters into members. The callable gets the values
+        # back, as before_tool_callback does; only the tool function gets the
+        # members. With validation on, it has always gotten the members.
+        preprocessed_args = _enum_members_to_values(preprocessed_args)
       args_to_call = self._prepare_invocation_args(
           preprocessed_args, tool_context
       )

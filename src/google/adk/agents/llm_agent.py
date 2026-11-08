@@ -35,6 +35,7 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 from pydantic import PrivateAttr
+from pydantic import ValidationInfo
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
@@ -55,6 +56,7 @@ from ..utils._agent_mode import LlmAgentMode as _LlmAgentMode
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._event_loop_cache import per_loop_value
 from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import top_level_input_keys
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
@@ -411,6 +413,12 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   parallel_worker: bool | None = None
   """Whether to run the agent in parallel worker mode."""
+
+  max_parallel_workers: int | None = Field(default=None, ge=1)
+  """Maximum number of input items to run concurrently in parallel worker mode.
+
+  Requires parallel_worker=True. None means no limit on concurrency.
+  """
 
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
@@ -1186,6 +1194,21 @@ class LlmAgent(BaseAgent, abc.ABC):
     event.actions.state_delta[self.output_key] = accumulator
     return accumulator
 
+  # A field validator, unlike a model 'after' validator, does not run on an
+  # LlmAgent instance passed as a field value, such as an autospec mock.
+  @field_validator('max_parallel_workers', mode='after')
+  @classmethod
+  def _validate_parallel_worker_config(
+      cls, max_parallel_workers: int | None, info: ValidationInfo
+  ) -> int | None:
+    if max_parallel_workers is not None and not info.data.get(
+        'parallel_worker'
+    ):
+      raise ValueError(
+          'max_parallel_workers can only be set when parallel_worker is True.'
+      )
+    return max_parallel_workers
+
   @model_validator(mode='before')
   @classmethod
   def _reject_misplaced_generate_content_kwargs(cls, data: Any) -> Any:
@@ -1201,9 +1224,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not isinstance(data, dict):
       return data
 
-    agent_names = set(cls.model_fields) | {
-        f.alias for f in cls.model_fields.values() if f.alias is not None
-    }
+    agent_names = top_level_input_keys(cls.model_fields)
     redirected: list[tuple[str, str]] = []
     misplaced: dict[str, None] = {}
     extras: list[str] = []

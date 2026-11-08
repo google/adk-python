@@ -411,6 +411,18 @@ class TestValidateNodeData:
     result = validate_node_data(SampleModel, {"name": "test", "value": 42})
     assert result == {"name": "test", "value": 42}
 
+  @pytest.mark.parametrize(
+      "data", [{"city_name": "Paris"}, {"cityName": "Paris"}]
+  )
+  def test_aliased_schema_accepts_field_name_and_alias(self, data):
+    """Data keyed by field name validates even if the schema disallows it."""
+
+    class Stop(BaseModel):
+      model_config = ConfigDict(validate_by_name=False)
+      city_name: str = Field(validation_alias="cityName")
+
+    assert validate_node_data(Stop, data) == {"city_name": "Paris"}
+
   def test_content_data_and_preserve_content(self):
     """Validates wrapped content and wraps result back into Content."""
     data = types.Content(
