@@ -2476,7 +2476,8 @@ class TestRestApiTool:
         args={"pet_id": "  "}, tool_context=mock_tool_context
     )
 
-    assert "Path parameter 'petId' must not be empty." in result["error"]
+    assert "Path parameter 'pet_id' must not be empty." in result["error"]
+    assert "petId" not in result["error"]
     assert not mock_request.called
 
   def test_prepare_request_params_header_param(
