@@ -61,6 +61,7 @@ from google.adk.utils import _mtls_utils
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
 import httpx
+from jsonschema import Draft202012Validator
 import pytest
 import requests
 
@@ -370,6 +371,75 @@ class TestRestApiToolWithJsonSchema:
     declaration = tool._get_declaration()
 
     assert declaration.response_json_schema == expected
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_declared_schema_matches_successful_results(
+      self, mock_request: AsyncMock, sample_endpoint: OperationEndpoint
+  ) -> None:
+    operation = Operation(
+        operationId="getPets",
+        responses={
+            "200": Response(
+                description="Pets",
+                content={
+                    "application/json": MediaType(
+                        schema=OpenAPISchema(
+                            type="array", items={"type": "string"}
+                        )
+                    ),
+                    "text/plain": MediaType(
+                        schema=OpenAPISchema(type="string")
+                    ),
+                },
+            ),
+            "202": Response(
+                description="Job accepted",
+                content={
+                    "application/vnd.example+json": MediaType(
+                        schema=OpenAPISchema(
+                            type="object",
+                            properties={"jobId": OpenAPISchema(type="string")},
+                            required=["jobId"],
+                        )
+                    )
+                },
+            ),
+            "204": Response(description="No content"),
+        },
+    )
+    tool = RestApiTool(
+        name="get_pets",
+        description="Get pets.",
+        endpoint=sample_endpoint,
+        operation=operation,
+        include_response_schema=True,
+    )
+    validator = Draft202012Validator(
+        tool._get_declaration().response_json_schema
+    )
+    request = httpx.Request("GET", "https://example.com/pets")
+    cases = [
+        (httpx.Response(200, request=request, json=["Milo"]), ["Milo"]),
+        (httpx.Response(200, request=request, text="42"), {"text": "42"}),
+        (
+            httpx.Response(
+                202,
+                request=request,
+                json={"jobId": "job-1"},
+                headers={"Content-Type": "application/vnd.example+json"},
+            ),
+            {"jobId": "job-1"},
+        ),
+        (httpx.Response(204, request=request), {"text": ""}),
+    ]
+    for reply, expected in cases:
+      mock_request.return_value = reply
+      result = await tool.run_async(args={}, tool_context=None)
+      assert result == expected
+      validator.validate(result)
 
 
 class TestRestApiTool:

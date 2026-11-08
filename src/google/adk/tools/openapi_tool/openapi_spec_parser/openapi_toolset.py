@@ -174,8 +174,9 @@ class OpenAPIToolset(BaseToolset):
         to allow requests to private networks, localhost, and custom non-DNS
         transports.
       include_response_schema: If True, each generated tool's function
-        declaration includes the operation's 2xx response schema as
-        ``response_json_schema``, so the model can see what the tool returns.
+        declaration includes the tool's declared success shapes as
+        ``response_json_schema`` when known. Explicitly non-JSON responses
+        are returned as a text object.
         This adds the schemas to every model request that includes the tools.
         Defaults to False.
     """

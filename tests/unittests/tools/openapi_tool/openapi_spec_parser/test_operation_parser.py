@@ -478,6 +478,65 @@ def test_get_response_json_schema_without_2xx_schema():
   assert parser.get_response_json_schema() is None
 
 
+def test_get_response_json_schema_normalizes_nested_openapi_fields() -> None:
+  operation = Operation(
+      responses={
+          '200': Response(
+              description='Success',
+              content={
+                  'application/json': MediaType(
+                      schema=Schema(
+                          type='array',
+                          items=Schema(
+                              type='object',
+                              required=['name', 'password'],
+                              properties={
+                                  'name': Schema(type='string', nullable=True),
+                                  'password': Schema(
+                                      type='string', writeOnly=True
+                                  ),
+                              },
+                          ),
+                      )
+                  )
+              },
+          )
+      }
+  )
+
+  assert OperationParser(operation).get_response_json_schema() == {
+      'type': 'array',
+      'items': {
+          'type': 'object',
+          'required': ['name'],
+          'properties': {
+              'name': {'type': ['string', 'null']},
+              'password': {'type': 'string', 'writeOnly': True},
+          },
+      },
+  }
+
+
+def test_get_response_json_schema_preserves_null_const() -> None:
+  operation = Operation(
+      responses={
+          '200': Response(
+              description='Success',
+              content={
+                  'application/json': MediaType(
+                      schema=Schema(type=['string', 'null'], const=None)
+                  )
+              },
+          )
+      }
+  )
+
+  assert OperationParser(operation).get_response_json_schema() == {
+      'type': ['string', 'null'],
+      'const': None,
+  }
+
+
 def test_get_signature_parameters(sample_operation):
   """Test get_signature_parameters method."""
   parser = OperationParser(sample_operation)

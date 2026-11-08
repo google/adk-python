@@ -30,6 +30,12 @@ from pydantic import SerializationInfo
 from ..._gemini_schema_util import _to_snake_case
 
 
+def _is_json_media_type(content_type: str) -> bool:
+  """Returns whether the media type denotes a JSON representation."""
+  media_type = content_type.partition(';')[0].strip().lower()
+  return media_type == 'application/json' or media_type.endswith('+json')
+
+
 def _schema_from_openapi(value: object, *, context: str) -> Schema:
   """Normalizes a schema-bearing OpenAPI field to a concrete Schema.
 

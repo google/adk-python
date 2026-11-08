@@ -59,6 +59,7 @@ from ...tool_context import ToolContext
 from ..auth.auth_helpers import credential_to_param
 from ..auth.auth_helpers import dict_to_auth_scheme
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
+from ..common.common import _is_json_media_type
 from ..common.common import ApiParameter
 from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
@@ -263,9 +264,10 @@ class RestApiTool(BaseTool):
           to allow requests to private networks, localhost, and custom non-DNS
           transports.
         include_response_schema: If True, the function declaration includes
-          the operation's 2xx response schema as ``response_json_schema``, so
-          the model can see what the tool returns. This adds the schema to
-          every model request that includes the tool. Defaults to False.
+          the tool's declared success shapes as ``response_json_schema`` when
+          known. Explicitly non-JSON responses are returned as a text object.
+          This adds the schema to every model request that includes the tool.
+          Defaults to False.
     """
     # Gemini restrict the length of function name to be less than 64 characters
     self.name = name[:_MAX_TOOL_NAME_LENGTH]
@@ -330,7 +332,7 @@ class RestApiTool(BaseTool):
           to allow requests to private networks, localhost, and custom non-DNS
           transports.
         include_response_schema: Whether the function declaration includes the
-          operation's 2xx response schema. See ``RestApiTool.__init__``.
+          tool's declared success shapes. See ``RestApiTool.__init__``.
 
     Returns:
         A RestApiTool object.
@@ -645,12 +647,13 @@ class RestApiTool(BaseTool):
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
-  ) -> Dict[str, Any]:
+  ) -> Any:
+    """Runs the REST operation and returns its decoded result."""
     return await self.call(args=args, tool_context=tool_context)
 
   async def call(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
-  ) -> Dict[str, Any]:
+  ) -> Any:
     """Executes the REST API call.
 
     Args:
@@ -660,9 +663,9 @@ class RestApiTool(BaseTool):
           attempt and the guard that bounds the retry.
 
     Returns:
-        The API response as a dictionary. HTTP, authorization, and URL
-        validation failures are reported as an "error" entry rather than
-        raised.
+        The decoded JSON value or a dictionary containing the response text.
+        HTTP, authorization, and URL validation failures return an "error"
+        entry.
     """
     # Prepare auth credentials for the API call
     tool_auth_handler = ToolAuthHandler.from_tool_context(
@@ -779,7 +782,11 @@ class RestApiTool(BaseTool):
     # Parse API response
     try:
       response.raise_for_status()  # Raise HTTPStatusError for bad responses
-      return response.json()  # Try to decode JSON
+      if self._include_response_schema:
+        content_type = response.headers.get("content-type")
+        if content_type and not _is_json_media_type(content_type):
+          return {"text": response.text}
+      return response.json()
     except httpx.HTTPStatusError:
       error_details = response.text
       self._logger.warning(
