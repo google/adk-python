@@ -700,30 +700,46 @@ class TestLowercaseSchemaTypes:
     assert name_validator.is_valid("Paris")
     assert not name_validator.is_valid(7)
 
+  @pytest.mark.parametrize("applicator", [None, "allOf", "anyOf", "oneOf"])
   @pytest.mark.parametrize("nested_definition", [False, True])
-  def test_nullable_ancestor_preserves_pointer_targets(self, nested_definition):
+  def test_nullable_ancestor_preserves_pointer_targets(
+      self, nested_definition, applicator
+  ):
     """References into properties and descendant definitions keep resolving."""
-    name_schema = {"type": "STRING"}
+    name_schema = {"type": "string"}
     if nested_definition:
       name_schema = {
-          "$defs": {"Text": {"type": "STRING"}},
+          "$defs": {"Text": {"type": "string"}},
           "$ref": "#/properties/details/properties/name/$defs/Text",
       }
     schema = {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
             "details": {
-                "type": "OBJECT",
+                "type": "object",
                 "nullable": True,
                 "properties": {"name": name_schema},
                 "required": ["name"],
             },
             "copy": {"$ref": "#/properties/details/properties/name"},
         },
+        "required": ["details", "copy"],
     }
+    if applicator:
+      schema["properties"]["details"][applicator] = [{"required": ["name"]}]
 
     lowercase_schema_types(schema)
 
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"details": {"name": "Paris"}, "copy": "Paris"})
+    assert validator.is_valid({"details": None, "copy": "Paris"})
+    assert not validator.is_valid({"details": {"name": 7}, "copy": "Paris"})
+
+    assert not validator.is_valid({"details": {}, "copy": "Paris"})
+    assert not validator.is_valid({"details": None, "copy": 7})
+    assert not validator.is_valid({"details": {"name": "Paris"}, "copy": 7})
+    assert not validator.is_valid({"copy": "Paris"})
     assert schema["properties"]["details"]["properties"]["name"] is name_schema
     assert schema["properties"]["copy"]["$ref"] == (
         "#/properties/details/properties/name"
@@ -732,10 +748,6 @@ class TestLowercaseSchemaTypes:
       assert name_schema["$ref"] == (
           "#/properties/details/properties/name/$defs/Text"
       )
-    validator = Draft202012Validator(schema)
-    assert validator.is_valid({"details": {"name": "Paris"}, "copy": "Paris"})
-    assert validator.is_valid({"details": None, "copy": "Paris"})
-    assert not validator.is_valid({"details": {"name": 7}, "copy": "Paris"})
 
   def test_nullable_annotations_and_default_data_are_preserved(self):
     default = {"type": "USER_DATA", "nullable": True}

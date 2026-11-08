@@ -133,26 +133,6 @@ def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
   return TypeAdapter(schema).json_schema()
 
 
-_SCHEMA_METADATA_KEYS = frozenset({
-    "$defs",
-    "definitions",
-    "defs",
-    "$id",
-    "$schema",
-    "$anchor",
-    "$dynamicAnchor",
-    "$comment",
-    "title",
-    "description",
-    "default",
-    "examples",
-    "example",
-    "deprecated",
-    "readOnly",
-    "writeOnly",
-})
-
-
 def _json_schema_equal(left: object, right: object) -> bool:
   """Compares JSON values, keeping booleans distinct from numbers."""
   if isinstance(left, bool) or isinstance(right, bool):
@@ -235,62 +215,58 @@ def lowercase_schema_types(
   if not convert_nullable or value.pop("nullable", False) is not True:
     return
 
-  # Conservatively wrap applicators/references: widening type alone cannot
-  # ensure that these constraints accept null (even allOf: [False] can occur).
-  needs_union = any(
-      key in value
-      for key in (
-          "$ref",
-          "$dynamicRef",
-          "allOf",
-          "all_of",
-          "oneOf",
-          "one_of",
-          "not",
-          "if",
-          "then",
-          "else",
+  # Widen type/enum in place, preserving properties, items and their descendants
+  # as JSON Pointer targets even when applicators also need a null alternative.
+  if "type" in value:
+    schema_type = value["type"]
+    if isinstance(schema_type, str):
+      value["type"] = (
+          [schema_type, "null"] if schema_type != "null" else ["null"]
       )
-  ) or ("type" in value and any(k in value for k in ("anyOf", "any_of")))
-  if not needs_union:
-    if "type" in value:
-      schema_type = value["type"]
-      if isinstance(schema_type, str):
-        value["type"] = (
-            [schema_type, "null"] if schema_type != "null" else ["null"]
-        )
-      elif isinstance(schema_type, list) and "null" not in schema_type:
-        schema_type.append("null")
-    if "const" in value:
-      constant = value.pop("const")
-      value["enum"] = (
-          [constant]
-          if "enum" not in value
-          or any(_json_schema_equal(constant, item) for item in value["enum"])
-          else []
-      )
-    if "enum" in value and not any(
-        _json_schema_equal(None, item) for item in value["enum"]
-    ):
-      value["enum"].append(None)
-    if "type" in value:
-      return
+    elif isinstance(schema_type, list) and "null" not in schema_type:
+      schema_type.append("null")
+  if "const" in value:
+    constant = value.pop("const")
+    value["enum"] = (
+        [constant]
+        if "enum" not in value
+        or any(_json_schema_equal(constant, item) for item in value["enum"])
+        else []
+    )
+  if "enum" in value and not any(
+      _json_schema_equal(None, item) for item in value["enum"]
+  ):
+    value["enum"].append(None)
+
+  # Only applicators/references can still reject null. Move those constraints
+  # into a union, leaving all other keywords and subschemas at their old paths.
+  union_keys = (
+      "$ref",
+      "$dynamicRef",
+      "allOf",
+      "all_of",
+      "oneOf",
+      "one_of",
+      "not",
+      "if",
+      "then",
+      "else",
+  )
+  needs_union = any(key in value for key in union_keys) or (
+      "type" in value and any(key in value for key in ("anyOf", "any_of"))
+  )
+  if needs_union:
+    constraints = {
+        key: value.pop(key)
+        for key in (*union_keys, "anyOf", "any_of")
+        if key in value
+    }
+    value["anyOf"] = [constraints, {"type": "null"}]
+  elif "type" not in value:
     for key in ("anyOf", "any_of"):
       if key in value:
         value[key].append({"type": "null"})
-    # Untyped type-specific keywords already accept null. Keep their children
-    # at the original paths so JSON Pointer references continue to resolve.
-    return
-
-  # Null-rejecting applicators need a union. Metadata and definitions stay at
-  # the original node.
-  constraints = {
-      key: value.pop(key)
-      for key in tuple(value)
-      if key not in _SCHEMA_METADATA_KEYS
-  }
-  if constraints:
-    value["anyOf"] = [constraints, {"type": "null"}]
+    # Untyped type-specific keywords already accept null.
 
 
 def enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
