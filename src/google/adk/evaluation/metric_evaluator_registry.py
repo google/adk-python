@@ -25,6 +25,7 @@ from ._efficiency_evaluators import _InferenceCallCountV1Evaluator
 from ._efficiency_evaluators import _InvocationDurationV1Evaluator
 from ._efficiency_evaluators import _TokenUsageV1Evaluator
 from ._efficiency_evaluators import _ToolCallCountV1Evaluator
+from ._tool_parameter_match_evaluator import _ToolParameterMatchEvaluator
 from .custom_metric_evaluator import _CustomMetricEvaluator
 from .eval_config import EvalConfig
 from .eval_metrics import EvalMetric
@@ -50,6 +51,7 @@ from .metric_info_providers import RubricBasedToolUseV1EvaluatorMetricInfoProvid
 from .metric_info_providers import SafetyEvaluatorV1MetricInfoProvider
 from .metric_info_providers import TokenUsageV1MetricInfoProvider
 from .metric_info_providers import ToolCallCountV1MetricInfoProvider
+from .metric_info_providers import ToolParameterMatchEvaluatorMetricInfoProvider
 from .metric_info_providers import TrajectoryEvaluatorMetricInfoProvider
 from .multi_turn_task_success_evaluator import MultiTurnTaskSuccessV1Evaluator
 from .multi_turn_tool_use_quality_evaluator import MultiTurnToolUseQualityV1Evaluator
@@ -203,6 +205,11 @@ def _register_standard_metrics(
   metric_evaluator_registry.register_evaluator(
       metric_info=TrajectoryEvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=TrajectoryEvaluator,
+  )
+
+  metric_evaluator_registry.register_evaluator(
+      metric_info=ToolParameterMatchEvaluatorMetricInfoProvider().get_metric_info(),
+      evaluator=_ToolParameterMatchEvaluator,
   )
 
   metric_evaluator_registry.register_evaluator(
