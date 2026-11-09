@@ -47,6 +47,7 @@ except ImportError as e:
 
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic_core import to_jsonable_python
 from typing_extensions import override
 
 from . import _openai_common
@@ -115,6 +116,22 @@ def _part_to_openai_content(
   return ""
 
 
+def _encode_tool_result_value(value: Any) -> Any:
+  """Converts a tool result value that json cannot encode, like a datetime.
+
+  Datetimes become ISO 8601 text, bytes become base64 text and Pydantic
+  models become dicts of their non-None fields, as in a Gemini request.
+  Values Pydantic cannot convert fall back to their str().
+  """
+  return to_jsonable_python(
+      value,
+      by_alias=False,
+      exclude_none=True,
+      bytes_mode="base64",
+      serialize_unknown=True,
+  )
+
+
 def _content_to_openai_messages(
     content: types.Content,
 ) -> list[dict[str, object]]:
@@ -144,7 +161,10 @@ def _content_to_openai_messages(
           "role": "tool",
           "tool_call_id": part.function_response.id or "",
           "content": (
-              json.dumps(part.function_response.response)
+              json.dumps(
+                  part.function_response.response,
+                  default=_encode_tool_result_value,
+              )
               if part.function_response.response is not None
               else ""
           ),
