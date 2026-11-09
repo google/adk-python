@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -34,6 +35,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
+from ..utils._sync_runner import _is_async_callable
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -593,11 +595,23 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
-    result = metric_evaluator.evaluate_invocations(
-        actual_invocations=actual_invocations,
-        expected_invocations=expected_invocations,
-        conversation_scenario=conversation_scenario,
-    )
+    result: EvaluationResult | Awaitable[EvaluationResult]
+    if _is_async_callable(metric_evaluator.evaluate_invocations):
+      result = metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
+    else:
+      # Offload synchronous evaluators (such as the Vertex Gen AI Evaluation SDK
+      # facade) to a worker thread so blocking I/O does not stall the event
+      # loop.
+      result = await asyncio.to_thread(
+          metric_evaluator.evaluate_invocations,
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
     if inspect.isawaitable(result):
       return await result
     return result
