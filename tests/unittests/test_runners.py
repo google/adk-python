@@ -7576,5 +7576,85 @@ async def test_run_async_workflow_root_with_existing_history_and_no_new_message_
   )
 
 
+async def test_run_async_sequential_agent_root_empty_and_history_cases():
+  """Runner.run_async with SequentialAgent (BaseAgent) root checks empty session and proceeds with history (#7934)."""
+  from google.adk.agents.sequential_agent import SequentialAgent
+
+  session_service = InMemorySessionService()
+
+  # 1. Empty session: without new_message or invocation_id, raises ValueError before execution
+  empty_session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s_empty"
+  )
+  mock_model1 = testing_utils.MockModel.create(responses=["step1"])
+  seq1 = SequentialAgent(
+      name="seq1", sub_agents=[LlmAgent(name="sub1", model=mock_model1)]
+  )
+  runner1 = Runner(
+      app=App(
+          name="test_app",
+          root_agent=seq1,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      ),
+      session_service=session_service,
+  )
+
+  with pytest.raises(
+      ValueError,
+      match=r"Running an agent requires either a new_message or an invocation_id",
+  ):
+    async for _ in runner1.run_async(
+        user_id="u",
+        session_id=empty_session.id,
+        new_message=None,
+        invocation_id=None,
+    ):
+      pass
+
+  # 2. History session: with prior user event and resumable app, proceeds without new_message
+  history_session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s_history"
+  )
+  user_event = Event(
+      timestamp=1.0,
+      invocation_id="inv1",
+      author="user",
+      content=types.Content(
+          role="user", parts=[types.Part(text="hello previous")]
+      ),
+  )
+  await session_service.append_event(session=history_session, event=user_event)
+
+  mock_model2 = testing_utils.MockModel.create(responses=["step1 reply"])
+  seq2 = SequentialAgent(
+      name="seq2", sub_agents=[LlmAgent(name="sub2", model=mock_model2)]
+  )
+  runner2 = Runner(
+      app=App(
+          name="test_app",
+          root_agent=seq2,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      ),
+      session_service=session_service,
+  )
+
+  events = [
+      e
+      async for e in runner2.run_async(
+          user_id="u",
+          session_id=history_session.id,
+          new_message=None,
+          invocation_id="inv1",
+      )
+  ]
+  assert events
+  assert len(mock_model2.requests) == 1
+  assert any(
+      any(part.text == "hello previous" for part in c.parts)
+      for c in mock_model2.requests[0].contents
+      if c.role == "user"
+  )
+
+
 if __name__ == "__main__":
   pytest.main([__file__])
