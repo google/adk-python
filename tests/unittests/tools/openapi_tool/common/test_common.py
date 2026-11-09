@@ -147,6 +147,7 @@ class TestApiParameter:
         'param_schema': {'type': 'string', 'description': 'test description'},
         'description': 'test description',
         'py_name': 'test_param_custom',
+        'required': False,
     }
 
   def test_api_parameter_model_serializer_preserves_style_and_explode(self):
