@@ -100,10 +100,26 @@ class _LoopState(DynamicNodeState):
   step before the loop: the loop does not run it again, so its arrival stays
   recorded.
 
-  An arrival is dropped (and any prior one for that predecessor cleared) when
-  a newer run of the predecessor is already buffered, so a loop restart that
-  re-triggers a still-running branch cannot mix that branch's old completion
-  with a newer sibling.
+  Before firing, an arrival is dropped if the loop restarted its branch after
+  it ran, so a join never combines outputs from different iterations. See
+  ``Workflow._is_superseded_arrival``.
+  """
+
+  run_sequence: int = 0
+  """Number of static runs started so far; each run's id in ``run_sources``."""
+
+  static_run_ids: dict[str, int] = field(default_factory=dict)
+  """``run_sources`` id of the latest run of each static node."""
+
+  run_sources: dict[int, tuple[str, tuple[int, ...]]] = field(
+      default_factory=dict
+  )
+  """Node name and source run ids for every static run started.
+
+  The sources are the runs whose completion triggered the run (several for a
+  wait-for-all node). Following them gives each run's ancestry, which is how
+  a join tells a late arrival from an abandoned loop iteration apart from a
+  current one.
   """
 
   descendants: dict[str, frozenset[str]] = field(default_factory=dict)
@@ -707,6 +723,12 @@ class Workflow(BaseNode):
       loop_state.replayed_nodes.add(node_name)
 
     loop_state.static_runs[node_name] = run
+    loop_state.run_sequence += 1
+    loop_state.static_run_ids[node_name] = loop_state.run_sequence
+    loop_state.run_sources[loop_state.run_sequence] = (
+        node_name,
+        trigger._sources,
+    )
     loop_state.pending_tasks[node_name] = asyncio.create_task(
         ctx._run_node_internal(
             node,
@@ -866,6 +888,31 @@ class Workflow(BaseNode):
         for p in predecessors
     ):
       return
+    pred_run_ids = {
+        p: loop_state.static_run_ids[p]
+        for p in predecessors
+        if p != START.name and p in loop_state.static_run_ids
+    }
+    superseded = {
+        p
+        for p, run_id in pred_run_ids.items()
+        if any(
+            self._is_superseded_arrival(loop_state, run_id, other_id)
+            for other, other_id in pred_run_ids.items()
+            if other != p
+        )
+    }
+    if superseded:
+      # The loop restarted these branches after they ran. Wait for their
+      # runs from the current iteration instead of mixing iterations.
+      logger.debug(
+          "Dropping join arrivals from %s for %s; the loop restarted their"
+          " branch",
+          sorted(superseded),
+          target_name,
+      )
+      arrivals.difference_update(superseded)
+      return
     reachable = self._descendants(loop_state, target_name)
     if target_name in reachable:
       # The join is on a cycle. A predecessor it cannot reach, such as a
@@ -891,25 +938,59 @@ class Workflow(BaseNode):
         else (loop_state.static_runs[p].branch or "")
         for p in predecessors
     ]
-    loop_state.trigger_buffer.setdefault(target_name, []).append(
-        Trigger(
-            input=outputs,
-            use_sub_branch=False,
-            branch=get_common_branch_prefix(branches),
-        )
+    trigger = Trigger(
+        input=outputs,
+        use_sub_branch=False,
+        branch=get_common_branch_prefix(branches),
     )
+    trigger._sources = tuple(sorted(pred_run_ids.values()))
+    loop_state.trigger_buffer.setdefault(target_name, []).append(trigger)
 
-  def _invalidate_join_arrivals_for(
-      self, loop_state: _LoopState, predecessor_name: str
-  ) -> None:
-    """Drop a predecessor's unconsumed arrivals from every wait-for-all node.
+  @staticmethod
+  def _run_ancestry(loop_state: _LoopState, run_id: int) -> set[int]:
+    """Returns run_id and every static run it was triggered from, transitively."""
+    seen = {run_id}
+    frontier = [run_id]
+    while frontier:
+      _, sources = loop_state.run_sources[frontier.pop()]
+      for source in sources:
+        if source not in seen:
+          seen.add(source)
+          frontier.append(source)
+    return seen
 
-    Called when a newer run of ``predecessor_name`` is buffered, so a join
-    cannot later combine that predecessor's previous completion with outputs
-    from a newer iteration of its siblings.
+  def _is_superseded_arrival(
+      self, loop_state: _LoopState, run_id: int, other_run_id: int
+  ) -> bool:
+    """Checks whether a join arrival is from an older loop iteration.
+
+    Two arrivals meeting at a join share their most recent common ancestor
+    runs: the points where their branches forked. The arrival from
+    ``run_id`` is superseded when the other branch, after that fork, ran a
+    newer run of a node on ``run_id``'s own branch, starting with the fork
+    itself. That means the loop came back and restarted ``run_id``'s branch,
+    so a newer run of it belongs with the other arrival.
+
+    Two branches forked by the same run are never superseded, however many
+    steps each has or however often an inner loop on one of them repeats.
     """
-    for arrivals in loop_state.join_arrivals.values():
-      arrivals.discard(predecessor_name)
+    own = self._run_ancestry(loop_state, run_id)
+    other = self._run_ancestry(loop_state, other_run_id)
+    common = own & other
+    # The common ancestors that no other common ancestor was triggered from.
+    common_sources = {
+        source for c in common for source in loop_state.run_sources[c][1]
+    }
+    forks = common - common_sources
+    branch = (own - common) | forks
+    latest_on_branch: dict[str, int] = {}
+    for rid in branch:
+      name = loop_state.run_sources[rid][0]
+      latest_on_branch[name] = max(latest_on_branch.get(name, 0), rid)
+    return any(
+        rid > latest_on_branch.get(loop_state.run_sources[rid][0], rid)
+        for rid in other - own
+    )
 
   def _buffer_downstream_triggers(
       self,
@@ -927,33 +1008,23 @@ class Workflow(BaseNode):
         routes_to_match=route,
     )
     use_sub_branch = len(next_nodes) > 1
+    source = loop_state.static_run_ids.get(node_name)
     for target_name in next_nodes:
       target_node = self._get_static_node_by_name(target_name)
 
       if target_node._requires_all_predecessors:
-        # A completion that still has another run of the same node queued is
-        # from an abandoned iteration: the loop head restarted and re-triggered
-        # this branch while it was in flight. Drop it so the join waits for
-        # the newer run instead of mixing iterations.
-        if loop_state.trigger_buffer.get(node_name):
-          logger.debug(
-              "Dropping join arrival from %s for %s; a newer run is buffered",
-              node_name,
-              target_name,
-          )
-        else:
-          loop_state.join_arrivals.setdefault(target_name, set()).add(node_name)
-          self._buffer_barrier_trigger(loop_state, target_name, ctx)
+        loop_state.join_arrivals.setdefault(target_name, set()).add(node_name)
+        self._buffer_barrier_trigger(loop_state, target_name, ctx)
       else:
-        # A newer run of this node supersedes any arrival it already recorded.
-        self._invalidate_join_arrivals_for(loop_state, target_name)
-        loop_state.trigger_buffer.setdefault(target_name, []).append(
-            Trigger(
-                input=output,
-                use_sub_branch=use_sub_branch,
-                branch=branch,
-            )
+        # Normal node logic
+        trigger = Trigger(
+            input=output,
+            use_sub_branch=use_sub_branch,
+            branch=branch,
         )
+        if source is not None:
+          trigger._sources = (source,)
+        loop_state.trigger_buffer.setdefault(target_name, []).append(trigger)
 
   def _collect_remaining_interrupts(self, loop_state: _LoopState) -> None:
     """Gather interrupt_ids from nodes still WAITING after the loop."""
