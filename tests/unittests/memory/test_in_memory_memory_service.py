@@ -424,6 +424,17 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
         ('私はPythonでADKを使っています', 'Java', 0),
         ('私はmy_var_nameを使う', 'my_var_name', 1),
         ('私はcafé_1を使う', 'café_1', 1),
+        # Latin word inside an unspaced-script query, e.g. a user message
+        # that preload_memory searches with
+        ('I write my backend in Python.', 'Pythonについて教えて', 1),
+        ('I write my backend in Python.', '我用Python写代码', 1),
+        ('I visited İstanbul last year.', 'İstanbul旅行', 1),
+        ('I write my backend in Python.', 'Javaについて教えて', 0),
+        ('I write my backend in Python.', 'thonについて教えて', 0),
+        # A run split out of a query word matches whole words only
+        ('私と犬', 'Pythonと', 0),
+        # "İ".lower() is "i" plus U+0307: no stray "i" word to match on
+        ('I like cats.', 'İstanbul旅行', 0),
         # Latin partial-word must NOT match (regression guard)
         ('I like to code in Python.', 'thon', 0),
         ('私はPythonでADKを使っています', 'thon', 0),
