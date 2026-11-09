@@ -1002,6 +1002,73 @@ def test_run_eval_without_eval_set_results_manager_succeeds(
   assert response.json() == {"runEvalResults": []}
 
 
+@pytest.fixture
+def workflow_root_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  workflow = Workflow(name="wf", edges=[(START, BaseNode(name="leaf"))])
+
+  class WorkflowLoader(BaseAgentLoader):
+
+    def load_agent(self, agent_name: str) -> Workflow:
+      return workflow
+
+    def list_agents(self) -> list[str]:
+      return ["wf_app"]
+
+  dev_server = DevServer(
+      agent_loader=WorkflowLoader(),
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  return TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+
+def test_app_graph_for_workflow_root_is_empty(workflow_root_client):
+  """A Workflow root gets an empty app graph instead of a 500."""
+  response = workflow_root_client.get("/dev/apps/wf_app/graph")
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
+async def test_event_graph_for_workflow_root_is_empty(
+    workflow_root_client, mock_session_service
+):
+  """A Workflow root gets an empty event graph instead of a 500."""
+  session = await mock_session_service.create_session(
+      app_name="wf_app", user_id="user"
+  )
+  event = Event(author="leaf", invocation_id="invocation_id")
+  await mock_session_service.append_event(session=session, event=event)
+
+  response = workflow_root_client.get(
+      f"/dev/apps/wf_app/users/user/sessions/{session.id}/events/"
+      f"{event.id}/graph"
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
 @pytest.mark.parametrize(
     ("web", "bind_host", "expected"),
     [

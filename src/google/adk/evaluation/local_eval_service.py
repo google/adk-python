@@ -25,7 +25,6 @@ import uuid
 
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -36,6 +35,7 @@ from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
 from ..utils._sync_runner import _is_async_callable
+from ..workflow._base_node import BaseNode
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -162,7 +162,7 @@ class LocalEvalService(BaseEvalService):
 
   def __init__(
       self,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       eval_sets_manager: EvalSetsManager,
       metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
       session_service: Optional[BaseSessionService] = None,
@@ -647,7 +647,7 @@ class LocalEvalService(BaseEvalService):
       app_name: str,
       eval_set_id: str,
       eval_case: EvalCase,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       use_live: bool,
       live_timeout_seconds: int,
       *,

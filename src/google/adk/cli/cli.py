@@ -40,7 +40,6 @@ from watchdog.events import FileSystemEvent
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
@@ -60,6 +59,7 @@ from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME as _REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
+from ..workflow._base_node import BaseNode
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_loader import AgentLoader
@@ -118,8 +118,8 @@ class InputFile(BaseModel):
   queries: list[str]
 
 
-def _to_app(agent_or_app: Union[BaseAgent, App, Any], app_name: str) -> App:
-  """Wraps a BaseAgent or BaseNode in an App if not already one."""
+def _to_app(agent_or_app: Union[BaseNode, App], app_name: str) -> App:
+  """Wraps a BaseNode in an App if not already one."""
   if isinstance(agent_or_app, App):
     return agent_or_app
   return App(name=app_name, root_agent=agent_or_app)
@@ -128,7 +128,7 @@ def _to_app(agent_or_app: Union[BaseAgent, App, Any], app_name: str) -> App:
 async def run_input_file(
     app_name: str,
     user_id: str,
-    agent_or_app: Union[LlmAgent, BaseAgent, App],
+    agent_or_app: Union[BaseNode, App],
     artifact_service: BaseArtifactService,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
@@ -249,7 +249,7 @@ async def _prompt_for_function_call(
 
 
 async def run_interactively(
-    root_agent_or_app: Union[LlmAgent, BaseAgent, App],
+    root_agent_or_app: Union[BaseNode, App],
     artifact_service: BaseArtifactService,
     session: Session,
     session_service: BaseSessionService,
@@ -466,7 +466,7 @@ def _setup_runner_context(
     use_local_storage: bool = True,
     default_llm_model: Optional[str] = None,
 ) -> tuple[
-    Union[BaseAgent, App],
+    Union[BaseNode, App],
     BaseSessionService,
     BaseArtifactService,
     BaseMemoryService,
