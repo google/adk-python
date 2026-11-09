@@ -45,6 +45,7 @@ from ..features import FeatureName
 from ..features import override_feature_enabled
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._cli_generate_agent_card import generate_agent_card
 from ._telemetry._metrics_collector import MetricsCollector
 from .utils import envs
 from .utils import logs
@@ -1096,6 +1097,15 @@ def adk_services_options(
     ),
     default=None,
 )
+@click.option(
+    "--reload_agents",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Watch the agent folder for .py/.yaml/.yml changes and"
+        " hot-reload the agent in interactive mode."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1121,6 +1131,7 @@ def cli_run(
     default_llm_model: Optional[str] = None,
     log_level: str = "INFO",
     state_file: Optional[str] = None,
+    reload_agents: bool = False,
 ) -> None:
   """Runs an agent. If no query is provided, enters interactive mode.
 
@@ -1195,6 +1206,7 @@ def cli_run(
             timeout=timeout,
             in_memory=in_memory,
             jsonl=jsonl,
+            reload_agents=reload_agents,
             session_service_uri=session_service_uri,
             artifact_service_uri=artifact_service_uri,
             memory_service_uri=memory_service_uri,
@@ -1370,6 +1382,16 @@ def _resolve_eval_config_file_path(
     ),
 )
 @click.option(
+    "--parallelism",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Optional. Maximum number of eval cases to run in parallel during"
+        " inference and metric evaluation. Overrides parallelism in the eval"
+        " config; if neither is set, defaults to 4."
+    ),
+)
+@click.option(
     "--print_detailed_results",
     is_flag=True,
     show_default=True,
@@ -1385,6 +1407,7 @@ def cli_eval(
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
     num_runs: Optional[int] = None,
+    parallelism: int | None = None,
 ) -> None:
   """Evaluates an agent given the eval sets.
 
@@ -1442,6 +1465,10 @@ def cli_eval(
   multi_run_config.num_runs in the eval config; if neither is set, each eval
   case runs once.
 
+  PARALLELISM: Maximum number of eval cases to run in parallel during inference
+  and metric evaluation. Overrides parallelism in the eval config; if neither is
+  set, defaults to 4.
+
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
@@ -1451,6 +1478,7 @@ def cli_eval(
     import importlib  # noqa: F401
 
     from ..evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
+    from ..evaluation._eval_case_result_multi_run_aggregator import check_pass_k_criteria_against_num_runs
     from ..evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
     from ..evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
     from ..evaluation.base_eval_service import InferenceConfig
@@ -1508,6 +1536,19 @@ def cli_eval(
     num_runs = eval_config.multi_run_config.num_runs
   if num_runs is None:
     num_runs = 1
+  # A pass@k criterion's k is checked against the number of runs only now,
+  # once `--num_runs` has overridden the config, and before any inference.
+  try:
+    check_pass_k_criteria_against_num_runs(
+        eval_config.multi_run_config, num_runs
+    )
+  except ValueError as e:
+    raise click.UsageError(str(e)) from e
+
+  # The `--parallelism` flag overrides the eval config. If neither sets
+  # parallelism, the eval service uses its own default.
+  if parallelism is None:
+    parallelism = eval_config.parallelism
 
   # Live mode is resolved from the eval config, consistent with how
   # `user_simulator_config` and other eval settings are sourced.
@@ -1519,6 +1560,8 @@ def cli_eval(
     )
   else:
     inference_config = InferenceConfig(use_live=False, num_runs=num_runs)
+  if parallelism is not None:
+    inference_config.parallelism = parallelism
 
   # Check if the first entry is a file that exists, if it does then we assume
   # rest of the entries are also files. We enforce this assumption in the if
@@ -1600,6 +1643,7 @@ def cli_eval(
             inference_results=inference_results,
             eval_service=eval_service,
             eval_metrics=eval_metrics,
+            parallelism=parallelism,
         )
     )
     aggregate_eval_results = aggregate_eval_case_results(
@@ -3494,3 +3538,6 @@ def cli_deploy_gke(
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)
+
+
+main.add_command(generate_agent_card)

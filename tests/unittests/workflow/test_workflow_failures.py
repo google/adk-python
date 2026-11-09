@@ -33,6 +33,8 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
+from google.adk.workflow import FunctionNode
+from google.adk.workflow import JoinNode
 from google.adk.workflow import START
 from google.adk.workflow._errors import NodeTimeoutError
 from google.adk.workflow._graph import Graph
@@ -1424,12 +1426,10 @@ async def test_fail_fast_preserves_completed_siblings(
   original_handle_completion = Workflow._handle_completion
   handle_completion_calls = []
 
-  def spy_handle_completion(
-      self, loop_state, node_name, node_obj, child_ctx, ctx
-  ):
+  def spy_handle_completion(self, loop_state, node_name, child_ctx, ctx):
     handle_completion_calls.append(node_name)
     return original_handle_completion(
-        self, loop_state, node_name, node_obj, child_ctx, ctx
+        self, loop_state, node_name, child_ctx, ctx
     )
 
   app = App(name=request.function.__name__, root_agent=wf)
@@ -1446,9 +1446,8 @@ async def test_fail_fast_preserves_completed_siblings(
   assert node_success_completed is True
 
   # Under the bug, succeeding_node's completion handler was skipped.
-  # With the fix, succeeding_node's completion is handled.
-  assert 'failing_node' not in handle_completion_calls
-  assert 'succeeding_node' in handle_completion_calls
+  # With the fix, succeeding_node's completion is handled after failing_node.
+  assert handle_completion_calls == ['failing_node', 'succeeding_node']
 
 
 @pytest.mark.asyncio
@@ -1808,3 +1807,77 @@ async def test_failed_node_in_nested_workflow_reruns_on_resume(
   assert inner_flaky_runs == 2
   assert inner_downstream_inputs == ['inner output']
   assert outer_upstream_runs == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_replays_sibling_with_pending_event_persist() -> None:
+  """A retried workflow does not re-run a sibling with a pending event append.
+
+  The sibling's task completes its body but can still be blocked in
+  _enqueue_event waiting for the runner to append its output event (slow
+  plugin callbacks or a session service with awaited I/O). The retry's
+  rescan must wait for those queued appends, otherwise the sibling is not
+  recovered and its side effect happens twice.
+  """
+  sibling_attempts = 0
+  flaky_attempts = 0
+  plugin_events: list[Event] = []
+
+  class SlowAppendPlugin(BasePlugin):
+    """Simulates slow event persistence (plugin callbacks or DB I/O)."""
+
+    @override
+    async def on_event_callback(
+        self, *, invocation_context: InvocationContext, event: Event
+    ) -> Event | None:
+      plugin_events.append(event)
+      await asyncio.sleep(0.05)
+      return None
+
+  async def sibling_node(ctx: Context) -> AsyncGenerator[str, None]:
+    nonlocal sibling_attempts
+    sibling_attempts += 1
+    yield 'side effect done'
+
+  async def flaky_node(ctx: Context) -> AsyncGenerator[str, None]:
+    nonlocal flaky_attempts
+    flaky_attempts += 1
+    if flaky_attempts == 1:
+      raise CustomRetryableError('Node failed')
+    yield 'recovered'
+
+  sibling = FunctionNode(func=sibling_node, name='sibling')
+  flaky = FunctionNode(func=flaky_node, name='flaky')
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='body',
+      edges=[
+          (START, (flaky, sibling)),
+          (flaky, join),
+          (sibling, join),
+      ],
+      retry_config=RetryConfig(
+          max_attempts=2,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner.plugin_manager.plugins.insert(0, InvariantPlugin())
+  runner.plugin_manager.plugins.append(SlowAppendPlugin(name='slow_append'))
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='start')], role='user')
+  streamed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=msg
+      )
+  ]
+
+  assert flaky_attempts == 2
+  assert sibling_attempts == 1
+  assert not any(e.partial for e in plugin_events)
+  assert not any(e.partial for e in streamed_events)

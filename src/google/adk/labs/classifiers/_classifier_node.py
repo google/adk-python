@@ -20,7 +20,6 @@ from collections.abc import AsyncGenerator
 from typing import Annotated
 from typing import Any
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -68,7 +67,7 @@ class ClassifierNode(BaseNode):
   classifier: SerializeAsAny[BaseClassifier]
   """The classifier that answers :attr:`question`."""
 
-  question: Annotated[Union[Choice, Binary], Field(discriminator='type')]
+  question: Annotated[Choice | Binary, Field(discriminator='type')]
   """The question whose answer picks the route."""
 
   threshold: float = Field(default=0.5, ge=0.0, le=1.0)

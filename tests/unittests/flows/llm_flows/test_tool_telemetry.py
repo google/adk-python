@@ -13,8 +13,6 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Dict
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
@@ -27,8 +25,8 @@ from google.genai import types
 from ... import testing_utils
 
 
-async def invoke_tool() -> Optional[Event]:
-  def simple_fn(**kwargs) -> Dict[str, Any]:
+async def invoke_tool() -> Event | None:
+  def simple_fn(**kwargs) -> dict[str, Any]:
     return {'result': 'test'}
 
   tool = FunctionTool(simple_fn)

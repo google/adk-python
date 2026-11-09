@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import aclosing
 import json
 import logging
@@ -119,10 +120,36 @@ async def _summarize_events_with_trace(
     events: list[Event],
     events_to_compact: list[Event],
     trigger: str,
+    abort_signal: asyncio.Event | None = None,
 ) -> Event | None:
   """Summarizes events within a trace span labeled for compaction."""
-  if config.summarizer is None:
+  if config.summarizer is None or (
+      abort_signal is not None and abort_signal.is_set()
+  ):
     return None
+
+  async def _maybe_summarize_with_abort() -> Event | None:
+    assert config.summarizer is not None
+    if abort_signal is None:
+      return await config.summarizer.maybe_summarize_events(
+          events=events_to_compact
+      )
+    summarize_task = asyncio.create_task(
+        config.summarizer.maybe_summarize_events(events=events_to_compact)
+    )
+    abort_task = asyncio.create_task(abort_signal.wait())
+    try:
+      await asyncio.wait(
+          {summarize_task, abort_task}, return_when=asyncio.FIRST_COMPLETED
+      )
+      if abort_signal.is_set():
+        return None
+      return await summarize_task
+    finally:
+      for task in (abort_task, summarize_task):
+        if not task.done():
+          task.cancel()
+      await asyncio.gather(abort_task, summarize_task, return_exceptions=True)
 
   attributes = _build_compaction_attributes(
       session_id=session.id,
@@ -138,9 +165,7 @@ async def _summarize_events_with_trace(
   with tracer.start_as_current_span(f'compact_events {trigger}') as span:
     span.set_attributes(attributes)
     try:
-      compaction_event = await config.summarizer.maybe_summarize_events(
-          events=events_to_compact
-      )
+      compaction_event = await _maybe_summarize_with_abort()
     except Exception as e:  # pylint: disable=broad-exception-caught
       # The full history is still usable, so a failure must not end the turn.
       # Nothing unwinds past the span, so without an explicit status it would
@@ -725,8 +750,11 @@ async def _run_compaction_for_token_threshold_config(
     agent_name: str = '',
     current_branch: str | None = None,
     isolation_scope: str | None = None,
+    abort_signal: asyncio.Event | None = None,
 ) -> bool:
   """Runs token-threshold compaction for a provided compaction config."""
+  if abort_signal is not None and abort_signal.is_set():
+    return False
   if not _has_token_threshold_config(config):
     return False
   if config is None:
@@ -774,8 +802,11 @@ async def _run_compaction_for_token_threshold_config(
       events=events,
       events_to_compact=events_to_compact,
       trigger='token_threshold',
+      abort_signal=abort_signal,
   )
-  if compaction_event:
+  if compaction_event and not (
+      abort_signal is not None and abort_signal.is_set()
+  ):
     compaction_event.isolation_scope = isolation_scope
     await session_service.append_event(session=session, event=compaction_event)
     logger.debug('Token-threshold event compactor finished.')
@@ -787,6 +818,8 @@ async def _run_compaction_for_sliding_window(
     app: App,
     session: Session,
     session_service: BaseSessionService,
+    *,
+    abort_signal: asyncio.Event | None = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs sliding-window compaction with the app's compaction config."""
   if app.root_agent is None:
@@ -797,6 +830,7 @@ async def _run_compaction_for_sliding_window(
           session=session,
           session_service=session_service,
           agent=app.root_agent,
+          abort_signal=abort_signal,
       )
   ) as compaction_events:
     async for compaction_event in compaction_events:
@@ -809,6 +843,7 @@ async def _run_compaction_for_sliding_window_config(
     session: Session,
     session_service: BaseSessionService,
     agent: BaseNode,
+    abort_signal: asyncio.Event | None = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs sliding-window compaction over the session's events.
 
@@ -834,14 +869,17 @@ async def _run_compaction_for_sliding_window_config(
     session: The session containing events to compact.
     session_service: The session service, used by the token-threshold path,
       which appends its own event directly.
-    agent: The root agent, whose model builds the summarizer when the config
-      has none.
+    agent: The root agent, whose model builds the summarizer when the config has
+      none.
+    abort_signal: Optional signal that cancels in-flight summarization.
 
   Yields:
     The sliding-window compaction event, if one is produced. The caller (the
     runner loop) is responsible for appending it to the session, so that
     persistence of this event stays at the runtime's synchronization point.
   """
+  if abort_signal is not None and abort_signal.is_set():
+    return
   # Drop rewound invocations first so the summary covers only live events. This
   # keeps the compactor consistent with prompt building (the contents processor
   # also applies rewinds); otherwise rewound content would leak back into future
@@ -863,6 +901,7 @@ async def _run_compaction_for_sliding_window_config(
         session=session,
         session_service=session_service,
         agent=agent,
+        abort_signal=abort_signal,
     )
     if token_compacted:
       return
@@ -959,6 +998,7 @@ async def _run_compaction_for_sliding_window_config(
       events=events,
       events_to_compact=events_to_compact,
       trigger='sliding_window',
+      abort_signal=abort_signal,
   )
   logger.debug('Event compactor finished.')
   if compaction_event:

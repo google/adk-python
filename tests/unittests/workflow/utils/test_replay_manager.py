@@ -27,6 +27,8 @@ from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.workflow.utils import _rehydration_utils
+from google.adk.workflow.utils import _replay_manager
 from google.adk.workflow.utils._replay_manager import ReplayManager
 from google.genai import types
 import pytest
@@ -415,11 +417,6 @@ def test_scan_workflow_events_sequence_excludes_prior_invocation_events():
   assert sequence == ["alpha@1", "beta@1"]
   # Sequence and recovered state must agree; disagreement was the defect.
   assert "finish@1" not in recovered
-  # The fix belongs in _scan_sequence, NOT in the event index: the index
-  # deliberately spans the whole session so multi-turn context stays visible
-  # during rehydration. Filtering there instead would pass the assertions
-  # above while silently breaking cross-turn context.
-  assert prior in mgr._transitive_events_by_parent["wf@1"]
 
 
 def test_prepare_parent_sequence_barrier_excludes_prior_invocation_events():
@@ -448,7 +445,6 @@ def test_prepare_parent_sequence_barrier_excludes_prior_invocation_events():
   barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
 
   assert barrier.sequence == ["alpha@1"]
-  assert prior in mgr._events_by_parent["wf@1"]
 
 
 @pytest.mark.asyncio
@@ -609,11 +605,31 @@ async def test_advance_sequence_for_unprepared_path_leaves_other_barriers_alone(
   assert not barrier.events["beta@1"].is_set()
 
 
-def _ctx_over(events):
+@pytest.mark.asyncio
+async def test_release_pending_sequence_releases_only_interrupt_placed_keys():
+  """A rerun releases a place its interrupt took, never one a result took."""
+  ctx = _ctx_over([
+      _node_ev("wf@1/ask@1", "inv-1", interrupt_ids=["fc-1"]),
+      _node_ev("wf@1/done@1", "inv-1", output="done"),
+      _node_ev("wf@1/after@1", "inv-1", output="after"),
+  ])
+  mgr = ReplayManager()
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+  assert barrier.sequence == ["ask@1", "done@1", "after@1"]
+
+  await mgr.release_pending_sequence("wf@1", "ask@1")
+  assert barrier.current_index == 1
+
+  await mgr.release_pending_sequence("wf@1", "done@1")
+  assert barrier.current_index == 1
+  assert not barrier.events["after@1"].is_set()
+
+
+def _ctx_over(events, invocation_id="inv-1"):
   """A Context whose session holds `events`."""
   ctx = MagicMock()
   ctx._invocation_context = MagicMock()
-  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.invocation_id = invocation_id
   ctx._invocation_context.session = MagicMock()
   ctx._invocation_context.session.events = events
   return ctx
@@ -1116,3 +1132,174 @@ def test_scan_workflow_events_sequence_keeps_error_event_with_transfer() -> (
   assert recovered["router@1"].error_code is None
   assert recovered["router@1"].transfer_to_agent == "agent_b"
   assert sequence == ["router@1", "steady@1"]
+
+
+def _user_reply(fc_id, invocation_id, branch=None):
+  return Event(
+      author="user",
+      invocation_id=invocation_id,
+      branch=branch,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="adk_request_input", id=fc_id, response={"r": 1}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _node_ev(path, invocation_id, output=None, interrupt_ids=None):
+  return Event(
+      author="node",
+      invocation_id=invocation_id,
+      output=output,
+      node_info=NodeInfo(path=path),
+      long_running_tool_ids=interrupt_ids,
+  )
+
+
+def _prompt(invocation_id):
+  return Event(
+      author="user",
+      invocation_id=invocation_id,
+      content=types.Content(role="user", parts=[types.Part(text="hi")]),
+  )
+
+
+def _multi_invocation_history():
+  """Interleaved invocations with nested paths, replies, branches and a rewind."""
+  return [
+      _prompt("inv-a"),
+      _node_ev("wf@1/a@1", "inv-a", output="a"),
+      _node_ev("wf@1/a@1/x@1", "inv-a", output="x"),
+      _node_ev("wf@1/ask@1", "inv-a", interrupt_ids=["fc-a"]),
+      _prompt("inv-b"),
+      _node_ev("wf@1/a@1", "inv-b", output="a2"),
+      _node_ev("wf@1/br@1/child@1", "inv-b", interrupt_ids=["fc-10"]),
+      _node_ev("other@1/c@1", "inv-b", output="c"),
+      _node_ev("wf@1/a@1", "", output="orphan"),
+      _user_reply("fc-a", "inv-a"),
+      _node_ev("wf@1/ask@1", "inv-a", output="answered"),
+      _user_reply("resp-1", "inv-b", branch="wf@1.child@fc-10"),
+      _prompt("inv-c"),
+      _user_reply("fc-a", "inv-c"),
+      _node_ev("wf@1/a@1/x@1/y@1", "inv-c", output="y"),
+      Event(
+          author="user",
+          invocation_id="inv-d",
+          actions=EventActions(rewind_before_invocation_id="inv-c"),
+      ),
+      _prompt("inv-d"),
+      _node_ev("wf@1/a@1", "inv-d", output="after rewind"),
+  ]
+
+
+def test_growing_a_session_matches_indexing_it_from_scratch():
+  """Each query matches what a manager built on the same prefix returns.
+
+  The session grows under a live run, so the index is extended in place. Every
+  append must leave it saying what a rebuild would say, for every invocation.
+  """
+  history = _multi_invocation_history()
+  invocations = ["inv-a", "inv-b", "inv-c", "inv-d", "inv-missing"]
+  paths = [
+      "",
+      "wf@1",
+      "wf@1/a@1",
+      "wf@1/a@1/x@1",
+      "wf@1/a@1/x@1/y@1",
+      "wf@1/ask@1",
+      "wf@1/br@1",
+      "wf@1/br@1/child@1",
+      "other@1",
+      "other@1/c@1",
+      "missing@1/z@1",
+  ]
+
+  def ids(events):
+    return [id(e) for e in events or []]
+
+  growing = []
+  incremental = {
+      inv: (ReplayManager(), _ctx_over(growing, inv)) for inv in invocations
+  }
+  for event in history:
+    growing.append(event)
+    for inv in invocations:
+      mgr, ctx = incremental[inv]
+      rebuilt = ReplayManager()
+      rebuilt_ctx = _ctx_over(list(growing), inv)
+
+      for path in paths:
+        assert ids(mgr.get_events_for_rehydration(ctx, path)) == ids(
+            rebuilt.get_events_for_rehydration(rebuilt_ctx, path)
+        )
+      assert ids(mgr.indexed_invocation_events(ctx)) == ids(
+          rebuilt.indexed_invocation_events(rebuilt_ctx)
+      )
+
+
+def test_a_reply_routes_to_an_interrupt_from_an_earlier_invocation():
+  """Indexing one invocation still files its replies under the asker's parent.
+
+  Interrupt ownership is the one thing read across invocations: the call a
+  reply answers was raised by an earlier turn, so it is never among the
+  indexed invocation's own events.
+  """
+  asked = _node_ev("wf@1/ask@1", "inv-a", interrupt_ids=["fc-a"])
+  elsewhere = _node_ev("other@1/c@1", "inv-b", output="c")
+  reply = _user_reply("fc-a", "inv-b")
+  mgr = ReplayManager()
+  ctx = _ctx_over([asked, elsewhere, reply], "inv-b")
+
+  # Unrouted, the reply would land under root and the query would fall back to
+  # every event of the invocation.
+  assert [id(e) for e in mgr.get_events_for_rehydration(ctx, "wf@1/ask@1")] == [
+      id(reply)
+  ]
+
+
+def _earlier_turns(count):
+  return [
+      _node_ev(f"wf@1/step{i}@1", f"turn-{t}", output=i)
+      for t in range(count)
+      for i in range(3)
+  ]
+
+
+def test_workflow_scans_read_only_the_current_invocation():
+  """Scans at workflow start skip earlier invocations' events entirely."""
+  current = _node_ev("wf@1/step0@1", "inv-1", output="now")
+  ctx = _ctx_over(_earlier_turns(20) + [current])
+  ctx.node_path = "wf@1"
+  mgr = ReplayManager()
+  scanned = []
+
+  def _record_reconstruct(*, events, **kwargs):
+    scanned.extend(events)
+    return _rehydration_utils._reconstruct_node_states(events=events, **kwargs)
+
+  real_scan_sequence = ReplayManager._scan_sequence
+
+  def _record_scan_sequence(self, events, *args, **kwargs):
+    scanned.extend(events)
+    return real_scan_sequence(self, events, *args, **kwargs)
+
+  with (
+      mock.patch.object(
+          _replay_manager,
+          "_reconstruct_node_states",
+          side_effect=_record_reconstruct,
+      ),
+      mock.patch.object(ReplayManager, "_scan_sequence", _record_scan_sequence),
+  ):
+    recovered, sequence = mgr.scan_workflow_events(ctx)
+    ReplayManager().prepare_parent_sequence_barrier(ctx, "wf@1")
+
+  assert [id(e) for e in scanned] == [id(current)] * 3
+  assert recovered["step0@1"].output == "now"
+  assert sequence == ["step0@1"]

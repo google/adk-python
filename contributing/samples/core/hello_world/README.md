@@ -56,7 +56,7 @@ Demonstrates adjusting `GenerateContentConfig` safety settings to prevent false 
 ```python
 root_agent = Agent(
     name='hello_world_agent',
-    ...
+    # ...
     generate_content_config=types.GenerateContentConfig(
         safety_settings=[
             types.SafetySetting(

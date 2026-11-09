@@ -1659,7 +1659,6 @@ def to_agent_engine(
   # source copied; the config-file value is resolved once the file is read.
   if python_version is not None:
     python_version = _validate_python_version(python_version)
-  display_name = display_name or app_name
   parent_folder = os.path.dirname(os.path.normpath(agent_folder))
   if adk_app_object:
     warnings.warn(
@@ -1746,6 +1745,8 @@ def to_agent_engine(
             f' {display_name}'
         )
       agent_config['display_name'] = display_name
+    elif not agent_config.get('display_name'):
+      agent_config['display_name'] = app_name
     if description:
       if 'description' in agent_config:
         click.echo(

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -24,7 +25,6 @@ import uuid
 
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -34,6 +34,8 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
+from ..utils._sync_runner import _is_async_callable
+from ..workflow._base_node import BaseNode
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -160,7 +162,7 @@ class LocalEvalService(BaseEvalService):
 
   def __init__(
       self,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       eval_sets_manager: EvalSetsManager,
       metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
       session_service: Optional[BaseSessionService] = None,
@@ -593,11 +595,23 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
-    result = metric_evaluator.evaluate_invocations(
-        actual_invocations=actual_invocations,
-        expected_invocations=expected_invocations,
-        conversation_scenario=conversation_scenario,
-    )
+    result: EvaluationResult | Awaitable[EvaluationResult]
+    if _is_async_callable(metric_evaluator.evaluate_invocations):
+      result = metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
+    else:
+      # Offload synchronous evaluators (such as the Vertex Gen AI Evaluation SDK
+      # facade) to a worker thread so blocking I/O does not stall the event
+      # loop.
+      result = await asyncio.to_thread(
+          metric_evaluator.evaluate_invocations,
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
     if inspect.isawaitable(result):
       return await result
     return result
@@ -633,7 +647,7 @@ class LocalEvalService(BaseEvalService):
       app_name: str,
       eval_set_id: str,
       eval_case: EvalCase,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       use_live: bool,
       live_timeout_seconds: int,
       *,

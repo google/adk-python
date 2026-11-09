@@ -68,6 +68,8 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     "gen_ai.client.inference.usage.reasoning.output_tokens": "generate_content",
     "gen_ai.client.inference.operation.input_tokens": "generate_content",
     "gen_ai.client.inference.operation.output_tokens": "generate_content",
+    "gen_ai.client.inference.time_to_first_chunk": "generate_content",
+    "gen_ai.client.inference.time_per_output_chunk": "generate_content",
     "gen_ai.execute_tool.duration": "execute_tool",
     "gen_ai.invoke_agent.duration": "invoke_agent",
     "gen_ai.invoke_agent.inference_calls": "invoke_agent",

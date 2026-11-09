@@ -243,6 +243,45 @@ _inference_operation_output_tokens = meter.create_histogram(
     explicit_bucket_boundaries_advisory=_INFERENCE_OPERATION_TOKEN_BUCKET_BOUNDS,
 )
 
+# Declared here rather than through `gen_ai_metrics`, which only has these under
+# the `gen_ai.client.operation.*` names semantic-conventions-genai#521 replaced.
+_INFERENCE_CHUNK_BUCKET_BOUNDS = [
+    0.01,
+    0.02,
+    0.04,
+    0.08,
+    0.16,
+    0.32,
+    0.64,
+    1.28,
+    2.56,
+    5.12,
+    10.24,
+    20.48,
+    40.96,
+    81.92,
+]
+_client_inference_time_to_first_chunk = meter.create_histogram(
+    "gen_ai.client.inference.time_to_first_chunk",
+    unit="s",
+    description=(
+        "Time to receive the first chunk, measured from when the client issues"
+        " the generation request to when the first chunk is received in the"
+        " response stream."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_CHUNK_BUCKET_BOUNDS,
+)
+_client_inference_time_per_output_chunk = meter.create_histogram(
+    "gen_ai.client.inference.time_per_output_chunk",
+    unit="s",
+    description=(
+        "Time per output chunk, recorded for each chunk received after the"
+        " first one, measured as the time elapsed from the end of the previous"
+        " chunk to the end of the current chunk."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_CHUNK_BUCKET_BOUNDS,
+)
+
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
 # The tail is sized for a workflow rather than a single agent: a coding agent
 # routinely spends hundreds of model and tool calls finishing one task, and a
@@ -696,6 +735,40 @@ def record_client_operation_duration(
     attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
 
   _client_operation_duration.record(elapsed_s, attributes=attrs)
+
+
+def record_client_inference_chunk(
+    llm_request: LlmRequest,
+    response: LlmResponse,
+    elapsed_s: float,
+    first_chunk: bool,
+) -> None:
+  """Records how long one chunk of a streamed response took to arrive.
+
+  Args:
+    llm_request: The request being streamed.
+    response: The chunk that arrived.
+    elapsed_s: Seconds since the request was issued for the first chunk, and
+      since the previous chunk for every later one.
+    first_chunk: Whether this is the first chunk of the response.
+  """
+  attrs = {
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
+          llm_request.model
+      ),
+  }
+  if llm_request.model:
+    attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
+  if response.model_version:
+    attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response.model_version
+
+  histogram = (
+      _client_inference_time_to_first_chunk
+      if first_chunk
+      else _client_inference_time_per_output_chunk
+  )
+  histogram.record(elapsed_s, attributes=attrs)
 
 
 def record_client_token_usage(

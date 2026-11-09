@@ -1753,6 +1753,140 @@ async def test_evaluate_raises_when_num_runs_less_than_one(num_runs):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parallelism", [0, -1])
+async def test_evaluate_raises_when_parallelism_less_than_one(parallelism):
+  """`evaluate` rejects `parallelism` values below 1 up front."""
+  with pytest.raises(
+      ValueError, match=f"`parallelism` must be at least 1, got {parallelism}."
+  ):
+    await AgentEvaluator.evaluate(
+        agent_module="pkg.search_agent",
+        eval_dataset_file_path_or_dir="some.test.json",
+        parallelism=parallelism,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallelism", [0, -1])
+async def test_evaluate_eval_set_raises_when_parallelism_less_than_one(
+    parallelism,
+):
+  """`evaluate_eval_set` rejects `parallelism` values below 1 up front."""
+  with pytest.raises(
+      ValueError, match=f"`parallelism` must be at least 1, got {parallelism}."
+  ):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="pkg.search_agent",
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        parallelism=parallelism,
+    )
+
+
+def _mock_eval_service_for_parallelism(mocker):
+  """Patches agent resolution and LocalEvalService to record eval configs."""
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=mocker.AsyncMock(return_value=(mocker.MagicMock(), None)),
+  )
+  mock_service = mocker.MagicMock()
+  mock_service.perform_inference = mocker.MagicMock(
+      side_effect=_empty_async_gen
+  )
+  mock_service.evaluate = mocker.MagicMock(side_effect=_empty_async_gen)
+  mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService",
+      return_value=mock_service,
+  )
+  return mock_service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "live_model_config",
+    [None, LiveModelConfig(timeout_seconds=600)],
+    ids=["standard", "live"],
+)
+async def test_evaluate_eval_set_reads_parallelism_from_eval_config(
+    live_model_config, mocker
+):
+  """`eval_config.parallelism` reaches both inference and evaluation."""
+  mock_service = _mock_eval_service_for_parallelism(mocker)
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module="pkg.search_agent",
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(
+          criteria={},
+          parallelism=8,
+          live_model_config=live_model_config,
+      ),
+      num_runs=1,
+      print_detailed_results=False,
+  )
+
+  inference_request = mock_service.perform_inference.call_args.kwargs[
+      "inference_request"
+  ]
+  evaluate_request = mock_service.evaluate.call_args.kwargs["evaluate_request"]
+  assert inference_request.inference_config.parallelism == 8
+  assert evaluate_request.evaluate_config.parallelism == 8
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_parallelism_arg_overrides_eval_config(mocker):
+  """An explicit `parallelism` argument overrides `eval_config.parallelism`."""
+  mock_service = _mock_eval_service_for_parallelism(mocker)
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module="pkg.search_agent",
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(criteria={}, parallelism=8),
+      num_runs=1,
+      print_detailed_results=False,
+      parallelism=2,
+  )
+
+  inference_request = mock_service.perform_inference.call_args.kwargs[
+      "inference_request"
+  ]
+  evaluate_request = mock_service.evaluate.call_args.kwargs["evaluate_request"]
+  assert inference_request.inference_config.parallelism == 2
+  assert evaluate_request.evaluate_config.parallelism == 2
+
+
+@pytest.mark.asyncio
+async def test_evaluate_threads_parallelism_to_eval_service(mocker, tmp_path):
+  """`evaluate` forwards `parallelism` to override `test_config.json`."""
+  mock_service = _mock_eval_service_for_parallelism(mocker)
+  (tmp_path / "test_config.json").write_text(
+      json.dumps({"criteria": {}, "parallelism": 3}),
+      encoding="utf-8",
+  )
+  eval_file = tmp_path / "sample.test.json"
+  eval_file.write_text(
+      _make_eval_set().model_dump_json(),
+      encoding="utf-8",
+  )
+
+  await AgentEvaluator.evaluate(
+      agent_module="pkg.search_agent",
+      eval_dataset_file_path_or_dir=str(eval_file),
+      num_runs=1,
+      print_detailed_results=False,
+      parallelism=6,
+  )
+
+  inference_request = mock_service.perform_inference.call_args.kwargs[
+      "inference_request"
+  ]
+  evaluate_request = mock_service.evaluate.call_args.kwargs["evaluate_request"]
+  assert inference_request.inference_config.parallelism == 6
+  assert evaluate_request.evaluate_config.parallelism == 6
+
+
+@pytest.mark.asyncio
 async def test_evaluate_passes_results_manager_and_app_name(mocker, tmp_path):
   test_dir = tmp_path / "evals"
   nested_dir = test_dir / "nested"

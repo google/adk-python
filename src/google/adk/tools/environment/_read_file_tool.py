@@ -179,6 +179,9 @@ class ReadFileTool(BaseTool):
             end_line=end_line,
             max_bytes=max_bytes + 1,
         )
+      end = total if end_line is None else min(total, end_line)
+      if total == 0 and start == 1 and end == 0:
+        return {'status': 'ok', 'content': ''}
       if start > total:
         return {
             'status': 'error',
@@ -187,7 +190,6 @@ class ReadFileTool(BaseTool):
             ),
             'total_lines': total,
         }
-      end = total if end_line is None else min(total, end_line)
       if start > end:
         return {
             'status': 'error',
