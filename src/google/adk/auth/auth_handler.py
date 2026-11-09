@@ -251,10 +251,14 @@ class AuthHandler:
     state[key] = _credential_without_client_secret(exchange_result.credential)
     return exchange_result.credential
 
-  async def _get_auth_response_async(
+  async def get_auth_response_async(
       self, state: State
   ) -> AuthCredential | None:
-    """Same as `get_auth_response`, awaiting the token request in place."""
+    """Same as `get_auth_response`, but awaits the token request in place.
+
+    The token request is awaited instead of blocking the calling thread, so
+    callers on an event loop keep running while the exchange is in flight.
+    """
     stored = self._read_stored_credential(state)
     if stored is None:
       return None
@@ -272,6 +276,12 @@ class AuthHandler:
     )
     state[key] = _credential_without_client_secret(exchange_result.credential)
     return exchange_result.credential
+
+  async def _get_auth_response_async(
+      self, state: State
+  ) -> AuthCredential | None:
+    """Same as `get_auth_response`, awaiting the token request in place."""
+    return await self.get_auth_response_async(state)
 
   def generate_auth_request(self) -> AuthConfig:
     return _without_configured_secrets(self._generate_auth_request())

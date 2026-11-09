@@ -52,7 +52,7 @@ class TestGoogleCredentialsManager:
     Now includes state dictionary for testing caching behavior.
     """
     context = create_autospec(ToolContext, instance=True)
-    context.get_auth_response.return_value = None
+    context.get_auth_response_async.return_value = None
     context.state = {}
     return context
 
@@ -95,7 +95,7 @@ class TestGoogleCredentialsManager:
 
     assert result == mock_creds
     # Verify no OAuth flow was triggered
-    mock_tool_context.get_auth_response.assert_not_called()
+    mock_tool_context.get_auth_response_async.assert_not_called()
     mock_tool_context.request_credential.assert_not_called()
 
   @pytest.mark.parametrize(
@@ -132,7 +132,7 @@ class TestGoogleCredentialsManager:
       )
 
     # Verify no OAuth flow was triggered
-    mock_tool_context.get_auth_response.assert_not_called()
+    mock_tool_context.get_auth_response_async.assert_not_called()
     mock_tool_context.request_credential.assert_not_called()
 
   @pytest.mark.asyncio
@@ -430,7 +430,7 @@ class TestGoogleCredentialsManager:
     mock_auth_response = Mock()
     mock_auth_response.oauth2.access_token = "new_access_token"
     mock_auth_response.oauth2.refresh_token = "new_refresh_token"
-    mock_tool_context.get_auth_response.return_value = mock_auth_response
+    mock_tool_context.get_auth_response_async.return_value = mock_auth_response
 
     # Create a mock credentials instance that will represent our created credentials
     mock_creds = create_autospec(OAuthCredentials, instance=True)
@@ -477,7 +477,7 @@ class TestGoogleCredentialsManager:
     """
     # No existing credentials, no auth response (flow not completed)
     manager.credentials_config.credentials = None
-    mock_tool_context.get_auth_response.return_value = None
+    mock_tool_context.get_auth_response_async.return_value = None
 
     result = await manager.get_valid_credentials(mock_tool_context)
 
@@ -506,7 +506,7 @@ class TestGoogleCredentialsManager:
     mock_auth_response = Mock()
     mock_auth_response.oauth2.access_token = "cached_access_token"
     mock_auth_response.oauth2.refresh_token = "cached_refresh_token"
-    mock_tool_context.get_auth_response.return_value = mock_auth_response
+    mock_tool_context.get_auth_response_async.return_value = mock_auth_response
 
     # Create the mock credentials instance that will be returned by the constructor
     mock_creds = create_autospec(OAuthCredentials, instance=True)
@@ -542,7 +542,7 @@ class TestGoogleCredentialsManager:
     credentials_config.credentials = None
 
     # Reset auth response to None (no new OAuth flow available)
-    mock_tool_context.get_auth_response.return_value = None
+    mock_tool_context.get_auth_response_async.return_value = None
 
     # Mock the from_authorized_user_info method for the second manager
     with patch.object(

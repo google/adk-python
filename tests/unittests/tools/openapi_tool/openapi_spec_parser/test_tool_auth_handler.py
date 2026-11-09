@@ -244,7 +244,9 @@ async def test_openid_connect_with_auth_response(
       auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
       oauth2=OAuth2Auth(auth_response_uri='test_auth_response_uri'),
   )
-  mock_auth_handler.get_auth_response.return_value = returned_credential
+  mock_auth_handler.get_auth_response_async = AsyncMock(
+      return_value=returned_credential
+  )
   mock_auth_handler_path = 'google.adk.auth.auth_handler.AuthHandler'
   monkeypatch.setattr(
       mock_auth_handler_path, lambda *args, **kwargs: mock_auth_handler
@@ -267,7 +269,67 @@ async def test_openid_connect_with_auth_response(
       openid_connect_scheme, openid_connect_credential
   )
   assert stored_credential == returned_credential
-  mock_auth_handler.get_auth_response.assert_called_once()
+  mock_auth_handler.get_auth_response_async.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_openid_connect_exchange_does_not_block_the_event_loop(
+    openid_connect_scheme, openid_connect_credential, monkeypatch
+):
+  """Test that redeeming the auth code does not freeze the event loop.
+
+  The token request has to be awaited rather than run on the calling thread,
+  otherwise a slow token endpoint stalls every other request served by the
+  same event loop.
+  """
+  stored = openid_connect_credential.model_copy(deep=True)
+  stored.oauth2.client_secret = None
+  stored.oauth2.auth_code = 'auth-code'
+  stored.oauth2.auth_response_uri = 'test.com?code=auth-code'
+
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+  )
+  auth_config = handler._build_auth_config()
+  tool_context.state['temp:' + auth_config.credential_key] = stored
+
+  mock_client = MagicMock()
+
+  def slow_fetch_token(*args, **kwargs):
+    time.sleep(0.5)
+    return {'access_token': 'slow_access_token', 'token_type': 'bearer'}
+
+  mock_client.fetch_token.side_effect = slow_fetch_token
+  monkeypatch.setattr(
+      'google.adk.auth.oauth2_credential_util.OAuth2Session',
+      lambda *args, **kwargs: mock_client,
+  )
+
+  ticks = 0
+  done = False
+
+  async def ticker():
+    nonlocal ticks
+    while not done:
+      await asyncio.sleep(0.01)
+      ticks += 1
+
+  ticker_task = asyncio.create_task(ticker())
+  await asyncio.sleep(0)
+  try:
+    result = await handler.prepare_auth_credentials()
+  finally:
+    done = True
+    await ticker_task
+
+  assert result.state == 'done'
+  assert result.auth_credential.http.credentials.token == 'slow_access_token'
+  # The loop kept running while the token request was in flight. A blocking
+  # exchange leaves a single tick, the one that ran before it started.
+  assert ticks > 1
 
 
 @pytest.mark.asyncio

@@ -714,8 +714,10 @@ class ToolAuthHandler:
     self.tool_context.request_credential(self._build_auth_config())
     return None
 
-  def _get_auth_response(self) -> AuthCredential:
-    return self.tool_context.get_auth_response(self._build_auth_config())
+  async def _get_auth_response(self) -> AuthCredential:
+    return await self.tool_context.get_auth_response_async(
+        self._build_auth_config()
+    )
 
   def _external_exchange_required(self, credential) -> bool:
     return (
@@ -747,7 +749,7 @@ class ToolAuthHandler:
     # adk framework supports exchange access_token already
     # for other credential, adk can also get back the credential directly
     if not credential or self._external_exchange_required(credential):
-      credential = self._get_auth_response()
+      credential = await self._get_auth_response()
       # store fetched credential
       if credential:
         self._store_credential(credential)
