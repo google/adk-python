@@ -1577,6 +1577,12 @@ class ApiServer:
     app = FastAPI(
         lifespan=cast("Lifespan[FastAPI]", internal_lifespan),
         root_path=root_path,
+        # FastAPI >= 0.142 continues the incoming traceparent in its server
+        # span. On Agent Engine that header is the platform's, mostly
+        # unsampled, so the default sampler would drop every span of the
+        # request; get_propagated_context ignores it there for the same reason.
+        # Older FastAPI keeps this unused in `app.extra`.
+        telemetry={"tracing": not os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")},
     )
 
     has_configured_allowed_origins = bool(allow_origins)
