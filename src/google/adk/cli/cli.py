@@ -60,6 +60,7 @@ from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME as _RE
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
 from ..workflow._base_node import BaseNode
+from ..workflow.utils._rehydration_utils import _schema_expects_text
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_loader import AgentLoader
@@ -226,6 +227,10 @@ async def _prompt_for_function_call(
   if fc_name == _REQUEST_CONFIRMATION:
     confirmed = _is_positive_response(user_input)
     response: dict[str, Any] = {'confirmed': confirmed}
+  elif fc_name == _REQUEST_INPUT and _schema_expects_text(
+      args.get('response_schema')
+  ):
+    response = {'result': user_input}
   else:
     # Try to parse as JSON, fall back to wrapping as {"result": value}.
     try:
