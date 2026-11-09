@@ -282,7 +282,12 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
   def _aggregate_conversation_results(
       self, per_invocation_results: list[PerInvocationResult]
   ) -> EvaluationResult:
-    """Computes the fraction of results that resulted in a pass status."""
+    """Computes the fraction of evaluated user turns that passed.
+
+    Turns that could not be evaluated (no score, or NOT_EVALUATED) are left
+    out of the fraction instead of counting as failures. If no turn was
+    evaluated, the overall status is NOT_EVALUATED.
+    """
     num_valid = 0.0
     num_evaluated = 0
     num_skipped = 0
