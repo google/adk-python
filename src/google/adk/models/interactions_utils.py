@@ -759,7 +759,7 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
   """Convert an interaction output content to a list of types.Part.
 
   Args:
-    output: The interaction output object to convert.
+    step: The interaction step to convert.
 
   Returns:
     A list of types.Part objects.
