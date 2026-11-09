@@ -9185,5 +9185,51 @@ def test_context_propagation_middleware_extracts_w3c_traceparent_and_baggage(
   ] == [("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")]
 
 
+def test_agent_engine_keeps_spans_of_unsampled_platform_traceparent(
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """On Agent Engine an unsampled platform traceparent does not drop spans."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "123")
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  exporter = InMemorySpanExporter()
+  trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+
+  @client.app.get("/_test_trace_context")
+  async def _probe():
+    with trace.get_tracer(__name__).start_as_current_span("probe"):
+      pass
+    return {"ok": True}
+
+  try:
+    response = client.get(
+        "/_test_trace_context",
+        headers={
+            "traceparent": (
+                "00-0000000000000000385c840e58676fdd-00f067aa0ba902b7-00"
+            ),
+        },
+    )
+    spans = exporter.get_finished_spans()
+  finally:
+    exporter.shutdown()
+
+  assert response.status_code == 200
+  assert [(s.name, s.parent) for s in spans] == [("probe", None)]
+  assert spans[0].context.trace_id != 0x385C840E58676FDD
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])
