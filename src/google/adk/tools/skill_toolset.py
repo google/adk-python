@@ -2177,7 +2177,12 @@ class SkillToolset(BaseToolset):
       ValueError: If both `code_executor` and `environment` are given, or on a
         duplicate skill name or a relative `skills_folder`.
     """
-    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+    # Loading a skill changes the tools mid-turn, so they are not cached.
+    super().__init__(
+        tool_filter=tool_filter,
+        tool_name_prefix=tool_name_prefix,
+        disable_invocation_cache=True,
+    )
 
     config = lifecycle_config or SkillLifecycleConfig()
     # Copy the overrides: editing the config later must not change a session
@@ -2231,8 +2236,6 @@ class SkillToolset(BaseToolset):
       self._skills_folder = Path(skills_folder)
     self._script_timeout = script_timeout
     self._save_output_artifacts = save_output_artifacts
-    # Needed for mid-turn reloading of skill tools.
-    self._use_invocation_cache = False
     # Cache fetched remote skill definitions per turn to reduce requests to registry
     self._fetched_skill_cache: collections.OrderedDict[
         str,

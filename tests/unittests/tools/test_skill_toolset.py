@@ -4270,7 +4270,7 @@ async def test_turn_scoped_skill_cache_concurrency(mock_registry, mock_skill1):
 def test_skill_toolset_disables_invocation_cache():
   """Verify SkillToolset disables tool invocation caching to allow dynamic tools."""
   toolset = skill_toolset.SkillToolset()
-  assert toolset._use_invocation_cache is False
+  assert toolset.use_invocation_cache is False
 
 
 @pytest.mark.asyncio
