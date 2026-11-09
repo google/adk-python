@@ -53,6 +53,7 @@ from .eval_result import EvalCaseResult
 from .eval_set import EvalCase
 from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
+from .evaluation_generator import _get_eval_session_app_name_and_user_id
 from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -356,10 +357,10 @@ class LocalEvalService(BaseEvalService):
     # would be the score for the eval case.
     overall_eval_metric_results: list[EvalMetricResult] = []
 
-    user_id = (
-        eval_case.session_input.user_id
-        if eval_case.session_input and eval_case.session_input.user_id
-        else "test_user_id"
+    # Inference created the session under the eval case's own app name and
+    # user id, which can differ from the app name of the request.
+    session_app_name, user_id = _get_eval_session_app_name_and_user_id(
+        eval_case.session_input
     )
 
     actual_invocations = inference_result.inferences
@@ -370,7 +371,7 @@ class LocalEvalService(BaseEvalService):
       session_details = None
       if inference_result.session_id is not None:
         session_details = await self._session_service.get_session(
-            app_name=inference_result.app_name,
+            app_name=session_app_name,
             user_id=user_id,
             session_id=inference_result.session_id,
         )
@@ -443,7 +444,7 @@ class LocalEvalService(BaseEvalService):
     session_details = None
     if session_id is not None:
       session_details = await self._session_service.get_session(
-          app_name=inference_result.app_name,
+          app_name=session_app_name,
           user_id=user_id,
           session_id=session_id,
       )

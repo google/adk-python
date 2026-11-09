@@ -1930,6 +1930,97 @@ async def test_batch_with_a_zero_event_turn_scores_every_eval_case(
   mock_eval_set_results_manager.save_eval_set_result.assert_called_once()
 
 
+async def _run_eval_case(
+    eval_sets_manager, root_agent: BaseAgent, eval_case: EvalCase
+) -> EvalCaseResult:
+  """Runs inference and then evaluation of `eval_case` for app `test_app`."""
+  eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set", eval_cases=[eval_case]
+  )
+  eval_sets_manager.get_eval_case.return_value = eval_case
+  service = LocalEvalService(
+      root_agent=root_agent, eval_sets_manager=eval_sets_manager
+  )
+  inference_results = [
+      result
+      async for result in service.perform_inference(
+          InferenceRequest(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              inference_config=InferenceConfig(),
+          )
+      )
+  ]
+  [eval_case_result] = [
+      result
+      async for result in service.evaluate(
+          EvaluateRequest(
+              inference_results=inference_results,
+              evaluate_config=EvaluateConfig(eval_metrics=[]),
+          )
+      )
+  ]
+  return eval_case_result
+
+
+@pytest.mark.parametrize(
+    "session_input",
+    [
+        None,
+        SessionInput(app_name="other_app", user_id="test_user"),
+        SessionInput(app_name="test_app", user_id=""),
+    ],
+    ids=[
+        "no_session_input",
+        "session_input_for_another_app",
+        "session_input_with_empty_user_id",
+    ],
+)
+async def test_evaluate_reports_the_session_the_case_ran_in(
+    mock_eval_sets_manager, session_input
+):
+  """The result carries the details of the session the eval case ran in.
+
+  The session is found under the app name and user id it was created with,
+  which can differ from `test_app`, the app name of the eval request.
+  """
+  agent = LlmAgent(
+      name="test_agent", model=MockModel.create(responses=["hello"])
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[Invocation(user_content=_user_content("hi"))],
+      session_input=session_input,
+  )
+
+  result = await _run_eval_case(mock_eval_sets_manager, agent, eval_case)
+
+  assert result.session_details is not None
+  assert result.session_details.id == result.session_id
+
+
+async def test_evaluate_reports_the_session_of_a_failed_inference(
+    mock_eval_sets_manager,
+):
+  """A case whose inference failed carries the session it partly ran in."""
+  agent = LlmAgent(
+      name="test_agent",
+      model=MockModel.create(
+          responses=[], error=RuntimeError("model unavailable")
+      ),
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[Invocation(user_content=_user_content("hi"))],
+  )
+
+  result = await _run_eval_case(mock_eval_sets_manager, agent, eval_case)
+
+  assert result.final_eval_status == EvalStatus.FAILED
+  assert result.session_details is not None
+  assert result.session_details.events[0].content == _user_content("hi")
+
+
 def test_default_user_simulator_provider_is_not_shared_between_services(
     dummy_agent, mock_eval_sets_manager
 ):
