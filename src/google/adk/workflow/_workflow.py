@@ -905,7 +905,7 @@ class Workflow(BaseNode):
     if superseded:
       # The loop restarted these branches after they ran. Wait for their
       # runs from the current iteration instead of mixing iterations.
-      logger.debug(
+      logger.info(
           "Dropping join arrivals from %s for %s; the loop restarted their"
           " branch",
           sorted(superseded),

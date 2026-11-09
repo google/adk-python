@@ -746,6 +746,82 @@ async def test_join_node_in_loop_drops_stale_arrival_when_branch_retriggered(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_join_node_in_loop_keeps_dropped_stale_arrival_across_resume(
+    request: pytest.FixtureRequest, is_resumable: bool
+) -> None:
+  """Tests a dropped stale arrival stays dropped after a pause and resume.
+
+  The run lineage used to spot stale arrivals is rebuilt from events on
+  resume. The join must not fire again with the abandoned iteration's output,
+  and the node after it must not run twice.
+  """
+  iteration = 0
+  join_inputs: list[dict[str, str]] = []
+  done_inputs: list[str] = []
+
+  def loop_head(node_input: str) -> str:
+    nonlocal iteration
+    iteration += 1
+    return f'iter{iteration}'
+
+  async def slow_a(node_input: str) -> str:
+    await asyncio.sleep(0.05)
+    return f'a<{node_input}>'
+
+  def node_b(node_input: str) -> Event:
+    return Event(
+        output=f'b<{node_input}>',
+        route='retry' if node_input == 'iter1' else 'go',
+    )
+
+  def capture(node_input: dict[str, str]) -> str:
+    join_inputs.append(node_input)
+    return 'captured'
+
+  def approve() -> RequestInput:
+    return RequestInput(message='Continue?')
+
+  def done(node_input: str) -> None:
+    done_inputs.append(node_input)
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, loop_head),
+          (loop_head, slow_a, join),
+          (loop_head, node_b),
+          (node_b, {'retry': loop_head, 'go': join}),
+          (join, capture, approve, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(
+          name=request.function.__name__,
+          root_agent=agent,
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+
+  events = await runner.run_async('go')
+
+  assert join_inputs == [{'node_b': 'b<iter2>', 'slow_a': 'a<iter2>'}]
+
+  request_events = workflow_testing_utils.get_request_input_events(events)
+  [interrupt_id] = extract_event_interrupt_ids(request_events[0])
+  await runner.run_async(
+      new_message=hitl_utils.create_request_input_response(
+          interrupt_id, {'result': 'ok'}
+      ),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert join_inputs == [{'node_b': 'b<iter2>', 'slow_a': 'a<iter2>'}]
+  assert len(done_inputs) == 1
+
+
+@pytest.mark.asyncio
 async def test_join_node_in_loop_drops_stale_arrival_from_multi_step_branch(
     request: pytest.FixtureRequest,
 ) -> None:
