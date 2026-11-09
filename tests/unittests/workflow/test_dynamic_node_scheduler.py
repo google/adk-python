@@ -1749,3 +1749,36 @@ async def test_same_turn_replayed_run_preserves_route_and_branch(
       child_ctx.branch,
       child_ctx.actions.transfer_to_agent,
   )
+
+
+@pytest.mark.asyncio
+async def test_rerun_on_resume_error_names_orchestrator_node():
+  """A node calling ctx.run_node without rerun_on_resume=True raises ValueError naming the node."""
+  from google.adk.workflow import node as node_decorator
+  from google.adk.workflow import Workflow
+  from google.genai import types
+
+  @node_decorator
+  def child(node_input):
+    return 'done'
+
+  @node_decorator
+  async def orchestrator(ctx: Context, node_input):
+    yield await ctx.run_node(child, node_input=node_input)
+
+  wf = Workflow(name='root', edges=[(START, orchestrator)])
+  session_service = InMemorySessionService()
+  runner = Runner(app_name='t', node=wf, session_service=session_service)
+  session = await session_service.create_session(app_name='t', user_id='u')
+
+  expected_pattern = (
+      r"Node 'orchestrator' calls ctx\.run_node but has rerun_on_resume=False;"
+      r" declare it with @node\(rerun_on_resume=True\)\."
+  )
+  with pytest.raises(ValueError, match=expected_pattern):
+    async for _ in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text='start')], role='user'),
+    ):
+      pass

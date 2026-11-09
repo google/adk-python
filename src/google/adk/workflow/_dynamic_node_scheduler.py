@@ -782,8 +782,20 @@ async def run_node_internal(
   from ._workflow import Workflow
 
   if not ctx._node_rerun_on_resume:
+    caller_name = (
+        ctx.node.name
+        if ctx.node and getattr(ctx.node, 'name', None)
+        else (ctx.node_path or '')
+    )
+    if caller_name:
+      prefix = (
+          f"Node '{caller_name}' calls ctx.run_node but has"
+          ' rerun_on_resume=False; declare it with @node(rerun_on_resume=True).'
+      )
+    else:
+      prefix = 'A node must have rerun_on_resume=True.'
     raise ValueError(
-        'A node must have rerun_on_resume=True. Reason is that dynamically'
+        f'{prefix} Reason is that dynamically'
         ' scheduled nodes might be interrupted, and the workflow'
         ' wakes-up/re-runs the parent node, so it can get the child node'
         ' response.'
