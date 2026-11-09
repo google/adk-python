@@ -256,10 +256,12 @@ class ModelArmorPlugin(BasePlugin):
     return None
 
   async def close(self) -> None:
-    """Closes the client built for the running event loop."""
-    clients = self._clients_on_running_loop()
-    if clients:
-      await clients.pop().transport.close()
+    """Leaves the per-loop clients open, since runners on a loop share them.
+
+    Closing one runner must not tear down a transport that sibling runners on
+    the same loop are still screening through. Each client is released with
+    its event loop.
+    """
 
   def _handle_sanitization_result(
       self,
