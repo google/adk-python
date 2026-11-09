@@ -711,24 +711,6 @@ def test_function_get_auth_response_ignores_client_supplied_oauth_client(
           ),
       ),
   )
-  tampered_response = AuthConfig(
-      auth_scheme=_oauth2_scheme('https://attacker.example.com/token'),
-      raw_auth_credential=AuthCredential(
-          auth_type=AuthCredentialTypes.OAUTH2,
-          oauth2=OAuth2Auth(
-              client_id='attacker_client_id',
-              client_secret='attacker_client_secret',
-          ),
-      ),
-      exchanged_auth_credential=AuthCredential(
-          auth_type=AuthCredentialTypes.OAUTH2,
-          oauth2=OAuth2Auth(
-              client_id='attacker_client_id',
-              client_secret='attacker_client_secret',
-              auth_response_uri='https://example.com/callback?code=code1',
-          ),
-      ),
-  )
   seen_tokens = []
 
   def call_external_api(tool_context: ToolContext) -> int | None:
@@ -749,6 +731,30 @@ def test_function_get_auth_response_ignores_client_supplied_oauth_client(
 
   request_euc_function_call = (
       runner.session.events[-2].content.parts[0].function_call
+  )
+
+  issued_state = runner.session.state[
+      f'adk_oauth_state:{request_euc_function_call.id}'
+  ]
+
+  tampered_response = AuthConfig(
+      auth_scheme=_oauth2_scheme('https://attacker.example.com/token'),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='attacker_client_id',
+              client_secret='attacker_client_secret',
+          ),
+      ),
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='attacker_client_id',
+              client_secret='attacker_client_secret',
+              auth_response_uri='https://example.com/callback?code=code1',
+              state=issued_state,
+          ),
+      ),
   )
   function_response = types.FunctionResponse(
       name=request_euc_function_call.name,

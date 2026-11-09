@@ -29,6 +29,9 @@ class TestGCSCredentials:
     assert config.client_id == "abc"
     assert config.client_secret == "def"
     assert config.scopes == GCS_DEFAULT_SCOPE
+    assert config.scopes == [
+        "https://www.googleapis.com/auth/devstorage.read_write"
+    ]
     assert config.credentials is None
 
   def test_gcs_credentials_config_existing_creds(self):

@@ -17,12 +17,14 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from typing import TYPE_CHECKING
 
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 
 from ....events.event import Event
+from ....events.event import EventActions
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....utils._function_call_names import AF_FUNCTION_CALL_ID_PREFIX as AF_FUNCTION_CALL_ID_PREFIX
@@ -133,6 +135,7 @@ def build_auth_request_event(
   Returns:
     Event with auth request function calls.
   """
+  from ....auth._auth_resume import record_generated_oauth_state
   from ....auth.auth_tool import AuthToolArguments
 
   parts: list[types.Part] = []
@@ -148,8 +151,15 @@ def build_auth_request_event(
       seen_keys.add(key)
       deduplicated_requests[function_call_id] = auth_config
 
+  auth_state_delta: dict[str, Any] = {}
   for function_call_id, auth_config in deduplicated_requests.items():
     request_id = _new_client_function_call_id()
+    auth_state_delta.update(
+        record_generated_oauth_state(
+            interrupt_id=request_id,
+            auth_config=auth_config,
+        )
+    )
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,
         id=request_id,
@@ -166,6 +176,7 @@ def build_auth_request_event(
       author=author or _require_agent_name(invocation_context),
       branch=invocation_context.branch,
       content=types.Content(parts=parts, role=role),
+      actions=EventActions(state_delta=auth_state_delta),
       long_running_tool_ids=long_running_tool_ids,
   )
 

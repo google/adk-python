@@ -61,6 +61,7 @@ class EnvironmentToolset(BaseToolset):
       *,
       environment: BaseEnvironment,
       max_output_chars: Optional[int] = None,
+      require_confirmation: bool = True,
       **kwargs: Any,
   ):
     """Create an environment toolset.
@@ -70,11 +71,15 @@ class EnvironmentToolset(BaseToolset):
         I/O.
       max_output_chars: Maximum character limit for stdout/stderr/file
         truncation.
+      require_confirmation: Whether the ``Execute`` tool must be confirmed by a
+        human before running a shell command. Defaults to ``True``; only set it
+        to ``False`` for trusted, already-sandboxed environments.
       **kwargs: Forwarded to ``BaseToolset.__init__``.
     """
     super().__init__(**kwargs)
     self._environment = environment
     self._max_output_chars = max_output_chars
+    self._require_confirmation = require_confirmation
     self._environment_initialized = False
     self._init_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
     self._lock_map_lock = threading.Lock()
@@ -128,7 +133,11 @@ class EnvironmentToolset(BaseToolset):
   ) -> list[BaseTool]:
     await self._ensure_initialized()
     return [
-        ExecuteTool(self._environment, max_output_chars=self._max_output_chars),
+        ExecuteTool(
+            self._environment,
+            max_output_chars=self._max_output_chars,
+            require_confirmation=self._require_confirmation,
+        ),
         ReadFileTool(
             self._environment, max_output_chars=self._max_output_chars
         ),

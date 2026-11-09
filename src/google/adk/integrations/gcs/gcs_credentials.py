@@ -18,7 +18,7 @@ from ...tools._google_credentials import BaseGoogleCredentialsConfig
 
 GCS_TOKEN_CACHE_KEY = "gcs_token_cache"
 GCS_DEFAULT_SCOPE = [
-    "https://www.googleapis.com/auth/devstorage.full_control",
+    "https://www.googleapis.com/auth/devstorage.read_write",
 ]
 
 

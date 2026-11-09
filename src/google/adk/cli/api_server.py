@@ -22,6 +22,7 @@ import binascii
 from contextlib import asynccontextmanager
 import contextvars
 from dataclasses import dataclass
+import hmac
 import importlib
 import inspect
 import json
@@ -469,6 +470,24 @@ async def _send_forbidden(send: Any, reason: str) -> None:
   })
 
 
+async def _send_unauthorized(send: Any, reason: str) -> None:
+  """Sends a plain-text 401 with a Bearer challenge over the ASGI send channel."""
+  response_body = f"Unauthorized: {reason}".encode()
+  await send({
+      "type": "http.response.start",
+      "status": 401,
+      "headers": [
+          (b"content-type", b"text/plain"),
+          (b"www-authenticate", b"Bearer"),
+          (b"content-length", str(len(response_body)).encode()),
+      ],
+  })
+  await send({
+      "type": "http.response.body",
+      "body": response_body,
+  })
+
+
 def _accepts_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) -> bool:
   """Returns True if func accepts all keys in kwargs as keyword arguments."""
   try:
@@ -645,6 +664,67 @@ class _DefaultAppRewriteMiddleware:
         if "raw_path" in scope:
           scope["raw_path"] = scope["path"].encode("latin-1")
 
+    await self._app(scope, receive, send)
+
+
+class _AuthTokenMiddleware:
+  """ASGI middleware requiring a shared bearer token on every request.
+
+  The ADK server ships with no user model, so a single deployment-wide token is
+  the strongest check it can make on its own. Browsers cannot set an
+  ``Authorization`` header on a WebSocket handshake, so ``?auth_token=`` is
+  accepted there and only there. CORS preflight (``OPTIONS``) is not
+  authenticated: it carries no credentials and reveals no data.
+  """
+
+  _HEADER = b"x-adk-auth-token"
+  _QUERY_PARAM = "auth_token"
+
+  def __init__(self, app: Any, token: str) -> None:
+    self._app = app
+    self._token = token
+
+  def _is_authorized(self, scope: Mapping[str, Any]) -> bool:
+    authorization = _get_scope_header(scope, b"authorization")
+    if authorization is not None:
+      scheme, _, value = authorization.partition(" ")
+      if scheme.lower() == "bearer" and hmac.compare_digest(
+          value.strip(), self._token
+      ):
+        return True
+    header_token = _get_scope_header(scope, self._HEADER)
+    if header_token is not None and hmac.compare_digest(
+        header_token.strip(), self._token
+    ):
+      return True
+    if scope["type"] == "websocket":
+      query = urllib.parse.parse_qs(
+          scope.get("query_string", b"").decode("latin-1")
+      )
+      values = query.get(self._QUERY_PARAM)
+      if values and hmac.compare_digest(values[0], self._token):
+        return True
+    return False
+
+  async def __call__(
+      self,
+      scope: dict[str, Any],
+      receive: Any,
+      send: Any,
+  ) -> None:
+    if scope["type"] not in ("http", "websocket"):
+      await self._app(scope, receive, send)
+      return
+    if scope["type"] == "http" and scope.get("method") == "OPTIONS":
+      # CORS preflight must succeed before the browser sends the token.
+      await self._app(scope, receive, send)
+      return
+    if not self._is_authorized(scope):
+      if scope["type"] == "websocket":
+        await send({"type": "websocket.close", "code": 1008})
+      else:
+        await _send_unauthorized(send, "a valid bearer token is required")
+      return
     await self._app(scope, receive, send)
 
 
@@ -1474,6 +1554,7 @@ class ApiServer:
       otel_to_cloud: bool = False,
       with_ui: bool = False,
       bind_host: Optional[str] = None,
+      auth_token: Optional[str] = None,
   ) -> FastAPI:
     """Creates a FastAPI app for the ADK web server.
 
@@ -1499,6 +1580,10 @@ class ApiServer:
       bind_host: The address the server will bind. A loopback value rejects
         requests addressed to any other host as DNS rebinding; None disables
         that, for callers that do not own the bind.
+      auth_token: When set, every HTTP and WebSocket request must present this
+        shared token as ``Authorization: Bearer <token>`` or
+        ``X-ADK-Auth-Token: <token>`` (WebSockets may instead pass
+        ``?auth_token=<token>``). None leaves the app unauthenticated.
 
     Returns:
       A FastAPI app instance.
@@ -1590,11 +1675,21 @@ class ApiServer:
       compiled_origin_regex = (
           re.compile(combined_regex) if combined_regex is not None else None
       )
+      # A wildcard with credentials lets any site read authenticated responses:
+      # Starlette mirrors the caller's Origin instead of replying "*". The ADK
+      # server has no cookie session to carry, so drop credentials rather than
+      # trust every origin with them.
+      allow_credentials = "*" not in literal_origins
+      if not allow_credentials:
+        logger.warning(
+            "CORS is configured with a wildcard origin and credentials are"
+            " disabled; list explicit origins to allow credentialed requests."
+        )
       app.add_middleware(
           CORSMiddleware,
           allow_origins=literal_origins,
           allow_origin_regex=combined_regex,
-          allow_credentials=True,
+          allow_credentials=allow_credentials,
           allow_methods=["*"],
           allow_headers=["*"],
       )
@@ -1615,6 +1710,11 @@ class ApiServer:
         _DefaultAppRewriteMiddleware,
         default_app_name=self.default_app_name,
     )
+
+    if auth_token:
+      # Added last so it is the outermost layer: unauthenticated requests are
+      # rejected before CORS, the Origin check, or any endpoint sees them.
+      app.add_middleware(_AuthTokenMiddleware, token=auth_token)
 
     # Register production endpoints (23 total)
     self._register_production_endpoints(

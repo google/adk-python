@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from google.adk.telemetry._serialization import safe_json_serialize
 from google.adk.telemetry._serialization import serialize_content
 from google.genai import types
 
@@ -84,3 +85,21 @@ def test_serialize_content_unserializable_value_yields_the_sentinel():
   raising out of the telemetry path.
   """
   assert serialize_content(object()) == '"<not serializable>"'
+
+
+def test_safe_json_serialize_redacts_credential_fields():
+  """Tool results can carry credentials, so trace attributes must mask them."""
+  serialized = safe_json_serialize({
+      'password': 'hunter2',
+      'access_token': 'abc123',
+      'query': 'weather',
+  })
+
+  assert 'hunter2' not in serialized
+  assert 'abc123' not in serialized
+  assert 'weather' in serialized
+
+
+def test_serialize_content_redacts_free_text_secrets():
+  """A bare string is redacted before it becomes an OTel attribute."""
+  assert serialize_content('api_key=supersecret') == 'api_key=<redacted>'

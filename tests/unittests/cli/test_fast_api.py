@@ -630,6 +630,191 @@ def test_no_auth_warning_on_non_loopback_bind(
   assert warned is expect_warning
 
 
+def test_auth_token_rejects_requests_without_credentials(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      auth_token="s3cret",
+  )
+
+  response = client.get("/version")
+
+  assert response.status_code == 401
+  assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_auth_token_accepts_bearer_and_custom_header(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      auth_token="s3cret",
+  )
+
+  assert (
+      client.get(
+          "/version", headers={"authorization": "Bearer s3cret"}
+      ).status_code
+      == 200
+  )
+  assert (
+      client.get("/version", headers={"x-adk-auth-token": "s3cret"}).status_code
+      == 200
+  )
+  assert (
+      client.get(
+          "/version", headers={"authorization": "Bearer wrong"}
+      ).status_code
+      == 401
+  )
+
+
+def test_auth_token_falls_back_to_environment(
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  monkeypatch.setenv("ADK_SERVER_AUTH_TOKEN", "from-env")
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  assert client.get("/version").status_code == 401
+  assert (
+      client.get(
+          "/version", headers={"authorization": "Bearer from-env"}
+      ).status_code
+      == 200
+  )
+
+
+def test_auth_token_lets_cors_preflight_through(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      auth_token="s3cret",
+  )
+
+  response = client.options(
+      "/version",
+      headers={
+          "origin": "http://127.0.0.1:8000",
+          "access-control-request-method": "GET",
+      },
+  )
+
+  assert response.status_code == 200
+
+
+def test_require_auth_for_remote_refuses_unauth_bind(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  with pytest.raises(ValueError, match="Refusing to bind"):
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        bind_host="0.0.0.0",
+        require_auth_for_remote=True,
+    )
+
+
+def test_require_auth_for_remote_allows_token_bind(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      bind_host="0.0.0.0",
+      require_auth_for_remote=True,
+      auth_token="s3cret",
+  )
+
+  assert client.get("/version").status_code == 401
+
+
+def test_wildcard_cors_origin_does_not_allow_credentials(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+  )
+
+  response = client.get("/version", headers={"origin": "http://127.0.0.1:8000"})
+
+  assert response.status_code == 200
+  assert response.headers.get("access-control-allow-credentials") != "true"
+
+
 def test_get_fast_api_app_creates_file_eval_storage_dir(tmp_path, monkeypatch):
   """file:// eval_storage_uri creates that directory for local eval managers."""
   monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)

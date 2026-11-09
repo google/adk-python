@@ -17,9 +17,15 @@ from __future__ import annotations
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 BIGTABLE_TOKEN_CACHE_KEY = "bigtable_token_cache"
+# Least privilege for the tools shipped in `BigtableToolset`: instance/cluster
+# and table metadata reads need the admin.instance/admin.table scopes, and
+# `execute_sql` is read-only, so it needs the data.readonly scope. The broader
+# `bigtable.admin`/`bigtable.data` scopes can be requested explicitly through
+# `BigtableCredentialsConfig(scopes=[...])`.
 BIGTABLE_DEFAULT_SCOPE = [
-    "https://www.googleapis.com/auth/bigtable.admin",
-    "https://www.googleapis.com/auth/bigtable.data",
+    "https://www.googleapis.com/auth/bigtable.admin.instance",
+    "https://www.googleapis.com/auth/bigtable.admin.table",
+    "https://www.googleapis.com/auth/bigtable.data.readonly",
 ]
 
 

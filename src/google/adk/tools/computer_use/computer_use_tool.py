@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping
 import logging
 from typing import Any
 from typing import Callable
@@ -22,11 +23,67 @@ from typing import Callable
 from typing_extensions import override
 
 from ...models.llm_request import LlmRequest
+from ...utils._redaction import redact_text
 from ..function_tool import FunctionTool
 from ..tool_context import ToolContext
 from .base_computer import ComputerState
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_SAFETY_DECISION_ARG = "safety_decision"
+_DEFAULT_CONFIRMATION_HINT = (
+    "This computer use action requires safety confirmation."
+)
+_MAX_CONFIRMATION_HINT_LENGTH = 500
+
+
+def _consume_safety_decision(args: dict[str, Any]) -> tuple[bool, str | None]:
+  """Removes and interprets the model-supplied ``safety_decision`` argument.
+
+  ``safety_decision`` is a control field, not an action parameter, so it is
+  stripped before the computer function is invoked. A malformed value fails
+  closed by requiring confirmation instead of crashing or executing.
+
+  Args:
+    args: The tool call arguments, mutated to drop the control field.
+
+  Returns:
+    A tuple of ``(requires_confirmation, explanation)``.
+  """
+  if _SAFETY_DECISION_ARG not in args:
+    return False, None
+  safety_decision = args.pop(_SAFETY_DECISION_ARG)
+  if not isinstance(safety_decision, Mapping):
+    logger.warning(
+        "Ignoring malformed safety_decision of type %s; requiring"
+        " confirmation.",
+        type(safety_decision).__name__,
+    )
+    return True, None
+  decision = safety_decision.get("decision")
+  if decision is None:
+    return False, None
+  if not isinstance(decision, str):
+    logger.warning(
+        "Ignoring non-string safety_decision decision; requiring confirmation."
+    )
+    return True, None
+  if decision.strip() != "require_confirmation":
+    return False, None
+  explanation = safety_decision.get("explanation")
+  if not isinstance(explanation, str):
+    explanation = None
+  return True, explanation
+
+
+def _confirmation_hint(explanation: str | None) -> str:
+  """Builds the human-facing hint from untrusted model-supplied text."""
+  if not explanation or not explanation.strip():
+    return _DEFAULT_CONFIRMATION_HINT
+  hint = redact_text(
+      explanation.strip(), max_length=_MAX_CONFIRMATION_HINT_LENGTH
+  )
+  return hint or _DEFAULT_CONFIRMATION_HINT
 
 
 class ComputerUseTool(FunctionTool):
@@ -105,26 +162,21 @@ class ComputerUseTool(FunctionTool):
   ) -> Any:
     """Run the computer control function with normalized coordinates."""
 
-    # Check for safety confirmation if required by the model
-    if not tool_context.tool_confirmation:
-      safety_decision = args.get("safety_decision")
-      if safety_decision:
-        decision = safety_decision.get("decision")
-        explanation = safety_decision.get("explanation")
+    # Check for safety confirmation if required by the model. `safety_decision`
+    # is a model-supplied control arg, so strip it before the computer function
+    # runs and fail closed on malformed values.
+    requires_confirmation, explanation = _consume_safety_decision(args)
 
-        if decision == "require_confirmation":
-          hint = (
-              explanation
-              or "This computer use action requires safety confirmation."
-          )
-          tool_context.request_confirmation(hint=hint)
-          tool_context.actions.skip_summarization = True
-          return {
-              "error": (
-                  "This tool call requires confirmation, please approve or"
-                  " reject."
-              )
-          }
+    if not tool_context.tool_confirmation:
+      if requires_confirmation:
+        tool_context.request_confirmation(hint=_confirmation_hint(explanation))
+        tool_context.actions.skip_summarization = True
+        return {
+            "error": (
+                "This tool call requires confirmation, please approve or"
+                " reject."
+            )
+        }
     elif not tool_context.tool_confirmation.confirmed:
       return {"error": "This tool call is rejected."}
 

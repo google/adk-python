@@ -223,6 +223,37 @@ class TestGcpUtils(unittest.TestCase):
         "https://us-central1-aiplatform.mtls.googleapis.com/v1beta1/vertexExpress:retrieveExpressProject",
     )
 
+  @mock.patch("google.adk.cli.utils.gcp_utils.AuthorizedSession")
+  @mock.patch("google.auth.default")
+  def test_retrieve_express_project_rejects_invalid_location(
+      self, mock_auth_default, mock_session_cls
+  ):
+    mock_auth_default.return_value = (mock.Mock(), "test-project-id")
+    mock_session = mock.Mock()
+    mock_session_cls.return_value = mock_session
+    with self.assertRaisesRegex(ValueError, "Invalid Vertex AI location"):
+      gcp_utils.retrieve_express_project(location="../evil/aiplatform")
+    mock_session.get.assert_not_called()
+
+  @mock.patch("google.adk.cli.utils.gcp_utils.AuthorizedSession")
+  @mock.patch("google.auth.default")
+  def test_retrieve_express_project_accepts_valid_location(
+      self, mock_auth_default, mock_session_cls
+  ):
+    mock_auth_default.return_value = (mock.Mock(), "test-project-id")
+    mock_session = mock.Mock()
+    mock_session_cls.return_value = mock_session
+    mock_response = mock.Mock()
+    mock_response.json.return_value = {
+        "expressProject": {
+            "projectId": "test-project",
+            "defaultApiKey": "test-api-key",
+            "region": "us-central1",
+        }
+    }
+    mock_session.get.return_value = mock_response
+    self.assertIsNotNone(gcp_utils.retrieve_express_project())
+
 
 if __name__ == "__main__":
   unittest.main()

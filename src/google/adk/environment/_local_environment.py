@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import subprocess
 import tempfile
 
 from typing_extensions import override
@@ -39,6 +40,30 @@ _TERMINATE_GRACE_SECONDS = 5
 
 _READ_CHUNK_SIZE = 64 * 1024
 
+# Environment variable names (matched case-insensitively against substrings)
+# that commonly carry credentials and must not leak into model-driven shell
+# execution.  Applications can opt variables back in through ``env_vars``.
+_SENSITIVE_ENV_NAME_FRAGMENTS = (
+    'password',
+    'passwd',
+    'secret',
+    'token',
+    'api_key',
+    'apikey',
+    'access_key',
+    'private_key',
+    'credential',
+    'session_key',
+    'auth',
+    'cookie',
+)
+
+
+def _is_sensitive_env_name(name: str) -> bool:
+  """Returns whether an environment variable name looks credential-bearing."""
+  lowered = name.lower()
+  return any(fragment in lowered for fragment in _SENSITIVE_ENV_NAME_FRAGMENTS)
+
 
 def _signal_group(group: int, sig: int) -> None:
   """Signals every process left in a group, tolerating an empty one."""
@@ -48,6 +73,27 @@ def _signal_group(group: int, sig: int) -> None:
     os.killpg(group, sig)
   except OSError:
     logger.debug('Could not signal the command process group.')
+
+
+async def _kill_windows_process_tree(pid: int) -> None:
+  """Kills a process and all of its descendants on Windows.
+
+  ``Process.terminate()``/``kill()`` only reach the shell process itself on
+  Windows, so a timed-out command can leave grandchildren running and holding
+  the output pipes open.  ``taskkill /T`` walks and terminates the tree.
+  """
+  if os.name != 'nt':
+    return
+  try:
+    await asyncio.to_thread(
+        subprocess.run,
+        ['taskkill', '/F', '/T', '/PID', str(pid)],
+        capture_output=True,
+        timeout=_TERMINATE_GRACE_SECONDS,
+        check=False,
+    )
+  except (OSError, subprocess.SubprocessError):
+    logger.debug('Could not terminate the command process tree on Windows.')
 
 
 def _terminate(proc: asyncio.subprocess.Process) -> None:
@@ -78,6 +124,7 @@ class LocalEnvironment(BaseEnvironment):
       *,
       working_dir: Path | None = None,
       env_vars: dict[str, str] | None = None,
+      strip_sensitive_env: bool = True,
   ):
     """Create a local environment.
 
@@ -86,10 +133,19 @@ class LocalEnvironment(BaseEnvironment):
         ``None``, a temporary directory is created during
         ``initialize()``.
       env_vars: Extra environment variables merged into the subprocess
-        environment.
+        environment.  These are applied after filtering, so they can
+        deliberately re-enable a credential variable for a specific
+        workspace.
+      strip_sensitive_env: When ``True`` (the default), environment
+        variables whose names look credential-bearing (for example
+        ``OPENAI_API_KEY``, ``GITHUB_TOKEN`` or
+        ``GOOGLE_APPLICATION_CREDENTIALS``) are removed from the
+        subprocess environment before execution.  Set this to ``False``
+        only when the process environment is already trusted.
     """
     self._working_dir = working_dir
     self._env_vars = env_vars
+    self._strip_sensitive_env = strip_sensitive_env
     self._auto_created = False
     self._is_initialized = False
 
@@ -129,6 +185,16 @@ class LocalEnvironment(BaseEnvironment):
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
 
     proc_env = os.environ.copy()
+    if self._strip_sensitive_env:
+      removed = [name for name in proc_env if _is_sensitive_env_name(name)]
+      for name in removed:
+        proc_env.pop(name, None)
+      if removed:
+        logger.debug(
+            'Removed %d credential-like environment variable(s) from the'
+            ' command environment.',
+            len(removed),
+        )
     if self._env_vars:
       proc_env.update(self._env_vars)
 
@@ -190,6 +256,9 @@ class LocalEnvironment(BaseEnvironment):
       # output pipes open besides.
       _signal_group(group, signal.SIGKILL)
       _kill(proc)
+      # On Windows there are no process groups to signal, so walk and kill
+      # the descendant tree explicitly before abandoning the collect.
+      await _kill_windows_process_tree(group)
       done, _ = await asyncio.wait([drain], timeout=_TERMINATE_GRACE_SECONDS)
 
     if not done:

@@ -46,6 +46,7 @@ from typing import TypedDict
 
 from google.adk.dependencies._mcp_name import SDK_MODULE_NAME as _MCP_SDK_MODULE_NAME
 from google.adk.telemetry._token_usage import TokenUsage
+from google.adk.utils._redaction import redact_secrets
 from google.genai import types
 from opentelemetry._logs import Logger
 from opentelemetry._logs import LogRecord
@@ -236,7 +237,7 @@ def _safe_json_serialize_no_whitespaces(obj: object) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(
-        obj,
+        redact_secrets(obj),
         separators=(',', ':'),
         ensure_ascii=False,
         default=lambda o: '<not serializable>',

@@ -287,6 +287,30 @@ async def test_before_tool_callback_truncates_long_arguments(
   assert str(tool_args) not in out
 
 
+def test_format_args_redacts_credentials(plugin):
+  formatted = plugin._format_args({
+      'api_key': 'sk-live-secret',
+      'password': 'hunter2',
+      'query': 'weather',
+  })
+
+  assert 'sk-live-secret' not in formatted
+  assert 'hunter2' not in formatted
+  assert 'weather' in formatted
+  assert '<redacted>' in formatted
+
+
+def test_format_content_redacts_bearer_tokens(plugin):
+  content = types.Content(
+      parts=[types.Part(text='Authorization: Bearer abcdefghijkl')]
+  )
+
+  formatted = plugin._format_content(content)
+
+  assert 'abcdefghijkl' not in formatted
+  assert '<redacted>' in formatted
+
+
 async def test_before_model_callback_formats_content_system_instruction(
     plugin, callback_context, capsys
 ):

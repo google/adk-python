@@ -55,6 +55,7 @@ class ExecuteTool(BaseTool):
       environment: BaseEnvironment,
       *,
       max_output_chars: Optional[int] = None,
+      require_confirmation: bool = True,
   ):
     super().__init__(
         name='Execute',
@@ -64,6 +65,19 @@ class ExecuteTool(BaseTool):
     self._max_output_chars = (
         max_output_chars if max_output_chars is not None else MAX_OUTPUT_CHARS
     )
+    self._require_confirmation = require_confirmation
+
+  @override
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    """Shell execution is destructive, so it requires confirmation by default.
+
+    A developer can opt out per toolset by constructing the tool with
+    ``require_confirmation=False`` after establishing that the environment
+    itself is sandboxed and the commands are trusted.
+    """
+    return self._require_confirmation
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:

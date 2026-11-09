@@ -504,8 +504,10 @@ class DevServer(ApiServer):
   Inherits all production endpoints from ApiServer and adds development-specific
   endpoints for evaluation, debugging, and developer UI features.
 
-  Like ApiServer, all endpoints are unauthenticated. This server is intended
-  for local development only and must not be exposed to untrusted networks.
+  Like ApiServer, endpoints are unauthenticated unless ``auth_token`` is
+  configured, in which case every HTTP and WebSocket request must present it.
+  Without a token, this server is intended for local development only and must
+  not be exposed to untrusted networks.
   """
 
   _allow_special_agents: bool = True
