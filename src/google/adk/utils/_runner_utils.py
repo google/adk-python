@@ -31,6 +31,10 @@ from typing import TYPE_CHECKING
 from typing import TypeVar
 
 from ..errors._stale_session_error import StaleSessionError
+from ..events._branch_path import _BranchPath
+from ..events._interrupts import index_open_interrupts
+from ._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
@@ -120,13 +124,56 @@ async def _notify_run_error(
     )
 
 
+def _guarded_call_ids(invocation_context: InvocationContext) -> frozenset[str]:
+  """Returns the ids of the calls an open interrupt still waits on.
+
+  These are each open interrupt's own call, the call a confirmation or
+  credential request was raised for, and the calls whose branch it was raised
+  on.
+
+  Args:
+    invocation_context: The invocation whose events are searched.
+
+  Returns:
+    The guarded call ids.
+  """
+  if invocation_context.session is None:
+    return frozenset()
+  events = [
+      e
+      for e in invocation_context.session.events
+      if e.invocation_id == invocation_context.invocation_id
+  ]
+  open_ids = index_open_interrupts(events)
+  guarded = set(open_ids)
+  for event in events:
+    for fc in event.get_function_calls():
+      if fc.id not in open_ids:
+        continue
+      if event.branch:
+        guarded.update(_BranchPath.from_string(event.branch).ordered_run_ids)
+      args = fc.args or {}
+      if fc.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
+        original = args.get("originalFunctionCall")
+        if isinstance(original, dict) and original.get("id"):
+          guarded.add(original["id"])
+      elif fc.name == REQUEST_EUC_FUNCTION_CALL_NAME and args.get(
+          "functionCallId"
+      ):
+        guarded.add(args["functionCallId"])
+  return frozenset(guarded)
+
+
 async def _seal_aborted_invocation(
     invocation_context: InvocationContext,
-    synthesize_abort_events: Callable[[InvocationContext], Awaitable[Any]],
+    synthesize_abort_events: Callable[
+        [InvocationContext, frozenset[str]], Awaitable[Any]
+    ],
+    keep_open: frozenset[str],
 ) -> None:
   """Seals dangling calls on abort, skipping if a newer turn updated session."""
   try:
-    await synthesize_abort_events(invocation_context)
+    await synthesize_abort_events(invocation_context, keep_open)
   except StaleSessionError:
     # Match Runner._run_post_invocation_compaction: if a newer turn has already
     # updated the session while the aborted turn wound down, skip sealing.
@@ -148,7 +195,9 @@ async def _run_invocation_lifecycle(
     *,
     invocation_context: InvocationContext,
     plugin_manager: PluginManager,
-    synthesize_abort_events: Callable[[InvocationContext], Awaitable[Any]],
+    synthesize_abort_events: Callable[
+        [InvocationContext, frozenset[str]], Awaitable[Any]
+    ],
     is_live_call: bool = False,
     post_run_compaction: (
         Callable[[InvocationContext], Awaitable[None]] | None
@@ -163,8 +212,10 @@ async def _run_invocation_lifecycle(
       (keeps paused long-running calls resumable), runs `after_run_callback`,
       no compaction.
     - Other `asyncio.CancelledError`: marks `_abort_state.aborted = True` and
-      seals; `after_run_callback` runs only if `is_aborted` was already `True`
-      before cancellation, no compaction.
+      seals; if `is_aborted` was not already `True`, calls an open interrupt
+      still waits on stay unsealed so the invocation can resume.
+      `after_run_callback` runs only if `is_aborted` was already `True` before
+      cancellation, no compaction.
     - `Exception`: runs `on_run_error_callback`, seals if aborted, no
       `after_run_callback`.
     - Other `BaseException`: seals if aborted, no `after_run_callback`.
@@ -174,7 +225,8 @@ async def _run_invocation_lifecycle(
   Args:
     invocation_context: Active invocation context for the run.
     plugin_manager: Plugin manager notified for error and post-run hooks.
-    synthesize_abort_events: Callback that seals dangling calls on abort.
+    synthesize_abort_events: Callback that seals dangling calls on abort,
+      except the calls whose ids it is given.
     is_live_call: Whether this lifecycle wraps a live streaming run.
     post_run_compaction: Optional post-invocation compaction coroutine.
 
@@ -183,6 +235,7 @@ async def _run_invocation_lifecycle(
   """
   run_error: BaseException | None = None
   closing_early = False
+  keep_open: frozenset[str] = frozenset()
   try:
     yield
   except GeneratorExit:
@@ -207,6 +260,7 @@ async def _run_invocation_lifecycle(
         closing_early = True
       else:
         run_error = e
+        keep_open = _guarded_call_ids(invocation_context)
     raise
   except BaseException as e:
     run_error = e
@@ -214,7 +268,7 @@ async def _run_invocation_lifecycle(
   finally:
     if not is_live_call and invocation_context.is_aborted:
       await _seal_aborted_invocation(
-          invocation_context, synthesize_abort_events
+          invocation_context, synthesize_abort_events, keep_open
       )
     if run_error is None:
       try:
