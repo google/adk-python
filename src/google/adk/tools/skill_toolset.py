@@ -492,7 +492,10 @@ def _validate_skill_subpath(
 
 
 async def _write_skill_resources_to_env(
-    skill: models.Skill, skill_dir: Path, env: BaseEnvironment
+    skill: models.Skill,
+    skill_dir: Path,
+    env: BaseEnvironment,
+    tool_context: ToolContext,
 ) -> None:
   """Writes every resource of a skill into its folder in the environment."""
   for sub_dir, names in (
@@ -523,6 +526,7 @@ async def _write_skill_resources_to_env(
                 ),
             ),
             content,
+            ctx=tool_context,
         )
     )
 
@@ -2009,7 +2013,7 @@ class RunSkillScriptTool(BaseTool):
         }
       try:
         script_path = await self._ensure_skill_materialized_in_env(
-            skill, file_path, env
+            skill, file_path, env, tool_context
         )
         skill_dir = PurePosixPath(
             (cast(Path, self._toolset.skills_folder) / skill.name).as_posix()
@@ -2027,6 +2031,7 @@ class RunSkillScriptTool(BaseTool):
         result = await env.execute(
             command=command,
             timeout=self._toolset._script_timeout,
+            ctx=tool_context,
         )
         skill_telemetry.script_exit_code = result.exit_code
         return {
@@ -2085,7 +2090,11 @@ class RunSkillScriptTool(BaseTool):
     )
 
   async def _ensure_skill_materialized_in_env(
-      self, skill: models.Skill, file_path: str, env: BaseEnvironment
+      self,
+      skill: models.Skill,
+      file_path: str,
+      env: BaseEnvironment,
+      tool_context: ToolContext,
   ) -> PurePosixPath:
     # JIT Materialization: Check if the script exists in the environment.
     # If not, write all skill resources (including scripts) to the environment.
@@ -2103,7 +2112,7 @@ class RunSkillScriptTool(BaseTool):
     )
 
     try:
-      await env.read_file(cast(Path, script_path))
+      await env.read_file(cast(Path, script_path), ctx=tool_context)
       script_exists = True
     except FileNotFoundError:
       script_exists = False
@@ -2112,7 +2121,7 @@ class RunSkillScriptTool(BaseTool):
       logger.info(
           "Materializing skill resources for %s in environment", skill.name
       )
-      await _write_skill_resources_to_env(skill, skill_dir, env)
+      await _write_skill_resources_to_env(skill, skill_dir, env, tool_context)
     return script_path
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
@@ -2777,7 +2786,7 @@ class SkillToolset(BaseToolset):
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
     if self._env is not None and not self._env.is_initialized:
-      await self._env.initialize()
+      await self._env.initialize(ctx=tool_context)
     selected_core_tools = {
         t.name for t in self._tools if self._is_tool_selected(t, tool_context)
     }
@@ -2891,7 +2900,7 @@ class SkillToolset(BaseToolset):
       if skill is None or _skill_content_hash(skill) == loaded_hash:
         continue
       try:
-        await self._rematerialize_skill(skill)
+        await self._rematerialize_skill(skill, tool_context)
       except Exception as e:  # pylint: disable=broad-exception-caught
         # Still worth re-stating the skill; only the sandbox copy is stale.
         logger.warning(
@@ -2911,7 +2920,9 @@ class SkillToolset(BaseToolset):
       )
     return instructions
 
-  async def _rematerialize_skill(self, skill: models.Skill) -> None:
+  async def _rematerialize_skill(
+      self, skill: models.Skill, tool_context: ToolContext
+  ) -> None:
     """Rewrites a changed skill's resources into the environment.
 
     Scripts are copied into the sandbox on first run and left there, so
@@ -2920,6 +2931,11 @@ class SkillToolset(BaseToolset):
 
     Only writes. `BaseEnvironment` has no delete, so a resource the new version
     dropped stays on disk; the re-stated instructions no longer mention it.
+
+    Args:
+      skill: The changed skill to write.
+      tool_context: Context of the request being built, passed to the
+        environment.
     """
     env = self._env
     skills_folder = self.skills_folder
@@ -2929,8 +2945,10 @@ class SkillToolset(BaseToolset):
     if self._materialized_skill_hashes.get(skill.name) == content_hash:
       return
     if not env.is_initialized:
-      await env.initialize()
-    await _write_skill_resources_to_env(skill, skills_folder / skill.name, env)
+      await env.initialize(ctx=tool_context)
+    await _write_skill_resources_to_env(
+        skill, skills_folder / skill.name, env, tool_context
+    )
     self._materialized_skill_hashes[skill.name] = content_hash
 
   @override
