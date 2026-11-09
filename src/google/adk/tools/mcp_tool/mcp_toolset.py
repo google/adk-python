@@ -42,8 +42,6 @@ from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...dependencies._mcp import ClientSession as _ClientSession
 from ...dependencies._mcp import ElicitationFnT
-from ...dependencies._mcp import ListResourcesResult
-from ...dependencies._mcp import ListToolsResult
 from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
@@ -58,6 +56,8 @@ from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import _is_session_terminated_error
+from .mcp_session_manager import _list_all_pages
+from .mcp_session_manager import _operation_timeout
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -75,6 +75,15 @@ from .mcp_tool import ProgressFnT
 logger = logging.getLogger("google_adk." + __name__)
 
 ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR = "ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS"
+
+ALLOW_CONFIG_PRIVATE_MCP_URLS_ENV_VAR = "ADK_ALLOW_CONFIG_PRIVATE_MCP_URLS"
+"""
+Opt-in gate for config-supplied MCP URLs pointing at loopback/private hosts.
+
+An untrusted agent config could otherwise point the server at cloud metadata
+(`169.254.169.254`) or an internal service and exfiltrate credentials through
+the MCP handshake. Set this only for configs you trust.
+"""
 
 # In-process override for `ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR`. `None` means
 # "not set, defer to the environment variable".
@@ -100,6 +109,42 @@ def _allow_config_stdio_servers_enabled() -> bool:
   if _allow_config_stdio_servers is not None:
     return _allow_config_stdio_servers
   return is_env_enabled(ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR)
+
+
+def _validate_config_remote_url(url: str) -> None:
+  """Rejects config-supplied URLs aimed at local or link-local services (M7).
+
+  This is a lexical check: literal IPs and well-known loopback names are
+  rejected without a DNS lookup, so `from_config` stays synchronous and cannot
+  be used as a DNS oracle. A hostname that resolves to a private address is
+  caught by the transport-level guards.
+  """
+  if is_env_enabled(ALLOW_CONFIG_PRIVATE_MCP_URLS_ENV_VAR):
+    return
+
+  from .._url_validator import _is_blocked_address  # pylint: disable=g-import-not-at-top
+  from .._url_validator import _is_blocked_hostname  # pylint: disable=g-import-not-at-top
+  from .._url_validator import _parse_ip_literal  # pylint: disable=g-import-not-at-top
+  from .._url_validator import _parse_request_target  # pylint: disable=g-import-not-at-top
+
+  target = _parse_request_target(url)
+  if _is_blocked_hostname(target.hostname):
+    raise ValueError(
+        f"MCP server URL {url!r} points at a loopback or internal host, which"
+        " is not allowed in agent configs. Construct the McpToolset in Python"
+        " code instead, or set"
+        f" {ALLOW_CONFIG_PRIVATE_MCP_URLS_ENV_VAR}=1 if this application only"
+        " loads agent configs it trusts."
+    )
+  literal = _parse_ip_literal(target.hostname)
+  if literal is not None and _is_blocked_address(literal):
+    raise ValueError(
+        f"MCP server URL {url!r} points at a private or link-local address,"
+        " which is not allowed in agent configs. Construct the McpToolset in"
+        " Python code instead, or set"
+        f" {ALLOW_CONFIG_PRIVATE_MCP_URLS_ENV_VAR}=1 if this application only"
+        " loads agent configs it trusts."
+    )
 
 
 T = TypeVar("T")
@@ -416,11 +461,9 @@ class McpToolset(BaseToolset):
       session = await self._mcp_session_manager.create_session(
           headers=session_headers
       )
-      timeout_in_seconds = (
-          self._connection_params.timeout
-          if hasattr(self._connection_params, "timeout")
-          else None
-      )
+      # `timeout` on the connection params bounds only connection setup; a
+      # tool call has its own budget (M4).
+      timeout_in_seconds = _operation_timeout(self._connection_params)
       # Hold the session out of the pool's idle sweep while it is in use, so
       # another caller's sweep cannot close the transport mid-call.
       self._mcp_session_manager._begin_session_use(session_headers)  # pylint: disable=protected-access
@@ -521,13 +564,12 @@ class McpToolset(BaseToolset):
 
     if mcp_tools is None:
       # Fetch available tools from the MCP server
-      tools_response: ListToolsResult = await self._execute_with_session(
-          lambda session: session.list_tools(),
+      mcp_tools = await self._execute_with_session(
+          lambda session: _list_all_pages(session, "list_tools", "tools"),
           "Failed to get tools from MCP server",
           readonly_context,
           headers=headers,
       )
-      mcp_tools = tools_response.tools
       self._write_tool_list_cache(cache_key, mcp_tools)
 
     # Apply filtering based on context and tool_filter. This runs on every call
@@ -559,6 +601,23 @@ class McpToolset(BaseToolset):
 
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
+
+    # M5: a server can list the same name twice (or two servers fronted by one
+    # proxy can collide). Keep the first occurrence and drop later ones: the
+    # model API rejects duplicate declarations, which would take the whole
+    # listing down.
+    deduped: List[BaseTool] = []
+    seen_names: set[str] = set()
+    for tool in tools:
+      if tool.name in seen_names:
+        logger.warning(
+            "Skipping duplicate MCP tool name '%s' from the server.",
+            tool.name,
+        )
+        continue
+      seen_names.add(tool.name)
+      deduped.append(tool)
+    tools = deduped
 
     # Sort by name for a stable order across turns. The MCP server's
     # list_tools() order is not contractual; an unstable order would
@@ -600,23 +659,23 @@ class McpToolset(BaseToolset):
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> list[str]:
     """Returns a list of resource names available on the MCP server."""
-    result: ListResourcesResult = await self._execute_with_session(
-        lambda session: session.list_resources(),
+    resources = await self._execute_with_session(
+        lambda session: _list_all_pages(session, "list_resources", "resources"),
         "Failed to list resources from MCP server",
         readonly_context,
     )
-    return [resource.name for resource in result.resources]
+    return [resource.name for resource in resources]
 
   async def get_resource_info(
       self, name: str, readonly_context: Optional[ReadonlyContext] = None
   ) -> dict[str, Any]:
     """Returns metadata about a specific resource (name, MIME type, etc.)."""
-    result: ListResourcesResult = await self._execute_with_session(
-        lambda session: session.list_resources(),
+    resources = await self._execute_with_session(
+        lambda session: _list_all_pages(session, "list_resources", "resources"),
         "Failed to list resources from MCP server",
         readonly_context,
     )
-    for resource in result.resources:
+    for resource in resources:
       if resource.name == name:
         # `Resource` carries `mimeType`, which 2.x renames. A plain dump would
         # hand the caller a different key on each major, the way the tool
@@ -655,6 +714,13 @@ class McpToolset(BaseToolset):
   ) -> McpToolset:
     """Creates an McpToolset from a configuration object."""
     mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
+
+    for remote_params in (
+        mcp_toolset_config.sse_connection_params,
+        mcp_toolset_config.streamable_http_connection_params,
+    ):
+      if remote_params is not None:
+        _validate_config_remote_url(remote_params.url)
 
     if (
         mcp_toolset_config.stdio_server_params

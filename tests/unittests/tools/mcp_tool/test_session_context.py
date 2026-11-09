@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
 import time
@@ -33,7 +32,6 @@ from google.adk.tools.mcp_tool.session_context import _warn_probe_unavailable
 from google.adk.tools.mcp_tool.session_context import SessionContext
 from google.adk.version import __version__
 import httpx
-from mcp import ClientSession
 import pytest
 
 
@@ -637,6 +635,24 @@ class TestSessionContext:
 
     # Verify task completed
     assert session_context._task.done()
+
+  @pytest.mark.asyncio
+  async def test_start_after_close_does_not_return_the_dead_session(self):
+    """A closed context must not hand a caller the torn-down session (M10)."""
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+      await session_context.close()
+
+      with pytest.raises(ConnectionError, match='session already closed'):
+        await session_context.start()
 
   @pytest.mark.asyncio
   async def test_close_handles_cancelled_error(self):

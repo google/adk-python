@@ -15,7 +15,6 @@
 import asyncio
 import base64
 from contextlib import asynccontextmanager
-from io import StringIO
 import itertools
 import pickle
 import sys
@@ -357,6 +356,43 @@ class TestMcpToolset:
 
     assert isinstance(toolset, McpToolset)
 
+  def test_from_config_rejects_loopback_url(self):
+    """A config must not aim the server at itself (M7)."""
+    config = ToolArgsConfig(
+        sse_connection_params=SseConnectionParams(
+            url="http://localhost:8080/sse"
+        )
+    )
+
+    with pytest.raises(ValueError, match="loopback or internal host"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_rejects_metadata_ip(self):
+    """The cloud metadata endpoint is the classic SSRF target (M7)."""
+    config = ToolArgsConfig(
+        streamable_http_connection_params=StreamableHTTPConnectionParams(
+            url="http://169.254.169.254/latest/meta-data"
+        )
+    )
+
+    with pytest.raises(ValueError, match="private or link-local address"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_allows_private_url_when_opted_in(self, monkeypatch):
+    """Applications that trust their configs can opt out (M7)."""
+    monkeypatch.setenv(
+        mcp_toolset_module.ALLOW_CONFIG_PRIVATE_MCP_URLS_ENV_VAR, "1"
+    )
+    config = ToolArgsConfig(
+        sse_connection_params=SseConnectionParams(
+            url="http://localhost:8080/sse"
+        )
+    )
+
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset, McpToolset)
+
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
     with pytest.raises(ValueError, match="Missing connection params"):
@@ -599,7 +635,7 @@ class TestMcpToolset:
   async def test_get_tools_with_timeout(self):
     """Test get_tools with timeout."""
     stdio_params = StdioConnectionParams(
-        server_params=self.mock_stdio_params, timeout=0.01
+        server_params=self.mock_stdio_params, tool_timeout=0.01
     )
     toolset = McpToolset(connection_params=stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
@@ -1186,6 +1222,91 @@ class TestMcpToolset:
     unpickled = pickle.loads(pickled)
     assert unpickled._connection_params == self.mock_stdio_params
     assert unpickled._errlog == sys.stderr
+
+  @pytest.mark.asyncio
+  async def test_get_tools_drains_every_page(self):
+    """A paginated tools/list hides later tools behind nextCursor (M6)."""
+    first_page = Mock()
+    first_page.tools = [MockMCPTool("alpha")]
+    first_page.nextCursor = "cursor-1"
+    second_page = Mock()
+    second_page.tools = [MockMCPTool("bravo")]
+    second_page.nextCursor = None
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=[first_page, second_page]
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["alpha", "bravo"]
+    self.mock_session.list_tools.assert_awaited_with(cursor="cursor-1")
+
+  @pytest.mark.asyncio
+  async def test_list_resources_drains_every_page(self):
+    """Resource listings are paginated too (M6)."""
+    first_resource = Mock()
+    first_resource.name = "one"
+    second_resource = Mock()
+    second_resource.name = "two"
+    first_page = Mock()
+    first_page.resources = [first_resource]
+    first_page.nextCursor = "cursor-1"
+    second_page = Mock()
+    second_page.resources = [second_resource]
+    second_page.nextCursor = None
+    self.mock_session.list_resources = AsyncMock(
+        side_effect=[first_page, second_page]
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    names = await toolset.list_resources()
+
+    assert names == ["one", "two"]
+
+  @pytest.mark.asyncio
+  async def test_get_tools_drops_duplicate_names(self):
+    """Two declarations with the same name break the model API (M5)."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult([
+            MockMCPTool("dup"),
+            MockMCPTool("dup"),
+            MockMCPTool("other"),
+        ])
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["dup", "other"]
+
+  @pytest.mark.asyncio
+  async def test_get_tools_skips_collision_with_load_mcp_resource(self):
+    """The resource loader is framework-owned, so a server cannot shadow it (M5)."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult([
+            MockMCPTool("load_mcp_resource"),
+        ])
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params, use_mcp_resources=True
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with warnings.catch_warnings():
+      warnings.simplefilter("ignore", DeprecationWarning)
+      tools = await toolset.get_tools()
+
+    # Only ADK's own loader remains.
+    assert [tool.name for tool in tools].count("load_mcp_resource") == 1
+    assert isinstance(tools[0], LoadMcpResourceTool)
 
 
 class TestMcpToolsetHttpDebug:

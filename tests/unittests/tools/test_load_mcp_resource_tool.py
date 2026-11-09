@@ -13,11 +13,9 @@
 # limitations under the License.
 
 import base64
-import json
 from unittest.mock import AsyncMock
 from unittest.mock import call
 from unittest.mock import Mock
-from unittest.mock import patch
 
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
@@ -127,8 +125,9 @@ class TestLoadMcpResourceTool:
     new_content = llm_request.contents[1]
     assert new_content.role == "user"
     assert len(new_content.parts) == 2
-    assert "Resource res1 is:" in new_content.parts[0].text
-    assert new_content.parts[1].text == "hello content"
+    assert 'Resource "res1" is:' in new_content.parts[0].text
+    assert "hello content" in new_content.parts[1].text
+    assert "external MCP server resource" in new_content.parts[1].text
 
   @pytest.mark.asyncio
   async def test_process_llm_request_loads_content_binary(self):
@@ -205,8 +204,9 @@ class TestLoadMcpResourceTool:
     new_content = llm_request.contents[1]
     assert new_content.role == "user"
     assert len(new_content.parts) == 2
-    assert "Resource res1 is:" in new_content.parts[0].text
-    assert new_content.parts[1].text == "hello content"
+    assert 'Resource "res1" is:' in new_content.parts[0].text
+    assert "hello content" in new_content.parts[1].text
+    assert "external MCP server resource" in new_content.parts[1].text
 
   @pytest.mark.asyncio
   async def test_process_llm_request_sends_request_headers(self):
@@ -263,4 +263,42 @@ class TestLoadMcpResourceTool:
         c == call(headers=expected_headers)
         for c in session_manager.create_session.call_args_list
     )
-    assert llm_request.contents[-1].parts[1].text == "hello"
+    assert "hello" in llm_request.contents[-1].parts[1].text
+
+  @pytest.mark.asyncio
+  async def test_run_async_rejects_non_list_resource_names(self):
+    """A string is not a list of resource names and is rejected."""
+    tool = LoadMcpResourceTool(mcp_toolset=self.mock_mcp_toolset)
+    result = await tool.run_async(
+        args={"resource_names": "res1"}, tool_context=self.mock_tool_context
+    )
+
+    assert result["resource_names"] == []
+    assert "must be a list" in result["error"]
+
+  @pytest.mark.asyncio
+  async def test_resource_text_is_truncated(self):
+    """Oversized resource text is capped instead of flooding the context."""
+    tool = LoadMcpResourceTool(mcp_toolset=self.mock_mcp_toolset)
+    llm_request = Mock(spec=LlmRequest)
+    function_response = Mock()
+    function_response.name = "load_mcp_resource"
+    function_response.response = {"resource_names": ["res1"]}
+    part = Mock()
+    part.function_response = function_response
+    content = Mock()
+    content.parts = [part]
+    llm_request.contents = [content]
+
+    text_content = TextResourceContents(
+        uri="file:///res1", mimeType="text/plain", text="a" * 200_000
+    )
+    self.mock_mcp_toolset.read_resource = AsyncMock(return_value=[text_content])
+
+    await tool.process_llm_request(
+        tool_context=self.mock_tool_context, llm_request=llm_request
+    )
+
+    appended = llm_request.contents[1].parts[1].text
+    assert "[truncated]" in appended
+    assert len(appended) < 200_000
