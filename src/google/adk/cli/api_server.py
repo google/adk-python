@@ -123,6 +123,9 @@ if typing.TYPE_CHECKING:
   from opentelemetry.util.types import AttributeValue
   # watchdog types Observer as a factory, so type checkers see its base class.
   from watchdog.observers.api import BaseObserver as Observer
+
+  from ..evaluation.eval_set_results_manager import EvalSetResultsManager
+  from ..evaluation.eval_sets_manager import EvalSetsManager
 else:
   from watchdog.observers import Observer
 
@@ -1040,9 +1043,11 @@ class ApiServer:
       credential_service: An instance of BaseCredentialService for managing
         credentials.
       eval_sets_manager: An instance of EvalSetsManager for managing evaluation
-        sets.
+        sets, or None. The dev server's eval set endpoints return a 500 when it
+        is None.
       eval_set_results_manager: An instance of EvalSetResultsManager for
-        managing evaluation set results.
+        managing evaluation set results, or None. The dev server's eval result
+        endpoints return a 500 when it is None.
       agents_dir: Root directory containing subdirs for agents with those
         containing resources (e.g. .env files, eval sets, etc.) for the agents.
       extra_plugins: A list of fully qualified names of extra plugins to load.
@@ -1068,8 +1073,8 @@ class ApiServer:
       memory_service: BaseMemoryService,
       artifact_service: BaseArtifactService,
       credential_service: BaseCredentialService,
-      eval_sets_manager: EvalSetsManager,
-      eval_set_results_manager: EvalSetResultsManager,
+      eval_sets_manager: EvalSetsManager | None,
+      eval_set_results_manager: EvalSetResultsManager | None,
       agents_dir: str,
       extra_plugins: Optional[list[str]] = None,
       logo_text: Optional[str] = None,

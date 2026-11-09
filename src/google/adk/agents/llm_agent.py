@@ -56,6 +56,7 @@ from ..utils._agent_mode import LlmAgentMode as _LlmAgentMode
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._event_loop_cache import per_loop_value
 from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import top_level_input_keys
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
@@ -1223,9 +1224,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not isinstance(data, dict):
       return data
 
-    agent_names = set(cls.model_fields) | {
-        f.alias for f in cls.model_fields.values() if f.alias is not None
-    }
+    agent_names = top_level_input_keys(cls.model_fields)
     redirected: list[tuple[str, str]] = []
     misplaced: dict[str, None] = {}
     extras: list[str] = []

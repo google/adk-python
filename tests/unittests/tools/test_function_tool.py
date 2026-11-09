@@ -1807,6 +1807,223 @@ async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
   assert result == {"types": ["float"]}
 
 
+class _Action(Enum):
+  READ = "read"
+  DELETE = "delete"
+
+
+class _StrAction(str, Enum):
+  READ = "read"
+  DELETE = "delete"
+
+
+def _manage_file_plain_enum(path: str, action: _Action):
+  return {"path": path, "action": action}
+
+
+def _manage_file_str_enum(path: str, action: _StrAction):
+  return {"path": path, "action": action}
+
+
+def _manage_file_optional_enum(path: str, action: Optional[_Action] = None):
+  return {"path": path, "action": action}
+
+
+def _manage_file_list_enum(path: str, action: list[_Action]):
+  return {"path": path, "action": action}
+
+
+def _confirmation_tool_context() -> ToolContext:
+  invocation_context = MagicMock(spec=InvocationContext)
+  invocation_context._state_schema = None
+  invocation_context.session = MagicMock(spec=Session)
+  invocation_context.session.state = MagicMock()
+  invocation_context.agent = MagicMock()
+  invocation_context.agent.name = "test_agent"
+  tool_context = ToolContext(invocation_context=invocation_context)
+  tool_context.function_call_id = "test_function_call_id"
+  return tool_context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "func, raw_action, expected_action",
+    [
+        (_manage_file_plain_enum, "delete", _Action.DELETE),
+        (_manage_file_str_enum, "delete", _StrAction.DELETE),
+        (_manage_file_optional_enum, "delete", _Action.DELETE),
+        (
+            _manage_file_list_enum,
+            ["read", "delete"],
+            [_Action.READ, _Action.DELETE],
+        ),
+    ],
+    ids=["enum", "str_enum", "optional_enum", "list_enum"],
+)
+async def test_require_confirmation_callable_receives_raw_enum_values(
+    func, raw_action, expected_action
+):
+  """A callable require_confirmation gets the values the model sent.
+
+  A predicate written against the raw value (`action == "delete"`) must still
+  pause the call; only the tool function gets the Enum members.
+  """
+  seen = []
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    if isinstance(action, list):
+      return "delete" in action
+    return action == "delete"
+
+  tool = FunctionTool(func, require_confirmation=needs_confirmation)
+  tool_context = _confirmation_tool_context()
+  args = {"path": "/etc/x", "action": raw_action}
+
+  result = await tool.run_async(args=args, tool_context=tool_context)
+
+  assert result == {
+      "error": "This tool call requires confirmation, please approve or reject."
+  }
+  assert seen == [raw_action]
+  if isinstance(raw_action, list):
+    assert [type(a) for a in seen[0]] == [str] * len(raw_action)
+  else:
+    assert type(seen[0]) is str
+
+  tool_context.tool_confirmation = ToolConfirmation(confirmed=True)
+  result = await tool.run_async(args=args, tool_context=tool_context)
+
+  assert result == {"path": "/etc/x", "action": expected_action}
+  if isinstance(expected_action, list):
+    assert all(isinstance(a, _Action) for a in result["action"])
+  else:
+    assert isinstance(result["action"], type(expected_action))
+
+
+@pytest.mark.asyncio
+async def test_check_require_confirmation_callable_receives_raw_enum_value(
+    mock_tool_context,
+):
+  """Calling check_require_confirmation directly also passes the raw value."""
+  seen = []
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    return action == "delete"
+
+  tool = FunctionTool(
+      _manage_file_plain_enum, require_confirmation=needs_confirmation
+  )
+
+  requires = await tool.check_require_confirmation(
+      args={"path": "/etc/x", "action": "delete"},
+      tool_context=mock_tool_context,
+  )
+
+  assert requires is True
+  assert seen == ["delete"]
+  assert type(seen[0]) is str
+
+
+@pytest.mark.asyncio
+async def test_require_confirmation_callable_raw_enum_with_subclass_preprocess(
+    mock_tool_context,
+):
+  """A subclass _preprocess_args that calls super() still shapes the input."""
+  seen = []
+
+  class RenamingTool(FunctionTool):
+
+    def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
+      args = dict(args)
+      if "op" in args:
+        args["action"] = args.pop("op")
+      return super()._preprocess_args(args)
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    return action == "delete"
+
+  tool = RenamingTool(
+      _manage_file_plain_enum, require_confirmation=needs_confirmation
+  )
+
+  requires = await tool.check_require_confirmation(
+      args={"path": "/etc/x", "op": "delete"},
+      tool_context=mock_tool_context,
+  )
+
+  assert requires is True
+  assert seen == ["delete"]
+  assert type(seen[0]) is str
+  # The function itself still gets the member.
+  assert tool._preprocess_args({"path": "/etc/x", "op": "delete"}) == {
+      "path": "/etc/x",
+      "action": _Action.DELETE,
+  }
+
+
+@pytest.mark.asyncio
+async def test_require_confirmation_callable_keeps_pydantic_model(
+    mock_tool_context,
+):
+  """Only top-level Enum values are passed raw; a model arg stays a model."""
+
+  class Request(pydantic.BaseModel):
+    action: _Action
+
+  seen = []
+
+  def needs_confirmation(request):
+    seen.append(request)
+    return request.action is _Action.DELETE
+
+  def manage_file(request: Request):
+    return request
+
+  tool = FunctionTool(manage_file, require_confirmation=needs_confirmation)
+
+  requires = await tool.check_require_confirmation(
+      args={"request": {"action": "delete"}},
+      tool_context=mock_tool_context,
+  )
+
+  assert requires is True
+  assert seen == [Request(action=_Action.DELETE)]
+
+
+@pytest.mark.asyncio
+async def test_require_confirmation_callable_gets_enum_member_with_arg_validation(
+    mock_tool_context,
+):
+  """With FUNCTION_TOOL_ARG_VALIDATION on, the validated member is passed.
+
+  Validation has always coerced the value to the member before the predicate
+  runs, so that path is unchanged.
+  """
+  seen = []
+
+  def needs_confirmation(path, action):
+    seen.append(action)
+    return action is _Action.DELETE
+
+  tool = FunctionTool(
+      _manage_file_plain_enum, require_confirmation=needs_confirmation
+  )
+
+  with temporary_feature_override(
+      FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True
+  ):
+    requires = await tool.check_require_confirmation(
+        args={"path": "/etc/x", "action": "delete"},
+        tool_context=mock_tool_context,
+    )
+
+  assert requires is True
+  assert seen == [_Action.DELETE]
+
+
 @pytest.mark.asyncio
 async def test_async_generator_tool_emits_intermediate_events_and_returns_final_output():
   """An async generator tool emits intermediate events on a sub-branch and returns its final output to the model."""

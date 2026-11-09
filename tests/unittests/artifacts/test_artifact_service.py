@@ -3592,7 +3592,14 @@ async def test_load_artifact_preserves_inline_data_display_name(
 )
 @pytest.mark.parametrize(
     "text_content",
-    ['{"key": "value"}', "some other text"],
+    [
+        '{"key": "value"}',
+        "some other text",
+        "first\nsecond\n",
+        "first\r\nsecond\r\n",
+        "first\rsecond\r",
+        "\u00e9\r\n\u4e16\u754c\rthird\n",
+    ],
 )
 async def test_save_load_text_artifact(
     service_type, artifact_service_factory, text_content
@@ -3617,6 +3624,24 @@ async def test_save_load_text_artifact(
   assert loaded is not None
   assert loaded.text == text_content
   assert loaded.inline_data is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+async def test_file_save_text_artifact_preserves_utf8_bytes(tmp_path, filename):
+  """Text payloads retain their UTF-8 bytes when read directly from disk."""
+  service = FileArtifactService(root_dir=tmp_path)
+  scope = dict(
+      app_name="app", user_id="user", session_id="session", filename=filename
+  )
+  text = "\u00e9\r\n\u4e16\u754c\rthird\n"
+
+  version = await service.save_artifact(**scope, artifact=types.Part(text=text))
+  metadata = await service.get_artifact_version(**scope, version=version)
+
+  assert metadata is not None
+  payload_path = Path(url2pathname(urlparse(metadata.canonical_uri).path))
+  assert payload_path.read_bytes() == text.encode("utf-8")
 
 
 @pytest.mark.asyncio
