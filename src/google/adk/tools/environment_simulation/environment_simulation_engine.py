@@ -259,6 +259,11 @@ class EnvironmentSimulationEngine:
     """
     if tool.name not in self._tool_sim_configs:
       self._check_unmocked_tool(tool.name, "no tool simulation configuration")
+      environment_simulation_logger.debug(
+          "Tool '%s' has no simulation configuration. Allowing real tool"
+          " execution.",
+          tool.name,
+      )
       return None
 
     tool_sim_config = self._tool_sim_configs[tool.name]

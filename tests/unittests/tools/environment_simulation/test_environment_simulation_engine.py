@@ -50,10 +50,11 @@ import pytest
 class TestEnvironmentSimulationEngineSimulate:
   """Test cases for the simulate method of EnvironmentSimulationEngine."""
 
-  async def test_simulate_no_op_for_unconfigured_tool(
-      self, mock_create_strategy, mock_analyzer
+  @pytest.mark.parametrize("log_level", [logging.DEBUG, logging.INFO])
+  async def test_unconfigured_tool_logs_passthrough_only_at_debug(
+      self, mock_create_strategy, mock_analyzer, caplog, log_level
   ):
-    """Test that simulate returns None for a tool not in the config."""
+    """Unconfigured passthrough is visible at debug level without arguments."""
     config = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
@@ -67,8 +68,25 @@ class TestEnvironmentSimulationEngineSimulate:
     engine = EnvironmentSimulationEngine(config)
     mock_tool = MagicMock()
     mock_tool.name = "unconfigured_tool"
-    result = await engine.simulate(mock_tool, {}, MagicMock())
+    caplog.set_level(log_level, logger="environment_simulation_logger")
+
+    result = await engine.simulate(
+        mock_tool, {"token": "private-test-value"}, MagicMock()
+    )
+
     assert result is None
+    records = [
+        r for r in caplog.records if r.name == "environment_simulation_logger"
+    ]
+    if log_level == logging.DEBUG:
+      assert len(records) == 1
+      assert records[0].levelno == logging.DEBUG
+      assert "unconfigured_tool" in records[0].getMessage()
+      assert "Allowing real tool execution" in records[0].getMessage()
+      assert "private-test-value" not in records[0].getMessage()
+      assert "token" not in records[0].getMessage()
+    else:
+      assert records == []
 
   @pytest.mark.parametrize("response", [{}, {"injected": True}])
   @pytest.mark.parametrize(
