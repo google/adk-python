@@ -551,6 +551,49 @@ async def test_signed_thought_is_not_executed_under_a_planner():
   assert emitted_parts[0].text == '```python\nprint("from the reasoning")\n```'
 
 
+async def _run_without_artifact_service(code_executor):
+  """Runs the code-execution response processor with no artifact service."""
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = None
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part(text='```python\nprint(1)\n```')])
+  )
+  return [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_code_runs_without_artifact_service_when_no_files_are_written():
+  """The artifact service is only needed to save output files."""
+  code_executor = _stub_code_executor()
+
+  events = await _run_without_artifact_service(code_executor)
+
+  code_executor.execute_code.assert_called_once()
+  result = events[-1].content.parts[0].code_execution_result
+  assert result.output == 'Code execution result:\nok\n'
+  assert not events[-1].actions.artifact_delta
+
+
+@pytest.mark.asyncio
+async def test_output_files_still_require_an_artifact_service():
+  """Output files cannot be saved without an artifact service."""
+  code_executor = _stub_code_executor()
+  code_executor.execute_code.return_value = CodeExecutionResult(
+      output_files=[File(name='out.txt', content=b'hi')]
+  )
+
+  with pytest.raises(ValueError, match='Artifact service is not initialized'):
+    await _run_without_artifact_service(code_executor)
+
+
 def test_get_content_as_bytes_returns_bytes_unchanged():
   """Binary output files are already bytes and must not be decoded again."""
   # PNG magic: valid bytes, but not decodable as base64.
