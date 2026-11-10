@@ -2328,6 +2328,34 @@ def test_convert_events_empty_invocation_events_when_no_agent_events():
   assert invocations[0].intermediate_data.invocation_events == []
 
 
+def test_convert_events_ignores_lifecycle_events_with_none_invocation_id():
+  """Lifecycle events with None invocation_id should not emit phantom invocations."""
+  lifecycle_event_1 = Event.model_construct(
+      author="system",
+      invocation_id=None,
+      actions=EventActions(state_delta={"status": "completed"}),
+  )
+  lifecycle_event_2 = Event.model_construct(
+      author="",
+      invocation_id=None,
+      content=None,
+  )
+  events = [
+      _build_event("user", [types.Part(text="Hello")], "inv1"),
+      _build_event("agent", [types.Part(text="Hi there!")], "inv1"),
+      lifecycle_event_1,
+      lifecycle_event_2,
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert len(invocations) == 1
+  assert invocations[0].invocation_id == "inv1"
+  assert invocations[0].user_content.parts
+  assert invocations[0].user_content.parts[0].text == "Hello"
+  assert invocations[0].final_response.parts[0].text == "Hi there!"
+
+
 @pytest.mark.parametrize("chunks", [["Hello"], ["Hel", "lo"]])
 @pytest.mark.parametrize(
     "usage_position", ["before", "after", "combined", "absent"]
