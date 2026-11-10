@@ -14,7 +14,10 @@
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.evaluation import _retry_options_utils
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
+from google.auth import exceptions as auth_exceptions
+from google.genai import _api_client
 from google.genai import types
 import pytest
 
@@ -75,4 +78,56 @@ async def test_ensure_retry_options_plugin(mocker):
   assert (
       request.config.http_options.retry_options
       == _retry_options_utils._DEFAULT_HTTP_RETRY_OPTIONS
+  )
+
+
+def test_timeout_retry_kwargs_without_retry_options_stops_after_one_attempt():
+  request = LlmRequest()
+  kwargs = _retry_options_utils.timeout_retry_kwargs(request)
+  assert kwargs["stop"].max_attempt_number == 1
+  assert "retry" not in kwargs
+
+
+def test_timeout_retry_kwargs_retries_timeout_exceptions(monkeypatch):
+  monkeypatch.setattr(_api_client, "_AIOHTTP_TRANSIENT_EXC", (), raising=False)
+  request = LlmRequest(
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              retry_options=types.HttpRetryOptions(
+                  attempts=3, initial_delay=0.0, max_delay=0.0, jitter=0.0
+              )
+          )
+      )
+  )
+  kwargs = _retry_options_utils.timeout_retry_kwargs(
+      request, Gemini(model="gemini-2.5-flash")
+  )
+  assert kwargs["stop"].max_attempt_number == 3
+  retry_predicate = kwargs["retry"].predicate
+  assert retry_predicate(TimeoutError("Request timed out after 120.0 seconds."))
+  assert retry_predicate(
+      auth_exceptions.TimeoutError("Request timed out after 120.0 seconds.")
+  )
+  assert not retry_predicate(RuntimeError("non-timeout error"))
+
+
+def test_timeout_retry_kwargs_skips_when_genai_already_retries_aiohttp_timeouts(
+    monkeypatch,
+):
+  monkeypatch.setattr(_api_client, "has_aiohttp", True)
+  monkeypatch.setattr(
+      _api_client,
+      "_AIOHTTP_TRANSIENT_EXC",
+      (TimeoutError, auth_exceptions.TimeoutError),
+      raising=False,
+  )
+  request = LlmRequest()
+  _retry_options_utils.add_default_retry_options_if_not_present(request)
+  kwargs = _retry_options_utils.timeout_retry_kwargs(
+      request, Gemini(model="gemini-2.5-flash")
+  )
+  retry_predicate = kwargs["retry"].predicate
+  assert not retry_predicate(TimeoutError("Already retried by google-genai"))
+  assert not retry_predicate(
+      auth_exceptions.TimeoutError("Already retried by google-genai")
   )

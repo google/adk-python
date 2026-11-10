@@ -26,6 +26,7 @@ from typing import TypeVar
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
+import tenacity
 from typing_extensions import override
 
 from ..models.base_llm import BaseLlm
@@ -34,6 +35,7 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ._retry_options_utils import add_default_retry_options_if_not_present
+from ._retry_options_utils import timeout_retry_kwargs
 from .common import EvalBaseModel
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
@@ -179,25 +181,28 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     Returns:
       A PerInvocationResult containing the evaluation score and status.
     """
-    async with Aclosing(
-        self._judge_model.generate_content_async(llm_request)
-    ) as agen:
-      async for llm_response in agen:
-        # Non-streaming call, so there is only one response content.
-        auto_rater_score = (
-            self._convert_auto_rater_response_to_score_for_invocation(
-                llm_response, actual=actual, expected=expected
+    retry_kwargs = timeout_retry_kwargs(llm_request, self._judge_model)
+    async for attempt in tenacity.AsyncRetrying(**retry_kwargs):
+      with attempt:
+        async with Aclosing(
+            self._judge_model.generate_content_async(llm_request)
+        ) as agen:
+          async for llm_response in agen:
+            # Non-streaming call, so there is only one response content.
+            auto_rater_score = (
+                self._convert_auto_rater_response_to_score_for_invocation(
+                    llm_response, actual=actual, expected=expected
+                )
             )
-        )
-        return PerInvocationResult(
-            actual_invocation=actual,
-            expected_invocation=expected,
-            score=auto_rater_score.score,
-            eval_status=get_eval_status(
-                auto_rater_score.score, self._threshold
-            ),
-            rubric_scores=auto_rater_score.rubric_scores,
-        )
+            return PerInvocationResult(
+                actual_invocation=actual,
+                expected_invocation=expected,
+                score=auto_rater_score.score,
+                eval_status=get_eval_status(
+                    auto_rater_score.score, self._threshold
+                ),
+                rubric_scores=auto_rater_score.rubric_scores,
+            )
     # If we reach here, the LLM didn't return any response
     raise RuntimeError(
         "LLM evaluation failed: no response received from judge model"

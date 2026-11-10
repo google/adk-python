@@ -1982,3 +1982,50 @@ async def test_evaluate_invocations_cancels_in_flight_judge_calls_on_error(
     await metric.evaluate_invocations(invocations)
 
   assert cancelled
+
+
+async def test_evaluate_nl_response_retries_judge_timeouts(mock_llm_registry):
+  del mock_llm_registry  # fixture only needed for its side effect.
+  criterion = HallucinationsCriterion(
+      threshold=0.5,
+      judge_model_options=JudgeModelOptions(
+          judge_model="gemini-2.5-flash",
+          judge_model_config=genai_types.GenerateContentConfig(
+              http_options=genai_types.HttpOptions(
+                  retry_options=genai_types.HttpRetryOptions(
+                      attempts=2, initial_delay=0.0, max_delay=0.0, jitter=0.0
+                  )
+              )
+          ),
+          num_samples=1,
+      ),
+  )
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1", threshold=0.5, criterion=criterion
+      )
+  )
+  responses = [
+      None,
+      "<sentence>s</sentence>",
+      None,
+      (
+          "sentence: s\nlabel: supported\nrationale: r\n"
+          "supporting_excerpt: null\ncontradicting_excerpt: null"
+      ),
+  ]
+
+  async def mock_generate(llm_request):
+    del llm_request
+    text = responses.pop(0)
+    if text is None:
+      raise TimeoutError("Request timed out.")
+    yield LlmResponse(
+        content=genai_types.Content(parts=[genai_types.Part(text=text)])
+    )
+
+  metric._judge_model.generate_content_async = mock_generate
+  score, _ = await metric._evaluate_nl_response("nl", "ctx")
+
+  assert score == 1.0
+  assert not responses
