@@ -114,9 +114,7 @@ def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
   if isinstance(agent, LlmAgent):
     return agent.input_schema
 
-  # For composite agents, check the first sub-agent
-  if agent.sub_agents:
-    return _get_input_schema(agent.sub_agents[0])
+  
 
   return None
 
