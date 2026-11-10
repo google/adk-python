@@ -27,6 +27,7 @@ from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ..base_tool import BaseTool
+from ._utils import ensure_initialized
 
 if TYPE_CHECKING:
   from ..tool_context import ToolContext
@@ -97,6 +98,7 @@ class EditFileTool(BaseTool):
           ),
       }
 
+    await ensure_initialized(self._environment, tool_context)
     try:
       data_bytes = await self._environment.read_file(path, ctx=tool_context)
       content = data_bytes.decode('utf-8', errors='surrogateescape')
