@@ -20,6 +20,7 @@ import logging
 
 from ...agents.context import Context
 from ...events._branch_path import _BranchPath
+from ...events._interrupts import extract_event_interrupt_ids
 from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
 from ...events._node_path_builder import parent_node_path
@@ -142,20 +143,22 @@ class ReplayManager:
     """Adds `events` to the index, continuing from what is already there.
 
     Interrupt ownership (`_fc_to_parent`) carries across calls: a user response
-    indexed now may answer a function call indexed in an earlier batch. It is
-    tracked for every event rather than only the indexed invocation's, so a
-    reply still routes to an interrupt raised by an earlier invocation.
+    or pathless error seal indexed now may close a function call indexed in an
+    earlier batch. It is tracked for every event rather than only the indexed
+    invocation's, so a reply still routes to an interrupt raised by an earlier
+    invocation.
     """
-    from ...events._interrupts import extract_event_interrupt_ids
-
     for event in events:
       if event.author == "user":
         if self._in_scope(event):
           self._index_user_event(event, self._fc_to_parent)
         continue
 
-      path = event.node_info.path or ""
+      path = (event.node_info.path if event.node_info else None) or ""
       if not path:
+        if event.error_code is not None and self._in_scope(event):
+          # Routes pathless error seals to the owning interrupt's parent.
+          self._index_event_by_response_ids(event, self._fc_to_parent)
         continue
 
       parent_path = parent_node_path(path)
@@ -163,18 +166,17 @@ class ReplayManager:
       if self._in_scope(event):
         self._add_event_to_index(parent_path, event)
 
-      # Track interrupts to route future user responses
+      # Track interrupts to route future user responses and error seals.
       for fid in extract_event_interrupt_ids(event):
         self._fc_to_parent[fid] = parent_path
 
-  def _index_user_event(
+  def _index_event_by_response_ids(
       self, event: Event, fc_to_parent: dict[str, str]
-  ) -> None:
-    """Routes user response events to parent path based on function call IDs."""
-    if not event.content or not event.content.parts:
-      return
-    matched = False
+  ) -> set[str]:
+    """Indexes ``event`` under parents owning its FunctionResponse IDs."""
     added_parents: set[str] = set()
+    if not event.content or not event.content.parts:
+      return added_parents
     for part in event.content.parts:
       fr = part.function_response
       if fr and fr.id and fr.id in fc_to_parent:
@@ -182,7 +184,16 @@ class ReplayManager:
         if parent not in added_parents:
           self._add_event_to_index(parent, event)
           added_parents.add(parent)
-          matched = True
+    return added_parents
+
+  def _index_user_event(
+      self, event: Event, fc_to_parent: dict[str, str]
+  ) -> None:
+    """Routes user response events to parent path based on function call IDs."""
+    if not event.content or not event.content.parts:
+      return
+    added_parents = self._index_event_by_response_ids(event, fc_to_parent)
+    matched = bool(added_parents)
 
     if event.branch:
       # Match the branch's run ids exactly. A substring test on the raw branch
@@ -279,6 +290,8 @@ class ReplayManager:
     base_path_builder = _NodePathBuilder.from_string(base_path)
     sequence: list[str] = []
     completed: set[str] = set()
+    interrupt_owner: dict[str, str] = {}
+    open_interrupts: dict[str, set[str]] = {}
     invocation_id = ctx._invocation_context.invocation_id
 
     for event in events:
@@ -287,7 +300,43 @@ class ReplayManager:
       if invocation_id and event.invocation_id != invocation_id:
         continue
 
-      event_node_path = event.node_info.path or ""
+      if event.author == "user" and event.content and event.content.parts:
+        for part in event.content.parts:
+          fr = part.function_response
+          if fr and fr.id:
+            owner_seg = interrupt_owner.pop(fr.id, None)
+            if owner_seg is not None:
+              open_interrupts[owner_seg].discard(fr.id)
+            elif event.branch:
+              branch_run_ids = _BranchPath.from_string(event.branch).run_ids
+              for int_id in [
+                  fid for fid in interrupt_owner if fid in branch_run_ids
+              ]:
+                owner_seg = interrupt_owner.pop(int_id)
+                open_interrupts[owner_seg].discard(int_id)
+        continue
+
+      event_node_path = (
+          event.node_info.path if event.node_info else None
+      ) or ""
+      if event.error_code is not None and event.content and event.content.parts:
+        for part in event.content.parts:
+          fr = part.function_response
+          if fr and fr.id:
+            owner_seg = interrupt_owner.pop(fr.id, None)
+            if owner_seg is not None:
+              open_set = open_interrupts.get(owner_seg)
+              if open_set is not None:
+                open_set.discard(fr.id)
+                if not open_set and (
+                    not event_node_path or owner_seg not in completed
+                ):
+                  completed.discard(owner_seg)
+                  if owner_seg in sequence:
+                    sequence.remove(owner_seg)
+      if not event_node_path:
+        continue
+
       event_path_builder = _NodePathBuilder.from_string(event_node_path)
 
       if not event_path_builder.is_descendant_of(base_path_builder):
@@ -299,6 +348,7 @@ class ReplayManager:
 
       # Only direct child events, events with delegated output for the child,
       # or descendant interrupt events represent terminal outcomes for the child itself.
+      is_interrupt = is_interrupt_event(event)
       is_child_event = (
           event_path_builder == child_path
           or bool(
@@ -306,7 +356,7 @@ class ReplayManager:
               and event.node_info.output_for
               and str(child_path) in event.node_info.output_for
           )
-          or is_interrupt_event(event)
+          or is_interrupt
       )
       if not is_child_event:
         continue
@@ -315,14 +365,15 @@ class ReplayManager:
 
       if is_terminal_event(event):
         has_result = _event_has_result(event)
+        if is_interrupt:
+          completed.discard(segment)
+          for fid in extract_event_interrupt_ids(event):
+            interrupt_owner[fid] = segment
+            open_interrupts.setdefault(segment, set()).add(fid)
         # An error with no result means the child did not complete: on resume
         # it runs again rather than being replayed, so it holds no place in
         # the replay order. A later attempt that succeeds places it there.
-        if (
-            event.error_code is not None
-            and not has_result
-            and not is_interrupt_event(event)
-        ):
+        if event.error_code is not None and not has_result and not is_interrupt:
           if segment in sequence and segment not in completed:
             sequence.remove(segment)
           continue
@@ -333,7 +384,7 @@ class ReplayManager:
           sequence.remove(segment)
         sequence.append(segment)
         # Only non-interrupt terminal outcomes mark the child completed.
-        if not is_interrupt_event(event) and has_result:
+        if not is_interrupt and has_result:
           completed.add(segment)
 
     return sequence, completed
