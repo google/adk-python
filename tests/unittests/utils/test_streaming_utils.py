@@ -17,6 +17,7 @@ from __future__ import annotations
 from google.adk.features._feature_registry import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.functions import AF_FUNCTION_CALL_ID_PREFIX
+from google.adk.models.llm_response import LlmResponse
 from google.adk.utils import streaming_utils
 from google.genai import types
 import pytest
@@ -180,8 +181,51 @@ class TestStreamingResponseAggregator:
     closed_response = aggregator.close()
     assert closed_response is not None
     assert closed_response.content.parts[0].text == "Error"
-    assert closed_response.error_code == types.FinishReason.RECITATION
-    assert closed_response.error_message == "Recitation error"
+    # Content with parts is not an error, as in LlmResponse.create.
+    assert closed_response.finish_reason == types.FinishReason.RECITATION
+    assert closed_response.error_code is None
+    assert closed_response.error_message is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("use_progressive_sse", [True, False])
+  @pytest.mark.parametrize(
+      "finish_reason",
+      [
+          types.FinishReason.STOP,
+          types.FinishReason.MAX_TOKENS,
+          types.FinishReason.SAFETY,
+          types.FinishReason.RECITATION,
+          types.FinishReason.OTHER,
+      ],
+  )
+  @pytest.mark.parametrize("parts", [[types.Part(text="Hello")], []])
+  async def test_close_error_matches_llm_response_create(
+      self, use_progressive_sse, finish_reason, parts
+  ):
+    """The same response gets the same error_code with and without streaming."""
+    response = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(parts=parts),
+                finish_reason=finish_reason,
+                finish_message="finish message",
+            )
+        ]
+    )
+    expected = LlmResponse.create(response)
+
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      async for _ in aggregator.process_response(response):
+        pass
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.error_code == expected.error_code
+    assert closed_response.error_message == expected.error_message
+    assert closed_response.finish_reason == expected.finish_reason
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize("use_progressive_sse", [True, False])
