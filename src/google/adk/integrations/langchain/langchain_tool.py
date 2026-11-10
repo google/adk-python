@@ -91,8 +91,8 @@ class LangchainTool(FunctionTool):
       # whose signature describes the real parameters. Falling back to
       # ``_run`` would advertise a required ``config`` parameter the model is
       # asked for but cannot use (Tool._run(self, *args, config, ...)).
-      if isinstance(tool, Tool) and getattr(tool, 'func', None) is not None:
-        func = tool.func
+      if isinstance(tool, Tool) and (tool.func or tool.coroutine) is not None:
+        func = tool.func or tool.coroutine
       elif hasattr(tool, '_run') or hasattr(tool, 'run'):
         func = (
             getattr(tool, '_run')

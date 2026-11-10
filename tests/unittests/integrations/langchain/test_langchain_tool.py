@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 from google.adk.events.event_actions import EventActions
 from google.adk.integrations.langchain import LangchainTool
+from langchain_core.tools import Tool
 from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
@@ -54,6 +55,14 @@ def sync_add(x, y) -> int:
   return x + y
 
 
+async def async_shout(text: str) -> str:
+  return text.upper()
+
+
+def shout(text: str) -> str:
+  return text.upper()
+
+
 class AddSchema(BaseModel):
   x: int
   y: int
@@ -72,6 +81,35 @@ test_langchain_sync_add_tool = StructuredTool.from_function(
     description="Adds two numbers",
     args_schema=AddSchema,
 )
+
+
+@pytest.mark.asyncio
+async def test_plain_tool_with_func():
+  """A plain Tool whose callable is in func uses that signature."""
+  langchain_tool = LangchainTool(
+      tool=Tool(name="shout", func=shout, description="Shouts text")
+  )
+  result = await langchain_tool.run_async(
+      args={"text": "hi"}, tool_context=MagicMock()
+  )
+  assert result == "HI"
+
+
+@pytest.mark.asyncio
+async def test_plain_tool_with_coroutine():
+  """A plain Tool whose callable is only in coroutine is wired correctly."""
+  langchain_tool = LangchainTool(
+      tool=Tool(
+          name="shout",
+          func=None,
+          coroutine=async_shout,
+          description="Shouts text",
+      )
+  )
+  result = await langchain_tool.run_async(
+      args={"text": "hi"}, tool_context=MagicMock()
+  )
+  assert result == "HI"
 
 
 @pytest.mark.asyncio
