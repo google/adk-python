@@ -47,12 +47,23 @@ def _is_abort_event(event: Event) -> bool:
   return event.error_code == _INVOCATION_ABORTED
 
 
-def _is_paused_task_reply(event: Event) -> bool:
-  """Whether a task agent already paused on this event to wait for the user."""
-  return (
-      bool(event.isolation_scope)
+def _is_paused_task_reply(events: list[Event]) -> bool:
+  """Whether a task agent paused on the last event to wait for the user."""
+  from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
+
+  event = events[-1]
+  if not (
+      event.isolation_scope
       and event.author != 'user'
       and event.is_final_response()
+  ):
+    return False
+  # A finished task is not paused, even when its after callbacks emit more
+  # events in its scope.
+  return not any(
+      e.isolation_scope == event.isolation_scope
+      and is_finish_task_terminal_fr(e)
+      for e in events
   )
 
 
@@ -93,7 +104,7 @@ def _build_abort_events(
     The synthetic events, in the order they should be appended.
   """
   invocation_events = [e for e in events if e.invocation_id == invocation_id]
-  if invocation_events and _is_paused_task_reply(invocation_events[-1]):
+  if invocation_events and _is_paused_task_reply(invocation_events):
     return []
   answered_call_ids = {
       fr.id
