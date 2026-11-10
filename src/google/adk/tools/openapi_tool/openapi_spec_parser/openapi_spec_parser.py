@@ -47,6 +47,14 @@ _VALID_SCHEMA_TYPES: Set[str] = frozenset({
 _SCHEMA_CONTAINER_KEYS: Set[str] = frozenset({"schema", "schemas"})
 
 
+def _first_server_url(servers: list[dict[str, Any]] | None) -> str | None:
+  """Returns the URL of the first server, or None if no server is declared."""
+  if not servers:
+    return None
+  url: str = servers[0].get("url", "")
+  return url
+
+
 class OperationEndpoint(BaseModel):
   base_url: str
   path: str
@@ -178,9 +186,7 @@ class OpenApiSpecParser:
     operations = []
 
     # Taking first server url, or default to empty string if not present
-    base_url = ""
-    if openapi_spec.get("servers"):
-      base_url = openapi_spec["servers"][0].get("url", "")
+    root_base_url = _first_server_url(openapi_spec.get("servers")) or ""
 
     # Get global security scheme (if any).
     global_scheme_name = _required_scheme_name(openapi_spec.get("security"))
@@ -190,6 +196,11 @@ class OpenApiSpecParser:
     for path, path_item in openapi_spec.get("paths", {}).items():
       if path_item is None:
         continue
+
+      # Path-level servers override the root servers for this path.
+      path_base_url = _first_server_url(path_item.get("servers"))
+      if path_base_url is None:
+        path_base_url = root_base_url
 
       for method in (
           "get",
@@ -226,6 +237,11 @@ class OpenApiSpecParser:
         if "operationId" not in operation_dict:
           temp_id = _to_snake_case(f"{path}_{method}")
           operation_dict["operationId"] = temp_id
+
+        # Operation-level servers override the path and root servers.
+        base_url = _first_server_url(operation_dict.get("servers"))
+        if base_url is None:
+          base_url = path_base_url
 
         url = OperationEndpoint(base_url=base_url, path=path, method=method)
         operation = Operation.model_validate(operation_dict)

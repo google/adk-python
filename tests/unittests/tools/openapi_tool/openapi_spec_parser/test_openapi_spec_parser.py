@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 from typing import Any
 from typing import Dict
 
@@ -304,6 +305,78 @@ def test_parse_spec_with_no_servers(openapi_spec_generator):
 
   assert len(parsed_operations) == 1
   assert parsed_operations[0].endpoint.base_url == ""
+
+
+def test_operation_servers_override_path_and_root_servers(
+    openapi_spec_generator,
+):
+  """An operation that declares servers is sent to its own server."""
+  openapi_spec = create_minimal_openapi_spec()
+  openapi_spec["servers"] = [{"url": "https://root.example.com"}]
+  path_item = openapi_spec["paths"]["/test"]
+  path_item["servers"] = [{"url": "https://path.example.com"}]
+  path_item["get"]["servers"] = [
+      {"url": "https://operation.example.com"},
+      {"url": "https://operation-fallback.example.com"},
+  ]
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+  assert (
+      parsed_operations[0].endpoint.base_url == "https://operation.example.com"
+  )
+
+
+def test_path_servers_override_root_servers(openapi_spec_generator):
+  """Operations without servers of their own use their path's servers."""
+  openapi_spec = create_minimal_openapi_spec()
+  openapi_spec["servers"] = [{"url": "https://root.example.com"}]
+  openapi_spec["paths"]["/test"]["servers"] = [
+      {"url": "https://path.example.com"}
+  ]
+  openapi_spec["paths"]["/other"] = copy.deepcopy(
+      openapi_spec["paths"]["/test"]
+  )
+  del openapi_spec["paths"]["/other"]["servers"]
+  openapi_spec["paths"]["/other"]["get"]["operationId"] = "otherGet"
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  base_urls = {op.name: op.endpoint.base_url for op in parsed_operations}
+  assert base_urls == {
+      "test_get": "https://path.example.com",
+      "other_get": "https://root.example.com",
+  }
+
+
+def test_path_servers_apply_when_no_root_servers(openapi_spec_generator):
+  """Path-level servers are used even when the spec has no root servers."""
+  openapi_spec = create_minimal_openapi_spec()
+  openapi_spec["paths"]["/test"]["servers"] = [
+      {"url": "https://path.example.com"}
+  ]
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+  assert parsed_operations[0].endpoint.base_url == "https://path.example.com"
+
+
+def test_empty_operation_servers_fall_back_to_path_servers(
+    openapi_spec_generator,
+):
+  """An empty servers list on an operation does not override its path."""
+  openapi_spec = create_minimal_openapi_spec()
+  openapi_spec["servers"] = [{"url": "https://root.example.com"}]
+  path_item = openapi_spec["paths"]["/test"]
+  path_item["servers"] = [{"url": "https://path.example.com"}]
+  path_item["get"]["servers"] = []
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+  assert parsed_operations[0].endpoint.base_url == "https://path.example.com"
 
 
 def test_parse_spec_with_description(openapi_spec_generator):
