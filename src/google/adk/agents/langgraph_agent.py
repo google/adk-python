@@ -140,7 +140,12 @@ class LangGraphAgent(BaseAgent):
 
     # Use the Runnable
     final_state = await self.graph.ainvoke({'messages': messages}, config)
-    result = final_state['messages'][-1].content
+    message = final_state['messages'][-1]
+    # Content can be a list of blocks (e.g. reasoning and text); `.text` keeps
+    # only the text. String content is passed through unchanged.
+    result = (
+        message.content if isinstance(message.content, str) else message.text
+    )
 
     result_event = Event(
         invocation_id=ctx.invocation_id,
