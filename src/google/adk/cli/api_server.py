@@ -1756,8 +1756,8 @@ class ApiServer:
         from google.api_core.client_options import ClientOptions
         from google.api_core.exceptions import GoogleAPICallError
         from google.api_core.exceptions import InvalidArgument
-        from google.cloud.iamconnectorcredentials_v1alpha import FinalizeCredentialsRequest
-        from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient
+        from google.cloud.agentidentitycredentials_v1 import AuthProviderCredentialsServiceClient
+        from google.cloud.agentidentitycredentials_v1 import FinalizeCredentialsRequest
       except ImportError as e:
         raise HTTPException(
             status_code=500,
@@ -1768,13 +1768,13 @@ class ApiServer:
         ) from e
 
       # Optional endpoint override (defaults to the prod
-      # iamconnectorcredentials.googleapis.com when unset). Mirrors the retrieve
-      # client so finalize targets the same service instance; developers do not
-      # normally set this.
+      # agentidentitycredentials.googleapis.com when unset). Mirrors the
+      # retrieve client so finalize targets the same service instance;
+      # developers do not normally set this.
       client_options = None
-      if host := os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST"):
+      if host := os.environ.get("AGENT_IDENTITY_CREDENTIALS_TARGET_HOST"):
         client_options = ClientOptions(api_endpoint=host)
-      client = IAMConnectorCredentialsServiceClient(
+      client = AuthProviderCredentialsServiceClient(
           client_options=client_options, transport="rest"
       )
 
@@ -1794,7 +1794,9 @@ class ApiServer:
         ) from e
 
       finalize_request = FinalizeCredentialsRequest(
-          connector=req.connector_name,
+          auth_provider=req.connector_name.replace(
+              "/connectors/", "/authProviders/"
+          ),
           user_id=req.user_id,
           user_id_validation_state=state_bytes,
           consent_nonce=req.consent_nonce,
