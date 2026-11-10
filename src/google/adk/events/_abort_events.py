@@ -62,6 +62,7 @@ def _build_abort_events(
     invocation_id: str,
     root_agent_name: str,
     branch: str | None,
+    keep_open: frozenset[str] = frozenset(),
 ) -> list[Event]:
   """Returns the events that seal an aborted invocation.
 
@@ -74,7 +75,9 @@ def _build_abort_events(
 
   Long-running calls (including confirmation and credential requests) are
   sealed too: the invocation that issued them is gone, so they are not left
-  pending for a later turn.
+  pending for a later turn. When the run task is cancelled without
+  `abort_signal` set, the runner passes the calls the invocation is still
+  waiting on as `keep_open`, so it can resume.
 
   Args:
     events: The session history, in chronological order.
@@ -83,6 +86,8 @@ def _build_abort_events(
       dangling.
     branch: Branch for calls whose event has no branch, and for the abort
       event returned when nothing is dangling.
+    keep_open: Ids of dangling calls to leave unsealed. If every dangling
+      call is one of these, no abort event is returned at all.
 
   Returns:
     The synthetic events, in the order they should be appended.
@@ -100,13 +105,20 @@ def _build_abort_events(
   grouped_calls: dict[
       tuple[str, str | None, str | None], list[types.FunctionCall]
   ] = collections.defaultdict(list)
+  kept_open = False
   for event in invocation_events:
     for fc in event.get_function_calls():
-      if fc.id and fc.id not in answered_call_ids:
-        key = (event.author, event.branch or branch, event.isolation_scope)
-        grouped_calls[key].append(fc)
+      if not fc.id or fc.id in answered_call_ids:
+        continue
+      if fc.id in keep_open:
+        kept_open = True
+        continue
+      key = (event.author, event.branch or branch, event.isolation_scope)
+      grouped_calls[key].append(fc)
 
   if not grouped_calls:
+    if kept_open:
+      return []
     return [
         Event(
             invocation_id=invocation_id,

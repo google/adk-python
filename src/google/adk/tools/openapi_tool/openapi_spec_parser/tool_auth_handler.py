@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
@@ -211,7 +212,10 @@ class _RefreshOutcome(NamedTuple):
 
 
 class ToolAuthHandler:
-  """Handles the preparation and exchange of authentication credentials for tools."""
+  """Handles the preparation and exchange of authentication credentials for tools.
+
+  The credential exchanger's exchange_credential() runs in a worker thread.
+  """
 
   def __init__(
       self,
@@ -769,7 +773,9 @@ class ToolAuthHandler:
     #    the token store
     # 2. blow line should only do credential conversion
 
-    exchanged_credential = self._exchange_credential(credential)
+    exchanged_credential = await asyncio.to_thread(
+        self._exchange_credential, credential
+    )
     return AuthPreparationResult(
         state="done",
         auth_scheme=self.auth_scheme,

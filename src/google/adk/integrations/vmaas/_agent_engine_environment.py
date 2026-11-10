@@ -41,6 +41,8 @@ from ._sandbox_manager import SandboxManager
 if TYPE_CHECKING:
   import agentplatform
 
+  from ...agents.context import Context
+
 logger = logging.getLogger("google_adk." + __name__)
 
 # Working directory of the shell sandbox container.
@@ -171,7 +173,7 @@ class AgentEngineEnvironment(BaseEnvironment):
     return Path(_WORKSPACE)
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     async with self._lifecycle_lock:
       if self._is_initialized:
         return
@@ -217,6 +219,7 @@ class AgentEngineEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     timeout_seconds = math.ceil(timeout) if timeout is not None else None
     if timeout_seconds is not None and timeout_seconds > _MAX_TIMEOUT_SECONDS:
@@ -240,7 +243,12 @@ class AgentEngineEnvironment(BaseEnvironment):
     )
 
   @override
-  async def read_file(self, path: str | os.PathLike[str]) -> bytes:
+  async def read_file(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> bytes:
     resolved = self._resolve_path(path)
     quoted = shlex.quote(resolved)
     # pipefail keeps a base64 failure, such as reading a directory, from being
@@ -285,7 +293,11 @@ class AgentEngineEnvironment(BaseEnvironment):
 
   @override
   async def write_file(
-      self, path: str | os.PathLike[str], content: str | bytes
+      self,
+      path: str | os.PathLike[str],
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
   ) -> None:
     if isinstance(content, str):
       content = content.encode("utf-8")
