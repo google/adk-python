@@ -130,19 +130,21 @@ _MAX_RESOURCE_LIST_PAGES = 100
 async def _iter_resources(
     session: _ClientSession,
 ) -> AsyncGenerator[mcp_types.Resource, None]:
-  """Yields the resources of each resources/list page, a page at a time."""
+  """Yields the resources of each resources/list page, a page at a time.
+
+  The listing ends at the first page without `nextCursor`. Any cursor the
+  server sends, `""` or one it sent before included, is sent back as is: the
+  specification treats cursors as opaque.
+  """
   result: ListResourcesResult = await session.list_resources()
-  seen_cursors: set[str] = set()
+  pages = 1
   while True:
     for resource in result.resources:
       yield resource
     cursor = _read_field(result, "nextCursor", "next_cursor")
     if cursor is None:
       return
-    if cursor in seen_cursors:
-      raise ValueError("MCP server repeated a resources/list cursor.")
-    seen_cursors.add(cursor)
-    if len(seen_cursors) == _MAX_RESOURCE_LIST_PAGES:
+    if pages == _MAX_RESOURCE_LIST_PAGES:
       raise ValueError(
           "MCP server paginated resources/list past"
           f" {_MAX_RESOURCE_LIST_PAGES} pages."
@@ -150,6 +152,7 @@ async def _iter_resources(
     result = await session.list_resources(
         params=mcp_types.PaginatedRequestParams(cursor=cursor)
     )
+    pages += 1
 
 
 async def _list_all_resources(

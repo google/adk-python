@@ -907,19 +907,55 @@ class TestMcpToolset:
     self.mock_session_manager.create_session.assert_awaited_once()
 
   @pytest.mark.asyncio
-  async def test_list_resources_rejects_a_repeated_cursor(self) -> None:
-    """A cursor the server already returned ends the listing with an error."""
+  async def test_list_resources_follows_a_repeated_cursor(self) -> None:
+    """A server that sends the same cursor on each page has every page read."""
     self.mock_session.list_resources = AsyncMock(
-        return_value=_list_resources_page("file1.txt", next_cursor="page-2")
+        side_effect=[
+            _list_resources_page("file1.txt", next_cursor=""),
+            _list_resources_page("file2.txt", next_cursor=""),
+            _list_resources_page("file3.txt"),
+        ]
     )
 
     toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
-    with pytest.raises(
-        ConnectionError, match="repeated a resources/list cursor"
-    ):
+    result = await toolset.list_resources()
+
+    assert result == ["file1.txt", "file2.txt", "file3.txt"]
+    later_calls = self.mock_session.list_resources.await_args_list[1:]
+    assert [call.kwargs["params"].cursor for call in later_calls] == ["", ""]
+
+  @pytest.mark.asyncio
+  async def test_list_resources_on_a_server_whose_last_cursor_is_empty(
+      self,
+  ) -> None:
+    """A server that sends `""` on its last page hits the page limit.
+
+    The server reads `int(cursor or 0)`, so the `""` cursor brings back the
+    first page. Lookups that end on an earlier page still succeed.
+    """
+
+    async def list_resources(
+        params: PaginatedRequestParams | None = None,
+    ) -> ListResourcesResult:
+      page = int(params.cursor or 0) if params else 0
+      return _list_resources_page(
+          f"file{page + 1}.txt", next_cursor="" if page == 1 else str(page + 1)
+      )
+
+    self.mock_session.list_resources = AsyncMock(side_effect=list_resources)
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with pytest.raises(ConnectionError, match="past 100 pages"):
       await toolset.list_resources()
+    assert self.mock_session.list_resources.await_count == 100
+
+    self.mock_session.list_resources.reset_mock()
+    result = await toolset.get_resource_info("file2.txt")
+    assert result["name"] == "file2.txt"
     assert self.mock_session.list_resources.await_count == 2
 
   @pytest.mark.asyncio
