@@ -1025,6 +1025,31 @@ class TestMcpToolset:
         "uri": "file:///file2.txt",
     }
 
+  @pytest.mark.parametrize(
+      ("name", "pages_read"), [("file1.txt", 1), ("file2.txt", 2)]
+  )
+  @pytest.mark.asyncio
+  async def test_get_resource_info_reads_no_page_past_the_match(
+      self, name: str, pages_read: int
+  ) -> None:
+    """A lookup stops at the page that lists the name, below the page limit."""
+
+    async def list_resources(
+        params: PaginatedRequestParams | None = None,
+    ) -> ListResourcesResult:
+      page = 1 if params is None else int(params.cursor)
+      return _list_resources_page(f"file{page}.txt", next_cursor=str(page + 1))
+
+    self.mock_session.list_resources = AsyncMock(side_effect=list_resources)
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.get_resource_info(name)
+
+    assert result["name"] == name
+    assert self.mock_session.list_resources.await_count == pages_read
+
   @pytest.mark.asyncio
   async def test_get_resource_info_not_found(self):
     """Test getting resource info for a non-existent resource."""

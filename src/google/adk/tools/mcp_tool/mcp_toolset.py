@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import dataclasses
 import inspect
 import logging
 import sys
 import time
 from typing import Any
+from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
 from typing import Dict
@@ -125,15 +127,18 @@ class _CachedToolList:
 _MAX_RESOURCE_LIST_PAGES = 100
 
 
-async def _list_all_resources(
+async def _iter_resources(
     session: _ClientSession,
-) -> list[mcp_types.Resource]:
-  """Returns the resources from every resources/list page."""
+) -> AsyncGenerator[mcp_types.Resource, None]:
+  """Yields the resources of each resources/list page, a page at a time."""
   result: ListResourcesResult = await session.list_resources()
-  resources = list(result.resources)
   seen_cursors: set[str] = set()
-  cursor = _read_field(result, "nextCursor", "next_cursor")
-  while cursor is not None:
+  while True:
+    for resource in result.resources:
+      yield resource
+    cursor = _read_field(result, "nextCursor", "next_cursor")
+    if cursor is None:
+      return
     if cursor in seen_cursors:
       raise ValueError("MCP server repeated a resources/list cursor.")
     seen_cursors.add(cursor)
@@ -145,9 +150,24 @@ async def _list_all_resources(
     result = await session.list_resources(
         params=mcp_types.PaginatedRequestParams(cursor=cursor)
     )
-    resources.extend(result.resources)
-    cursor = _read_field(result, "nextCursor", "next_cursor")
-  return resources
+
+
+async def _list_all_resources(
+    session: _ClientSession,
+) -> list[mcp_types.Resource]:
+  """Returns the resources from every resources/list page."""
+  return [resource async for resource in _iter_resources(session)]
+
+
+async def _find_resource(
+    session: _ClientSession, name: str
+) -> Optional[mcp_types.Resource]:
+  """Returns the first resource named `name`, reading no page past it."""
+  async with contextlib.aclosing(_iter_resources(session)) as resources:
+    async for resource in resources:
+      if resource.name == name:
+        return resource
+  return None
 
 
 class McpToolset(BaseToolset):
@@ -643,18 +663,17 @@ class McpToolset(BaseToolset):
       self, name: str, readonly_context: Optional[ReadonlyContext] = None
   ) -> dict[str, Any]:
     """Returns metadata about a specific resource (name, MIME type, etc.)."""
-    resources = await self._execute_with_session(
-        _list_all_resources,
+    resource = await self._execute_with_session(
+        lambda session: _find_resource(session, name),
         "Failed to list resources from MCP server",
         readonly_context,
     )
-    for resource in resources:
-      if resource.name == name:
-        # `Resource` carries `mimeType`, which 2.x renames. A plain dump would
-        # hand the caller a different key on each major, the way the tool
-        # result did.
-        return _dump_mcp_model(resource)
-    raise ValueError(f"Resource with name '{name}' not found.")
+    if resource is None:
+      raise ValueError(f"Resource with name '{name}' not found.")
+    # `Resource` carries `mimeType`, which 2.x renames. A plain dump would
+    # hand the caller a different key on each major, the way the tool result
+    # did.
+    return _dump_mcp_model(resource)
 
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
