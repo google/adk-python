@@ -106,18 +106,19 @@ def _wrap_response(value: Any) -> dict[str, Any]:
   return {_RESULT_KEY: value}
 
 
-def _unwrap_response(data: Any) -> Any:
+def _unwrap_response(data: Any, *, parse_json: bool = True) -> Any:
   """Unwraps a FunctionResponse dict to the original value.
 
   If ``data`` is a dict with exactly one key ``"result"``, extracts the
   value.  String values are JSON-parsed when possible (the web frontend
-  wraps user text as ``{"result": text}`` without parsing).
+  wraps user text as ``{"result": text}`` without parsing), unless
+  ``parse_json`` is False.
 
   Otherwise returns ``data`` unchanged.
   """
   if isinstance(data, dict) and len(data) == 1 and _RESULT_KEY in data:
     value = data[_RESULT_KEY]
-    if isinstance(value, str):
+    if isinstance(value, str) and parse_json:
       try:
         value = json.loads(value)
       except (json.JSONDecodeError, ValueError):
@@ -125,6 +126,27 @@ def _unwrap_response(data: Any) -> Any:
       return value
     return value
   return data
+
+
+def _schema_expects_text(schema: Any) -> bool:
+  """Whether a resume response schema accepts only strings (or null).
+
+  Text answers for such a schema are kept as typed: JSON-parsing them would
+  turn "94103" into an int and "true" into a bool, which the schema rejects.
+  """
+  if not isinstance(schema, dict):
+    return False
+  type_value = schema.get('type')
+  if type_value == 'string':
+    return True
+  options = schema.get('anyOf') or schema.get('oneOf')
+  if isinstance(options, list) and options:
+    option_types = {
+        option.get('type') if isinstance(option, dict) else None
+        for option in options
+    }
+    return 'string' in option_types and option_types <= {'string', 'null'}
+  return False
 
 
 def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
@@ -340,8 +362,10 @@ def _reconstruct_node_states(
       for part in event.content.parts:
         fr = part.function_response
         if fr and fr.id:
-          response_data = _unwrap_response(fr.response)
           schema = schemas_by_id.get(fr.id)
+          response_data = _unwrap_response(
+              fr.response, parse_json=not _schema_expects_text(schema)
+          )
           if schema:
             try:
               response_data = _validate_resume_response(response_data, schema)

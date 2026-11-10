@@ -96,7 +96,7 @@ class ExecuteTool(BaseTool):
     logger.debug('Execute command: %s', command)
     try:
       execution_result: ExecutionResult = await self._environment.execute(
-          command, timeout=DEFAULT_TIMEOUT
+          command, timeout=DEFAULT_TIMEOUT, ctx=tool_context
       )
       logger.debug(
           'Execute result: exit_code=%d, stdout=%r, stderr=%r, timed_out=%r',
