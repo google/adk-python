@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 from collections import OrderedDict
@@ -30,6 +29,7 @@ from typing_extensions import override
 
 from . import _utils
 from ..events._rewind_events import _apply_rewinds
+from ..utils._event_loop_cache import per_loop_value
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -251,8 +251,6 @@ class VertexAiRagMemoryService(BaseMemoryService):
         )
     output_string = "\n".join(output_lines)
 
-    from ..dependencies._agentplatform import agentplatform
-
     temp_file_path: str | None = None
     try:
       with tempfile.NamedTemporaryFile(
@@ -264,24 +262,16 @@ class VertexAiRagMemoryService(BaseMemoryService):
         temp_file_path = temp_file.name
         temp_file.write(output_string)
 
-      client = agentplatform.Client(
-          project=self._project, location=self._location
-      ).aio
-      rag = client.rag
-      try:
-        # Fails fast: the RAG API cannot roll back corpora already written.
-        for corpus_name in corpus_names:
-          await rag.upload_file(
-              corpus_name=corpus_name,
-              path=temp_file_path,
-              display_name=_build_source_display_name(
-                  session.app_name, session.user_id, session.id
-              ),
-          )
-      finally:
-        # Shielded so a cancellation racing the close cannot leak the
-        # underlying HTTP session.
-        await asyncio.shield(client.aclose())
+      rag = self._get_api_client().rag
+      # Fails fast: the RAG API cannot roll back corpora already written.
+      for corpus_name in corpus_names:
+        await rag.upload_file(
+            corpus_name=corpus_name,
+            path=temp_file_path,
+            display_name=_build_source_display_name(
+                session.app_name, session.user_id, session.id
+            ),
+        )
     finally:
       if temp_file_path:
         try:
@@ -310,43 +300,36 @@ class VertexAiRagMemoryService(BaseMemoryService):
     if not rag_resources:
       raise ValueError("Rag resources must be set.")
 
-    client = agentplatform.Client(
-        project=self._project, location=self._location
-    ).aio
+    client = self._get_api_client()
     try:
-      try:
-        scoped_resources = await _scoped_rag_resources(
-            client, rag_resources, app_name, user_id
-        )
-      except Exception:  # pylint: disable=broad-except
-        # Narrowing the resources only improves ranking and transfer; the
-        # response filter below keeps an unnarrowed retrieval correct.
-        logger.warning(
-            "Listing the corpus failed, so retrieval is not scoped to the"
-            " requesting app and user.",
-            exc_info=True,
-        )
-        scoped_resources = None
-
-      vertex_rag_store = self._vertex_rag_store
-      if scoped_resources is not None:
-        if not scoped_resources:
-          return SearchMemoryResponse()
-        vertex_rag_store = self._vertex_rag_store.model_copy(
-            update={"rag_resources": scoped_resources}
-        )
-
-      response = await client.rag.retrieve_contexts(
-          vertex_rag_store=vertex_rag_store,
-          query=agentplatform_types.RagQuery(
-              text=query,
-              similarity_top_k=self._similarity_top_k,
-          ),
+      scoped_resources = await _scoped_rag_resources(
+          client, rag_resources, app_name, user_id
       )
-    finally:
-      # Shielded so a cancellation racing the close cannot leak the
-      # underlying HTTP session.
-      await asyncio.shield(client.aclose())
+    except Exception:  # pylint: disable=broad-except
+      # Narrowing the resources only improves ranking and transfer; the
+      # response filter below keeps an unnarrowed retrieval correct.
+      logger.warning(
+          "Listing the corpus failed, so retrieval is not scoped to the"
+          " requesting app and user.",
+          exc_info=True,
+      )
+      scoped_resources = None
+
+    vertex_rag_store = self._vertex_rag_store
+    if scoped_resources is not None:
+      if not scoped_resources:
+        return SearchMemoryResponse()
+      vertex_rag_store = self._vertex_rag_store.model_copy(
+          update={"rag_resources": scoped_resources}
+      )
+
+    response = await client.rag.retrieve_contexts(
+        vertex_rag_store=vertex_rag_store,
+        query=agentplatform_types.RagQuery(
+            text=query,
+            similarity_top_k=self._similarity_top_k,
+        ),
+    )
     memory_results = []
     session_events_map: OrderedDict[str, list[list[Event]]] = OrderedDict()
     for context in response.contexts.contexts:
@@ -404,6 +387,22 @@ class VertexAiRagMemoryService(BaseMemoryService):
             if event.content
         ])
     return SearchMemoryResponse(memories=memory_results)
+
+  def _get_api_client(self) -> agentplatform.AsyncClient:
+    """Returns the API client for the running event loop.
+
+    The client is built once per event loop and reused, so its credentials,
+    access token and connections carry over from one call to the next.
+    """
+    return per_loop_value(self, "_api_client_per_loop", self._build_api_client)
+
+  def _build_api_client(self) -> agentplatform.AsyncClient:
+    """Instantiates an API client for the configured project and location."""
+    from ..dependencies._agentplatform import agentplatform
+
+    return agentplatform.Client(
+        project=self._project, location=self._location
+    ).aio
 
 
 def _merge_event_lists(event_lists: list[list[Event]]) -> list[list[Event]]:

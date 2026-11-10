@@ -33,6 +33,7 @@ from ._read_file_tool import ReadFileTool
 from ._write_file_tool import WriteFileTool
 
 if TYPE_CHECKING:
+  from ...agents.context import Context
   from ...agents.readonly_context import ReadonlyContext
   from ...environment._base_environment import BaseEnvironment
   from ...models.llm_request import LlmRequest
@@ -113,12 +114,12 @@ class EnvironmentToolset(BaseToolset):
     self._init_lock_map = {}
     self._lock_map_lock = threading.Lock()
 
-  async def _ensure_initialized(self) -> None:
+  async def _ensure_initialized(self, ctx: Context) -> None:
     if self._environment_initialized:
       return
     async with self._get_init_lock():
       if not self._environment_initialized:
-        await self._environment.initialize()
+        await self._environment.initialize(ctx=ctx)
         self._environment_initialized = True
 
   @override
@@ -126,7 +127,6 @@ class EnvironmentToolset(BaseToolset):
       self,
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> list[BaseTool]:
-    await self._ensure_initialized()
     return [
         ExecuteTool(self._environment, max_output_chars=self._max_output_chars),
         ReadFileTool(
@@ -141,7 +141,7 @@ class EnvironmentToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Inject environment-level system instruction."""
-    await self._ensure_initialized()
+    await self._ensure_initialized(tool_context)
     working_dir = self._environment.working_dir
     instruction = ENVIRONMENT_INSTRUCTION.format(
         working_dir=working_dir,

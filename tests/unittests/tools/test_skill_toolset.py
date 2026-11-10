@@ -1583,9 +1583,10 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
       "timed_out": False,
   }
   mock_env.read_file.assert_called_once_with(
-      PurePosixPath("skills/skill1/scripts/run.py")
+      PurePosixPath("skills/skill1/scripts/run.py"), ctx=ctx
   )
   assert mock_env.execute.call_count == 1
+  assert mock_env.execute.call_args.kwargs["ctx"] is ctx
   assert (
       mock_env.execute.call_args.kwargs["command"]
       == "cd skills/skill1 && python3 scripts/run.py --flag 1"
@@ -1840,7 +1841,7 @@ async def test_run_skill_script_materialize_writes_concurrently():
   active_writes = 0
   max_active_writes = 0
 
-  async def slow_write(path, content):
+  async def slow_write(path, content, ctx):
     nonlocal active_writes, max_active_writes
     active_writes += 1
     max_active_writes = max(max_active_writes, active_writes)
@@ -4270,7 +4271,7 @@ async def test_turn_scoped_skill_cache_concurrency(mock_registry, mock_skill1):
 def test_skill_toolset_disables_invocation_cache():
   """Verify SkillToolset disables tool invocation caching to allow dynamic tools."""
   toolset = skill_toolset.SkillToolset()
-  assert toolset._use_invocation_cache is False
+  assert toolset.use_invocation_cache is False
 
 
 @pytest.mark.asyncio
@@ -6451,7 +6452,9 @@ async def test_env_materialization_rejects_dotdot_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6472,7 +6475,9 @@ async def test_env_materialization_rejects_cross_directory_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6493,7 +6498,9 @@ async def test_env_materialization_rejects_self_referential_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6514,7 +6521,9 @@ async def test_env_materialization_safe_path_writes_correctly(tmp_path):
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
-  await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+  await tool._ensure_skill_materialized_in_env(
+      skill, "run.py", mock_env, mock.sentinel.tool_context
+  )
   assert mock_env.write_file.call_count == 3
 
 
@@ -6536,7 +6545,9 @@ async def test_env_materialization_rejects_absolute_path_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6561,7 +6572,9 @@ async def test_env_materialization_validates_all_paths_before_writing(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
   mock_env.write_file.assert_not_called()
 
 
@@ -6623,7 +6636,9 @@ async def test_env_materialization_rejects_dot_path_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 def test_materialization_safe_backslash_path_writes_correctly():
@@ -6736,7 +6751,9 @@ async def test_env_materialization_safe_backslash_path_writes_correctly(
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
-  await tool._ensure_skill_materialized_in_env(skill, "sub\\run.py", mock_env)
+  await tool._ensure_skill_materialized_in_env(
+      skill, "sub\\run.py", mock_env, mock.sentinel.tool_context
+  )
   written_paths = {
       call.args[0].as_posix() for call in mock_env.write_file.call_args_list
   }
@@ -6753,7 +6770,9 @@ async def test_env_materialization_safe_backslash_path_writes_correctly(
   assert expected_asset in written_paths
   assert expected_script in written_paths
   expected_probe = PurePosixPath(expected_script)
-  mock_env.read_file.assert_called_once_with(expected_probe)
+  mock_env.read_file.assert_called_once_with(
+      expected_probe, ctx=mock.sentinel.tool_context
+  )
 
 
 @pytest.mark.asyncio
@@ -6776,7 +6795,7 @@ async def test_rematerialize_skill_rejects_path_traversal(tmp_path):
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await toolset._rematerialize_skill(skill)
+    await toolset._rematerialize_skill(skill, mock.sentinel.tool_context)
   mock_env.write_file.assert_not_called()
 
 
@@ -7030,7 +7049,9 @@ async def test_a_changed_skill_is_rewritten_into_the_environment(
   await _instructions_for(toolset, lifecycle_context)
 
   mock_env.write_file.assert_awaited_once_with(
-      PurePosixPath("skills/a/scripts/s.py"), "print(2)"
+      PurePosixPath("skills/a/scripts/s.py"),
+      "print(2)",
+      ctx=lifecycle_context,
   )
 
 
@@ -7157,17 +7178,19 @@ async def test_script_path_with_scripts_prefix_dot_and_dot_slash(tmp_path):
   for bad_script_path in ("scripts/.", "scripts/"):
     with pytest.raises(PermissionError, match="Path traversal detected"):
       await tool._ensure_skill_materialized_in_env(
-          skill, bad_script_path, mock_env
+          skill, bad_script_path, mock_env, mock.sentinel.tool_context
       )
   mock_env.read_file.assert_not_called()
 
   await tool._ensure_skill_materialized_in_env(
-      skill, "./scripts/run.py", mock_env
+      skill, "./scripts/run.py", mock_env, mock.sentinel.tool_context
   )
   expected_probe = PurePosixPath(
       (tmp_path / "skills" / "safe-skill" / "scripts" / "run.py").as_posix()
   )
-  mock_env.read_file.assert_called_once_with(expected_probe)
+  mock_env.read_file.assert_called_once_with(
+      expected_probe, ctx=mock.sentinel.tool_context
+  )
 
 
 @pytest.mark.asyncio
@@ -7198,7 +7221,7 @@ async def test_write_skill_resources_to_env_rejects_cross_subdir_symlink(
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await toolset._rematerialize_skill(skill)
+    await toolset._rematerialize_skill(skill, mock.sentinel.tool_context)
   mock_env.write_file.assert_not_called()
 
 
@@ -7245,7 +7268,9 @@ async def test_write_skill_resources_to_env_rejects_duplicate_normalized_path(
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(ValueError, match="Duplicate normalized path"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
   mock_env.write_file.assert_not_called()
 
   executor = skill_toolset._SkillScriptCodeExecutor(
