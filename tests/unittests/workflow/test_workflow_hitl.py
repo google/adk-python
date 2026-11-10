@@ -1449,6 +1449,74 @@ async def test_wrapped_response_unwrapped_for_node(
 
 
 @pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize(
+    'response_schema, answer, expected',
+    [
+        (str, '94103', '94103'),
+        (str, 'true', 'true'),
+        (str, 'null', 'null'),
+        (str, 'abc', 'abc'),
+        (str | None, '94103', '94103'),
+        (str | None, 'null', 'null'),
+        (str | None, 'abc', 'abc'),
+        (str | int, '42', 42),
+        ({'oneOf': [{'type': 'string'}, {'type': 'null'}]}, '94103', '94103'),
+        (int, '42', 42),
+        (None, '42', 42),
+    ],
+)
+@pytest.mark.asyncio
+async def test_wrapped_text_answer_kept_as_text_for_string_schema(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+    response_schema: Any,
+    answer: str,
+    expected: Any,
+):
+  """A typed answer is parsed according to the response schema.
+
+  It is kept as text for a string-only schema and still JSON-parsed otherwise.
+  """
+  from google.adk.workflow import FunctionNode
+
+  def ask():
+    return RequestInput(
+        interrupt_id='ask1',
+        message='Zip code?',
+        response_schema=response_schema,
+    )
+
+  node_a = FunctionNode(func=ask)
+  node_b = InputCapturingNode(name='NodeB')
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(
+          name='test_agent',
+          edges=[(START, node_a), (node_a, node_b)],
+      ),
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+
+  # adk run and adk web send typed text wrapped as {"result": text}.
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, _wrap_response(answer))
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert node_b.received_inputs == [expected]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_dict_response_not_unwrapped(
     request: pytest.FixtureRequest, resumable: bool

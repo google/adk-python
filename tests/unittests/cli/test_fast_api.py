@@ -1002,6 +1002,73 @@ def test_run_eval_without_eval_set_results_manager_succeeds(
   assert response.json() == {"runEvalResults": []}
 
 
+@pytest.fixture
+def workflow_root_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  workflow = Workflow(name="wf", edges=[(START, BaseNode(name="leaf"))])
+
+  class WorkflowLoader(BaseAgentLoader):
+
+    def load_agent(self, agent_name: str) -> Workflow:
+      return workflow
+
+    def list_agents(self) -> list[str]:
+      return ["wf_app"]
+
+  dev_server = DevServer(
+      agent_loader=WorkflowLoader(),
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  return TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+
+def test_app_graph_for_workflow_root_is_empty(workflow_root_client):
+  """A Workflow root gets an empty app graph instead of a 500."""
+  response = workflow_root_client.get("/dev/apps/wf_app/graph")
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
+async def test_event_graph_for_workflow_root_is_empty(
+    workflow_root_client, mock_session_service
+):
+  """A Workflow root gets an empty event graph instead of a 500."""
+  session = await mock_session_service.create_session(
+      app_name="wf_app", user_id="user"
+  )
+  event = Event(author="leaf", invocation_id="invocation_id")
+  await mock_session_service.append_event(session=session, event=event)
+
+  response = workflow_root_client.get(
+      f"/dev/apps/wf_app/users/user/sessions/{session.id}/events/"
+      f"{event.id}/graph"
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
 @pytest.mark.parametrize(
     ("web", "bind_host", "expected"),
     [
@@ -9116,6 +9183,52 @@ def test_context_propagation_middleware_extracts_w3c_traceparent_and_baggage(
       (f"{s.context.trace_id:032x}", s.parent and f"{s.parent.span_id:016x}")
       for s in roots
   ] == [("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")]
+
+
+def test_agent_engine_keeps_spans_of_unsampled_platform_traceparent(
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """On Agent Engine an unsampled platform traceparent does not drop spans."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "123")
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  exporter = InMemorySpanExporter()
+  trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+
+  @client.app.get("/_test_trace_context")
+  async def _probe():
+    with trace.get_tracer(__name__).start_as_current_span("probe"):
+      pass
+    return {"ok": True}
+
+  try:
+    response = client.get(
+        "/_test_trace_context",
+        headers={
+            "traceparent": (
+                "00-0000000000000000385c840e58676fdd-00f067aa0ba902b7-00"
+            ),
+        },
+    )
+    spans = exporter.get_finished_spans()
+  finally:
+    exporter.shutdown()
+
+  assert response.status_code == 200
+  assert [(s.name, s.parent) for s in spans] == [("probe", None)]
+  assert spans[0].context.trace_id != 0x385C840E58676FDD
 
 
 if __name__ == "__main__":

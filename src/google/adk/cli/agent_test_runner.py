@@ -46,8 +46,8 @@ if TYPE_CHECKING:
   from collections.abc import Iterable
   from collections.abc import Mapping
 
-  from google.adk.agents.base_agent import BaseAgent
   from google.adk.sessions.session import Session
+  from google.adk.workflow._base_node import BaseNode
 
 EXCLUDED_EVENT_FIELDS = {
     "id",
@@ -144,7 +144,7 @@ class MockModel(BaseLlm):
 class InMemoryRunner:
 
   def __init__(
-      self, root_agent: BaseAgent | None = None, app: App | None = None
+      self, root_agent: BaseNode | None = None, app: App | None = None
   ) -> None:
     self._session_service = InMemorySessionService()
     if app:
@@ -159,7 +159,7 @@ class InMemoryRunner:
       self.app_name = "test_app"
       self.runner = Runner(
           app_name="test_app",
-          agent=root_agent,
+          node=root_agent,
           artifact_service=InMemoryArtifactService(),
           session_service=self._session_service,
           memory_service=InMemoryMemoryService(),

@@ -38,6 +38,8 @@ if TYPE_CHECKING:
   from daytona import ExecuteResponse
   from daytona import Image
 
+  from ...agents.context import Context
+
 
 class _ClosableBytesStream(Protocol):
 
@@ -100,7 +102,7 @@ class DaytonaEnvironment(BaseEnvironment):
     return Path(_SANDBOX_HOME)
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     if self._sandbox is not None:
       return
     self._sandbox = await self._create_sandbox()
@@ -124,6 +126,7 @@ class DaytonaEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     sandbox = await self._ensure_sandbox()
 
@@ -153,7 +156,12 @@ class DaytonaEnvironment(BaseEnvironment):
     )
 
   @override
-  async def read_file(self, path: str | os.PathLike[str]) -> bytes:
+  async def read_file(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> bytes:
     sandbox = await self._ensure_sandbox()
     resolved = self._resolve_path(path)
     try:
@@ -170,7 +178,10 @@ class DaytonaEnvironment(BaseEnvironment):
 
   @override
   async def read_file_stream(
-      self, path: str | os.PathLike[str]
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
   ) -> AsyncGenerator[bytes, None]:
     from daytona import DaytonaError
     from daytona import DaytonaNotFoundError
@@ -206,7 +217,11 @@ class DaytonaEnvironment(BaseEnvironment):
 
   @override
   async def write_file(
-      self, path: str | os.PathLike[str], content: str | bytes
+      self,
+      path: str | os.PathLike[str],
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
   ) -> None:
     sandbox = await self._ensure_sandbox()
     resolved = self._resolve_path(path)

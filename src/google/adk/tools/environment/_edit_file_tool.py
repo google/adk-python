@@ -98,7 +98,7 @@ class EditFileTool(BaseTool):
       }
 
     try:
-      data_bytes = await self._environment.read_file(path)
+      data_bytes = await self._environment.read_file(path, ctx=tool_context)
       content = data_bytes.decode('utf-8', errors='surrogateescape')
     except FileNotFoundError:
       return {'status': 'error', 'error': f'File not found: {path}'}
@@ -151,7 +151,7 @@ class EditFileTool(BaseTool):
 
     new_content = re.sub(pattern, lambda m: new_string, content, count=1)
     data = new_content.encode('utf-8', errors='surrogateescape')
-    await self._environment.write_file(path, data)
+    await self._environment.write_file(path, data, ctx=tool_context)
     return {'status': 'ok', 'message': f'Edited {path}'}
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:

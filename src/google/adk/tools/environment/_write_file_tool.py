@@ -78,7 +78,7 @@ class WriteFileTool(BaseTool):
     if not path:
       return {'status': 'error', 'error': '`path` is required.'}
     try:
-      await self._environment.write_file(path, content)
+      await self._environment.write_file(path, content, ctx=tool_context)
     except Exception as e:
       return {'status': 'error', 'error': str(e)}
     return {'status': 'ok', 'message': f'Wrote {path}'}
