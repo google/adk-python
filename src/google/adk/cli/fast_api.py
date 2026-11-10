@@ -143,6 +143,8 @@ def get_fast_api_app(
     express_mode: bool = False,
     avatar_config: types.AvatarConfig | None = None,
     max_llm_calls: int | None = None,
+    auth_token: str | None = None,
+    require_auth_for_remote: bool = False,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -218,19 +220,41 @@ def get_fast_api_app(
       request VIDEO output.
     max_llm_calls: Maximum number of LLM calls allowed for each agent run.
       When None, ``RunConfig`` resolves its normal default.
+    auth_token: Shared bearer token that every HTTP and WebSocket request must
+      present. Falls back to the ``ADK_SERVER_AUTH_TOKEN`` environment variable
+      when None. None leaves the server unauthenticated.
+    require_auth_for_remote: When True, refuse to bind to a non-loopback
+      address without an ``auth_token``. When False, a non-loopback bind merely
+      logs a warning.
 
   Returns:
     The configured FastAPI application instance.
   """
 
+  auth_token = auth_token or os.environ.get("ADK_SERVER_AUTH_TOKEN") or None
+
   if bind_host is not None and not _is_loopback_address(bind_host):
-    logger.warning(
-        "ADK server is binding to a non-loopback address (%s) and has no"
-        " authentication: any client that can reach it can read, modify, and"
-        " delete any user's sessions and artifacts. Do not expose it to"
-        " untrusted networks without an authenticating proxy.",
-        bind_host,
-    )
+    if auth_token:
+      logger.info(
+          "ADK server is binding to non-loopback address %s with bearer-token"
+          " authentication enabled.",
+          bind_host,
+      )
+    elif require_auth_for_remote:
+      raise ValueError(
+          "Refusing to bind the ADK server to non-loopback address"
+          f" {bind_host!r} without authentication. Pass auth_token (or set"
+          " ADK_SERVER_AUTH_TOKEN / --auth_token), bind to a loopback address,"
+          " or explicitly allow it with --allow_unauthenticated_remote."
+      )
+    else:
+      logger.warning(
+          "ADK server is binding to a non-loopback address (%s) and has no"
+          " authentication: any client that can reach it can read, modify, and"
+          " delete any user's sessions and artifacts. Pass --auth_token (or set"
+          " ADK_SERVER_AUTH_TOKEN) or put it behind an authenticating proxy.",
+          bind_host,
+      )
 
   # Enable the YAML key denylist for config loads if the web UI is enabled.
   if web:
@@ -463,6 +487,7 @@ def get_fast_api_app(
       allow_origins=allow_origins,
       otel_to_cloud=otel_to_cloud,
       bind_host=bind_host,
+      auth_token=auth_token,
       **extra_fast_api_args,
   )
 

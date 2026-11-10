@@ -15,11 +15,13 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 from collections.abc import Mapping
 from collections.abc import Sequence
 import datetime
 import json
 import threading
+import time
 from typing import Any
 from typing import cast
 
@@ -27,28 +29,47 @@ from cryptography.fernet import Fernet
 import google.oauth2.credentials
 
 _MAX_CACHE_SIZE = 1024
+# Plaintext DEKs and Fernet instances are cached to avoid a KMS call per
+# encryption, but the plaintext key material must not live for the whole
+# process: entries older than this are dropped and a fresh DEK is generated.
+_DEK_CACHE_TTL_SECONDS = 3600.0
 _CACHE_LOCK = threading.Lock()
 
-# Cache mapping KMS key name -> tuple of (plaintext_dek: bytes, wrapped_dek: str)
-_KMS_KEY_DEK_CACHE: dict[str, tuple[bytes, str]] = {}
+# Cache mapping KMS key name -> ((plaintext_dek: bytes, wrapped_dek: str), created_at)
+_KMS_KEY_DEK_CACHE: OrderedDict[str, tuple[tuple[bytes, str], float]] = (
+    OrderedDict()
+)
 
-# Cache mapping (kms_key_name, wrapped_dek) -> Fernet instance
-_DEK_FERNET_CACHE: dict[tuple[str, str], Fernet] = {}
+# Cache mapping (kms_key_name, wrapped_dek) -> (Fernet, created_at)
+_DEK_FERNET_CACHE: OrderedDict[tuple[str, str], tuple[Fernet, float]] = (
+    OrderedDict()
+)
 
 # KMS Client cache
 _KMS_CLIENT_CACHE: dict[str, Any] = {}
 
 
-def _cache_put(cache: dict[Any, Any], key: Any, value: Any) -> None:
-  """Adds an item to a bounded cache, evicting the oldest entry if full."""
+def _cache_get(cache: OrderedDict[Any, Any], key: Any) -> Any:
+  """Returns a live cache entry, refreshing its LRU position, or None."""
   with _CACHE_LOCK:
-    if key in cache:
-      cache[key] = value
-      return
-    if len(cache) >= _MAX_CACHE_SIZE:
-      oldest_key = next(iter(cache))
-      cache.pop(oldest_key, None)
-    cache[key] = value
+    entry = cache.get(key)
+    if entry is None:
+      return None
+    value, created_at = entry
+    if time.monotonic() - created_at > _DEK_CACHE_TTL_SECONDS:
+      del cache[key]
+      return None
+    cache.move_to_end(key)
+    return value
+
+
+def _cache_put(cache: OrderedDict[Any, Any], key: Any, value: Any) -> None:
+  """Adds an item to a bounded LRU cache, evicting the oldest entry if full."""
+  with _CACHE_LOCK:
+    cache[key] = (value, time.monotonic())
+    cache.move_to_end(key)
+    while len(cache) > _MAX_CACHE_SIZE:
+      cache.popitem(last=False)
 
 
 def _get_kms_client() -> Any:
@@ -74,9 +95,9 @@ def _get_kms_client() -> Any:
 
 def _get_or_create_dek(kms_key_name: str) -> tuple[bytes, str]:
   """Gets the cached DEK for a KMS key, or generates and wraps a new one."""
-  with _CACHE_LOCK:
-    if kms_key_name in _KMS_KEY_DEK_CACHE:
-      return _KMS_KEY_DEK_CACHE[kms_key_name]
+  cached = _cache_get(_KMS_KEY_DEK_CACHE, kms_key_name)
+  if cached is not None:
+    return cached
 
   # Generate a new 32-byte Fernet key
   plaintext_dek = Fernet.generate_key()
@@ -104,9 +125,9 @@ def _get_fernet_for_wrapped_dek(
 ) -> Fernet:
   """Gets the cached Fernet instance for a wrapped DEK, unwrapping it with KMS if needed."""
   cache_key = (kms_key_name, wrapped_dek)
-  with _CACHE_LOCK:
-    if cache_key in _DEK_FERNET_CACHE:
-      return _DEK_FERNET_CACHE[cache_key]
+  cached = _cache_get(_DEK_FERNET_CACHE, cache_key)
+  if cached is not None:
+    return cached
 
   # Unwrap (decrypt) the DEK using Cloud KMS.
   # Cloud KMS Decrypt requires a CryptoKey name, not a CryptoKeyVersion.
@@ -151,8 +172,7 @@ def encrypt_credentials(
   """
   plaintext_dek, wrapped_dek = _get_or_create_dek(kms_key_name)
   cache_key = (kms_key_name, wrapped_dek)
-  with _CACHE_LOCK:
-    fernet = _DEK_FERNET_CACHE.get(cache_key)
+  fernet = _cache_get(_DEK_FERNET_CACHE, cache_key)
   if fernet is None:
     fernet = Fernet(plaintext_dek)
     _cache_put(_DEK_FERNET_CACHE, cache_key, fernet)

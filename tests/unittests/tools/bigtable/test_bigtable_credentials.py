@@ -38,6 +38,11 @@ class TestBigtableCredentials:
     assert config.client_id == "abc"
     assert config.client_secret == "def"
     assert config.scopes == BIGTABLE_DEFAULT_SCOPE
+    assert config.scopes == [
+        "https://www.googleapis.com/auth/bigtable.admin.instance",
+        "https://www.googleapis.com/auth/bigtable.admin.table",
+        "https://www.googleapis.com/auth/bigtable.data.readonly",
+    ]
     assert config.credentials is None
 
   def test_bigtable_credentials_config_existing_creds(self):

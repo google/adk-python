@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Any
 from typing import cast
@@ -35,6 +36,16 @@ _VERTEX_AI_ENDPOINT = "https://{location}-aiplatform.googleapis.com/v1beta1"
 _VERTEX_AI_MTLS_ENDPOINT = (
     "https://{location}-aiplatform.mtls.googleapis.com/v1beta1"
 )
+# A location is interpolated into the request host that carries the ADC bearer
+# token, so reject anything that could rewrite the URL (path segments, userinfo,
+# extra labels) instead of letting `str.format` substitute it verbatim.
+_LOCATION_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _validate_location(location: str) -> None:
+  """Raises ValueError for a location that is not a GCP region name."""
+  if not isinstance(location, str) or not _LOCATION_PATTERN.fullmatch(location):
+    raise ValueError(f"Invalid Vertex AI location: {location!r}.")
 
 
 def check_adc() -> bool:
@@ -78,6 +89,7 @@ def _call_vertex_express_api(
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
   """Calls a Vertex AI Express API."""
+  _validate_location(location)
   credentials, _ = google.auth.default()
   session = AuthorizedSession(credentials)
 

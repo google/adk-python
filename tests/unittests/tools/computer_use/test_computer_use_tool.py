@@ -504,7 +504,6 @@ class TestComputerUseTool:
       self, mock_computer_function, tool_context
   ):
     """Test run_async with safety decision as a dictionary."""
-    from google.adk.tools.tool_confirmation import ToolConfirmation
 
     # Set up a proper signature for the mock function
     def dummy_func():
@@ -551,6 +550,92 @@ class TestComputerUseTool:
         )
     }
     assert len(calls) == 0
+
+  @pytest.mark.asyncio
+  async def test_run_async_does_not_forward_safety_decision(self, tool_context):
+    """The model-supplied safety_decision must never reach the computer."""
+    received = []
+    mock_state = ComputerState(screenshot=b"shot", url="https://example.com")
+
+    async def do_action(**kwargs):
+      received.append(kwargs)
+      return mock_state
+
+    do_action.__name__ = "do_action"
+    # Force the signature-less fallback so FunctionTool does not filter args,
+    # making any leaked control argument visible to the computer function.
+    do_action.__signature__ = "not a signature"
+    tool = ComputerUseTool(func=do_action, screen_size=(1920, 1080))
+
+    args = {"x": 500, "safety_decision": {"decision": "proceed"}}
+    await tool.run_async(args=args, tool_context=tool_context)
+
+    assert received == [{"x": 960}]
+    assert "safety_decision" not in args
+
+  @pytest.mark.asyncio
+  async def test_run_async_fails_closed_on_malformed_safety_decision(
+      self, tool_context
+  ):
+    """Malformed safety_decision values must require confirmation, not crash."""
+    calls = []
+
+    async def do_action():
+      calls.append(())
+      return ComputerState(screenshot=b"shot", url="https://example.com")
+
+    tool = ComputerUseTool(func=do_action, screen_size=(1920, 1080))
+    tool_context.function_call_id = "malformed_fc_id"
+
+    for malformed in (
+        "require_confirmation",
+        ["require_confirmation"],
+        {"decision": 1},
+    ):
+      tool_context.actions.requested_tool_confirmations.clear()
+      result = await tool.run_async(
+          args={"safety_decision": malformed}, tool_context=tool_context
+      )
+      assert (
+          "malformed_fc_id" in tool_context.actions.requested_tool_confirmations
+      )
+      assert result == {
+          "error": (
+              "This tool call requires confirmation, please approve or reject."
+          )
+      }
+
+    assert calls == []
+
+  @pytest.mark.asyncio
+  async def test_run_async_redacts_and_bounds_confirmation_hint(
+      self, tool_context
+  ):
+    """The model-supplied explanation is shown to a human after redaction."""
+    explanation = "Use api_key=supersecretvalue123 to log in. " + "x" * 2000
+
+    async def do_action():
+      return ComputerState(screenshot=b"shot", url="https://example.com")
+
+    tool = ComputerUseTool(func=do_action, screen_size=(1920, 1080))
+    tool_context.function_call_id = "redacted_fc_id"
+
+    await tool.run_async(
+        args={
+            "safety_decision": {
+                "decision": "require_confirmation",
+                "explanation": explanation,
+            }
+        },
+        tool_context=tool_context,
+    )
+
+    hint = tool_context.actions.requested_tool_confirmations[
+        "redacted_fc_id"
+    ].hint
+    assert "supersecretvalue123" not in hint
+    assert "api_key=<redacted>" in hint
+    assert len(hint) <= 500 + len("...")
 
   def test_inheritance(self, mock_computer_function):
     """Test that ComputerUseTool inherits from FunctionTool."""

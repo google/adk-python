@@ -22,6 +22,9 @@ from google.genai import types
 from opentelemetry.util.types import AnyValue
 from pydantic import BaseModel
 
+from ..utils._redaction import redact_secrets
+from ..utils._redaction import redact_text
+
 
 def safe_json_serialize(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
@@ -43,7 +46,7 @@ def safe_json_serialize(obj: object) -> str:
     return "<not serializable>"
 
   try:
-    return json.dumps(obj, ensure_ascii=False, default=_default)
+    return json.dumps(redact_secrets(obj), ensure_ascii=False, default=_default)
   except (TypeError, ValueError, OverflowError, RecursionError):
     return "<not serializable>"
 
@@ -60,9 +63,9 @@ def serialize_content(content: types.ContentUnion | None) -> AnyValue:
   if content is None:
     return None
   if isinstance(content, BaseModel):
-    return content.model_dump()
+    return redact_secrets(content.model_dump())
   if isinstance(content, str):
-    return content
+    return redact_text(content)
   if isinstance(content, list):
     return [serialize_content(part) for part in content]
   return safe_json_serialize(content)

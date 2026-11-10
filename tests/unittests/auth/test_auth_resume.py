@@ -338,6 +338,7 @@ class TestStoreAuthResponse:
         state_token="expected-state",
     )
     state = _empty_state()
+    state[_oauth_state_key("int-1")] = "expected-state"
 
     forged = _oauth_auth_config(
         credential_key="attacker_key",
@@ -386,6 +387,7 @@ class TestStoreAuthResponse:
     )
     assert requested.exchanged_auth_credential is None
     state = _empty_state()
+    state[_oauth_state_key("int-1")] = ""
 
     response = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
@@ -422,6 +424,7 @@ class TestStoreAuthResponse:
     requested.raw_auth_credential.oauth2.code_verifier = None
     requested.raw_auth_credential.oauth2.code_challenge_method = None
     state = _empty_state()
+    state[_oauth_state_key("int-1")] = ""
     state[_oauth_credential_key("int-1")] = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
         oauth2=OAuth2Auth(
@@ -486,11 +489,17 @@ class TestStoreAuthResponse:
     state = _empty_state()
     state[_oauth_state_key("int-1")] = "expected-session-state"
 
+  @pytest.mark.asyncio
+  async def test_rejects_oauth_code_response_without_recorded_state(self):
+    """Rejects an authorization-code response with no server-recorded state."""
+    requested = _oauth_auth_config(credential_key="oauth_cred")
+    state = _empty_state()
+
     response = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
         oauth2=OAuth2Auth(
             auth_code="code-123",
-            state=None,
+            state="attacker-chosen-state",
         ),
     )
 

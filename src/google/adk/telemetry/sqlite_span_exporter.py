@@ -37,6 +37,8 @@ from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 from opentelemetry.util.types import AttributeValue
 
+from ..utils._redaction import redact_secrets
+
 logger = logging.getLogger("google_adk." + __name__)
 
 _CREATE_SPANS_TABLE = """
@@ -154,7 +156,7 @@ class SqliteSpanExporter(SpanExporter):
   ) -> str:
     try:
       return json.dumps(
-          attributes,
+          redact_secrets(attributes),
           ensure_ascii=False,
           default=lambda o: "<not serializable>",
       )
@@ -179,14 +181,14 @@ class SqliteSpanExporter(SpanExporter):
   def _serialize_events(self, events: Sequence[Event]) -> str:
     try:
       return json.dumps(
-          [
+          redact_secrets([
               {
                   "name": event.name,
                   "timestamp": event.timestamp,
                   "attributes": dict(event.attributes or {}),
               }
               for event in events
-          ],
+          ]),
           ensure_ascii=False,
           default=lambda o: "<not serializable>",
       )

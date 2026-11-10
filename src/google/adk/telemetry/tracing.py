@@ -30,6 +30,7 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
+import json
 import logging
 import os
 import re
@@ -80,6 +81,7 @@ from typing_extensions import deprecated
 from . import _genai_instrumentor
 from .. import version
 from ..auth.auth_credential import _redact_credential_secrets
+from ..utils._redaction import redact_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
@@ -813,7 +815,13 @@ def trace_call_llm(
         response_for_trace = llm_response.model_copy(
             update={"content": _summarize_inline_data(llm_response.content)}
         )
-      llm_response_json = response_for_trace.model_dump_json(exclude_none=True)
+      llm_response_json = json.dumps(
+          redact_secrets(
+              response_for_trace.model_dump(mode="json", exclude_none=True)
+          ),
+          separators=(",", ":"),
+          ensure_ascii=False,
+      )
     except Exception:  # pylint: disable=broad-exception-caught
       llm_response_json = "<not serializable>"
 

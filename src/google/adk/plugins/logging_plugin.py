@@ -29,6 +29,8 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils._redaction import redact_secrets
+from ..utils._redaction import redact_text
 from ._callback_helpers import _classify_tool_result_error
 from ._callback_helpers import _is_durable_node_error
 from ._callback_helpers import _mark_tool_error_recorded
@@ -395,7 +397,7 @@ class LoggingPlugin(BasePlugin):
     so anything else falls back to its string form.
     """
     if isinstance(system_instruction, str):
-      return system_instruction
+      return redact_text(system_instruction)
     if isinstance(system_instruction, types.Content):
       return self._format_content(system_instruction)
     if isinstance(system_instruction, types.Part):
@@ -404,7 +406,7 @@ class LoggingPlugin(BasePlugin):
       return " | ".join(
           self._render_system_instruction(entry) for entry in system_instruction
       )
-    return str(system_instruction)
+    return redact_text(str(system_instruction))
 
   def _format_content(
       self, content: Optional[types.Content], max_length: int = 200
@@ -416,9 +418,7 @@ class LoggingPlugin(BasePlugin):
     parts = []
     for part in content.parts:
       if part.text:
-        text = part.text.strip()
-        if len(text) > max_length:
-          text = text[:max_length] + "..."
+        text = redact_text(part.text.strip(), max_length=max_length)
         parts.append(f"text: '{text}'")
       elif part.function_call:
         parts.append(f"function_call: {part.function_call.name}")
@@ -432,18 +432,20 @@ class LoggingPlugin(BasePlugin):
     return " | ".join(parts)
 
   def _format_args(self, args: dict[str, Any], max_length: int = 300) -> str:
-    """Format arguments dictionary for logging."""
+    """Format arguments dictionary for logging, with secrets masked."""
     if not args:
       return "{}"
 
-    formatted = str(args)
+    formatted = str(redact_secrets(args, include_ambiguous=True))
     if len(formatted) > max_length:
       formatted = formatted[:max_length] + "...}"
     return formatted
 
   def _format_value(self, value: Any, max_length: int = 300) -> str:
     """Format any value, such as a node output, for logging."""
-    formatted = repr(value) if isinstance(value, str) else str(value)
+    redacted = redact_secrets(value, include_ambiguous=True)
+    formatted = repr(redacted) if isinstance(value, str) else str(redacted)
+    formatted = redact_text(formatted)
     if len(formatted) > max_length:
       formatted = formatted[:max_length] + "..."
     return formatted

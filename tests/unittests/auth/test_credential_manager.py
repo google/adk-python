@@ -26,7 +26,6 @@ from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlowImplicit
 from fastapi.openapi.models import OAuthFlows
-from fastapi.openapi.models import SecurityBase
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
@@ -1273,6 +1272,7 @@ class TestCredentialManager:
     response["exchangedAuthCredential"]["oauth2"][
         "authResponseUri"
     ] = f"https://example.com/callback?code=auth-code&state={issued_oauth2.state}"
+    session.state["adk_oauth_state:call_1"] = issued_oauth2.state
     await store_auth_response(
         requested=requested,
         response=response,

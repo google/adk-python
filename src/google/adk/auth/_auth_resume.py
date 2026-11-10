@@ -53,6 +53,46 @@ def _oauth_credential_key(interrupt_id: str) -> str:
   return f"{_OAUTH_CREDENTIAL_KEY_PREFIX}{interrupt_id}"
 
 
+def record_generated_oauth_state(
+    interrupt_id: str,
+    auth_config: AuthConfig,
+) -> dict[str, Any]:
+  """Returns the state delta that binds a generated auth request to `state`.
+
+  The OAuth `state` (and PKCE verifier) generated for an auth request travels to
+  the client inside the function call arguments. Recording them server-side
+  before the request is sent lets `store_auth_response` reject a response that
+  was not produced for this request. Authorization-code flows have no state to
+  record; an empty string sentinel still marks the request as one this server
+  issued, so a response carrying an unexpected state is rejected.
+
+  Args:
+    interrupt_id: The `adk_request_credential` function call ID.
+    auth_config: The generated auth request to record.
+
+  Returns:
+    Mapping of session state keys to values, suitable for an event's
+    `state_delta`.
+  """
+  credential = auth_config.exchanged_auth_credential
+  oauth2 = credential.oauth2 if credential else None
+  if oauth2 is None:
+    return {}
+
+  updates: dict[str, Any] = {
+      _oauth_state_key(interrupt_id): oauth2.state or "",
+  }
+  if oauth2.code_verifier:
+    updates[_oauth_credential_key(interrupt_id)] = AuthCredential(
+        auth_type=credential.auth_type,
+        oauth2=OAuth2Auth(
+            code_verifier=oauth2.code_verifier,
+            code_challenge_method=oauth2.code_challenge_method,
+        ),
+    )
+  return updates
+
+
 def _merge_credential_oauth2_fields(
     target_cred: AuthCredential | None,
     source_cred: AuthCredential | None,
@@ -193,9 +233,20 @@ async def store_auth_response(
     return None
 
   generated_state = state.get(_oauth_state_key(interrupt_id))
-  if generated_state is not None:
-    oauth2 = exchanged_credential.oauth2
-    if not oauth2 or oauth2.state != generated_state:
+  oauth2 = exchanged_credential.oauth2
+  requires_oauth_state_verification = bool(
+      oauth2 and (oauth2.state or oauth2.auth_response_uri or oauth2.auth_code)
+  )
+  if requires_oauth_state_verification:
+    if _oauth_state_key(interrupt_id) not in state:
+      logger.warning(
+          "Ignoring auth response for function call ID %r: no OAuth state was"
+          " recorded for it, so the response cannot be verified. Re-run the"
+          " authentication flow.",
+          interrupt_id,
+      )
+      return None
+    if oauth2.state != generated_state and (oauth2.state or generated_state):
       logger.warning(
           "Ignoring auth response with mismatched OAuth state for function"
           " call ID %r.",

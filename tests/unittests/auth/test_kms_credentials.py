@@ -294,6 +294,48 @@ def test_kms_credentials_copy_and_with_methods():
   assert new_creds4.kms_key_name == key_name
 
 
+def test_kms_dek_cache_rotates_after_ttl(monkeypatch):
+  """Test that expired DEK cache entries force a fresh DEK."""
+  import google.adk.auth._kms_encryptor as kms_enc
+
+  _KMS_KEY_DEK_CACHE.clear()
+  _DEK_FERNET_CACHE.clear()
+  monkeypatch.setattr(kms_enc, "_DEK_CACHE_TTL_SECONDS", -1.0)
+
+  key_name = (
+      "projects/p1/locations/l1/keyRings/kr1/cryptoKeys/k1/cryptoKeyVersions/1"
+  )
+  _, _, _, _, wrapped_dek_first = encrypt_credentials(
+      kms_key_name=key_name,
+      token="token1",
+  )
+  _, _, _, _, wrapped_dek_second = encrypt_credentials(
+      kms_key_name=key_name,
+      token="token2",
+  )
+  assert wrapped_dek_first != wrapped_dek_second
+
+
+def test_kms_dek_cache_is_lru(monkeypatch):
+  """Test that cache eviction follows least-recently-used order."""
+  import google.adk.auth._kms_encryptor as kms_enc
+
+  _KMS_KEY_DEK_CACHE.clear()
+  _DEK_FERNET_CACHE.clear()
+  monkeypatch.setattr(kms_enc, "_MAX_CACHE_SIZE", 2)
+
+  first_wrapped = encrypt_credentials(kms_key_name="key_0", token="token0")[4]
+  encrypt_credentials(kms_key_name="key_1", token="token1")
+  # Touch key_0 so it becomes the most recently used entry.
+  encrypt_credentials(kms_key_name="key_0", token="token0")
+
+  encrypt_credentials(kms_key_name="key_2", token="token2")
+
+  assert "key_0" in _KMS_KEY_DEK_CACHE
+  assert "key_2" in _KMS_KEY_DEK_CACHE
+  assert "key_1" not in _KMS_KEY_DEK_CACHE
+
+
 def test_kms_cache_bounded(monkeypatch):
   """Test that DEK and Fernet caches are bounded and evict oldest entries."""
   import google.adk.auth._kms_encryptor as kms_enc

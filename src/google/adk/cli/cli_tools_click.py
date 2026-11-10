@@ -2178,6 +2178,29 @@ def fast_api_common_options() -> (
         default=8000,
     )
     @click.option(
+        "--auth_token",
+        type=str,
+        envvar="ADK_SERVER_AUTH_TOKEN",
+        help=(
+            "Optional. Shared bearer token that every HTTP and WebSocket"
+            " request must present, either as 'Authorization: Bearer <token>'"
+            " or 'X-ADK-Auth-Token: <token>'. Falls back to the"
+            " ADK_SERVER_AUTH_TOKEN environment variable. Strongly recommended"
+            " whenever --host is not a loopback address."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--require_auth_for_remote/--allow_unauthenticated_remote",
+        default=False,
+        show_default=True,
+        help=(
+            "Optional. Refuse to start when binding to a non-loopback address"
+            " without --auth_token. Off by default so deployments that rely on"
+            " an authenticating proxy keep working."
+        ),
+    )
+    @click.option(
         "--allow_origins",
         help=(
             "Optional. Origins to allow for CORS. Can be literal origins"
@@ -2380,6 +2403,8 @@ def cli_web(
     log_level: str = "INFO",
     allow_origins: list[str] | None = None,
     host: str = "127.0.0.1",
+    auth_token: str | None = None,
+    require_auth_for_remote: bool = False,
     port: int = 8000,
     url_prefix: str | None = None,
     trace_to_cloud: bool = False,
@@ -2407,8 +2432,9 @@ def cli_web(
   pointing directly to a single agent folder.
 
   This server is intended for local development. Its endpoints are
-  unauthenticated, so run it on a trusted network only and do not expose it to
-  untrusted or public networks.
+  unauthenticated unless --auth_token (or ADK_SERVER_AUTH_TOKEN) is set, so run
+  it on a trusted network only and do not expose it to untrusted or public
+  networks.
 
   Example:
 
@@ -2461,6 +2487,8 @@ def cli_web(
       a2a=a2a,
       host=host,
       bind_host=host,
+      auth_token=auth_token,
+      require_auth_for_remote=require_auth_for_remote,
       port=port,
       url_prefix=url_prefix,
       reload_agents=reload_agents,
@@ -2537,6 +2565,8 @@ def cli_api_server(
     log_level: str = "INFO",
     allow_origins: list[str] | None = None,
     host: str = "127.0.0.1",
+    auth_token: str | None = None,
+    require_auth_for_remote: bool = False,
     port: int = 8000,
     url_prefix: str | None = None,
     trace_to_cloud: bool = False,
@@ -2565,9 +2595,10 @@ def cli_api_server(
   agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
   pointing directly to a single agent folder.
 
-  This server's endpoints are unauthenticated. Run it on a trusted network
-  only, and put it behind your own authentication and authorization layer
-  before exposing it to untrusted or public networks or serving multiple users.
+  This server's endpoints are unauthenticated unless --auth_token (or
+  ADK_SERVER_AUTH_TOKEN) is set. Run it on a trusted network only, and put it
+  behind your own authentication and authorization layer before exposing it to
+  untrusted or public networks or serving multiple users.
 
   Example:
 
@@ -2610,6 +2641,8 @@ def cli_api_server(
           a2a=a2a,
           host=host,
           bind_host=host,
+          auth_token=auth_token,
+          require_auth_for_remote=require_auth_for_remote,
           port=port,
           url_prefix=url_prefix,
           reload_agents=reload_agents,

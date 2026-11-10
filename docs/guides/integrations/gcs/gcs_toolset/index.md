@@ -117,8 +117,8 @@ agent = LlmAgent(
 ```
 
 ### Customizing authentication scopes
-By default, `GCSCredentialsConfig` uses the `devstorage.full_control` scope. If
-an application requires more restrictive scopes at the OAuth level, they can
+By default, `GCSCredentialsConfig` uses the `devstorage.read_write` scope. If
+an application requires different scopes at the OAuth level, they can
 be specified during configuration.
 
 ```python

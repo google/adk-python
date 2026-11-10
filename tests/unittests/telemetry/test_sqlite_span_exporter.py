@@ -865,3 +865,40 @@ def test_unserializable_event_attributes_do_not_fail_export(tmp_path):
   (restored,) = exporter.get_all_spans_for_session("s1")
   assert restored.name == "op"
   assert list(restored.events) == []
+
+
+def test_exported_attributes_and_events_are_redacted(tmp_path):
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  span = ReadableSpan(
+      name="op",
+      context=SpanContext(
+          trace_id=0xDEF45,
+          span_id=0xABC12,
+          is_remote=False,
+          trace_flags=TraceFlags(TraceFlags.SAMPLED),
+          trace_state=TraceState(),
+      ),
+      attributes={
+          "gcp.vertex.agent.session_id": "s1",
+          "gen_ai.tool.call.arguments": {
+              "password": "hunter2",
+              "query": "weather",
+          },
+      },
+      start_time=1000,
+      end_time=2000,
+      events=[
+          Event(
+              name="auth",
+              attributes={"access_token": "abc123", "status": "ok"},
+          )
+      ],
+  )
+
+  assert exporter.export([span]) == SpanExportResult.SUCCESS
+  (restored,) = exporter.get_all_spans_for_session("s1")
+  arguments = restored.attributes["gen_ai.tool.call.arguments"]
+  assert arguments["password"] == "<redacted>"
+  assert arguments["query"] == "weather"
+  assert restored.events[0].attributes["access_token"] == "<redacted>"
+  assert restored.events[0].attributes["status"] == "ok"
