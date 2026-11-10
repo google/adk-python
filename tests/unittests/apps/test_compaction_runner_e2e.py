@@ -20,7 +20,10 @@ session service, and token-threshold event compaction.
 
 import asyncio
 from contextlib import suppress
+from typing import AsyncGenerator
 
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.apps.app import App
 from google.adk.apps.app import EventsCompactionConfig
@@ -29,6 +32,7 @@ from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -449,3 +453,118 @@ async def test_turn_that_regrows_after_mid_turn_compaction_is_compacted_again():
   ]
   assert len(compaction_events) == 2
   assert refreshed.events[-1].actions.compaction
+
+
+class _SessionCompactionPlugin(BasePlugin):
+  """Sets the invocation's compaction config for the listed sessions."""
+
+  def __init__(
+      self, config_by_session: dict[str, EventsCompactionConfig | None]
+  ):
+    super().__init__(name="session_compaction")
+    self._config_by_session = config_by_session
+
+  async def before_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    session_id = invocation_context.session.id
+    if session_id in self._config_by_session:
+      invocation_context.events_compaction_config = self._config_by_session[
+          session_id
+      ]
+
+
+class _ReplyAgent(BaseAgent):
+  """A plain BaseAgent root, which the runner runs without the node runtime."""
+
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(
+        invocation_id=ctx.invocation_id,
+        author=self.name,
+        content=types.ModelContent("reply"),
+    )
+
+
+def _llm_root() -> Agent:
+  return Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(
+          responses=["answer"] * 2,
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=100
+          ),
+      ),
+  )
+
+
+def _summarizer() -> LlmEventSummarizer:
+  return LlmEventSummarizer(
+      llm=testing_utils.MockModel.create(responses=["summary"] * 2)
+  )
+
+
+def _sliding_window_config() -> EventsCompactionConfig:
+  return EventsCompactionConfig(
+      compaction_interval=1, overlap_size=0, summarizer=_summarizer()
+  )
+
+
+def _token_threshold_config() -> EventsCompactionConfig:
+  return EventsCompactionConfig(
+      token_threshold=50, event_retention_size=1, summarizer=_summarizer()
+  )
+
+
+async def _compactions_after_one_turn(app: App) -> dict[str, int]:
+  """Runs one turn in sessions "on" and "off" and counts their summaries."""
+  session_service = InMemorySessionService()
+  runner = Runner(app=app, session_service=session_service)
+  counts = {}
+  for session_id in ("on", "off"):
+    await session_service.create_session(
+        app_name="test_app", user_id="u1", session_id=session_id
+    )
+    async for _ in runner.run_async(
+        user_id="u1", session_id=session_id, new_message=types.UserContent("hi")
+    ):
+      pass
+    session = await session_service.get_session(
+        app_name="test_app", user_id="u1", session_id=session_id
+    )
+    counts[session_id] = len(
+        [event for event in session.events if event.actions.compaction]
+    )
+  return counts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("llm_root", [True, False], ids=["llm", "base_agent"])
+async def test_plugin_turns_compaction_off_for_one_session(llm_root):
+  """Clearing the invocation's config skips the post-invocation compaction."""
+  app = App(
+      name="test_app",
+      root_agent=_llm_root() if llm_root else _ReplyAgent(name="agent"),
+      plugins=[_SessionCompactionPlugin({"off": None})],
+      events_compaction_config=_sliding_window_config(),
+  )
+
+  assert await _compactions_after_one_turn(app) == {"on": 1, "off": 0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_config",
+    [_sliding_window_config, _token_threshold_config],
+    ids=["sliding_window", "token_threshold"],
+)
+async def test_plugin_turns_compaction_on_for_one_session(make_config):
+  """An app without a config compacts the sessions a plugin gives one."""
+  app = App(
+      name="test_app",
+      root_agent=_llm_root(),
+      plugins=[_SessionCompactionPlugin({"on": make_config()})],
+  )
+
+  assert await _compactions_after_one_turn(app) == {"on": 1, "off": 0}

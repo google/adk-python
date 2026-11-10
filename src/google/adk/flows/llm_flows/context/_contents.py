@@ -337,11 +337,8 @@ def _build_task_input_user_content(
 
   # Fallback: workflow-node task with no originating FC.  Use the
   # node_input that the wrapper stamped onto ``ic.user_content``.
-  if user_content and user_content.parts:
-    parts = list(user_content.parts)
-    if is_single_turn:
-      parts.append(types.Part(text=_SINGLE_TURN_NUDGE))
-    return types.Content(role='user', parts=parts)
+  if not is_single_turn and user_content and user_content.parts:
+    return types.Content(role='user', parts=list(user_content.parts))
   return None
 
 
@@ -773,12 +770,10 @@ def _is_event_belongs_to_branch(
   This is for event context segregation between agents. E.g. agent A shouldn't
   see output of agent B.
   """
-  if not invocation_branch or not event.branch:
+  event_branch = event.branch
+  if not invocation_branch or not event_branch:
     return True
-
-  inv_path = _BranchPath.from_string(invocation_branch)
-  evt_path = _BranchPath.from_string(event.branch)
-  return inv_path == evt_path or inv_path.is_descendant_of(evt_path)
+  return _BranchPath.is_same_or_below(invocation_branch, event_branch)
 
 
 def _is_tool_sub_branch_event(
@@ -803,18 +798,8 @@ def _is_tool_sub_branch_event(
   Workflow run by a NodeTool that fans out publishes on
   ``<tool>@<function_call_id>.<node>@<run_id>``.
   """
-  if not event.branch:
-    return False
-  event_path = _BranchPath.from_string(event.branch)
-  base_path = _BranchPath.from_string(current_branch)
-  if not event_path.is_descendant_of(base_path):
-    return False
-  segments = event_path.segments
-  return any(
-      _BranchPath.is_tool_branch(
-          str(_BranchPath(segments[:depth])), agent_name, tool_call_ids
-      )
-      for depth in range(len(base_path.segments) + 1, len(segments) + 1)
+  return _BranchPath.has_tool_segment_below(
+      event.branch, current_branch, agent_name, tool_call_ids
   )
 
 

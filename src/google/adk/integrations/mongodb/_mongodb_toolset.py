@@ -120,11 +120,18 @@ class MongoDbToolset(BaseToolset):
       agent = Agent(model="gemini-3.5-flash", tools=[toolset])
       ```
 
-  When constructed with `connection_string` and no `genai_client`, the toolset
-  is picklable, so the agent can ship to Agent Engine (which packages apps with
-  cloudpickle): the live `MongoClient` is dropped at pickle time and rebuilt
-  from the connection string on the runtime. A toolset built with a
-  caller-owned `mongo_client` or `genai_client` cannot be pickled.
+  When constructed with `connection_string` or `connection_string_env_var`
+  and no `genai_client`, the toolset is picklable, so the agent can ship to
+  Agent Engine (which packages apps with cloudpickle): the live `MongoClient`
+  is dropped at pickle time and rebuilt from the connection string on the
+  runtime. A toolset built with a caller-owned `mongo_client` or
+  `genai_client` cannot be pickled.
+
+  Prefer `connection_string_env_var` for Agent Engine deployments: a plain
+  `connection_string` is stored on the toolset and would be pickled into the
+  deployment package in plaintext, password included. The env-var form keeps
+  only the variable's name on the toolset and resolves the value on the
+  runtime, so the package holds no credential.
   """
 
   def __init__(
@@ -132,6 +139,7 @@ class MongoDbToolset(BaseToolset):
       *,
       database_name: str,
       connection_string: str | None = None,
+      connection_string_env_var: str | None = None,
       mongo_client: MongoClient | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
       settings: MongoDbToolSettings | None = None,
@@ -146,6 +154,10 @@ class MongoDbToolset(BaseToolset):
       connection_string: The MongoDB connection string (URI) used to create a
         client owned by this toolset. Requires the `pymongo` package
         (`pip install google-adk[mongodb]`).
+      connection_string_env_var: Name of an environment variable holding the
+        connection string, resolved where the client is built. Prefer this
+        over `connection_string` for Agent Engine deployments so the
+        credential is not pickled into the deployment package.
       mongo_client: An existing PyMongo client to use instead of creating one
         from `connection_string`. The caller keeps ownership of the client,
         and `settings.timeout_ms` is applied per operation rather than to the
@@ -156,31 +168,44 @@ class MongoDbToolset(BaseToolset):
         Defaults to a client built from the ambient environment.
 
     Raises:
-      ValueError: If both or neither of `connection_string` and `mongo_client`
-        are given.
+      ValueError: If more than one of `connection_string`,
+        `connection_string_env_var` and `mongo_client` are given, or none.
     """
     super().__init__(
         tool_filter=tool_filter,
         tool_name_prefix=DEFAULT_MONGODB_TOOL_NAME_PREFIX,
     )
     self._settings = settings if settings else MongoDbToolSettings()
-    if mongo_client is not None and connection_string is not None:
+    sources = [
+        source is not None
+        for source in (
+            connection_string,
+            connection_string_env_var,
+            mongo_client,
+        )
+    ]
+    if sum(sources) != 1:
       raise ValueError(
-          "Only one of `connection_string` and `mongo_client` may be provided."
+          "Exactly one of `connection_string`, `connection_string_env_var` or"
+          " `mongo_client` must be provided."
       )
     if mongo_client is not None:
       self._client = mongo_client
       self._owns_client = False
-    elif connection_string is not None:
+      self._connection_string = None
+    else:
+      if connection_string is not None:
+        resolved = connection_string
+      else:
+        assert connection_string_env_var is not None
+        resolved = _client.connection_string_from_env(connection_string_env_var)
       self._client = _client.get_mongo_client(
-          connection_string, timeout_ms=self._settings.timeout_ms
+          resolved, timeout_ms=self._settings.timeout_ms
       )
       self._owns_client = True
-    else:
-      raise ValueError(
-          "Either `connection_string` or `mongo_client` must be provided."
-      )
-    self._connection_string = connection_string
+      # None in env-var mode, so the credential is never pickled.
+      self._connection_string = connection_string
+    self._connection_string_env_var = connection_string_env_var
     self._database_name = database_name
     self._genai_client = genai_client
 
@@ -189,9 +214,10 @@ class MongoDbToolset(BaseToolset):
 
     Agent Engine packages the app with cloudpickle; neither a MongoClient
     (sockets, locks, background threads) nor a genai Client (httpx pools)
-    crosses that boundary. The MongoClient is rebuilt from the connection
-    string on restore, and a caller-owned `mongo_client` or `genai_client`
-    raises `TypeError`.
+    crosses that boundary. The MongoClient is rebuilt on restore from the
+    connection string, or, with `connection_string_env_var`, re-resolved from
+    the named environment variable on the destination. A caller-owned
+    `mongo_client` or `genai_client` raises `TypeError`.
     """
     state = _client.drop_client_for_pickle(
         self.__dict__, owns_client=self._owns_client, owner="MongoDbToolset"
@@ -209,9 +235,16 @@ class MongoDbToolset(BaseToolset):
 
   def __setstate__(self, state: dict[str, Any]) -> None:
     self.__dict__.update(state)
-    assert self._connection_string is not None
+    connection_string = self._connection_string
+    if connection_string is None:
+      # Env-var form: the credential was never pickled; resolve it on the
+      # destination (e.g. injected by Secret Manager on Agent Engine).
+      assert self._connection_string_env_var is not None
+      connection_string = _client.connection_string_from_env(
+          self._connection_string_env_var
+      )
     self._client = _client.get_mongo_client(
-        self._connection_string, timeout_ms=self._settings.timeout_ms
+        connection_string, timeout_ms=self._settings.timeout_ms
     )
 
   @override

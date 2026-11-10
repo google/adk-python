@@ -9,35 +9,37 @@ graph nodes and tracks dynamic nodes spawned by `ctx.run_node()`.
 Workflow manages two kinds of child nodes through a unified scheduler (`DynamicNodeScheduler`):
 
 - **Static (graph) nodes** — declared in `edges`, compiled into a
-  `Graph`. Scanned upfront into `_LoopState.recovered_executions` by
-  `ReplayManager.scan_workflow_events(ctx)`. When scheduled by the
-  orchestration loop, `_start_node_task` checks `check_interception` on any
-  recovered execution to mark `_LoopState.replayed_nodes` and pre-populate
-  `_LoopState.runs[node_path]` (`DynamicNodeRun` with `is_static=True`), then
-  delegates to `ctx._run_node_internal` (`DynamicNodeScheduler`). Tracked in
-  `_LoopState.nodes` by node name (`NodeState`).
+  `Graph`. Scanned upfront by `ReplayManager.scan_workflow_events(ctx)` and
+  seeded into `_LoopState.runs[node_path]` (`DynamicNodeRun`). When scheduled
+  by the orchestration loop, `_start_node_task` marks the entry with
+  `is_static=True`, points `_LoopState.static_runs[node_name]` at that same
+  `DynamicNodeRun`, checks `_classify_static_replay` to populate
+  `_LoopState.replayed_nodes`, and delegates to `ctx._run_node_internal`
+  (`DynamicNodeScheduler`).
 - **Dynamic nodes** — spawned at runtime via `ctx.run_node()` from
   inside a graph node's `_run_impl`. Lazily rehydrated from `ReplayManager`
   by `DynamicNodeScheduler._rehydrate_from_events` and tracked in
   `_LoopState.runs` by full `node_path` (`DynamicNodeRun`,
-  which holds `state: NodeState`, `output`, `task`, `transfer_to_agent`,
-  `recovered_state`, and `is_static`). Managed by `DynamicNodeScheduler`.
+  which holds `state: NodeState`, `output`, `route`, `branch`, `task`,
+  `transfer_to_agent`, `recovered_state`, and `is_static`). Managed by
+  `DynamicNodeScheduler`.
 
-Static and dynamic nodes share the same `DynamicNodeScheduler`, replay
-interception (`check_interception` / `ReplayManager`), and
-`_LoopState.interrupt_ids` set, so the Workflow sees a unified view of
-execution and all pending interrupts.
+Static and dynamic nodes share the same `DynamicNodeScheduler`, `DynamicNodeRun`
+outcome recording (`record_outcome`), replay interception
+(`check_interception` / `ReplayManager`), and `_LoopState.interrupt_ids` set,
+so the Workflow sees a single unified view of execution and all pending
+interrupts.
 
 ## Implementing a graph node
 
 A graph node is a regular BaseNode placed in a Workflow's edges.
-In `_start_node_task`, the Workflow checks `check_interception` against
-`_LoopState.recovered_executions` (to record `_LoopState.replayed_nodes` and
-seed `_LoopState.runs` with `is_static=True`) and dispatches
+In `_start_node_task`, the Workflow classifies any pre-seeded `DynamicNodeRun`
+in `_LoopState.runs` (to record `_LoopState.replayed_nodes`), indexes it under
+`_LoopState.static_runs[node_name]`, and dispatches
 `ctx._run_node_internal` to `DynamicNodeScheduler`, which either returns a
 replayed mock `Context` (`create_mock_context`) or wraps the node in a
-`NodeRunner` with a child `Context`, reading `ctx.output`, `ctx.route`, and
-`ctx.interrupt_ids` after it completes.
+`NodeRunner` with a child `Context`; `_handle_completion` then records the
+final outcome on the shared `DynamicNodeRun` in deterministic loop order.
 
 **Output** — two paths. At most one per execution. The Workflow
 reads the output to pass downstream.
@@ -158,13 +160,17 @@ Within a single step (`_execute_step`), when replay is enabled:
   concurrent `run.task`, or calls `check_interception(node=curr_node,
   recovered=run.recovered_state, current_run=run)`:
 
-1. **Same-turn dedup / waiting (`current_run` present and `not current_run.is_static`)** —
+1. **Same-turn dedup / failed / waiting (`current_run` present and `not current_run.is_static`)** —
    if `current_run.state.status == COMPLETED`, returns `should_run=False` with
-   `current_run.output` and `current_run.transfer_to_agent`. If `WAITING` with
-   `interrupts`, returns `should_run=False` with those `interrupts`. (Every
-   static dispatch gets a fresh `run_id`, so loop edges never reuse a
-   `node_path`; static runs have `is_static=True` so no-outcome static nodes
-   fast-forward in step 7 via `should_run = (current_run is not None and not current_run.is_static)`.)
+   `current_run.output`, `current_run.route`, and
+   `current_run.transfer_to_agent`. If `FAILED`, returns `should_run=True`
+   with `resume_inputs=recovered.resolved_responses` so a dynamic run that
+   failed in the current turn reruns instead of consulting stale recovered
+   events. If `WAITING` with `interrupts`, returns `should_run=False` with
+   those `interrupts`. (Every static dispatch gets a fresh `run_id`, so loop
+   edges never reuse a `node_path`; static runs have `is_static=True` so
+   no-outcome static nodes fast-forward in step 7 via
+   `should_run = (current_run is not None and not current_run.is_static)`.)
 
 2. **Nested `Workflow` (`isinstance(node, Workflow)`)** — before checking
    completion or interrupts, `check_interception` immediately returns
@@ -175,7 +181,12 @@ Within a single step (`_execute_step`), when replay is enabled:
 
 3. **Waiting / Partial resume (`recovered.interrupt_ids - recovered.resolved_ids` non-empty)** —
    - If `node.rerun_on_resume` is `True` and `recovered.resolved_ids` is
-     non-empty (**partial resume**): returns `should_run=True` with
+     non-empty (**partial resume**): if `recovered.finished_after_resume` is
+     `True` and the node either recorded a result (`recovered.output`,
+     `recovered.route`, or `recovered.transfer_to_agent`) or has
+     `not node.wait_for_output`, fast-forwards (`should_run=False`) with the
+     rehydrated `output`, `route`, and `transfer_to_agent` (and no
+     `interrupts`); otherwise returns `should_run=True` with
      `resume_inputs=recovered.resolved_responses`.
    - Otherwise: returns `should_run=False` with `interrupts=unresolved`,
      propagating unresolved interrupt IDs to `_state.interrupt_ids` via a
@@ -201,9 +212,14 @@ Within a single step (`_execute_step`), when replay is enabled:
      `resume_inputs=recovered.resolved_responses`.
 
 7. **No output, route, or interrupts in recovered events** —
-   - If `node.wait_for_output` or `node.rerun_on_resume`: returns
+   - If `node.wait_for_output` and the node is a `BaseAgent` (task or chat
+     mode), or `node.rerun_on_resume` with `wait_for_output`: returns
      `should_run=True` with `resume_inputs=recovered.resolved_responses`.
-   - Otherwise: returns `should_run = (current_run is not None and not current_run.is_static)`
+   - Else if `node.rerun_on_resume`: fast-forwards (`should_run=False`) when
+     `recovered.finished_after_resume`, otherwise returns `should_run=True`
+     with `resume_inputs`.
+   - Otherwise (including any other `wait_for_output` node, whose next trigger
+     starts a new run): returns `should_run = (current_run is not None and not current_run.is_static)`
      (static nodes that completed with `None` output fast-forward with
      `should_run=False`, while dynamic nodes with no recorded outcome
      re-execute with `should_run=True`).
@@ -212,7 +228,8 @@ Within a single step (`_execute_step`), when replay is enabled:
 
 When a dynamic child interrupts:
 
-1. `DynamicNodeScheduler._record_result` sets the child's `DynamicNodeRun`
+1. **Dynamic child interrupts**:
+   `DynamicNodeRun.record_outcome` sets the child's `DynamicNodeRun`
    status to WAITING and adds its interrupt IDs to
    `_LoopState.interrupt_ids`.
 2. `ctx.run_node()` checks `child_ctx.interrupt_ids`. If non-empty,
@@ -349,24 +366,30 @@ Key behaviors:
 On every run, `Workflow` reconstructs progress from session events in three
 stages:
 
-1. **Upfront static scan (`ReplayManager.scan_workflow_events`)** — during
+1. **Upfront child scan (`ReplayManager.scan_workflow_events`)** — during
    `_run_impl` SETUP, `ReplayManager` scans the invocation's events and
-   populates `loop_state.recovered_executions` (keyed by `node_name@run_id`)
-   with outputs, routes, interrupts, resolved function responses, error codes,
-   and transfers for direct static children. `Workflow` then seeds `START`
+   `Workflow` seeds `_LoopState.runs[node_path]` with `DynamicNodeRun` entries
+   carrying outputs, routes, interrupts, resolved function responses, error
+   codes, and transfers for direct children. `Workflow` then seeds `START`
    triggers normally (`_seed_start_triggers`).
 2. **Static node interception in `_start_node_task` and `DynamicNodeScheduler`** —
    when `_schedule_ready_nodes` pops a trigger for a static node,
-   `_start_node_task` looks up `recovered = loop_state.recovered_executions.get(f"{node_name}@{run_id}")`:
-   - If `recovered` is present, `_start_node_task` calls
-     `check_interception(node=node, recovered=recovered)` to check whether the
+   `_start_node_task` looks up or creates `run = loop_state.runs[node_path]`,
+   sets `run.is_static = True`, and registers `loop_state.static_runs[node_name] = run`:
+   - If `run.recovered_state` is present, `_start_node_task` uses
+     `_classify_static_replay` (`check_interception`) to determine whether the
      run will fast-forward (`not result.should_run` and not a resolved transfer
      interrupt), adding `node_name` to `loop_state.replayed_nodes` (so
      checkpoint emission is skipped in `_schedule_ready_nodes` and on the
      `COMPLETED` path of `_handle_completion`; `_handle_completion` still emits
-     a checkpoint if a replayed node comes back `WAITING`) and seeding
-     `loop_state.runs[node_path]` with
-     `DynamicNodeRun(state=NodeState(run_id=run_id), recovered_state=recovered, is_static=True)`.
+     a checkpoint if a replayed node comes back `WAITING`).
+     `_at_concurrency_limit` excludes `replayed_nodes` from the
+     `max_concurrency` count. A resolved-transfer fast-forward is not in that
+     set because it runs its transfer target once the replay barrier releases
+     it, so under `max_concurrency` `_schedule_ready_nodes` keeps its trigger
+     buffered (`_is_held_transfer`) until its barrier key is released and then
+     counts it like any running node. If nothing else is pending, it starts
+     one held node anyway so the barrier reports the divergence.
    - `_start_node_task` then dispatches `ctx._run_node_internal` to
      `DynamicNodeScheduler._check_existing_run`, which runs
      `check_interception(node=curr_node, recovered=run.recovered_state, current_run=run)`:
@@ -377,25 +400,30 @@ stages:
      - **Completed non-`Workflow` node (or `rerun_on_resume=False` with all interrupts resolved)**:
        returns `should_run=False`; `_check_existing_run` builds a mock
        `Context` (`create_mock_context`) and awaits
-       `ReplayManager.wait_sequence` so `_handle_completion` can re-surface
-       replayed output (`_maybe_reemit_replayed_output`) and buffer downstream
-       triggers without running `NodeRunner`.
+       `ReplayManager.wait_sequence` so `_handle_completion` can record the
+       outcome on `run`, re-surface replayed output
+       (`_maybe_reemit_replayed_output`), and buffer downstream triggers without
+       running `NodeRunner`.
      - **Interrupted with unresolved interrupts**: if `rerun_on_resume=True`
        and `recovered.resolved_ids` is non-empty (**partial resume**),
+       fast-forwards (`should_run=False`) with the rehydrated `output`,
+       `route`, and `transfer_to_agent` when `recovered.finished_after_resume`
+       is `True` (and a result was recorded or `not node.wait_for_output`), or
        re-executes (`should_run=True`) via `NodeRunner` with
-       `resume_inputs=recovered.resolved_responses`; otherwise stays WAITING
-       (`should_run=False` with `interrupts` populated) and records unresolved
-       IDs in `_LoopState.interrupt_ids`.
+       `resume_inputs=recovered.resolved_responses` otherwise; if not a partial
+       resume on a `rerun_on_resume` node, stays WAITING (`should_run=False`
+       with `interrupts` populated) and records unresolved IDs in
+       `_LoopState.interrupt_ids`.
      - **Interrupted with all interrupts resolved (`rerun_on_resume=True`) or prior failure (`error_code`)**:
        re-executes (`should_run=True`) via `NodeRunner` with
        `resume_inputs=recovered.resolved_responses`.
-3. **Dynamic node lazy rehydration (`_rehydrate_from_events`)** — dynamic
-   children are not scanned upfront into `recovered_executions`. When a
-   re-executing parent calls `ctx.run_node()`,
-   `DynamicNodeScheduler._execute_step` lazily populates
-   `_LoopState.runs[node_path]` via `_rehydrate_from_events` and applies the
-   same `check_interception` rules in `_check_existing_run` (with
-   `current_run=run` also deduplicating same-turn completed or waiting runs).
+3. **Dynamic node lazy rehydration (`_rehydrate_from_events`)** — descendant
+   dynamic children not already present in `_LoopState.runs` are lazily
+   rehydrated when a re-executing parent calls `ctx.run_node()`.
+   `DynamicNodeScheduler._execute_step` populates `_LoopState.runs[node_path]`
+   via `_rehydrate_from_events` and applies the same `check_interception` rules
+   in `_check_existing_run` (with `current_run=run` also deduplicating
+   same-turn completed or waiting runs).
 
 ## Key design rules for node authors
 

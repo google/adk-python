@@ -16,7 +16,6 @@ import asyncio
 import logging
 import sys
 import time
-from typing import Tuple
 
 from adk_stale_agent.agent import root_agent
 from adk_stale_agent.settings import CONCURRENCY_LIMIT
@@ -38,7 +37,7 @@ APP_NAME = "stale_bot_app"
 USER_ID = "stale_bot_user"
 
 
-async def process_single_issue(issue_number: int) -> Tuple[float, int, bool]:
+async def process_single_issue(issue_number: int) -> tuple[float, int, bool]:
   """
   Processes a single GitHub issue using the AI agent and logs execution metrics.
 

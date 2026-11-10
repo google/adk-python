@@ -84,11 +84,45 @@ def _filter_media_parts(content: types.Content) -> types.Content | None:
   return types.Content(role=content.role, parts=filtered_parts)
 
 
-def extract_text_from_content(content: types.Content | None) -> str:
-  """Extracts text from a Content object, filtering out thoughts."""
+def _filter_media_history(history: list[types.Content]) -> list[types.Content]:
+  """Filters media parts out of every content in a replayed history.
+
+  Applies `_filter_media_parts` to each content and leaves out the contents
+  with no parts left.
+
+  Args:
+    history: The history to filter. It is not modified.
+
+  Returns:
+    The filtered contents, in their original order.
+  """
+  return [
+      filtered
+      for content in history
+      if (filtered := _filter_media_parts(content)) is not None
+  ]
+
+
+def extract_text_from_content(
+    content: types.Content | None, splitter: str = ''
+) -> str:
+  """Extracts text from a Content object, filtering out thoughts.
+
+  Args:
+    content: The content object to extract text from, or None.
+    splitter: Separator used when joining text across parts. Defaults to `''`
+      for chunked model output that forms a single logical string; callers
+      joining distinct user text parts typically pass `' '`.
+
+  Returns:
+    The joined non-thought text from `content`, or `''` if `content` is None or
+    contains no non-empty non-thought text parts.
+  """
   if not content or not content.parts:
     return ''
-  return ''.join(p.text for p in content.parts if p.text and not p.thought)
+  return splitter.join(
+      p.text for p in content.parts if p.text and not p.thought
+  )
 
 
 def to_user_content(value: Any) -> types.Content:

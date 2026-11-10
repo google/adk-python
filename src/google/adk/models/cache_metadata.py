@@ -33,7 +33,9 @@ class CacheMetadata(BaseModel):
      contents_count are set for prefix matching
 
   Token counts (cached and total) are available in the LlmResponse.usage_metadata
-  and should be accessed from there to avoid duplication.
+  and should be accessed from there to avoid duplication. Cache-creation (write)
+  token counts, when reported by the provider, are available on
+  LlmResponse.cache_creation_token_count.
 
   Attributes:
       cache_name: The full resource name of the cached content (e.g.,
@@ -98,7 +100,7 @@ class CacheMetadata(BaseModel):
   )
 
   @model_validator(mode="after")
-  def _enforce_active_state_invariant(self) -> "CacheMetadata":
+  def _enforce_active_state_invariant(self) -> CacheMetadata:
     active = (self.cache_name, self.expire_time, self.invocations_used)
     if len({f is not None for f in active}) > 1:
       raise ValueError(

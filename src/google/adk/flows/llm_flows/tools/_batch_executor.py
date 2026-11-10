@@ -21,7 +21,6 @@ from collections.abc import Callable
 from collections.abc import Coroutine
 import logging
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
@@ -34,6 +33,7 @@ from ....telemetry.tracing import trace_merged_tool_calls
 from ....telemetry.tracing import tracer
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
+from ....workflow._errors import NodeInterruptedError
 from ..core._utils import as_llm_agent as _as_llm_agent
 from ._caller import _execute_single_prepared_call_async
 from ._caller import _prepare_single
@@ -218,8 +218,8 @@ async def _prepare_function_calls(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     *,
-    filters: Optional[set[str]] = None,
-    tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
+    filters: set[str] | None = None,
+    tool_confirmation_dict: dict[str, ToolConfirmation] | None = None,
 ) -> list[_PreparedFunctionCall]:
   """Prepares every call that the execute phase will run, in parallel."""
   filtered_calls = [
@@ -254,10 +254,10 @@ async def _execute_prepared_function_calls(
     prepared_calls: list[_PreparedFunctionCall],
     *,
     call_executor: Callable[
-        [_PreparedFunctionCall], Coroutine[Any, Any, Optional[Event]]
+        [_PreparedFunctionCall], Coroutine[Any, Any, Event | None]
     ],
-    live_session_id: Optional[str] = None,
-) -> Optional[Event]:
+    live_session_id: str | None = None,
+) -> Event | None:
   """Runs prepared calls in parallel and merges their response events."""
   if not prepared_calls:
     return None
@@ -271,7 +271,7 @@ async def _execute_prepared_function_calls(
   # Wait for all tasks to complete
   try:
     maybe_function_response_events = await _gather_or_cancel(tasks)
-  except Exception as e:
+  except (Exception, NodeInterruptedError) as e:
     # A call raised and its unfinished siblings were cancelled. Calls that had
     # already finished may have had side effects, so keep their real results
     # for the postprocessor to yield before the error unwinds the agent.
@@ -300,8 +300,8 @@ async def _execute_prepared_function_calls(
 
 def _keep_completed_responses(
     invocation_context: InvocationContext,
-    tasks: list[asyncio.Task[Optional[Event]]],
-) -> Optional[Event]:
+    tasks: list[asyncio.Task[Event | None]],
+) -> Event | None:
   """Keeps the responses of calls that finished before their batch ended early.
 
   Only plain tool results are kept: a call that was cancelled, raised or
@@ -333,7 +333,7 @@ def _keep_completed_responses(
 
 def _pop_kept_function_response_event(
     error: BaseException,
-) -> Optional[Event]:
+) -> Event | None:
   """Pops and returns any kept function response event attached to `error`."""
   kept_event = getattr(error, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR, None)
   if isinstance(kept_event, Event):
@@ -370,7 +370,7 @@ async def _execute_prepared_function_calls_async(
     invocation_context: InvocationContext,
     prepared_calls: list[_PreparedFunctionCall],
     agent: LlmAgent,
-) -> Optional[Event]:
+) -> Event | None:
   """Runs the prepared calls in parallel and merges their response events."""
   return await _execute_prepared_function_calls(
       invocation_context,
@@ -385,9 +385,9 @@ async def handle_function_call_list_async(
     invocation_context: InvocationContext,
     function_calls: list[types.FunctionCall],
     tools_dict: dict[str, BaseTool],
-    filters: Optional[set[str]] = None,
-    tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
-) -> Optional[Event]:
+    filters: set[str] | None = None,
+    tool_confirmation_dict: dict[str, ToolConfirmation] | None = None,
+) -> Event | None:
   """Calls the functions and returns the function response event."""
   agent = _as_llm_agent(invocation_context)
   prepared_calls = await _prepare_function_calls(

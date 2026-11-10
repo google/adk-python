@@ -17,6 +17,7 @@ import tempfile
 import warnings
 
 from google.adk.features import FeatureName
+from google.adk.utils.feature_decorator import _make_feature_decorator
 from google.adk.utils.feature_decorator import _WARNED_MESSAGES
 from google.adk.utils.feature_decorator import experimental
 from google.adk.utils.feature_decorator import working_in_progress
@@ -192,8 +193,6 @@ def test_working_in_progress_loads_from_dotenv_file():
   try:
     from dotenv import load_dotenv
   except ImportError:
-    import pytest
-
     pytest.skip("python-dotenv not available")
 
   # Ensure environment variable is not set in os.environ
@@ -420,3 +419,38 @@ def test_feature_name_is_rejected(decorator):
   """A FeatureName must not be swallowed as the warning message."""
   with pytest.raises(TypeError, match="google.adk.features"):
     decorator(FeatureName.TOOL_CONFIG)
+
+
+def test_experimental_block_usage_still_raises_with_warning_suppression(
+    monkeypatch,
+):
+  """Suppression must not bypass block_usage RuntimeError."""
+  blocked_decorator = _make_feature_decorator(
+      label="EXPERIMENTAL",
+      default_message="blocked experimental feature",
+      block_usage=True,
+  )
+
+  @blocked_decorator
+  def blocked_func():
+    return "executed"
+
+  @blocked_decorator
+  class BlockedClass:
+    pass
+
+  monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "1")
+  with pytest.raises(RuntimeError, match=r"\[EXPERIMENTAL\] blocked_func:"):
+    blocked_func()
+  with pytest.raises(RuntimeError, match=r"\[EXPERIMENTAL\] BlockedClass:"):
+    BlockedClass()
+
+
+def test_working_in_progress_still_raises_with_general_suppression(
+    monkeypatch,
+):
+  """The experimental suppression flag must not lift the WIP RuntimeError."""
+  monkeypatch.delenv("ADK_ALLOW_WIP_FEATURES", raising=False)
+  monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "true")
+  with pytest.raises(RuntimeError, match=r"\[WIP\] wip_function:"):
+    wip_function()

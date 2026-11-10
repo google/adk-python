@@ -201,9 +201,7 @@ class TrajectoryEvaluator(Evaluator):
     try:
       current_expected = next(expected_it)
       for actual in actual_tool_calls:
-        if actual.name == current_expected.name and (
-            self._ignore_args or actual.args == current_expected.args
-        ):
+        if self._are_tool_calls_equal(actual, current_expected):
           current_expected = next(expected_it)
     except StopIteration:
       return True
@@ -238,9 +236,7 @@ class TrajectoryEvaluator(Evaluator):
     for expected in expected_tool_calls:
       found = False
       for i, actual in enumerate(actual_tool_calls_copy):
-        if actual.name == expected.name and (
-            self._ignore_args or actual.args == expected.args
-        ):
+        if self._are_tool_calls_equal(actual, expected):
           actual_tool_calls_copy.pop(i)
           found = True
           break
@@ -273,12 +269,27 @@ class TrajectoryEvaluator(Evaluator):
     for actual, expected in zip(
         actual_tool_calls, expected_tool_calls, strict=True
     ):
-      if actual.name != expected.name or (
-          not self._ignore_args and actual.args != expected.args
-      ):
+      if not self._are_tool_calls_equal(actual, expected):
         return False
 
     return True
+
+  def _are_tool_calls_equal(
+      self,
+      actual_tool_call: genai_types.FunctionCall,
+      expected_tool_call: genai_types.FunctionCall,
+  ) -> bool:
+    """Checks if two tool calls have the same name and, unless ignored, args.
+
+    A call without arguments can have `args` set to None or to an empty dict,
+    depending on the model integration and on how the eval case was written,
+    so the two compare equal.
+    """
+    if actual_tool_call.name != expected_tool_call.name:
+      return False
+    return self._ignore_args or (actual_tool_call.args or {}) == (
+        expected_tool_call.args or {}
+    )
 
   def _get_eval_status(self, score: float) -> EvalStatus:
     return EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED

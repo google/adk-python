@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Iterator
 from collections.abc import Mapping
+import contextlib
 from typing import Any
 from typing import Literal
 from typing import overload
@@ -250,6 +252,12 @@ class Node(base_node.BaseNode):
 
     return copied
 
+  @override
+  def _iter_static_children(self) -> Iterator[base_node.BaseNode]:
+    """Yields the inner node if configured as a parallel worker."""
+    if self._inner_node is not None:
+      yield self._inner_node
+
   async def run_node_impl(
       self, *, ctx: Context, node_input: Any
   ) -> AsyncGenerator[Any, None]:
@@ -271,8 +279,9 @@ class Node(base_node.BaseNode):
         raise WorkflowInvariantError(
             'inner_node is not initialized for parallel worker.'
         )
-      async for output in self._inner_node.run(ctx=ctx, node_input=node_input):
-        yield output
+      agen = self._inner_node.run(ctx=ctx, node_input=node_input)
     else:
-      async for output in self.run_node_impl(ctx=ctx, node_input=node_input):
+      agen = self.run_node_impl(ctx=ctx, node_input=node_input)
+    async with contextlib.aclosing(agen) as agen:
+      async for output in agen:
         yield output

@@ -45,6 +45,7 @@ from ..features import FeatureName
 from ..features import override_feature_enabled
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._cli_generate_agent_card import generate_agent_card
 from ._telemetry._metrics_collector import MetricsCollector
 from .utils import envs
 from .utils import logs
@@ -56,8 +57,6 @@ if TYPE_CHECKING:
   from google.genai import types
 
   from ..agents.llm_agent import LlmAgent
-  from ..evaluation.eval_set_results_manager import EvalSetResultsManager
-  from ..evaluation.eval_sets_manager import EvalSetsManager
 
 _R = TypeVar("_R")
 _T = TypeVar("_T")
@@ -110,7 +109,7 @@ def _parse_avatar_config(
   else:
     try:
       config_json = Path(value).read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
       raise click.BadParameter(
           f"could not read avatar configuration file {value!r}: {exc}",
           param=param,
@@ -586,6 +585,16 @@ def deploy_options(command: _F) -> _F:
           help=(
               "Optional. The ADK version used in deployment. (default: the"
               " version in the dev environment)"
+          ),
+      ),
+      click.option(
+          "--python_version",
+          type=str,
+          default="3.11",
+          show_default=True,
+          help=(
+              "Optional. The Python version used in the container image"
+              " (default: 3.11)."
           ),
       ),
       click.argument(
@@ -1088,6 +1097,15 @@ def adk_services_options(
     ),
     default=None,
 )
+@click.option(
+    "--reload_agents",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Watch the agent folder for .py/.yaml/.yml changes and"
+        " hot-reload the agent in interactive mode."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1113,6 +1131,7 @@ def cli_run(
     default_llm_model: Optional[str] = None,
     log_level: str = "INFO",
     state_file: Optional[str] = None,
+    reload_agents: bool = False,
 ) -> None:
   """Runs an agent. If no query is provided, enters interactive mode.
 
@@ -1187,6 +1206,7 @@ def cli_run(
             timeout=timeout,
             in_memory=in_memory,
             jsonl=jsonl,
+            reload_agents=reload_agents,
             session_service_uri=session_service_uri,
             artifact_service_uri=artifact_service_uri,
             memory_service_uri=memory_service_uri,
@@ -1294,7 +1314,8 @@ def eval_options() -> Callable[[Callable[..., _R]], Callable[..., _R]]:
         type=str,
         help=(
             "Optional. The evals storage URI to store agent evals,"
-            " supported URIs: gs://<bucket name>."
+            " supported URIs: gs://<bucket name> or file://<path>. When"
+            " omitted, ADK_EVAL_STORAGE_URI is used if set."
         ),
         default=None,
     )
@@ -1351,6 +1372,26 @@ def _resolve_eval_config_file_path(
 @click.argument("eval_set_file_path_or_id", nargs=-1)
 @click.option("--config_file_path", help="Optional. The path to config file.")
 @click.option(
+    "--num_runs",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Optional. Number of times to run each eval case. Overrides"
+        " multi_run_config.num_runs in the eval config; if neither is set,"
+        " each eval case runs once."
+    ),
+)
+@click.option(
+    "--parallelism",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Optional. Maximum number of eval cases to run in parallel during"
+        " inference and metric evaluation. Overrides parallelism in the eval"
+        " config; if neither is set, defaults to 4."
+    ),
+)
+@click.option(
     "--print_detailed_results",
     is_flag=True,
     show_default=True,
@@ -1365,6 +1406,8 @@ def cli_eval(
     print_detailed_results: bool,
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
+    num_runs: Optional[int] = None,
+    parallelism: int | None = None,
 ) -> None:
   """Evaluates an agent given the eval sets.
 
@@ -1418,6 +1461,14 @@ def cli_eval(
 
   CONFIG_FILE_PATH: The path to config file.
 
+  NUM_RUNS: Number of times to run each eval case. Overrides
+  multi_run_config.num_runs in the eval config; if neither is set, each eval
+  case runs once.
+
+  PARALLELISM: Maximum number of eval cases to run in parallel during inference
+  and metric evaluation. Overrides parallelism in the eval config; if neither is
+  set, defaults to 4.
+
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
@@ -1426,6 +1477,10 @@ def cli_eval(
   try:
     import importlib  # noqa: F401
 
+    from ..evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
+    from ..evaluation._eval_case_result_multi_run_aggregator import check_pass_k_criteria_against_num_runs
+    from ..evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
+    from ..evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
     from ..evaluation.eval_config import get_eval_metrics_from_config
@@ -1433,35 +1488,28 @@ def cli_eval(
     from ..evaluation.evaluator import EvalStatus
     from ..evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
     from ..evaluation.local_eval_service import LocalEvalService
-    from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
-    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..evaluation.metric_evaluator_registry import register_custom_metrics_from_config
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import _pretty_print_eval_results_across_runs
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
+    from .utils import _eval_storage
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   app, root_agent = asyncio.run(get_app_or_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
-  eval_sets_manager: EvalSetsManager | None = None
-  eval_set_results_manager: EvalSetResultsManager | None = None
-
-  if eval_storage_uri:
-    from .utils import evals
-
-    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
+  try:
+    eval_sets_manager, eval_set_results_manager = (
+        _eval_storage.create_eval_managers(eval_storage_uri, agents_dir)
     )
-    eval_sets_manager = gcs_eval_managers.eval_sets_manager
-    eval_set_results_manager = gcs_eval_managers.eval_set_results_manager
-  else:
-    eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+  except ValueError as ve:
+    raise click.ClickException(str(ve)) from ve
 
   inference_requests = []
   eval_set_file_or_id_to_evals = parse_and_get_evals_to_run(
@@ -1473,7 +1521,34 @@ def cli_eval(
   )
   eval_config = get_evaluation_criteria_or_default(resolved_config_file_path)
   print(f"Using evaluation criteria: {eval_config}")
+  # Custom methods are only called once every run is scored, so they are
+  # imported now: a wrong path then stops the eval before any inference, not
+  # after every run of every eval case.
+  try:
+    load_aggregation_methods(eval_config.multi_run_config)
+  except (ImportError, TypeError) as e:
+    raise click.ClickException(str(e)) from e
   eval_metrics = get_eval_metrics_from_config(eval_config)
+
+  # The `--num_runs` flag overrides the eval config. If neither sets the
+  # number of runs, each eval case runs once.
+  if num_runs is None and eval_config.multi_run_config:
+    num_runs = eval_config.multi_run_config.num_runs
+  if num_runs is None:
+    num_runs = 1
+  # A pass@k criterion's k is checked against the number of runs only now,
+  # once `--num_runs` has overridden the config, and before any inference.
+  try:
+    check_pass_k_criteria_against_num_runs(
+        eval_config.multi_run_config, num_runs
+    )
+  except ValueError as e:
+    raise click.UsageError(str(e)) from e
+
+  # The `--parallelism` flag overrides the eval config. If neither sets
+  # parallelism, the eval service uses its own default.
+  if parallelism is None:
+    parallelism = eval_config.parallelism
 
   # Live mode is resolved from the eval config, consistent with how
   # `user_simulator_config` and other eval settings are sourced.
@@ -1481,9 +1556,12 @@ def cli_eval(
     inference_config = InferenceConfig(
         use_live=True,
         live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
+        num_runs=num_runs,
     )
   else:
-    inference_config = InferenceConfig(use_live=False)
+    inference_config = InferenceConfig(use_live=False, num_runs=num_runs)
+  if parallelism is not None:
+    inference_config.parallelism = parallelism
 
   # Check if the first entry is a file that exists, if it does then we assume
   # rest of the entries are also files. We enforce this assumption in the if
@@ -1526,13 +1604,6 @@ def cli_eval(
       )
   else:
     # We assume that what we have are eval set ids instead.
-    # eval_sets_manager is set exactly when eval_storage_uri is.
-    eval_sets_manager = (
-        eval_sets_manager
-        if eval_sets_manager is not None
-        else LocalEvalSetsManager(agents_dir=agents_dir)
-    )
-
     for eval_set_id_key, eval_case_ids in eval_set_file_or_id_to_evals.items():
       inference_requests.append(
           InferenceRequest(
@@ -1559,9 +1630,12 @@ def cli_eval(
         app=app,
     )
 
+    # `num_runs` is carried on the InferenceConfig, so the eval service repeats
+    # each eval case through its own parallelism pool.
     inference_results = asyncio.run(
         _collect_inferences(
-            inference_requests=inference_requests, eval_service=eval_service
+            inference_requests=inference_requests,
+            eval_service=eval_service,
         )
     )
     eval_results = asyncio.run(
@@ -1569,7 +1643,11 @@ def cli_eval(
             inference_results=inference_results,
             eval_service=eval_service,
             eval_metrics=eval_metrics,
+            parallelism=parallelism,
         )
+    )
+    aggregate_eval_results = aggregate_eval_case_results(
+        eval_results, multi_run_config=eval_config.multi_run_config
     )
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
@@ -1579,15 +1657,20 @@ def cli_eval(
   )
   eval_run_summary = {}
 
-  for eval_result in eval_results:
-    if eval_result.eval_set_id not in eval_run_summary:
-      eval_run_summary[eval_result.eval_set_id] = [0, 0]
+  for aggregate_eval_result in aggregate_eval_results:
+    if aggregate_eval_result.eval_set_id not in eval_run_summary:
+      eval_run_summary[aggregate_eval_result.eval_set_id] = [0, 0]
 
-    if eval_result.final_eval_status == EvalStatus.PASSED:
-      eval_run_summary[eval_result.eval_set_id][0] += 1
+    if aggregate_eval_result.final_eval_status == EvalStatus.PASSED:
+      eval_run_summary[aggregate_eval_result.eval_set_id][0] += 1
     else:
-      eval_run_summary[eval_result.eval_set_id][1] += 1
+      eval_run_summary[aggregate_eval_result.eval_set_id][1] += 1
   click.echo("Eval Run Summary")
+  if num_runs > 1:
+    click.echo(
+        f"Each eval case was run {num_runs} times and judged on all"
+        f" {num_runs} runs."
+    )
   for eval_set_id, pass_fail_count in eval_run_summary.items():
     click.echo(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
@@ -1595,11 +1678,30 @@ def cli_eval(
     )
 
   if print_detailed_results:
-    for eval_result in eval_results:
-      click.echo(
-          "********************************************************************"
+    # Rules that count passing runs judge a case run once as well, so its
+    # verdict is printed the way a case run several times is.
+    if num_runs > 1 or has_pass_count_rules(eval_config.multi_run_config):
+      _pretty_print_eval_results_across_runs(
+          aggregate_eval_results=aggregate_eval_results,
+          num_runs=num_runs,
       )
-      pretty_print_eval_result(eval_result)
+    else:
+      for eval_result in eval_results:
+        click.echo(
+            "********************************************************************"
+        )
+        pretty_print_eval_result(eval_result)
+
+  # The printed "Eval Run Summary" above is otherwise the only place this
+  # command's verdict is visible -- without this, the process exit code is
+  # always 0 regardless of any failed test, indistinguishable from every
+  # test genuinely passing. Every other subcommand in this file that has a
+  # pass/fail outcome (e.g. `test`, `run --query`) already does this; `eval`
+  # was the one command whose exit code carried no signal at all.
+  total_failed = sum(
+      pass_fail_count[1] for pass_fail_count in eval_run_summary.values()
+  )
+  sys.exit(1 if total_failed or not eval_run_summary else 0)
 
 
 @main.command("optimize", cls=HelpfulCommand)
@@ -1670,7 +1772,6 @@ def cli_optimize(
 
   try:
     from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator  # noqa: F401
-    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
     from ..optimization.local_eval_sampler import LocalEvalSampler
@@ -1678,6 +1779,7 @@ def cli_optimize(
     from .cli_eval import _collect_eval_results  # noqa: F401
     from .cli_eval import _collect_inferences  # noqa: F401
     from .cli_eval import get_root_agent
+    from .utils import _eval_storage
 
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
@@ -1703,7 +1805,10 @@ def cli_optimize(
         f"App name in the agent module file path ({app_name}) does not match"
         f" the app name in the sampler config file ({sampler_config.app_name})."
     )
-  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+  try:
+    eval_sets_manager, _ = _eval_storage.create_eval_managers(None, agents_dir)
+  except ValueError as ve:
+    raise click.ClickException(str(ve)) from ve
 
   sampler = LocalEvalSampler(sampler_config, eval_sets_manager)
   optimizer = GEPARootAgentPromptOptimizer(optimizer_config)
@@ -1761,9 +1866,9 @@ def cli_create_eval_set(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
-  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
+    eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
     eval_sets_manager.create_eval_set(
         app_name=app_name, eval_set_id=eval_set_id
     )
@@ -1824,7 +1929,10 @@ def cli_add_eval_case(
 
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
-  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+  try:
+    eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+  except ValueError as ve:
+    raise click.ClickException(str(ve)) from ve
 
   try:
     if session_input_file is None:
@@ -2122,7 +2230,8 @@ def fast_api_common_options() -> (
         type=str,
         help=(
             "Optional. The evals storage URI to store agent evals,"
-            " supported URIs: gs://<bucket name>."
+            " supported URIs: gs://<bucket name> or file://<path>. When"
+            " omitted, ADK_EVAL_STORAGE_URI is used if set."
         ),
         default=None,
     )
@@ -2603,10 +2712,12 @@ def cli_api_server(
     help=(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
-        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
-        " is added to PYTHONPATH, so a top-level name that matches an installed"
-        " dependency will shadow it at runtime; pick distinct names."
-        " Repeatable."
+        " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
+        " .zip), or a project directory containing pyproject.toml or setup.py"
+        " (without a root __init__.py) is installed with pip. Any other entry"
+        " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
+        " a top-level name that matches an installed dependency will shadow it"
+        " at runtime; pick distinct names. Repeatable."
     ),
 )
 @deploy_options
@@ -2639,6 +2750,7 @@ def cli_deploy_cloud_run(
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
     extra_packages: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to Cloud Run.
 
@@ -2690,6 +2802,7 @@ def cli_deploy_cloud_run(
         extra_gcloud_args=tuple(gcloud_args),
         with_cloud_run_sandbox=with_cloud_run_sandbox,
         extra_packages=list(extra_packages),
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -2721,6 +2834,7 @@ def cli_deploy_docker(
     a2a: bool = False,
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to a local Docker container."""
   _warn_if_with_ui(with_ui)
@@ -2749,6 +2863,7 @@ def cli_deploy_docker(
         trigger_sources=None,
         provider_args=provider_args,
         env=env,
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3015,6 +3130,17 @@ def cli_migrate_session(
     ),
 )
 @click.option(
+    "--python_version",
+    type=str,
+    default=None,
+    help=(
+        "Optional. The Python version used in the container image. Overrides"
+        " `python_version` in `.agent_engine_config.json` when both are set."
+        " (default: `python_version` from `.agent_engine_config.json`, or"
+        " 3.11)"
+    ),
+)
+@click.option(
     "--extra_packages",
     multiple=True,
     type=str,
@@ -3022,10 +3148,12 @@ def cli_migrate_session(
     help=(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
-        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
-        " is added to PYTHONPATH, so a top-level name that matches an installed"
-        " dependency will shadow it at runtime; pick distinct names."
-        " Repeatable."
+        " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
+        " .zip), or a project directory containing pyproject.toml or setup.py"
+        " (without a root __init__.py) is installed with pip. Any other entry"
+        " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
+        " a top-level name that matches an installed dependency will shadow it"
+        " at runtime; pick distinct names. Repeatable."
     ),
 )
 @click.option(
@@ -3091,6 +3219,7 @@ def cli_deploy_agent_engine(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
     service_account: str | None = None,
+    python_version: str | None = None,
 ) -> None:
   """Deploys an agent to Agent Engine.
 
@@ -3156,6 +3285,7 @@ def cli_deploy_agent_engine(
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
         service_account=service_account,
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3275,6 +3405,16 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--python_version",
+    type=str,
+    default="3.11",
+    show_default=True,
+    help=(
+        "Optional. The Python version used in the container image"
+        " (default: 3.11)."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -3313,10 +3453,12 @@ def cli_deploy_agent_engine(
     help=(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
-        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
-        " is added to PYTHONPATH, so a top-level name that matches an installed"
-        " dependency will shadow it at runtime; pick distinct names."
-        " Repeatable."
+        " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
+        " .zip), or a project directory containing pyproject.toml or setup.py"
+        " (without a root __init__.py) is installed with pip. Any other entry"
+        " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
+        " a top-level name that matches an installed dependency will shadow it"
+        " at runtime; pick distinct names. Repeatable."
     ),
 )
 @adk_services_options(default_use_local_storage=False)
@@ -3349,6 +3491,7 @@ def cli_deploy_gke(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
     extra_packages: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to GKE.
 
@@ -3388,9 +3531,13 @@ def cli_deploy_gke(
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
         extra_packages=list(extra_packages),
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)
+
+
+main.add_command(generate_agent_card)

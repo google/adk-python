@@ -20,12 +20,16 @@ workflow behavior through Runner(node=...) instead of agent.run_async().
 
 import asyncio
 from collections import Counter
+import gc
 from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 import uuid
+import weakref
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
@@ -33,6 +37,7 @@ from google.adk.events.request_input import RequestInput
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._join_node import JoinNode
@@ -44,6 +49,8 @@ from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 import pytest
+
+from .. import testing_utils
 
 # ---------------------------------------------------------------------------
 # Shared helper nodes (used by multiple tests)
@@ -207,6 +214,59 @@ async def test_sequential_two_nodes():
   assert ('NodeA', 'Hello') in by_node
   assert ('NodeB', 'World') in by_node
   assert by_node.index(('NodeA', 'Hello')) < by_node.index(('NodeB', 'World'))
+
+
+@pytest.mark.asyncio
+async def test_event_validation_alias_does_not_route_workflow():
+  """A custom event's aliased data does not become a workflow route."""
+
+  class _DomainEvent(Event):
+    destination: str = Field(validation_alias='route')
+
+  async def emit_event():
+    yield _DomainEvent(route='domain_destination', output='ready')
+
+  def consume(node_input: str) -> str:
+    return f'{node_input} processed'
+
+  wf = Workflow(name='wf', edges=[(START, emit_event, consume)])
+
+  events, _, _ = await _run_workflow(wf)
+
+  assert ('consume', 'ready processed') in _output_by_node(events)
+  assert all(event.actions.route is None for event in events)
+
+
+@pytest.mark.asyncio
+async def test_finished_turn_frees_its_session_without_gc():
+  """A turn's session copy is freed by reference counting once the turn ends."""
+  seen_sessions = []
+
+  def record_session(ctx: Context) -> str:
+    seen_sessions.append(weakref.ref(ctx.session))
+    return 'done'
+
+  wf = Workflow(name='wf', edges=[(START, record_session)])
+  session_service = InMemorySessionService()
+  runner = Runner(app_name='app', node=wf, session_service=session_service)
+  session = await session_service.create_session(app_name='app', user_id='u')
+
+  gc.collect()
+  gc.disable()
+  try:
+    for _ in range(2):
+      async for _ in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(role='user', parts=[types.Part(text='hi')]),
+      ):
+        pass
+    alive = [ref for ref in seen_sessions if ref() is not None]
+  finally:
+    gc.enable()
+
+  assert len(seen_sessions) == 2
+  assert not alive
 
 
 # 2. test_run_async_with_intermediate_content
@@ -907,6 +967,40 @@ async def test_wait_for_output_completes_after_all():
   assert by_node[3] == ('Downstream', 'done')
 
 
+@pytest.mark.asyncio
+async def test_wait_for_output_terminal_rerun_into_waiting_clears_output():
+  """A wait_for_output terminal node rerun into WAITING ends with no output."""
+  gate_runs = 0
+
+  class _FirstOnlyGateNode(BaseNode):
+    wait_for_output: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del ctx, node_input
+      nonlocal gate_runs
+      gate_runs += 1
+      if gate_runs == 1:
+        yield Event(output='first_only')
+
+  gate = _FirstOnlyGateNode(name='gate')
+  inner = Workflow(
+      name='inner',
+      edges=[
+          (START, _OutputNode(name='a', value='A'), gate),
+          (START, _OutputNode(name='b', value='B'), gate),
+      ],
+  )
+  capture = _InputCapturingNode(name='capture')
+  outer = Workflow(name='outer', edges=[(START, inner, capture)])
+
+  await _run_workflow(outer)
+
+  assert gate_runs == 2
+  assert capture.received_inputs == [None]
+
+
 # 25. test_run_async_with_implicit_graph_chain
 @pytest.mark.asyncio
 async def test_chain_syntax():
@@ -1415,6 +1509,242 @@ async def test_use_as_output_custom_node():
   by_node = _output_by_node(events)
   assert ('func_b', 'delegated_output') in by_node
   assert not any(name == 'delegator' for name, _ in by_node)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize('message_kind', ['text', 'image'])
+async def test_delegated_output_preserves_message_content(
+    delegate_output: bool, message_kind: str
+):
+  """Delegating output suppresses duplicates without losing message content."""
+  if message_kind == 'text':
+    part = types.Part(text='Please review the result.')
+  else:
+    part = types.Part.from_bytes(data=b'image-data', mime_type='image/png')
+  content = types.Content(role='model', parts=[part])
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, content=content)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  messages = [e for e in events if e.content == content]
+  assert len(messages) == 1
+  assert messages[0].output == (None if delegate_output else 'answer')
+  assert _outputs(events).count('answer') == (1 if delegate_output else 2)
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert sum(e.content == content for e in persisted.events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize(
+    'error_fields',
+    [
+        {'error_code': 'UPSTREAM_ERROR'},
+        {'error_message': 'The upstream operation failed.'},
+        {
+            'error_code': 'UPSTREAM_ERROR',
+            'error_message': 'The upstream operation failed.',
+        },
+    ],
+)
+async def test_delegated_output_preserves_error_details(
+    delegate_output: bool, error_fields: dict[str, str]
+):
+  """Delegated output keeps errors, and keeps output beside an error code."""
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, **error_fields)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  errors = [e for e in events if e.error_code or e.error_message]
+  assert len(errors) == 1
+  for field, value in error_fields.items():
+    assert getattr(errors[0], field) == value
+  assert errors[0].output == (
+      None if delegate_output and 'error_code' not in error_fields else 'answer'
+  )
+  assert _outputs(events).count('answer') == (
+      1 if delegate_output and 'error_code' not in error_fields else 2
+  )
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert (
+      sum(bool(e.error_code or e.error_message) for e in persisted.events) == 1
+  )
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_with_error_is_not_rerun_on_resume():
+  """A delegator that completed with an error event is not rerun on resume."""
+  delegator_runs = []
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      delegator_runs.append(node_input)
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'), use_as_output=True
+      )
+      yield Event(output=result, error_code='UPSTREAM_ERROR')
+
+  class _Approval(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'approval' in ctx.resume_inputs:
+        yield Event(output=node_input)
+        return
+      yield _make_function_call_interrupt('approval')
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, _Delegator(name='delegator'), _Approval(name='approval'))],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  async for _ in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(role='user', parts=[types.Part(text='go')]),
+  ):
+    pass
+  resumed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='approve', id='approval', response={'ok': True}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  assert len(delegator_runs) == 1
+  assert 'answer' in _outputs(resumed_events)
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_preserves_confirmation_and_resume():
+  """A parent can request confirmation after publishing its child's output.
+
+  Setup: a parent delegates output, then yields a combined output/interrupt
+  event.
+  Act: run once, then respond to its approval request.
+  Assert: the request is persisted and visible, and downstream runs only on
+  resume.
+  """
+  downstream_inputs = []
+
+  class _ApprovalNode(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'approval' in ctx.resume_inputs:
+        yield Event(
+            output='approved answer',
+            content=types.Content(parts=[types.Part(text='Approved.')]),
+        )
+        return
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'), use_as_output=True
+      )
+      event = _make_function_call_interrupt('approval')
+      event.output = result
+      yield event
+
+  def downstream(node_input):
+    downstream_inputs.append(node_input)
+    return 'finished'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, _ApprovalNode(name='approval_node'), downstream)],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  first_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(role='user', parts=[types.Part(text='go')]),
+      )
+  ]
+  requests = [
+      e for e in first_events if e.long_running_tool_ids == {'approval'}
+  ]
+  assert len(requests) == 1
+  assert requests[0].get_function_calls()[0].id == 'approval'
+  assert requests[0].output is None
+  assert _outputs(first_events).count('answer') == 1
+  assert downstream_inputs == []
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert any(e.long_running_tool_ids == {'approval'} for e in persisted.events)
+
+  resumed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='approve', id='approval', response={'ok': True}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  assert downstream_inputs == ['approved answer']
+  assert 'finished' in _outputs(resumed_events)
 
 
 @pytest.mark.asyncio
@@ -2641,12 +2971,10 @@ async def test_workflow_error_drains_completed_sibling_nodes():
 
   original_handle_completion = Workflow._handle_completion
 
-  def spy_handle_completion(
-      self, loop_state, node_name, node_obj, child_ctx, ctx
-  ):
+  def spy_handle_completion(self, loop_state, node_name, child_ctx, ctx):
     handle_completion_calls.append(node_name)
     return original_handle_completion(
-        self, loop_state, node_name, node_obj, child_ctx, ctx
+        self, loop_state, node_name, child_ctx, ctx
     )
 
   events: list[Event] = []
@@ -2662,8 +2990,7 @@ async def test_workflow_error_drains_completed_sibling_nodes():
         events.append(event)
 
   assert succeeding_completed is True
-  assert 'failing_node' not in handle_completion_calls
-  assert 'succeeding_node' in handle_completion_calls
+  assert handle_completion_calls == ['failing_node', 'succeeding_node']
   outputs = [e.output for e in events if e.output is not None]
   assert 'sibling_output' in outputs
 
@@ -2797,3 +3124,249 @@ async def test_workflow_abort_yields_abort_event_and_runs_after_run():
 
   assert [e.error_code for e in events] == ['INVOCATION_ABORTED']
   assert after_run_called is True
+
+
+def test_workflow_iter_static_children_yields_graph_nodes_without_start():
+  """Workflow._iter_static_children yields compiled graph nodes excluding START."""
+  node_a = BaseNode(name='a')
+  node_b = BaseNode(name='b')
+  wf = Workflow(name='my_wf', edges=[(START, node_a), (node_a, node_b)])
+
+  children = list(wf._iter_static_children())
+  assert [c.name for c in children] == ['a', 'b']
+
+
+def test_workflow_iter_static_children_empty_when_no_graph():
+  """Workflow._iter_static_children yields nothing when the workflow has no graph."""
+  wf = Workflow(name='empty_wf')
+  assert list(wf._iter_static_children()) == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_resume_task_on_replay_barrier_allows_siblings():
+  """A waiting task agent on the replay barrier stays RUNNING until ready."""
+  # Arrange
+  node_b_interrupted = asyncio.Event()
+
+  class _NodeA(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(output='a_done')
+
+  class _NodeB(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'int_b' in ctx.resume_inputs:
+        yield Event(output=f"b_done:{ctx.resume_inputs['int_b']}")
+        return
+      yield RequestInput(interrupt_id='int_b', message='Approve node_b')
+      node_b_interrupted.set()
+
+  def ask_task():
+    return None
+
+  async def _wait_for_node_b(*, callback_context, llm_request):
+    del callback_context, llm_request
+    await node_b_interrupted.wait()
+    return None
+
+  task_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='ask_task', args={}),
+      ]
+  )
+  node_a = _NodeA(name='node_a')
+  node_b = _NodeB(name='node_b')
+  task_agent = LlmAgent(
+      name='task_agent',
+      model=task_model,
+      tools=[LongRunningFunctionTool(func=ask_task)],
+      mode='task',
+      before_model_callback=_wait_for_node_b,
+  )
+  wf = Workflow(
+      name='replay_barrier_task_wf',
+      edges=[(START, node_a), (START, task_agent), (node_a, node_b)],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  turn1_events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+          ),
+          turn1_events,
+      ),
+      timeout=2.0,
+  )
+  task_interrupt_ids = {
+      lro_id
+      for e in turn1_events
+      if e.long_running_tool_ids
+      for lro_id in e.long_running_tool_ids
+      if lro_id != 'int_b'
+  }
+  assert len(task_interrupt_ids) == 1
+
+  # Act: resume answering only int_b while task_agent stays unresolved behind
+  # node_b@1 on the ['node_a@1', 'node_b@1', 'task_agent@1'] sequence barrier.
+  resume_msg = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name='adk_request_input',
+                  id='int_b',
+                  response={'result': 'approved'},
+              )
+          )
+      ],
+      role='user',
+  )
+  turn2_events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              invocation_id=turn1_events[0].invocation_id,
+              new_message=resume_msg,
+          ),
+          turn2_events,
+      ),
+      timeout=2.0,
+  )
+
+  # Assert
+  outputs = [e.output for e in turn2_events if e.output is not None]
+  assert 'b_done:approved' in outputs
+  checkpoints = [
+      e.actions.agent_state['nodes']
+      for e in turn2_events
+      if e.actions
+      and e.actions.agent_state
+      and 'nodes' in e.actions.agent_state
+  ]
+  assert len(checkpoints) >= 3
+  for cp in checkpoints[:-1]:
+    assert cp['task_agent']['status'] == NodeStatus.RUNNING.value
+  assert checkpoints[-1]['node_b']['status'] == NodeStatus.COMPLETED.value
+  assert checkpoints[-1]['task_agent']['status'] == NodeStatus.WAITING.value
+  assert set(checkpoints[-1]['task_agent']['interrupts']) == task_interrupt_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('nested', [False, True])
+async def test_workflow_resume_direct_sibling_transfer_preserves_inputs(
+    nested: bool,
+):
+  """A sibling transfer target under a Workflow resumes with its inputs."""
+  # Arrange
+  seen_resume_inputs: list[dict[str, Any]] = []
+
+  class _BetaAgent(BaseAgent):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del node_input
+      ctx.event_author = self.name
+      seen_resume_inputs.append(dict(ctx.resume_inputs or {}))
+      if ctx.resume_inputs and 'int_beta' in ctx.resume_inputs:
+        yield Event(output=f"beta_done:{ctx.resume_inputs['int_beta']}")
+        return
+      yield RequestInput(interrupt_id='int_beta', message='Approve beta')
+
+  class _Downstream(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del ctx
+      yield Event(output=f'downstream:{node_input}')
+
+  alpha_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='transfer_to_agent', args={'agent_name': 'beta'}
+          ),
+      ]
+  )
+  alpha = LlmAgent(name='alpha', model=alpha_model)
+  beta = _BetaAgent(name='beta')
+  coordinator = LlmAgent(
+      name='coordinator',
+      model=testing_utils.MockModel.create(responses=[]),
+      sub_agents=[alpha, beta],
+  )
+  assert coordinator.sub_agents == [alpha, beta]
+  wf = Workflow(
+      name='inner_wf',
+      edges=[(START, alpha), (alpha, _Downstream(name='downstream'))],
+  )
+  root = Workflow(name='outer_wf', edges=[(START, wf)]) if nested else wf
+  app = App(
+      name='test',
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act: turn 1 transfers alpha -> sibling beta directly under inner_wf and
+  # pauses on beta; turn 2 resolves int_beta and finishes downstream.
+  turn1_events = await runner.run_async(testing_utils.get_user_content('go'))
+  resume_msg = testing_utils.UserContent(
+      create_request_input_response('int_beta', {'result': 'approved'})
+  )
+  turn2_events = await runner.run_async(
+      new_message=resume_msg,
+      invocation_id=turn1_events[0].invocation_id,
+  )
+
+  # Assert
+  wf_prefix = 'outer_wf@1/inner_wf@1' if nested else 'inner_wf@1'
+  expected_beta_path = f'{wf_prefix}/beta@1'
+  expected_downstream_path = f'{wf_prefix}/downstream@1'
+  assert any(
+      e.author == 'beta'
+      and e.long_running_tool_ids == {'int_beta'}
+      and e.node_info.path == expected_beta_path
+      for e in turn1_events
+  )
+  assert not any(
+      e.node_info.path == expected_downstream_path for e in turn1_events
+  )
+  assert len(alpha_model.requests) == 1
+  assert seen_resume_inputs == [{}, {'int_beta': 'approved'}]
+  observed_turn2 = [
+      (e.author, e.node_info.path, e.output)
+      for e in turn2_events
+      if e.author == 'beta'
+      or e.node_info.path == expected_downstream_path
+      or e.actions.end_of_agent
+  ]
+  expected_turn2 = [
+      ('beta', expected_beta_path, 'beta_done:approved'),
+      ('inner_wf', expected_downstream_path, 'downstream:beta_done:approved'),
+      ('inner_wf', '', None),
+  ]
+  if nested:
+    expected_turn2.append(('outer_wf', '', None))
+  assert observed_turn2 == expected_turn2

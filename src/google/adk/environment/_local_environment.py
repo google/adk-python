@@ -17,18 +17,22 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 import logging
 import os
 from pathlib import Path
 import shutil
 import signal
 import tempfile
+from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
-from ..utils.feature_decorator import experimental
 from ._base_environment import BaseEnvironment
 from ._base_environment import ExecutionResult
+
+if TYPE_CHECKING:
+  from ..agents.context import Context
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -36,6 +40,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 # SIGKILL, and then for its output pipes to close, so that tearing a command
 # down cannot itself block forever.
 _TERMINATE_GRACE_SECONDS = 5
+
+_READ_CHUNK_SIZE = 64 * 1024
 
 
 def _signal_group(group: int, sig: int) -> None:
@@ -64,7 +70,6 @@ def _kill(proc: asyncio.subprocess.Process) -> None:
     pass
 
 
-@experimental
 class LocalEnvironment(BaseEnvironment):
   """Execute commands via local ``asyncio`` subprocesses.
 
@@ -100,7 +105,7 @@ class LocalEnvironment(BaseEnvironment):
     return self._working_dir
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     if self._working_dir is None:
       self._working_dir = Path(tempfile.mkdtemp(prefix='adk_workspace_'))
       self._auto_created = True
@@ -123,6 +128,7 @@ class LocalEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -200,7 +206,9 @@ class LocalEnvironment(BaseEnvironment):
     return drain.result()
 
   @override
-  async def read_file(self, path: str | Path) -> bytes:
+  async def read_file(
+      self, path: str | Path, *, ctx: Context | None = None
+  ) -> bytes:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
 
@@ -208,7 +216,28 @@ class LocalEnvironment(BaseEnvironment):
     return await asyncio.to_thread(self._sync_read, resolved)
 
   @override
-  async def write_file(self, path: str | Path, content: str | bytes) -> None:
+  async def read_file_stream(
+      self, path: str | Path, *, ctx: Context | None = None
+  ) -> AsyncGenerator[bytes, None]:
+    if self._working_dir is None:
+      raise RuntimeError('`working_dir` is not set. Call initialize() first.')
+
+    resolved = self._resolve_path(path)
+    f = await asyncio.to_thread(open, resolved, 'rb')
+    try:
+      while chunk := await asyncio.to_thread(f.read, _READ_CHUNK_SIZE):
+        yield chunk
+    finally:
+      f.close()
+
+  @override
+  async def write_file(
+      self,
+      path: str | Path,
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
+  ) -> None:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
 
@@ -234,10 +263,14 @@ class LocalEnvironment(BaseEnvironment):
 
   @staticmethod
   def _sync_write(path: Path, content: str | bytes) -> None:
-    os.makedirs(path.parent, exist_ok=True)
     if isinstance(content, str):
-      with open(path, 'w', encoding='utf-8', newline='') as f:
-        f.write(content)
+      data = content.encode('utf-8')
+    elif isinstance(content, bytes):
+      data = content
     else:
-      with open(path, 'wb') as f:
-        f.write(content)
+      raise TypeError(
+          f'content must be str or bytes, got {type(content).__name__}'
+      )
+    os.makedirs(path.parent, exist_ok=True)
+    with open(path, 'wb') as f:
+      f.write(data)

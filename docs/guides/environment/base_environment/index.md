@@ -11,8 +11,8 @@ environment toolset gives the agent four tools called `Execute`, `ReadFile`,
 `WriteFile` and `EditFile`, and the skill toolset needs the same facility
 whenever a skill ships executable scripts. Neither of them wants to know about
 subprocesses, sandboxes and remote containers, so both take a `BaseEnvironment`
-instead and call three methods on it: `execute`, `read_file` and `write_file`,
-all relative to its `working_dir`.
+instead and call four methods on it: `execute`, `read_file`, `read_file_stream`
+and `write_file`, all relative to its `working_dir`.
 
 That indirection is the entire reason the class exists. One agent definition can
 run against a local subprocess while you develop and against an isolated remote
@@ -85,21 +85,26 @@ An environment moves through four steps, always in this order.
 2.  **`initialize()`.** Creates the working directory, or connects to the remote
     workspace. Implementations are expected to make this idempotent, so calling
     it twice is safe.
-3.  **`execute`, `read_file`, `write_file`.** The working phase.
+3.  **`execute`, `read_file`, `read_file_stream`, `write_file`.** The working
+    phase.
 4.  **`close()`.** Releases whatever `initialize` acquired. For
     `LocalEnvironment` this deletes an auto-created temporary directory and
     leaves a directory you supplied alone.
 
-Both `initialize` and `close` have no-op default implementations on the base
-class, so an environment that needs neither can leave them alone. The other four
+`initialize` and `close` have no-op default implementations on the base class,
+and `read_file_stream` defaults to yielding the `read_file` result as one chunk,
+so an environment that needs none of them can leave them alone. The four core
 members, `working_dir`, `execute`, `read_file` and `write_file`, are abstract,
 and a subclass that does not provide all of them cannot be instantiated at all.
 
-`is_initialized` is a plain boolean property that each implementation sets for
-itself. Nothing in the framework checks it, so read it as a status report rather
-than as a guard that will stop you. Calling `execute` before `initialize` on
-`LocalEnvironment` raises `RuntimeError: `working_dir` is not set. Call
-initialize() first.`
+`is_initialized` is a plain boolean property. The tools of both toolsets call
+`initialize` whether or not it is set, and set it once `initialize` returns if
+the environment has not. Each toolset's `close()` clears it after closing the
+environment, and both toolsets read it to decide whether to tell the model the
+working directory yet. No environment method checks it, so read it as a status
+report rather than as a guard that will stop you. Calling `execute` before
+`initialize` on `LocalEnvironment` raises `RuntimeError: `working_dir` is not
+set. Call initialize() first.`
 
 ### ExecutionResult
 
@@ -140,7 +145,8 @@ all. `write_file` creates parent directories as needed, accepts either `str` or
 `read_file` always hands back `bytes`.
 
 Both file methods run on a worker thread through `asyncio.to_thread`, so reading
-or writing a large file will not block the event loop.
+or writing a large file will not block the event loop. `read_file_stream` goes
+through the same path check and reads the file in 64 KiB chunks.
 
 ## Configuration options
 
@@ -187,16 +193,30 @@ class MemoryEnvironment(BaseEnvironment):
   def working_dir(self) -> Path:
     return Path("/")
 
-  async def execute(self, command: str, *, timeout: float | None = None):
+  async def execute(
+      self,
+      command: str,
+      *,
+      timeout: float | None = None,
+      ctx: Context | None = None,
+  ):
     return ExecutionResult(exit_code=1, stderr="This environment has no shell.")
 
-  async def read_file(self, path: Path) -> bytes:
+  async def read_file(
+      self, path: Path, *, ctx: Context | None = None
+  ) -> bytes:
     try:
       return self._files[str(path)]
     except KeyError as e:
       raise FileNotFoundError(path) from e
 
-  async def write_file(self, path: Path, content: str | bytes) -> None:
+  async def write_file(
+      self,
+      path: Path,
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
+  ) -> None:
     self._files[str(path)] = (
         content.encode("utf-8") if isinstance(content, str) else content
     )
@@ -206,6 +226,32 @@ There are two conventions the built-in tools rely on, so keep them even in an
 environment of your own. `read_file` raises `FileNotFoundError` for a missing
 file rather than returning empty bytes, and `execute` reports failure through
 `exit_code` rather than by raising.
+
+`read_file_stream` is optional. The `ReadFile` tool reads through it, and the
+default yields the whole `read_file` result as one chunk, so the environment
+above works unchanged. Override it to yield the same bytes in chunks when files
+can be larger than you want to hold in memory; `LocalEnvironment`, E2B and
+Daytona do. Raise `FileNotFoundError` for a missing file here as well.
+
+Every method an agent run calls also takes a keyword-only `ctx` argument, and
+an override should accept it even when it ignores it, because the built-in
+tools always pass it. An override written before the argument existed still
+works for now: `BaseEnvironment` wraps it to drop `ctx` and raises a
+`DeprecationWarning` when the class is defined, but it will break once that
+support is removed in a future release. `initialize`, `execute`, `read_file`,
+`read_file_stream` and `write_file` receive the calling run's `Context`, so an
+environment can key a sandbox off `ctx.session.id` or `ctx.user_id`, keep the
+sandbox's name in `ctx.state`, or request credentials. The toolsets call
+`initialize` before every tool call that uses the environment, not while they
+build the model request, and pass that call's context, so state that
+`initialize` writes is saved with the tool call, and an environment that keeps a
+sandbox per session can create it on the session's first tool call. That makes
+the idempotence the lifecycle above asks for a requirement: once the environment
+is set up, `initialize` should return quickly. The toolsets run the calls for
+one environment one at a time, even when two toolsets share it, so concurrent
+tool calls do not set it up twice. `close` and `working_dir` take no context.
+Code that drives an environment directly, as in the example under
+[Get started](#get-started), can leave `ctx` out.
 
 ### Share one environment across a conversation
 
@@ -217,21 +263,18 @@ one toolset is there when it looks through the other.
 Sharing comes with a catch that is worth understanding before you depend on it.
 Each toolset closes the environment in its own `close()`, and neither one checks
 whether the other is still using it. Close one toolset and the shared working
-directory is deleted out from under the other. Every tool on the surviving
-toolset then fails with the same message:
-
-```text
-`working_dir` is not set. Call initialize() first.
-```
-
-It will not recover on its own either, because it still believes it initialized
-the environment already. Either give each toolset an environment of its own, or
-close both at the same time.
+directory is deleted out from under the other. The surviving toolset's next tool
+call initializes the environment again, and a `LocalEnvironment` that created
+its own directory starts over in a new, empty one, so the files written earlier
+are gone. Either give each toolset an environment of its own, or close both at
+the same time.
 
 An environment's lifetime is therefore the lifetime of the object you built, and
 it has nothing to do with a session. An environment held in a module-level
 variable is shared by every user of the process, which is fine for a single-user
-command-line agent and wrong for a server.
+command-line agent and wrong for a server. None of the built-in environments
+isolate sessions, but one of your own can, by using the `ctx` its methods
+receive to choose a workspace per session or user.
 
 ## Limitations
 
@@ -241,9 +284,9 @@ command-line agent and wrong for a server.
     command can read anything that user can read, reach the network, and write
     outside the working directory. Use it where you trust the model's output,
     and use a remote sandbox where you do not.
-*   **The path check applies to `read_file` and `write_file` only.** It is a
-    check on the resolved path, so it stops `../../etc/passwd`, but it does
-    nothing about `execute("cat /etc/passwd")`.
+*   **The path check applies to `read_file`, `read_file_stream` and `write_file`
+    only.** It is a check on the resolved path, so it stops `../../etc/passwd`,
+    but it does nothing about `execute("cat /etc/passwd")`.
 *   **No streaming.** `execute` returns once the command has finished, with the
     whole of stdout and stderr buffered in memory. A long-running command
     produces no output until it exits, and a command that prints a gigabyte
@@ -251,9 +294,8 @@ command-line agent and wrong for a server.
 *   **`close()` does not stop running work.** All it does is release the
     directory, so a process the agent left running in the background survives
     it.
-*   **The classes are experimental.** Import them from `google.adk.environment`
-    rather than from any module beneath it, and expect the signatures to be
-    able to change.
+*   **Import from the package root.** Import the classes from
+    `google.adk.environment` rather than from any private module beneath it.
 
 ## Related samples
 

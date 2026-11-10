@@ -15,23 +15,61 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
+from collections.abc import Callable
+from dataclasses import dataclass
+import inspect
 import json
 from typing import Any
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
 from ._reflect_retry_utils import GLOBAL_SCOPE_KEY as GLOBAL_SCOPE_KEY
+from ._reflect_retry_utils import is_paused_invocation
 from ._reflect_retry_utils import REFLECT_AND_RETRY_RESPONSE_TYPE
 from ._reflect_retry_utils import resolve_scope_key
 from ._reflect_retry_utils import ScopedFailureTracker
 from ._reflect_retry_utils import TrackingScope
 from .base_plugin import BasePlugin
 
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
+
 # A mapping from a tool's name to its consecutive failure count.
 PerToolFailuresCounter = dict[str, int]
+
+
+@dataclass(frozen=True)
+class ToolReflectionContext:
+  """Context provided to reflection and retry guidance providers.
+
+  Attributes:
+    tool_name: Name of the tool that failed.
+    tool_args: Arguments passed to the failed tool call.
+    error: The raised exception, or the value returned by
+      `extract_error_from_result`.
+    error_details: `"<ErrorType>: <message>"` for exceptions, otherwise
+      `str(error)`.
+    retry_count: Consecutive failure count, capped at `max_retries` once the
+      limit is exceeded; `0` when `max_retries` is `0`.
+    max_retries: The plugin's configured retry limit.
+    tool_context: The `ToolContext` of the failed call.
+    default_guidance: The built-in guidance text for this failure, which a
+      provider can return, extend or ignore.
+  """
+
+  tool_name: str
+  tool_args: dict[str, Any]
+  error: Any
+  error_details: str
+  retry_count: int
+  max_retries: int
+  tool_context: ToolContext
+  default_guidance: str
 
 
 class ToolFailureResponse(BaseModel):
@@ -106,6 +144,13 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       max_retries: int = 3,
       throw_exception_if_retry_exceeded: bool = True,
       tracking_scope: TrackingScope = TrackingScope.INVOCATION,
+      *,
+      reflection_guidance: (
+          str | Callable[[ToolReflectionContext], str | Awaitable[str]] | None
+      ) = None,
+      retry_exceeded_guidance: (
+          str | Callable[[ToolReflectionContext], str | Awaitable[str]] | None
+      ) = None,
   ):
     """Initializes the ReflectAndRetryToolPlugin.
 
@@ -117,13 +162,39 @@ class ReflectAndRetryToolPlugin(BasePlugin):
           when the retry limit is reached. If False, returns guidance instead.
         tracking_scope: Determines the lifecycle of the error tracking state.
           Defaults to `TrackingScope.INVOCATION` tracking per-invocation.
+        reflection_guidance: Custom guidance for retry attempts: a string, or
+          a sync or async callable taking a `ToolReflectionContext`. `None`
+          keeps the built-in text. If the callable raises or returns a
+          non-string (the latter raises `TypeError`), the error propagates out
+          of the plugin callback and `PluginManager` re-raises it as a
+          `RuntimeError` that ends the run.
+        retry_exceeded_guidance: Custom guidance once the retry limit is
+          exceeded and the plugin does not re-raise, in the same forms and
+          with the same `None` and error behavior as `reflection_guidance`.
+
+    Raises:
+      ValueError: If `max_retries` is negative.
+      TypeError: If a guidance value is neither a string, a callable, nor
+        `None`.
     """
     super().__init__(name)
     if max_retries < 0:
       raise ValueError("max_retries must be a non-negative integer.")
+    for guidance in (reflection_guidance, retry_exceeded_guidance):
+      if (
+          guidance is not None
+          and not isinstance(guidance, str)
+          and not callable(guidance)
+      ):
+        raise TypeError(
+            "Guidance must be a string or a callable, got"
+            f" {type(guidance).__name__}."
+        )
     self.max_retries = max_retries
     self.throw_exception_if_retry_exceeded = throw_exception_if_retry_exceeded
     self.scope = tracking_scope
+    self.reflection_guidance = reflection_guidance
+    self.retry_exceeded_guidance = retry_exceeded_guidance
     self._tracker = ScopedFailureTracker()
     self._scoped_failure_counters = self._tracker._scoped_failure_counters
     self._lock = self._tracker._lock
@@ -152,6 +223,17 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     if (
         isinstance(result, dict)
         and result.get("response_type") == REFLECT_AND_RETRY_RESPONSE_TYPE
+    ):
+      return None
+
+    # A call that requested confirmation or credentials returns a placeholder
+    # before pausing (and confirmation placeholders carry an "error" key); it is
+    # neither a tool failure nor a success.
+    if (
+        tool_context.function_call_id
+        in tool_context.actions.requested_tool_confirmations
+        or tool_context.function_call_id
+        in tool_context.actions.requested_auth_configs
     ):
       return None
 
@@ -217,6 +299,62 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       return None
     return await self._handle_tool_error(tool, tool_args, tool_context, error)
 
+  async def _resolve_guidance(
+      self,
+      provider: str | Callable[[ToolReflectionContext], str | Awaitable[str]],
+      reflection_context: ToolReflectionContext,
+  ) -> str:
+    """Resolves a guidance provider into a string."""
+    if isinstance(provider, str):
+      return provider
+    result = provider(reflection_context)
+    if inspect.isawaitable(result):
+      return await result
+    return result
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Drops the failure counts of an invocation once it has ended."""
+    await self._clear_invocation_failures(
+        invocation_context, keep_if_paused=True
+    )
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Drops the failure counts of an invocation whose run failed."""
+    del error  # The counts are dropped whatever ended the run.
+    await self._clear_invocation_failures(
+        invocation_context, keep_if_paused=False
+    )
+
+  async def _clear_invocation_failures(
+      self, invocation_context: InvocationContext, *, keep_if_paused: bool
+  ) -> None:
+    """Drops the counts kept for an invocation under the INVOCATION scope.
+
+    Each invocation gets its own scope, and nothing reads it once the
+    invocation is over, so keeping it would grow the tracker with every
+    invocation that saw a failure.
+    """
+    if self.scope != TrackingScope.INVOCATION:
+      return
+    scope_key = self._get_scope_key(ToolContext(invocation_context))
+    # A key that does not embed the invocation id, such as one from a
+    # per-session or per-user override, is meant to outlive the invocation.
+    if (
+        invocation_context.invocation_id not in scope_key
+        or scope_key not in self._scoped_failure_counters
+    ):
+      return
+    if keep_if_paused and is_paused_invocation(invocation_context):
+      return
+    await self._tracker.clear_scope(scope_key)
+
   async def _handle_tool_error(
       self,
       tool: BaseTool,
@@ -239,24 +377,52 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     Returns:
       An optional dictionary containing reflection guidance for the error.
     """
-    if self.max_retries == 0:
-      if self.throw_exception_if_retry_exceeded:
-        raise self._ensure_exception(error)
-      return self._get_tool_retry_exceed_msg(tool, tool_args, error)
-
-    scope_key = self._get_scope_key(tool_context)
-    current_retries = await self._tracker.increment(scope_key, tool.name)
-
-    if current_retries <= self.max_retries:
-      return self._create_tool_reflection_response(
-          tool, tool_args, error, current_retries
-      )
-
-    # Max Retry exceeded
-    if self.throw_exception_if_retry_exceeded:
+    current_retries = 0
+    if self.max_retries:
+      scope_key = self._get_scope_key(tool_context)
+      current_retries = await self._tracker.increment(scope_key, tool.name)
+    exceeded = not self.max_retries or current_retries > self.max_retries
+    if exceeded and self.throw_exception_if_retry_exceeded:
       raise self._ensure_exception(error)
+
+    error_details = self._format_error_details(error)
+    retry_count = min(current_retries, self.max_retries)
+    if exceeded:
+      provider = self.retry_exceeded_guidance
+      default_guidance = self._get_default_retry_exceeded_guidance(
+          tool.name, tool_args, error_details
+      )
     else:
-      return self._get_tool_retry_exceed_msg(tool, tool_args, error)
+      provider = self.reflection_guidance
+      default_guidance = self._get_default_reflection_guidance(
+          tool.name, tool_args, error_details, retry_count
+      )
+    guidance = default_guidance
+    if provider is not None:
+      guidance = await self._resolve_guidance(
+          provider,
+          ToolReflectionContext(
+              tool_name=tool.name,
+              tool_args=tool_args,
+              error=error,
+              error_details=error_details,
+              retry_count=retry_count,
+              max_retries=self.max_retries,
+              tool_context=tool_context,
+              default_guidance=default_guidance,
+          ),
+      )
+    if not isinstance(guidance, str):
+      raise TypeError(
+          f"Guidance must be a string, got {type(guidance).__name__}."
+      )
+    if exceeded:
+      return self._get_tool_retry_exceed_msg(
+          tool, tool_args, error, retry_exceeded_guidance=guidance
+      )
+    return self._create_tool_reflection_response(
+        tool, tool_args, error, current_retries, reflection_guidance=guidance
+    )
 
   def _get_scope_key(self, tool_context: ToolContext) -> str:
     """Returns a unique key for the state dictionary based on the scope.
@@ -283,19 +449,17 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       return f"{type(error).__name__}: {str(error)}"
     return str(error)
 
-  def _create_tool_reflection_response(
+  def _get_default_reflection_guidance(
       self,
-      tool: BaseTool,
+      tool_name: str,
       tool_args: dict[str, Any],
-      error: Any,
+      error_details: str,
       retry_count: int,
-  ) -> dict[str, Any]:
-    """Generates structured reflection guidance for tool failures."""
+  ) -> str:
+    """Generates the default reflection guidance message."""
     args_summary = json.dumps(tool_args, indent=2, default=str)
-    error_details = self._format_error_details(error)
-
     reflection_message = f"""
-The call to tool `{tool.name}` failed.
+The call to tool `{tool_name}` failed.
 
 **Error Details:**
 ```
@@ -318,30 +482,19 @@ This is retry attempt **{retry_count} of {self.max_retries}**. Analyze the error
 
 Formulate a new plan based on your analysis and try a corrected or different approach.
 """
+    return reflection_message.strip()
 
-    return ToolFailureResponse(
-        error_type=(
-            type(error).__name__
-            if isinstance(error, Exception)
-            else "ToolError"
-        ),
-        error_details=str(error),
-        retry_count=retry_count,
-        reflection_guidance=reflection_message.strip(),
-    ).model_dump(mode="json")
-
-  def _get_tool_retry_exceed_msg(
+  def _get_default_retry_exceeded_guidance(
       self,
-      tool: BaseTool,
+      tool_name: str,
       tool_args: dict[str, Any],
-      error: Exception,
-  ) -> dict[str, Any]:
-    """Generates guidance when the maximum retry limit is exceeded."""
-    error_details = self._format_error_details(error)
+      error_details: str,
+  ) -> str:
+    """Generates the default retry exceeded guidance message."""
     args_summary = json.dumps(tool_args, indent=2, default=str)
-
     reflection_message = f"""
-The tool `{tool.name}` has failed consecutively {self.max_retries} times and the retry limit has been exceeded.
+The tool `{tool_name}` has failed consecutively {self.max_retries} times \
+and the retry limit has been exceeded.
 
 **Last Error:**
 ```
@@ -354,9 +507,52 @@ The tool `{tool.name}` has failed consecutively {self.max_retries} times and the
 ```
 
 **Final Instruction:**
-**Do not attempt to use the `{tool.name}` tool again for this task.** You must now try a different approach. Acknowledge the failure and devise a new strategy, potentially using other available tools or informing the user that the task cannot be completed.
+**Do not attempt to use the `{tool_name}` tool again for this task.** \
+You must now try a different approach. Acknowledge the failure and devise a \
+new strategy, potentially using other available tools or informing the user \
+that the task cannot be completed.
 """
+    return reflection_message.strip()
 
+  def _create_tool_reflection_response(
+      self,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      error: Any,
+      retry_count: int,
+      reflection_guidance: str | None = None,
+  ) -> dict[str, Any]:
+    """Generates structured reflection guidance for tool failures."""
+    if reflection_guidance is None:
+      reflection_guidance = self._get_default_reflection_guidance(
+          tool.name,
+          tool_args,
+          self._format_error_details(error),
+          retry_count,
+      )
+    return ToolFailureResponse(
+        error_type=(
+            type(error).__name__
+            if isinstance(error, Exception)
+            else "ToolError"
+        ),
+        error_details=str(error),
+        retry_count=retry_count,
+        reflection_guidance=reflection_guidance,
+    ).model_dump(mode="json")
+
+  def _get_tool_retry_exceed_msg(
+      self,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      error: Any,
+      retry_exceeded_guidance: str | None = None,
+  ) -> dict[str, Any]:
+    """Generates guidance when the maximum retry limit is exceeded."""
+    if retry_exceeded_guidance is None:
+      retry_exceeded_guidance = self._get_default_retry_exceeded_guidance(
+          tool.name, tool_args, self._format_error_details(error)
+      )
     return ToolFailureResponse(
         error_type=(
             type(error).__name__
@@ -365,5 +561,5 @@ The tool `{tool.name}` has failed consecutively {self.max_retries} times and the
         ),
         error_details=str(error),
         retry_count=self.max_retries,
-        reflection_guidance=reflection_message.strip(),
+        reflection_guidance=retry_exceeded_guidance,
     ).model_dump(mode="json")

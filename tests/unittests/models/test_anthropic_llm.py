@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import re
+import sys
 import threading
 from typing import Any
 from unittest import mock
@@ -40,6 +41,9 @@ from google.adk.models.anthropic_llm import part_to_message_block
 from google.adk.models.anthropic_llm import to_google_genai_finish_reason
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools.function_tool import FunctionTool
+from google.api_core import exceptions as google_exceptions
+from google.auth import exceptions as google_auth_exceptions
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -722,6 +726,31 @@ def test_function_declaration_to_tool_param(
   )
 
 
+@pytest.mark.parametrize("keyword", ["additionalItems", "unevaluatedItems"])
+def test_tool_array_tail_schema_types_are_lowercased(keyword):
+  """Array-tail schemas use JSON Schema types without changing default data."""
+  declaration = types.FunctionDeclaration(
+      name="collect_values",
+      parameters_json_schema={
+          "type": "OBJECT",
+          "default": {"type": "USER_DATA"},
+          "properties": {
+              "values": {
+                  "type": "ARRAY",
+                  keyword: {"type": ["STRING", "NULL"]},
+              },
+          },
+      },
+  )
+
+  tool = function_declaration_to_tool_param(declaration)
+
+  assert tool["input_schema"]["properties"]["values"][keyword] == {
+      "type": ["string", "null"],
+  }
+  assert tool["input_schema"]["default"] == {"type": "USER_DATA"}
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async(
     claude_llm, llm_request, generate_content_response, generate_llm_response
@@ -895,6 +924,33 @@ async def test_output_schema_without_tools_is_forced_as_a_tool_call():
   part = responses[0].content.parts[0]
   assert part.function_call is None
   assert json.loads(part.text) == {"name": "Ada", "age": 36}
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_schema_call_is_reported():
+  """A structured output cut off by max_tokens is reported, not returned."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(response_schema=_Person),
+  )
+  message = _tool_use_message({"name": "Ada"})
+  message.stop_reason = "max_tokens"
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=message)
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert len(responses) == 1
+  assert responses[0].content is None
+  assert responses[0].error_code == types.FinishReason.MAX_TOKENS
+  assert "structured output" in responses[0].error_message
 
 
 @pytest.mark.parametrize("thinking_budget", [2048, -1])
@@ -1379,6 +1435,24 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+@pytest.mark.parametrize("error_key", ["isError", "is_error"])
+def test_part_to_message_block_marks_mcp_error_result_as_error(error_key):
+  """An MCP CallToolResult with isError reaches Claude as an error result."""
+  response_part = types.Part.from_function_response(
+      name="mcp_tool",
+      response={
+          "content": [{"type": "text", "text": "file not found"}],
+          error_key: True,
+      },
+  )
+  response_part.function_response.id = "test_id_mcp_error"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == "file not found"
+  assert result["is_error"] is True
+
+
 def test_part_to_message_block_tool_result_with_image():
   """Media a tool attached to its response reaches Claude as an image block."""
   image_data = b"chart-bytes"
@@ -1509,6 +1583,480 @@ def test_part_to_message_block_rejects_unsupported_image_mime_type():
 
   with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
     part_to_message_block(part)
+
+
+def test_part_to_message_block_with_gcs_pdf_document():
+  """A gs:// PDF file part downloads the object and sends it inline."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch(
+      "google.cloud.storage.Client", return_value=client
+  ) as client_cls:
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
+
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+  client_cls.assert_called_once_with(project=None)
+  client.close.assert_called_once_with()
+  client.bucket.assert_called_once_with("my-bucket")
+  client.bucket.return_value.get_blob.assert_called_once_with("reports/q4.pdf")
+
+
+def test_part_to_message_block_rejects_oversized_gcs_file():
+  """A gs:// object over the size cap raises before it is downloaded."""
+  blob = MagicMock(size=anthropic_llm._MAX_FILE_DATA_SIZE + 1)
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(ValueError, match="too large"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/big.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+  blob.download_as_bytes.assert_not_called()
+
+
+def test_part_to_message_block_rejects_unsupported_gcs_file_type():
+  """A gs:// object Claude cannot carry inline raises NotImplementedError."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = MagicMock(size=10)
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(NotImplementedError, match="Not supported yet"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/clip.mp4",
+                  mime_type="video/mp4",
+              )
+          )
+      )
+
+
+def test_part_to_message_block_missing_gcs_dependency(monkeypatch):
+  """Without google-cloud-storage, the error names the extra to install."""
+  # None in sys.modules makes the import itself raise ImportError.
+  monkeypatch.setitem(sys.modules, "google.cloud", None)
+  monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+
+  with pytest.raises(ImportError, match=r"google-adk\[gcp\]"):
+    part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
+
+
+@pytest.mark.parametrize("mime_type", ["image/png", "image/PNG", "IMAGE/PNG"])
+def test_part_to_message_block_with_gcs_image(mime_type):
+  """A gs:// image part is sent inline with its MIME type lowercased."""
+  image_data = b"\x89PNG fake image content"
+  blob = MagicMock(size=len(image_data))
+  blob.download_as_bytes.return_value = image_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/photo.png",
+                mime_type=mime_type,
+            )
+        )
+    )
+
+  assert result == {
+      "type": "image",
+      "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": base64.b64encode(image_data).decode(),
+      },
+  }
+
+
+def test_part_to_message_block_gcs_pdf_mime_type_normalized():
+  """A padded, uppercase PDF MIME type still yields a document block."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type=" APPLICATION/PDF",
+            )
+        )
+    )
+
+  assert result["type"] == "document"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+def test_part_to_message_block_rejects_non_gcs_file_uri():
+  """A non-gs:// file URI on a user turn raises without downloading."""
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    with pytest.raises(NotImplementedError, match="Not supported yet"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="https://example.com/q4.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_missing_gcs_object():
+  """A gs:// URI naming a missing object raises ValueError."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = None
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(ValueError, match="not found: gs://my-bucket/gone.pdf"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/gone.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+
+@pytest.mark.parametrize(
+    "uri", ["gs://bucket-only", "gs:///reports/q4.pdf", "gs://bucket/"]
+)
+def test_part_to_message_block_rejects_gcs_uri_without_bucket_or_object(uri):
+  """A gs:// URI without a bucket or object raises before any download."""
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    with pytest.raises(ValueError, match="must name a bucket and an object"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri=uri, mime_type="application/pdf"
+              )
+          )
+      )
+
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_rejects_unsupported_gcs_image_before_download():
+  """An unsupported image type raises before the object is downloaded."""
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/scan.tiff", mime_type="image/tiff"
+              )
+          )
+      )
+
+  client_cls.assert_not_called()
+
+
+def test_content_to_message_param_skips_gcs_file_on_assistant_turn():
+  """A file_data part on an assistant turn is dropped, not downloaded."""
+  content = Content(
+      role="model",
+      parts=[
+          Part.from_text(text="Here is the report."),
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/reports/q4.pdf",
+                  mime_type="application/pdf",
+              )
+          ),
+      ],
+  )
+
+  with mock.patch("google.cloud.storage.Client") as client_cls:
+    result = content_to_message_param(content)
+
+  assert result["content"] == [{"type": "text", "text": "Here is the report."}]
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_tool_result_with_gcs_image():
+  """A gs:// image a tool attaches is sent in the tool result."""
+  image_data = b"\x89PNG chart"
+  blob = MagicMock(size=len(image_data))
+  blob.download_as_bytes.return_value = image_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+  part = types.Part.from_function_response(
+      name="draw_chart",
+      response={},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/chart.png", mime_type="image/png"
+          )
+      ],
+  )
+  part.function_response.id = "call_5"
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(part)
+
+  assert result["content"] == [{
+      "type": "image",
+      "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": base64.b64encode(image_data).decode(),
+      },
+  }]
+  client.bucket.return_value.get_blob.assert_called_once_with("chart.png")
+
+
+def test_part_to_message_block_tool_result_drops_non_gcs_file(caplog):
+  """A non-gs:// file a tool attaches is dropped with a warning."""
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="https://example.com/report.pdf",
+              mime_type="application/pdf",
+          )
+      ],
+  )
+  part.function_response.id = "call_9"
+
+  with (
+      mock.patch("google.cloud.storage.Client") as client_cls,
+      caplog.at_level("WARNING"),
+  ):
+    result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+  assert "only gs:// URIs can be sent" in caplog.text
+  client_cls.assert_not_called()
+
+
+def test_part_to_message_block_tool_result_drops_missing_gcs_file():
+  """A missing gs:// object a tool attaches is dropped from the result."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = None
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/gone.pdf", mime_type="application/pdf"
+          )
+      ],
+  )
+  part.function_response.id = "call_6"
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        google_exceptions.Forbidden("denied"),
+        google_auth_exceptions.DefaultCredentialsError("no credentials"),
+        ConnectionError("network unreachable"),
+    ],
+    ids=["forbidden", "no_adc", "network"],
+)
+def test_part_to_message_block_tool_result_drops_gcs_file_on_download_error(
+    error,
+):
+  """A download error drops the tool's gs:// file instead of raising."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.side_effect = error
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/report.pdf", mime_type="application/pdf"
+          )
+      ],
+  )
+  part.function_response.id = "call_7"
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+
+
+def test_part_to_message_block_tool_result_drops_gcs_file_without_storage(
+    monkeypatch,
+):
+  """Without google-cloud-storage, the tool's gs:// file is dropped."""
+  monkeypatch.setitem(sys.modules, "google.cloud", None)
+  monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={"status": "ok"},
+      parts=[
+          types.FunctionResponsePart.from_uri(
+              file_uri="gs://my-bucket/report.pdf", mime_type="application/pdf"
+          )
+      ],
+  )
+  part.function_response.id = "call_8"
+
+  result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"status": "ok"})
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_downloads_gcs_file_off_event_loop(
+    generate_content_response,
+):
+  """The gs:// download runs in a worker thread, not on the event loop."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  download_threads = []
+
+  def download_as_bytes():
+    download_threads.append(threading.get_ident())
+    return pdf_data
+
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.side_effect = download_as_bytes
+  storage_client = MagicMock()
+  storage_client.bucket.return_value.get_blob.return_value = blob
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part(
+                      file_data=types.FileData(
+                          file_uri="gs://my-bucket/reports/q4.pdf",
+                          mime_type="application/pdf",
+                      )
+                  ),
+                  Part.from_text(text="Summarize this"),
+              ],
+          )
+      ],
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=generate_content_response
+  )
+
+  with (
+      mock.patch("google.cloud.storage.Client", return_value=storage_client),
+      mock.patch.object(llm, "_anthropic_client", mock_client),
+  ):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert download_threads
+  assert threading.get_ident() not in download_threads
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["messages"][0]["content"][0] == {
+      "type": "document",
+      "source": {
+          "type": "base64",
+          "media_type": "application/pdf",
+          "data": base64.b64encode(pdf_data).decode(),
+      },
+  }
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_downloads_each_gcs_uri_once(
+    generate_content_response,
+):
+  """A gs:// URI repeated across turns is downloaded once per request."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  storage_client = MagicMock()
+  storage_client.bucket.return_value.get_blob.return_value = blob
+  file_part = Part(
+      file_data=types.FileData(
+          file_uri="gs://my-bucket/reports/q4.pdf",
+          mime_type="application/pdf",
+      )
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[
+          Content(role="user", parts=[file_part]),
+          Content(role="model", parts=[Part.from_text(text="Read it.")]),
+          Content(role="user", parts=[file_part]),
+      ],
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=generate_content_response
+  )
+
+  with (
+      mock.patch(
+          "google.cloud.storage.Client", return_value=storage_client
+      ) as client_cls,
+      mock.patch.object(llm, "_anthropic_client", mock_client),
+  ):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  client_cls.assert_called_once()
+  blob.download_as_bytes.assert_called_once_with()
+  _, kwargs = mock_client.messages.create.call_args
+  expected_block = {
+      "type": "document",
+      "source": {
+          "type": "base64",
+          "media_type": "application/pdf",
+          "data": base64.b64encode(pdf_data).decode(),
+      },
+  }
+  assert kwargs["messages"][0]["content"] == [expected_block]
+  assert kwargs["messages"][2]["content"] == [expected_block]
 
 
 content_to_message_param_test_cases = [
@@ -2101,6 +2649,91 @@ async def test_streaming_text_yields_partial_and_final():
   assert responses[2].usage_metadata.prompt_token_count == 10
   assert responses[2].usage_metadata.candidates_token_count == 5
   assert responses[2].finish_reason == "STOP"
+
+
+@pytest.mark.parametrize(
+    (
+        "delta_cache_read",
+        "delta_cache_creation",
+        "expected_prompt",
+        "expected_cached",
+        "expected_creation",
+    ),
+    [
+        pytest.param(30, 10, 160, 30, 10, id="delta_has_cache_counts"),
+        pytest.param(None, None, 150, 25, 5, id="delta_omits_cache_counts"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_streaming_takes_input_and_cache_counts_from_message_delta(
+    delta_cache_read,
+    delta_cache_creation,
+    expected_prompt,
+    expected_cached,
+    expected_creation,
+):
+  """Streamed usage takes each count from message_delta, else message_start."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=anthropic_types.Usage(
+                  input_tokens=3,
+                  output_tokens=1,
+                  cache_read_input_tokens=25,
+                  cache_creation_input_tokens=5,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=anthropic_types.MessageDeltaUsage(
+              output_tokens=7,
+              input_tokens=120,
+              cache_read_input_tokens=delta_cache_read,
+              cache_creation_input_tokens=delta_cache_creation,
+          ),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="You are helpful"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  usage = responses[-1].usage_metadata
+  assert usage.prompt_token_count == expected_prompt
+  assert usage.cached_content_token_count == expected_cached
+  assert usage.candidates_token_count == 7
+  assert usage.total_token_count == expected_prompt + 7
+  assert usage.cache_creation_input_tokens == expected_creation
 
 
 @pytest.mark.asyncio
@@ -2848,6 +3481,53 @@ def test_message_to_generate_content_response_maps_finish_reason(
   assert response.finish_reason == expected_finish_reason
 
 
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
+def test_message_to_generate_content_response_reports_truncated_tool_use(
+    stop_reason,
+):
+  """A truncated tool_use is reported, not returned as a call."""
+  message = anthropic_types.Message(
+      id="msg_truncated",
+      content=[
+          anthropic_types.TextBlock(
+              text="Writing the file.", type="text", citations=None
+          ),
+          anthropic_types.ToolUseBlock(
+              id="toolu_1",
+              name="write_file",
+              input={"path": "app.py", "content": "def main():\n    retu"},
+              type="tool_use",
+          ),
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="max_tokens",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=7,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+  # The SDK's StopReason literal lacks "model_context_window_exceeded",
+  # so it is assigned after construction, as an unvalidated API response.
+  message.stop_reason = stop_reason
+
+  response = message_to_generate_content_response(message)
+
+  assert response.content is None
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "max_output_tokens" in response.error_message
+  assert response.cache_creation_token_count == 7
+
+
 def test_message_to_generate_content_response_reports_cache_creation_tokens():
   """cache_creation_input_tokens maps to usage_metadata.cache_creation_input_tokens."""
   from google.adk.models.anthropic_llm import message_to_generate_content_response
@@ -2875,8 +3555,19 @@ def test_message_to_generate_content_response_reports_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert response.usage_metadata.cache_creation_input_tokens == 50
+  # Serializable mirror: the usage_metadata attribute above is dropped by
+  # model_dump (google.genai forbids extra fields), so the count is also
+  # exposed on LlmResponse.cache_creation_token_count for event consumers.
+  assert response.cache_creation_token_count == 50
+  assert (
+      response.model_dump(by_alias=True, exclude_none=True)[
+          "cacheCreationTokenCount"
+      ]
+      == 50
+  )
   dumped = response.model_dump()
   assert "usage_metadata" in dumped
+  assert "cache_creation_input_tokens" not in dumped["usage_metadata"]
 
 
 def test_message_to_generate_content_response_no_cache_creation_tokens():
@@ -2906,6 +3597,7 @@ def test_message_to_generate_content_response_no_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert not hasattr(response.usage_metadata, "cache_creation_input_tokens")
+  assert response.cache_creation_token_count is None
 
 
 @pytest.mark.asyncio
@@ -2963,8 +3655,10 @@ async def test_streaming_reports_cache_creation_tokens():
   assert len(responses) == 2
   final_response = responses[-1]
   assert final_response.usage_metadata.cache_creation_input_tokens == 50
+  assert final_response.cache_creation_token_count == 50
   dumped = final_response.model_dump()
   assert "usage_metadata" in dumped
+  assert "cache_creation_input_tokens" not in dumped["usage_metadata"]
 
 
 async def test_streaming_sets_model_version():
@@ -3032,10 +3726,11 @@ async def test_streaming_sets_model_version():
   assert final_response.model_version == "claude-sonnet-4-20250514"
 
 
-def test_part_to_message_block_thinking_roundtrip():
+@pytest.mark.parametrize("thinking_text", ["My reasoning steps.", ""])
+def test_part_to_message_block_thinking_roundtrip(thinking_text):
   """Part with thought=True and signature creates ThinkingBlockParam."""
   part = Part(
-      text="My reasoning steps.",
+      text=thinking_text,
       thought=True,
       thought_signature=b"roundtrip_sig",
   )
@@ -3044,7 +3739,7 @@ def test_part_to_message_block_thinking_roundtrip():
 
   assert isinstance(result, dict)
   assert result["type"] == "thinking"
-  assert result["thinking"] == "My reasoning steps."
+  assert result["thinking"] == thinking_text
   assert result["signature"] == "roundtrip_sig"
 
 
@@ -3346,7 +4041,8 @@ async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
 
 
 @pytest.mark.asyncio
-async def test_streaming_thinking_captures_signature_delta():
+@pytest.mark.parametrize("thinking_deltas", [["Reason."], []])
+async def test_streaming_thinking_captures_signature_delta(thinking_deltas):
   """A streamed signature_delta must land on the final thinking Part.
 
   Without this the aggregated thinking Part has no ``thought_signature`` and
@@ -3370,13 +4066,16 @@ async def test_streaming_thinking_captures_signature_delta():
               thinking="", signature="", type="thinking"
           ),
       ),
-      MagicMock(
-          type="content_block_delta",
-          index=0,
-          delta=anthropic_types.ThinkingDelta(
-              thinking="Reason.", type="thinking_delta"
-          ),
-      ),
+      *[
+          MagicMock(
+              type="content_block_delta",
+              index=0,
+              delta=anthropic_types.ThinkingDelta(
+                  thinking=text, type="thinking_delta"
+              ),
+          )
+          for text in thinking_deltas
+      ],
       MagicMock(
           type="content_block_delta",
           index=0,
@@ -3414,15 +4113,20 @@ async def test_streaming_thinking_captures_signature_delta():
   assert not final.partial
   thinking_part = final.content.parts[0]
   assert thinking_part.thought
-  assert thinking_part.text == "Reason."
+  assert thinking_part.text == "".join(thinking_deltas)
   assert thinking_part.thought_signature == b"sig_stream_123"
 
-  # The aggregated Part must round-trip back to a valid Anthropic thinking
-  # block -- this is exactly what fails today (missing signature) on a
-  # tool-call turn.
+  # Preserve the thinking block on the follow-up request, including when
+  # the stream contains a signature without any thinking text deltas.
   block = part_to_message_block(thinking_part)
   assert block["type"] == "thinking"
+  assert block["thinking"] == "".join(thinking_deltas)
   assert block["signature"] == "sig_stream_123"
+  assert final.content is not None
+  assert content_to_message_param(final.content) == {
+      "role": "assistant",
+      "content": [block],
+  }
 
 
 @pytest.mark.asyncio
@@ -4243,6 +4947,7 @@ async def test_generate_content_async_excludes_sampling_when_effort(
         ("stop_sequence", types.FinishReason.STOP),
         ("tool_use", types.FinishReason.STOP),
         ("max_tokens", types.FinishReason.MAX_TOKENS),
+        ("model_context_window_exceeded", types.FinishReason.MAX_TOKENS),
         ("pause_turn", types.FinishReason.STOP),
         ("refusal", types.FinishReason.SAFETY),
         (None, None),
@@ -4256,23 +4961,38 @@ def test_to_google_genai_finish_reason(stop_reason, expected_finish_reason):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "stop_reason,expected_finish_reason",
+    "stop_reason,has_content,expected_finish_reason,expected_error_code",
     [
-        ("end_turn", types.FinishReason.STOP),
-        ("max_tokens", types.FinishReason.MAX_TOKENS),
-        ("refusal", types.FinishReason.SAFETY),
+        ("end_turn", True, types.FinishReason.STOP, None),
+        ("max_tokens", True, types.FinishReason.MAX_TOKENS, None),
+        ("refusal", True, types.FinishReason.SAFETY, None),
+        ("end_turn", False, types.FinishReason.STOP, None),
+        (
+            "max_tokens",
+            False,
+            types.FinishReason.MAX_TOKENS,
+            types.FinishReason.MAX_TOKENS,
+        ),
+        (
+            "refusal",
+            False,
+            types.FinishReason.SAFETY,
+            types.FinishReason.SAFETY,
+        ),
     ],
 )
 async def test_non_streaming_sets_finish_reason(
-    stop_reason, expected_finish_reason
+    stop_reason, has_content, expected_finish_reason, expected_error_code
 ):
-  """finish_reason is populated on the non-streaming LlmResponse."""
+  """finish_reason and error_code are set on the non-streaming LlmResponse."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   mock_message = anthropic_types.Message(
       id="msg_test",
-      content=[
-          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
-      ],
+      content=(
+          [anthropic_types.TextBlock(text="Hi", type="text", citations=None)]
+          if has_content
+          else []
+      ),
       model="claude-sonnet-4-20250514",
       role="assistant",
       stop_reason=stop_reason,
@@ -4303,11 +5023,48 @@ async def test_non_streaming_sets_finish_reason(
 
   assert len(responses) == 1
   assert responses[0].finish_reason == expected_finish_reason
+  assert responses[0].error_code == expected_error_code
+  if expected_error_code:
+    assert repr(stop_reason) in responses[0].error_message
+  else:
+    assert responses[0].error_message is None
+  assert responses[0].usage_metadata.prompt_token_count == 5
+  assert responses[0].usage_metadata.candidates_token_count == 2
+  assert responses[0].model_version == "claude-sonnet-4-20250514"
 
 
 @pytest.mark.asyncio
-async def test_streaming_sets_finish_reason():
-  """finish_reason is populated on the final streaming LlmResponse."""
+@pytest.mark.parametrize(
+    "stop_reason,has_content,expected_finish_reason,expected_error_code",
+    [
+        ("end_turn", True, types.FinishReason.STOP, None),
+        ("max_tokens", True, types.FinishReason.MAX_TOKENS, None),
+        ("refusal", True, types.FinishReason.SAFETY, None),
+        ("end_turn", False, types.FinishReason.STOP, None),
+        (
+            "max_tokens",
+            False,
+            types.FinishReason.MAX_TOKENS,
+            types.FinishReason.MAX_TOKENS,
+        ),
+        (
+            "refusal",
+            False,
+            types.FinishReason.SAFETY,
+            types.FinishReason.SAFETY,
+        ),
+        (
+            "unknown",
+            False,
+            types.FinishReason.FINISH_REASON_UNSPECIFIED,
+            types.FinishReason.FINISH_REASON_UNSPECIFIED,
+        ),
+    ],
+)
+async def test_streaming_sets_finish_reason(
+    stop_reason, has_content, expected_finish_reason, expected_error_code
+):
+  """finish_reason and error_code are set on the final streaming LlmResponse."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
 
   events = [
@@ -4331,11 +5088,15 @@ async def test_streaming_sets_finish_reason():
       MagicMock(type="content_block_stop", index=0),
       MagicMock(
           type="message_delta",
-          delta=MagicMock(stop_reason="max_tokens"),
+          delta=MagicMock(stop_reason=stop_reason),
           usage=MagicMock(output_tokens=1),
       ),
       MagicMock(type="message_stop"),
   ]
+  if not has_content:
+    events = [
+        event for event in events if not event.type.startswith("content_")
+    ]
 
   mock_client = MagicMock()
   mock_client.messages.create = AsyncMock(
@@ -4354,7 +5115,167 @@ async def test_streaming_sets_finish_reason():
     ]
 
   final = responses[-1]
+  assert final.finish_reason == expected_finish_reason
+  assert final.error_code == expected_error_code
+  if expected_error_code:
+    assert repr(stop_reason) in final.error_message
+  else:
+    assert final.error_message is None
+  assert final.usage_metadata.prompt_token_count == 5
+  assert final.usage_metadata.candidates_token_count == 1
+  assert final.model_version == "claude-sonnet-4-20250514"
+
+
+def test_non_streaming_thinking_and_empty_text_max_tokens_sets_error_code():
+  """A max_tokens turn with only thinking and empty text is an error."""
+  message = anthropic_types.Message(
+      id="msg_test",
+      content=[
+          anthropic_types.ThinkingBlock(
+              thinking="Reason.", signature="sig", type="thinking"
+          ),
+          anthropic_types.RedactedThinkingBlock(
+              data="hidden", type="redacted_thinking"
+          ),
+          anthropic_types.TextBlock(text="", type="text"),
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="max_tokens",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(input_tokens=5, output_tokens=2),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 3
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert "'max_tokens'" in response.error_message
+
+
+@pytest.mark.asyncio
+async def test_streaming_thinking_and_empty_text_max_tokens_sets_error_code():
+  """A streamed max_tokens turn of thinking and empty text is an error."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ThinkingBlock(
+              thinking="", signature="", type="thinking"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.ThinkingDelta(
+              thinking="Reason.", type="thinking_delta"
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="content_block_start",
+          index=1,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="max_tokens"),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  final = responses[-1]
+  assert [part.thought for part in final.content.parts] == [True, None]
+  assert final.error_code == types.FinishReason.MAX_TOKENS
+  assert "'max_tokens'" in final.error_message
+
+
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
+@pytest.mark.asyncio
+async def test_streaming_truncated_tool_use_is_reported(stop_reason):
+  """A streamed tool_use cut off mid-input ends in a MAX_TOKENS error."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(
+                  input_tokens=5,
+                  output_tokens=0,
+                  cache_creation_input_tokens=7,
+                  cache_read_input_tokens=0,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ToolUseBlock(
+              id="toolu_1", name="write_file", input={}, type="tool_use"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.InputJSONDelta(
+              partial_json='{"path": "app.py", "content": "def ma',
+              type="input_json_delta",
+          ),
+      ),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason=stop_reason),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Write")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  final = responses[-1]
+  assert final.content is None
+  assert final.error_code == types.FinishReason.MAX_TOKENS
   assert final.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final.cache_creation_token_count == 7
 
 
 def _make_rate_limit_error() -> RateLimitError:
@@ -4762,10 +5683,11 @@ async def test_cache_breakpoint_skips_a_reasoning_block(
 
   kwargs = await _sent_anthropic_kwargs(request)
 
-  blocks = kwargs["messages"][-1]["content"]
+  blocks = kwargs["messages"][1]["content"]
   assert blocks[-1]["type"] == expected_block_type
   assert "cache_control" not in blocks[-1]
   assert blocks[-2]["cache_control"] == _EPHEMERAL
+  assert "cache_control" not in kwargs["messages"][-1]["content"][0]
 
 
 @pytest.mark.asyncio
@@ -4796,6 +5718,61 @@ async def test_cache_breakpoint_skips_a_turn_left_with_no_blocks():
       "tools[1]": _EPHEMERAL,
       "messages[0][0]": _EPHEMERAL,
   }
+
+
+_HAIKU_USER = Content(role="user", parts=[Part.from_text(text="Write a haiku")])
+_HAIKU_MODEL = Content(
+    role="model", parts=[Part.from_text(text="An old silent pond")]
+)
+_CONTINUE_TEXT = (
+    "Continue processing previous requests as instructed."
+    " Exit or provide a summary if no more outputs are needed."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "contents,expected_roles,expected_text",
+    [
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="ends_on_assistant",
+        ),
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL, Content(role="user", parts=[])],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="trailing_user_turn_dropped",
+        ),
+        pytest.param(
+            [],
+            ["user"],
+            "Handle the requests as specified in the System Instruction.",
+            id="no_contents",
+        ),
+        pytest.param(
+            [_HAIKU_USER],
+            ["user"],
+            "Write a haiku",
+            id="ends_on_user",
+        ),
+    ],
+)
+async def test_request_ends_on_a_user_turn(
+    contents, expected_roles, expected_text, stream
+):
+  """Claude reads a trailing assistant turn as prefill, which 4.6+ rejects."""
+  request = LlmRequest(model="claude-sonnet-4-20250514", contents=contents)
+
+  kwargs = await _sent_anthropic_kwargs(request, stream=stream)
+
+  assert [m["role"] for m in kwargs["messages"]] == expected_roles
+  assert kwargs["messages"][-1]["content"] == [
+      {"type": "text", "text": expected_text}
+  ]
 
 
 @pytest.mark.asyncio
@@ -4842,3 +5819,142 @@ async def test_cache_config_marks_the_first_turn_of_a_session():
       "tools[1]": _EPHEMERAL,
       "messages[2][0]": _EPHEMERAL,
   }
+
+
+def _get_weather(city: str) -> str:
+  """Returns the weather for a city."""
+  return f"Sunny in {city}"
+
+
+def _get_time(city: str) -> str:
+  """Returns the time in a city."""
+  return f"Noon in {city}"
+
+
+def _tool_choice_request(
+    function_calling_config: types.FunctionCallingConfig | None,
+    thinking_budget: int | None = None,
+) -> LlmRequest:
+  """A request with two tools, as an agent's flow builds it."""
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Paris?")])],
+      config=types.GenerateContentConfig(
+          tool_config=(
+              types.ToolConfig(function_calling_config=function_calling_config)
+              if function_calling_config
+              else None
+          ),
+          thinking_config=(
+              types.ThinkingConfig(thinking_budget=thinking_budget)
+              if thinking_budget is not None
+              else None
+          ),
+      ),
+  )
+  llm_request.append_tools(
+      [FunctionTool(func=_get_weather), FunctionTool(func=_get_time)]
+  )
+  return llm_request
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("function_calling_config", "expected_tool_choice"),
+    [
+        (None, {"type": "auto"}),
+        (types.FunctionCallingConfig(mode="AUTO"), {"type": "auto"}),
+        (types.FunctionCallingConfig(mode="NONE"), {"type": "none"}),
+        (types.FunctionCallingConfig(mode="ANY"), {"type": "any"}),
+        (
+            types.FunctionCallingConfig(
+                mode="ANY", allowed_function_names=["_get_weather"]
+            ),
+            {"type": "tool", "name": "_get_weather"},
+        ),
+        # Claude's tool_choice cannot name a subset of several tools.
+        (
+            types.FunctionCallingConfig(
+                mode="ANY",
+                allowed_function_names=["_get_weather", "_get_time"],
+            ),
+            {"type": "any"},
+        ),
+        (types.FunctionCallingConfig(mode="VALIDATED"), {"type": "auto"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_tool_config_mode_reaches_claude_tool_choice(
+    function_calling_config, expected_tool_choice, stream
+):
+  """The function calling mode an agent configures is the one Claude gets."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(function_calling_config), stream=stream
+  )
+
+  assert [tool["name"] for tool in kwargs["tools"]] == [
+      "_get_weather",
+      "_get_time",
+  ]
+  assert kwargs["tool_choice"] == expected_tool_choice
+
+
+@pytest.mark.parametrize(
+    "function_calling_config",
+    [
+        types.FunctionCallingConfig(mode="ANY"),
+        types.FunctionCallingConfig(
+            mode="ANY", allowed_function_names=["_get_weather"]
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_forced_tool_choice_with_manual_thinking_falls_back_to_auto(
+    function_calling_config,
+):
+  """Claude rejects forced tool use with manual thinking, so it is offered."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(function_calling_config, thinking_budget=2048)
+  )
+
+  assert kwargs["thinking"]["type"] == "enabled"
+  assert kwargs["tool_choice"] == {"type": "auto"}
+
+
+@pytest.mark.asyncio
+async def test_forced_tool_choice_is_kept_with_adaptive_thinking():
+  """Claude accepts forced tool use with adaptive thinking."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(
+          types.FunctionCallingConfig(mode="ANY"), thinking_budget=-1
+      )
+  )
+
+  assert kwargs["thinking"]["type"] == "adaptive"
+  assert kwargs["tool_choice"] == {"type": "any"}
+
+
+@pytest.mark.asyncio
+async def test_forced_tool_choice_is_kept_with_effort():
+  """Claude accepts forced tool use alongside effort."""
+  llm_request = _tool_choice_request(types.FunctionCallingConfig(mode="ANY"))
+  llm_request.config = AnthropicGenerateContentConfig(
+      **llm_request.config.model_dump(exclude_none=True), effort="high"
+  )
+
+  kwargs = await _sent_anthropic_kwargs(llm_request)
+
+  assert kwargs["output_config"] == {"effort": "high"}
+  assert kwargs["tool_choice"] == {"type": "any"}
+
+
+@pytest.mark.asyncio
+async def test_tool_config_none_mode_is_kept_with_thinking():
+  """Claude accepts tool_choice none alongside thinking."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(
+          types.FunctionCallingConfig(mode="NONE"), thinking_budget=2048
+      )
+  )
+
+  assert kwargs["tool_choice"] == {"type": "none"}

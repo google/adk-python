@@ -129,7 +129,7 @@ class _ToolNode(BaseNode):
       all_params = list(getattr(schema, 'properties', None) or ())
       required_params = list(getattr(schema, 'required', None) or ())
     else:
-      all_params, required_params = (), ()
+      all_params, required_params = [], []
 
     if args is None:
       args = {}
@@ -212,8 +212,11 @@ class _ToolNode(BaseNode):
           )
           return _AuthPending(auth_request)
       except asyncio.CancelledError as cancelled:
-        ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
-        ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
+        if ctx.function_call_id is not None:
+          ctx.actions.requested_tool_confirmations.pop(
+              ctx.function_call_id, None
+          )
+          ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
         await _tool_error_handler.notify_tool_cancelled(
             invocation_context=ctx.get_invocation_context(),
             tool=self.tool,
@@ -226,8 +229,11 @@ class _ToolNode(BaseNode):
         # The failure is the call's result, so a confirmation or credential
         # the tool asked for before raising is dropped rather than left
         # pending.
-        ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
-        ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
+        if ctx.function_call_id is not None:
+          ctx.actions.requested_tool_confirmations.pop(
+              ctx.function_call_id, None
+          )
+          ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
         response = await plugin_manager.run_on_tool_error_callback(
             tool=self.tool, tool_args=args, tool_context=ctx, error=error
         )

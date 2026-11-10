@@ -32,7 +32,6 @@ from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.core._utils import as_llm_agent as _as_llm_agent
 from ..flows.llm_flows.core._utils import require_run_config as _require_run_config
-from ..flows.llm_flows.prompt import _schema as _output_schema_processor
 from ..flows.llm_flows.tools import _functions as functions
 from ..models.base_llm_connection import BaseLlmConnection
 from ..models.google_llm import Gemini
@@ -40,6 +39,7 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..telemetry.tracing import trace_send_data
 from ..telemetry.tracing import tracer
+from ..utils._agent_mode import AgentMode
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from ._flow_utils import _ReconnectMode as _ReconnectMode
@@ -110,8 +110,8 @@ async def send_to_model(
         if active.input_stream is not None
     ]
     logger.debug(
-        'Sending live request %s to %d active stream(s)',
-        live_request,
+        'Sending live request with fields %s to %d active stream(s)',
+        sorted(live_request.model_fields_set),
         len(active_streams),
     )
     for stream in active_streams:
@@ -155,15 +155,8 @@ async def send_to_model(
           types.LiveClientRealtimeInput(audio_stream_end=True)  # type: ignore[arg-type]
       )
     elif live_request.blob:
-      # Cache input audio chunks before flushing. The cache concatenates
-      # every chunk into one audio file, so other blobs (e.g. video frames)
-      # must stay out of it.
-      if (
-          run_config.save_live_blob
-          and live_request.blob.mime_type
-          and live_request.blob.mime_type.startswith('audio/')
-      ):
-        realtime_cache_manager.cache_audio(
+      if run_config.save_live_blob:
+        realtime_cache_manager.cache_blob(
             invocation_context, live_request.blob, cache_type='input'
         )
 
@@ -207,8 +200,8 @@ async def send_to_model(
           content.parts and all(p.function_response for p in content.parts)
       )
       if not is_only_function_responses:
-        if blocked_event := await flow._screen_live_user_content(
-            invocation_context, content, llm_request
+        if blocked_event := await screen_live_user_content(
+            flow, invocation_context, content, llm_request
         ):
           await invocation_context._enqueue_event(blocked_event)
           continue
@@ -257,9 +250,12 @@ async def receive_from_model(
               'Update session resumption handle:'
               f' {llm_response.live_session_resumption_update}.'
           )
-          invocation_context.live_session_resumption_handle = (
-              llm_response.live_session_resumption_update.new_handle
-          )
+          # Updates sent while the session can't be resumed (the model is
+          # generating or a tool call is running) carry no handle. Keep the
+          # last handle the server offered, so a reconnect can still resume.
+          new_handle = llm_response.live_session_resumption_update.new_handle
+          if new_handle:
+            invocation_context.live_session_resumption_handle = new_handle
         if llm_response.go_away:
           logger.info(f'Received go away signal: {llm_response.go_away}')
           # The server signals that it will close the connection soon.
@@ -307,7 +303,8 @@ async def receive_from_model(
               return
 
         async with Aclosing(
-            flow._postprocess_live(
+            postprocess_live_flow(
+                flow,
                 invocation_context,
                 llm_request,
                 llm_response,
@@ -315,25 +312,15 @@ async def receive_from_model(
             )
         ) as postprocess_agen:
           async for event in postprocess_agen:
-            # Cache output audio chunks from model responses
-            # TODO: support video data
             if (
                 run_config.save_live_blob
                 and event.content
                 and event.content.parts
             ):
               for part in event.content.parts:
-                if (
-                    part.inline_data
-                    and part.inline_data.mime_type
-                    and part.inline_data.mime_type.startswith('audio/')
-                ):
-                  audio_blob = types.Blob(
-                      data=part.inline_data.data,
-                      mime_type=part.inline_data.mime_type,
-                  )
-                  realtime_cache_manager.cache_audio(
-                      invocation_context, audio_blob, cache_type='output'
+                if part.inline_data:
+                  realtime_cache_manager.cache_blob(
+                      invocation_context, part.inline_data, cache_type='output'
                   )
 
             yield event
@@ -357,7 +344,8 @@ async def receive_from_model(
                   )
               ],
           )
-          if blocked_event := await flow._screen_live_user_content(
+          if blocked_event := await screen_live_user_content(
+              flow,
               invocation_context,
               spoken_content,
               llm_request,
@@ -451,27 +439,33 @@ async def postprocess_live_flow(
     yield model_response_event
     return
 
-  # Flush audio caches based on control events using configurable settings
-  if run_config.save_live_blob:
+  # With save_live_blob, a turn end or an interruption also saves the cached
+  # live blobs. On a barge-in, `interrupted` goes out before the model's output
+  # is saved, so the caller can drop queued playback right away. Otherwise the
+  # blobs are saved first, so a caller that stops reading at `turn_complete`
+  # still has the turn saved.
+  is_barge_in = bool(
+      llm_response.interrupted and not llm_response.turn_complete
+  )
+  if run_config.save_live_blob and not is_barge_in:
     flushed_events = await handle_control_event_flush(
         flow, invocation_context, llm_response
     )
     for event in flushed_events:
       yield event
-    if flushed_events:
-      # NOTE below return is O.K. for now, because currently we only flush
-      # events on interrupted or turn_complete. turn_complete is a pure
-      # control event and interrupted is not with content but those content
-      # is ignorable because model is already interrupted. If we have other
-      # case to flush events in the future that are not pure control events,
-      # we should not return here.
-      return
 
   # Builds the event.
   model_response_event = flow._finalize_model_response_event(
       llm_request, llm_response, model_response_event
   )
   yield model_response_event
+
+  if run_config.save_live_blob and is_barge_in:
+    flushed_events = await handle_control_event_flush(
+        flow, invocation_context, llm_response
+    )
+    for event in flushed_events:
+      yield event
 
   # Handles function calls.
   if model_response_event.get_function_calls():
@@ -485,22 +479,7 @@ async def postprocess_live_flow(
       # `_postprocess_handle_function_calls_async` does. Without it the live
       # client never receives an `adk_request_confirmation` function call, so
       # it has no call id to approve or reject against.
-      # Always yield the function response event first
       yield function_response_event
-
-      # Check if this is a set_model_response function response
-      if json_response := (
-          _output_schema_processor.get_structured_model_response(
-              function_response_event
-          )
-      ):
-        # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
-            )
-        )
-        yield final_event
 
 
 async def run_live_flow(
@@ -516,7 +495,9 @@ async def run_live_flow(
 
     # Preprocess before calling the LLM.
     async with Aclosing(
-        flow._preprocess_async(invocation_context, llm_request)
+        flow._preprocess_async(  # pylint: disable=protected-access
+            invocation_context, llm_request, live=True
+        )
     ) as agen:
       async for event in agen:
         yield event
@@ -524,6 +505,20 @@ async def run_live_flow(
       return
 
     agent = _as_llm_agent(invocation_context)
+    # A live session has no final response to structure, and the connect
+    # config carries no `response_schema`, so `output_schema` has no effect
+    # here. Task mode is exempt: it collects structured output through
+    # `finish_task`.
+    if (
+        getattr(agent, 'output_schema', None)
+        and getattr(agent, 'mode', None) != AgentMode.TASK
+    ):
+      logger.warning(
+          'Agent %s sets output_schema, which is not supported in live mode'
+          ' and will be ignored. To capture structured data during a live'
+          ' session, give the agent a tool that writes it to session state.',
+          agent.name,
+      )
     live_request_queue = require_live_request_queue(invocation_context)
     llm_request.model = agent.canonical_live_model.model
 
@@ -634,8 +629,8 @@ async def run_live_flow(
               )
 
           send_task = asyncio.create_task(
-              flow._send_to_model(
-                  llm_connection, invocation_context, llm_request
+              send_to_model(
+                  flow, llm_connection, invocation_context, llm_request
               )
           )
 
@@ -643,7 +638,8 @@ async def run_live_flow(
           reconnect_mode = None
           try:
             async with Aclosing(
-                flow._receive_from_model(
+                receive_from_model(
+                    flow,
                     llm_connection,
                     invocation_context,
                     llm_request,
@@ -657,12 +653,14 @@ async def run_live_flow(
                 # Empty event means the queue is closed.
                 if not event:
                   break
-                logger.debug('Receive new event: %s', event)
+                logger.debug(
+                    'Receive new event: %s, author: %s', event.id, event.author
+                )
                 yield event
                 # send back the function response to models
                 if event.get_function_responses():
                   logger.debug(
-                      'Sending back last function response event: %s', event
+                      'Sending back last function response event: %s', event.id
                   )
                   if event.content is None:
                     raise RuntimeError(
@@ -670,9 +668,9 @@ async def run_live_flow(
                     )
                   live_request_queue.send_content(event.content)
                 # We handle agent transfer here in `run_live` rather than
-                # in `_postprocess_live` to prevent duplication of function
+                # in `postprocess_live_flow` to prevent duplication of function
                 # response processing. If agent transfer were handled in
-                # `_postprocess_live`, events yielded from child agent's
+                # `postprocess_live_flow`, events yielded from child agent's
                 # `run_live` would bubble up to parent agent's `run_live`,
                 # causing `event.get_function_responses()` to be true in both
                 # child and parent, and `send_content()` to be called twice for

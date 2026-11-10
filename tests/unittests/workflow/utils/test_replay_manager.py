@@ -15,11 +15,21 @@
 """Tests for ReplayManager utility."""
 
 import asyncio
+from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
+from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events._abort_events import _build_abort_events
+from google.adk.events._node_path_builder import _NodePathBuilder
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
+from google.adk.workflow.utils import _rehydration_utils
+from google.adk.workflow.utils import _replay_manager
 from google.adk.workflow.utils._replay_manager import ReplayManager
 from google.genai import types
 import pytest
@@ -148,6 +158,28 @@ def test_build_event_index_groups_events_by_parent_and_transitive_ancestors():
   assert e_a in mgr._transitive_events_by_parent["wf@1"]
   assert e_a not in mgr._transitive_events_by_parent.get("wf@1/child_a@1", [])
   assert e_user in mgr._transitive_events_by_parent["wf@1"]
+
+
+def test_build_event_index_parses_no_paths_for_plain_events() -> None:
+  """Indexing events files them by path without building path objects."""
+  events = [
+      Event(
+          author="node",
+          node_info=NodeInfo(path=f"wf@1/a@{i}/b@1"),
+          invocation_id="inv-1",
+      )
+      for i in range(5)
+  ]
+  mgr = ReplayManager()
+
+  with mock.patch.object(
+      _NodePathBuilder, "from_string", wraps=_NodePathBuilder.from_string
+  ) as from_string:
+    mgr._build_event_index(events)
+
+  from_string.assert_not_called()
+  assert mgr._transitive_events_by_parent["wf@1"] == events
+  assert mgr._events_by_parent["wf@1/a@3"] == [events[3]]
 
 
 def test_build_event_index_matches_branch_run_ids_not_substrings():
@@ -386,11 +418,6 @@ def test_scan_workflow_events_sequence_excludes_prior_invocation_events():
   assert sequence == ["alpha@1", "beta@1"]
   # Sequence and recovered state must agree; disagreement was the defect.
   assert "finish@1" not in recovered
-  # The fix belongs in _scan_sequence, NOT in the event index: the index
-  # deliberately spans the whole session so multi-turn context stays visible
-  # during rehydration. Filtering there instead would pass the assertions
-  # above while silently breaking cross-turn context.
-  assert prior in mgr._transitive_events_by_parent["wf@1"]
 
 
 def test_prepare_parent_sequence_barrier_excludes_prior_invocation_events():
@@ -419,7 +446,6 @@ def test_prepare_parent_sequence_barrier_excludes_prior_invocation_events():
   barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
 
   assert barrier.sequence == ["alpha@1"]
-  assert prior in mgr._events_by_parent["wf@1"]
 
 
 @pytest.mark.asyncio
@@ -580,11 +606,31 @@ async def test_advance_sequence_for_unprepared_path_leaves_other_barriers_alone(
   assert not barrier.events["beta@1"].is_set()
 
 
-def _ctx_over(events):
+@pytest.mark.asyncio
+async def test_release_pending_sequence_releases_only_interrupt_placed_keys():
+  """A rerun releases a place its interrupt took, never one a result took."""
+  ctx = _ctx_over([
+      _node_ev("wf@1/ask@1", "inv-1", interrupt_ids=["fc-1"]),
+      _node_ev("wf@1/done@1", "inv-1", output="done"),
+      _node_ev("wf@1/after@1", "inv-1", output="after"),
+  ])
+  mgr = ReplayManager()
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+  assert barrier.sequence == ["ask@1", "done@1", "after@1"]
+
+  await mgr.release_pending_sequence("wf@1", "ask@1")
+  assert barrier.current_index == 1
+
+  await mgr.release_pending_sequence("wf@1", "done@1")
+  assert barrier.current_index == 1
+  assert not barrier.events["after@1"].is_set()
+
+
+def _ctx_over(events, invocation_id="inv-1"):
   """A Context whose session holds `events`."""
   ctx = MagicMock()
   ctx._invocation_context = MagicMock()
-  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.invocation_id = invocation_id
   ctx._invocation_context.session = MagicMock()
   ctx._invocation_context.session.events = events
   return ctx
@@ -1015,3 +1061,556 @@ def test_scan_workflow_events_registers_parent_sequence_barrier():
   barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
   assert barrier is mgr.sequence_barrier
   assert barrier.sequence == ["alpha@1", "beta@1"]
+
+
+def _workflow_ctx(events: list[Event]) -> Context:
+  """A Context for workflow `wf@1` whose session holds `events`."""
+  ic = InvocationContext(
+      invocation_id="inv-1",
+      session=Session(id="s", app_name="app", user_id="u", events=events),
+      session_service=InMemorySessionService(),
+  )
+  return Context(ic, node_path="wf@1")
+
+
+def _child_event(child: str, **fields: Any) -> Event:
+  """An event emitted by direct child `child` of workflow `wf@1`."""
+  return Event(
+      author="node",
+      node_info=NodeInfo(path=f"wf@1/{child}", run_id="1"),
+      invocation_id="inv-1",
+      **fields,
+  )
+
+
+def test_scan_workflow_events_sequence_skips_child_that_only_failed() -> None:
+  """A child whose only outcome is an error has no place in the replay order.
+
+  It did not complete, so it runs again on resume instead of being replayed.
+  """
+  events = [
+      _child_event("flaky@1", error_code="ValueError"),
+      _child_event("steady@1", output="steady_out"),
+  ]
+
+  _, sequence = ReplayManager().scan_workflow_events(_workflow_ctx(events))
+
+  assert sequence == ["steady@1"]
+
+
+def test_scan_workflow_events_sequence_orders_retried_child_by_its_success() -> (
+    None
+):
+  """A child that failed and then succeeded is ordered where it succeeded."""
+  events = [
+      _child_event("flaky@1", error_code="ValueError"),
+      _child_event("steady@1", output="steady_out"),
+      _child_event("flaky@1", output="flaky_out"),
+  ]
+
+  _, sequence = ReplayManager().scan_workflow_events(_workflow_ctx(events))
+
+  assert sequence == ["steady@1", "flaky@1"]
+
+
+def test_scan_workflow_events_sequence_keeps_error_event_with_transfer() -> (
+    None
+):
+  """An error event that also carries a transfer counts as a completed result."""
+  events = [
+      _child_event(
+          "router@1",
+          error_code="MAX_TOKENS",
+          actions=EventActions(transfer_to_agent="agent_b"),
+      ),
+      _child_event("steady@1", output="steady_out"),
+  ]
+
+  recovered, sequence = ReplayManager().scan_workflow_events(
+      _workflow_ctx(events)
+  )
+
+  assert recovered["router@1"].error_code is None
+  assert recovered["router@1"].transfer_to_agent == "agent_b"
+  assert sequence == ["router@1", "steady@1"]
+
+
+def _user_reply(fc_id, invocation_id, branch=None):
+  return Event(
+      author="user",
+      invocation_id=invocation_id,
+      branch=branch,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="adk_request_input", id=fc_id, response={"r": 1}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _node_ev(path, invocation_id, output=None, interrupt_ids=None):
+  return Event(
+      author="node",
+      invocation_id=invocation_id,
+      output=output,
+      node_info=NodeInfo(path=path),
+      long_running_tool_ids=interrupt_ids,
+  )
+
+
+def _prompt(invocation_id):
+  return Event(
+      author="user",
+      invocation_id=invocation_id,
+      content=types.Content(role="user", parts=[types.Part(text="hi")]),
+  )
+
+
+def _multi_invocation_history():
+  """Interleaved invocations with nested paths, replies, branches and a rewind."""
+  return [
+      _prompt("inv-a"),
+      _node_ev("wf@1/a@1", "inv-a", output="a"),
+      _node_ev("wf@1/a@1/x@1", "inv-a", output="x"),
+      _node_ev("wf@1/ask@1", "inv-a", interrupt_ids=["fc-a"]),
+      _prompt("inv-b"),
+      _node_ev("wf@1/a@1", "inv-b", output="a2"),
+      _node_ev("wf@1/br@1/child@1", "inv-b", interrupt_ids=["fc-10"]),
+      _node_ev("wf@1/aborted@1", "inv-b", interrupt_ids=["fc-abort"]),
+      _node_ev("other@1/c@1", "inv-b", output="c"),
+      _node_ev("wf@1/a@1", "", output="orphan"),
+      _user_reply("fc-a", "inv-a"),
+      _node_ev("wf@1/ask@1", "inv-a", output="answered"),
+      _user_reply("resp-1", "inv-b", branch="wf@1.child@fc-10"),
+      Event(
+          author="node",
+          invocation_id="inv-b",
+          error_code="INVOCATION_ABORTED",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="adk_request_input",
+                          id="fc-abort",
+                          response={"error": "aborted"},
+                      )
+                  )
+              ],
+          ),
+      ),
+      _prompt("inv-c"),
+      _user_reply("fc-a", "inv-c"),
+      _node_ev("wf@1/a@1/x@1/y@1", "inv-c", output="y"),
+      Event(
+          author="user",
+          invocation_id="inv-d",
+          actions=EventActions(rewind_before_invocation_id="inv-c"),
+      ),
+      _prompt("inv-d"),
+      _node_ev("wf@1/a@1", "inv-d", output="after rewind"),
+  ]
+
+
+def test_growing_a_session_matches_indexing_it_from_scratch():
+  """Each query matches what a manager built on the same prefix returns.
+
+  The session grows under a live run, so the index is extended in place. Every
+  append must leave it saying what a rebuild would say, for every invocation.
+  """
+  history = _multi_invocation_history()
+  invocations = ["inv-a", "inv-b", "inv-c", "inv-d", "inv-missing"]
+  paths = [
+      "",
+      "wf@1",
+      "wf@1/a@1",
+      "wf@1/a@1/x@1",
+      "wf@1/a@1/x@1/y@1",
+      "wf@1/ask@1",
+      "wf@1/aborted@1",
+      "wf@1/br@1",
+      "wf@1/br@1/child@1",
+      "other@1",
+      "other@1/c@1",
+      "missing@1/z@1",
+  ]
+
+  def ids(events):
+    return [id(e) for e in events or []]
+
+  growing = []
+  incremental = {
+      inv: (ReplayManager(), _ctx_over(growing, inv)) for inv in invocations
+  }
+  for event in history:
+    growing.append(event)
+    for inv in invocations:
+      mgr, ctx = incremental[inv]
+      rebuilt = ReplayManager()
+      rebuilt_ctx = _ctx_over(list(growing), inv)
+
+      for path in paths:
+        assert ids(mgr.get_events_for_rehydration(ctx, path)) == ids(
+            rebuilt.get_events_for_rehydration(rebuilt_ctx, path)
+        )
+      assert ids(mgr.indexed_invocation_events(ctx)) == ids(
+          rebuilt.indexed_invocation_events(rebuilt_ctx)
+      )
+
+
+def test_a_reply_routes_to_an_interrupt_from_an_earlier_invocation():
+  """Indexing one invocation still files its replies under the asker's parent.
+
+  Interrupt ownership is the one thing read across invocations: the call a
+  reply answers was raised by an earlier turn, so it is never among the
+  indexed invocation's own events.
+  """
+  asked = _node_ev("wf@1/ask@1", "inv-a", interrupt_ids=["fc-a"])
+  elsewhere = _node_ev("other@1/c@1", "inv-b", output="c")
+  reply = _user_reply("fc-a", "inv-b")
+  mgr = ReplayManager()
+  ctx = _ctx_over([asked, elsewhere, reply], "inv-b")
+
+  # Unrouted, the reply would land under root and the query would fall back to
+  # every event of the invocation.
+  assert [id(e) for e in mgr.get_events_for_rehydration(ctx, "wf@1/ask@1")] == [
+      id(reply)
+  ]
+
+
+def _earlier_turns(count):
+  return [
+      _node_ev(f"wf@1/step{i}@1", f"turn-{t}", output=i)
+      for t in range(count)
+      for i in range(3)
+  ]
+
+
+def test_workflow_scans_read_only_the_current_invocation():
+  """Scans at workflow start skip earlier invocations' events entirely."""
+  current = _node_ev("wf@1/step0@1", "inv-1", output="now")
+  ctx = _ctx_over(_earlier_turns(20) + [current])
+  ctx.node_path = "wf@1"
+  mgr = ReplayManager()
+  scanned = []
+
+  def _record_reconstruct(*, events, **kwargs):
+    scanned.extend(events)
+    return _rehydration_utils._reconstruct_node_states(events=events, **kwargs)
+
+  real_scan_sequence = ReplayManager._scan_sequence
+
+  def _record_scan_sequence(self, events, *args, **kwargs):
+    scanned.extend(events)
+    return real_scan_sequence(self, events, *args, **kwargs)
+
+  with (
+      mock.patch.object(
+          _replay_manager,
+          "_reconstruct_node_states",
+          side_effect=_record_reconstruct,
+      ),
+      mock.patch.object(ReplayManager, "_scan_sequence", _record_scan_sequence),
+  ):
+    recovered, sequence = mgr.scan_workflow_events(ctx)
+    ReplayManager().prepare_parent_sequence_barrier(ctx, "wf@1")
+
+  assert [id(e) for e in scanned] == [id(current)] * 3
+  assert recovered["step0@1"].output == "now"
+  assert sequence == ["step0@1"]
+
+
+def test_abort_seal_rehydrates_static_and_dynamic_children() -> None:
+  """Pathless abort seals reach child rehydration scans and drop sequence."""
+  partial_out = Event(
+      author="asker",
+      invocation_id="inv-1",
+      output="partial",
+      node_info=NodeInfo(path="wf@1/asker@1", run_id="1"),
+  )
+  interrupt_ev = Event(
+      author="asker",
+      invocation_id="inv-1",
+      node_info=NodeInfo(path="wf@1/asker@1", run_id="1"),
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="adk_request_input",
+                      id="int-1",
+                  )
+              )
+          ]
+      ),
+      long_running_tool_ids={"int-1"},
+  )
+  sibling_ev = Event(
+      author="sibling",
+      invocation_id="inv-1",
+      output="sibling_out",
+      node_info=NodeInfo(path="wf@1/sibling@1", run_id="1"),
+  )
+  peer_ev = Event(
+      author="peer",
+      invocation_id="inv-1",
+      output="peer_out",
+      node_info=NodeInfo(path="wf@1/other_branch@1/peer@1", run_id="1"),
+  )
+  history = [partial_out, interrupt_ev, sibling_ev, peer_ev]
+  seals = _build_abort_events(
+      history,
+      invocation_id="inv-1",
+      root_agent_name="wf",
+      branch=None,
+  )
+  assert len(seals) == 1
+  [abort_seal] = seals
+  assert not abort_seal.node_info.path
+
+  ctx = _workflow_ctx(history + seals)
+  mgr = ReplayManager()
+  recovered, sequence = mgr.scan_workflow_events(ctx)
+
+  assert recovered["asker@1"].interrupt_ids == set()
+  assert recovered["asker@1"].output is None
+  assert recovered["asker@1"].error_code == "INVOCATION_ABORTED"
+  assert recovered["sibling@1"].output == "sibling_out"
+  assert sequence == ["sibling@1"]
+
+  asker_events = mgr.get_events_for_rehydration(ctx, "wf@1/asker@1")
+  assert any(e is abort_seal for e in asker_events)
+  peer_events = mgr.get_events_for_rehydration(
+      ctx, "wf@1/other_branch@1/peer@1"
+  )
+  assert all(e is not abort_seal for e in peer_events)
+
+
+@pytest.mark.parametrize(
+    ("events", "owner_key", "expected_interrupts", "expected_sequence"),
+    [
+        pytest.param(
+            [
+                Event(
+                    author="node_a",
+                    invocation_id="inv-1",
+                    output="partial work",
+                    node_info=NodeInfo(path="wf@1/node_a@1", run_id="1"),
+                ),
+                Event(
+                    author="node_a",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(path="wf@1/node_a@1", run_id="1"),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="int-a",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"int-a"},
+                ),
+                Event(
+                    author="node_a",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(path="wf@1/node_a@1", run_id="1"),
+                    error_code="RuntimeError",
+                    error_message="boom",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="int-a",
+                                    name="adk_request_input",
+                                    response={"error": "boom"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+                Event(
+                    author="sibling",
+                    invocation_id="inv-1",
+                    output="sibling_out",
+                    node_info=NodeInfo(path="wf@1/sibling@1", run_id="1"),
+                ),
+            ],
+            "node_a@1",
+            set(),
+            ["sibling@1"],
+            id="direct_seal_after_partial_output",
+        ),
+        pytest.param(
+            [
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-0",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-0"},
+                ),
+                Event(
+                    author="ask_1",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_1@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-1",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-1"},
+                ),
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    error_code="RuntimeError",
+                    error_message="sub_0 crashed",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="sub-0",
+                                    name="adk_request_input",
+                                    response={"error": "sub_0 crashed"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+            ],
+            "worker@1",
+            {"sub-1"},
+            ["worker@1"],
+            id="nested_sub_branch_partial_seal",
+        ),
+        pytest.param(
+            [
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-0",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-0"},
+                ),
+                Event(
+                    author="ask_1",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_1@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-1",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-1"},
+                ),
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    error_code="RuntimeError",
+                    error_message="sub_0 crashed",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="sub-0",
+                                    name="adk_request_input",
+                                    response={"error": "sub_0 crashed"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+                Event(
+                    author="ask_1",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_1@1", run_id="1"
+                    ),
+                    error_code="RuntimeError",
+                    error_message="sub_1 crashed",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="sub-1",
+                                    name="adk_request_input",
+                                    response={"error": "sub_1 crashed"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+            ],
+            "worker@1",
+            set(),
+            [],
+            id="nested_sub_branch_all_sealed",
+        ),
+    ],
+)
+def test_error_function_response_seal_updates_sequence(
+    events: list[Event],
+    owner_key: str,
+    expected_interrupts: set[str],
+    expected_sequence: list[str],
+) -> None:
+  """Path-scoped error seals drop segments once all pauses close."""
+  ctx = _workflow_ctx(events)
+  mgr = ReplayManager()
+  recovered, sequence = mgr.scan_workflow_events(ctx)
+
+  assert recovered[owner_key].interrupt_ids == expected_interrupts
+  assert sequence == expected_sequence

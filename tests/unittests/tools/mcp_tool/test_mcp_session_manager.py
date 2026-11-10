@@ -421,6 +421,27 @@ class TestMCPSessionManager:
     })
     assert merged == expected
 
+  def test_merge_headers_override_replaces_base_header_in_any_case(self):
+    """A request header replaces a static header that differs only in case."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="https://example.com/mcp",
+            headers={
+                "authorization": "Bearer shared-service-token",
+                "X-Static": "kept",
+            },
+        )
+    )
+
+    merged = manager._merge_headers(  # pylint: disable=protected-access
+        {"Authorization": "Bearer per-user-token"}
+    )
+
+    assert httpx.Headers(merged).get_list("authorization") == [
+        "Bearer per-user-token"
+    ]
+    assert merged["X-Static"] == "kept"
+
   def test_merge_headers_adds_adk_user_agent(self):
     """An MCP server can attribute the request to ADK."""
     manager = MCPSessionManager(
@@ -1698,6 +1719,31 @@ class TestMCPSessionManager:
     ):
       transport = await manager._get_mtls_transport()
       assert transport is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      ("use_client_cert", "expected_probes"), [(False, 0), (True, 1)]
+  )
+  async def test_mtls_probe_follows_google_auth_client_cert_decision(
+      self, monkeypatch, use_client_cert, expected_probes
+  ):
+    """An unset GOOGLE_API_USE_CLIENT_CERTIFICATE defers to google-auth."""
+    monkeypatch.delenv("GOOGLE_API_USE_CLIENT_CERTIFICATE", raising=False)
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://localhost:8000/mcp")
+    )
+
+    with patch(
+        "google.auth.transport.mtls.should_use_client_cert",
+        return_value=use_client_cert,
+    ):
+      with patch(
+          "google.auth.default", side_effect=Exception("no credentials")
+      ) as mock_auth_default:
+        assert await manager._get_mtls_transport() is None
+
+    assert mock_auth_default.call_count == expected_probes
 
   @pytest.mark.asyncio
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")

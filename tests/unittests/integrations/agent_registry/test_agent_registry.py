@@ -13,14 +13,20 @@
 # limitations under the License.
 
 
+import asyncio
+import datetime
 import os
 import pickle
+import threading
+import time
+from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from fastapi.openapi.models import OAuth2
 from google.adk.a2a import _compat
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -33,6 +39,8 @@ from google.adk.integrations.agent_registry.agent_registry import AgentRegistryS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.utils._google_client_headers import merge_tracking_headers
+import google.auth.credentials
+import google.auth.transport.requests
 import google.oauth2.credentials
 import httpx
 from mcp import ClientSession
@@ -40,6 +48,79 @@ from mcp.types import ListToolsResult
 from mcp.types import Tool
 import pytest
 import requests
+
+
+def _naive_utc_now() -> datetime.datetime:
+  return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
+class _FakeCredentials(google.auth.credentials.Credentials):
+  """In-memory Google credentials double with controllable expiry and refresh."""
+
+  def __init__(
+      self,
+      *,
+      token: str | None = None,
+      expiry: datetime.datetime | None = None,
+      refresh_delay: float = 0.0,
+      refresh_entered: threading.Event | None = None,
+      allow_refresh_finish: threading.Event | None = None,
+  ) -> None:
+    super().__init__()
+    self.token = token
+    self.expiry = expiry
+    self.refresh_calls = 0
+    self._refresh_delay = refresh_delay
+    self._refresh_entered = refresh_entered
+    self._allow_refresh_finish = allow_refresh_finish
+
+  def refresh(self, request: object) -> None:
+    if self._refresh_entered is not None:
+      self._refresh_entered.set()
+    if self._allow_refresh_finish is not None:
+      assert self._allow_refresh_finish.wait(timeout=5.0)
+    if self._refresh_delay:
+      time.sleep(self._refresh_delay)
+    self.refresh_calls += 1
+    self.token = f"refreshed-token-{self.refresh_calls}"
+    self.expiry = _naive_utc_now() + datetime.timedelta(hours=1)
+
+
+def _build_mcp_toolset_with_credentials(
+    creds: _FakeCredentials,
+    mock_create_session: AsyncMock | None = None,
+) -> McpToolset:
+  """Builds an MCP toolset backed by a Google API endpoint and `creds`."""
+  mock_http_session = mock.create_autospec(
+      google.auth.transport.requests.AuthorizedSession, instance=True
+  )
+  mock_response = mock.create_autospec(requests.Response, instance=True)
+  mock_response.json.return_value = {
+      "displayName": "TestPrefix",
+      "interfaces": [{
+          "url": "https://mcp.googleapis.com/v1",
+          "protocolBinding": "JSONRPC",
+      }],
+  }
+  mock_http_session.get.return_value = mock_response
+  if mock_create_session is not None:
+    mock_mcp_session = AsyncMock(spec=ClientSession)
+    mock_mcp_session.list_tools.return_value = ListToolsResult(tools=[])
+    mock_create_session.return_value = mock_mcp_session
+
+  with (
+      patch(
+          "google.auth.default", return_value=(creds, "test-project")
+      ) as mock_default,
+      patch(
+          "google.auth.transport.requests.AuthorizedSession",
+          return_value=mock_http_session,
+      ),
+  ):
+    registry = AgentRegistry(project_id="test-project", location="global")
+    toolset = registry.get_mcp_toolset("test-mcp")
+  mock_default.assert_called_once_with()
+  return toolset
 
 
 def _assert_preferred_transport(agent_card, expected):
@@ -107,7 +188,9 @@ def _auth_provider(name):
   return f"projects/123/locations/l/authProviders/{name}"
 
 
-def _mcp_binding(auth_provider, update_time, source=None):
+def _mcp_binding(
+    auth_provider, update_time, source=None, continue_uri=None, scopes=None
+):
   binding = {
       "target": {"identifier": _MCP_SERVER_ID},
       "authProviderBinding": {"authProvider": _auth_provider(auth_provider)},
@@ -115,6 +198,10 @@ def _mcp_binding(auth_provider, update_time, source=None):
   }
   if source:
     binding["source"] = {"identifier": source}
+  if continue_uri:
+    binding["authProviderBinding"]["continueUri"] = continue_uri
+  if scopes:
+    binding["authProviderBinding"]["scopes"] = scopes
   return binding
 
 
@@ -270,6 +357,97 @@ class TestAgentRegistry:
           tool.custom_metadata.get(GCP_MCP_SERVER_DESTINATION_ID)
           == "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery"
       )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "uri, expected_destination_id",
+      [
+          (
+              (
+                  "//agentregistry.googleapis.com/projects/1234/locations/"
+                  "global/services/bigquery"
+              ),
+              (
+                  "//agentregistry.googleapis.com/projects/1234/locations/"
+                  "global/services/bigquery"
+              ),
+          ),
+          (
+              "",
+              "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery",
+          ),
+          (
+              "   ",
+              "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery",
+          ),
+          (
+              12345,
+              "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery",
+          ),
+      ],
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager."
+      "MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
+  async def test_get_mcp_toolset_prefers_runtime_reference_uri(
+      self, mock_create_session, uri, expected_destination_id, registry
+  ):
+    """Destination ID prefers non-blank RuntimeReference.uri over mcpServerId.
+
+    The destination ID prefers a non-blank string RuntimeReference.uri (which
+    App Hub / Agent Platform Topology matches on) and otherwise falls back to
+    mcpServerId.
+    """
+    # Arrange
+    mcp_server_name = "test-mcp-server"
+    mock_api_response = MagicMock()
+    mock_api_response.json.return_value = {
+        "displayName": "TestPrefix",
+        "mcpServerId": (
+            "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery"
+        ),
+        "attributes": {
+            "agentregistry.googleapis.com/system/RuntimeReference": {
+                "uri": uri,
+            },
+        },
+        "interfaces": [{
+            "url": "https://mcp.com",
+            "protocolBinding": "JSONRPC",
+        }],
+    }
+    registry._session.get.return_value = mock_api_response
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    mock_session = AsyncMock(spec=ClientSession)
+    mock_create_session.return_value = mock_session
+
+    mock_session.list_tools.return_value = ListToolsResult(
+        tools=[
+            Tool(
+                name="tool1",
+                description="d1",
+                inputs={},
+                outputs={},
+                inputSchema={},
+            ),
+        ]
+    )
+
+    # Act
+    toolset = registry.get_mcp_toolset(mcp_server_name)
+    tools = await toolset.get_tools()
+
+    # Assert
+    assert len(tools) == 1
+    assert (
+        tools[0].custom_metadata.get(GCP_MCP_SERVER_DESTINATION_ID)
+        == expected_destination_id
+    )
 
   @pytest.mark.asyncio
   @patch(
@@ -534,6 +712,7 @@ class TestAgentRegistry:
     server = registry.get_endpoint("test-endpoint")
     assert server == {"name": "test-endpoint"}
 
+  @pytest.mark.asyncio
   @pytest.mark.parametrize(
       "url, expected_auth, use_custom_provider",
       [
@@ -544,9 +723,10 @@ class TestAgentRegistry:
           ("https://mcp.googleapis.com/v1", True, True),
       ],
   )
-  def test_get_mcp_toolset_auth_headers(
+  async def test_get_mcp_toolset_auth_headers(
       self, registry, url, expected_auth, use_custom_provider
   ):
+    """Attaches ADC bearer headers only to Google API HTTPS MCP endpoints."""
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "displayName": "TestPrefix",
@@ -581,8 +761,11 @@ class TestAgentRegistry:
     toolset = registry.get_mcp_toolset("test-mcp")
     assert isinstance(toolset, McpToolset)
     assert toolset.tool_name_prefix == "TestPrefix"
-    assert toolset._connection_params.headers is None
-    headers = toolset._header_provider(MagicMock())
+    assert toolset.connection_params.headers is None
+    assert toolset.header_provider is not None
+    headers = await toolset.header_provider(
+        mock.create_autospec(ReadonlyContext, instance=True)
+    )
 
     if use_custom_provider:
       assert headers.get("Authorization") == "Bearer custom_token"
@@ -621,7 +804,9 @@ class TestAgentRegistry:
     assert auth_config.auth_scheme == auth_scheme
     assert auth_config.raw_auth_credential == auth_credential
 
-  def test_get_mcp_toolset_with_auth_blocks_gcp_headers(self, registry):
+  @pytest.mark.asyncio
+  async def test_get_mcp_toolset_with_auth_blocks_gcp_headers(self, registry):
+    """Omits ADC bearer headers when explicit auth is configured."""
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "displayName": "TestPrefix",
@@ -646,8 +831,11 @@ class TestAgentRegistry:
         "test-mcp", auth_scheme=auth_scheme, auth_credential=auth_credential
     )
     assert isinstance(toolset, McpToolset)
+    assert toolset.header_provider is not None
 
-    headers = toolset._header_provider(MagicMock())
+    headers = await toolset.header_provider(
+        mock.create_autospec(ReadonlyContext, instance=True)
+    )
     assert "Authorization" not in headers
 
   def test_get_remote_a2a_agent(self, registry):
@@ -801,6 +989,118 @@ class TestAgentRegistry:
     assert headers["Authorization"] == "Bearer fake-token"
     assert "x-goog-user-project" not in headers
 
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "expiry_offset",
+      [None, datetime.timedelta(hours=1)],
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager."
+      "MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
+  async def test_valid_credentials_not_rerefreshed_across_mcp_calls(
+      self,
+      mock_create_session,
+      expiry_offset: datetime.timedelta | None,
+  ):
+    """Valid cached and static credentials are reused without refreshing."""
+    creds = _FakeCredentials(
+        token="cached-token",
+        expiry=(
+            _naive_utc_now() + expiry_offset
+            if expiry_offset is not None
+            else None
+        ),
+    )
+    toolset = _build_mcp_toolset_with_credentials(creds, mock_create_session)
+    context = mock.create_autospec(ReadonlyContext, instance=True)
+
+    await toolset.get_tools(context)
+    await toolset.get_tools(context)
+    await toolset.get_tools(context)
+
+    assert creds.refresh_calls == 0
+    sent_headers = [
+        call.kwargs["headers"] for call in mock_create_session.call_args_list
+    ]
+    assert len(sent_headers) == 3
+    assert sent_headers[0]["Authorization"] == "Bearer cached-token"
+    assert sent_headers[0] == sent_headers[1] == sent_headers[2]
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "initial_token, expiry_offset",
+      [
+          (None, None),
+          ("expired-token", datetime.timedelta(minutes=-5)),
+          ("near-expiry-token", datetime.timedelta(seconds=30)),
+      ],
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager."
+      "MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
+  async def test_invalid_credentials_refreshed_once_under_concurrency(
+      self,
+      mock_create_session,
+      initial_token: str | None,
+      expiry_offset: datetime.timedelta | None,
+  ):
+    """Concurrent calls with invalid or near-expiry credentials refresh once."""
+    initial_expiry = (
+        _naive_utc_now() + expiry_offset if expiry_offset is not None else None
+    )
+    creds = _FakeCredentials(
+        token=initial_token,
+        expiry=initial_expiry,
+        refresh_delay=0.05,
+    )
+    toolset = _build_mcp_toolset_with_credentials(creds, mock_create_session)
+    context = mock.create_autospec(ReadonlyContext, instance=True)
+    await asyncio.gather(*(toolset.get_tools(context) for _ in range(10)))
+
+    assert creds.refresh_calls == 1
+    assert {
+        call.kwargs["headers"]["Authorization"]
+        for call in mock_create_session.call_args_list
+    } == {"Bearer refreshed-token-1"}
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager."
+      "MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
+  async def test_async_header_provider_does_not_block_event_loop(
+      self, mock_create_session
+  ):
+    """Credential refresh runs on a worker thread without stalling the loop."""
+    refresh_entered = threading.Event()
+    allow_refresh_finish = threading.Event()
+    creds = _FakeCredentials(
+        token=None,
+        expiry=None,
+        refresh_entered=refresh_entered,
+        allow_refresh_finish=allow_refresh_finish,
+    )
+    toolset = _build_mcp_toolset_with_credentials(creds, mock_create_session)
+    context = mock.create_autospec(ReadonlyContext, instance=True)
+    get_tools_task = asyncio.create_task(toolset.get_tools(context))
+    deadline = time.monotonic() + 5.0
+    while not refresh_entered.is_set():
+      assert time.monotonic() < deadline
+      await asyncio.sleep(0.005)
+    allow_refresh_finish.set()
+    await get_tools_task
+
+    assert creds.refresh_calls == 1
+    assert (
+        mock_create_session.call_args.kwargs["headers"]["Authorization"]
+        == "Bearer refreshed-token-1"
+    )
+
   def test_pickle_drops_credentials_and_reloads_on_use(self):
     """A pickled registry leaves its credentials behind and loads new ones."""
     deployer_credentials = google.oauth2.credentials.Credentials(
@@ -821,8 +1121,7 @@ class TestAgentRegistry:
     assert b"deployer-refresh-token" not in pickled
     assert b"client-secret" not in pickled
 
-    runtime_credentials = MagicMock()
-    runtime_credentials.quota_project_id = None
+    runtime_credentials = _FakeCredentials(token="runtime-token")
     with (
         patch(
             "google.auth.default",
@@ -839,8 +1138,14 @@ class TestAgentRegistry:
       }
 
       assert restored.get_mcp_server("test-mcp") == {"name": "test-mcp"}
-
-    assert restored._credentials is runtime_credentials
+      # pylint: disable=protected-access
+      assert (
+          restored._get_auth_headers()["Authorization"]
+          == "Bearer runtime-token"
+      )
+      assert restored._credentials is runtime_credentials
+      # pylint: enable=protected-access
+    assert runtime_credentials.refresh_calls == 0
     mock_session_class.assert_called_once_with(credentials=runtime_credentials)
 
   def test_registry_requests_identify_adk(self, registry):
@@ -983,6 +1288,44 @@ class TestAgentRegistry:
         toolset._auth_scheme.name
         == "projects/123/locations/l/authProviders/ap-789"
     )
+    assert toolset._auth_scheme.continue_uri == "https://override.com/continue"
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_mcp_toolset_uses_binding_continue_uri_and_scopes(
+      self, mock_make_request, registry
+  ):
+    """Without a caller continue URI, the binding's continue URI is used."""
+    mock_make_request.side_effect = _mcp_server_side_effect([
+        _mcp_binding(
+            "ap",
+            "2026-09-01T00:00:00Z",
+            continue_uri="https://binding.com/continue",
+            scopes=["openid", "email"],
+        )
+    ])
+
+    toolset = registry.get_mcp_toolset("test-mcp")
+
+    assert toolset._auth_scheme.continue_uri == "https://binding.com/continue"
+    assert toolset._auth_scheme.scopes == ["openid", "email"]
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_caller_continue_uri_overrides_binding(
+      self, mock_make_request, registry
+  ):
+    """A continue URI the caller passes beats the binding's."""
+    mock_make_request.side_effect = _mcp_server_side_effect([
+        _mcp_binding(
+            "ap",
+            "2026-09-01T00:00:00Z",
+            continue_uri="https://binding.com/continue",
+        )
+    ])
+
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+
     assert toolset._auth_scheme.continue_uri == "https://override.com/continue"
 
   @patch.object(AgentRegistry, "_make_request")
@@ -1133,6 +1476,124 @@ class TestAgentRegistry:
     )
 
   @patch.object(AgentRegistry, "_make_request")
+  def test_rebind_uses_new_binding_continue_uri(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """A rebind takes the new binding's continue URI, not the old one's."""
+    mock_make_request.side_effect = _mcp_server_side_effect(
+        list_bindings=[
+            _mcp_binding(
+                "stale",
+                "2026-09-02T00:00:00Z",
+                continue_uri="https://stale.com/continue",
+            )
+        ],
+        available_bindings=[
+            _mcp_binding(
+                "current",
+                "2026-09-01T00:00:00Z",
+                continue_uri="https://current.com/continue",
+            )
+        ],
+    )
+    toolset = registry.get_mcp_toolset("test-mcp")
+    assert (
+        toolset.get_auth_config().auth_scheme.continue_uri
+        == "https://stale.com/continue"
+    )
+
+    _enter_agent_engine(monkeypatch)
+
+    assert (
+        toolset.get_auth_config().auth_scheme.continue_uri
+        == "https://current.com/continue"
+    )
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_toolset_pickled_without_continue_uri_keeps_caller_override(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """For older pickles, the scheme's continue URI is the caller's override."""
+    mock_make_request.side_effect = _mcp_server_side_effect(
+        list_bindings=[_mcp_binding("stale", "2026-09-02T00:00:00Z")],
+        available_bindings=[
+            _mcp_binding(
+                "current",
+                "2026-09-01T00:00:00Z",
+                continue_uri="https://current.com/continue",
+            )
+        ],
+    )
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+    state = toolset.__getstate__()
+    del state["_continue_uri"]
+    restored = AgentRegistrySingleMcpToolset.__new__(
+        AgentRegistrySingleMcpToolset
+    )
+    restored.__setstate__(state)
+
+    _enter_agent_engine(monkeypatch)
+
+    assert (
+        restored.get_auth_config().auth_scheme.continue_uri
+        == "https://override.com/continue"
+    )
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_deployed_toolset_with_runtime_reference_rebinds_with_mcp_server_id(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """Rebinding a deployed toolset uses mcpServerId, not RuntimeReference."""
+
+    def side_effect(path, *_args, **_kwargs):
+      if path == "test-mcp":
+        return {
+            "displayName": "TestPrefix",
+            "mcpServerId": _MCP_SERVER_ID,
+            "attributes": {
+                "agentregistry.googleapis.com/system/RuntimeReference": {
+                    "uri": (
+                        "//agentregistry.googleapis.com/projects/1234/"
+                        "locations/global/services/bigquery"
+                    ),
+                },
+            },
+            "interfaces": [{
+                "url": "https://mcp.com",
+                "protocolBinding": "JSONRPC",
+            }],
+        }
+      if path == "agents":
+        return {"agents": [_deployed_agent()]}
+      if path == "bindings":
+        return {"bindings": [_mcp_binding("stale", "2026-09-02T00:00:00Z")]}
+      if path == "bindings:fetchAvailable":
+        return {"bindings": [_mcp_binding("current", "2026-09-01T00:00:00Z")]}
+      return {}
+
+    mock_make_request.side_effect = side_effect
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+    assert toolset.get_auth_config().auth_scheme.name == _auth_provider("stale")
+
+    _enter_agent_engine(monkeypatch)
+    auth_config = toolset.get_auth_config()
+
+    assert auth_config is not None
+    assert auth_config.auth_scheme.name == _auth_provider("current")
+    mock_make_request.assert_called_with(
+        "bindings:fetchAvailable",
+        params={
+            "sourceIdentifier": _AGENT_SOURCE_ID,
+            "targetIdentifier": _MCP_SERVER_ID,
+        },
+        timeout=10.0,
+    )
+
+  @patch.object(AgentRegistry, "_make_request")
   def test_available_binding_for_this_agent_wins(
       self, mock_make_request, registry, monkeypatch
   ):
@@ -1204,6 +1665,31 @@ class TestAgentRegistry:
         "listed"
     )
     assert "bindings:fetchAvailable" not in _request_paths(mock_make_request)
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_toolset_pickled_without_mcp_server_id_rebinds_with_destination_id(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """Toolset pickled without _mcp_server_id falls back to destination ID."""
+    mock_make_request.side_effect = _mcp_server_side_effect(
+        list_bindings=[_mcp_binding("stale", "2026-09-02T00:00:00Z")],
+        available_bindings=[_mcp_binding("current", "2026-09-01T00:00:00Z")],
+    )
+    toolset = registry.get_mcp_toolset("test-mcp")
+    del toolset.__dict__["_mcp_server_id"]
+
+    _enter_agent_engine(monkeypatch)
+    auth_config = toolset.get_auth_config()
+
+    assert auth_config.auth_scheme.name == _auth_provider("current")
+    mock_make_request.assert_called_with(
+        "bindings:fetchAvailable",
+        params={
+            "sourceIdentifier": _AGENT_SOURCE_ID,
+            "targetIdentifier": _MCP_SERVER_ID,
+        },
+        timeout=10.0,
+    )
 
   @patch.object(AgentRegistry, "_make_request")
   def test_toolset_with_explicit_auth_scheme_is_not_rebound(
@@ -1300,6 +1786,27 @@ class TestAgentRegistry:
     assert isinstance(auth_scheme, GcpAuthProviderScheme)
     assert auth_scheme.name == "projects/123/locations/l/authProviders/ap-789"
     assert auth_scheme.continue_uri == "https://override.com/continue"
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_remote_a2a_agent_uses_binding_continue_uri(
+      self, mock_make_request, registry
+  ):
+    """The binding's continue URI is used when the caller passes none."""
+
+    def side_effect(path, *args, **kwargs):
+      data = _agent_with_binding_side_effect(path, *args, **kwargs)
+      if path == "bindings":
+        data["bindings"][0]["authProviderBinding"][
+            "continueUri"
+        ] = "https://binding.com/continue"
+      return data
+
+    mock_make_request.side_effect = side_effect
+
+    agent = registry.get_remote_a2a_agent("test-agent")
+
+    auth_scheme = agent._auth_config.auth_scheme
+    assert auth_scheme.continue_uri == "https://binding.com/continue"
 
   @patch.object(AgentRegistry, "_make_request")
   def test_get_remote_a2a_agent_with_card_and_binding(

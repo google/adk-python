@@ -14,20 +14,17 @@
 from __future__ import annotations
 
 import abc
-from typing import Optional
 
 from ..events.event import Event
-from ..utils.feature_decorator import experimental
 
 
-@experimental
 class BaseEventsSummarizer(abc.ABC):
   """Base interface for compacting events."""
 
   @abc.abstractmethod
   async def maybe_summarize_events(
       self, *, events: list[Event]
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Compact a list of events into a single event.
 
     If compaction failed, return None. Otherwise, compact into a content and

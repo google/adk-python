@@ -14,14 +14,13 @@
 
 from collections.abc import AsyncGenerator
 
-import pytest
-
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 from google.adk.integrations.redis import RedisSessionService
 from google.adk.runners import Runner
 from google.genai import types
+import pytest
 
 from ._fake_redis import FakeRedisAsync
 

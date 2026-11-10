@@ -14,78 +14,34 @@
 
 """Opt-in for the ADK telemetry schema version.
 
-``ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN`` lets a deployment pin which version of
-the ADK telemetry format (span names, span/log attributes, metrics) it emits.
+``ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN`` pins which version of the ADK telemetry
+format (span names, span/log attributes, metrics) a deployment emits:
 
-Why this exists:
+* ``2`` or ``otel_semconv_1_44`` (default): OpenTelemetry GenAI semconv
+  aligned. ``invoke_workflow`` replaces ``invocation``, there is no
+  ``call_llm`` span, tool content is ``gen_ai.tool.call.*``, and the
+  experimental GenAI semconv is the default.
+* ``1`` or ``otel_semconv_1_36``: the legacy format, with the stable GenAI
+  semconv recorded by ADK even when
+  ``opentelemetry-instrumentation-google-genai`` is installed.
 
-* **Staged migration.** Telemetry format changes are breaking for anyone who
-  built dashboards/alerts on the previous shape. The version env lets users
-  fall back to the legacy format if they rely on it, and migrate on their own
-  schedule.
-* **Fast iteration on managed services.** GCP-managed runtimes (e.g. Agent
-  Runtime / Vertex Agent Engine) can pin themselves to the latest version and
-  iterate quickly, decoupled from the broader user base.
-* **Eventually removable.** Ideally this knob is phased out once ADK is
-  ({almost,} fully) OTel semconv compliant, after which we no longer expect
-  breaking telemetry changes.
-
-Default resolution:
-
-* ``2`` on Agent Engine, detected via the presence of the
-  ``GOOGLE_CLOUD_AGENT_ENGINE_ID`` env var.
-* ``1`` everywhere else.
-
-Migration plan (steps land incrementally; this comment should be kept in sync
-as each one ships):
-
-1. The ``invocation`` span is updated to the ``invoke_workflow`` span.
-2. The ``call_llm`` span is removed.
-3. The ``execute_tool`` content-bearing attributes become OTel semconv aligned.
-4. The experimental OTel GenAI semconv becomes the default in both
-   ``opentelemetry-instrumentation-google-genai`` and ADK's native
-   instrumentation.
-5. ``2`` becomes the global default (this knob flips).
-6. After ~6 months, the env var is phased out entirely, along with support for
-   the LEGACY schema.
+``1`` is supported until at least 2027-03-31, then removed with this knob.
 """
 
 from __future__ import annotations
 
 import os
 
-# Env var users set to pin the ADK telemetry schema version ("1" or "2").
 ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN = "ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN"
 
-# Presence of this env var indicates the process runs on Vertex Agent Engine.
-GOOGLE_CLOUD_AGENT_ENGINE_ID = "GOOGLE_CLOUD_AGENT_ENGINE_ID"
-
-# Legacy telemetry format: top-level ``invocation`` span. Only a workflow
-# entrypoint gets an entrypoint ``invoke_workflow`` span/metric, under it.
 SCHEMA_VERSION_LEGACY = 1
-
-# OTel-semconv-aligned telemetry format: the ``invocation`` span is replaced by
-# an entrypoint ``invoke_workflow {entrypoint}`` span + duration metric.
 SCHEMA_VERSION_SEMCONV_ALIGNED = 2
 
 
 def resolve_schema_version() -> int:
-  """Resolves the active ADK telemetry schema version.
-
-  Precedence: ``ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN`` (if set to a recognized
-  value) > ``2`` on Agent Engine > ``1``.
-
-  Returns:
-    Either :data:`SCHEMA_VERSION_LEGACY` or
-    :data:`SCHEMA_VERSION_SEMCONV_ALIGNED`.
-  """
+  """Returns 1 if ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN pins it, else 2."""
   opt_in = os.environ.get(ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, "").strip()
-  if opt_in == "1":
+  # `otel_semconv_1_44` needs no branch, it resolves like the default.
+  if opt_in in ("1", "otel_semconv_1_36"):
     return SCHEMA_VERSION_LEGACY
-  if opt_in == "2":
-    return SCHEMA_VERSION_SEMCONV_ALIGNED
-
-  # Unset/unrecognized: default to v2 on Agent Engine, v1 elsewhere.
-  if os.environ.get(GOOGLE_CLOUD_AGENT_ENGINE_ID):
-    return SCHEMA_VERSION_SEMCONV_ALIGNED
-  return SCHEMA_VERSION_LEGACY
+  return SCHEMA_VERSION_SEMCONV_ALIGNED

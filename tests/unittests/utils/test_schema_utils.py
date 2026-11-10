@@ -19,10 +19,12 @@ import inspect
 import signal
 import time
 from typing import Annotated
+from typing import Any
 from typing import Optional
 
 from google.adk.utils._callable_utils import get_type_hints_cached
 from google.adk.utils._schema_utils import _strip_json_code_fence
+from google.adk.utils._schema_utils import _unwrap_content_payload
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
@@ -33,6 +35,7 @@ from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import ValidationError
 import pytest
@@ -352,10 +355,69 @@ class TestValidateNodeData:
     )
     assert result == {"role": "user", "parts": []}
 
+  @pytest.mark.parametrize(
+      "schema",
+      [
+          Annotated[types.Content, "content"],
+          Annotated[types.Content, "content"] | None,
+      ],
+  )
+  def test_annotated_content_schema_preserves_content(self, schema):
+    """Content annotations keep the message instead of parsing its text."""
+    data = types.Content(role="user", parts=[types.Part(text='{"value": 42}')])
+
+    assert validate_node_data(schema, data) == data.model_dump(
+        exclude_none=True
+    )
+
+  def test_annotated_string_schema_enforces_constraints(self):
+    """Text conversion still validates the metadata on the string schema."""
+    data = types.Content(parts=[types.Part(text="1")])
+
+    with pytest.raises(ValidationError, match="at least 2 characters"):
+      validate_node_data(Annotated[str, Field(min_length=2)], data)
+
+  @pytest.mark.parametrize(
+      "schema",
+      [
+          str | Annotated[types.Content, "content"],
+          Annotated[str, "text"] | Annotated[types.Content, "content"],
+      ],
+  )
+  def test_union_with_annotated_content_arm_expects_text(self, schema):
+    """An Annotated Content arm does not stop a str union from taking text."""
+    data = types.Content(parts=[types.Part(text='{"value": 42}')])
+
+    assert validate_node_data(schema, data) == '{"value": 42}'
+
+  @pytest.mark.parametrize(
+      "annotation", [Annotated[Any, "x"], Annotated[object, "x"]]
+  )
+  def test_fan_out_with_annotated_any_parses_list(self, annotation):
+    """Annotated Any fans out a JSON list like plain Any does."""
+    data = types.Content(parts=[types.Part(text="[1, 2]")])
+
+    assert _unwrap_content_payload(data, annotation, fan_out_list=True) == [
+        1,
+        2,
+    ]
+
   def test_plain_basemodel_schema_validates_raw_dict(self):
     """Validates raw dict data against BaseModel schema."""
     result = validate_node_data(SampleModel, {"name": "test", "value": 42})
     assert result == {"name": "test", "value": 42}
+
+  @pytest.mark.parametrize(
+      "data", [{"city_name": "Paris"}, {"cityName": "Paris"}]
+  )
+  def test_aliased_schema_accepts_field_name_and_alias(self, data):
+    """Data keyed by field name validates even if the schema disallows it."""
+
+    class Stop(BaseModel):
+      model_config = ConfigDict(validate_by_name=False)
+      city_name: str = Field(validation_alias="cityName")
+
+    assert validate_node_data(Stop, data) == {"city_name": "Paris"}
 
   def test_content_data_and_preserve_content(self):
     """Validates wrapped content and wraps result back into Content."""

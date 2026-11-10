@@ -70,7 +70,11 @@ def reset_env_and_registry(monkeypatch):
   """Reset environment variables and registry before each test."""
   # Clean up environment variables
   for key in list(os.environ.keys()):
-    if key.startswith("ADK_ENABLE_") or key.startswith("ADK_DISABLE_"):
+    if (
+        key.startswith("ADK_ENABLE_")
+        or key.startswith("ADK_DISABLE_")
+        or key == "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS"
+    ):
       monkeypatch.delenv(key, raising=False)
 
   # Add an existing feature to the registry

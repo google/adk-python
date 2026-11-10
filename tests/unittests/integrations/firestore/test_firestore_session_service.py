@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import contextlib
 from datetime import datetime
 from datetime import timedelta
@@ -32,6 +33,7 @@ from google.adk.integrations.firestore.firestore_session_service import Firestor
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
 from google.cloud import firestore
+from google.genai import types
 import pytest
 
 
@@ -41,7 +43,7 @@ def _where_filter(where_mock):
   return field_filter.field_path, field_filter.op_string, field_filter.value
 
 
-def _stored_snapshot(data):
+def _stored_snapshot(data: Mapping[str, object]) -> mock.MagicMock:
   """Returns a snapshot of an existing document holding `data`."""
   snapshot = mock.MagicMock()
   snapshot.exists = True
@@ -672,7 +674,9 @@ async def test_append_event_with_temp_state(mock_firestore_client):
       and "event_data" in call[0][1]
   ]
   assert len(event_set_calls) == 1
-  event_data = event_set_calls[0][0][1]["event_data"]
+  raw_event_data = event_set_calls[0][0][1]["event_data"]
+  assert isinstance(raw_event_data, str)
+  event_data = json.loads(raw_event_data)
 
   # Temporary keys should be deleted from delta before snapshot
   assert "temp:k1" not in event_data["actions"]["state_delta"]
@@ -720,14 +724,20 @@ async def test_list_sessions_with_user_id(mock_firestore_client):
 
   app_doc = mock.MagicMock()
   app_doc.exists = True
-  app_doc.to_dict.return_value = {"app_key": "app_val"}
+  app_doc.to_dict.return_value = {
+      "app_key": "app_val",
+      "grid": [{"_adk_list": [1, 2]}],
+  }
   app_doc_ref = mock.MagicMock()
   app_state_coll.document.return_value = app_doc_ref
   app_doc_ref.get = mock.AsyncMock(return_value=app_doc)
 
   user_doc = mock.MagicMock()
   user_doc.exists = True
-  user_doc.to_dict.return_value = {"user_key": "user_val"}
+  user_doc.to_dict.return_value = {
+      "user_key": "user_val",
+      "grid": [{"_adk_list": [3, 4]}],
+  }
   user_app_doc = mock.MagicMock()
   user_state_coll.document.return_value = user_app_doc
   users_coll = mock.MagicMock()
@@ -756,6 +766,8 @@ async def test_list_sessions_with_user_id(mock_firestore_client):
   assert session.state["session_key"] == "session_val"
   assert session.state["app:app_key"] == "app_val"
   assert session.state["user:user_key"] == "user_val"
+  assert session.state["app:grid"] == [[1, 2]]
+  assert session.state["user:grid"] == [[3, 4]]
   assert session.last_update_time == 1234567890.0
 
 
@@ -861,7 +873,10 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
 
   app_doc = mock.MagicMock()
   app_doc.exists = True
-  app_doc.to_dict.return_value = {"app_key": "app_val"}
+  app_doc.to_dict.return_value = {
+      "app_key": "app_val",
+      "grid": [{"_adk_list": [1, 2]}],
+  }
   app_doc_ref = mock.MagicMock()
   app_state_coll.document.return_value = app_doc_ref
   app_doc_ref.get = mock.AsyncMock(return_value=app_doc)
@@ -869,7 +884,10 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
   user_doc = mock.MagicMock()
   user_doc.id = "user1"
   user_doc.exists = True
-  user_doc.to_dict.return_value = {"user_key": "user_val"}
+  user_doc.to_dict.return_value = {
+      "user_key": "user_val",
+      "grid": [{"_adk_list": [3, 4]}],
+  }
   user_app_doc = mock.MagicMock()
   user_state_coll.document.return_value = user_app_doc
   users_coll = mock.MagicMock()
@@ -889,6 +907,8 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
   assert session.id == "session1"
   assert session.state["app:app_key"] == "app_val"
   assert session.state["user:user_key"] == "user_val"
+  assert session.state["app:grid"] == [[1, 2]]
+  assert session.state["user:grid"] == [[3, 4]]
   assert session.last_update_time == 1234567890.0
 
   mock_firestore_client.collection_group.assert_called_once_with("sessions")
@@ -962,18 +982,53 @@ async def test_list_sessions_filters_other_apps(mock_firestore_client):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_with_empty_user_id_returns_no_sessions(
+    mock_firestore_client,
+):
+  """list_sessions(user_id="") returns no sessions without querying Firestore.
+
+  The collection_group and get_all stubs serve the all-users path only, so the
+  test fails if user_id="" falls through to it.
+  """
+  service = FirestoreSessionService(client=mock_firestore_client)
+  other_user_session = _stored_snapshot({
+      "id": "s-alice",
+      "appName": "test_app",
+      "userId": "alice",
+      "state": {},
+  })
+  mock_firestore_client.collection_group.return_value.where.return_value.get = (
+      mock.AsyncMock(return_value=[other_user_session])
+  )
+
+  async def mock_get_all(refs):
+    for _ in refs:
+      yield mock.MagicMock(exists=False)
+
+  mock_firestore_client.get_all = mock_get_all
+
+  response = await service.list_sessions(app_name="test_app", user_id="")
+
+  assert response.sessions == []
+  mock_firestore_client.collection_group.assert_not_called()
+  mock_firestore_client.collection.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_user_state_returns_stored_user_state(mock_firestore_client):
   """get_user_state returns the user_states document for the app and user."""
   service = FirestoreSessionService(client=mock_firestore_client)
   root_coll = mock_firestore_client.collection.return_value
   users_coll = root_coll.document.return_value.collection.return_value
   users_coll.document.return_value.get = mock.AsyncMock(
-      return_value=_stored_snapshot({"theme": "dark"})
+      return_value=_stored_snapshot(
+          {"theme": "dark", "grid": [{"_adk_list": [1, 2]}]}
+      )
   )
 
   state = await service.get_user_state(app_name="test_app", user_id="alice")
 
-  assert state == {"theme": "dark"}
+  assert state == {"theme": "dark", "grid": [[1, 2]]}
   mock_firestore_client.collection.assert_called_with("user_states")
   root_coll.document.assert_called_with("test_app")
   users_coll.document.assert_called_with("alice")
@@ -1122,8 +1177,11 @@ def _wire_epoch(value: datetime) -> float:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "after_timestamp", [1234567890.0, 0.0], ids=["recent", "epoch"]
+)
 async def test_get_session_after_timestamp_cursor_is_utc_aware(
-    mock_firestore_client,
+    mock_firestore_client, after_timestamp
 ):
   """The after_timestamp cursor must be an aware UTC datetime.
 
@@ -1135,7 +1193,6 @@ async def test_get_session_after_timestamp_cursor_is_utc_aware(
   app_name = "test_app"
   user_id = "test_user"
   session_id = "test_session"
-  after_timestamp = 1234567890.0
 
   doc_snapshot = (
       mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.get.return_value
@@ -1296,3 +1353,352 @@ async def test_list_sessions_missing_states(mock_firestore_client):
   assert session.state["session_key"] == "session_val"
   assert "_app_app_key" not in session.state
   assert "_user_user_key" not in session.state
+
+
+@pytest.mark.parametrize(
+    "bad_user_id",
+    [
+        "alice/sessions/s",  # even number of '/': passes verify_path, injects
+        "a/b/c/d",
+        "..",
+        "",
+        "__reserved__",
+        "____",
+        "__x__",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_rejects_path_breaking_user_id(
+    mock_firestore_client, bad_user_id
+):
+  """A user_id that would alter the Firestore document path is rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(ValueError):
+      await service.create_session(app_name="test_app", user_id=bad_user_id)
+
+
+@pytest.mark.parametrize(
+    "bad_session_id",
+    [
+        "x/sessions/y",  # even number of '/': passes verify_path, injects
+        "s/users/other/sessions/s",
+        "..",
+        "__reserved__",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_rejects_path_breaking_session_id(
+    mock_firestore_client, bad_session_id
+):
+  """A caller-supplied session_id that alters the document path is rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(ValueError):
+      await service.create_session(
+          app_name="test_app", user_id="alice", session_id=bad_session_id
+      )
+
+
+@pytest.mark.asyncio
+async def test_get_session_rejects_path_breaking_identity(
+    mock_firestore_client,
+):
+  """Read paths validate identity components too."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with pytest.raises(ValueError):
+    await service.get_session(
+        app_name="test_app", user_id="alice/sessions/s", session_id="s"
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_session_rejects_path_breaking_identity(
+    mock_firestore_client,
+):
+  """Delete paths validate identity components too."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with pytest.raises(ValueError):
+    await service.delete_session(
+        app_name="test_app", user_id="alice", session_id="x/sessions/y"
+    )
+
+
+@pytest.mark.parametrize(
+    "ok_identity",
+    [
+        "alice",
+        "alice@example.com",  # email user_id (contains '.') must still work
+        "user-123_abc",
+        "a.b.c",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_accepts_normal_identity(
+    mock_firestore_client, ok_identity
+):
+  """Legitimate identity components (including emails) are not rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    session = await service.create_session(
+        app_name="test_app", user_id=ok_identity
+    )
+
+  assert session.user_id == ok_identity
+  assert session.id
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_path_breaking_app_name(
+    mock_firestore_client,
+):
+  """An app_name that would alter the Firestore document path is rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(ValueError):
+      await service.create_session(app_name="a/users/b", user_id="alice")
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_rejects_path_breaking_user_id(
+    mock_firestore_client,
+):
+  """Listing one user's sessions validates the user_id."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with pytest.raises(ValueError):
+    await service.list_sessions(app_name="test_app", user_id="alice/sessions/s")
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_without_user_id_rejects_path_breaking_app_name(
+    mock_firestore_client,
+):
+  """Listing all users' sessions still validates the app_name."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with pytest.raises(ValueError):
+    await service.list_sessions(app_name="a/users/b")
+
+  mock_firestore_client.collection_group.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_append_event_rejects_path_breaking_session_id(
+    mock_firestore_client,
+):
+  """A session_id that reaches another session's event is rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="s/events/e", app_name="test_app", user_id="alice")
+  event = Event(invocation_id="test_inv", author="user")
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(ValueError):
+      await service.append_event(session, event)
+
+  mock_firestore_client.transaction.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("app_name", "user_id"),
+    [
+        ("test_app", "alice/x/y"),
+        ("a/users/b", "alice"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_user_state_rejects_path_breaking_identity(
+    mock_firestore_client, app_name, user_id
+):
+  """get_user_state validates the components of the user_states path."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with pytest.raises(ValueError):
+    await service.get_user_state(app_name=app_name, user_id=user_id)
+
+
+@pytest.mark.parametrize(
+    "short_underscore_id",
+    [
+        "__",  # too short to match __.*__
+        "___",
+        "__alice",
+        "alice__",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_accepts_non_reserved_underscore_identity(
+    mock_firestore_client, short_underscore_id
+):
+  """Underscore ids that do not fully match __.*__ are accepted."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    session = await service.create_session(
+        app_name="test_app", user_id=short_underscore_id
+    )
+
+  assert session.user_id == short_underscore_id
+
+
+def _has_nested_array(value: object, *, in_list: bool = False) -> bool:
+  if isinstance(value, dict):
+    return any(_has_nested_array(v) for v in value.values())
+  if isinstance(value, (list, tuple, set, frozenset)):
+    return in_list or any(_has_nested_array(v, in_list=True) for v in value)
+  return False
+
+
+_SENTINEL_ITEMS = [
+    {"_adk_list": [1]},
+    {"_adk_list": "x"},
+    {"_adk_dict": {"_adk_list": [[2]]}},
+]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ([[1, 2], [3, 4]], [[1, 2], [3, 4]]),
+        ([[[0.0, 1.0], [2.0, 3.0]]], [[[0.0, 1.0], [2.0, 3.0]]]),
+        (((1, 2), {3}, frozenset({4})), [[1, 2], [3], [4]]),
+        ([{"rows": [[1]]}], [{"rows": [[1]]}]),
+        (_SENTINEL_ITEMS, _SENTINEL_ITEMS),
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_round_trips_nested_lists_in_app_and_user_state(
+    mock_firestore_client: mock.MagicMock, value: object, expected: object
+) -> None:
+  """Nested lists are stored without arrays in arrays and read back unchanged."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  app_ref = mock_firestore_client.collection.return_value.document.return_value
+  user_ref = app_ref.collection.return_value.document.return_value
+  session_ref = user_ref.collection.return_value.document.return_value
+  stored = {"old": [{"_adk_list": [9]}]}
+  app_ref.get = mock.AsyncMock(return_value=_stored_snapshot(stored))
+  user_ref.get = mock.AsyncMock(return_value=_stored_snapshot(stored))
+
+  with mock.patch.object(firestore, "async_transactional", lambda x: x):
+    created = await service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="s1",
+        state={"app:v": value, "user:v": value},
+    )
+
+  transaction = mock_firestore_client.transaction.return_value
+  written = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  for ref in (app_ref, user_ref):
+    assert not _has_nested_array(written[ref])
+    assert written[ref]["old"] == stored["old"]
+    ref.get = mock.AsyncMock(return_value=_stored_snapshot(written[ref]))
+  session_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot(written[session_ref])
+  )
+  loaded = await service.get_session(
+      app_name="test_app", user_id="test_user", session_id="s1"
+  )
+
+  assert created.state["app:old"] == [[9]]
+  assert created.state["user:old"] == [[9]]
+  assert loaded is not None
+  assert loaded.state["app:v"] == expected
+  assert loaded.state["user:v"] == expected
+  assert loaded.state["app:old"] == [[9]]
+
+
+@pytest.mark.asyncio
+async def test_append_event_round_trips_nested_lists(
+    mock_firestore_client: mock.MagicMock,
+) -> None:
+  """Nested lists in event content and app and user state survive a write."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  app_ref = mock_firestore_client.collection.return_value.document.return_value
+  user_ref = app_ref.collection.return_value.document.return_value
+  session_ref = user_ref.collection.return_value.document.return_value
+  events_ref = session_ref.collection.return_value
+  session_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"revision": 0})
+  )
+  stored = {"old": [{"_adk_list": [9]}]}
+  app_ref.get = mock.AsyncMock(return_value=_stored_snapshot(stored))
+  user_ref.get = mock.AsyncMock(return_value=_stored_snapshot(stored))
+  event = Event(
+      invocation_id="test_inv",
+      author="model",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part.from_function_call(
+                  name="rotate", args={"matrix": [[1, 2], [3, 4]]}
+              )
+          ],
+      ),
+      actions=EventActions(
+          state_delta={"app:grid": [[5, 6]], "user:grid": [[7, 8]]}
+      ),
+  )
+
+  with mock.patch.object(firestore, "async_transactional", lambda x: x):
+    await service.append_event(session, event)
+
+  transaction = mock_firestore_client.transaction.return_value
+  written = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  event_doc = written[events_ref.document.return_value]
+  assert not _has_nested_array(event_doc)
+  assert written[app_ref] == {
+      "old": [{"_adk_list": [9]}],
+      "grid": [{"_adk_list": [5, 6]}],
+  }
+  assert written[user_ref] == {
+      "old": [{"_adk_list": [9]}],
+      "grid": [{"_adk_list": [7, 8]}],
+  }
+
+  for ref in (app_ref, user_ref):
+    ref.get = mock.AsyncMock(return_value=_stored_snapshot(written[ref]))
+  events_ref.get = mock.AsyncMock(return_value=[_stored_snapshot(event_doc)])
+  loaded = await service.get_session(
+      app_name="test_app", user_id="test_user", session_id="test_session"
+  )
+
+  assert loaded is not None
+  assert loaded.events == [event]
+  assert loaded.state["app:grid"] == [[5, 6]]
+  assert loaded.state["user:grid"] == [[7, 8]]
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_reads_documents_written_before_list_wrapping(
+    mock_firestore_client: mock.MagicMock,
+) -> None:
+  """Older state documents, including sentinel-named keys, read unchanged."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  users_coll = (
+      mock_firestore_client.collection.return_value.document.return_value.collection.return_value
+  )
+  legacy = {
+      "tags": ["a", "b"],
+      "cfg": {"_adk_list": [1, 2]},
+      "rows": [{"_adk_list": "raw"}, {"id": 1}],
+  }
+  users_coll.document.return_value.get = mock.AsyncMock(
+      return_value=_stored_snapshot(legacy)
+  )
+
+  assert (
+      await service.get_user_state(app_name="test_app", user_id="alice")
+      == legacy
+  )

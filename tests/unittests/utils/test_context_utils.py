@@ -14,6 +14,8 @@
 
 """Tests for context_utils module."""
 
+import dataclasses
+import functools
 from typing import Optional
 from unittest import mock
 
@@ -159,6 +161,33 @@ class TestFindContextParameter:
 
     assert find_context_parameter(my_tool) == 'ctx'
 
+  def test_find_context_parameter_with_unhashable_and_partial_callables(self):
+    """Unhashable callables and partials resolve string context hints."""
+
+    @dataclasses.dataclass
+    class Search:
+      prefix: str = ''
+
+      def __call__(self, query: str, ctx: 'ToolContext') -> str:
+        return self.prefix + query
+
+    def search_fn(query: str, count: int, ctx: 'ToolContext') -> str:
+      return f'{query}_{count}'
+
+    class WrappedCallable:
+
+      def __init__(self, fn):
+        functools.update_wrapper(self, fn)
+
+      def __call__(self, *args, **kwargs):
+        return self.__wrapped__(*args, **kwargs)
+
+    assert find_context_parameter(Search(prefix='found: ')) == 'ctx'
+    assert (
+        find_context_parameter(functools.partial(search_fn, count=5)) == 'ctx'
+    )
+    assert find_context_parameter(WrappedCallable(search_fn)) == 'ctx'
+
 
 class TestContextParameterExcludedFromDeclaration:
   """Tests that the detected context parameter never reaches the model."""
@@ -197,3 +226,40 @@ class TestFindContextParameterCaching:
         assert find_context_parameter(my_tool) == 'ctx'
 
     assert spy.call_count == 1
+
+  def test_cache_introspection_stays_on_the_public_function(self):
+    """cache_clear/cache_info/cache_parameters stay on the public name."""
+
+    def my_tool(ctx: Context) -> str:
+      return 'ok'
+
+    assert find_context_parameter.cache_parameters() == {
+        'maxsize': 1024,
+        'typed': False,
+    }
+    find_context_parameter.cache_clear()
+    assert find_context_parameter.cache_info().currsize == 0
+
+    assert find_context_parameter(my_tool) == 'ctx'
+    assert find_context_parameter(my_tool) == 'ctx'
+
+    info = find_context_parameter.cache_info()
+    assert info.misses == 1
+    assert info.hits == 1
+
+  def test_unhashable_callable_runs_uncached(self):
+    """An unhashable callable bypasses the cache rather than raising."""
+
+    @dataclasses.dataclass
+    class SearchTool:
+      prefix: str = ''
+
+      def __call__(self, ctx: Context) -> str:
+        return 'ok'
+
+    tool = SearchTool()
+    find_context_parameter.cache_clear()
+
+    assert find_context_parameter(tool) == 'ctx'
+    assert find_context_parameter(tool) == 'ctx'
+    assert find_context_parameter.cache_info().currsize == 0
