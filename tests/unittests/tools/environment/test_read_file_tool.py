@@ -17,6 +17,7 @@
 from collections.abc import AsyncGenerator
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 from typing import Optional
 
 from google.adk.environment._base_environment import BaseEnvironment
@@ -44,19 +45,23 @@ class _StubEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: Optional[float] = None,
+      ctx: Any = None,
   ) -> ExecutionResult:
-    del timeout
+    del timeout, ctx
     self.execute_calls.append(command)
     raise AssertionError('ReadFileTool should not invoke execute().')
 
-  async def read_file(self, path: Path) -> bytes:
+  async def read_file(self, path: Path, *, ctx: Any = None) -> bytes:
+    del ctx
     key = str(path)
     if key not in self._files:
       raise FileNotFoundError(key)
     return self._files[key]
 
-  async def write_file(self, path: Path, content: str | bytes) -> None:
-    del path, content
+  async def write_file(
+      self, path: Path, content: str | bytes, *, ctx: Any = None
+  ) -> None:
+    del path, content, ctx
     raise NotImplementedError
 
 

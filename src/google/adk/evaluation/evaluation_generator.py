@@ -131,16 +131,29 @@ def _send_audio_to_live(
   live_request_queue.send_activity_end()
 
 
+def _get_eval_session_app_name_and_user_id(
+    initial_session: SessionInput | None,
+) -> tuple[str, str]:
+  """Returns the app name and user id of the session an eval case runs in.
+
+  Both creating the session and looking it up for the eval result use this,
+  so the lookup finds the session the eval case ran in.
+
+  Args:
+    initial_session: The `session_input` of the eval case, if it has one.
+  """
+  if initial_session is None:
+    return "EvaluationGenerator", "test_user_id"
+  return initial_session.app_name, initial_session.user_id
+
+
 async def _get_or_create_eval_session(
     session_service: BaseSessionService,
     initial_session: Optional[SessionInput],
     fallback_session_id: Optional[str],
 ) -> Session:
   """Returns the session an eval case runs in."""
-  app_name = (
-      initial_session.app_name if initial_session else "EvaluationGenerator"
-  )
-  user_id = initial_session.user_id if initial_session else "test_user_id"
+  app_name, user_id = _get_eval_session_app_name_and_user_id(initial_session)
   pinned_session_id = initial_session.session_id if initial_session else None
 
   if pinned_session_id:
