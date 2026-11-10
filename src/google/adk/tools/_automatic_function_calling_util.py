@@ -425,7 +425,9 @@ def from_function_with_options(
           )
           if param.default is not inspect.Parameter.empty:
             if param.default is not None:
-              parameters_json_schema[name].default = param.default
+              parameters_json_schema[name].default = (
+                  _function_parameter_parse_util._json_schema_default(param)
+              )
             else:
               parameters_json_schema[name].nullable = True
         except Exception as e:

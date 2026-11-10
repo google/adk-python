@@ -577,8 +577,9 @@ class TestBuildFunctionDeclarationLegacy:
     function_decl = _automatic_function_calling_util.build_function_declaration(
         func=set_date
     )
-    assert 'date' in function_decl.parameters.properties
-    assert function_decl.parameters.properties['date'].default == DateEnum.EPOCH
+    date_schema = function_decl.parameters.properties['date']
+    assert date_schema.enum == ['1970-01-01']
+    assert date_schema.default == '1970-01-01'
 
   def test_enum_fallback_rejects_invalid_default(self):
     """An Enum falling back to pydantic rejects an invalid default value."""
@@ -593,6 +594,50 @@ class TestBuildFunctionDeclarationLegacy:
       _automatic_function_calling_util.build_function_declaration(
           func=set_date_invalid
       )
+
+  @pytest.mark.parametrize(
+      'variant', [GoogleLLMVariant.GEMINI_API, GoogleLLMVariant.VERTEX_AI]
+  )
+  def test_int_enum_falling_back_to_pydantic(self, variant):
+    """An IntEnum declares its values as strings when its function falls back.
+
+    The tuple parameter makes every parameter of the function fall back to
+    pydantic schema generation.
+    """
+
+    class Level(IntEnum):
+      LOW = 1
+      HIGH = 2
+
+    def set_level(level: Level = Level.HIGH, pair: tuple[str, int] = None):
+      return level.value
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=set_level, variant=variant
+    )
+
+    level_schema = function_decl.parameters.properties['level']
+    assert level_schema.type == 'STRING'
+    assert level_schema.enum == ['1', '2']
+    assert level_schema.default == '2'
+
+  def test_nested_int_enum_falling_back_to_pydantic(self):
+    """An IntEnum nested in a fallback parameter declares string values."""
+
+    class Level(IntEnum):
+      LOW = 1
+      HIGH = 2
+
+    def set_levels(levels: list[Level], pair: tuple[str, int] = None):
+      return levels
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=set_levels
+    )
+
+    items_schema = function_decl.parameters.properties['levels'].items
+    assert items_schema.type == 'STRING'
+    assert items_schema.enum == ['1', '2']
 
   def test_basemodel_list(self):
     class ChildInput(BaseModel):
