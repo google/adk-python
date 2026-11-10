@@ -108,6 +108,7 @@ from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
 from ..version import __version__
+from ..workflow._base_node import BaseNode
 from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
@@ -1325,7 +1326,7 @@ class ApiServer:
     self.runner_dict[app_name] = runner
     return runner
 
-  def _load_agent_or_raise(self, app_name: str) -> BaseAgent | App:
+  def _load_agent_or_raise(self, app_name: str) -> BaseNode | App:
     """Loads an agent, mapping a load failure onto an HTTP status code.
 
     Args:
@@ -1348,12 +1349,11 @@ class ApiServer:
       logger.exception("Failed to load agent %s", app_name)
       raise HTTPException(status_code=500, detail="Failed to load agent") from e
 
-  def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
-    """Extract root agent from either a BaseAgent or App object."""
+  def _get_root_agent(self, agent_or_app: BaseNode | App) -> BaseNode:
+    """Extract the root node from either a BaseNode or App object."""
     if isinstance(agent_or_app, App):
-      # App.root_agent is a BaseNode; every caller here needs an agent, and the
-      # App validator already rejects a missing root.
-      return cast(BaseAgent, agent_or_app.root_agent)
+      # The App validator rejects a missing root.
+      return cast(BaseNode, agent_or_app.root_agent)
     return agent_or_app
 
   def _create_runner(self, agentic_app: App, app_name: str) -> Runner:
@@ -1582,6 +1582,12 @@ class ApiServer:
     app = FastAPI(
         lifespan=cast("Lifespan[FastAPI]", internal_lifespan),
         root_path=root_path,
+        # FastAPI >= 0.142 continues the incoming traceparent in its server
+        # span. On Agent Engine that header is the platform's, mostly
+        # unsampled, so the default sampler would drop every span of the
+        # request; get_propagated_context ignores it there for the same reason.
+        # Older FastAPI keeps this unused in `app.extra`.
+        telemetry={"tracing": not os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")},
     )
 
     has_configured_allowed_origins = bool(allow_origins)

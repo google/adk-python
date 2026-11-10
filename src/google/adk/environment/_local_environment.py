@@ -24,11 +24,15 @@ from pathlib import Path
 import shutil
 import signal
 import tempfile
+from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
 from ._base_environment import BaseEnvironment
 from ._base_environment import ExecutionResult
+
+if TYPE_CHECKING:
+  from ..agents.context import Context
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -101,7 +105,7 @@ class LocalEnvironment(BaseEnvironment):
     return self._working_dir
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     if self._working_dir is None:
       self._working_dir = Path(tempfile.mkdtemp(prefix='adk_workspace_'))
       self._auto_created = True
@@ -124,6 +128,7 @@ class LocalEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -201,7 +206,9 @@ class LocalEnvironment(BaseEnvironment):
     return drain.result()
 
   @override
-  async def read_file(self, path: str | Path) -> bytes:
+  async def read_file(
+      self, path: str | Path, *, ctx: Context | None = None
+  ) -> bytes:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
 
@@ -210,7 +217,7 @@ class LocalEnvironment(BaseEnvironment):
 
   @override
   async def read_file_stream(
-      self, path: str | Path
+      self, path: str | Path, *, ctx: Context | None = None
   ) -> AsyncGenerator[bytes, None]:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -224,7 +231,13 @@ class LocalEnvironment(BaseEnvironment):
       f.close()
 
   @override
-  async def write_file(self, path: str | Path, content: str | bytes) -> None:
+  async def write_file(
+      self,
+      path: str | Path,
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
+  ) -> None:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
 

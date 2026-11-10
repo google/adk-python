@@ -53,7 +53,7 @@ dependencies = [
   "tenacity>=9,<10",
   "typing-extensions>=4.5,<5",
   "uvicorn>=0.34,<1",
-  "watchdog>=6,<7",
+  "watchdog>=7,<8",
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
@@ -439,6 +439,10 @@ module.name = "google.adk"
 module.include = [ "py.typed" ]
 sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
 sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
+
+[tool.uv]
+# Extras that depend on ADK must use this checkout's dependency requirements.
+sources.google-adk = { path = ".", editable = true }
 
 [tool.ruff]
 extend-exclude = [
