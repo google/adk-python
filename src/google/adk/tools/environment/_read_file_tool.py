@@ -171,7 +171,7 @@ class ReadFileTool(BaseTool):
       end_line = end_line or None
       max_bytes = self._max_output_chars * 4
       async with contextlib.aclosing(
-          self._environment.read_file_stream(path)
+          self._environment.read_file_stream(path, ctx=tool_context)
       ) as chunks:
         selected_bytes, total = await _read_line_range(
             chunks,

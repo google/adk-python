@@ -190,16 +190,30 @@ class MemoryEnvironment(BaseEnvironment):
   def working_dir(self) -> Path:
     return Path("/")
 
-  async def execute(self, command: str, *, timeout: float | None = None):
+  async def execute(
+      self,
+      command: str,
+      *,
+      timeout: float | None = None,
+      ctx: Context | None = None,
+  ):
     return ExecutionResult(exit_code=1, stderr="This environment has no shell.")
 
-  async def read_file(self, path: Path) -> bytes:
+  async def read_file(
+      self, path: Path, *, ctx: Context | None = None
+  ) -> bytes:
     try:
       return self._files[str(path)]
     except KeyError as e:
       raise FileNotFoundError(path) from e
 
-  async def write_file(self, path: Path, content: str | bytes) -> None:
+  async def write_file(
+      self,
+      path: Path,
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
+  ) -> None:
     self._files[str(path)] = (
         content.encode("utf-8") if isinstance(content, str) else content
     )
@@ -215,6 +229,22 @@ default yields the whole `read_file` result as one chunk, so the environment
 above works unchanged. Override it to yield the same bytes in chunks when files
 can be larger than you want to hold in memory; `LocalEnvironment`, E2B and
 Daytona do. Raise `FileNotFoundError` for a missing file here as well.
+
+Every method an agent run calls also takes a keyword-only `ctx` argument, and
+an override should accept it even when it ignores it, because the built-in
+tools always pass it. An override written before the argument existed still
+works for now: `BaseEnvironment` wraps it to drop `ctx` and raises a
+`DeprecationWarning` when the class is defined, but it will break once that
+support is removed in a future release. `initialize`, `execute`, `read_file`,
+`read_file_stream` and `write_file` receive the calling run's `Context`, so an
+environment can key a sandbox off `ctx.session.id` or `ctx.user_id`, keep the
+sandbox's name in `ctx.state`, or request credentials. The toolsets currently
+call `initialize` once per environment, not once per session, so its `ctx` is
+the first run's; keep `initialize` idempotent. That `ctx` comes from building
+the model request, not from a tool call, so state written through it is not
+saved and `ctx.request_credential` raises there. `close` and `working_dir` take
+no context. Code that drives an environment directly, as in the example under
+[Get started](#get-started), can leave `ctx` out.
 
 ### Share one environment across a conversation
 
@@ -240,7 +270,9 @@ close both at the same time.
 An environment's lifetime is therefore the lifetime of the object you built, and
 it has nothing to do with a session. An environment held in a module-level
 variable is shared by every user of the process, which is fine for a single-user
-command-line agent and wrong for a server.
+command-line agent and wrong for a server. None of the built-in environments
+isolate sessions, but one of your own can, by using the `ctx` its methods
+receive to choose a workspace per session or user.
 
 ## Limitations
 

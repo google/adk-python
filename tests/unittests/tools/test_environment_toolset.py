@@ -21,6 +21,7 @@ from typing import Any
 from typing import Optional
 from unittest import mock
 
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.environment._base_environment import BaseEnvironment
 from google.adk.environment._base_environment import ExecutionResult
 from google.adk.models.llm_request import LlmRequest
@@ -36,20 +37,26 @@ class _FakeEnvironment(BaseEnvironment):
   def __init__(self, *, stdout: str, file_content: bytes):
     self._stdout = stdout
     self._file_content = file_content
+    self.contexts: list[tuple[str, Any]] = []
 
   @property
   def working_dir(self) -> Path:
     return Path("/workspace")
 
-  async def initialize(self) -> None:
-    pass
+  async def initialize(self, *, ctx: Any = None) -> None:
+    self.contexts.append(("initialize", ctx))
 
   async def close(self) -> None:
     pass
 
   async def execute(
-      self, command: str, *, timeout: Optional[float] = None
+      self,
+      command: str,
+      *,
+      timeout: Optional[float] = None,
+      ctx: Any = None,
   ) -> ExecutionResult:
+    self.contexts.append(("execute", ctx))
     return ExecutionResult(
         exit_code=0,
         stdout=self._stdout,
@@ -57,11 +64,14 @@ class _FakeEnvironment(BaseEnvironment):
         timed_out=False,
     )
 
-  async def read_file(self, path: Path) -> bytes:
+  async def read_file(self, path: Path, *, ctx: Any = None) -> bytes:
+    self.contexts.append(("read_file", ctx))
     return self._file_content
 
-  async def write_file(self, path: Path, content: str | bytes) -> None:
-    pass
+  async def write_file(
+      self, path: Path, content: str | bytes, *, ctx: Any = None
+  ) -> None:
+    self.contexts.append(("write_file", ctx))
 
 
 @pytest.mark.asyncio
@@ -145,6 +155,68 @@ async def test_no_truncation_under_limit():
   assert res["stdout"] == short_text
 
 
+@pytest.mark.asyncio
+async def test_get_tools_does_not_initialize_environment():
+  """get_tools leaves initialization to the run that uses the environment."""
+  env = _FakeEnvironment(stdout="", file_content=b"")
+  toolset = EnvironmentToolset(environment=env)
+
+  await toolset.get_tools(mock.MagicMock(spec=ReadonlyContext))
+
+  assert not env.contexts
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_passes_tool_context_to_initialize():
+  """process_llm_request hands its tool context to initialize."""
+  env = _FakeEnvironment(stdout="", file_content=b"")
+  tool_context = mock.MagicMock(spec=ToolContext)
+  toolset = EnvironmentToolset(environment=env)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context, llm_request=LlmRequest()
+  )
+
+  assert env.contexts == [("initialize", tool_context)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "args", "expected_calls"),
+    [
+        ("Execute", {"command": "ls"}, ["execute"]),
+        ("ReadFile", {"path": "a.txt"}, ["read_file"]),
+        ("WriteFile", {"path": "a.txt", "content": "x"}, ["write_file"]),
+        (
+            "EditFile",
+            {"path": "a.txt", "old_string": "old", "new_string": "new"},
+            ["read_file", "write_file"],
+        ),
+    ],
+)
+async def test_tools_pass_tool_context_to_environment(
+    tool_name: str, args: dict[str, Any], expected_calls: list[str]
+):
+  """Each tool passes its tool context to every environment call it makes."""
+  env = _FakeEnvironment(stdout="", file_content=b"old")
+  toolset = EnvironmentToolset(environment=env)
+  tools = await toolset.get_tools()
+  env.contexts.clear()
+  tool = next(t for t in tools if t.name == tool_name)
+  tool_context = mock.MagicMock(spec=ToolContext)
+
+  res = await tool.run_async(args=args, tool_context=tool_context)
+
+  assert res["status"] == "ok"
+  assert env.contexts == [(call, tool_context) for call in expected_calls]
+
+
+async def _process_llm_request(toolset: EnvironmentToolset) -> None:
+  await toolset.process_llm_request(
+      tool_context=mock.MagicMock(spec=ToolContext), llm_request=LlmRequest()
+  )
+
+
 class _AsyncCountingEnvironment(BaseEnvironment):
   """Environment that yields to the event loop during initialize/close."""
 
@@ -156,7 +228,8 @@ class _AsyncCountingEnvironment(BaseEnvironment):
   def working_dir(self) -> Path:
     return Path("/workspace")
 
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Any = None) -> None:
+    del ctx
     await asyncio.sleep(0)
     self.init_count += 1
 
@@ -165,9 +238,13 @@ class _AsyncCountingEnvironment(BaseEnvironment):
     self.close_count += 1
 
   async def execute(
-      self, command: str, *, timeout: float | None = None
+      self,
+      command: str,
+      *,
+      timeout: float | None = None,
+      ctx: Any = None,
   ) -> ExecutionResult:
-    del timeout
+    del timeout, ctx
     await asyncio.sleep(0)
     return ExecutionResult(
         exit_code=0,
@@ -176,29 +253,23 @@ class _AsyncCountingEnvironment(BaseEnvironment):
         timed_out=False,
     )
 
-  async def read_file(self, path: Path) -> bytes:
+  async def read_file(self, path: Path, *, ctx: Any = None) -> bytes:
+    del ctx
     return f"content:{path}".encode("utf-8")
 
-  async def write_file(self, path: Path, content: str | bytes) -> None:
-    del path, content
+  async def write_file(
+      self, path: Path, content: str | bytes, *, ctx: Any = None
+  ) -> None:
+    del path, content, ctx
 
 
 @pytest.mark.asyncio
 async def test_environment_toolset_concurrent_initialization():
-  """Concurrent get_tools/process_llm_request initialize environment once."""
+  """Concurrent process_llm_request calls initialize the environment once."""
   env = _AsyncCountingEnvironment()
   toolset = EnvironmentToolset(environment=env, tool_name_prefix="env")
 
-  await asyncio.gather(
-      *(toolset.get_tools() for _ in range(8)),
-      *(
-          toolset.process_llm_request(
-              tool_context=mock.MagicMock(spec=ToolContext),
-              llm_request=LlmRequest(),
-          )
-          for _ in range(8)
-      ),
-  )
+  await asyncio.gather(*(_process_llm_request(toolset) for _ in range(8)))
   assert env.init_count == 1
 
 
@@ -208,10 +279,12 @@ async def test_environment_toolset_pickle_roundtrip():
   env = _AsyncCountingEnvironment()
   toolset = EnvironmentToolset(environment=env, tool_name_prefix="env")
   tools = await toolset.get_tools_with_prefix()
+  await _process_llm_request(toolset)
   assert env.init_count == 1
 
   restored = pickle.loads(pickle.dumps(toolset))
   restored_tools = await restored.get_tools_with_prefix()
+  await _process_llm_request(restored)
   assert len(restored_tools) == len(tools)
   assert restored._environment.init_count == 2
 
@@ -225,12 +298,14 @@ async def test_environment_toolset_close_resets_and_allows_reinitialization():
   assert env.close_count == 0
 
   tools = await toolset.get_tools_with_prefix()
+  await _process_llm_request(toolset)
   assert env.init_count == 1
 
   await asyncio.gather(*(toolset.close() for _ in range(8)))
   assert env.close_count == 1
 
   new_tools = await toolset.get_tools_with_prefix()
+  await _process_llm_request(toolset)
   assert len(new_tools) == len(tools)
   assert env.init_count == 2
 
@@ -241,7 +316,7 @@ def test_closed_event_loops_are_evicted_from_init_lock_map():
   toolset = EnvironmentToolset(environment=env)
 
   async def _init_concurrently() -> None:
-    await asyncio.gather(*(toolset.get_tools() for _ in range(4)))
+    await asyncio.gather(*(_process_llm_request(toolset) for _ in range(4)))
 
   loop1 = asyncio.new_event_loop()
   try:
