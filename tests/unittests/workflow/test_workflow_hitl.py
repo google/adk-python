@@ -40,6 +40,7 @@ from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
+from google.adk.workflow import JoinNode
 from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow._node_status import NodeStatus
@@ -2958,3 +2959,125 @@ async def test_resume_does_not_rerun_waiting_runs_from_earlier_loop_laps(
   assert done.received_inputs == [{'yes': True}]
   assert not workflow_testing_utils.get_request_input_events(events2)
   assert runner.session.state['lap'] == 3
+
+
+@pytest.mark.asyncio
+async def test_aborted_request_input_reruns_node_on_same_invocation_resume():
+  """Resuming an aborted invocation reruns the paused node, not done ones.
+
+  Setup: START -> [node_a (rerun_on_resume=True), node_b, gate] -> join ->
+    collect.
+  Act:
+    - Run 1: abort after node_a requests input and node_b outputs while gate
+      waits.
+    - Run 2: release gate and resume the same invocation with no new message.
+    - Run 3: answer the fresh interrupt on the same invocation.
+  Assert:
+    - Run 1: emits INVOCATION_ABORTED after node_a and node_b run once.
+    - Run 2: node_a reruns and re-emits RequestInput; node_b does not rerun.
+    - Run 3: collect outputs 'approved:True|from_b' with node_b still at 1 run.
+  """
+  a_runs = 0
+  b_runs = 0
+  gate_release = asyncio.Event()
+  abort_signal = asyncio.Event()
+
+  @node(rerun_on_resume=True)
+  async def node_a(ctx: Context):
+    nonlocal a_runs
+    a_runs += 1
+    if 'ask' in ctx.resume_inputs:
+      yield Event(output=f"approved:{ctx.resume_inputs['ask']['ok']}")
+      return
+    yield Event(output='partial')
+    yield RequestInput(interrupt_id='ask', message='approve?')
+
+  @node
+  def node_b() -> str:
+    nonlocal b_runs
+    b_runs += 1
+    return 'from_b'
+
+  @node
+  async def gate() -> str:
+    await gate_release.wait()
+    return 'gate_done'
+
+  @node
+  def collect(node_input: dict[str, Any]) -> str:
+    return f"{node_input['node_a']}|{node_input['node_b']}"
+
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='wf',
+      edges=[
+          (START, [node_a, node_b, gate]),
+          ([node_a, node_b, gate], join),
+          (join, collect),
+      ],
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(
+      app_name='test', node=wf, session_service=ss
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  # Run 1: abort once node_a emitted its RequestInput and node_b completed.
+  events1: list[Event] = []
+  saw_ask = False
+  saw_b = False
+  msg1 = types.Content(role='user', parts=[types.Part(text='start')])
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=msg1,
+      abort_signal=abort_signal,
+  ):
+    events1.append(event)
+    if extract_event_interrupt_ids(event):
+      saw_ask = True
+    if event.output == 'from_b':
+      saw_b = True
+    if saw_ask and saw_b and not abort_signal.is_set():
+      abort_signal.set()
+
+  assert a_runs == 1
+  assert b_runs == 1
+  assert any(e.error_code == 'INVOCATION_ABORTED' for e in events1)
+  invocation_id = events1[0].invocation_id
+
+  # Run 2: resume the aborted invocation; node_b fast-forwards, node_a reruns.
+  gate_release.set()
+  events2: list[Event] = []
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      invocation_id=invocation_id,
+      new_message=None,
+  ):
+    events2.append(event)
+
+  req_events2 = workflow_testing_utils.get_request_input_events(events2)
+  assert len(req_events2) == 1
+  assert a_runs == 2
+  assert b_runs == 1
+  [fresh_interrupt_id] = extract_event_interrupt_ids(req_events2[0])
+
+  # Run 3: answer the fresh interrupt to complete the workflow.
+  events3: list[Event] = []
+  msg3 = types.Content(
+      role='user',
+      parts=[create_request_input_response(fresh_interrupt_id, {'ok': True})],
+  )
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      invocation_id=invocation_id,
+      new_message=msg3,
+  ):
+    events3.append(event)
+
+  assert a_runs == 3
+  assert b_runs == 1
+  outputs3 = [e.output for e in events3 if e.output is not None]
+  assert outputs3[-1] == 'approved:True|from_b'
