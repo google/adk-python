@@ -30,6 +30,7 @@ from google.adk.evaluation.simulation.per_turn_user_simulator_quality_v1 import 
 from google.adk.evaluation.simulation.per_turn_user_simulator_quality_v1 import PerTurnUserSimulatorQualityV1
 from google.adk.evaluation.simulation.user_simulator_personas import UserBehavior
 from google.adk.evaluation.simulation.user_simulator_personas import UserPersona
+from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from google.genai import types as genai_types
@@ -1066,3 +1067,38 @@ async def test_evaluate_invocations_cancels_in_flight_sibling_calls_on_error(
 
   assert in_flight == 0
   assert cancelled_calls >= 2
+
+
+async def test_sample_llm_retries_judge_timeout(mocker):
+  evaluator = _create_test_evaluator()
+  call_count = 0
+
+  async def mock_generate_content_async(llm_request):
+    del llm_request
+    nonlocal call_count
+    call_count += 1
+    if call_count == 1:
+      raise TimeoutError("Request timed out.")
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text='{"is_valid": "valid"}')],
+            role="model",
+        )
+    )
+
+  evaluator._llm = mocker.MagicMock()
+  evaluator._llm.generate_content_async = mock_generate_content_async
+  llm_request = LlmRequest(
+      config=genai_types.GenerateContentConfig(
+          http_options=genai_types.HttpOptions(
+              retry_options=genai_types.HttpRetryOptions(
+                  attempts=2, initial_delay=0.0, max_delay=0.0, jitter=0.0
+              )
+          )
+      )
+  )
+
+  score = await evaluator._sample_llm(llm_request)
+
+  assert score == AutoRaterScore(score=1.0)
+  assert call_count == 2
