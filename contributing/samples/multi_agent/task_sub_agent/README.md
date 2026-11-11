@@ -37,7 +37,7 @@ graph TD
        name="order_collector",
        mode="task",
        output_schema=list[OrderItem],
-       ...
+       # ...
    )
    ```
 
@@ -47,7 +47,7 @@ graph TD
    coordinator = Agent(
        sub_agents=[order_collector],
        instruction="Delegate using `order_collector`...",
-       ...
+       # ...
    )
    ```
 

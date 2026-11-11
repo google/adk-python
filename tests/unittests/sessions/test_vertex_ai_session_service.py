@@ -19,9 +19,6 @@ import json
 import re
 import types
 from typing import Any
-from typing import List
-from typing import Optional
-from typing import Tuple
 from unittest import mock
 import uuid
 
@@ -373,7 +370,7 @@ class MockAsyncClient:
   def __init__(self) -> None:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
-    self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
+    self.event_dict: dict[str, tuple[list[Any], str | None]] = {}
     self.sessions = mock.AsyncMock()
     self.sessions.get.side_effect = self._get_session
     self.sessions.list.side_effect = self._list_sessions
@@ -610,10 +607,10 @@ async def test_get_session_pagination_keeps_client_open():
 
 
 def mock_vertex_ai_session_service(
-    project: Optional[str] = 'test-project',
-    location: Optional[str] = 'test-location',
-    agent_engine_id: Optional[str] = None,
-    express_mode_api_key: Optional[str] = None,
+    project: str | None = 'test-project',
+    location: str | None = 'test-location',
+    agent_engine_id: str | None = None,
+    express_mode_api_key: str | None = None,
 ):
   """Creates a mock Vertex AI Session service for testing."""
   return VertexAiSessionService(
@@ -866,6 +863,27 @@ async def test_get_session_with_after_timestamp_filter():
   assert session is not None
   assert len(session.events) == 1
   assert session.events[0].id == '456'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_after_timestamp_zero_drops_pre_epoch_events(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """after_timestamp=0 sends a timestamp>=epoch filter instead of no filter."""
+  event = mock_api_client_instance.event_dict['1'][0][0]
+  event['timestamp'] = '1969-12-31T23:59:59Z'
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='1',
+      config=GetSessionConfig(after_timestamp=0),
+  )
+
+  assert session is not None
+  assert not session.events
 
 
 @pytest.mark.asyncio
@@ -1128,6 +1146,7 @@ async def test_append_event_sends_json_safe_state_delta(
   session_service = mock_vertex_ai_session_service()
   session = await session_service.create_session(app_name='123', user_id='user')
   request_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+  png_bytes = b'\x89PNG\r\n\x1a\n'
   event = Event(
       invocation_id='inv',
       author='agent',
@@ -1135,22 +1154,27 @@ async def test_append_event_sends_json_safe_state_delta(
           state_delta={
               'due': datetime.date(2026, 11, 1),
               'request_id': request_id,
+              'screenshot': png_bytes,
               'total': decimal.Decimal('19.99'),
           }
       ),
   )
 
-  await session_service.append_event(session, event)
+  appended = await session_service.append_event(session, event)
 
-  # The SDK JSON-encodes the request body, and only converts datetimes, bytes
-  # and Pydantic models first, so any other rich value would fail the append.
+  # The SDK JSON-encodes the request body, so rich values and non-UTF-8 binary
+  # bytes must be coerced to JSON-safe forms on the wire while in-memory session
+  # state and the returned event retain the original Python values.
   sent_events, _ = mock_api_client_instance.event_dict[session.id]
   sent_delta = sent_events[-1]['actions']['state_delta']
   assert json.loads(json.dumps(sent_delta)) == {
       'due': '2026-11-01',
       'request_id': str(request_id),
+      'screenshot': 'iVBORw0KGgo=',
       'total': '19.99',
   }
+  assert session.state['screenshot'] == png_bytes
+  assert appended.actions.state_delta['screenshot'] == png_bytes
 
 
 @pytest.mark.asyncio
@@ -2136,3 +2160,39 @@ async def test_append_event_does_not_retry_on_non_429_client_error(
     assert exc_info.value.code == 400
     assert mock_api_client_instance.sessions.events.append.call_count == 1
     mock_sleep.assert_not_called()
+
+
+def test_get_api_client_attaches_tracking_headers():
+  """Tests that get_api_client attaches tracking headers."""
+  # pylint: disable=protected-access
+  session_service = mock_vertex_ai_session_service()
+  with mock.patch('agentplatform.Client') as mock_client:
+    _ = session_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']
+
+
+def test_get_api_client_merges_tracking_headers_with_http_options_override():
+  """Tests that get_api_client merges tracking headers with options override."""
+  # pylint: disable=protected-access
+  session_service = mock_vertex_ai_session_service()
+  with (
+      mock.patch.object(
+          session_service,
+          '_api_client_http_options_override',
+          return_value=genai_types.HttpOptions(base_url='https://example.com'),
+      ),
+      mock.patch('agentplatform.Client') as mock_client,
+  ):
+    _ = session_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert http_options.base_url == 'https://example.com'
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']

@@ -24,8 +24,10 @@ and use_as_output delegation.
 """
 
 import asyncio
+import contextlib
 from typing import Any
 from typing import AsyncGenerator
+from unittest import mock
 
 from google.adk.agents.context import Context
 from google.adk.events.event import Event
@@ -36,6 +38,7 @@ from google.adk.workflow import START
 from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils._replay_manager import ReplayManager
 from google.genai import types
 import pytest
 
@@ -1532,3 +1535,111 @@ async def test_parent_retry_replays_work_of_a_cancelled_worker_item() -> None:
 
   assert runs == {'grandchild': 1, 'slow': 2, 'bad': 2}
   assert ['slow:grandchild_done', 'bad_done'] in _outputs(events)
+
+
+@contextlib.contextmanager
+def _replay_over_whole_session():
+  """Makes replay read every invocation's events."""
+  with mock.patch.object(ReplayManager, '_in_scope', lambda self, event: True):
+    yield
+
+
+async def _run_multi_turn_resume_conversation() -> list[list[tuple[Any, ...]]]:
+  """Runs turns that interrupt, resume, retry and nest; returns their events."""
+  failures_left: dict[str, int] = {}
+
+  @node(rerun_on_resume=True)
+  async def approver(*, ctx, node_input):
+    fc_id = f'fc-{node_input}'
+    if ctx.resume_inputs and fc_id in ctx.resume_inputs:
+      yield f'approved {node_input}: {ctx.resume_inputs[fc_id]["answer"]}'
+      return
+    yield Event(
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name='approve', args={}, id=fc_id
+                    )
+                )
+            ]
+        ),
+        long_running_tool_ids={fc_id},
+    )
+
+  def double(node_input: str) -> str:
+    return node_input * 2
+
+  def leaf(node_input: str) -> str:
+    return f'leaf {node_input}'
+
+  inner = Workflow(name='inner', edges=[(START, leaf)])
+
+  def prep(node_input: Any) -> str:
+    return node_input.parts[0].text
+
+  @node(rerun_on_resume=True)
+  async def orchestrator(*, ctx, node_input):
+    doubled = await ctx.run_node(double, node_input=node_input)
+    nested = await ctx.run_node(inner, node_input=node_input)
+    answer = None
+    if node_input.startswith('ask'):
+      answer = await ctx.run_node(approver, node_input=node_input)
+    yield f'{doubled}|{nested}|{answer}'
+
+  @node(retry_config=RetryConfig(initial_delay=0.0, exceptions=['ValueError']))
+  def flaky(node_input: str) -> str:
+    left = failures_left.setdefault(node_input, 1)
+    if left:
+      failures_left[node_input] = left - 1
+      raise ValueError('first attempt fails')
+    return f'done {node_input}'
+
+  wf = Workflow(name='wf', edges=[(START, prep, orchestrator, flaky)])
+  ss = InMemorySessionService()
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  turns = [
+      await _run(runner, ss, session, 'plain1'),
+      await _run(runner, ss, session, 'ask2'),
+      await _resume(runner, ss, session, 'fc-ask2', {'answer': 'yes'}),
+      await _run(runner, ss, session, 'plain3'),
+      await _run(runner, ss, session, 'ask4'),
+      await _run(runner, ss, session, 'plain5'),
+      await _resume(runner, ss, session, 'fc-ask4', {'answer': 'late'}),
+  ]
+  final = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  invocation_order: dict[str, int] = {}
+
+  def _summary(event: Event) -> tuple[Any, ...]:
+    parts = event.content.parts if event.content and event.content.parts else []
+    return (
+        invocation_order.setdefault(event.invocation_id, len(invocation_order)),
+        event.author,
+        event.node_info.path,
+        event.node_info.output_for,
+        repr(event.output),
+        event.branch,
+        event.error_code,
+        sorted(event.long_running_tool_ids or []),
+        [repr(p.model_dump(exclude_none=True)) for p in parts],
+    )
+
+  return [[_summary(e) for e in events] for events in turns + [final.events]]
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_resume_matches_replay_over_whole_session():
+  """Replay from this invocation's events matches replay over the session."""
+  scoped = await _run_multi_turn_resume_conversation()
+  with _replay_over_whole_session():
+    whole_session = await _run_multi_turn_resume_conversation()
+
+  assert scoped == whole_session
+  outputs = [s[4] for turn in scoped[:-1] for s in turn]
+  assert "'approved ask2: yes'" in outputs
+  assert "'approved ask4: late'" in outputs
+  assert "'done plain5plain5|leaf plain5|None'" in outputs

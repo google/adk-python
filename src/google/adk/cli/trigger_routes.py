@@ -55,6 +55,7 @@ from pydantic import Field
 
 from ..agents.run_config import RunConfig
 from ..events.event import Event
+from ..utils._error_reporting import report_error
 from ..utils.context_utils import Aclosing
 
 if TYPE_CHECKING:
@@ -503,10 +504,11 @@ class TriggerRouter:
               e,
           )
 
+    # The cause carries the provider's error text, which is for the log only --
+    # chain it rather than formatting it into a message that reaches the caller.
     raise TransientError(
-        f"Rate limit exceeded after {self._max_retries + 1} attempts:"
-        f" {last_error}"
-    )
+        f"Rate limit exceeded after {self._max_retries + 1} attempts."
+    ) from last_error
 
   def register(self, app: FastAPI) -> None:
     """Register /trigger/* routes on the FastAPI app.
@@ -557,10 +559,14 @@ class TriggerRouter:
             except json.JSONDecodeError:
               data_payload = decoded_data
           except Exception as e:
-            logger.exception("Failed to decode Pub/Sub message data")
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid base64 message data: {e}",
+                detail=report_error(
+                    logger,
+                    e,
+                    summary="Invalid base64 message data.",
+                    log_message="Failed to decode Pub/Sub message data",
+                ),
             ) from e
 
         message_text = json.dumps(
@@ -586,16 +592,24 @@ class TriggerRouter:
               },
           )
         except TransientError as te:
-          logger.exception("Pub/Sub: transient error after retries: %s", te)
           raise HTTPException(
               status_code=500,
-              detail=f"Rate limit exceeded (429). Retryable. {te}",
+              detail=report_error(
+                  logger,
+                  te,
+                  summary="Rate limit exceeded (429). Retryable.",
+                  log_message="Pub/Sub: transient error after retries",
+              ),
           ) from te
         except Exception as e:
-          logger.exception("Error processing Pub/Sub message: %s", e)
           raise HTTPException(
               status_code=500,
-              detail=f"Agent processing failed: {e}",
+              detail=report_error(
+                  logger,
+                  e,
+                  summary="Agent processing failed.",
+                  log_message="Error processing Pub/Sub message",
+              ),
           ) from e
 
         return TriggerResponse(status="success")
@@ -722,16 +736,24 @@ class TriggerRouter:
               },
           )
         except TransientError as te:
-          logger.exception("Eventarc: transient error after retries: %s", te)
           raise HTTPException(
               status_code=500,
-              detail=f"Rate limit exceeded (429). Retryable. {te}",
+              detail=report_error(
+                  logger,
+                  te,
+                  summary="Rate limit exceeded (429). Retryable.",
+                  log_message="Eventarc: transient error after retries",
+              ),
           ) from te
         except Exception as e:
-          logger.exception("Error processing Eventarc event: %s", e)
           raise HTTPException(
               status_code=500,
-              detail=f"Agent processing failed: {e}",
+              detail=report_error(
+                  logger,
+                  e,
+                  summary="Agent processing failed.",
+                  log_message="Error processing Eventarc event",
+              ),
           ) from e
 
         return TriggerResponse(status="success")

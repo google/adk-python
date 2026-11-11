@@ -18,7 +18,6 @@ import logging
 from types import SimpleNamespace
 from typing import Any
 from typing import Iterable
-from typing import Optional
 from unittest import mock
 
 import agentplatform
@@ -180,11 +179,11 @@ MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
 
 
 def mock_vertex_ai_memory_bank_service(
-    project: Optional[str] = 'test-project',
-    location: Optional[str] = 'test-location',
-    agent_engine_id: Optional[str] = '123',
-    express_mode_api_key: Optional[str] = None,
-    credentials: Optional[Credentials] = None,
+    project: str | None = 'test-project',
+    location: str | None = 'test-location',
+    agent_engine_id: str | None = '123',
+    express_mode_api_key: str | None = None,
+    credentials: Credentials | None = None,
 ):
   """Creates a mock Vertex AI Memory Bank service for testing."""
   return VertexAiMemoryBankService(
@@ -462,6 +461,7 @@ def test_get_api_client_passes_credentials_through():
       project='test-project',
       location='test-location',
       credentials=mock_credentials,
+      http_options=mock.ANY,
   )
 
 
@@ -475,6 +475,7 @@ def test_get_api_client_defaults_credentials_to_none():
       project='test-project',
       location='test-location',
       credentials=None,
+      http_options=mock.ANY,
   )
 
 
@@ -1907,3 +1908,39 @@ async def test_add_session_to_memory_skips_rewound_events(
   )
   source = call_kwargs['direct_contents_source']
   assert [event.event_id for event in source.events] == ['444']
+
+
+def test_get_api_client_attaches_tracking_headers():
+  """Tests that get_api_client attaches tracking headers."""
+  # pylint: disable=protected-access
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch('agentplatform.Client') as mock_client:
+    _ = memory_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']
+
+
+def test_get_api_client_merges_tracking_headers_with_http_options_override():
+  """Tests that get_api_client merges tracking headers with options override."""
+  # pylint: disable=protected-access
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with (
+      mock.patch.object(
+          memory_service,
+          '_api_client_http_options_override',
+          return_value=types.HttpOptions(base_url='https://example.com'),
+      ),
+      mock.patch('agentplatform.Client') as mock_client,
+  ):
+    _ = memory_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert http_options.base_url == 'https://example.com'
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']

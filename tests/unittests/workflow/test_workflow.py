@@ -217,6 +217,27 @@ async def test_sequential_two_nodes():
 
 
 @pytest.mark.asyncio
+async def test_event_validation_alias_does_not_route_workflow():
+  """A custom event's aliased data does not become a workflow route."""
+
+  class _DomainEvent(Event):
+    destination: str = Field(validation_alias='route')
+
+  async def emit_event():
+    yield _DomainEvent(route='domain_destination', output='ready')
+
+  def consume(node_input: str) -> str:
+    return f'{node_input} processed'
+
+  wf = Workflow(name='wf', edges=[(START, emit_event, consume)])
+
+  events, _, _ = await _run_workflow(wf)
+
+  assert ('consume', 'ready processed') in _output_by_node(events)
+  assert all(event.actions.route is None for event in events)
+
+
+@pytest.mark.asyncio
 async def test_finished_turn_frees_its_session_without_gc():
   """A turn's session copy is freed by reference counting once the turn ends."""
   seen_sessions = []
@@ -1488,6 +1509,242 @@ async def test_use_as_output_custom_node():
   by_node = _output_by_node(events)
   assert ('func_b', 'delegated_output') in by_node
   assert not any(name == 'delegator' for name, _ in by_node)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize('message_kind', ['text', 'image'])
+async def test_delegated_output_preserves_message_content(
+    delegate_output: bool, message_kind: str
+):
+  """Delegating output suppresses duplicates without losing message content."""
+  if message_kind == 'text':
+    part = types.Part(text='Please review the result.')
+  else:
+    part = types.Part.from_bytes(data=b'image-data', mime_type='image/png')
+  content = types.Content(role='model', parts=[part])
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, content=content)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  messages = [e for e in events if e.content == content]
+  assert len(messages) == 1
+  assert messages[0].output == (None if delegate_output else 'answer')
+  assert _outputs(events).count('answer') == (1 if delegate_output else 2)
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert sum(e.content == content for e in persisted.events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize(
+    'error_fields',
+    [
+        {'error_code': 'UPSTREAM_ERROR'},
+        {'error_message': 'The upstream operation failed.'},
+        {
+            'error_code': 'UPSTREAM_ERROR',
+            'error_message': 'The upstream operation failed.',
+        },
+    ],
+)
+async def test_delegated_output_preserves_error_details(
+    delegate_output: bool, error_fields: dict[str, str]
+):
+  """Delegated output keeps errors, and keeps output beside an error code."""
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, **error_fields)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  errors = [e for e in events if e.error_code or e.error_message]
+  assert len(errors) == 1
+  for field, value in error_fields.items():
+    assert getattr(errors[0], field) == value
+  assert errors[0].output == (
+      None if delegate_output and 'error_code' not in error_fields else 'answer'
+  )
+  assert _outputs(events).count('answer') == (
+      1 if delegate_output and 'error_code' not in error_fields else 2
+  )
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert (
+      sum(bool(e.error_code or e.error_message) for e in persisted.events) == 1
+  )
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_with_error_is_not_rerun_on_resume():
+  """A delegator that completed with an error event is not rerun on resume."""
+  delegator_runs = []
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      delegator_runs.append(node_input)
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'), use_as_output=True
+      )
+      yield Event(output=result, error_code='UPSTREAM_ERROR')
+
+  class _Approval(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'approval' in ctx.resume_inputs:
+        yield Event(output=node_input)
+        return
+      yield _make_function_call_interrupt('approval')
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, _Delegator(name='delegator'), _Approval(name='approval'))],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  async for _ in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(role='user', parts=[types.Part(text='go')]),
+  ):
+    pass
+  resumed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='approve', id='approval', response={'ok': True}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  assert len(delegator_runs) == 1
+  assert 'answer' in _outputs(resumed_events)
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_preserves_confirmation_and_resume():
+  """A parent can request confirmation after publishing its child's output.
+
+  Setup: a parent delegates output, then yields a combined output/interrupt
+  event.
+  Act: run once, then respond to its approval request.
+  Assert: the request is persisted and visible, and downstream runs only on
+  resume.
+  """
+  downstream_inputs = []
+
+  class _ApprovalNode(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'approval' in ctx.resume_inputs:
+        yield Event(
+            output='approved answer',
+            content=types.Content(parts=[types.Part(text='Approved.')]),
+        )
+        return
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'), use_as_output=True
+      )
+      event = _make_function_call_interrupt('approval')
+      event.output = result
+      yield event
+
+  def downstream(node_input):
+    downstream_inputs.append(node_input)
+    return 'finished'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, _ApprovalNode(name='approval_node'), downstream)],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  first_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(role='user', parts=[types.Part(text='go')]),
+      )
+  ]
+  requests = [
+      e for e in first_events if e.long_running_tool_ids == {'approval'}
+  ]
+  assert len(requests) == 1
+  assert requests[0].get_function_calls()[0].id == 'approval'
+  assert requests[0].output is None
+  assert _outputs(first_events).count('answer') == 1
+  assert downstream_inputs == []
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert any(e.long_running_tool_ids == {'approval'} for e in persisted.events)
+
+  resumed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='approve', id='approval', response={'ok': True}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  assert downstream_inputs == ['approved answer']
+  assert 'finished' in _outputs(resumed_events)
 
 
 @pytest.mark.asyncio

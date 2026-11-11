@@ -16,18 +16,17 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from typing import AsyncGenerator
-from typing import Union
 
 from google.genai import types
 
 from .llm_response import LlmResponse
 
-RealtimeInput = Union[
-    types.Blob,
-    types.ActivityStart,
-    types.ActivityEnd,
-    types.LiveClientRealtimeInput,
-]
+RealtimeInput = (
+    types.Blob
+    | types.ActivityStart
+    | types.ActivityEnd
+    | types.LiveClientRealtimeInput
+)
 """Inputs the live flow passes to `BaseLlmConnection.send_realtime`."""
 
 

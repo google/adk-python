@@ -30,6 +30,7 @@ from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
 from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DELEGATED_TASK_MODES
 from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
@@ -432,11 +433,8 @@ def _remove_event(events: list[Event], event: Event) -> None:
     events: The events to remove from.
     event: The event to remove. Nothing is removed if no entry equals it.
   """
-  # getattr: some test doubles carry no id.
   for i, candidate in enumerate(events):
-    if candidate is event or (
-        getattr(candidate, 'id', None) == event.id and candidate == event
-    ):
+    if candidate is event or (candidate.id == event.id and candidate == event):
       del events[i]
       return
 
@@ -469,13 +467,15 @@ async def run_llm_agent_as_node(
 
   ic = agent_ctx.get_invocation_context()
   update: dict[str, object] = {'agent': effective_agent}
-  # Override ``user_content`` for task mode with this node's input.
-  # The content-builder uses it as the fallback first user turn when
-  # there is no originating delegation FC (the workflow-node task
-  # case).  For delegated tasks, the FC takes precedence and this
-  # override is unused.
-  if mode == AgentMode.TASK and node_input is not None:
+  # Populate ``user_content`` for ``task`` and ``single_turn`` nodes when
+  # ``node_input`` is provided (``_contents`` only falls back to it for
+  # ``task`` workflow nodes, since ``prepare_llm_agent_input`` seeds
+  # ``single_turn`` events). Clear inherited ``user_content`` for scoped
+  # ``single_turn`` nodes with ``node_input=None``.
+  if mode in DELEGATED_TASK_MODES and node_input is not None:
     update['user_content'] = to_user_content(node_input)
+  elif mode == AgentMode.SINGLE_TURN and ic.isolation_scope is not None:
+    update['user_content'] = None
   ic = ic.model_copy(update=update)
 
   from ..live.live_request_queue import LiveRequestQueue
@@ -494,6 +494,10 @@ async def run_llm_agent_as_node(
         async for event in run_iter:
           process_llm_agent_output(effective_agent, ctx, event)
           yield event
+      # A single_turn agent runs its transfer target inline, so the target's
+      # reply is already this node's output. Clear the transfer so the
+      # scheduler does not run the target again as a separate hop.
+      ctx.actions.transfer_to_agent = None
     finally:
       if injected_input_event is not None:
         _remove_event(agent_ctx.session.events, injected_input_event)
@@ -541,6 +545,7 @@ async def run_llm_agent_as_node(
     had_task_fc = False
     transferred = False
     pending_fc_args: dict[str, Any] | None = None
+    finished = False
     run_method = (
         effective_agent.run_live(ic)
         if is_live
@@ -548,6 +553,13 @@ async def run_llm_agent_as_node(
     )
     async with aclosing(run_method) as run_iter:
       async for event in run_iter:
+        if finished:
+          # A sibling tool's pause request would strand the finished result.
+          if event.get_function_calls():
+            return
+          # Closing the run early would skip the agent's after callbacks.
+          yield event
+          continue
         task_fcs = _extract_task_delegation_fcs(event, tools_dict)
         if is_task_mode:
           finish_fc = _extract_finish_task_fc(event)
@@ -572,7 +584,12 @@ async def run_llm_agent_as_node(
             if output_key and event.output is not None:
               ctx.actions.state_delta[output_key] = event.output
             yield event
-            return
+            # A live session does not end on its own, and a transfer in the
+            # same turn runs at the parent; close the run here for both.
+            if is_live or event.actions.transfer_to_agent:
+              return
+            finished = True
+            continue
 
         yield event
         if task_fcs:
@@ -595,6 +612,8 @@ async def run_llm_agent_as_node(
                             ' result is available.'
                         )
                     }
+                    # The rejected finish_task does not end the turn.
+                    pending_event.actions.skip_summarization = None
                 yield pending_event
 
           for fc in task_fcs:

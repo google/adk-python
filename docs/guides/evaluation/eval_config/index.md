@@ -86,9 +86,9 @@ Keys may be written in `snake_case` or `camelCase`, so `match_type` and
 
 ## The metrics, and the criterion each one accepts
 
-Every metric name is one of the thirteen `PrebuiltMetrics` values, or a name you
-declared yourself under `custom_metrics`. The **criterion type** column says
-which set of keys that metric's evaluator accepts in the object form.
+Every metric name is one of the `PrebuiltMetrics` values, or a name you declared
+yourself under `custom_metrics`. The **criterion type** column says which set of
+keys that metric's evaluator accepts in the object form.
 
 Most of them group into four families, and the family a metric belongs to
 decides what it costs and what its score is worth.
@@ -113,6 +113,7 @@ specific quality a deterministic score cannot see.
 | Metric | Criterion type | Range | What it scores |
 | :--- | :--- | :--- | :--- |
 | `tool_trajectory_avg_score` | `ToolTrajectoryCriterion` | 0 to 1 | Exact match of tool name and arguments against the expected trajectory. |
+| `tool_parameter_match` | `ToolParameterMatchCriterion` | 0 to 1 | How correct the arguments of the expected tool calls were, with partial credit per argument. |
 | `response_match_score` | `BaseCriterion` | 0 to 1 | ROUGE-1 word overlap between the final response and the expected one. |
 | `response_evaluation_score` | `BaseCriterion` | **1 to 5** | How coherent the response was. |
 | `final_response_match_v2` | `LlmAsAJudgeCriterion` | 0 to 1 | Whether the response matches the expected one, judged by a model. |
@@ -159,6 +160,49 @@ do not want to pin down, and for `ANY_ORDER` when the calls are independent of
 each other, such as three separate reads whose results are combined at the end.
 Each step away from `EXACT` buys tolerance for a variation you consider harmless
 and gives up the ability to catch that variation when it is not.
+
+**`ToolParameterMatchCriterion`** adds two keys. `match_type` takes the same
+three values as above but defaults to `IN_ORDER`, and decides which actual call
+each expected call is paired with. `args_matcher` decides how each expected
+argument is compared, with one matcher per argument name:
+
+```json
+{
+  "criteria": {
+    "tool_parameter_match": {
+      "threshold": 0.8,
+      "match_type": "ANY_ORDER",
+      "args_matcher": {
+        "per_arg_matchers": {
+          "city": {"type": "casefold"},
+          "temperature": {"type": "numeric", "tolerance": 0.5},
+          "request_id": {"type": "ignore"}
+        }
+      }
+    }
+  }
+}
+```
+
+Each paired call scores the mean of its expected arguments' scores, and an
+expected call left unpaired scores 0.0, so one wrong argument costs part of the
+score rather than all of it. `EXACT` and `IN_ORDER` pair calls first and score
+only the paired calls, whereas `ANY_ORDER` scores every same-name pair (`n * m`
+pairs for a tool expected `n` times and called `m` times) to pick the
+highest-scoring pairing, which multiplies the cost of a model-backed argument
+matcher. Without `args_matcher`, arguments must be equal. The matchers are those
+of
+[`ToolArgsMatcher`](../../tools/tool_args_matcher/tool_args_matcher/index.md),
+so the metric needs the `TOOL_ARGS_MATCHER` feature, which is on by default.
+
+`IN_ORDER` here pairs calls by name alone, which makes it stricter than
+`IN_ORDER` on `tool_trajectory_avg_score`. That metric skips a same-name call
+whose arguments differ and looks for a later exact match; this one pairs the
+expected call with the first same-name call after the previous pair, whatever
+its arguments. So when the agent retries a call, the first attempt is scored:
+expecting `search(city="Rome")` against the calls `search(city="Paris")` and
+then `search(city="Rome")` scores 1.0 on `tool_trajectory_avg_score` but 0.0
+here. Use `ANY_ORDER` if a retry should be scored on its best attempt.
 
 **`LlmAsAJudgeCriterion`** adds `judge_model_options`, an object with four keys
 of its own:
@@ -393,9 +437,10 @@ above the threshold.
 
 A **rule object**, `{"method": ..., "threshold": ...}`, counts the runs that
 passed and compares the result with its own `threshold`, from 0 to 1. Each run
-is first judged on its own, as a single run would be. The one such method so
-far is `pass_rate`: the runs that passed, divided by the runs that passed or
-failed. pass@k and pass^k are planned as further methods of this kind.
+is first judged on its own, as a single run would be. `pass_rate` is the runs
+that passed, divided by the runs that passed or failed. `pass_at_k` and
+`pass_hat_k` also count passing runs, in `cross_run_criteria` only; see
+[pass@k and pass^k](#passk-and-passk).
 
 The case passes when its metrics pass, combined as for a single run, and every
 cross-run criterion passes, unless more of its runs crashed than
@@ -436,13 +481,63 @@ as a bare name without a threshold, when a method that combines scores is given
 as a rule object or in `cross_run_criteria`, when a key of
 `cross_run_scoring_by_metric` is not in `criteria`, when a `threshold` is
 outside 0 to 1, when `max_crashed_runs` is negative, or when a rule object has
-a key it does not recognize.
+a key it does not recognize. The checks for `k` are listed under
+[pass@k and pass^k](#passk-and-passk).
 
 A rule object judges a case run once as well, so with one configured,
 `adk eval --print_detailed_results` prints every case the way it prints a case
 run several times: each metric with its method and value, then each cross-run
 criterion, then the runs. `AgentEvaluator`, which pytest suites call, and
 `adk web` ignore these keys for now.
+
+### pass@k and pass^k
+
+Two methods look at k runs at a time:
+
+*   `pass_at_k` measures capability: the chance that at least one of k runs
+    passes. It answers whether the agent can do the task at all.
+*   `pass_hat_k` measures reliability: the chance that all k runs pass. It
+    answers whether the agent does the task every time.
+
+Both are unbiased estimates from the runs that passed or failed, so any k up to
+that number can be reported from the same runs. At k of 1 both equal
+`pass_rate`. A `pass_hat_k` well below `pass_at_k` marks a case that the agent
+can pass but not consistently, which is flaky rather than wrong.
+
+They go in `cross_run_criteria`, with `k`, and count the runs of the whole eval
+case: a run passes only when every metric passed in it, as in HumanEval and
+tau-bench. Without a `threshold`, a criterion only reports its value: its
+status is `INFORMATIONAL`, and it never passes or fails the case. With a
+`threshold`, it judges the case as `pass_rate` does.
+
+```json
+{
+  "criteria": {
+    "tool_trajectory_avg_score": 1.0,
+    "response_match_score": 0.6
+  },
+  "multi_run_config": {
+    "num_runs": 3,
+    "cross_run_criteria": [
+      {"method": "pass_at_k", "k": 2},
+      {"method": "pass_hat_k", "k": 2}
+    ]
+  }
+}
+```
+
+With the three runs in the table above, the case passed 2 of 3 runs, so it
+reports a `pass_at_k` of 1, printed as `pass@2`, and a `pass_hat_k` of 1 in 3,
+printed as `pass^2`. Neither has a threshold, so the case still passes on its
+metrics.
+
+A criterion has no value when fewer than k runs passed or failed, for example
+after a judge outage. The file fails to load when `pass_at_k` or `pass_hat_k`
+has no `k`, when `k` is less than 1, when another method has a `k`, when a
+method other than these two has no `threshold`, or when `pass_at_k` or
+`pass_hat_k` is used outside `cross_run_criteria`. `adk eval` checks `k`
+against the number of runs once `--num_runs` has been applied, and stops before
+any inference when `k` is more than that number.
 
 ### Crashed runs
 

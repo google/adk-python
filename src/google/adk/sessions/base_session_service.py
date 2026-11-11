@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import abc
 from typing import Any
-from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -33,19 +32,19 @@ class GetSessionConfig(BaseModel):
   Attributes:
     num_recent_events: The limit of recent events to get for the session.
       Optional: if None, the filter is not applied; if greater than 0, returns
-        at most given number of recent events; if 0, no events are returned;
-        if negative, a ValueError is raised.
+        at most given number of recent events; if 0, no events are returned; if
+        negative, a ValueError is raised.
     after_timestamp: The earliest timestamp of events to get for the session.
       Optional: if None, the filter is not applied; otherwise, returns events
         with timestamp >= the given time.
   """
 
-  num_recent_events: Optional[int] = None
-  after_timestamp: Optional[float] = None
+  num_recent_events: int | None = None
+  after_timestamp: float | None = None
 
   @field_validator('num_recent_events')
   @classmethod
-  def _validate_num_recent_events(cls, value: Optional[int]) -> Optional[int]:
+  def _validate_num_recent_events(cls, value: int | None) -> int | None:
     if value is not None and value < 0:
       raise ValueError('num_recent_events must be greater than or equal to 0.')
     return value
@@ -72,8 +71,8 @@ class BaseSessionService(abc.ABC):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     """Creates a new session.
 
@@ -95,13 +94,13 @@ class BaseSessionService(abc.ABC):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     """Gets a session."""
 
   @abc.abstractmethod
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     """Lists all the sessions for a user.
 

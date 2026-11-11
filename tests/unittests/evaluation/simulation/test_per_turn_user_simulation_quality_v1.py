@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
@@ -780,3 +782,287 @@ async def test_evaluate_invocations_judge_request_disables_afc(
   for request in captured_requests:
     assert request.config.automatic_function_calling is not None
     assert request.config.automatic_function_calling.disable is True
+
+
+def _mock_judge_llm(mocker):
+  mock_registry = mocker.patch(
+      "google.adk.evaluation.simulation.per_turn_user_simulator_quality_v1"
+      ".LLMRegistry"
+  )
+  mock_llm_cls = mocker.MagicMock()
+  mock_registry.return_value.resolve.return_value = mock_llm_cls
+  return mock_llm_cls.return_value
+
+
+async def test_evaluate_invocations_runs_judge_calls_up_to_parallelism_limit(
+    mocker,
+):
+  """Judge calls run concurrently, never more than parallelism_limit at once.
+
+  Setup: parallelism_limit=3, num_samples=2 and four turns, so three
+    intermediate turns and the stop-signal check issue eight judge calls. Each
+    call holds its slot until three calls are in flight.
+  Act: Evaluate the conversation.
+  Assert: The most judge calls in flight at once is three.
+  """
+  mock_llm = _mock_judge_llm(mocker)
+  evaluator = PerTurnUserSimulatorQualityV1(
+      EvalMetric(
+          metric_name="test_per_turn_user_simulator_quality_v1",
+          threshold=0.75,
+          criterion=LlmBackedUserSimulatorCriterion(
+              threshold=0.75,
+              stop_signal="test stop signal",
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  num_samples=2,
+                  parallelism_limit=3,
+              ),
+          ),
+      ),
+  )
+  in_flight = 0
+  max_in_flight = 0
+  all_slots_filled = asyncio.Event()
+
+  async def mock_generate_content_async(llm_request):
+    del llm_request
+    nonlocal in_flight, max_in_flight
+    in_flight += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    if in_flight == 3:
+      all_slots_filled.set()
+    try:
+      await asyncio.wait_for(all_slots_filled.wait(), timeout=1.0)
+      # Yield so a call beyond the limit, if unbounded, would start now.
+      await asyncio.sleep(0.01)
+      yield LlmResponse(
+          content=genai_types.Content(
+              parts=[genai_types.Part(text='{"is_valid": "valid"}')],
+              role="model",
+          )
+      )
+    finally:
+      in_flight -= 1
+
+  mock_llm.generate_content_async = mock_generate_content_async
+  invocations = [
+      _create_test_invocation(
+          "turn_0", user_content="start", model_content="m0"
+      ),
+      _create_test_invocation("turn_1", user_content="u1", model_content="m1"),
+      _create_test_invocation("turn_2", user_content="u2", model_content="m2"),
+      _create_test_invocation("turn_3", user_content="u3", model_content="m3"),
+  ]
+  scenario = _create_test_conversation_scenario(starting_prompt="start")
+
+  await evaluator.evaluate_invocations(
+      actual_invocations=invocations,
+      conversation_scenario=scenario,
+  )
+
+  assert max_in_flight == 3
+
+
+async def test_evaluate_invocations_keeps_turn_order_on_out_of_order_finish(
+    mocker,
+):
+  """Results keep turn order when a later turn's judge call finishes first.
+
+  Setup: parallelism_limit=3 and four turns, so three intermediate turns and
+    the stop-signal check issue four judge calls. The call for turn_1 waits
+    until the other three finish and judges turn_1 invalid; the rest are valid.
+  Act: Evaluate the conversation.
+  Assert: turn_1 finished last, yet results are in turn order, each with its
+    own score.
+  """
+  mock_llm = _mock_judge_llm(mocker)
+  evaluator = PerTurnUserSimulatorQualityV1(
+      EvalMetric(
+          metric_name="test_per_turn_user_simulator_quality_v1",
+          threshold=0.75,
+          criterion=LlmBackedUserSimulatorCriterion(
+              threshold=0.75,
+              stop_signal="test stop signal",
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  num_samples=1,
+                  parallelism_limit=3,
+              ),
+          ),
+      ),
+  )
+  finished = []
+  others_finished = asyncio.Event()
+
+  async def mock_generate_content_async(llm_request):
+    prompt_text = llm_request.contents[0].parts[0].text
+    is_turn_1 = prompt_text.endswith(
+        "# Generated User Response\noff-plan turn 1"
+    )
+    if is_turn_1:
+      await asyncio.wait_for(others_finished.wait(), timeout=1.0)
+    finished.append("turn_1" if is_turn_1 else "other")
+    if len(finished) == 3:
+      others_finished.set()
+    verdict = "invalid" if is_turn_1 else "valid"
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=f'{{"is_valid": "{verdict}"}}')],
+            role="model",
+        )
+    )
+
+  mock_llm.generate_content_async = mock_generate_content_async
+  invocations = [
+      _create_test_invocation(
+          "turn_0", user_content="start", model_content="m0"
+      ),
+      _create_test_invocation(
+          "turn_1", user_content="off-plan turn 1", model_content="m1"
+      ),
+      _create_test_invocation("turn_2", user_content="u2", model_content="m2"),
+      _create_test_invocation("turn_3", user_content="u3", model_content="m3"),
+  ]
+  scenario = _create_test_conversation_scenario(starting_prompt="start")
+
+  result = await evaluator.evaluate_invocations(
+      actual_invocations=invocations,
+      conversation_scenario=scenario,
+  )
+
+  assert finished[-1] == "turn_1"
+  assert [
+      r.actual_invocation.invocation_id for r in result.per_invocation_results
+  ] == ["turn_0", "turn_1", "turn_2", "turn_3"]
+  assert [r.score for r in result.per_invocation_results] == [
+      1.0,
+      0.0,
+      1.0,
+      1.0,
+  ]
+
+
+async def test_evaluate_invocations_stop_signal_failure_marks_last_turn_failed(
+    mocker,
+):
+  """A failed stop-signal check still overwrites the final turn."""
+  mock_llm = _mock_judge_llm(mocker)
+  evaluator = PerTurnUserSimulatorQualityV1(
+      EvalMetric(
+          metric_name="test_per_turn_user_simulator_quality_v1",
+          threshold=1.0,
+          criterion=LlmBackedUserSimulatorCriterion(
+              threshold=1.0,
+              stop_signal="test stop signal",
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  num_samples=2,
+                  parallelism_limit=3,
+              ),
+          ),
+      ),
+  )
+
+  async def mock_generate_content_async(llm_request):
+    prompt_text = llm_request.contents[0].parts[0].text
+    is_stop_signal = prompt_text.endswith(
+        "# Generated User Response\ntest stop signal"
+    )
+    verdict = "invalid" if is_stop_signal else "valid"
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=f'{{"is_valid": "{verdict}"}}')],
+            role="model",
+        )
+    )
+
+  mock_llm.generate_content_async = mock_generate_content_async
+
+  invocations = [
+      _create_test_invocation(
+          "turn_0", user_content="start", model_content="m0"
+      ),
+      _create_test_invocation("turn_1", user_content="u1", model_content="m1"),
+  ]
+  scenario = _create_test_conversation_scenario(starting_prompt="start")
+
+  result = await evaluator.evaluate_invocations(
+      actual_invocations=invocations,
+      conversation_scenario=scenario,
+  )
+
+  assert [r.eval_status for r in result.per_invocation_results] == [
+      EvalStatus.PASSED,
+      EvalStatus.FAILED,
+  ]
+  assert result.overall_score == 0.5
+  assert result.overall_eval_status == EvalStatus.FAILED
+
+
+async def test_evaluate_invocations_cancels_in_flight_sibling_calls_on_error(
+    mocker,
+):
+  """A judge call that raises cancels and drains in-flight sibling calls."""
+  mock_llm = _mock_judge_llm(mocker)
+  evaluator = PerTurnUserSimulatorQualityV1(
+      EvalMetric(
+          metric_name="test_per_turn_user_simulator_quality_v1",
+          threshold=1.0,
+          criterion=LlmBackedUserSimulatorCriterion(
+              threshold=1.0,
+              stop_signal="test stop signal",
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  num_samples=2,
+                  parallelism_limit=3,
+              ),
+          ),
+      ),
+  )
+
+  in_flight = 0
+  cancelled_calls = 0
+  call_index = 0
+  all_slots_filled = asyncio.Event()
+  never_finishes = asyncio.Event()
+
+  async def mock_generate_content_async(llm_request):
+    del llm_request
+    nonlocal in_flight, cancelled_calls, call_index
+    my_index = call_index
+    call_index += 1
+    in_flight += 1
+    if in_flight >= 3:
+      all_slots_filled.set()
+    try:
+      await asyncio.wait_for(all_slots_filled.wait(), timeout=1.0)
+      if my_index == 0:
+        raise RuntimeError("judge model failure")
+      await asyncio.wait_for(never_finishes.wait(), timeout=2.0)
+      yield LlmResponse()
+    except asyncio.CancelledError:
+      cancelled_calls += 1
+      raise
+    finally:
+      in_flight -= 1
+
+  mock_llm.generate_content_async = mock_generate_content_async
+
+  invocations = [
+      _create_test_invocation(
+          "turn_0", user_content="start", model_content="m0"
+      ),
+      _create_test_invocation("turn_1", user_content="u1", model_content="m1"),
+      _create_test_invocation("turn_2", user_content="u2", model_content="m2"),
+  ]
+  scenario = _create_test_conversation_scenario(starting_prompt="start")
+
+  with pytest.raises(RuntimeError, match="judge model failure"):
+    await evaluator.evaluate_invocations(
+        actual_invocations=invocations,
+        conversation_scenario=scenario,
+    )
+
+  assert in_flight == 0
+  assert cancelled_calls >= 2

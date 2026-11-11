@@ -81,7 +81,8 @@ Open the printed URL, select `hello_world_openai`, and try
   `check_prime` tools to work. Some reasoning models (for example the gpt-5.6
   family) reject function tools on Chat Completions at their default reasoning
   effort; use a model such as `gpt-4.1` here, or `OpenAIResponsesLlm` for those
-  models.
+  models, as the
+  [Responses reasoning sample](../openai_responses_reasoning/README.md) does.
 - `OPENAI_BASE_URL` lets the same sample reach any OpenAI-compatible host; the
   default client reads it.
 

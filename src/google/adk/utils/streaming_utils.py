@@ -18,7 +18,6 @@ import json
 import re
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.genai import types
 
@@ -161,12 +160,12 @@ class _ActiveFunctionCall:
   """State tracker for an in-flight streaming function call."""
 
   def __init__(self) -> None:
-    self.name: Optional[str] = None
+    self.name: str | None = None
     self.args: dict[str, Any] = {}
     self.arg_chunks: dict[str, list[str]] = {}
-    self.id: Optional[str] = None
-    self.thought_signature: Optional[bytes] = None
-    self.sequence_index: Optional[int] = None
+    self.id: str | None = None
+    self.thought_signature: bytes | None = None
+    self.sequence_index: int | None = None
 
 
 class StreamingResponseAggregator:
@@ -179,22 +178,22 @@ class StreamingResponseAggregator:
   def __init__(self) -> None:
     self._text: list[str] = []
     self._thought_text: list[str] = []
-    self._usage_metadata: Optional[
-        types.GenerateContentResponseUsageMetadata
-    ] = None
-    self._grounding_metadata: Optional[types.GroundingMetadata] = None
-    self._citation_metadata: Optional[types.CitationMetadata] = None
-    self._response: Optional[types.GenerateContentResponse] = None
+    self._usage_metadata: types.GenerateContentResponseUsageMetadata | None = (
+        None
+    )
+    self._grounding_metadata: types.GroundingMetadata | None = None
+    self._citation_metadata: types.CitationMetadata | None = None
+    self._response: types.GenerateContentResponse | None = None
 
     # For progressive SSE streaming mode: accumulate parts in order
-    self._parts_sequence: list[Optional[types.Part]] = []
+    self._parts_sequence: list[types.Part | None] = []
     self._current_text_buffer: list[str] = []
-    self._current_text_is_thought: Optional[bool] = None
-    self._current_text_thought_signature: Optional[bytes] = None
-    self._finish_reason: Optional[types.FinishReason] = None
+    self._current_text_is_thought: bool | None = None
+    self._current_text_thought_signature: bytes | None = None
+    self._finish_reason: types.FinishReason | None = None
 
     # For streaming function call arguments
-    self._active_function_call: Optional[_ActiveFunctionCall] = None
+    self._active_function_call: _ActiveFunctionCall | None = None
 
   def _flush_text_buffer_to_sequence(self) -> None:
     """Flush current text buffer to parts sequence.
@@ -555,7 +554,7 @@ class StreamingResponseAggregator:
       deduped_parts.append(part)
     return deduped_parts
 
-  def close(self) -> Optional[LlmResponse]:
+  def close(self) -> LlmResponse | None:
     """Generate an aggregated response at the end, if needed.
 
     This should be called after all the model responses are processed.
@@ -574,7 +573,7 @@ class StreamingResponseAggregator:
     if not finish_reason and candidate:
       finish_reason = candidate.finish_reason
 
-    error_code: Optional[str] = None
+    error_code: str | None = None
     error_message = None
     if finish_reason and finish_reason != types.FinishReason.STOP:
       error_code = finish_reason
@@ -739,13 +738,19 @@ class _JsonPathTracker:
 
     try:
       current_dict = json.loads(completed)
-    except (json.JSONDecodeError, RecursionError):
+    except (ValueError, RecursionError):
+      # ValueError also covers an integer over the int max str digits limit.
       return []
 
     if not isinstance(current_dict, dict):
       return []
 
-    diffs = self._get_diff(self.previous_dict, current_dict)
+    try:
+      diffs = self._get_diff(self.previous_dict, current_dict)
+    except RecursionError:
+      # The diff walks the value recursively; nesting the decoder accepted
+      # can still be too deep for it. Partial args are optional.
+      return []
     self.previous_dict = current_dict
 
     if self._open_string_path is not None and not any(
@@ -917,6 +922,12 @@ class _JsonPathTracker:
           json_path=path, string_value=val, will_continue=False
       )
     elif isinstance(val, (int, float)) and not isinstance(val, bool):
+      try:
+        float(val)
+      except OverflowError:
+        # number_value is a float; an integer too large for one is left
+        # valueless like other unsupported leaves.
+        return types.PartialArg(json_path=path, will_continue=False)
       return types.PartialArg(
           json_path=path, number_value=val, will_continue=False
       )

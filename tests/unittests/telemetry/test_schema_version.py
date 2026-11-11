@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.telemetry._schema_version import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
 from google.adk.telemetry._schema_version import resolve_schema_version
 import pytest
@@ -47,7 +45,7 @@ import pytest
     ],
 )
 def test_resolve_schema_version(
-    monkeypatch: pytest.MonkeyPatch, opt_in: Optional[str], expected: int
+    monkeypatch: pytest.MonkeyPatch, opt_in: str | None, expected: int
 ):
   if opt_in is None:
     monkeypatch.delenv(ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, raising=False)

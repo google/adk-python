@@ -235,9 +235,6 @@ one will.
     a grandchild agent contributes no skills.
 *   **`security_schemes` is descriptive only.** Nothing validates requests
     against it.
-*   **Experimental.** The class is decorated `@a2a_experimental`, so
-    constructing one emits a `UserWarning`. Set
-    `ADK_SUPPRESS_A2A_EXPERIMENTAL_FEATURE_WARNINGS` to silence it.
 
 ## Related samples
 

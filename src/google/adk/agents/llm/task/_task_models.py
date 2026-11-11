@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -73,10 +72,10 @@ class _DefaultTaskInput(BaseModel):
       populate_by_name=True,
   )
 
-  goal: Optional[str] = None
+  goal: str | None = None
   """The goal or objective for the task agent."""
 
-  background: Optional[str] = None
+  background: str | None = None
   """Additional background context for the task agent."""
 
 

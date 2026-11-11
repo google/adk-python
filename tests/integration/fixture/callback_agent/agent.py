@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
@@ -74,7 +73,7 @@ def before_model_call(
 def after_model_call(
     callback_context: CallbackContext,
     llm_response: LlmResponse,
-) -> Optional[LlmResponse]:
+) -> LlmResponse | None:
   content = llm_response.content
   if not content or not content.parts or not content.parts[0].text:
     return
