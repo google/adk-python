@@ -819,11 +819,14 @@ class Workflow(BaseNode):
       return
 
     # A genuine execution records a checkpoint on completion. A replayed
-    # fast-forward instead re-surfaces its recovered output so a resumable
-    # stream stays complete, without a redundant checkpoint.
+    # fast-forward instead re-surfaces its output so a resumable stream stays
+    # complete, without a redundant checkpoint. An output recovered from the
+    # session is already persisted there: emitting it again would store it
+    # once more on every later resume. Only an output this resume derived from
+    # resolved interrupts still needs to be persisted.
     if not replayed:
       await self._emit_node_checkpoint(loop_state, ctx)
-    else:
+    elif run.recovered_state is None or run.recovered_state.output is None:
       await self._maybe_reemit_replayed_output(child_ctx, ctx)
 
     # Buffer downstream triggers.
