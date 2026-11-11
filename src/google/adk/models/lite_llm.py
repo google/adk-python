@@ -4414,18 +4414,40 @@ def _is_litellm_vertex_model(model_string: str) -> bool:
   return _strip_proxy_prefix(model_string).startswith("vertex_ai/")
 
 
-def _is_litellm_gemini_model(model_string: str) -> bool:
+def _is_litellm_gemini_model(
+    model_string: str, *, resolve_provider: bool = True
+) -> bool:
   """Check if the model is a Gemini model accessed via LiteLLM.
 
   Args:
     model_string: A LiteLLM model string (e.g., "gemini/gemini-2.5-pro" or
       "vertex_ai/gemini-2.5-flash")
+    resolve_provider: Use LiteLLM resolution when already imported. Disable for
+      constructor warnings to avoid provider lookups during initialization.
 
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
-  return _strip_proxy_prefix(model_string).startswith(
-      ("gemini/gemini-", "vertex_ai/gemini-")
+  model = _strip_proxy_prefix(model_string)
+  if resolve_provider and litellm is not None:
+    try:
+      # LiteLLM resolves provider aliases locally, without making an API request.
+      resolved = litellm.get_llm_provider(model)
+      if (
+          isinstance(resolved, (tuple, list))
+          and len(resolved) > 1
+          and isinstance(resolved[0], str)
+          and isinstance(resolved[1], str)
+      ):
+        return resolved[1] in {"gemini", "vertex_ai", "vertex_ai_beta"} and (
+            resolved[0].startswith("gemini-")
+        )
+    except Exception as e:
+      logger.debug("Failed to resolve Gemini route for %s: %s", model, e)
+  # Older LiteLLM versions may not resolve every supported provider prefix.
+  provider, _, model_name = model.partition("/")
+  return provider in {"gemini", "vertex_ai", "vertex_ai_beta"} and (
+      model_name.startswith("gemini-")
   )
 
 
@@ -4459,7 +4481,7 @@ def _warn_gemini_via_litellm(
     model_string: The LiteLLM model string to check
     completion_args: Optional completion arguments to check for proxy settings.
   """
-  if not _is_litellm_gemini_model(model_string):
+  if not _is_litellm_gemini_model(model_string, resolve_provider=False):
     return
 
   # Do not warn if using a proxy, as native Gemini client might not support it.

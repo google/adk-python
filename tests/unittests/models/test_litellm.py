@@ -14489,18 +14489,38 @@ def test_strict_nullable_object_type_list_requires_all_properties():
 
 
 @pytest.mark.parametrize(
-    "model",
+    "model, is_gemini",
     [
-        "gemini/gemini-2.5-flash",
-        "vertex_ai/gemini-2.5-flash",
-        "litellm_proxy/vertex_ai/gemini-2.5-flash",
-        "openai/gpt-4o-mini",
+        ("gemini/gemini-2.5-flash", True),
+        ("vertex_ai/gemini-2.5-flash", True),
+        ("vertex_ai_beta/gemini-2.5-flash", True),
+        ("litellm_proxy/gemini/gemini-2.5-flash", True),
+        ("litellm_proxy/vertex_ai/gemini-2.5-flash", True),
+        ("litellm_proxy/vertex_ai_beta/gemini-2.5-flash", True),
+        ("openai/gpt-4o-mini", False),
+        ("anthropic/claude-3-5-sonnet-20241022", False),
+        ("vertex_ai/claude-3-5-sonnet-v2@20241022", False),
+        ("openai/gemini-2.5-flash", False),
     ],
 )
+@pytest.mark.parametrize(
+    "provider_resolution", ["available", "raises", "missing"]
+)
 @pytest.mark.asyncio
-async def test_nullable_provider_payload(model, mock_client):
-  """Gemini preserves nullable enums through LiteLLM's own transformation."""
+async def test_nullable_provider_payload(
+    model, is_gemini, provider_resolution, mock_client, monkeypatch
+):
+  """Routes preserve nullable or type lists through provider transformation."""
   from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexGeminiConfig
+
+  if provider_resolution == "raises":
+    monkeypatch.setattr(
+        litellm,
+        "get_llm_provider",
+        Mock(side_effect=RuntimeError("unresolved")),
+    )
+  elif provider_resolution == "missing":
+    monkeypatch.delattr(litellm, "get_llm_provider")
 
   schema = types.Schema(
       type=types.Type.OBJECT,
@@ -14533,12 +14553,16 @@ async def test_nullable_provider_payload(model, mock_client):
 
   payload = mock_client.acompletion_mock.call_args.kwargs
   parameters = payload["tools"][0]["function"]["parameters"]
-  if model.startswith("openai/"):
+  if not is_gemini:
     response = payload["response_format"]["json_schema"]["schema"]
     for result in (parameters, response):
       assert result["properties"]["city"]["type"] == ["string", "null"]
+      assert "nullable" not in result["properties"]["city"]
+      assert result["properties"]["choice"]["type"] == ["string", "null"]
       assert result["properties"]["choice"]["enum"] == ["x", "y", None]
   else:
+    assert parameters["properties"]["city"]["nullable"] is True
+    assert parameters["properties"]["choice"]["nullable"] is True
     config = VertexGeminiConfig()
     tools = config._map_function(payload["tools"], {})
     response = config._map_response_schema(
@@ -14551,3 +14575,26 @@ async def test_nullable_provider_payload(model, mock_client):
       assert result["properties"]["city"]["nullable"] is True
       assert result["properties"]["choice"]["nullable"] is True
       assert result["properties"]["choice"]["enum"] == ["x", "y"]
+
+
+@pytest.mark.parametrize(
+    "resolved_model, provider, expected",
+    [
+        ("gemini-2.5-flash", "gemini", True),
+        ("gemini-2.5-flash", "vertex_ai", True),
+        ("gemini-2.5-flash", "vertex_ai_beta", True),
+        ("claude-4-sonnet", "vertex_ai", False),
+        ("gemini-2.5-flash", "openai", False),
+    ],
+)
+def test_gemini_detection_uses_resolved_provider(
+    resolved_model, provider, expected, monkeypatch
+):
+  """Provider resolution identifies aliases without matching other families."""
+  monkeypatch.setattr(
+      litellm,
+      "get_llm_provider",
+      Mock(return_value=(resolved_model, provider, None, None)),
+  )
+
+  assert _is_litellm_gemini_model("custom-alias") is expected
