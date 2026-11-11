@@ -23,6 +23,7 @@ Features include:
   - Semaphore-based concurrency control to stay within LLM model quota
   - Automatic retry with exponential backoff on 429 / RESOURCE_EXHAUSTED
   - Transient error detection to signal upstream services to retry
+  - Delivery identity in session state so tools can recognize redeliveries
 """
 
 from __future__ import annotations
@@ -52,11 +53,15 @@ from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
 from pydantic import Field
 
+from ..agents.run_config import RunConfig
 from ..events.event import Event
+from ..utils._error_reporting import report_error
 from ..utils.context_utils import Aclosing
 
 if TYPE_CHECKING:
-  from .adk_web_server import AdkWebServer
+  from collections.abc import Sequence
+
+  from .api_server import ApiServer
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -81,6 +86,33 @@ DEFAULT_RETRY_MAX_DELAY = float(
     os.environ.get("ADK_TRIGGER_RETRY_MAX_DELAY", "30.0")
 )
 """Maximum delay in seconds for exponential backoff."""
+
+TRIGGER_DELIVERY_STATE_KEY = "trigger_delivery"
+"""Session state key holding the identity of the delivery that started a run.
+
+Pub/Sub and Eventarc redeliver a message whenever the endpoint does not
+acknowledge it, and every delivery runs the agent in a new session with fresh
+state, so nothing an earlier attempt wrote to session state is visible to the
+redelivery. A tool with side effects should instead derive an idempotency key
+from this value and deduplicate where the side effect happens: pass the key to
+the provider (for example a payment API's idempotency key) or check it against
+an external store.
+
+The value is a dict with:
+
+  - ``source``: ``"pubsub"`` or ``"eventarc"``.
+  - ``id``: the Pub/Sub ``messageId`` or the CloudEvents ``id``, which stay
+    the same across redeliveries of one message. ``None`` if the request did
+    not carry one.
+  - ``subscription`` and ``publish_time`` for Pub/Sub, or ``event_source``
+    and ``type`` for Eventarc.
+
+``id`` alone is not globally unique: a Pub/Sub ``messageId`` is unique only
+within its topic, and every subscription on the topic receives the message,
+while a CloudEvents ``id`` is unique only within its source. Build the key
+from ``subscription`` and ``id`` for Pub/Sub, and from ``event_source`` and
+``id`` for Eventarc.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +288,7 @@ class GoogleOidcVerifier:
       )
       if self._allowed_emails:
         if (
-            not claims.get("email_verified")
+            claims.get("email_verified") is not True
             or claims.get("email") not in self._allowed_emails
         ):
           raise HTTPException(
@@ -290,7 +322,7 @@ class TriggerRouter:
       exponential backoff + jitter
   """
 
-  DEFAULT_TRIGGER_SOURCES = []
+  DEFAULT_TRIGGER_SOURCES: list[str] = []
   """Trigger sources registered when ``trigger_sources`` is not specified.
   By default, no triggers are registered to require explicit opt-in via CLI.
   """
@@ -299,9 +331,9 @@ class TriggerRouter:
 
   def __init__(
       self,
-      adk_web_server: "AdkWebServer",
+      adk_web_server: ApiServer,
       *,
-      trigger_sources: Optional[list[str]] = None,
+      trigger_sources: Optional[Sequence[str]] = None,
       max_concurrent: int = DEFAULT_MAX_CONCURRENT,
       max_retries: int = DEFAULT_MAX_RETRIES,
       retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
@@ -341,6 +373,7 @@ class TriggerRouter:
       user_id: str,
       message_text: str,
       session_id: str,
+      session_state: Optional[dict[str, Any]] = None,
   ) -> list[Event]:
     """Run the agent with an auto-created ephemeral session.
 
@@ -352,6 +385,7 @@ class TriggerRouter:
       user_id: Identifier for observability (derived from trigger metadata).
       message_text: The text input to send to the agent.
       session_id: The session ID to use.
+      session_state: Initial state for the session if it has to be created.
 
     Returns:
       List of events produced by the agent invocation.
@@ -369,6 +403,7 @@ class TriggerRouter:
         session = await self._server.session_service.create_session(
             app_name=app_name,
             user_id=user_id,
+            state=session_state,
             session_id=session_id,
         )
 
@@ -377,12 +412,20 @@ class TriggerRouter:
           parts=[types.Part(text=message_text)],
       )
 
+      max_llm_calls = getattr(self._server, "max_llm_calls", None)
+      run_config = (
+          RunConfig(max_llm_calls=max_llm_calls)
+          if max_llm_calls is not None
+          else None
+      )
+
       events: list[Event] = []
       async with Aclosing(
           runner.run_async(
               user_id=user_id,
               session_id=session.id,
               new_message=new_message,
+              run_config=run_config,
           )
       ) as agen:
         async for event in agen:
@@ -396,6 +439,7 @@ class TriggerRouter:
       app_name: str,
       user_id: str,
       message_text: str,
+      delivery: Optional[dict[str, Any]] = None,
   ) -> list[Event]:
     """Run the agent with retry on transient errors.
 
@@ -407,6 +451,8 @@ class TriggerRouter:
       app_name: The target application / agent name.
       user_id: Identifier for observability.
       message_text: The text input to send to the agent.
+      delivery: Identity of the upstream delivery, stored in session state
+        under ``TRIGGER_DELIVERY_STATE_KEY``.
 
     Returns:
       List of events produced by the agent invocation.
@@ -417,6 +463,9 @@ class TriggerRouter:
     """
     last_error: Optional[Exception] = None
     session_id = str(uuid.uuid4())
+    session_state = (
+        {TRIGGER_DELIVERY_STATE_KEY: delivery} if delivery is not None else None
+    )
 
     for attempt in range(self._max_retries + 1):
       try:
@@ -425,6 +474,7 @@ class TriggerRouter:
             user_id=user_id,
             message_text=message_text,
             session_id=session_id,
+            session_state=session_state,
         )
       except Exception as e:
         if not _is_transient_error(e):
@@ -454,10 +504,11 @@ class TriggerRouter:
               e,
           )
 
+    # The cause carries the provider's error text, which is for the log only --
+    # chain it rather than formatting it into a message that reaches the caller.
     raise TransientError(
-        f"Rate limit exceeded after {self._max_retries + 1} attempts:"
-        f" {last_error}"
-    )
+        f"Rate limit exceeded after {self._max_retries + 1} attempts."
+    ) from last_error
 
   def register(self, app: FastAPI) -> None:
     """Register /trigger/* routes on the FastAPI app.
@@ -485,6 +536,9 @@ class TriggerRouter:
               "Processes a message from a Pub/Sub push subscription."
               " Returns 200 on success; errors trigger Pub/Sub retry."
               " Includes automatic retry with backoff on 429 errors."
+              " The messageId is stored in session state under"
+              f" '{TRIGGER_DELIVERY_STATE_KEY}' so tools can detect"
+              " redeliveries."
           ),
           dependencies=auth_dependencies,
       )
@@ -505,10 +559,14 @@ class TriggerRouter:
             except json.JSONDecodeError:
               data_payload = decoded_data
           except Exception as e:
-            logger.exception("Failed to decode Pub/Sub message data")
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid base64 message data: {e}",
+                detail=report_error(
+                    logger,
+                    e,
+                    summary="Invalid base64 message data.",
+                    log_message="Failed to decode Pub/Sub message data",
+                ),
             ) from e
 
         message_text = json.dumps(
@@ -526,18 +584,32 @@ class TriggerRouter:
               app_name=app_name,
               user_id=user_id,
               message_text=message_text,
+              delivery={
+                  "source": "pubsub",
+                  "id": req.message.messageId,
+                  "subscription": req.subscription,
+                  "publish_time": req.message.publishTime,
+              },
           )
         except TransientError as te:
-          logger.exception("Pub/Sub: transient error after retries: %s", te)
           raise HTTPException(
               status_code=500,
-              detail=f"Rate limit exceeded (429). Retryable. {te}",
+              detail=report_error(
+                  logger,
+                  te,
+                  summary="Rate limit exceeded (429). Retryable.",
+                  log_message="Pub/Sub: transient error after retries",
+              ),
           ) from te
         except Exception as e:
-          logger.exception("Error processing Pub/Sub message: %s", e)
           raise HTTPException(
               status_code=500,
-              detail=f"Agent processing failed: {e}",
+              detail=report_error(
+                  logger,
+                  e,
+                  summary="Agent processing failed.",
+                  log_message="Error processing Pub/Sub message",
+              ),
           ) from e
 
         return TriggerResponse(status="success")
@@ -553,6 +625,9 @@ class TriggerRouter:
               "Processes a CloudEvent delivered by Eventarc."
               " Returns 200 on success; errors trigger Eventarc retry."
               " Includes automatic retry with backoff on 429 errors."
+              " The event id is stored in session state under"
+              f" '{TRIGGER_DELIVERY_STATE_KEY}' so tools can detect"
+              " redeliveries."
           ),
           dependencies=auth_dependencies,
       )
@@ -564,11 +639,18 @@ class TriggerRouter:
             default="eventarc-caller",
         )
 
+        event_type = req.type or request.headers.get("ce-type")
+        event_id = req.id or request.headers.get("ce-id")
+        if not event_id and req.message:
+          # A Pub/Sub-wrapped event may arrive without a CloudEvents id; its
+          # messageId is just as stable across redeliveries.
+          event_id = req.message.messageId
+
         logger.info(
             "Eventarc trigger: source=%s, type=%s, id=%s",
             user_id,
-            req.type or request.headers.get("ce-type"),
-            req.id or request.headers.get("ce-id"),
+            event_type,
+            event_id,
         )
 
         # Extract message text — support both structured and binary modes.
@@ -644,18 +726,34 @@ class TriggerRouter:
               app_name=app_name,
               user_id=user_id,
               message_text=message_text,
+              delivery={
+                  "source": "eventarc",
+                  "id": event_id,
+                  "event_source": (
+                      req.source or request.headers.get("ce-source")
+                  ),
+                  "type": event_type,
+              },
           )
         except TransientError as te:
-          logger.exception("Eventarc: transient error after retries: %s", te)
           raise HTTPException(
               status_code=500,
-              detail=f"Rate limit exceeded (429). Retryable. {te}",
+              detail=report_error(
+                  logger,
+                  te,
+                  summary="Rate limit exceeded (429). Retryable.",
+                  log_message="Eventarc: transient error after retries",
+              ),
           ) from te
         except Exception as e:
-          logger.exception("Error processing Eventarc event: %s", e)
           raise HTTPException(
               status_code=500,
-              detail=f"Agent processing failed: {e}",
+              detail=report_error(
+                  logger,
+                  e,
+                  summary="Agent processing failed.",
+                  log_message="Error processing Eventarc event",
+              ),
           ) from e
 
         return TriggerResponse(status="success")

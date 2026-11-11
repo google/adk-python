@@ -421,6 +421,27 @@ class TestMCPSessionManager:
     })
     assert merged == expected
 
+  def test_merge_headers_override_replaces_base_header_in_any_case(self):
+    """A request header replaces a static header that differs only in case."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="https://example.com/mcp",
+            headers={
+                "authorization": "Bearer shared-service-token",
+                "X-Static": "kept",
+            },
+        )
+    )
+
+    merged = manager._merge_headers(  # pylint: disable=protected-access
+        {"Authorization": "Bearer per-user-token"}
+    )
+
+    assert httpx.Headers(merged).get_list("authorization") == [
+        "Bearer per-user-token"
+    ]
+    assert merged["X-Static"] == "kept"
+
   def test_merge_headers_adds_adk_user_agent(self):
     """An MCP server can attribute the request to ADK."""
     manager = MCPSessionManager(
@@ -445,6 +466,85 @@ class TestMCPSessionManager:
     assert "User-Agent" not in merged
     assert merged["user-agent"].startswith("google-adk/")
     assert merged["user-agent"].endswith(" my-app/1.0")
+
+  @pytest.mark.parametrize(
+      "base_headers, additional",
+      [
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "user-agent": "base-client/2",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "x-goog-api-client": "base-sdk/2",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+      ],
+  )
+  def test_merge_headers_additional_overrides_base_tracking_headers(
+      self, base_headers, additional
+  ):
+    """Additional tracking headers replace base ones regardless of casing."""
+    original_base = base_headers.copy()
+    original_additional = additional.copy()
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp", headers=base_headers)
+    )
+
+    merged = manager._merge_headers(additional)
+
+    assert merged == merge_tracking_headers({
+        "user-agent": "extra-client/1",
+        "x-goog-api-client": "extra-sdk/1",
+        "X-Custom": "extra",
+    })
+    assert "base-client/" not in merged["user-agent"]
+    assert merged["user-agent"].endswith(" extra-client/1")
+    assert "base-sdk/" not in merged["x-goog-api-client"]
+    assert merged["x-goog-api-client"].endswith(" extra-sdk/1")
+    assert base_headers == original_base
+    assert additional == original_additional
 
   def test_is_session_disconnected(self):
     """Test session disconnection detection."""
@@ -485,7 +585,12 @@ class TestMCPSessionManager:
       pass
 
     manager = MCPSessionManager(self.mock_stdio_connection_params)
-    with caplog.at_level(logging.DEBUG):
+    # Set on the module's logger, not the root: CLI tests that run earlier in
+    # the same worker leave the `google_adk` logger at INFO, and the module
+    # logger would inherit that and never create this debug record.
+    with caplog.at_level(
+        logging.DEBUG, logger=mcp_session_manager_module.logger.name
+    ):
       assert not manager._is_session_disconnected(SessionWithoutStreams())
     assert any(
         "SessionWithoutStreams" in record.getMessage()
@@ -1617,6 +1722,31 @@ class TestMCPSessionManager:
 
   @pytest.mark.asyncio
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      ("use_client_cert", "expected_probes"), [(False, 0), (True, 1)]
+  )
+  async def test_mtls_probe_follows_google_auth_client_cert_decision(
+      self, monkeypatch, use_client_cert, expected_probes
+  ):
+    """An unset GOOGLE_API_USE_CLIENT_CERTIFICATE defers to google-auth."""
+    monkeypatch.delenv("GOOGLE_API_USE_CLIENT_CERTIFICATE", raising=False)
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://localhost:8000/mcp")
+    )
+
+    with patch(
+        "google.auth.transport.mtls.should_use_client_cert",
+        return_value=use_client_cert,
+    ):
+      with patch(
+          "google.auth.default", side_effect=Exception("no credentials")
+      ) as mock_auth_default:
+        assert await manager._get_mtls_transport() is None
+
+    assert mock_auth_default.call_count == expected_probes
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
   async def test_get_mtls_transport_success(self):
     """Test successful _GoogleAuthAsyncTransport creation with mTLS."""
     sse_params = SseConnectionParams(url="https://example.com/mcp")
@@ -1794,7 +1924,8 @@ class TestMCPSessionManager:
         "GET", "https://example.com/api", headers={"x-test": "value"}
     )
 
-    response = await transport.handle_async_request(request)
+    with patch.dict("os.environ", {}, clear=True):
+      response = await transport.handle_async_request(request)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
@@ -1805,6 +1936,79 @@ class TestMCPSessionManager:
         data=None,
         headers={"x-test": "value", "host": "example.com"},
         timeout=30.0,
+        proxy=None,
+        proxy_auth=None,
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_google_auth_async_transport_forwards_env_proxy(self):
+    """Test that _GoogleAuthAsyncTransport resolves HTTPS_PROXY and passes proxy and proxy_auth per request."""
+    import aiohttp
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+    import yarl
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+    request = httpx.Request("GET", "https://example.com/api")
+
+    with patch.dict(
+        "os.environ",
+        {"HTTPS_PROXY": "http://user:pass@proxy.example.com:8080"},
+        clear=True,
+    ):
+      await transport.handle_async_request(request)
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"host": "example.com"},
+        timeout=30.0,
+        proxy=yarl.URL("http://proxy.example.com:8080"),
+        proxy_auth=aiohttp.BasicAuth("user", "pass"),
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_google_auth_async_transport_respects_no_proxy(self):
+    """Test that _GoogleAuthAsyncTransport passes proxy=None when host matches NO_PROXY."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+    request = httpx.Request("GET", "https://example.com/api")
+
+    with patch.dict(
+        "os.environ",
+        {
+            "HTTPS_PROXY": "http://proxy.example.com:8080",
+            "NO_PROXY": "example.com",
+        },
+        clear=True,
+    ):
+      await transport.handle_async_request(request)
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"host": "example.com"},
+        timeout=30.0,
+        proxy=None,
+        proxy_auth=None,
     )
 
 

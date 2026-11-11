@@ -96,12 +96,14 @@ the syntax does not make obvious.
     extra thought.
 *   **`{artifact.filename}` loads a file instead of a state value.** The engine
     asks the artifact service for that artifact in the current session and
-    substitutes `str()` of what comes back. A missing artifact raises
+    converts a `types.Part` with `load_artifacts_tool.as_safe_part_for_llm`:
+    `Part.text` and text-like `inline_data` (`text/*`, JSON, XML, CSV, or DOCX)
+    are substituted as their text content, other binary blobs render as a
+    `[Binary artifact: ...]` placeholder, and Gemini-native inline media (such
+    as `image/*` or `application/pdf`) falls back to `str()`, which is the
+    Pydantic field dump rather than prompt text. A missing artifact raises
     `KeyError`, and `{artifact.filename?}` substitutes an empty string in the
-    same way the optional state form does. Check what that `str()` produces
-    before relying on the form: an artifact fetched from an artifact service is
-    a `types.Part`, and its `str()` is the whole Pydantic field dump rather than
-    the text you had in mind.
+    same way the optional state form does.
 
 A state key may carry one of the state prefixes, so `{app:theme}`,
 `{user:locale}`, and `{temp:draft}` all work, and read from the corresponding
@@ -266,16 +268,17 @@ function to instructions. Anywhere you hold a `ReadonlyContext`, and a
     missing, so it raises. `{customer name}` is not a valid name, so it is left
     in the prompt untouched and the model sees the braces. The two typos fail in
     completely different ways.
-*   **Artifacts are stringified, and that is almost never what you want.** Both
-    engines insert `str(artifact)`, and an artifact loaded from an artifact
-    service is a `types.Part`, whose `str()` is the Pydantic field dump. A
-    plain-text artifact reading "hello world" reaches the prompt as
-    `media_resolution=None code_execution_result=None ... text='hello world'
-    thought=None ...`, which is every field of the Part when only one of them
-    was what you wanted. Binary data is worse still. There is no option to
-    extract `.text`, so an
-    instruction that needs an artifact's contents should load it in Python and
-    interpolate the text itself rather than using `{artifact.name}`.
+*   **Binary and media artifacts cannot be inlined into an instruction.** Both
+    engines pass a loaded `types.Part` through
+    `load_artifacts_tool.as_safe_part_for_llm`, because an instruction is a
+    plain string: `Part.text` and text-like `inline_data` (`text/*`, JSON, XML,
+    CSV, or DOCX) unwrap to their text, other binary blobs render as a
+    `[Binary artifact: name, type, size]` placeholder, and Gemini-native media
+    (`image/*`, `audio/*`, `video/*`, `application/pdf`) or a `file_data`
+    reference has no `.text` and falls back to `str(artifact)`, which inserts
+    the Pydantic field dump into the prompt. Use `{artifact.name}` and
+    `artifact('name')` only for text artifacts, and pass binary or media
+    artifacts to the model as content parts instead.
 *   **A callable instruction gets no injection.** The omission is deliberate,
     on the assumption that a function with access to the context can interpolate
     for itself, and it is the reason to call this function yourself.

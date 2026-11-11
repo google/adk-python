@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+import contextlib
 import dataclasses
 import functools
 import inspect
@@ -107,8 +108,9 @@ _is_credential_type: Callable[[type], bool] = functools.lru_cache(maxsize=512)(
 
 @functools.lru_cache(maxsize=1024)
 def _is_credential_arg_name(name: str) -> bool:
-  """True iff a parameter called ``name`` conventionally holds a secret."""
-  lowered = name.lower()
+  """True iff a value named ``name`` conventionally holds a secret."""
+  # Hyphens fold so a header key like X-Api-Key matches the way api_key does.
+  lowered = name.lower().replace("-", "_")
   return lowered in _CREDENTIAL_ARG_NAMES or lowered.endswith(
       _CREDENTIAL_ARG_SUFFIXES
   )
@@ -513,11 +515,12 @@ def build_tracing_wrapper(
       items: list[Any] = []
       total = 0
       try:
-        async for item in fn(*args, **kwargs):
-          total += 1
-          if len(items) < yield_cap:
-            items.append(item)
-          yield item
+        async with contextlib.aclosing(fn(*args, **kwargs)) as agen:
+          async for item in agen:
+            total += 1
+            if len(items) < yield_cap:
+              items.append(item)
+            yield item
       except BaseException as exc:
         _finish(span, args, kwargs, StreamResult(items, caps, total), exc)
         raise
@@ -529,11 +532,12 @@ def build_tracing_wrapper(
       items: list[Any] = []
       total = 0
       try:
-        for item in fn(*args, **kwargs):
-          total += 1
-          if len(items) < yield_cap:
-            items.append(item)
-          yield item
+        with contextlib.closing(fn(*args, **kwargs)) as gen:
+          for item in gen:
+            total += 1
+            if len(items) < yield_cap:
+              items.append(item)
+            yield item
       except BaseException as exc:
         _finish(span, args, kwargs, StreamResult(items, caps, total), exc)
         raise

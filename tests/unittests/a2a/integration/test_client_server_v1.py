@@ -37,7 +37,6 @@ pytestmark = pytest.mark.skipif(
 
 from .client import create_a2a_client
 from .client import create_client
-from .server import agent_card
 from .server import create_server_app_v1
 
 
@@ -340,6 +339,67 @@ async def test_artifact_producing_agent_round_trip():
 
   assert len(received_requests) == 1
   assert "with artifact" in result["texts"]
+
+
+# -----------------------------------------------------------------------------
+# Session state boundary
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("force_new_version", "use_legacy"),
+    [
+        pytest.param(False, True, id="default_server_default_client"),
+        pytest.param(True, True, id="forced_new_server_default_client"),
+        pytest.param(False, False, id="default_server_non_legacy_client"),
+    ],
+)
+async def test_peer_state_delta_is_logged_and_not_applied(
+    caplog, streaming, force_new_version, use_legacy
+):
+  """A remote output_key never reaches caller state, and the drop is logged.
+
+  Covers both response handlers: a forced-new server marks its responses for
+  ``_handle_a2a_response_v2``, which reads actions from the nested message and
+  artifact metadata, while the default server's responses go through
+  ``_handle_a2a_response``.
+  """
+
+  async def run_async(**kwargs):
+    # What a remote LlmAgent(output_key="findings") emits as its final event.
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(parts=[types.Part(text="the findings")]),
+        actions=EventActions(state_delta={"findings": "the findings"}),
+    )
+
+  app = create_server_app_v1(run_async, force_new_version=force_new_version)
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+
+  texts = []
+  async with app.router.lifespan_context(app):
+    agent = create_client(app, streaming=streaming, use_legacy=use_legacy)
+    client_runner = Runner(
+        app_name="ClientApp", agent=agent, session_service=session_service
+    )
+    with caplog.at_level("WARNING"):
+      async for event in client_runner.run_async(
+          user_id="test_user",
+          session_id="test_session",
+          new_message=types.Content(parts=[types.Part(text="Hi")], role="user"),
+      ):
+        if event.content and event.content.parts:
+          texts.extend(part.text for part in event.content.parts if part.text)
+
+  session = await session_service.get_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  assert "the findings" in texts
+  assert "findings" not in session.state
+  assert "Ignoring a session state delta from a remote A2A peer" in caplog.text
 
 
 # -----------------------------------------------------------------------------

@@ -16,17 +16,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import model_validator
 
-from ..features import experimental
-from ..features import FeatureName
 
-
-@experimental(FeatureName.AGENT_CONFIG)
 class CodeConfig(BaseModel):
   """Code reference config for a variable, a function, or a class.
 
@@ -49,13 +43,12 @@ class CodeConfig(BaseModel):
   """
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 class AgentRefConfig(BaseModel):
   """The config for the reference to another agent."""
 
   model_config = ConfigDict(extra="forbid")
 
-  config_path: Optional[str] = None
+  config_path: str | None = None
   """The YAML config file path of the sub-agent.
 
   Only one of `config_path` or `code` can be set.
@@ -69,7 +62,7 @@ class AgentRefConfig(BaseModel):
     ```
   """
 
-  code: Optional[str] = None
+  code: str | None = None
   """The agent instance defined in the code.
 
   Only one of `config` or `code` can be set.
@@ -85,7 +78,7 @@ class AgentRefConfig(BaseModel):
     my_custom_agent = LlmAgent(
         name="my_custom_agent",
         instruction="You are a helpful custom agent.",
-        model="gemini-2.5-flash",
+        model="gemini-3.5-flash",
     )
     ```
 

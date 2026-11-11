@@ -26,17 +26,18 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from collections.abc import Iterator
 from collections.abc import Mapping
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
 import logging
 import os
 import re
+from typing import Any
 from typing import Final
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from google.genai.models import Models
 from opentelemetry import _logs
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -46,14 +47,21 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_PROVIDER_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MAX_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_TOP_P
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ARGUMENTS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ID
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_RESULT
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DESCRIPTION
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiProviderNameValues
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
+from opentelemetry.semconv._incubating.attributes.process_attributes import PROCESS_EXIT_CODE
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
@@ -66,9 +74,12 @@ from opentelemetry.trace import Span
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 from opentelemetry.util.types import AttributeValue
+from pydantic_core import to_jsonable_python
 from typing_extensions import deprecated
 
+from . import _genai_instrumentor
 from .. import version
+from ..auth.auth_credential import _redact_credential_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
@@ -76,12 +87,19 @@ from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES
+from ._adk_attributes import ADK_SKILL_ADDITIONAL_TOOLS
 from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
 from ._finish_reason import is_reported_finish_reason
+from ._schema_version import resolve_schema_version
+from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -150,11 +168,18 @@ _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE: Final[str] = (
     "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE"
 )
 
+# Skill telemetry attributes.
+GEN_AI_SKILL_NAME = "gen_ai.skill.name"
+GEN_AI_SKILL_DESCRIPTION = "gen_ai.skill.description"
+GEN_AI_SKILL_SOURCE_URI = "gen_ai.skill.source.uri"
+GEN_AI_SKILL_RESOURCE_NAME = "gen_ai.skill.resource.name"
+
 # Silence unused warnings, but keep the public interface the same.
 _ = OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
 
 # Needed to avoid circular imports
 if TYPE_CHECKING:
+  from opentelemetry.util.types import AnyValue
 
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
@@ -164,6 +189,9 @@ if TYPE_CHECKING:
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
   from ..workflow._base_node import BaseNode
+  from ._instrumentation import SkillLoadTelemetry
+  from ._instrumentation import SkillResourceLoadTelemetry
+  from ._instrumentation import SkillScriptExecutionTelemetry
 
 tracer = trace.get_tracer(
     instrumenting_module_name="gcp.vertex.agent",
@@ -196,6 +224,21 @@ def resolve_error_type(error: BaseException) -> str:
   if isinstance(error, genai_errors.APIError):
     return str(error.code)
   return type(error).__name__
+
+
+@contextmanager
+def _start_as_current_span(name: str, **kwargs: Any) -> Iterator[Span]:
+  """Opens a span with ``tracer`` that names the error escaping it, if any.
+
+  OpenTelemetry marks such a span ERROR on its own, but only ``error.type``
+  says which error it was, and the metric for the same operation records it.
+  """
+  with tracer.start_as_current_span(name, **kwargs) as span:
+    try:
+      yield span
+    except Exception as e:
+      span.set_attribute(ERROR_TYPE, resolve_error_type(e))
+      raise
 
 
 def trace_agent_invocation(
@@ -243,7 +286,7 @@ def trace_tool_call(
     span: Span | None = None,
     error_type: str | None = None,
     invocation_context: InvocationContext | None = None,
-):
+) -> None:
   """Traces tool call.
 
   Args:
@@ -303,22 +346,25 @@ def trace_tool_call(
     destination_id = tool.custom_metadata[GCP_MCP_SERVER_DESTINATION_ID]
     span.set_attribute(GCP_MCP_SERVER_DESTINATION_ID, destination_id)
 
-  # Setting empty llm request and response (as UI expect these) while not
-  # applicable for tool_response.
-  span.set_attribute("gcp.vertex.agent.llm_request", "{}")
-  span.set_attribute("gcp.vertex.agent.llm_response", "{}")
+  legacy = resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED
+  if legacy:
+    # Setting empty llm request and response (as UI expect these) while not
+    # applicable for tool_response.
+    span.set_attribute("gcp.vertex.agent.llm_request", "{}")
+    span.set_attribute("gcp.vertex.agent.llm_response", "{}")
 
-  if telemetry_config.should_add_content_to_legacy_spans:
-    span.set_attribute(
-        "gcp.vertex.agent.tool_call_args",
-        safe_json_serialize(args),
-    )
-  else:
-    span.set_attribute("gcp.vertex.agent.tool_call_args", "{}")
+    if telemetry_config.should_add_content_to_legacy_spans:
+      span.set_attribute(
+          "gcp.vertex.agent.tool_call_args",
+          safe_json_serialize(args),
+      )
+    else:
+      span.set_attribute("gcp.vertex.agent.tool_call_args", "{}")
 
   # Tracing tool response
   tool_call_id = "<not specified>"
-  tool_response = "<not specified>"
+  tool_response: str | dict[str, object] = "<not specified>"
+  has_response = False
   if (
       function_response_event is not None
       and function_response_event.content is not None
@@ -331,6 +377,7 @@ def trace_tool_call(
         tool_call_id = function_response.id
       if function_response.response is not None:
         tool_response = function_response.response
+        has_response = True
 
   span.set_attribute(GEN_AI_TOOL_CALL_ID, tool_call_id)
 
@@ -338,13 +385,34 @@ def trace_tool_call(
     tool_response = {"result": tool_response}
   if function_response_event is not None:
     span.set_attribute("gcp.vertex.agent.event_id", function_response_event.id)
-  if telemetry_config.should_add_content_to_legacy_spans:
-    span.set_attribute(
-        "gcp.vertex.agent.tool_response",
-        safe_json_serialize(tool_response),
+  if legacy:
+    if telemetry_config.should_add_content_to_legacy_spans:
+      span.set_attribute(
+          "gcp.vertex.agent.tool_response",
+          _serialize_tool_response(tool_response),
+      )
+    else:
+      span.set_attribute("gcp.vertex.agent.tool_response", "{}")
+  elif telemetry_config.should_add_content_to_experimental_spans:
+    span.set_attribute(GEN_AI_TOOL_CALL_ARGUMENTS, safe_json_serialize(args))
+    if has_response:
+      span.set_attribute(
+          GEN_AI_TOOL_CALL_RESULT, _serialize_tool_response(tool_response)
+      )
+
+
+def _serialize_tool_response(tool_response: object) -> str:
+  """Serializes a tool response with credential secrets redacted."""
+  try:
+    return safe_json_serialize(
+        _redact_credential_secrets(
+            to_jsonable_python(
+                tool_response, fallback=lambda _: "<not serializable>"
+            )
+        )
     )
-  else:
-    span.set_attribute("gcp.vertex.agent.tool_response", "{}")
+  except Exception:  # pylint: disable=broad-exception-caught
+    return "<not serializable>"
 
 
 def _should_report_mcp_http_exchanges() -> bool:
@@ -507,7 +575,7 @@ def trace_merged_tool_calls(
     response_event_id: str,
     function_response_event: Event,
     invocation_context: InvocationContext | None = None,
-):
+) -> None:
   """Traces merged tool call events.
 
   Calling this function is not needed for telemetry purposes. This is provided
@@ -532,6 +600,11 @@ def trace_merged_tool_calls(
   span.set_attribute(GEN_AI_TOOL_DESCRIPTION, "(merged tools)")
   span.set_attribute(GEN_AI_TOOL_CALL_ID, response_event_id)
 
+  if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+    # Each merged call has its own `execute_tool` span carrying its content.
+    span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
+    return
+
   # Pending cleanup: drop these placeholder attributes once no downstream
   # consumer reads them.
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
@@ -542,7 +615,9 @@ def trace_merged_tool_calls(
     parts = (content.parts or []) if content else []
     try:
       tool_response_json = safe_json_serialize([
-          part.function_response.model_dump(exclude_none=True, mode="json")
+          _redact_credential_secrets(
+              part.function_response.model_dump(exclude_none=True, mode="json")
+          )
           for part in parts
           if part.function_response is not None
       ])
@@ -598,24 +673,87 @@ def _set_context_cache_attributes(
   span.set_attributes(attributes)
 
 
+def _grounding_source_uris(
+    grounding_chunks: Sequence[types.GroundingChunk],
+) -> list[str]:
+  """Returns the distinct source URIs of the chunks, in first-seen order."""
+  uris: dict[str, None] = {}
+  for chunk in grounding_chunks:
+    candidates = (
+        chunk.web and chunk.web.uri,
+        chunk.retrieved_context and chunk.retrieved_context.uri,
+        chunk.maps and chunk.maps.uri,
+        # An image result's source is the page it came from, not the image.
+        chunk.image and chunk.image.source_uri,
+    )
+    for uri in candidates:
+      if uri:
+        uris[uri] = None
+  return list(uris)
+
+
+@experimental_telemetry(gate="grounding")
+def _set_grounding_attributes(
+    span: Span,
+    grounding_metadata: types.GroundingMetadata | None,
+    capture_content: bool,
+) -> None:
+  """Records what a built-in grounding tool did on the given span.
+
+  A built-in tool such as `google_search` runs inside the model call, so it
+  has no tool span of its own and the grounding metadata on the response is
+  the only record that it ran. The counts are always recorded. The queries
+  and the source URIs reveal what the user asked about, so they are recorded
+  only when `capture_content` is set.
+  """
+  if grounding_metadata is None:
+    return
+  web_search_queries = [
+      query for query in grounding_metadata.web_search_queries or () if query
+  ]
+  grounding_chunks = grounding_metadata.grounding_chunks or []
+  attributes: dict[str, AttributeValue] = {
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: len(set(web_search_queries)),
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: len(grounding_chunks),
+  }
+  if capture_content:
+    if web_search_queries:
+      attributes[ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES] = (
+          web_search_queries
+      )
+    if source_uris := _grounding_source_uris(grounding_chunks):
+      attributes[ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS] = source_uris
+  span.set_attributes(attributes)
+
+
+def _start_call_llm_span(
+    caller_context: otel_context.Context,
+) -> Span | None:
+  """Starts the `call_llm` span; None under schema v2, which has no such span."""
+  if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+    return None
+  return tracer.start_span("call_llm", context=caller_context)
+
+
 def trace_call_llm(
     invocation_context: InvocationContext,
     event_id: str,
     llm_request: LlmRequest,
     llm_response: LlmResponse,
     span: Span | None = None,
-):
-  """Traces a call to the LLM.
-
-  This function records details about the LLM request and response as
-  attributes on the current OpenTelemetry span.
+) -> None:
+  """Records the `call_llm` attributes. A no-op under schema v2.
 
   Args:
     invocation_context: The invocation context for the current agent run.
     event_id: The ID of the event.
     llm_request: The LLM request object.
     llm_response: The LLM response object.
+    span: The `call_llm` span to record on. Defaults to the current span.
   """
+  if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+    # No `call_llm` span under v2; `span` is some other span.
+    return
   if span is None:
     span = trace.get_current_span()
   if not span.is_recording():
@@ -627,7 +765,8 @@ def trace_call_llm(
   # Special standard Open Telemetry GenaI attributes that indicate
   # that this is a span related to a Generative AI system.
   span.set_attribute("gen_ai.system", "gcp.vertex.agent")
-  span.set_attribute("gen_ai.request.model", llm_request.model)
+  if llm_request.model is not None:
+    span.set_attribute("gen_ai.request.model", llm_request.model)
   span.set_attribute(
       "gcp.vertex.agent.invocation_id", invocation_context.invocation_id
   )
@@ -689,6 +828,12 @@ def trace_call_llm(
   _set_context_cache_attributes(
       telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
+  _set_grounding_attributes(
+      telemetry_config,
+      span,
+      getattr(llm_response, "grounding_metadata", None),
+      telemetry_config.should_add_content_to_legacy_spans,
+  )
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
 
@@ -748,7 +893,7 @@ def trace_send_data(
     invocation_context: InvocationContext,
     event_id: str,
     data: list[types.Content],
-):
+) -> None:
   """Traces the sending of data to the agent.
 
   This function records details about the data sent to the agent as
@@ -849,7 +994,8 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
     A dictionary representation of the LLM request.
   """
   # Some fields in LlmRequest are function pointers and cannot be serialized.
-  result = {
+  contents: list[dict[str, object]] = []
+  result: dict[str, object] = {
       "model": llm_request.model,
       "config": llm_request.config.model_dump(
           exclude_none=True,
@@ -872,16 +1018,16 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
           },
           mode="json",
       ),
-      "contents": [],
+      "contents": contents,
   }
   # We do not want to send bytes data to the trace.
   for content in llm_request.contents:
     parts = [
         _without_thought_signature(part)
-        for part in content.parts
+        for part in content.parts or []
         if not part.inline_data
     ]
-    result["contents"].append(
+    contents.append(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True, mode="json"
         )
@@ -924,8 +1070,11 @@ def use_generate_content_span(
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
   )
+  agent = invocation_context.agent
+  if agent is None:
+    raise ValueError("The invocation context must have an agent.")
   common_attributes = {
-      GEN_AI_AGENT_NAME: invocation_context.agent.name,
+      GEN_AI_AGENT_NAME: agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       "gcp.vertex.agent.event_id": model_response_event.id,
       "gcp.vertex.agent.invocation_id": invocation_context.invocation_id,
@@ -933,7 +1082,7 @@ def use_generate_content_span(
   log_only_common_attributes = {}
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
-  if _should_emit_native_telemetry(invocation_context.agent):
+  if _should_emit_native_telemetry(agent, telemetry_config):
     with _use_native_generate_content_span_stable_semconv(
         llm_request=llm_request,
         common_attributes=common_attributes,
@@ -946,7 +1095,7 @@ def use_generate_content_span(
         common_attributes,
         log_only_extra_attributes=log_only_common_attributes,
     ):
-      yield
+      yield None
 
 
 @asynccontextmanager
@@ -965,8 +1114,11 @@ async def use_inference_span(
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
   )
+  agent = invocation_context.agent
+  if agent is None:
+    raise ValueError("The invocation context must have an agent.")
   common_attributes = {
-      GEN_AI_AGENT_NAME: invocation_context.agent.name,
+      GEN_AI_AGENT_NAME: agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       "gcp.vertex.agent.event_id": model_response_event.id,
       "gcp.vertex.agent.invocation_id": invocation_context.invocation_id,
@@ -974,7 +1126,17 @@ async def use_inference_span(
   log_only_common_attributes = {}
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
-  if _should_emit_native_telemetry(invocation_context.agent):
+  if _should_emit_native_telemetry(agent, telemetry_config):
+    if (
+        telemetry_config.should_use_experimental_genai_semconv
+        and resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED
+    ):
+      # Semconv >= 1.37 replaces `gen_ai.system`; both are kept for consumers.
+      # Schema v1 keeps `gen_ai.system` only, as it did before the provider
+      # name existed.
+      common_attributes[GEN_AI_PROVIDER_NAME] = _resolve_gen_ai_provider_name(
+          llm_request.model
+      )
     with ExitStack() as stack:
       gc_span = stack.enter_context(
           _use_native_generate_content_span(
@@ -992,15 +1154,19 @@ async def use_inference_span(
             common_attributes,
             log_only_attributes=log_only_common_attributes,
         )
+
+      def _log_completion_details() -> None:
+        maybe_log_completion_details(
+            gc_span.span,
+            otel_logger,
+            gc_span.operation_details_attributes,
+            gc_span.operation_details_common_attributes,
+            telemetry_config,
+        )
+
       # Registered last, so it unwinds first: while the span is still open.
       _ = gc_span._exit_stack.callback(
-          lambda: maybe_log_completion_details(
-              gc_span.span,
-              otel_logger,
-              gc_span.operation_details_attributes,
-              gc_span.operation_details_common_attributes,
-              telemetry_config,
-          )
+          _log_completion_details
       )  # pylint: disable=protected-access
       yield gc_span
   else:
@@ -1008,38 +1174,27 @@ async def use_inference_span(
         common_attributes,
         log_only_extra_attributes=log_only_common_attributes,
     ):
-      yield
+      yield None
 
 
-def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
-  maybe_wrapped_function = Models.generate_content
-  while wrapped := getattr(maybe_wrapped_function, "__wrapped__", None):
-    if (
-        "opentelemetry/instrumentation/google_genai"
-        in maybe_wrapped_function.__code__.co_filename.replace("\\", "/")
-    ):
-      return True
-    maybe_wrapped_function = wrapped  # pyright: ignore[reportAny]
+def _should_emit_native_telemetry(
+    agent: BaseAgent | BaseNode, telemetry_config: TelemetryConfig
+) -> bool:
+  """Whether ADK, not the google-genai instrumentor, records this inference.
 
-  return False
-
-
-def _should_emit_native_telemetry(agent: BaseAgent) -> bool:
-  """If the google-genai instrumentation lib is active AND this is a Gemini agent, then the lib already emits inference metrics."""
-  if (
-      _instrumented_with_opentelemetry_instrumentation_google_genai()
-      and _is_gemini_agent(agent)
-  ):
-    return False
-
-  return True
+  The instrumentor records Gemini inferences in one semconv for the whole
+  process, so ADK records whenever that is not the one this request wants.
+  """
+  if not _is_gemini_agent(agent):
+    return True
+  return not _genai_instrumentor.records_inference(telemetry_config)
 
 
 @contextmanager
 def _use_extra_generate_content_attributes(
     extra_attributes: Mapping[str, AttributeValue],
     log_only_extra_attributes: Mapping[str, AttributeValue] | None = None,
-):
+) -> Iterator[None]:
   try:
     from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY
   except (ImportError, AttributeError):
@@ -1058,10 +1213,15 @@ def _use_extra_generate_content_attributes(
   )
   if log_only_extra_attributes:
     try:
-      from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY
+      from opentelemetry.instrumentation import google_genai
 
+      # Only some versions of the instrumentation define this key.
+      event_only_key: str = getattr(
+          google_genai,
+          "GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY",
+      )
       ctx = otel_context.set_value(
-          GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY,
+          event_only_key,
           log_only_extra_attributes,
           context=ctx,
       )
@@ -1075,7 +1235,7 @@ def _use_extra_generate_content_attributes(
     otel_context.detach(tok)
 
 
-def _is_gemini_agent(agent: BaseAgent) -> bool:
+def _is_gemini_agent(agent: BaseAgent | BaseNode) -> bool:
   return is_gemini_model(_agent_model_name(agent))
 
 
@@ -1083,9 +1243,15 @@ def _set_common_generate_content_attributes(
     span: Span,
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
-):
+) -> None:
   span.set_attribute(GEN_AI_OPERATION_NAME, "generate_content")
   span.set_attribute(GEN_AI_REQUEST_MODEL, llm_request.model or "")
+  if llm_request.config.top_p is not None:
+    span.set_attribute(GEN_AI_REQUEST_TOP_P, llm_request.config.top_p)
+  if llm_request.config.max_output_tokens is not None:
+    span.set_attribute(
+        GEN_AI_REQUEST_MAX_TOKENS, llm_request.config.max_output_tokens
+    )
   span.set_attributes(common_attributes)
 
 
@@ -1098,7 +1264,7 @@ def _use_native_generate_content_span_stable_semconv(
 ) -> Iterator[GenerateContentSpan]:
   telemetry_config = telemetry_config or TelemetryConfig()
   system_name = _resolve_gen_ai_system_name(llm_request.model)
-  with tracer.start_as_current_span(
+  with _start_as_current_span(
       f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     span.set_attribute(GEN_AI_SYSTEM, system_name)
@@ -1114,7 +1280,9 @@ def _use_native_generate_content_span_stable_semconv(
             attributes={GEN_AI_SYSTEM: system_name},
         )
     )
-    user_message_attributes = {GEN_AI_SYSTEM: system_name}
+    user_message_attributes: dict[str, AttributeValue] = {
+        GEN_AI_SYSTEM: system_name
+    }
     if (
         telemetry_config.should_add_content_to_logs
         and log_only_common_attributes
@@ -1152,7 +1320,7 @@ def _use_native_generate_content_span(
       yield gc_span
     return
 
-  with tracer.start_as_current_span(
+  with _start_as_current_span(
       f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     _set_common_generate_content_attributes(
@@ -1175,8 +1343,8 @@ class GenerateContentSpan:
 
   def __init__(self, span: Span):
     self.span: Final = span
-    self.operation_details_attributes: dict[str, AttributeValue] = {}
-    self.operation_details_common_attributes: dict[str, AttributeValue] = {}
+    self.operation_details_attributes: dict[str, AnyValue] = {}
+    self.operation_details_common_attributes: dict[str, AnyValue] = {}
     # Ends underlying span and records completion details log record.
     # Used over contextmanager to end the underlying span as soon as the
     # inference is done, instead of when the caller is done with the response.
@@ -1187,7 +1355,9 @@ class GenerateContentSpan:
 @deprecated(
     "Replaced by trace_inference_result to support experimental semconv."
 )
-def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
+def trace_generate_content_result(
+    span: Span | None, llm_response: LlmResponse
+) -> None:
   """Trace result of the inference in generate_content span."""
 
   if span is None:
@@ -1218,7 +1388,7 @@ def trace_inference_result(
     invocation_context: InvocationContext | None,
     span: Span | None | GenerateContentSpan,
     llm_response: LlmResponse,
-):
+) -> None:
   """Trace result of the inference in generate_content span."""
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
@@ -1242,6 +1412,12 @@ def trace_inference_result(
   # required to carry the fields this function already read.
   _set_context_cache_attributes(
       telemetry_config, span, getattr(llm_response, "cache_metadata", None)
+  )
+  _set_grounding_attributes(
+      telemetry_config,
+      span,
+      getattr(llm_response, "grounding_metadata", None),
+      telemetry_config.should_add_content_to_experimental_spans,
   )
 
   if telemetry_config.should_use_experimental_genai_semconv and isinstance(
@@ -1314,7 +1490,14 @@ def _resolve_gen_ai_system_name(model: str | None) -> str:
   Args:
     model: The model id the request is being served by, if known.
   """
-  if not model or is_gemini_model(model):
+  return _gen_ai_system_name_from_model(model) or _guess_gemini_system_name()
+
+
+def _gen_ai_system_name_from_model(model: str | None) -> str | None:
+  """Returns the system name `model` identifies, or None if it names none."""
+  if not model:
+    return None
+  if is_gemini_model(model):
     return _guess_gemini_system_name()
 
   model_name = extract_model_name(model)
@@ -1326,7 +1509,25 @@ def _resolve_gen_ai_system_name(model: str | None) -> str:
   if separator and provider and provider not in _RESOURCE_COLLECTION_SEGMENTS:
     return provider
 
-  return _guess_gemini_system_name()
+  return None
+
+
+# `gen_ai.provider.name` renamed the Google values of `gen_ai.system`; the rest
+# carried over unchanged.
+_PROVIDER_NAME_BY_SYSTEM_NAME: Final[Mapping[str, str]] = {
+    GenAiSystemValues.GEMINI.name.lower(): (
+        GenAiProviderNameValues.GCP_GEMINI.value
+    ),
+    GenAiSystemValues.VERTEX_AI.name.lower(): (
+        GenAiProviderNameValues.GCP_VERTEX_AI.value
+    ),
+}
+
+
+def _resolve_gen_ai_provider_name(model: str | None) -> str:
+  """Returns the `gen_ai.provider.name` value for a model."""
+  system_name = _resolve_gen_ai_system_name(model)
+  return _PROVIDER_NAME_BY_SYSTEM_NAME.get(system_name, system_name)
 
 
 def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
@@ -1345,9 +1546,87 @@ def _inference_system_name(
     llm_response: LlmResponse,
 ) -> str:
   """Returns the system name of the model that produced an inference result."""
-  model = llm_response.model_version
-  if not model and invocation_context is not None:
+  if system_name := _gen_ai_system_name_from_model(llm_response.model_version):
+    return system_name
+  # LiteLLM reports `model_version` without the provider prefix (`gpt-4o` for
+  # `openai/gpt-4o`), so fall back to the configured model the span reports.
+  model = None
+  if invocation_context is not None:
     agent = invocation_context.agent
     if agent is not None:
       model = _agent_model_name(agent)
   return _resolve_gen_ai_system_name(model)
+
+
+def _trace_skill_load(
+    span: trace.Span,
+    skill_telemetry: SkillLoadTelemetry,
+) -> None:
+  """Stamps the skill load attributes onto the ``execute_tool`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  skill = skill_telemetry.skill
+
+  if skill is not None:
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+
+    if (additional_tools := skill_telemetry.additional_tools) is not None:
+      attributes[ADK_SKILL_ADDITIONAL_TOOLS] = additional_tools
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_resource_load(
+    span: trace.Span,
+    skill_telemetry: SkillResourceLoadTelemetry,
+) -> None:
+  """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  if (skill := skill_telemetry.skill) is not None:
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+  attributes[GEN_AI_SKILL_RESOURCE_NAME] = (
+      skill_telemetry.resource_path.maybe_hallucinated_value
+  )
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_script_execution(
+    span: trace.Span,
+    skill_telemetry: SkillScriptExecutionTelemetry,
+) -> None:
+  """Stamps the skill script execution information in the ``execute_tool run_skill_script`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  attributes[GEN_AI_SKILL_RESOURCE_NAME] = (
+      skill_telemetry.script_path.maybe_hallucinated_value
+  )
+
+  if (script_exit_code := skill_telemetry.script_exit_code) is not None:
+    attributes[PROCESS_EXIT_CODE] = script_exit_code
+
+    if script_exit_code != 0:
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, "SKILL_SCRIPT_EXECUTION_ERROR")
+      )
+      span.set_attribute(ERROR_TYPE, "SKILL_SCRIPT_EXECUTION_ERROR")
+
+  if (skill := skill_telemetry.skill) is not None:
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+  span.set_attributes(attributes)

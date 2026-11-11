@@ -42,6 +42,7 @@ import pathlib
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
+from google.adk.integrations.mongodb import MongoDbSessionService
 from google.adk.integrations.redis._config import RedisSessionServiceConfig
 from google.adk.integrations.redis._redis_session_service import RedisSessionService
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -50,6 +51,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
 
+from ..integrations.mongodb._fake_mongo import FakeMongoClient
 from ..integrations.redis._fake_redis import FakeRedisAsync
 
 _MakeService = Callable[
@@ -122,6 +124,16 @@ async def _make_redis(
 
 
 @contextlib.asynccontextmanager
+async def _make_mongodb(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  del tmp_path
+  yield MongoDbSessionService(
+      mongo_client=FakeMongoClient(), database_name='conformance'
+  )
+
+
+@contextlib.asynccontextmanager
 async def _make_per_agent_database(
     tmp_path: pathlib.Path,
 ) -> AsyncIterator[BaseSessionService]:
@@ -137,20 +149,11 @@ BACKENDS = [
     _Backend('in_memory_light_copy', _make_in_memory_light_copy),
     _Backend('database', _make_database),
     _Backend('sqlite', _make_sqlite),
-    # One more Redis divergence has no contract test to hang an xfail on yet:
-    # it builds its key scan pattern from a truthiness check on the user id, so
-    # an empty one lists every user's sessions.
     _Backend(
         'redis',
         _make_redis,
-        divergences={
-            'test_append_event_to_unknown_session_raises_session_not_found': (
-                'Redis writes the session key unconditionally on append, so'
-                ' appending to a session it has never stored creates one'
-                ' instead of raising.'
-            ),
-        },
     ),
+    _Backend('mongodb', _make_mongodb),
     _Backend('per_agent_database', _make_per_agent_database),
 ]
 

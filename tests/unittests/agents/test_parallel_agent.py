@@ -15,15 +15,14 @@
 """Tests for the ParallelAgent."""
 
 import asyncio
-from types import SimpleNamespace
 from typing import AsyncGenerator
 from unittest.mock import patch
 
-from google.adk.agents import parallel_agent as parallel_agent_module
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.parallel_agent import _merge_agent_run
 from google.adk.agents.parallel_agent import _merge_agent_run_pre_3_11
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
@@ -390,22 +389,6 @@ async def test_stop_agent_if_sub_agent_fails(
       pass
 
 
-async def _slow_agent_with_cleanup_delay():
-  """Async generator that sleeps in its finally block to simulate cleanup."""
-  try:
-    await asyncio.sleep(10)
-    yield 'slow-event'
-  finally:
-    await asyncio.sleep(0.05)
-
-
-async def _failing_agent():
-  """Async generator that raises after a short delay."""
-  await asyncio.sleep(0.01)
-  raise ValueError('simulated sub-agent failure')
-  yield  # pragma: no cover
-
-
 class _TestingAgentFailingAfterDelay(_TestingAgent):
   """Emits one event, then fails while the caller is still busy with it."""
 
@@ -460,20 +443,10 @@ async def test_sub_agent_failure_reaches_busy_caller(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('use_pre_3_11_merge', [False, True])
 async def test_sub_agent_failure_keeps_its_type(
     request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-    use_pre_3_11_merge: bool,
 ):
   """The caller catches the error the sub-agent raised, not a wrapper."""
-  if use_pre_3_11_merge:
-    monkeypatch.setattr(
-        parallel_agent_module,
-        'sys',
-        SimpleNamespace(version_info=(3, 10)),
-    )
-
   parallel_agent = ParallelAgent(
       name=f'{request.function.__name__}_test_parallel_agent',
       sub_agents=[
@@ -492,20 +465,10 @@ async def test_sub_agent_failure_keeps_its_type(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('use_pre_3_11_merge', [False, True])
 async def test_earliest_of_several_sub_agent_failures_keeps_its_type(
     request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-    use_pre_3_11_merge: bool,
 ):
   """Several branches failing surfaces the earliest error, still unwrapped."""
-  if use_pre_3_11_merge:
-    monkeypatch.setattr(
-        parallel_agent_module,
-        'sys',
-        SimpleNamespace(version_info=(3, 10)),
-    )
-
   parallel_agent = ParallelAgent(
       name=f'{request.function.__name__}_test_parallel_agent',
       sub_agents=[
@@ -529,36 +492,23 @@ async def test_earliest_of_several_sub_agent_failures_keeps_its_type(
       pass
 
 
-@pytest.mark.asyncio
-async def test_merge_agent_run_pre_3_11_surfaces_failure_without_events():
-  """A branch failing before it emits anything must not look successful."""
-  with pytest.raises(ValueError, match='simulated sub-agent failure'):
-    async for _ in _merge_agent_run_pre_3_11([_failing_agent()], set()):
-      pass
-
-
-@pytest.mark.asyncio
-async def test_merge_agent_run_pre_3_11_no_aclose_error_on_failure():
-  """Regression test for Python 3.10 RuntimeError: aclose() already running.
-
-  _merge_agent_run_pre_3_11 must await all cancelled tasks before returning so
-  that generators are fully released before the caller invokes aclose() on them.
-  """
-  agent_runs = [_slow_agent_with_cleanup_delay(), _failing_agent()]
-
-  with pytest.raises(ValueError, match='simulated sub-agent failure'):
-    async for _ in _merge_agent_run_pre_3_11(agent_runs, set()):
-      pass
-
-  # If tasks were not properly awaited, aclose() on a still-running generator
-  # would raise RuntimeError here.
-  for agen in agent_runs:
-    await agen.aclose()
-
-
 def test_deprecation_mentions_sub_agent_limitation():
   with pytest.warns(DeprecationWarning, match='sub-agent'):
     ParallelAgent(name='deprecated_parallel', sub_agents=[])
+
+
+def test_pre_3_11_merge_alias():
+  assert _merge_agent_run_pre_3_11 is _merge_agent_run
+
+
+@pytest.mark.asyncio
+async def test_merge_agent_run_optional_sub_agent_names():
+  async def _empty_gen() -> AsyncGenerator[Event, None]:
+    if False:
+      yield
+
+  events = [e async for e in _merge_agent_run_pre_3_11([_empty_gen()])]
+  assert events == []
 
 
 class _TestingAgentWithOpenTelemetryContext(_TestingAgent):
@@ -601,12 +551,9 @@ async def test_parallel_agent_early_exit_context_cleanup(caplog):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('is_resumable', [True, False])
-@pytest.mark.parametrize('use_pre_3_11_merge', [False, True])
 async def test_run_async_short_circuits_other_agents_on_escalate_action(
     request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
     is_resumable: bool,
-    use_pre_3_11_merge: bool,
 ):
   """ParallelAgent stops sibling agents and finishes when a sub-agent escalates."""
 
@@ -626,13 +573,6 @@ async def test_run_async_short_circuits_other_agents_on_escalate_action(
       yield self.event(
           ctx, text='This event should be cancelled after escalation.'
       )
-
-  if use_pre_3_11_merge:
-    monkeypatch.setattr(
-        parallel_agent_module,
-        'sys',
-        SimpleNamespace(version_info=(3, 10)),
-    )
 
   fast_agent = _TestingAgent(
       name=f'{request.function.__name__}_test_fast_agent',
@@ -701,13 +641,10 @@ async def test_run_async_short_circuits_other_agents_on_escalate_action(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('is_resumable', [True, False])
-@pytest.mark.parametrize('use_pre_3_11_merge', [False, True])
 @pytest.mark.parametrize('pause_target', ['fast', 'escalating'])
 async def test_run_async_with_escalate_and_pause_does_not_finalize_agent(
     request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
     is_resumable: bool,
-    use_pre_3_11_merge: bool,
     pause_target: str,
 ):
   """ParallelAgent does not emit end_of_agent when an escalating run is paused."""
@@ -725,13 +662,6 @@ async def test_run_async_with_escalate_and_pause_does_not_finalize_agent(
           text=f'Escalating from {self.name}!',
           actions=EventActions(escalate=True),
       )
-
-  if use_pre_3_11_merge:
-    monkeypatch.setattr(
-        parallel_agent_module,
-        'sys',
-        SimpleNamespace(version_info=(3, 10)),
-    )
 
   fast_agent = _TestingAgent(
       name=f'{request.function.__name__}_test_fast_agent',
@@ -780,11 +710,8 @@ async def test_run_async_with_escalate_and_pause_does_not_finalize_agent(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('use_pre_3_11_merge', [False, True])
 async def test_run_async_keeps_siblings_when_a_nested_loop_ends_itself(
     request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-    use_pre_3_11_merge: bool,
 ):
   """A sub-agent ending its own LoopAgent must not cancel sibling branches."""
 
@@ -807,13 +734,6 @@ async def test_run_async_keeps_siblings_when_a_nested_loop_ends_itself(
           text=f'{self.name}#{ticks[self.name]}',
           actions=EventActions(escalate=True) if escalating else EventActions(),
       )
-
-  if use_pre_3_11_merge:
-    monkeypatch.setattr(
-        parallel_agent_module,
-        'sys',
-        SimpleNamespace(version_info=(3, 10)),
-    )
 
   fast_agent = _LoopingAgent(
       name=f'{request.function.__name__}_test_fast_agent',

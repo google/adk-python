@@ -22,11 +22,11 @@ from pathlib import Path
 import re
 import sys
 from typing import Any
+from typing import cast
 from typing import Literal
 from typing import Optional
 from typing import Union
 
-from pydantic import ValidationError
 from typing_extensions import override
 
 from . import envs
@@ -34,8 +34,8 @@ from ...agents import config_agent_utils
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 from ...tools.computer_use.computer_use_toolset import ComputerUseToolset
-from ...utils.feature_decorator import experimental
 from ...workflow import BaseNode
+from .base_agent_loader import _AgentLoadError
 from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -79,13 +79,13 @@ class AgentLoader(BaseAgentLoader):
     agents_path = Path(agents_dir).resolve()
     self._init_agent_mode(agents_path)
     self._original_sys_path = None
-    self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
+    self._agent_cache: dict[str, Union[BaseNode, App]] = {}
     self._root_agent_type_mismatches: list[tuple[str, str, bool]] = []
 
   def _init_agent_mode(self, agents_path: Path) -> None:
     if is_single_agent_directory(agents_path):
       self._is_single_agent = True
-      self._single_agent_name = agents_path.name
+      self._single_agent_name: Optional[str] = agents_path.name
       self.agents_dir = str(agents_path.parent)
     else:
       self._is_single_agent = False
@@ -119,7 +119,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _load_from_module_or_package(
       self, agent_name: str
-  ) -> Optional[Union[BaseAgent, App]]:
+  ) -> Optional[Union[BaseNode, App]]:
     # Load for case: Import "{agent_name}" (as a package or module)
     # Covers structures:
     #   a) agents_dir/{agent_name}.py (with root_agent in the module)
@@ -159,6 +159,8 @@ class AgentLoader(BaseAgentLoader):
         # found
         e.msg = f"Fail to load '{agent_name}' module. " + e.msg
         raise e
+    except ValueError as e:
+      raise _AgentLoadError(f"Fail to load '{agent_name}' module. {e}") from e
     except Exception as e:
       if hasattr(e, "msg"):
         e.msg = f"Fail to load '{agent_name}' module. " + e.msg
@@ -172,7 +174,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _load_from_submodule(
       self, agent_name: str
-  ) -> Optional[Union[BaseAgent], App]:
+  ) -> Optional[Union[BaseNode, App]]:
     # Load for case: Import "{agent_name}.agent" and look for "root_agent"
     # Covers structure: agents_dir/{agent_name}/agent.py (with root_agent defined in the module)
     try:
@@ -208,6 +210,10 @@ class AgentLoader(BaseAgentLoader):
         # the module imported by {agent_name}.agent module is not found
         e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
         raise e
+    except ValueError as e:
+      raise _AgentLoadError(
+          f"Fail to load '{agent_name}.agent' module. {e}"
+      ) from e
     except Exception as e:
       if hasattr(e, "msg"):
         e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
@@ -222,10 +228,9 @@ class AgentLoader(BaseAgentLoader):
 
     return None
 
-  @experimental
   def _load_from_yaml_config(
       self, agent_name: str, agents_dir: str
-  ) -> Optional[BaseAgent]:
+  ) -> Optional[BaseNode]:
     # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
     config_path = os.path.join(agents_dir, agent_name, "root_agent.yaml")
     try:
@@ -235,9 +240,8 @@ class AgentLoader(BaseAgentLoader):
     except FileNotFoundError:
       logger.debug("Config file %s not found.", config_path)
       return None
-    except ValidationError as e:
-      logger.error("Config file %s is invalid YAML.", config_path)
-      raise e
+    except ValueError as e:
+      raise _AgentLoadError(f"Fail to load '{config_path}' config. {e}") from e
     except Exception as e:
       if hasattr(e, "msg"):
         e.msg = f"Fail to load '{config_path}' config. " + e.msg
@@ -247,7 +251,8 @@ class AgentLoader(BaseAgentLoader):
       ) + e.args[1:]
       raise e
 
-  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+  # `\Z` rather than `$`, which also matches just before a trailing newline.
+  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+\Z")
 
   def _validate_agent_name(self, agent_name: str) -> None:
     """Validate agent name to prevent arbitrary module imports."""
@@ -286,7 +291,7 @@ class AgentLoader(BaseAgentLoader):
           f" exists in '{os.path.join(check_dir, name_to_check)}'."
       )
 
-  def _perform_load(self, agent_name: str) -> Union[BaseAgent, App]:
+  def _perform_load(self, agent_name: str) -> Union[BaseNode, App]:
     """Internal logic to load an agent"""
     self._root_agent_type_mismatches = []
     self._validate_agent_name(agent_name)
@@ -405,7 +410,7 @@ class AgentLoader(BaseAgentLoader):
   def _record_origin_metadata(
       self,
       *,
-      loaded: Union[BaseAgent, App],
+      loaded: Union[BaseNode, App],
       expected_app_name: str,
       module_name: Optional[str],
       agents_dir: str,
@@ -441,8 +446,14 @@ class AgentLoader(BaseAgentLoader):
       _attach_metadata(loaded)
 
   @override
-  def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
-    """Load an agent module (with caching & .env) and return its root_agent."""
+  def load_agent(self, agent_name: str) -> Union[BaseNode, App]:
+    """Load an agent module (with caching & .env) and return its root_agent.
+
+    Raises:
+      ValueError: If no agent exists under this name.
+      RuntimeError: If the agent's own module or config raises a ValueError
+        while loading. The original error is its cause.
+    """
     if agent_name in self._agent_cache:
       logger.debug("Returning cached agent for %s (async)", agent_name)
       return self._agent_cache[agent_name]
@@ -467,7 +478,8 @@ class AgentLoader(BaseAgentLoader):
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader (sorted alphabetically)."""
     if self._is_single_agent:
-      return [self._single_agent_name]
+      # Single-agent mode always sets the agent name.
+      return [cast(str, self._single_agent_name)]
     base_path = Path.cwd() / self.agents_dir
     agent_names = [
         x

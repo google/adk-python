@@ -31,8 +31,8 @@ from ....models.llm_request import LlmRequest
 from ....tools.base_toolset import BaseToolset
 from ....tools.tool_context import ToolContext
 from .._base_llm_processor import BaseLlmRequestProcessor
-from ._batch_executor import _is_non_blocking_tool
-from ._batch_executor import _is_streaming_tool
+from ._live_caller import _is_non_blocking_tool
+from ._live_caller import _is_streaming_tool
 
 if TYPE_CHECKING:
   from ....agents.llm_agent import LlmAgent

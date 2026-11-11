@@ -14,13 +14,24 @@
 
 """Prompt, instruction, and schema assembly for LLM flows."""
 
-from . import _identity
-from . import _instructions
-from . import _instructions_utils
-from . import _schema
-from ._instructions_utils import inject_session_state as inject_session_state
-from ._instructions_utils import InstructionProvider as InstructionProvider
+from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from ....utils import _lazy
+
+if TYPE_CHECKING:
+  from . import _identity
+  from . import _instructions
+  from . import _instructions_utils
+  from . import _schema
+  from ._instructions_utils import inject_session_state as inject_session_state
+  from ._instructions_utils import InstructionProvider as InstructionProvider
+
+_LAZY_MEMBERS: dict[str, str] = {
+    'InstructionProvider': '._instructions_utils',
+    'inject_session_state': '._instructions_utils',
+}
 __all__ = [
     'InstructionProvider',
     '_identity',
@@ -29,3 +40,5 @@ __all__ = [
     '_schema',
     'inject_session_state',
 ]
+
+__getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)

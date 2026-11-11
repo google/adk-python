@@ -93,7 +93,7 @@ class TestAuthLlmRequestProcessor:
     config.credential_key = None
     config.auth_scheme = None
     config.raw_auth_credential = None
-    config.exchanged_auth_credential = None
+    config.exchanged_auth_credential = Mock(spec=AuthCredential, oauth2=None)
     config.model_copy.return_value = config
     return config
 
@@ -290,7 +290,7 @@ class TestAuthLlmRequestProcessor:
     assert result == []
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   async def test_ignores_auth_responses_outside_current_branch(
       self,
@@ -322,7 +322,7 @@ class TestAuthLlmRequestProcessor:
     assert result == []
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   @patch('google.adk.auth.auth_tool.AuthToolArguments.model_validate')
   async def test_processes_auth_response_successfully(
@@ -380,13 +380,20 @@ class TestAuthLlmRequestProcessor:
         auth_config=mock_auth_config
     )
 
-    # Verify parse_and_store_auth_response was called
-    mock_auth_handler.parse_and_store_auth_response.assert_called_once_with(
-        state=mock_invocation_context.session.state
+    # Verify parse_and_store_auth_response stores into the session state
+    mock_auth_handler.parse_and_store_auth_response.assert_called_once()
+    stored_state = (
+        mock_auth_handler.parse_and_store_auth_response.call_args.kwargs[
+            'state'
+        ]
+    )
+    stored_state['credential_key'] = 'credential'
+    assert (
+        mock_invocation_context.session.state['credential_key'] == 'credential'
     )
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
   async def test_processes_multiple_auth_responses_and_resumes_tools(
@@ -494,7 +501,7 @@ class TestAuthLlmRequestProcessor:
     assert result == [mock_function_response_event]
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
   async def test_does_not_resume_tool_call_authored_by_another_agent(
@@ -570,7 +577,7 @@ class TestAuthLlmRequestProcessor:
     assert result == []
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   async def test_no_matching_system_function_calls_returns_early(
       self,
@@ -617,7 +624,7 @@ class TestAuthLlmRequestProcessor:
     assert result == []
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   @patch('google.adk.auth.auth_tool.AuthToolArguments.model_validate')
   async def test_handles_missing_original_function_calls(
@@ -699,7 +706,7 @@ class TestAuthLlmRequestProcessor:
     assert result == []
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
   async def test_resumes_tools_by_credential_key(
@@ -716,7 +723,9 @@ class TestAuthLlmRequestProcessor:
     auth_config = Mock(spec=AuthConfig)
     auth_config.credential_key = 'test_cred_key'
     auth_config.raw_auth_credential = None
-    auth_config.exchanged_auth_credential = None
+    auth_config.exchanged_auth_credential = Mock(
+        spec=AuthCredential, oauth2=None
+    )
     mock_auth_config_validate.return_value = auth_config
 
     auth_response = Mock()
@@ -814,7 +823,7 @@ class TestAuthLlmRequestProcessor:
     assert result == [mock_function_response_event]
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
   async def test_does_not_resume_stale_tools_from_older_events(
@@ -831,7 +840,9 @@ class TestAuthLlmRequestProcessor:
     auth_config = Mock(spec=AuthConfig)
     auth_config.credential_key = 'test_cred_key'
     auth_config.raw_auth_credential = None
-    auth_config.exchanged_auth_credential = None
+    auth_config.exchanged_auth_credential = Mock(
+        spec=AuthCredential, oauth2=None
+    )
     mock_auth_config_validate.return_value = auth_config
 
     auth_response = Mock()
@@ -938,7 +949,7 @@ class TestAuthLlmRequestProcessor:
     assert result == [mock_function_response_event]
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   async def test_store_auth_merges_oauth2_fields(
       self,
       mock_auth_handler_class,
@@ -1036,7 +1047,7 @@ class TestAuthLlmRequestProcessor:
     system_event.get_function_calls.return_value = [system_function_call]
 
     # Setup state
-    mock_state = Mock()
+    mock_state = {}
 
     # Call _store_auth_and_collect_resume_targets
     await _store_auth_and_collect_resume_targets(
@@ -1115,7 +1126,7 @@ class TestAuthLlmRequestProcessor:
 
   def test_merge_credential_oauth2_fields_when_target_oauth2_is_none(self):
     """Test merging fields into a target credential where target.oauth2 is None."""
-    from google.adk.auth.auth_preprocessor import _merge_credential_oauth2_fields
+    from google.adk.auth._auth_resume import _merge_credential_oauth2_fields
 
     target = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
@@ -1198,7 +1209,7 @@ class TestRequestPinning:
     )
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   async def test_scheme_comes_from_the_request_not_the_response(
       self, mock_auth_handler_class
   ):
@@ -1233,7 +1244,7 @@ class TestRequestPinning:
     assert used_config.auth_scheme.token_endpoint == 'https://example.com/token'
 
   @pytest.mark.asyncio
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   async def test_response_to_an_unrequested_call_id_is_ignored(
       self, mock_auth_handler_class
   ):
@@ -1267,7 +1278,7 @@ class TestRequestPinning:
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize('malformed', ['not-a-config', {'auth_scheme': 7}])
-  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth._auth_resume.AuthHandler')
   async def test_malformed_auth_response_is_skipped(
       self, mock_auth_handler_class, malformed
   ):

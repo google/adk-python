@@ -21,10 +21,78 @@ from unittest.mock import MagicMock
 from google.adk.events.event import Event
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import BaseSessionService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.utils.cache_performance_analyzer import CachePerformanceAnalyzer
 from google.genai import types
 import pytest
+
+
+@pytest.mark.parametrize(
+    "snapshots,expected_total,expected_average",
+    [
+        ([("cache1", 1), ("cache1", 2), ("cache1", 3)], 3, 3.0),
+        ([("cache1", 1), ("cache1", 1), ("cache1", 2)], 2, 2.0),
+        ([("cache1", 1), ("cache1", 2), ("cache2", 1)], 3, 1.5),
+        ([("cache1", 3)], 3, 3.0),
+        ([("cache1", 3), ("cache1", 2)], 3, 3.0),
+        ([(None, None), ("cache1", 2), (None, None)], 2, 2.0),
+        ([(None, None)], 0, 0),
+        ([("cache1", 0), ("cache1", 0)], 0, 0),
+    ],
+    ids=[
+        "successive-invocations",
+        "multiple-responses-per-invocation",
+        "cache-refresh-with-same-fingerprint",
+        "single-snapshot",
+        "out-of-order-snapshots",
+        "fingerprint-only-around-active-cache",
+        "fingerprint-only",
+        "unused-cache",
+    ],
+)
+async def test_cache_invocation_totals_count_each_cache_once(
+    snapshots: list[tuple[str | None, int | None]],
+    expected_total: int,
+    expected_average: float,
+) -> None:
+  """Cumulative cache counters are not added once per response."""
+  service = InMemorySessionService()
+  session = await service.create_session(app_name="app", user_id="user")
+  for cache_name, count in snapshots:
+    await service.append_event(
+        session=session,
+        event=Event(
+            author="agent",
+            invocation_id=f"invocation{count}",
+            cache_metadata=CacheMetadata(
+                cache_name=cache_name,
+                invocations_used=count,
+                expire_time=2_000_000_000 if cache_name is not None else None,
+                fingerprint="prefix",
+                contents_count=2,
+            ),
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=100,
+                cached_content_token_count=80 if cache_name is not None else 0,
+            ),
+        ),
+    )
+
+  result = await CachePerformanceAnalyzer(
+      service
+  ).analyze_agent_cache_performance(session.id, "user", "app", "agent")
+
+  assert result["total_invocations"] == expected_total
+  assert result["avg_invocations_used"] == expected_average
+  assert result["cache_refreshes"] == len(
+      {name for name, _ in snapshots if name is not None}
+  )
+  assert result["total_requests"] == len(snapshots)
+  assert result["total_prompt_tokens"] == 100 * len(snapshots)
+  assert result["total_cached_tokens"] == 80 * sum(
+      name is not None for name, _ in snapshots
+  )
 
 
 class TestCachePerformanceAnalyzer:

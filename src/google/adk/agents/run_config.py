@@ -18,7 +18,6 @@ import logging
 import os
 import sys
 from typing import Any
-from typing import Optional
 import warnings
 
 from google.genai import types
@@ -55,8 +54,16 @@ def _default_max_llm_calls() -> int:
 class ToolThreadPoolConfig(BaseModel):
   """Configuration for the tool thread pool executor.
 
-  Set through `RunConfig.tool_thread_pool_config`. Outside live mode only
-  synchronous function tools an `LlmAgent` calls use the pool.
+  Set through `RunConfig.tool_thread_pool_config`. Outside live mode,
+  synchronous `FunctionTool` and `FunctionNode` callables (including callable
+  `require_confirmation` predicates) run on the pool in both `LlmAgent` tool
+  calls and direct `Workflow` execution.
+
+  Timeout and retry caveat: Python threads cannot be forcibly preempted, so if
+  a node or caller times out (`NodeTimeoutError`) or cancels while a synchronous
+  callable is in flight, awaiting resumes immediately on schedule while the
+  worker thread continues running until the call returns (holding a
+  `max_workers` slot and potentially overlapping with retry attempts).
 
   Attributes:
     max_workers: Maximum number of worker threads in the pool. Defaults to 4.
@@ -84,16 +91,16 @@ class RunConfig(BaseModel):
   )
   """The pydantic model config."""
 
-  speech_config: Optional[types.SpeechConfig] = None
+  speech_config: types.SpeechConfig | None = None
   """Speech configuration for the live agent."""
 
-  http_options: Optional[types.HttpOptions] = None
+  http_options: types.HttpOptions | None = None
   """HTTP options for the agent execution (e.g. custom headers)."""
 
-  labels: Optional[dict[str, str]] = None
+  labels: dict[str, str] | None = None
   """User labels for the current invocation (e.g. for billing/attribution)."""
 
-  service_tier: Optional[ServiceTier | str] = None
+  service_tier: ServiceTier | str | None = None
   """Serving tier for the model calls of this run.
 
   Reaches models that call the interactions API through `Gemini`, and nothing
@@ -115,10 +122,10 @@ class RunConfig(BaseModel):
   `StreamingMode.SSE`.
   """
 
-  response_modalities: Optional[list[types.Modality]] = None
+  response_modalities: list[types.Modality] | None = None
   """The output modalities. If not set, it defaults to AUDIO."""
 
-  avatar_config: Optional[types.AvatarConfig] = None
+  avatar_config: types.AvatarConfig | None = None
   """Avatar configuration for the live agent."""
 
   save_input_blobs_as_artifacts: bool = Field(
@@ -145,50 +152,48 @@ class RunConfig(BaseModel):
   streaming_mode: StreamingMode = StreamingMode.NONE
   """Streaming mode, None or StreamingMode.SSE or StreamingMode.BIDI."""
 
-  output_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+  output_audio_transcription: types.AudioTranscriptionConfig | None = Field(
       default_factory=types.AudioTranscriptionConfig
   )
   """Output transcription for live agents with audio response."""
 
-  input_audio_transcription: Optional[types.AudioTranscriptionConfig] = Field(
+  input_audio_transcription: types.AudioTranscriptionConfig | None = Field(
       default_factory=types.AudioTranscriptionConfig
   )
   """Input transcription for live agents with audio input from user."""
 
-  realtime_input_config: Optional[types.RealtimeInputConfig] = None
+  realtime_input_config: types.RealtimeInputConfig | None = None
   """Realtime input config for live agents with audio input from user."""
 
-  explicit_vad_signal: Optional[bool] = None
+  explicit_vad_signal: bool | None = None
   """Whether to enable explicit voice activity detection (VAD) signals from the model."""
 
-  translation_config: Optional[types.TranslationConfig] = None
+  translation_config: types.TranslationConfig | None = None
   """Configures real-time speech-to-speech translation.
 
   Only supported by translation models such as
   `gemini-3.5-live-translate-preview`.
   """
 
-  enable_affective_dialog: Optional[bool] = None
+  enable_affective_dialog: bool | None = None
   """If enabled, the model will detect emotions and adapt its responses accordingly."""
 
-  proactivity: Optional[types.ProactivityConfig] = None
+  proactivity: types.ProactivityConfig | None = None
   """Configures the proactivity of the model. This allows the model to respond proactively to the input and to ignore irrelevant input."""
 
-  session_resumption: Optional[types.SessionResumptionConfig] = None
+  session_resumption: types.SessionResumptionConfig | None = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
 
-  history_config: Optional[types.HistoryConfig] = None
+  history_config: types.HistoryConfig | None = None
   """Configures the exchange of history between the client and the server."""
 
-  context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
-      None
-  )
+  context_window_compression: types.ContextWindowCompressionConfig | None = None
   """Configuration for context window compression. If set, this will enable context window compression for LLM input."""
 
   save_live_blob: bool = False
   """Saves live video and audio data to session and artifact service."""
 
-  tool_thread_pool_config: Optional[ToolThreadPoolConfig] = None
+  tool_thread_pool_config: ToolThreadPoolConfig | None = None
   """Configuration for running tools in a thread pool.
 
   When set, tool executions will run in a separate thread pool executor
@@ -205,16 +210,15 @@ class RunConfig(BaseModel):
   in a new event loop within the background thread, which helps catch blocking
   I/O mistakenly used inside async functions.
 
-  Outside live mode, only synchronous function tools an `LlmAgent` calls use
-  the pool, and only their own synchronous callables run there: the tool
-  function and a callable `require_confirmation`. Argument handling and
-  callbacks stay on the event loop, and async tools run on the event loop as
-  they do without this config. A tool used directly as a `Workflow` node also
-  runs on the event loop, because a tool node calls the tool itself rather
-  than through the `LlmAgent` tool pipeline this config applies to. Parallel
-  calls to synchronous function tools then overlap, so their functions must
-  be safe to run at the same time and on a thread other than the event
-  loop's.
+  Outside live mode, synchronous `FunctionTool` and `FunctionNode` callables
+  use the pool — whether called by an `LlmAgent` or run directly as `Workflow`
+  nodes — and only their own synchronous callables run there: the tool or node
+  function, synchronous generator steps, and a synchronous callable
+  `require_confirmation`. Argument handling and callbacks stay on the event
+  loop, and async tools and async nodes run on the event loop as they do
+  without this config. Parallel synchronous calls then overlap, so their
+  functions must be safe to run at the same time and on a thread other than the
+  event loop's.
 
   IMPORTANT - GIL (Global Interpreter Lock) Considerations:
 
@@ -280,7 +284,7 @@ class RunConfig(BaseModel):
     - Less than or equal to 0: This allows for unbounded number of llm calls.
   """
 
-  custom_metadata: Optional[dict[str, Any]] = None
+  custom_metadata: dict[str, Any] | None = None
   """Custom metadata for the current invocation."""
 
   telemetry: TelemetryConfig | None = None
@@ -296,7 +300,7 @@ class RunConfig(BaseModel):
       Experimental; API may change.
   """
 
-  get_session_config: Optional[GetSessionConfig] = None
+  get_session_config: GetSessionConfig | None = None
   """Configuration for controlling which events are fetched when loading
   a session.
 
@@ -305,6 +309,9 @@ class RunConfig(BaseModel):
   (e.g. via ``num_recent_events`` or ``after_timestamp``).  This is especially
   useful in combination with ``EventsCompactionConfig`` to avoid loading the
   full event history on every invocation.
+
+  Ignored by ``Runner.rewind_async``, which always loads the full session
+  history.
 
   Example::
 

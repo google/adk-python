@@ -1,18 +1,18 @@
 # Model Armor
 
-`ModelArmorPlugin` screens user input and model output against [Google Cloud Model Armor](https://cloud.google.com/security-command-center/docs/model-armor-overview) templates. When a filter matches, or when screening cannot complete, the offending content is replaced with a safe message before it reaches the model or the user.
+`ModelArmorPlugin` screens user input, model output, and tool output against [Google Cloud Model Armor](https://cloud.google.com/security-command-center/docs/model-armor-overview) templates. When a filter matches, or when screening cannot complete, the offending content is replaced with a safe message before it reaches the model or the user.
 
 ## Introduction
 
 Model Armor is a Google Cloud service that inspects text for prompt injection and jailbreak attempts, harmful content, and sensitive data. You define what to look for in a *template* — a named, server-side policy — and the service returns a verdict for each piece of text you send it.
 
-The integration is two public types: `ModelArmorPlugin`, a `BasePlugin` subclass driven by `PluginManager`, and `ModelArmorConfig`, which says which templates to screen against and what to do about a match. The plugin reads text off the `LlmRequest` and `LlmResponse`, calls Model Armor, and returns a replacement `LlmResponse` when content should be blocked.
+The integration is two public types: `ModelArmorPlugin`, a `BasePlugin` subclass driven by `PluginManager`, and `ModelArmorConfig`, which says which templates to screen against and what to do about a match. The plugin reads text off the `LlmRequest`, `LlmResponse`, and tool results, calls Model Armor, and returns a replacement when content should be blocked.
 
 Key features:
 
-- **Input and output screening**, each governed by its own template, and each optional.
+- **Input, output, and tool output screening**, each governed by its own template, and each optional.
 - **Block screening failures by default**: by default screening failures are blocked rather than delivered.
-- **Blocked responses are marked** with `custom_metadata['model_armor_blocked']` so your application can detect them.
+- **Blocked input and model output responses are marked** with `custom_metadata['model_armor_blocked']` so your application can detect them (blocked tool outputs return a plain `{'error': ...}` dict to the model and do not carry this marker).
 
 ## Get started
 
@@ -76,22 +76,36 @@ Credentials come from Application Default Credentials.
 3. The text is sent to Model Armor's `SanitizeModelResponse` method.
 4. It acts on the result (below).
 
+### `after_tool_callback` - screening tool output
+
+`after_tool_callback` runs after each tool call:
+
+1. If `tool_output_template_name` is unset, it returns immediately and nothing is screened.
+2. It extracts and serializes text from the tool result (skipping raw bytes and non-text media parts), splitting oversized text into overlapping 65,536-character chunks.
+3. Each chunk is sent to Model Armor's `SanitizeUserPrompt` method.
+4. It acts on each result (below).
+
 ### Acting on a result
 
-| `invocation_result` | Meaning | Plugin behavior |
-| :--- | :--- | :--- |
-| `SUCCESS` | Every filter ran. | Check `filter_match_state`. |
-| Anything else | Some or all filters were skipped, failed, or the field was unset. | Screening failure. |
+| `filter_match_state` | `invocation_result` | Meaning | Plugin behavior |
+| :--- | :--- | :--- | :--- |
+| `MATCH_FOUND` | Any | At least one filter tripped. | Block content. |
+| Anything else | `SUCCESS` | Every filter ran with no match. | Pass through untouched. |
+| Anything else | Anything else | Some or all filters were skipped, failed, or the field was unset. | Screening failure. |
 
-When screening completes successfully, a `filter_match_state` of `MATCH_FOUND` means at least one filter tripped, and the content is blocked. Anything else passes through untouched.
+`filter_match_state` is checked first, so a partial result that still reports `MATCH_FOUND` is always blocked.
+
+With `deidentify_sensitive_data=True`, one kind of match is handled differently: when Sensitive Data Protection (SDP) is the only filter that matched and the template's SDP advanced config has a de-identify template, Model Armor returns the text with the sensitive data transformed, and the plugin continues with that text instead of blocking. See [`deidentify_sensitive_data`](#deidentify_sensitive_data).
 
 A screening failure is routed through `block_on_screening_failure` and blocked by default.
 
 ### The blocked response
 
-Blocking returns an `LlmResponse` carrying the message for the direction that
-was screened: `input_blocked_message` for user input, `output_blocked_message`
-for model output.
+Blocking user input or model output returns an `LlmResponse` carrying the
+message for the direction that was screened: `input_blocked_message` for user
+input, `output_blocked_message` for model output. Blocking tool output returns
+`{'error': tool_output_blocked_message}` to the model as the tool result instead
+of an `LlmResponse`.
 
 ### Template paths and regional endpoints
 
@@ -124,27 +138,31 @@ Options introduced by `ModelArmorPlugin` (those inherited from `BasePlugin` are 
 | :--- | :--- | :--- | :--- |
 | `prompt_template_name` | `str \| None` | `None` | Template used to screen user input. Unset means input is not screened. |
 | `response_template_name` | `str \| None` | `None` | Template used to screen model output. Unset means output is not screened. |
+| `tool_output_template_name` | `str \| None` | `None` | Template used to screen tool output. Unset means tool output is not screened. |
 | `input_blocked_message` | `str` | `"I'm sorry, but I can't help with that request."` | Replacement text shown when user input is blocked. |
 | `output_blocked_message` | `str` | `"I'm sorry, but I can't help with that request."` | Replacement text shown when model output is blocked. |
+| `tool_output_blocked_message` | `str` | `"Tool output was blocked by Model Armor."` | Replacement error message returned to the model when tool output is blocked. |
 | `block_on_screening_failure` | `bool` | `True` | Whether to block content that could not be screened. |
+| `deidentify_sensitive_data` | `bool` | `False` | Whether to continue with de-identified text instead of blocking when SDP is the only filter that matched. |
 
-At least one of the two template names must be set.
+At least one of `prompt_template_name`, `response_template_name`, or `tool_output_template_name` must be set.
 
-#### `prompt_template_name` and `response_template_name`
+#### `prompt_template_name`, `response_template_name`, and `tool_output_template_name`
 
-Both fields require fully-qualified resource paths formatted as:
+All template fields require fully-qualified resource paths formatted as:
 `projects/{project}/locations/{location}/templates/{template}`
 
-You can configure either or both:
+You can configure any combination:
 
 - `prompt_template_name`: Screens user input prompts before forwarding to the model.
 - `response_template_name`: Screens model responses before delivering to the user.
+- `tool_output_template_name`: Screens tool outputs before returning to the model.
 
-If both are set they must reside in the same GCP location — see [Template paths and regional endpoints](#template-paths-and-regional-endpoints).
+If multiple templates are set they must reside in the same GCP location — see [Template paths and regional endpoints](#template-paths-and-regional-endpoints).
 
-#### `input_blocked_message` and `output_blocked_message`
+#### `input_blocked_message`, `output_blocked_message`, and `tool_output_blocked_message`
 
-Defines the replacement text returned to the user when a prompt or response is blocked. Screening failures reuse the message for the direction that failed.
+Defines the replacement text returned to the user when a prompt or response is blocked, or returned to the model in `{'error': tool_output_blocked_message}` when tool output is blocked. Screening failures reuse the message for the direction that failed.
 
 #### `block_on_screening_failure`
 
@@ -152,6 +170,17 @@ Controls how the plugin behaves when Model Armor cannot return a definitive `SUC
 
 - **`True` (default)**: Blocks the content. Unscreened content is treated as unsafe.
 - **`False`**: Delivers the content.
+
+#### `deidentify_sensitive_data`
+
+Controls what happens when the only filter that matched is Sensitive Data Protection.
+
+- **`False` (default)**: The content is blocked, like any other match.
+- **`True`**: If Model Armor returned de-identified text, the plugin uses it. For input, it replaces the text of the most recent `user` content in the request, so the model receives the de-identified text on that turn (the stored session event keeps the original text, so history replays the original on subsequent turns); non-text parts and thought parts are kept. For output, it returns the response with its text, or its live transcription, replaced, and marks it with `custom_metadata={"model_armor_deidentified": True}`.
+
+Model Armor returns de-identified text only when the template's SDP settings use an advanced config with a de-identify template (a Sensitive Data Protection `deidentifyTemplate`, for example one that replaces each finding with its info type). With a basic SDP config, or without a de-identify template, an SDP match carries no transformed text and is still blocked.
+
+A match from any other filter (responsible AI, prompt injection and jailbreak, malicious URIs, CSAM) still blocks, even when SDP also matched and de-identified text is available.
 
 ## Advanced applications
 
@@ -172,9 +201,21 @@ config = ModelArmorConfig(
 )
 ```
 
+### Continuing with de-identified text
+
+With a template whose SDP advanced config has a de-identify template, an email address or phone number in the user's message reaches the model as `[EMAIL_ADDRESS]` or `[PHONE_NUMBER]` instead of blocking the turn:
+
+```python
+config = ModelArmorConfig(
+    prompt_template_name="projects/my-project/locations/us-central1/templates/my-deidentify-template",
+    response_template_name="projects/my-project/locations/us-central1/templates/my-deidentify-template",
+    deidentify_sensitive_data=True,
+)
+```
+
 ### Detecting blocks in your application
 
-Blocked responses carry a marker, so a UI can render them differently from a real answer:
+Blocked input and model output responses carry a `custom_metadata['model_armor_blocked']` marker, so a UI can render them differently from a real answer (blocked tool outputs return a plain `{'error': ...}` dict to the model and do not carry this marker):
 
 ```python
 async for event in runner.run_async(...):
@@ -184,8 +225,14 @@ async for event in runner.run_async(...):
 
 ## Limitations
 
-- **Tool output is not screened.** Only the most recent `user` content with text parts is sent for screening. Tool results are added to the request as `user` content whose only part is a `function_response` and doesn't reach Model Armor.
+- **Live streaming and long-running tools are not screened.** Live streaming tools send yielded chunks directly to the live request queue and long-running tools deliver their final `function_response` on a later turn, so their outputs skip `after_tool_callback`.
 
-- **Enforcement mode is limited.** The Model Armor plugin is currently limited to logging detection results and blocking content. Future extensions could include replacing or redacting text.
+- **Media in tool results is not screened.** Raw `bytes` values and non-text `Part` objects (such as `inline_data` or `file_data` media) in tool results are skipped during text extraction and are not sent to Model Armor.
+
+- **Plugin registration order matters.** `PluginManager` stops at the first plugin that returns a non-`None` value from a callback. Register `ModelArmorPlugin` ahead of plugins that return a value from `after_tool_callback` (such as `MultimodalToolResultsPlugin`) so tool output screening is not bypassed.
+
+- **Enforcement is block or de-identify.** The plugin blocks matched content, or, with `deidentify_sensitive_data`, continues with Model Armor's de-identified text when SDP is the only match. It does not apply other transformations.
+
+- **De-identified input is not written back to the session.** With `deidentify_sensitive_data`, the plugin replaces the latest user content in the current request, but the user's event stored in the session keeps the original text, so subsequent turns rebuild the request from history and replay the original text to the model.
 
 - **Live audio screening uses transcriptions.** The Model Armor plugin currently screens audio via input and output transcriptions, which relies on their accuracy.

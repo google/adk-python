@@ -17,8 +17,6 @@ import contextlib
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
-from typing import Optional
-from typing import Union
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
@@ -47,6 +45,8 @@ from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from google.genai.types import Part
 from typing_extensions import override
+
+from ._invariants import InvariantPlugin
 
 
 def create_test_agent(name: str = 'test_agent') -> LlmAgent:
@@ -83,7 +83,7 @@ async def create_invocation_context(
     user_content: str = '',
     run_config: RunConfig = None,
     plugins: list[BasePlugin] = [],
-    abort_signal: Optional[asyncio.Event] = None,
+    abort_signal: asyncio.Event | None = None,
 ):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
@@ -145,7 +145,7 @@ END_OF_AGENT = 'end_of_agent'
 # Could be used to compare events for testing resumability.
 def simplify_resumable_app_events(
     events: list[Event],
-) -> list[(str, Union[types.Part, str])]:
+) -> list[(str, types.Part | str)]:
   results = []
   for event in events:
     if event.content:
@@ -172,7 +172,7 @@ def simplify_contents(contents: list[types.Content]) -> list[(str, types.Part)]:
 # - remove function_call_id if it exists
 def simplify_content(
     content: types.Content,
-) -> Union[str, types.Part, list[types.Part]]:
+) -> str | types.Part | list[types.Part]:
   for part in content.parts:
     if part.function_call and part.function_call.id:
       part.function_call.id = None
@@ -223,10 +223,22 @@ class TestInMemoryRunner(AfInMemoryRunner):
   app_name is hardcoded as InMemoryRunner in the parent class.
   """
 
+  __test__ = False
+
+  def __init__(
+      self,
+      *args: Any,
+      check_invariants: bool = True,
+      **kwargs: Any,
+  ) -> None:
+    super().__init__(*args, **kwargs)
+    if check_invariants:
+      self.plugin_manager.plugins.insert(0, InvariantPlugin())
+
   async def run_async_with_new_session(
       self,
       new_message: types.ContentUnion,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> list[Event]:
 
     collected_events: list[Event] = []
@@ -240,7 +252,7 @@ class TestInMemoryRunner(AfInMemoryRunner):
   async def run_async_with_new_session_agen(
       self,
       new_message: types.ContentUnion,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ) -> AsyncGenerator[Event, None]:
     session = await self.session_service.create_session(
         app_name='InMemoryRunner', user_id='test_user'
@@ -261,11 +273,12 @@ class InMemoryRunner:
 
   def __init__(
       self,
-      root_agent: Optional[Union[Agent, LlmAgent]] = None,
+      root_agent: Agent | LlmAgent | None = None,
       response_modalities: list[str] = None,
       plugins: list[BasePlugin] = [],
-      app: Optional[App] = None,
+      app: App | None = None,
       node: Any = None,
+      check_invariants: bool = True,
   ):
     """Initializes the InMemoryRunner.
 
@@ -276,6 +289,7 @@ class InMemoryRunner:
         provided.
       app: The app to use in the runner.
       node: The root node to run.
+      check_invariants: Whether to attach the runtime invariant checker plugin.
     """
     if node:
       self.app_name = node.name
@@ -307,6 +321,8 @@ class InMemoryRunner:
           session_service=InMemorySessionService(),
           memory_service=InMemoryMemoryService(),
       )
+    if check_invariants:
+      self.runner.plugin_manager.plugins.insert(0, InvariantPlugin())
     self.session_id = None
 
   @property
@@ -332,8 +348,8 @@ class InMemoryRunner:
 
   async def run_async(
       self,
-      new_message: Optional[types.ContentUnion] = None,
-      invocation_id: Optional[str] = None,
+      new_message: types.ContentUnion | None = None,
+      invocation_id: str | None = None,
   ) -> list[Event]:
     events = []
     async for event in self.runner.run_async(
@@ -400,19 +416,20 @@ class MockModel(BaseLlm):
 
   requests: list[LlmRequest] = []
   responses: list[LlmResponse]
-  error: Union[Exception, None] = None
+  error: Exception | None = None
   response_index: int = -1
 
   @classmethod
   def create(
       cls,
-      responses: Union[
-          list[types.Part], list[LlmResponse], list[str], list[list[types.Part]]
-      ],
-      error: Union[Exception, None] = None,
-      usage_metadata: Optional[
-          types.GenerateContentResponseUsageMetadata
-      ] = None,
+      responses: (
+          list[types.Part]
+          | list[LlmResponse]
+          | list[str]
+          | list[list[types.Part]]
+      ),
+      error: Exception | None = None,
+      usage_metadata: types.GenerateContentResponseUsageMetadata | None = None,
   ):
     if error and not responses:
       return cls(responses=[], error=error)
@@ -456,7 +473,7 @@ class MockModel(BaseLlm):
     self.response_index += 1
     self.requests.append(llm_request)
     # yield LlmResponse(content=self.responses[self.response_index])
-    yield self.responses[self.response_index]
+    yield self.responses[self.response_index].model_copy(deep=True)
 
   @override
   async def generate_content_async(
@@ -467,7 +484,7 @@ class MockModel(BaseLlm):
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
-    yield self.responses[self.response_index]
+    yield self.responses[self.response_index].model_copy(deep=True)
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -480,6 +497,8 @@ class MockLlmConnection(BaseLlmConnection):
 
   def __init__(self, llm_responses: list[LlmResponse]):
     self.llm_responses = llm_responses
+    self._replayed = False
+    self._closed = asyncio.Event()
 
   async def send_history(self, history: list[types.Content]):
     pass
@@ -495,12 +514,15 @@ class MockLlmConnection(BaseLlmConnection):
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
-    for response in self.llm_responses:
-      # Yield control to allow other tasks (like send_task) to run first.
-      # This ensures user content gets persisted before the mock response
-      # is yielded.
-      await asyncio.sleep(0)
-      yield response
+    if not self._replayed:
+      self._replayed = True
+      for response in self.llm_responses:
+        # Yield control to allow other tasks (like send_task) to run first.
+        # This ensures user content gets persisted before the mock response
+        # is yielded.
+        await asyncio.sleep(0)
+        yield response
+    await self._closed.wait()
 
   async def close(self):
-    pass
+    self._closed.set()

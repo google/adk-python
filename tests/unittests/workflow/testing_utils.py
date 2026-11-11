@@ -18,7 +18,6 @@ import copy
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
-from typing import Optional
 
 from google.adk.agents.context import Context as WorkflowContext
 from google.adk.agents.invocation_context import InvocationContext as BaseInvocationContext
@@ -44,6 +43,8 @@ from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from google.genai.types import Part
 from typing_extensions import override
+
+from .._invariants import InvariantPlugin
 
 
 def create_test_agent(name: str = 'test_agent') -> LlmAgent:
@@ -216,6 +217,18 @@ class TestInMemoryRunner(AfInMemoryRunner):
   app_name is hardcoded as InMemoryRunner in the parent class.
   """
 
+  __test__ = False
+
+  def __init__(
+      self,
+      *args: Any,
+      check_invariants: bool = True,
+      **kwargs: Any,
+  ) -> None:
+    super().__init__(*args, **kwargs)
+    if check_invariants:
+      self.plugin_manager.plugins.insert(0, InvariantPlugin())
+
   async def run_async_with_new_session(
       self, new_message: types.ContentUnion
   ) -> list[Event]:
@@ -247,11 +260,12 @@ class InMemoryRunner:
 
   def __init__(
       self,
-      root_agent: Optional[Agent | LlmAgent] = None,
+      root_agent: Agent | LlmAgent | None = None,
       response_modalities: list[str] = None,
       plugins: list[BasePlugin] = [],
-      app: Optional[App] = None,
+      app: App | None = None,
       node: Any = None,
+      check_invariants: bool = True,
   ):
     """Initializes the InMemoryRunner.
 
@@ -262,6 +276,7 @@ class InMemoryRunner:
         provided.
       app: The app to use in the runner.
       node: The root node to run.
+      check_invariants: Whether to attach the runtime invariant checker plugin.
     """
     self._app = app
     if node:
@@ -294,6 +309,8 @@ class InMemoryRunner:
           session_service=InMemorySessionService(),
           memory_service=InMemoryMemoryService(),
       )
+    if check_invariants:
+      self.runner.plugin_manager.plugins.insert(0, InvariantPlugin())
     self.session_id = None
 
   @property
@@ -327,8 +344,8 @@ class InMemoryRunner:
 
   async def run_async(
       self,
-      new_message: Optional[types.ContentUnion] = None,
-      invocation_id: Optional[str] = None,
+      new_message: types.ContentUnion | None = None,
+      invocation_id: str | None = None,
   ) -> list[Event]:
     # For non-resumable apps, don't reuse invocation_id on resume.
     # State reconstruction relies on scanning events from *previous*
@@ -444,7 +461,7 @@ class MockModel(BaseLlm):
     self.response_index += 1
     self.requests.append(llm_request)
     # yield LlmResponse(content=self.responses[self.response_index])
-    yield self.responses[self.response_index]
+    yield self.responses[self.response_index].model_copy(deep=True)
 
   @override
   async def generate_content_async(
@@ -455,7 +472,7 @@ class MockModel(BaseLlm):
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
-    yield self.responses[self.response_index]
+    yield self.responses[self.response_index].model_copy(deep=True)
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:

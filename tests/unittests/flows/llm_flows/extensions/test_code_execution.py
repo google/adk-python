@@ -19,18 +19,19 @@ import asyncio
 import datetime
 import threading
 from typing import Any
-from typing import Optional
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.code_execution_utils import File
 from google.adk.code_executors.code_executor_context import CodeExecutorContext
+from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.flows.llm_flows.extensions._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows.extensions._code_execution import _extract_and_replace_inline_files
 from google.adk.flows.llm_flows.extensions._code_execution import _get_data_file_preprocessing_code
@@ -52,8 +53,8 @@ class _ExecutionRecord:
   """Captures how the executor ran, for cross-thread inspection in tests."""
 
   def __init__(self):
-    self.thread: Optional[Any] = None
-    self.released: Optional[bool] = None
+    self.thread: Any | None = None
+    self.released: bool | None = None
 
 
 class _RecordingCodeExecutor(BaseCodeExecutor):
@@ -159,6 +160,33 @@ async def test_builtin_code_executor_image_artifact_creation(mock_datetime):
       == f'Saved as artifact: {expected_filename2}. '
   )
   assert not llm_response.content.parts[2].inline_data
+
+
+@pytest.mark.asyncio
+async def test_builtin_code_executor_emits_no_event_without_images():
+  """Test BuiltInCodeExecutor emits no event when there is no image to save."""
+  code_executor = BuiltInCodeExecutor()
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock(
+      return_value='v1'
+  )
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part(text='The answer is 42.')])
+  )
+
+  events = []
+  async for event in response_processor.run_async(
+      invocation_context, llm_response
+  ):
+    events.append(event)
+
+  assert events == []
+  invocation_context.artifact_service.save_artifact.assert_not_called()
+  assert llm_response.content.parts == [types.Part(text='The answer is 42.')]
 
 
 @pytest.mark.asyncio
@@ -523,6 +551,49 @@ async def test_signed_thought_is_not_executed_under_a_planner():
   assert emitted_parts[0].text == '```python\nprint("from the reasoning")\n```'
 
 
+async def _run_without_artifact_service(code_executor):
+  """Runs the code-execution response processor with no artifact service."""
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = None
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part(text='```python\nprint(1)\n```')])
+  )
+  return [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_code_runs_without_artifact_service_when_no_files_are_written():
+  """The artifact service is only needed to save output files."""
+  code_executor = _stub_code_executor()
+
+  events = await _run_without_artifact_service(code_executor)
+
+  code_executor.execute_code.assert_called_once()
+  result = events[-1].content.parts[0].code_execution_result
+  assert result.output == 'Code execution result:\nok\n'
+  assert not events[-1].actions.artifact_delta
+
+
+@pytest.mark.asyncio
+async def test_output_files_still_require_an_artifact_service():
+  """Output files cannot be saved without an artifact service."""
+  code_executor = _stub_code_executor()
+  code_executor.execute_code.return_value = CodeExecutionResult(
+      output_files=[File(name='out.txt', content=b'hi')]
+  )
+
+  with pytest.raises(ValueError, match='Artifact service is not initialized'):
+    await _run_without_artifact_service(code_executor)
+
+
 def test_get_content_as_bytes_returns_bytes_unchanged():
   """Binary output files are already bytes and must not be decoded again."""
   # PNG magic: valid bytes, but not decodable as base64.
@@ -703,6 +774,45 @@ async def test_support_cfc_resolves_builtin_code_executor_without_mutating_agent
   assert not any(
       tool.code_execution is not None for tool in sub_request.config.tools or []
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'executor_type',
+    [None, UnsafeLocalCodeExecutor, BuiltInCodeExecutor],
+    ids=['no-executor', 'custom-executor', 'explicit-builtin'],
+)
+async def test_cfc_code_execution_is_scoped_to_invocation(executor_type):
+  """Reusing an agent preserves each invocation's code-execution capability."""
+  code_executor = executor_type() if executor_type else None
+  agent = Agent(
+      name='test_agent',
+      model='gemini-2.0-flash',
+      code_executor=code_executor,
+  )
+
+  requests = []
+  executors_after_run = []
+  for support_cfc in [True, False]:
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent,
+        run_config=RunConfig(support_cfc=support_cfc),
+    )
+
+    llm_request = LlmRequest(model=agent.model)
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+    requests.append(llm_request)
+    executors_after_run.append(agent.code_executor)
+
+  assert len(requests) == 2
+  assert [
+      any(
+          tool.code_execution is not None for tool in request.config.tools or []
+      )
+      for request in requests
+  ] == [True, isinstance(code_executor, BuiltInCodeExecutor)]
+  assert all(executor is code_executor for executor in executors_after_run)
 
 
 @pytest.mark.asyncio

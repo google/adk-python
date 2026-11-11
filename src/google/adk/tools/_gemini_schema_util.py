@@ -19,6 +19,7 @@ import re
 from typing import Any
 from typing import Literal
 from typing import Optional
+import urllib.parse
 
 from google.genai.types import JSONSchema
 from google.genai.types import Schema
@@ -121,14 +122,53 @@ def _sanitize_schema_type(
   return schema
 
 
+def _resolve_json_pointer(ref_path: str, root: dict[str, Any]) -> object | None:
+  """Resolves a URI-fragment JSON Pointer (e.g. '#' or '#/path/to/node').
+
+  Returns the referenced value, or None if the pointer is not a valid URI
+  fragment, the path does not exist, or the target value itself is None (JSON
+  null, which callers treat the same as an unresolved path for defs fallback).
+  """
+  if ref_path == "#":
+    return root
+  if not ref_path.startswith("#/"):
+    return None
+  parts = [urllib.parse.unquote(part) for part in ref_path[2:].split("/")]
+  current: object = root
+  for part in parts:
+    part = part.replace("~1", "/").replace("~0", "~")
+    if isinstance(current, dict):
+      if part not in current:
+        return None
+      current = current[part]
+    elif isinstance(current, list):
+      if not re.fullmatch(r"0|[1-9][0-9]*", part):
+        return None
+      idx = int(part)
+      if idx >= len(current):
+        return None
+      current = current[idx]
+    else:
+      return None
+  return current
+
+
 def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
-  """Resolves $ref pointers in a JSON schema."""
+  """Resolves $ref pointers in a JSON schema.
+
+  Unresolvable or dangling $ref nodes, as well as references resolving to
+  non-dict values, are left unchanged in the returned schema. Downstream
+  consumers are responsible for validating that all required references were
+  dereferenced.
+  """
 
   # Support both the draft 2019-09+/2020-12 keyword (`$defs`) and the
   # draft-07 keyword (`definitions`). The MCP specification allows tool
   # `inputSchema`s to use either, so a server sending draft-07 schemas with
   # `definitions` + `$ref: "#/definitions/..."` must dereference correctly.
-  # `$defs` takes precedence on the (pathological) key collision.
+  # If the same definition key appears in both `definitions` and `$defs`,
+  # `$defs` takes precedence. Note that JSON Pointer resolution takes
+  # precedence over `defs` lookups.
   defs = {**schema.get("definitions", {}), **schema.get("$defs", {})}
 
   def _resolve_refs(sub_schema: object, path_refs: frozenset[str]) -> object:
@@ -145,18 +185,29 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
         new_path = path_refs | {ref_uri}
 
-        if ref_key in defs:
-          # Found the reference, replace it with the definition.
+        # Try to resolve as a JSON Pointer reference (e.g. #/properties/foo).
+        resolved = _resolve_json_pointer(ref_uri, schema)
+        if isinstance(resolved, dict):
+          resolved_copy = resolved.copy()
+          sub_schema_copy = sub_schema.copy()
+          del sub_schema_copy["$ref"]
+          resolved_copy.update(sub_schema_copy)
+          return _resolve_refs(resolved_copy, new_path)
+
+        # Fall back to defs lookup if the definition key exists.
+        if (
+            resolved is None
+            and ref_key in defs
+            and isinstance(defs[ref_key], dict)
+        ):
           resolved = defs[ref_key].copy()
-          # Merge properties from the reference, allowing overrides.
           sub_schema_copy = sub_schema.copy()
           del sub_schema_copy["$ref"]
           resolved.update(sub_schema_copy)
-          # Recursively resolve refs in the newly inserted part.
           return _resolve_refs(resolved, new_path)
-        else:
-          # Reference not found, return as is.
-          return sub_schema
+
+        # Reference not found or resolves to a non-dict, return as is.
+        return sub_schema
       else:
         # No $ref, so traverse deeper into the dictionary.
         return {

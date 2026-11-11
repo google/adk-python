@@ -20,11 +20,14 @@ import json
 from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.integrations.redis._config import RedisSessionServiceConfig
 from google.adk.integrations.redis._redis_session_service import RedisSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.adk.sessions.session import Session
+from google.genai import types
 import pytest
 
 from ._fake_redis import FakeRedisAsync
@@ -175,6 +178,195 @@ async def test_get_session_with_after_timestamp(session_service):
   assert fetched is not None
   assert len(fetched.events) == 2
   assert [e.author for e in fetched.events] == ["user_3", "user_4"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config, start",
+    [
+        (None, 0),
+        (GetSessionConfig(num_recent_events=2), 2),
+        (GetSessionConfig(num_recent_events=0), 4),
+        (GetSessionConfig(after_timestamp=102), 2),
+        (GetSessionConfig(num_recent_events=3, after_timestamp=102), 2),
+    ],
+)
+async def test_append_event_preserves_filtered_history(
+    session_service, config, start
+):
+  """A filtered view can grow without removing stored events."""
+  session = await session_service.create_session(
+      app_name="app1", user_id="u1", state={"original": "value"}
+  )
+  events = [
+      Event(
+          author="user",
+          invocation_id=f"invocation-{i}",
+          timestamp=100.0 + i,
+          content=types.Content(parts=[types.Part(text=f"event-{i}")]),
+      )
+      for i in range(6)
+  ]
+  for event in events[:4]:
+    await session_service.append_event(session, event)
+  view = await session_service.get_session(
+      app_name="app1", user_id="u1", session_id=session.id, config=config
+  )
+  assert view.events == events[start:4]
+  events[4].actions.state_delta = {
+      "added": 1,
+      "app:mode": "test",
+      "user:theme": "dark",
+      "temp:scratch": "local",
+  }
+
+  for event in events[4:]:
+    assert await session_service.append_event(view, event) is event
+
+  stored = await session_service.get_session(
+      app_name="app1", user_id="u1", session_id=session.id
+  )
+  assert stored.events == events
+  assert view.events == events[start:]
+  assert stored.state == {
+      "original": "value",
+      "added": 1,
+      "app:mode": "test",
+      "user:theme": "dark",
+  }
+  assert view.state["temp:scratch"] == "local"
+  assert "temp:scratch" not in stored.events[4].actions.state_delta
+
+
+@pytest.mark.asyncio
+async def test_partial_event_preserves_filtered_history(session_service):
+  session = await session_service.create_session(app_name="app1", user_id="u1")
+  old_event = Event(author="user", invocation_id="old")
+  await session_service.append_event(session, old_event)
+  view = await session_service.get_session(
+      app_name="app1",
+      user_id="u1",
+      session_id=session.id,
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  partial = Event(author="agent", invocation_id="partial", partial=True)
+
+  assert await session_service.append_event(view, partial) is partial
+
+  stored = await session_service.get_session(
+      app_name="app1", user_id="u1", session_id=session.id
+  )
+  assert stored.events == [old_event]
+  assert view.events == []
+
+
+@pytest.mark.asyncio
+async def test_partial_event_writes_nothing(session_service, fake_redis):
+  """A partial event leaves session, app state and user state untouched."""
+  session = await session_service.create_session(app_name="app1", user_id="u1")
+  stored_before = dict(fake_redis._store)
+  last_update_time_before = session.last_update_time
+  partial = Event(
+      author="agent",
+      partial=True,
+      timestamp=last_update_time_before + 100,
+      actions=EventActions(
+          state_delta={"count": 1, "user:score": 100, "app:status": "active"}
+      ),
+  )
+
+  assert await session_service.append_event(session, partial) is partial
+
+  assert session.last_update_time == last_update_time_before
+  assert fake_redis._store == stored_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["append", "delete", "expire"])
+async def test_append_event_retries_storage_changes(
+    session_service, fake_redis, monkeypatch, change
+):
+  """A concurrent append is retained; missing storage keeps recreation behavior."""
+  session = await session_service.create_session(app_name="app1", user_id="u1")
+  old_event = Event(author="user", invocation_id="old")
+  await session_service.append_event(session, old_event)
+  view = await session_service.get_session(
+      app_name="app1",
+      user_id="u1",
+      session_id=session.id,
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  other_event = Event(author="agent", invocation_id="other")
+  new_event = Event(author="user", invocation_id="new")
+  key = session_service._session_key("app1", "u1", session.id)
+  original_get = fake_redis.get
+  changed = False
+
+  async def get_with_concurrent_change(read_key):
+    nonlocal changed
+    raw = await original_get(read_key)
+    if read_key == key and not changed:
+      changed = True
+      if change == "append":
+        await session_service.append_event(session, other_event)
+      elif change == "delete":
+        await session_service.delete_session(
+            app_name="app1", user_id="u1", session_id=session.id
+        )
+      else:
+        fake_redis.advance_time(3601)
+    return raw
+
+  monkeypatch.setattr(fake_redis, "get", get_with_concurrent_change)
+  await session_service.append_event(view, new_event)
+
+  stored = await session_service.get_session(
+      app_name="app1", user_id="u1", session_id=session.id
+  )
+  expected = [old_event, other_event] if change == "append" else []
+  assert stored.events == expected + [new_event]
+  assert view.events == [new_event]
+  fake_redis.advance_time(3599)
+  assert await original_get(key) is not None
+  fake_redis.advance_time(2)
+  assert await original_get(key) is None
+
+
+@pytest.mark.asyncio
+async def test_append_event_preserves_concurrent_state_delta(session_service):
+  """State committed between get_session and append_event is preserved."""
+  session = await session_service.create_session(
+      app_name="app1", user_id="u1", state={"initial": "v1"}
+  )
+  view = await session_service.get_session(
+      app_name="app1",
+      user_id="u1",
+      session_id=session.id,
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  intervening_event = Event(
+      author="writer2",
+      invocation_id="inv-2",
+      actions=EventActions(state_delta={"writer2_key": "v2"}),
+  )
+  await session_service.append_event(session, intervening_event)
+
+  new_event = Event(
+      author="writer1",
+      invocation_id="inv-1",
+      actions=EventActions(state_delta={"writer1_key": "v3"}),
+  )
+  await session_service.append_event(view, new_event)
+
+  stored = await session_service.get_session(
+      app_name="app1", user_id="u1", session_id=session.id
+  )
+  assert stored.events == [intervening_event, new_event]
+  assert stored.state == {
+      "initial": "v1",
+      "writer2_key": "v2",
+      "writer1_key": "v3",
+  }
 
 
 @pytest.mark.asyncio
@@ -637,3 +829,129 @@ async def test_cumulative_user_state_creation(session_service):
       user_id="u1",
   )
   assert user_state == {"theme": "dark", "lang": "en"}
+
+
+@pytest.mark.asyncio
+async def test_create_session_keeps_user_state_written_while_it_merges(
+    session_service, fake_redis, monkeypatch
+):
+  """Initial user state merges with a write landing between read and write.
+
+  Setup: another session of the user appends a user: key right after
+    create_session reads the user's state.
+  Act: create a session whose initial state carries a different user: key.
+  Assert: the user's state keeps both keys.
+  """
+  other = await session_service.create_session(
+      app_name="app1", user_id="u1", session_id="other"
+  )
+  user_key = session_service._user_state_key("app1", "u1")
+  original_get = fake_redis.get
+  wrote_concurrently = False
+
+  async def get_then_write_concurrently(read_key):
+    nonlocal wrote_concurrently
+    raw = await original_get(read_key)
+    if read_key == user_key and not wrote_concurrently:
+      wrote_concurrently = True
+      await session_service.append_event(
+          other,
+          Event(
+              author="user",
+              invocation_id="other",
+              actions=EventActions(state_delta={"user:theme": "dark"}),
+          ),
+      )
+    return raw
+
+  monkeypatch.setattr(fake_redis, "get", get_then_write_concurrently)
+  await session_service.create_session(
+      app_name="app1",
+      user_id="u1",
+      session_id="new",
+      state={"user:lang": "en"},
+  )
+
+  assert await session_service.get_user_state(
+      app_name="app1", user_id="u1"
+  ) == {"theme": "dark", "lang": "en"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["app:", "user:"])
+async def test_append_event_keeps_scoped_state_written_while_it_merges(
+    session_service, fake_redis, monkeypatch, prefix
+):
+  """A scoped delta merges with a write landing between read and write.
+
+  Setup: another session of the user appends a `prefix` key right after
+    append_event reads that scope's state.
+  Act: append an event whose delta carries a different `prefix` key.
+  Assert: the scope keeps both keys.
+  """
+  other = await session_service.create_session(
+      app_name="app1", user_id="u1", session_id="other"
+  )
+  session = await session_service.create_session(
+      app_name="app1", user_id="u1", session_id="mine"
+  )
+  scope_key = (
+      session_service._app_state_key("app1")
+      if prefix == "app:"
+      else session_service._user_state_key("app1", "u1")
+  )
+  original_get = fake_redis.get
+  wrote_concurrently = False
+
+  async def get_then_write_concurrently(read_key):
+    nonlocal wrote_concurrently
+    raw = await original_get(read_key)
+    if read_key == scope_key and not wrote_concurrently:
+      wrote_concurrently = True
+      await session_service.append_event(
+          other,
+          Event(
+              author="user",
+              invocation_id="other",
+              actions=EventActions(state_delta={f"{prefix}theme": "dark"}),
+          ),
+      )
+    return raw
+
+  monkeypatch.setattr(fake_redis, "get", get_then_write_concurrently)
+  await session_service.append_event(
+      session,
+      Event(
+          author="user",
+          invocation_id="mine",
+          actions=EventActions(state_delta={f"{prefix}lang": "en"}),
+      ),
+  )
+
+  assert wrote_concurrently
+  assert json.loads(await original_get(scope_key)) == {
+      "theme": "dark",
+      "lang": "en",
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_append_event_to_unknown_session_writes_nothing(
+    session_service, fake_redis, partial
+):
+  """A rejected append leaves no session, app state or user state behind."""
+  session = Session(app_name="app1", user_id="u1", id="never_created")
+  event = Event(
+      author="agent",
+      partial=partial,
+      actions=EventActions(
+          state_delta={"count": 1, "user:score": 100, "app:status": "active"}
+      ),
+  )
+
+  with pytest.raises(SessionNotFoundError):
+    await session_service.append_event(session, event)
+
+  assert fake_redis._store == {}
+  assert session.events == []

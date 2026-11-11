@@ -43,7 +43,9 @@ def _report_text(tmp_path, version_data, summaries):
   generate_markdown_report(version_data, summaries, str(tmp_path))
   written = list(tmp_path.glob('*.md'))
   assert len(written) == 1, written
-  return written[0], written[0].read_text()
+  # The report is written as UTF-8; read it back the same way rather than
+  # through the platform locale, which fails on non-UTF-8 defaults (cp936 etc.).
+  return written[0], written[0].read_text(encoding='utf-8')
 
 
 def test_generate_markdown_report_names_the_file_after_the_server_version(

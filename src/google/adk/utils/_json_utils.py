@@ -43,6 +43,6 @@ def safe_json_loads(
   """
   try:
     return json.loads(text)
-  except json.JSONDecodeError as exc:
+  except (json.JSONDecodeError, UnicodeDecodeError) as exc:
     suffix = f' in {context}' if context else ''
     raise ValueError(f'Invalid JSON{suffix}: {exc}') from exc

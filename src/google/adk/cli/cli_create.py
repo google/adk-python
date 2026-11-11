@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import keyword
 import os
 from typing import Optional
 
@@ -23,7 +24,7 @@ from ..apps.app import validate_app_name
 from .utils import _onboarding
 
 _INIT_PY_TEMPLATE = """\
-from . import agent
+from . import agent as agent
 """
 
 _AGENT_PY_TEMPLATE = """\
@@ -65,10 +66,17 @@ _SUCCESS_MSG_CONFIG = """
 Agent created in {agent_folder}:
 - .env
 - .gitignore
-- __init__.py
 - root_agent.yaml
 
 ⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
+"""
+
+_NEXT_STEPS_MSG = """\
+Next steps:
+- Chat with your agent in the terminal: adk run {agent_path}
+- Or in the browser: adk web {agents_dir}
+- Have your coding agent evaluate and deploy it: uvx google-agents-cli setup
+  (other install options: https://adk.dev/get-started/agents-cli/)
 """
 
 
@@ -139,8 +147,9 @@ def _generate_files(
   if type == "config":
     with open(agent_config_file_path, "w", encoding="utf-8") as f:
       f.write(_AGENT_CONFIG_TEMPLATE.format(model_name=model))
-    with open(init_file_path, "w", encoding="utf-8") as f:
-      f.write("")
+    # Config agents are loaded from root_agent.yaml; they are not Python
+    # packages. Matching existing config samples, do not emit an empty
+    # __init__.py.
     click.secho(
         _SUCCESS_MSG_CONFIG.format(agent_folder=agent_folder),
         fg="green",
@@ -219,6 +228,12 @@ def run_cmd(
   except ValueError as exc:
     raise click.BadParameter(str(exc)) from exc
 
+  if not app_name.isidentifier() or keyword.iskeyword(app_name):
+    raise click.BadParameter(
+        f"Invalid agent name '{app_name}': must be a valid Python identifier"
+        " (e.g. 'my_agent', not 'my-agent') and cannot be a Python keyword."
+    )
+
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw
   if os.path.exists(agent_folder) and os.listdir(agent_folder):
@@ -258,4 +273,11 @@ def run_cmd(
       google_cloud_region=google_cloud_region,
       model=model,
       type=type.lower(),
+  )
+  agents_dir = os.path.dirname(os.path.normpath(agent_name))
+  click.echo(
+      _NEXT_STEPS_MSG.format(
+          agent_path=agent_name,
+          agents_dir=agents_dir or ".",
+      )
   )

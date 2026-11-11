@@ -38,8 +38,12 @@ pytestmark = pytest.mark.skipif(
 _LAZY_PACKAGES = (
     'google.adk',
     'google.adk.agents',
+    'google.adk.auth',
     'google.adk.cli',
     'google.adk.cli.utils',
+    'google.adk.flows.llm_flows',
+    'google.adk.flows.llm_flows.prompt',
+    'google.adk.telemetry',
     'google.adk.workflow',
 )
 
@@ -57,14 +61,10 @@ _ENTRY_POINTS = (
 _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
     # Declared requirements that ADK imports at module scope.
     'click',
-    'fastapi',
     'google',
     'httpx',
-    'opentelemetry',
     'packaging',
     'pydantic',
-    'python_multipart',
-    'starlette',
     'tenacity',
     'websockets',
     # Reached through pydantic and httpx rather than through ADK.
@@ -133,6 +133,34 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             ),
         ),
         (
+            'google.adk.auth',
+            (
+                'fastapi',
+                'google.adk.auth.auth_handler',
+                'google.adk.auth.auth_schemes',
+                'google.adk.auth.auth_tool',
+                'starlette',
+            ),
+        ),
+        (
+            'google.adk.telemetry',
+            (
+                'google.adk.telemetry.tracing',
+                'google.genai',
+            ),
+        ),
+        (
+            'google.adk.agents.llm_agent',
+            (
+                'google.adk.flows.llm_flows.base_llm_flow',
+                'google.adk.telemetry.tracing',
+            ),
+        ),
+        (
+            'google.adk.flows.llm_flows.base_llm_flow',
+            ('google.adk.live._live_llm_flow',),
+        ),
+        (
             'google.adk.code_executors',
             ('google.genai',),
         ),
@@ -167,15 +195,42 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             'google.adk.integrations.bigquery.bigquery_toolset',
             ('google.cloud.dataplex_v1',),
         ),
+        (
+            'google.adk.evaluation.vertex_ai_eval_facade',
+            ('vertexai.preview.rag',),
+        ),
+        # These integrations ship only in the `gcp` extra, so their packages
+        # have to import without the google-cloud client libraries installed
+        # and name the extra to install on first use instead.
+        (
+            'google.adk.integrations.gcs',
+            ('google.api_core', 'google.cloud.storage'),
+        ),
+        (
+            'google.adk.integrations.secret_manager',
+            ('google.api_core', 'google.cloud.secretmanager'),
+        ),
+        (
+            'google.adk.integrations.parameter_manager',
+            ('google.api_core', 'google.cloud.parametermanager_v1'),
+        ),
     ],
     ids=(
         'root',
         'agents',
+        'auth',
+        'telemetry',
+        'llm_agent',
+        'base_llm_flow',
         'code_executors',
         'built_in_code_executor',
         'workflow',
         'cli_commands',
         'bigquery_toolset',
+        'vertex_ai_eval_facade',
+        'gcs',
+        'secret_manager',
+        'parameter_manager',
     ),
 )
 def test_package_import_defers_unrelated_runtime(
@@ -208,6 +263,43 @@ def test_entry_point_loads_only_allowlisted_packages(statement: str) -> None:
       ' that needs it, or add the package to the allowlist together with the'
       ' reason it has to be eager.'
   )
+
+
+@pytest.fixture
+def preloaded_startup_package(tmp_path, monkeypatch):
+  package = tmp_path / 'startup_package'
+  package.mkdir()
+  (package / '__init__.py').write_text('value = 1\n')
+  (package / 'extra.py').write_text('value = 2\n')
+  (tmp_path / 'sitecustomize.py').write_text('import startup_package\n')
+  monkeypatch.setenv('PYTHONPATH', str(tmp_path))
+  return tmp_path
+
+
+def test_import_measurement_excludes_interpreter_startup(
+    preloaded_startup_package,
+):
+  assert (
+      loaded_top_level_packages("assert 'startup_package' in sys.modules")
+      == frozenset()
+  )
+
+
+def test_import_measurement_detects_new_package_after_startup(
+    preloaded_startup_package,
+):
+  (preloaded_startup_package / 'new_package.py').write_text('value = 3\n')
+  assert loaded_top_level_packages(
+      "assert 'startup_package' in sys.modules\nimport new_package"
+  ) == frozenset({'new_package'})
+
+
+def test_import_measurement_detects_new_submodule_of_preloaded_package(
+    preloaded_startup_package,
+):
+  assert loaded_top_level_packages(
+      "assert 'startup_package' in sys.modules\nimport startup_package.extra"
+  ) == frozenset({'startup_package'})
 
 
 def test_constructing_agent_defers_optional_mcp_server_stack():
@@ -268,6 +360,71 @@ for module_name in {_LAZY_PACKAGES!r}:
   except AttributeError:
     continue
   raise AssertionError(module_name)
+""")
+
+  assert result.returncode == 0, result.stderr
+
+
+def test_deferred_module_imports_stay_reachable_as_attributes():
+  """Names a module stopped importing eagerly still resolve on that module."""
+  result = run_isolated("""
+from google.adk import runners
+from google.adk.agents import llm_agent
+from google.adk.agents.llm_agent import BaseLlmFlow
+from google.adk.flows import llm_flows
+from google.adk.telemetry import tracing
+
+assert llm_agent.AutoFlow is llm_flows.auto_flow.AutoFlow
+assert llm_agent.SingleFlow is llm_flows.single_flow.SingleFlow
+assert BaseLlmFlow is llm_flows.base_llm_flow.BaseLlmFlow
+assert runners.tracer is tracing.tracer
+""")
+
+  assert result.returncode == 0, result.stderr
+
+
+def test_flow_submodules_load_when_read_as_package_attributes():
+  """llm_flows imports a submodule the first time it is read as an attribute."""
+  result = run_isolated("""
+import sys
+
+from google.adk.flows import llm_flows
+
+assert 'google.adk.flows.llm_flows.base_llm_flow' not in sys.modules
+assert llm_flows.base_llm_flow.BaseLlmFlow
+assert llm_flows.single_flow.SingleFlow
+""")
+
+  assert result.returncode == 0, result.stderr
+
+
+def test_patched_flow_classes_are_used_by_llm_agent():
+  """Patching llm_agent.AutoFlow or SingleFlow changes the flow an agent runs."""
+  result = run_isolated("""
+from unittest import mock
+
+from google.adk.agents import llm_agent
+
+
+class PatchedAutoFlow(llm_agent.AutoFlow):
+  pass
+
+
+class PatchedSingleFlow(llm_agent.SingleFlow):
+  pass
+
+
+with mock.patch.object(llm_agent, 'AutoFlow', PatchedAutoFlow):
+  agent = llm_agent.LlmAgent(name='auto')
+  assert isinstance(agent._llm_flow, PatchedAutoFlow)
+
+with mock.patch.object(llm_agent, 'SingleFlow', PatchedSingleFlow):
+  agent = llm_agent.LlmAgent(
+      name='single',
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+  )
+  assert isinstance(agent._llm_flow, PatchedSingleFlow)
 """)
 
   assert result.returncode == 0, result.stderr

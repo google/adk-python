@@ -14,9 +14,11 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+import threading
 import time
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -38,6 +40,7 @@ from google.adk.sessions.state import StateSchemaError
 from google.adk.tools.openapi_tool.auth.auth_helpers import openid_dict_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.credential_exchangers.auto_auth_credential_exchanger import OAuth2CredentialExchanger
+from google.adk.tools.openapi_tool.auth.credential_exchangers.base_credential_exchanger import BaseAuthCredentialExchanger
 from google.adk.tools.openapi_tool.openapi_spec_parser import tool_auth_handler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolContextCredentialStore
@@ -128,6 +131,68 @@ def openid_connect_credential():
 
 
 @pytest.mark.asyncio
+async def test_openid_connect_public_client_without_secret(
+    openid_connect_scheme,
+):
+  public_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='public-client',
+          redirect_uri='https://app/cb',
+      ),
+  )
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      public_credential,
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  assert result.auth_credential == public_credential
+
+
+@pytest.mark.asyncio
+async def test_openid_connect_public_client_exchanges_auth_response(
+    openid_connect_scheme, monkeypatch
+):
+  public_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='public-client',
+          redirect_uri='https://app/cb',
+      ),
+  )
+  stored = public_credential.model_copy(deep=True)
+  stored.oauth2.auth_code = 'public-auth-code'
+  stored.oauth2.auth_response_uri = 'https://app/cb?code=public-auth-code'
+
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      public_credential,
+  )
+  auth_config = handler._build_auth_config()
+  tool_context.state['temp:' + auth_config.credential_key] = stored
+
+  mock_client = MagicMock()
+  mock_client.fetch_token.return_value = {
+      'access_token': 'public_access_token',
+      'token_type': 'bearer',
+  }
+  monkeypatch.setattr(
+      'google.adk.auth.oauth2_credential_util.OAuth2Session',
+      lambda *args, **kwargs: mock_client,
+  )
+
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'done'
+  assert result.auth_credential.auth_type == AuthCredentialTypes.HTTP
+  assert result.auth_credential.http.credentials.token == 'public_access_token'
+
+
+@pytest.mark.asyncio
 async def test_openid_connect_no_auth_response(
     openid_connect_scheme, openid_connect_credential
 ):
@@ -147,6 +212,40 @@ async def test_openid_connect_no_auth_response(
   result = await handler.prepare_auth_credentials()
   assert result.state == 'pending'
   assert result.auth_credential == openid_connect_credential
+
+
+@pytest.mark.asyncio
+async def test_credential_exchange_keeps_loop_running(openid_connect_scheme):
+  """The blocking credential exchange runs off the event loop."""
+  _, credential = token_to_scheme_credential(
+      'oauth2Token', 'header', 'bearer', 'token'
+  )
+  loop_ran = threading.Event()
+  loop_ran_during_exchange = []
+  exchanged_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(scheme='bearer', credentials=HttpCredentials(token='new')),
+  )
+
+  def exchange_credential(*_):
+    loop_ran_during_exchange.append(loop_ran.wait(timeout=5))
+    return exchanged_credential
+
+  exchanger = create_autospec(BaseAuthCredentialExchanger, instance=True)
+  exchanger.exchange_credential.side_effect = exchange_credential
+  handler = ToolAuthHandler(
+      create_mock_tool_context(),
+      openid_connect_scheme,
+      credential,
+      credential_exchanger=exchanger,
+  )
+
+  asyncio.get_running_loop().call_soon(loop_ran.set)
+  result = await handler.prepare_auth_credentials()
+
+  assert loop_ran_during_exchange == [True]
+  assert result.state == 'done'
+  assert result.auth_credential == exchanged_credential
 
 
 @pytest.mark.asyncio
@@ -983,10 +1082,10 @@ async def test_handle_unauthorized_error_forced_expiry_reaches_token_endpoint(
   mock_client.refresh_token.assert_called_once_with(
       url='https://test.com/token', refresh_token='valid_refresh_token'
   )
-  # The credential handed to the session carries the forced expiry. It has to
-  # be truthy, not merely non-None: authlib < 1.7 returns None from
-  # is_expired() for a falsy expires_at, so 0 would skip the refresh on the
-  # oldest version the authlib>=1.6.6,<2 pin allows.
+  # The credential handed to the session carries the forced expiry. A timestamp
+  # of 1 (Jan 1, 1970 00:00:01 UTC) is expired under every version the
+  # authlib>=1.9.1,<2 pin allows (and remains truthy for any older authlib < 1.7
+  # environment where is_expired() returned None for a falsy expires_at).
   assert forced_expiry == {'expires_at': 1, 'expires_in': 0}
   updated = store.get_credential(
       openid_connect_scheme, openid_connect_credential
@@ -1153,7 +1252,7 @@ async def test_handle_unauthorized_error_returns_failed_when_reauth_impossible(
   tool_context = create_mock_tool_context()
   incomplete_credential = AuthCredential(
       auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
-      oauth2=OAuth2Auth(client_id='cid'),
+      oauth2=OAuth2Auth(),
   )
   handler = ToolAuthHandler.from_tool_context(
       tool_context=tool_context,
@@ -1172,7 +1271,7 @@ async def test_handle_unauthorized_error_returns_failed_when_reauth_impossible(
       ),
   )
 
-  # client_secret is missing, so _request_credential raises.
+  # client_id is missing, so _request_credential raises.
   recovery = await handler.handle_unauthorized_error()
   assert recovery == 'failed'
   assert not tool_context.actions.requested_auth_configs

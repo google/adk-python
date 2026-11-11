@@ -205,10 +205,21 @@ class OpenApiSpecParser:
         if operation_dict is None:
           continue
 
-        # Append path-level parameters
-        operation_dict["parameters"] = operation_dict.get(
-            "parameters", []
-        ) + path_item.get("parameters", [])
+        # Append path-level parameters. An operation-level parameter with the
+        # same name and location overrides the path-level one, so appending
+        # both would ask the model for the same value twice.
+        operation_parameters = operation_dict.get("parameters", [])
+        overridden = {
+            (parameter["name"], parameter.get("in"))
+            for parameter in operation_parameters
+            if isinstance(parameter, dict) and "name" in parameter
+        }
+        operation_dict["parameters"] = operation_parameters + [
+            parameter
+            for parameter in path_item.get("parameters", [])
+            if not isinstance(parameter, dict)
+            or (parameter.get("name"), parameter.get("in")) not in overridden
+        ]
 
         # If operation ID is missing, assign an operation id based on path
         # and method

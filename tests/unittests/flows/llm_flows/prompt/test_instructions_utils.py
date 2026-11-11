@@ -19,10 +19,12 @@ from unittest import mock
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import InstructionProvider as LlmAgentInstructionProvider
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.artifacts import InMemoryArtifactService
 from google.adk.flows.llm_flows.prompt import _instructions_utils as instructions_utils
 from google.adk.flows.llm_flows.prompt._instructions_utils import _is_valid_state_name
 from google.adk.flows.llm_flows.prompt._instructions_utils import InstructionProvider
 from google.adk.sessions.session import Session
+from google.genai import types
 import pytest
 
 from .... import testing_utils
@@ -514,3 +516,107 @@ async def test_inject_session_state_preserves_dollar_double_brace_patterns():
       instruction_template_with_state, invocation_context_with_state
   )
   assert populated_with_state == "Workflow syntax: ${{expression}} and bar."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_state_mapping():
+  """Exposes session state under the state mapping for colon-prefixed keys."""
+  instruction_template = "Hello {{ state['user:name'] }}."
+  invocation_context = await _create_test_readonly_context(
+      state={"user:name": "Foo"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context, use_jinja2=True
+  )
+  assert populated_instruction == "Hello Foo."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_sandbox_blocks_unsafe_access():
+  """Blocks unsafe dunder attribute access in the Jinja2 sandbox."""
+  from jinja2.exceptions import SecurityError
+
+  instruction_template = "{{ ''.__class__.__mro__ }}"
+  invocation_context = await _create_test_readonly_context()
+
+  with pytest.raises(SecurityError):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context, use_jinja2=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_state_mapping_is_read_only():
+  """Prevents mutating session state through the Jinja2 state mapping."""
+  from jinja2.exceptions import UndefinedError
+
+  invocation_context = await _create_test_readonly_context(
+      state={"user:name": "Foo", "count": 1}
+  )
+
+  with pytest.raises(UndefinedError):
+    await instructions_utils.inject_session_state(
+        "{{ state.pop('count') }}", invocation_context, use_jinja2=True
+    )
+  assert invocation_context.session.state == {"user:name": "Foo", "count": 1}
+
+  with pytest.raises(UndefinedError):
+    await instructions_utils.inject_session_state(
+        "{{ state.update({'user:name': 'Bar'}) }}",
+        invocation_context,
+        use_jinja2=True,
+    )
+  assert invocation_context.session.state == {"user:name": "Foo", "count": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "use_jinja2,template",
+    [
+        (False, "Notes: {artifact.notes}"),
+        (True, "Notes: {{ artifact('notes') }}"),
+    ],
+    ids=["regex", "jinja2"],
+)
+@pytest.mark.parametrize(
+    "artifact,expected",
+    [
+        (types.Part(text="Buy milk."), "Notes: Buy milk."),
+        (
+            types.Part.from_bytes(data=b"Buy milk.", mime_type="text/plain"),
+            "Notes: Buy milk.",
+        ),
+        (
+            types.Part.from_bytes(
+                data=b"\x00\x01\x02\x03", mime_type="application/octet-stream"
+            ),
+            (
+                "Notes: [Binary artifact: notes, type:"
+                " application/octet-stream, size: 0.0 KB. Content cannot be"
+                " displayed inline.]"
+            ),
+        ),
+    ],
+    ids=["text_part", "text_inline_data", "binary_inline_data"],
+)
+async def test_inject_session_state_artifact_part_renders_as_text(
+    use_jinja2, template, artifact, expected
+):
+  artifact_service = InMemoryArtifactService()
+  await artifact_service.save_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id="test_session_id",
+      filename="notes",
+      artifact=artifact,
+  )
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=artifact_service
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      template, invocation_context, use_jinja2=use_jinja2
+  )
+
+  assert populated_instruction == expected

@@ -21,9 +21,9 @@ import json
 import os
 import sys
 import traceback
-from typing import Optional
 import uuid
 
+import agentplatform
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi import Response
@@ -41,7 +41,6 @@ from google.cloud.agentidentitycredentials_v1 import FinalizeCredentialsRequest
 from google.genai import types
 from pydantic import BaseModel
 import uvicorn
-import vertexai
 
 # Add agent project directory to path to allow importing local agents
 AGENT_PROJECT_DIR = os.environ.get("AGENT_PROJECT_DIR") or os.path.dirname(
@@ -106,7 +105,7 @@ async def list_local_agents():
 @app.get("/list_agents")
 async def list_remote_agents(project_id: str, location: str):
   try:
-    client = vertexai.Client(project=project_id, location=location)
+    client = agentplatform.Client(project=project_id, location=location)
     return {
         "agents": [
             {
@@ -114,7 +113,7 @@ async def list_remote_agents(project_id: str, location: str):
                 "name": a.api_resource.display_name,
                 "full_name": a.api_resource.name,
             }
-            for a in client.agent_engines.list()
+            for a in client.runtimes.list()
         ]
     }
   except Exception as e:
@@ -142,16 +141,16 @@ class ChatRequest(BaseModel):
   message: str = ""
   agent_type: str = "remote"
   local_agent: str = ""
-  project_id: Optional[str] = os.environ.get(
+  project_id: str | None = os.environ.get(
       "GOOGLE_CLOUD_PROJECT", default_project or ""
   )
-  location: Optional[str] = os.environ.get("GOOGLE_CLOUD_LOCATION", "")
-  agent_id: Optional[str] = os.environ.get("AGENT_ID", "")
+  location: str | None = os.environ.get("GOOGLE_CLOUD_LOCATION", "")
+  agent_id: str | None = os.environ.get("AGENT_ID", "")
   user_id: str = "default_user_id"
-  session_id: Optional[str] = None
-  is_auth_resume: Optional[bool] = False
-  auth_config: Optional[dict] = None
-  auth_request_function_call_id: Optional[str] = None
+  session_id: str | None = None
+  is_auth_resume: bool | None = False
+  auth_config: dict | None = None
+  auth_request_function_call_id: str | None = None
 
 
 # Endpoint for querying the agent.
@@ -194,7 +193,7 @@ async def chat(request: ChatRequest, response: Response):
           traceback.format_exc(),
       )
   else:
-    client = vertexai.Client(
+    client = agentplatform.Client(
         project=request.project_id, location=request.location
     )
     remote_name = (
@@ -202,7 +201,7 @@ async def chat(request: ChatRequest, response: Response):
         f"/reasoningEngines/{request.agent_id}"
     )
     try:
-      current_agent = client.agent_engines.get(name=remote_name)
+      current_agent = client.runtimes.get(name=remote_name)
     except Exception as e:
       return stream_error(
           f"Failed to load remote agent: {e}", traceback.format_exc()
@@ -222,10 +221,10 @@ async def chat(request: ChatRequest, response: Response):
             )
             or session_id
         )
-        client = vertexai.Client(
+        client = agentplatform.Client(
             project=request.project_id, location=request.location
         )
-        current_agent = client.agent_engines.get(name=remote_name)
+        current_agent = client.runtimes.get(name=remote_name)
       except Exception as e:
         return stream_error(
             f"Failed to create session: {e}", traceback.format_exc()
@@ -410,8 +409,10 @@ async def validate_user_id(request: Request):
     }
 
   try:
-    state_bytes = base64.urlsafe_b64decode(
-        user_id_validation_state + "=" * (-len(user_id_validation_state) % 4)
+    state_bytes = base64.b64decode(
+        user_id_validation_state + "=" * (-len(user_id_validation_state) % 4),
+        altchars=b"-_",
+        validate=True,
     )
 
     client_options = None

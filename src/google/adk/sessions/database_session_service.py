@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack
 import copy
 from datetime import datetime
 from datetime import timezone
@@ -31,6 +33,7 @@ from typing import TypeVar
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 
+_sqlalchemy_import_error: ImportError | None = None
 try:
   from sqlalchemy import delete
   from sqlalchemy import event
@@ -49,8 +52,9 @@ try:
   from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
   from sqlalchemy.ext.asyncio import create_async_engine
   from sqlalchemy.pool import StaticPool
-except ImportError:
-  pass
+except ImportError as e:
+  # Re-raised by __init__, so the module still imports without the db extra.
+  _sqlalchemy_import_error = e
 from typing_extensions import override
 
 from . import _session_util
@@ -110,9 +114,9 @@ _ASYNC_DRIVER_BY_BACKEND = {
     _MYSQL_DIALECT: "aiomysql",
     _MARIADB_DIALECT: "asyncmy",
 }
-# Tuple key order for in-process per-session lock maps:
-# (app_name, user_id, session_id).
-_SessionLockKey: TypeAlias = tuple[str, str, str]
+# In-process lock keys: ("session", app_name, user_id, session_id),
+# ("user", app_name, user_id) or ("app", app_name).
+_LockKey: TypeAlias = tuple[str, ...]
 _StorageState: TypeAlias = (
     StorageAppStateV0
     | StorageAppStateV1
@@ -204,24 +208,35 @@ async def _get_or_create_state(
     state_model: type[_StorageStateT],
     primary_key: Any,
     defaults: dict[str, Any],
+    use_row_level_locking: bool = False,
 ) -> _StorageStateT:
   """Returns an existing state row or creates one, handling concurrent inserts.
 
   Uses a SAVEPOINT so that an IntegrityError from a racing INSERT does not
-  invalidate the outer transaction.
+  invalidate the outer transaction. With `use_row_level_locking`, the returned
+  row is locked `FOR UPDATE`.
   """
   row: _StorageStateT | None = await sql_session.get(state_model, primary_key)
   if row is not None:
+    if use_row_level_locking:
+      # Lock only an existing row: on MySQL a locking read of a missing key
+      # takes a gap lock, and two such inserts of the same key deadlock.
+      await sql_session.refresh(row, with_for_update=True)
     return row
   try:
     async with sql_session.begin_nested():
-      row = state_model(**defaults)
+      new_state: Callable[..., _StorageStateT] = state_model
+      row = new_state(**defaults)
       sql_session.add(row)
     return row
   except IntegrityError:
     # Another concurrent caller inserted the row first.
     # The savepoint was rolled back, so re-fetch the winner's row.
-    row = await sql_session.get(state_model, primary_key)
+    row = await sql_session.get(
+        state_model,
+        primary_key,
+        with_for_update=True if use_row_level_locking else None,
+    )
     if row is None:
       raise
     return row
@@ -233,6 +248,12 @@ def _set_sqlite_pragma(
   cursor = dbapi_connection.cursor()
   cursor.execute("PRAGMA foreign_keys=ON")
   cursor.close()
+
+
+def _begin_sqlite_write_transaction(connection: Connection) -> None:
+  """Takes the SQLite write lock before a read-write transaction reads."""
+  if not connection.get_execution_options().get("read_only"):
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def _ensure_schema_indexes_exist(
@@ -352,12 +373,15 @@ class DatabaseSessionService(BaseSessionService):
       ValueError: If neither or both db_url and db_engine are provided, or if
         engine creation fails.
     """
-    try:
-      import sqlalchemy  # noqa: F401
-    except ImportError as e:
+    # Re-importing cannot tell whether the imports above failed: without
+    # greenlet, SQLAlchemy 2.1 raises on the first import of its asyncio
+    # extension and lets later ones succeed.
+    if _sqlalchemy_import_error is not None:
       from ..utils._dependency import missing_extra
 
-      raise missing_extra("sqlalchemy", "db") from e
+      raise missing_extra(
+          "sqlalchemy[asyncio]", "db"
+      ) from _sqlalchemy_import_error
 
     if (db_url is None) == (db_engine is None):
       raise ValueError(
@@ -394,6 +418,11 @@ class DatabaseSessionService(BaseSessionService):
         if db_engine.dialect.name == _SQLITE_DIALECT:
           # Set sqlite pragma to enable foreign keys constraints
           event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
+          # A StaticPool shares one connection, which cannot nest transactions.
+          if not isinstance(db_engine.pool, StaticPool):
+            event.listen(
+                db_engine.sync_engine, "begin", _begin_sqlite_write_transaction
+            )
 
       except Exception as e:
         redacted_url = _schema_check_utils._redact_db_url(db_url)
@@ -441,10 +470,11 @@ class DatabaseSessionService(BaseSessionService):
     # The current database schema version in use, "None" if not yet checked
     self._db_schema_version: str | None = None
 
-    # Per-session locks used to serialize append_event calls in this process.
-    self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
-    self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
-    self._session_locks_guard = asyncio.Lock()
+    # In-process locks for appends to one session and for writes to the
+    # shared app- and user-state rows.
+    self._locks: dict[_LockKey, asyncio.Lock] = {}
+    self._lock_ref_count: dict[_LockKey, int] = {}
+    self._locks_guard = asyncio.Lock()
 
   def _get_schema_classes(self) -> _SchemaClasses:
     return _SchemaClasses(self._db_schema_version)
@@ -492,36 +522,64 @@ class DatabaseSessionService(BaseSessionService):
     return self.db_engine.dialect.name in _NAIVE_DATETIME_DIALECTS
 
   @asynccontextmanager
+  async def _with_lock(self, lock_key: _LockKey) -> AsyncIterator[None]:
+    """Holds the in-process lock for `lock_key`, creating it on first use."""
+    async with self._locks_guard:
+      lock = self._locks.get(lock_key)
+      if lock is None:
+        lock = asyncio.Lock()
+        self._locks[lock_key] = lock
+      # Reference counting keeps lock objects alive while they are in use by
+      # concurrent tasks and allows cleanup once all waiters complete.
+      self._lock_ref_count[lock_key] = self._lock_ref_count.get(lock_key, 0) + 1
+
+    try:
+      async with lock:
+        yield
+    finally:
+      async with self._locks_guard:
+        remaining = self._lock_ref_count.get(lock_key, 0) - 1
+        # Remove lock bookkeeping after the last waiter exits.
+        if remaining <= 0 and not lock.locked():
+          self._lock_ref_count.pop(lock_key, None)
+          self._locks.pop(lock_key, None)
+        else:
+          self._lock_ref_count[lock_key] = remaining
+
+  @asynccontextmanager
   async def _with_session_lock(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> AsyncIterator[None]:
     """Serializes event appends for the same session within this process."""
     # Use one lock per logical ADK session to prevent concurrent append_event
     # writes from racing in the same process.
-    lock_key = (app_name, user_id, session_id)
-    async with self._session_locks_guard:
-      lock = self._session_locks.get(lock_key)
-      if lock is None:
-        lock = asyncio.Lock()
-        self._session_locks[lock_key] = lock
-      # Reference counting keeps lock objects alive while they are in use by
-      # concurrent tasks and allows cleanup once all waiters complete.
-      self._session_lock_ref_count[lock_key] = (
-          self._session_lock_ref_count.get(lock_key, 0) + 1
-      )
+    async with self._with_lock(("session", app_name, user_id, session_id)):
+      yield
 
-    try:
-      async with lock:
-        yield
-    finally:
-      async with self._session_locks_guard:
-        remaining = self._session_lock_ref_count.get(lock_key, 0) - 1
-        # Remove lock bookkeeping after the last waiter exits.
-        if remaining <= 0 and not lock.locked():
-          self._session_lock_ref_count.pop(lock_key, None)
-          self._session_locks.pop(lock_key, None)
-        else:
-          self._session_lock_ref_count[lock_key] = remaining
+  @asynccontextmanager
+  async def _with_shared_state_locks(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      app_state: bool,
+      user_state: bool,
+  ) -> AsyncIterator[None]:
+    """Serializes writes to the shared app- and user-state rows in this process.
+
+    Writers merge their delta into the stored JSON and write it back, so
+    unordered writers drop each other's keys. Dialects without row-level
+    locking (SQLite) have only this lock to order them. Take it after any
+    session lock; the app lock always precedes the user lock to avoid cycles.
+    """
+    async with AsyncExitStack() as stack:
+      if app_state:
+        await stack.enter_async_context(self._with_lock(("app", app_name)))
+      if user_state:
+        await stack.enter_async_context(
+            self._with_lock(("user", app_name, user_id))
+        )
+      yield
 
   async def prepare_tables(self) -> None:
     """Ensure database tables are ready for use.
@@ -648,41 +706,58 @@ class DatabaseSessionService(BaseSessionService):
     # 4. Build the session object with generated id
     # 5. Return the session
     await self.prepare_tables()
-    has_user_provided_id = session_id is not None
-    if session_id is None:
+    has_user_provided_id = bool(session_id)
+    if not session_id:
       session_id = platform_uuid.new_uuid()
     schema = self._get_schema_classes()
-    async with self._rollback_on_exception_session() as sql_session:
-      if has_user_provided_id and await sql_session.get(
-          schema.StorageSession, (app_name, user_id, session_id)
-      ):
-        raise AlreadyExistsError(
-            f"Session with id {session_id} already exists."
+    use_row_level_locking = self._supports_row_level_locking()
+
+    # Extract state deltas
+    state_deltas = _session_util.extract_json_safe_state_delta(state or {})
+    app_state_delta = state_deltas["app"]
+    user_state_delta = state_deltas["user"]
+    session_state = state_deltas["session"]
+    has_app_delta = bool(app_state_delta)
+    has_user_delta = bool(user_state_delta)
+
+    async with (
+        self._with_shared_state_locks(
+            app_name=app_name,
+            user_id=user_id,
+            app_state=has_app_delta,
+            user_state=has_user_delta,
+        ),
+        self._rollback_on_exception_session() as sql_session,
+    ):
+      if has_user_provided_id:
+        existing_session = await sql_session.get(
+            schema.StorageSession, (app_name, user_id, session_id)
         )
-      # Get or create state rows, handling concurrent insert races.
+        if existing_session:
+          raise AlreadyExistsError(
+              f"Session with id {session_id} already exists."
+          )
+      # Get or create state rows, handling concurrent insert races. Rows the
+      # initial state merges into are locked, as in append_event.
       storage_app_state = await _get_or_create_state(
           sql_session=sql_session,
           state_model=schema.StorageAppState,
           primary_key=app_name,
           defaults={"app_name": app_name, "state": {}},
+          use_row_level_locking=use_row_level_locking and has_app_delta,
       )
       storage_user_state = await _get_or_create_state(
           sql_session=sql_session,
           state_model=schema.StorageUserState,
           primary_key=(app_name, user_id),
           defaults={"app_name": app_name, "user_id": user_id, "state": {}},
+          use_row_level_locking=use_row_level_locking and has_user_delta,
       )
 
-      # Extract state deltas
-      state_deltas = _session_util.extract_json_safe_state_delta(state or {})
-      app_state_delta = state_deltas["app"]
-      user_state_delta = state_deltas["user"]
-      session_state = state_deltas["session"]
-
       # Apply state delta
-      if app_state_delta:
+      if has_app_delta:
         storage_app_state.state.update(app_state_delta)
-      if user_state_delta:
+      if has_user_delta:
         storage_user_state.state.update(user_state_delta)
 
       # Store the session
@@ -756,7 +831,7 @@ class DatabaseSessionService(BaseSessionService):
             .filter(schema.StorageEvent.user_id == user_id)
         )
 
-        if config and config.after_timestamp:
+        if config and config.after_timestamp is not None:
           after_dt = datetime.fromtimestamp(
               config.after_timestamp, tz=timezone.utc
           )
@@ -868,6 +943,12 @@ class DatabaseSessionService(BaseSessionService):
     await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
+      delete_events_stmt = delete(schema.StorageEvent).where(
+          schema.StorageEvent.app_name == app_name,
+          schema.StorageEvent.user_id == user_id,
+          schema.StorageEvent.session_id == session_id,
+      )
+      await sql_session.execute(delete_events_stmt)
       stmt = delete(schema.StorageSession).where(
           schema.StorageSession.app_name == app_name,
           schema.StorageSession.user_id == user_id,
@@ -915,10 +996,18 @@ class DatabaseSessionService(BaseSessionService):
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])
 
-    async with self._with_session_lock(
-        app_name=session.app_name,
-        user_id=session.user_id,
-        session_id=session.id,
+    async with (
+        self._with_session_lock(
+            app_name=session.app_name,
+            user_id=session.user_id,
+            session_id=session.id,
+        ),
+        self._with_shared_state_locks(
+            app_name=session.app_name,
+            user_id=session.user_id,
+            app_state=has_app_delta,
+            user_state=has_user_delta,
+        ),
     ):
       async with self._rollback_on_exception_session() as sql_session:
         storage_session_stmt = (

@@ -1,7 +1,9 @@
 {
   "root_span": {
     "name": "invocation",
-    "attributes": {},
+    "attributes": {
+      "error.type": "429"
+    },
     "status": "ERROR",
     "children": [
       {
@@ -10,13 +12,16 @@
           "gen_ai.operation.name": "invoke_agent",
           "gen_ai.agent.description": "A sample root agent.",
           "gen_ai.agent.name": "some_root_agent",
-          "gen_ai.conversation.id": "PRESENT"
+          "gen_ai.conversation.id": "PRESENT",
+          "error.type": "429"
         },
         "status": "ERROR",
         "children": [
           {
             "name": "call_llm",
-            "attributes": {},
+            "attributes": {
+              "error.type": "429"
+            },
             "status": "ERROR",
             "children": [
               {
@@ -28,7 +33,8 @@
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.invocation_id": "PRESENT"
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "error.type": "429"
                 },
                 "status": "ERROR",
                 "children": [],

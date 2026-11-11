@@ -156,7 +156,7 @@ def approval_tool(request: str) -> str:
 
 llm_agent = LlmAgent(
     name='agent_with_approval',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='When you need approval, use approval_tool.',
     tools=[LongRunningFunctionTool(func=approval_tool)],
 )

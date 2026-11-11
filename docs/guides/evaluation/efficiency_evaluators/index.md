@@ -149,10 +149,14 @@ scores comparable across cases with differing turn counts.
   `inference_call_count_v1`, a turn that reported no value is left out of both
   the numerator and the denominator. If no turn reported one, the metric reads
   `n/a`.
-* **Token counts average over every turn:** `token_usage_v1` divides by the
-  turn count, so a field a turn did not report counts as zero for that turn —
-  the backend omits a count for a turn that did not spend it, and dropping the
-  turn would overstate the per-turn average. This holds for the headline
+* **Token counts average over every turn that reported usage:**
+  `token_usage_v1` divides by the number of turns that reported input or
+  output tokens, so a field such a turn did not report counts as zero for that
+  turn — the backend omits a count for a turn that did not spend it, and
+  dropping the turn would overstate the per-turn average. A turn that reported
+  neither input nor output reads `n/a` and is left out of the average, even if
+  it reported cached tokens. A turn that made no model call is also left out,
+  matching the per-turn token telemetry. This holds for the headline
   `total_tokens` as well as the breakdown. A field no turn reported at all
   stays `n/a`, and the shared denominator is what keeps `total` equal to
   `input` plus `output` after averaging.

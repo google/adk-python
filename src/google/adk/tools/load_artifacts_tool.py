@@ -85,7 +85,7 @@ def _normalize_mime_type(mime_type: str | None) -> str | None:
   """Returns the normalized MIME type, without parameters like charset."""
   if not mime_type:
     return None
-  return mime_type.split(';', 1)[0].strip()
+  return mime_type.split(';', 1)[0].strip().lower()
 
 
 def _is_inline_mime_type_supported(mime_type: str | None) -> bool:
@@ -106,7 +106,7 @@ def _maybe_base64_to_bytes(data: str) -> bytes | None:
     return base64.b64decode(data, validate=True)
   except (binascii.Error, ValueError):
     try:
-      return base64.urlsafe_b64decode(data)
+      return base64.b64decode(data, altchars=b'-_', validate=True)
     except (binascii.Error, ValueError):
       return None
 
@@ -235,12 +235,21 @@ def as_safe_part_for_llm(
   if inline_data is None:
     return artifact
 
-  if _is_inline_mime_type_supported(inline_data.mime_type):
-    return artifact
+  mime_type = _normalize_mime_type(inline_data.mime_type)
+  if inline_data.mime_type and _is_inline_mime_type_supported(mime_type):
+    base, sep, params = inline_data.mime_type.partition(';')
+    canonical_mime_type = f'{base.strip().lower()}{sep}{params}'
+    if inline_data.mime_type == canonical_mime_type:
+      return artifact
+    return artifact.model_copy(
+        update={
+            'inline_data': inline_data.model_copy(
+                update={'mime_type': canonical_mime_type}
+            )
+        }
+    )
 
-  mime_type = _normalize_mime_type(inline_data.mime_type) or (
-      'application/octet-stream'
-  )
+  mime_type = mime_type or 'application/octet-stream'
   data = inline_data.data
   if data is None:
     return types.Part.from_text(
@@ -298,6 +307,10 @@ ProcessArtifactCallback: TypeAlias = Callable[
     [types.Part, str],
     types.Part | None | Awaitable[types.Part | None],
 ]
+ProcessArtifactNamesCallback: TypeAlias = Callable[
+    [list[str]],
+    list[str] | Awaitable[list[str]],
+]
 
 
 def _resolve_requested_artifact_name(
@@ -344,6 +357,7 @@ class LoadArtifactsTool(BaseTool):
       self,
       *,
       process_artifact: ProcessArtifactCallback | None = None,
+      process_artifact_names: ProcessArtifactNamesCallback | None = None,
       enable_spreadsheet_parsing: bool = False,
   ) -> None:
     """Initializes the tool.
@@ -362,6 +376,19 @@ class LoadArtifactsTool(BaseTool):
         safety conversions; returning `None` skips the artifact so it is omitted
         from the request. If a custom callback raises an exception, the error is
         logged and the artifact is skipped.
+      process_artifact_names: An optional sync or async callable with signature
+        `(artifact_names: list[str]) -> list[str]`. The callback must return a
+        list of strings (a subset of `artifact_names`); sets or other
+        collections are not accepted. The returned names are exposed to the
+        LLM and are the only names the tool will load, except when loading a
+        bare name falls back to a user-scoped artifact as described below.
+        This can be used to hide artifacts that are intended only for control
+        code. The callback may be invoked more than once per request and
+        should be cheap and deterministic. Note that loading a bare name will
+        not fall back to a user-scoped artifact if that prefixed name was
+        withheld by the callback (i.e., present in the listing but absent from
+        the returned names). If the callback raises an exception,
+        the error is logged and no artifacts are exposed for the request.
       enable_spreadsheet_parsing: Whether to enable spreadsheet parsing files
         (e.g., .xlsx, .xls) into text. Defaults to False.
     """
@@ -373,6 +400,9 @@ NOTE: Call when you need access to artifacts (for example, uploads saved by the
 web UI)."""),
     )
     self._process_artifact: ProcessArtifactCallback | None = process_artifact
+    self._process_artifact_names: ProcessArtifactNamesCallback | None = (
+        process_artifact_names
+    )
     self._enable_spreadsheet_parsing: bool = enable_spreadsheet_parsing
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
@@ -425,6 +455,14 @@ web UI)."""),
     artifact_names = [
         name for name in raw_artifact_names if isinstance(name, str)
     ]
+    if self._process_artifact_names is not None:
+      allowed_artifact_names, _ = await self._get_artifact_names(tool_context)
+      allowed_set = set(allowed_artifact_names)
+      artifact_names = [
+          name
+          for name in artifact_names
+          if _resolve_requested_artifact_name(name, allowed_set) is not None
+      ]
     return {
         'artifact_names': artifact_names,
         'status': (
@@ -432,6 +470,32 @@ web UI)."""),
             ' these artifacts, call load_artifacts tool again.'
         ),
     }
+
+  async def _get_artifact_names(
+      self, tool_context: ToolContext
+  ) -> tuple[list[str], set[str]]:
+    artifact_names = await tool_context.list_artifacts()
+    raw_names = set(artifact_names) if artifact_names is not None else set()
+    if self._process_artifact_names is None:
+      return (
+          list(artifact_names) if artifact_names is not None else [],
+          raw_names,
+      )
+
+    try:
+      raw_name_list = list(artifact_names) if artifact_names is not None else []
+      processed_names = self._process_artifact_names(raw_name_list)
+      if inspect.isawaitable(processed_names):
+        processed_names = await processed_names
+      if not isinstance(processed_names, list):
+        raise TypeError(
+            'process_artifact_names callback must return a list of strings,'
+            f' got {type(processed_names).__name__}.'
+        )
+      return [name for name in processed_names if name in raw_names], raw_names
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.exception('Failed to process artifact names, skipping.')
+      return [], raw_names
 
   @override
   async def process_llm_request(
@@ -448,7 +512,7 @@ web UI)."""),
   async def _append_artifacts_to_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    artifact_names = await tool_context.list_artifacts()
+    artifact_names, raw_names = await self._get_artifact_names(tool_context)
     if not artifact_names:
       return
 
@@ -467,6 +531,7 @@ web UI)."""),
     # This only adds the content to the model request, instead of the session.
     if llm_request.contents and llm_request.contents[-1].parts:
       available_names = set(artifact_names)
+      withheld_names = raw_names - available_names
       for part in llm_request.contents[-1].parts:
         function_response = part.function_response
         if function_response and function_response.name == 'load_artifacts':
@@ -492,15 +557,26 @@ web UI)."""),
               )
               continue
 
+            if (
+                self._process_artifact_names is not None
+                and artifact_name not in available_names
+                and artifact_name.startswith(_USER_NAMESPACE_PREFIX)
+            ):
+              artifact_name = artifact_name.removeprefix(_USER_NAMESPACE_PREFIX)
+
             artifact = await tool_context.load_artifact(artifact_name)
 
             # A backend may list a user-scoped artifact under its bare name, in
             # which case the session scope searched above does not hold it. The
-            # retry stays within this user because the name was listed for them.
-            if artifact is None and not artifact_name.startswith(
-                _USER_NAMESPACE_PREFIX
+            # retry stays within this user because the name was listed for them,
+            # unless the user-scoped name was explicitly withheld by a callback.
+            user_prefixed_name = f'{_USER_NAMESPACE_PREFIX}{artifact_name}'
+            if (
+                artifact is None
+                and not artifact_name.startswith(_USER_NAMESPACE_PREFIX)
+                and user_prefixed_name not in withheld_names
             ):
-              artifact_name = f'{_USER_NAMESPACE_PREFIX}{artifact_name}'
+              artifact_name = user_prefixed_name
               artifact = await tool_context.load_artifact(artifact_name)
 
             if artifact is None:

@@ -16,6 +16,10 @@
 
 from __future__ import annotations
 
+import inspect
+
+from google.adk.auth import auth_credential as auth_cred_module
+from google.adk.auth.auth_credential import _CREDENTIAL_SECRET_KEYS
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import BaseModelWithConfig
@@ -24,6 +28,7 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccountCredential
 import pydantic
+from pydantic import alias_generators
 import pytest
 
 
@@ -123,6 +128,33 @@ def test_oauth2_credentials_redacted_in_repr_and_str():
   assert 'secret_response_code' not in str_str
 
 
+def test_credential_secret_keys_covers_every_repr_hidden_field():
+  """_CREDENTIAL_SECRET_KEYS tracks every `repr=False` field's alias and name.
+
+  `repr=False` only hides a field from `repr()`/`str()`; it does nothing for
+  `model_dump()`/`model_dump_json()`, which is what actually leaves the
+  process (e.g. a FastAPI response). `_CREDENTIAL_SECRET_KEYS` is the
+  network-facing counterpart consumers must use to redact those same
+  fields before sending a credential-bearing object to an external client.
+  This asserts the two lists can't silently drift apart: every field this
+  module marks `repr=False` has a same-named (by alias and by name) entry in
+  `_CREDENTIAL_SECRET_KEYS`.
+  """
+  camel_of = alias_generators.to_camel
+  expected_keys = set()
+  for _, model_cls in inspect.getmembers(auth_cred_module, inspect.isclass):
+    if (
+        issubclass(model_cls, BaseModelWithConfig)
+        and model_cls is not BaseModelWithConfig
+    ):
+      for name, field in model_cls.model_fields.items():
+        if field.repr is False:
+          expected_keys.add(name)
+          expected_keys.add(field.alias or camel_of(name))
+  assert expected_keys
+  assert expected_keys == _CREDENTIAL_SECRET_KEYS
+
+
 def test_service_account_redacted_in_repr_and_str():
   """A service account private key and its ID are not rendered."""
   sa_cred = ServiceAccountCredential(
@@ -197,3 +229,91 @@ def test_validation_error_does_not_echo_secret_value():
   assert 'sk-live-secret-api-key-12345' not in message
   # The field and the reason are still reported.
   assert 'api_key' in message
+
+
+def test_redact_credential_secrets_strips_snake_case_secrets():
+  """_redact_credential_secrets must strip snake_case secret keys.
+
+  Session state, state deltas, and Python-modeled auth credential dicts
+  use snake_case keys (e.g. client_secret, access_token, refresh_token,
+  private_key, api_key). These secrets must not leak over the wire.
+  """
+  payload = {
+      'auth_type': 'oauth2',
+      'oauth2': {
+          'client_id': 'public-client-id',
+          'client_secret': 'super_secret_client_secret',
+          'access_token': 'super_secret_access_token',
+          'refresh_token': 'super_secret_refresh_token',
+      },
+      'raw_auth_credential': {
+          'oauth2': {
+              'client_id': 'public-client-id-2',
+              'client_secret': 'raw_secret_client_secret',
+          }
+      },
+  }
+  redacted = auth_cred_module._redact_credential_secrets(payload)
+  assert 'super_secret_client_secret' not in str(redacted)
+  assert 'super_secret_access_token' not in str(redacted)
+  assert 'super_secret_refresh_token' not in str(redacted)
+  assert 'raw_secret_client_secret' not in str(redacted)
+  assert 'client_secret' not in redacted['oauth2']
+  assert 'access_token' not in redacted['oauth2']
+  assert 'refresh_token' not in redacted['oauth2']
+  assert 'client_secret' not in redacted['raw_auth_credential']['oauth2']
+  assert redacted['oauth2']['client_id'] == 'public-client-id'
+  assert (
+      redacted['raw_auth_credential']['oauth2']['client_id']
+      == 'public-client-id-2'
+  )
+
+
+def test_redact_credential_secrets_strips_snake_case_auth_types():
+  """_redact_credential_secrets strips secrets when auth_type is snake_case."""
+  payload = {
+      'api_key_cred': {
+          'auth_type': 'api_key',
+          'api_key': 'secret-api-key',
+      },
+      'sa_cred': {
+          'auth_type': 'service_account',
+          'service_account': {
+              'private_key': 'secret-private-key',
+          },
+      },
+      'oidc_cred': {
+          'auth_type': 'open_id_connect',
+          'oauth2': {
+              'client_secret': 'secret-client-secret',
+          },
+      },
+  }
+  redacted = auth_cred_module._redact_credential_secrets(payload)
+  assert 'secret-api-key' not in str(redacted)
+  assert 'secret-private-key' not in str(redacted)
+  assert 'secret-client-secret' not in str(redacted)
+  assert 'api_key' not in redacted['api_key_cred']
+  assert 'private_key' not in redacted['sa_cred']['service_account']
+  assert 'client_secret' not in redacted['oidc_cred']['oauth2']
+
+
+def test_redact_credential_secrets_handles_unhashable_auth_type():
+  """_redact_credential_secrets must not raise TypeError when authType is unhashable.
+
+  Arbitrary tool args and session state reach _redact_credential_secrets, and
+  may include dicts or lists under `authType` or `auth_type` keys.
+  """
+  payload = {
+      'authType': {'nested': 'dict'},
+      'auth_type': ['nested', 'list'],
+      'args': {
+          'authType': {'inner': 'value'},
+          'auth_type': [{'another': 'item'}],
+      },
+  }
+  redacted = auth_cred_module._redact_credential_secrets(payload)
+  assert redacted['authType'] == {'nested': 'dict'}
+  assert redacted['auth_type'] == ['nested', 'list']
+  assert redacted['args']['authType'] == {'inner': 'value'}
+  assert redacted['args']['auth_type'] == [{'another': 'item'}]

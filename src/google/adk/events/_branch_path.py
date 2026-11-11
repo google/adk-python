@@ -55,6 +55,21 @@ class _BranchPath:
     return list(self._segments)
 
   @property
+  def ordered_run_ids(self) -> tuple[str, ...]:
+    """Extracts all run IDs (the part after '@') in segment order.
+
+    Example:
+      - Path: 'parent@1.child@2.node'
+      - Returns: ('1', '2')
+    """
+    ids: list[str] = []
+    for segment in self._segments:
+      parts = segment.rsplit("@", 1)
+      if len(parts) > 1 and parts[1]:
+        ids.append(parts[1])
+    return tuple(ids)
+
+  @property
   def run_ids(self) -> set[str]:
     """Extracts all run IDs (the part after '@') from all segments in the path.
 
@@ -62,12 +77,7 @@ class _BranchPath:
       - Path: 'parent@1.child@2.node'
       - Returns: {'1', '2'}
     """
-    ids = set()
-    for segment in self._segments:
-      parts = segment.rsplit("@", 1)
-      if len(parts) > 1 and parts[1]:
-        ids.add(parts[1])
-    return ids
+    return set(self.ordered_run_ids)
 
   @property
   def parent(self) -> _BranchPath | None:
@@ -165,6 +175,67 @@ class _BranchPath:
     if not separator or trailing_id not in tool_call_ids:
       return False
     return leaf_name != node_name
+
+  @staticmethod
+  def is_same_or_below(path: str, ancestor: str) -> bool:
+    """Whether ``path`` is ``ancestor`` or lies below it.
+
+    The string-level form of ``path == ancestor or
+    from_string(path).is_descendant_of(from_string(ancestor))``. Both
+    arguments must be non-empty.
+
+    Args:
+      path: The branch to classify.
+      ancestor: The branch it is compared against.
+
+    Returns:
+      True if path names the same branch as ancestor, or one below it.
+    """
+    return path == ancestor or (
+        path.startswith(ancestor) and path[len(ancestor)] == "."
+    )
+
+  @staticmethod
+  def has_tool_segment_below(
+      path: str | None,
+      base: str | None,
+      node_name: str,
+      tool_call_ids: set[str],
+  ) -> bool:
+    """Whether any segment of ``path`` strictly below ``base`` is a tool branch.
+
+    The string-level form of testing ``is_tool_branch`` on every segment of
+    ``path`` below ``base``. Every segment is checked, not only the leaf,
+    because a workflow run by a tool fans out further below the tool's own
+    segment.
+
+    Args:
+      path: The branch to walk.
+      base: The branch the walk starts below, empty to walk all of path.
+      node_name: Name of the node the branch is being considered for.
+      tool_call_ids: Ids of the function calls recorded in the session.
+
+    Returns:
+      True if path lies strictly below base and a segment in between belongs
+      to a tool message rather than to the node.
+    """
+    if not path or not tool_call_ids:
+      return False
+    if base:
+      if not (
+          len(path) > len(base)
+          and path.startswith(base)
+          and path[len(base)] == "."
+      ):
+        return False
+      sub_path = path[len(base) + 1 :]
+    else:
+      sub_path = path
+    for segment in sub_path.split("."):
+      leaf_name, separator, trailing_id = segment.rpartition("@")
+      if separator and trailing_id in tool_call_ids and leaf_name != node_name:
+        return True
+    return False
 
   @classmethod
   def create_sub_branch(

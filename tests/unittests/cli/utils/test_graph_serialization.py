@@ -206,16 +206,26 @@ def test_serialize_node_like_falls_back_to_str_for_unknown_objects() -> None:
   assert serialize_node_like(_Opaque()) == 'opaque-repr'
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason='BaseNode has no get_name(), so the BaseNode branch never fires',
-)
 def test_serialize_node_like_serializes_base_nodes_as_dicts() -> None:
   from google.adk.workflow import BaseNode
 
   assert serialize_node_like(BaseNode(name='n1')) == serialize_node(
       BaseNode(name='n1')
   )
+
+
+def test_serialize_node_like_does_not_treat_name_only_lookalikes_as_nodes() -> (
+    None
+):
+  """A non-BaseNode with a node-ish class name and `name` falls back to str()."""
+
+  class FakeNodeTool:
+    name = 'n1'
+
+    def __str__(self):
+      return 'fake-node-tool'
+
+  assert serialize_node_like(FakeNodeTool()) == 'fake-node-tool'
 
 
 def test_serialize_node_marks_the_start_sentinel_without_dumping_fields() -> (

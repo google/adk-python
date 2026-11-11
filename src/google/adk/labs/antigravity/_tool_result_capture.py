@@ -31,14 +31,24 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from typing import Any
 from typing import Collection
 from typing import Protocol
 from typing import runtime_checkable
 
 from google.antigravity.hooks import hooks as sdk_hooks
+from google.antigravity.types import BuiltinTools
 from pydantic import JsonValue
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+class ToolCall(Protocol):
+  """The Antigravity SDK ``ToolCall`` fields this package reads."""
+
+  name: str
+  args: dict[str, Any]
+  id: str | None
 
 
 class ToolResult(Protocol):
@@ -89,6 +99,47 @@ class _FailedToolResult:
   error: str | None
 
 
+try:
+  _INVOKE_SUBAGENT_TOOL_NAME = BuiltinTools.INVOKE_SUBAGENT
+except AttributeError:
+  _INVOKE_SUBAGENT_TOOL_NAME = 'invoke_subagent'
+
+_SUBAGENT_TOOL_NAMES = frozenset({
+    _INVOKE_SUBAGENT_TOOL_NAME,
+    'invoke_subagent',
+    'start_subagent',
+})
+
+
+def extract_subagent_names(call: ToolCall) -> list[str]:
+  """Extracts target sub-agent names from a sub-agent invocation tool call.
+
+  Args:
+    call: The Antigravity tool call to inspect for sub-agent invocation
+      arguments.
+
+  Returns:
+    Ordered list of invoked sub-agent names extracted from ``Subagents``,
+    ``TypeName``, or ``Role``.
+  """
+  if call.name not in _SUBAGENT_TOOL_NAMES or not isinstance(call.args, dict):
+    return []
+  subagents = call.args.get('Subagents')
+  if isinstance(subagents, list):
+    names: list[str] = []
+    for entry in subagents:
+      if not isinstance(entry, dict):
+        continue
+      name = entry.get('TypeName') or entry.get('Role')
+      if isinstance(name, str) and name:
+        names.append(name)
+    return names
+  subagent_name = call.args.get('TypeName') or call.args.get('Role')
+  if isinstance(subagent_name, str) and subagent_name:
+    return [subagent_name]
+  return []
+
+
 class ToolResultBuffer:
   """One Antigravity conversation's tool outcomes, keyed by ``ToolCall.id``.
 
@@ -109,51 +160,78 @@ class ToolResultBuffer:
     # SDK's to change.
     super().__init__()
     self._results: dict[str, ToolResult] = {}
+    self.pending_subagents: list[str] = []
+    self.seen_subagent_calls: set[str] = set()
 
   def __len__(self) -> int:
     return len(self._results)
 
+  def record_subagent(self, call: ToolCall) -> None:
+    """Queues the sub-agent name from a ``start_subagent`` or ``invoke_subagent`` call."""
+    names = extract_subagent_names(call)
+    if not names:
+      return
+    if isinstance(call.id, str) and call.id:
+      if call.id in self.seen_subagent_calls:
+        return
+      self.seen_subagent_calls.add(call.id)
+    self.pending_subagents.extend(names)
+
   def record(self, result: ToolResult) -> None:
     """Buffers one tool result, dropping one that cannot be correlated."""
-    # ``id`` is the only thing tying a result to an emitted function call, so
-    # keeping one without it risks draining it against an unrelated call.
-    if not result.id:
+    step_id: str | None = getattr(result, 'step_id', None)
+    if not result.id and not step_id:
       logger.debug(
           '[ADK] Dropping an Antigravity tool result for %s: it carries no '
-          'call id to correlate it with.',
+          'call id or step id to correlate it with.',
           result.name,
       )
       return
-    self._results[result.id] = result
+    if result.id:
+      self._results[result.id] = result
+    if step_id and step_id != result.id:
+      self._results[step_id] = result
 
   def record_error(self, error: ToolError) -> None:
     """Buffers one failed tool call, dropping one that cannot be correlated."""
-    if not error.call_id:
+    step_id: str | None = getattr(error, 'step_id', None)
+    if not error.call_id and not step_id:
       logger.debug(
           '[ADK] Dropping an Antigravity tool failure for %s: it carries no '
-          'call id to correlate it with.',
+          'call id or step id to correlate it with.',
           error.tool_name,
       )
       return
-    self._results[error.call_id] = _FailedToolResult(
+    failed = _FailedToolResult(
         name=error.tool_name,
-        id=error.call_id,
+        id=error.call_id or step_id,
         result=None,
         error=str(error) or 'Tool call execution failed.',
     )
+    if error.call_id:
+      self._results[error.call_id] = failed
+    if step_id and step_id != error.call_id:
+      self._results[step_id] = failed
 
   def take(self, call_ids: Collection[str]) -> list[tuple[str, ToolResult]]:
     """Removes and returns any buffered results for ``call_ids``."""
     # Insertion order is arrival order, i.e. the order the tools finished in.
-    return [
-        (call_id, self._results.pop(call_id))
-        for call_id in list(self._results)
-        if call_id in call_ids
-    ]
+    taken: list[tuple[str, ToolResult]] = []
+    for call_id in list(self._results):
+      if call_id not in call_ids or call_id not in self._results:
+        continue
+      result = self._results.pop(call_id)
+      for alias in (result.id, getattr(result, 'step_id', None)):
+        if alias and self._results.get(alias) is result:
+          self._results.pop(alias, None)
+      taken.append((call_id, result))
+    return taken
 
   def clear(self) -> None:
     """Forgets everything buffered."""
     self._results.clear()
+    self.pending_subagents.clear()
+    self.seen_subagent_calls.clear()
 
 
 class ToolResultCapture(ToolResultBuffer, sdk_hooks.PostToolCallHook):  # type: ignore[misc]
@@ -215,3 +293,31 @@ class ToolErrorCapture(sdk_hooks.OnToolErrorHook):  # type: ignore[misc]
       )
       return
     self._buffer.record_error(data)
+
+
+class SubagentCallCapture(sdk_hooks.PreToolCallDecideHook):  # type: ignore[misc]
+  """Feeds ``start_subagent`` / ``invoke_subagent`` tool-call arguments into a ``ToolResultBuffer``.
+
+  When the harness sends an empty ``ActionInvokeSubagent`` proto on the
+  trajectory step, the invoked sub-agent's ``TypeName`` / ``Role`` arrives on
+  the pre-tool-call hook (matching ``utils/otel.py``); step-level tool calls
+  are also inspected when present.
+  """
+
+  def __init__(self, buffer: ToolResultBuffer) -> None:
+    super().__init__()
+    self._buffer = buffer
+
+  async def run(self, context: object, data: ToolCall) -> sdk_hooks.HookResult:
+    """Records a ``start_subagent`` or ``invoke_subagent`` call and allows execution.
+
+    Args:
+      context: Unused Antigravity hook invocation context.
+      data: The intercepted pre-tool-call invocation payload.
+
+    Returns:
+      A ``HookResult`` allowing the tool call to proceed.
+    """
+    del context
+    self._buffer.record_subagent(data)
+    return sdk_hooks.HookResult(allow=True)

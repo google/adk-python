@@ -409,3 +409,18 @@ def test_rouge_evaluator_grades_with_either_threshold_source(
 def test_rouge_evaluator_rejects_metric_without_a_threshold():
   with pytest.raises(ValueError, match="requires a threshold"):
     RougeEvaluator(EvalMetric(metric_name="response_match_score"))
+
+
+def test_rouge_evaluator_ignores_thought_parts():
+  """Thought parts in the final response are not scored as answer text."""
+  rouge_evaluator = _create_test_rouge_evaluator(threshold=0.8)
+  actual, expected = _create_test_invocations(
+      "It is sunny today.", "It is sunny today."
+  )
+  actual.final_response.parts.insert(
+      0, genai_types.Part(text="Let me reason about the weather.", thought=True)
+  )
+
+  evaluation_result = rouge_evaluator.evaluate_invocations([actual], [expected])
+
+  assert evaluation_result.overall_score == pytest.approx(1.0)

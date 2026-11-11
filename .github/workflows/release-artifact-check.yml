@@ -17,8 +17,9 @@
 # otherwise never installs the wheel it is about to upload.
 #
 # This runs on the release pull request, which is where the version bump and
-# the changelog live and where the release oncaller is already looking. It is
-# not a required check until someone marks it one in the repository settings.
+# the changelog live and where the release oncaller is already looking.
+# Release: Publish to PyPi refuses to run unless the artifact-check job passed
+# in every run of this workflow on the commit it is about to publish.
 name: "Release: Artifact Check"
 
 on:

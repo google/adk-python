@@ -14,22 +14,20 @@
 
 """Lets a fast executor model consult a stronger advisor model mid-task."""
 
-from ._context import ContextMode
 from ._context import ModelConsultContextConfig
-from ._model_consult_tool import DEFAULT_ADVISOR_MODEL
-from ._model_consult_tool import DEFAULT_TOOL_NAME
+from ._force_escalation_plugin import ForceEscalationPlugin
 from ._model_consult_tool import ModelConsultTool
-from ._prompts import ADVISOR_SYSTEM_INSTRUCTION
-from ._prompts import EXECUTOR_INSTRUCTION
-from ._prompts import TOOL_DESCRIPTION
+from ._observability_plugin import ModelConsultObservabilityPlugin
+from ._observability_plugin import ModelConsultReport
+from ._observability_plugin import ModelConsultStats
+from ._observability_plugin import ModelConsultUsage
 
 __all__ = [
-    'ADVISOR_SYSTEM_INSTRUCTION',
-    'ContextMode',
-    'DEFAULT_ADVISOR_MODEL',
-    'DEFAULT_TOOL_NAME',
-    'EXECUTOR_INSTRUCTION',
+    'ForceEscalationPlugin',
     'ModelConsultContextConfig',
+    'ModelConsultObservabilityPlugin',
+    'ModelConsultReport',
+    'ModelConsultStats',
     'ModelConsultTool',
-    'TOOL_DESCRIPTION',
+    'ModelConsultUsage',
 ]

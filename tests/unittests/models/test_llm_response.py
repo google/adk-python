@@ -457,3 +457,35 @@ def test_environment_id_defaults_to_none_and_roundtrips():
   dumped = resp.model_dump(exclude_none=True)
   assert dumped['environment_id'] == 'env_abc'
   assert LlmResponse.model_validate(dumped).environment_id == 'env_abc'
+
+
+def _max_tokens_response(parts: list[types.Part]) -> LlmResponse:
+  return LlmResponse.create(
+      types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(role='model', parts=parts),
+                  finish_reason=types.FinishReason.MAX_TOKENS,
+                  finish_message='Hit max_output_tokens',
+              )
+          ]
+      )
+  )
+
+
+def test_create_non_stop_finish_with_parts_keeps_content_without_error():
+  response = _max_tokens_response([types.Part(text='truncated output')])
+
+  assert response.content.parts[0].text == 'truncated output'
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert response.error_code is None
+  assert response.error_message is None
+
+
+def test_create_non_stop_finish_without_parts_sets_error():
+  response = _max_tokens_response([])
+
+  assert response.content is None
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.error_message == 'Hit max_output_tokens'

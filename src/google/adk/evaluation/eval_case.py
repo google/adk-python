@@ -24,10 +24,18 @@ from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import TypeAlias
 
+from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .conversation_scenarios import ConversationScenario as ConversationScenario
 from .eval_rubrics import Rubric
+
+# `adk_request_input` is kept: the public `request_input` tool is model-chosen.
+_FRAMEWORK_FUNCTION_CALL_NAMES = frozenset({
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+})
 
 
 class IntermediateData(EvalBaseModel):
@@ -126,6 +134,25 @@ class Invocation(EvalBaseModel):
   constructed, which for a model call is before the request is even sent.
   """
 
+  model_duration: Optional[float] = None
+  """Of `duration`, the seconds with at least one model call in flight.
+
+  Measured from the interval each model call occupied, with concurrent calls
+  counted once, so this is how long the turn spent awaiting a model rather
+  than the sum of how long each call took. Set under the same conditions as
+  `duration` and None otherwise.
+  """
+
+  tool_duration: Optional[float] = None
+  """Of `duration`, the seconds inside a tool but not awaiting a model.
+
+  Time a tool spent awaiting a model -- an `AgentTool` runs model calls inside
+  its own tool interval -- is excluded here and reported as `model_duration`
+  instead, so the two never double count. What is left of `duration` after both
+  is the framework's own time. Set under the same conditions as `duration` and
+  None otherwise.
+  """
+
   rubrics: Optional[list[Rubric]] = Field(
       default=None,
   )
@@ -220,7 +247,12 @@ class EvalCase(EvalBaseModel):
 def get_all_tool_calls(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[genai_types.FunctionCall]:
-  """A utility method to retrieve tools calls from intermediate data."""
+  """A utility method to retrieve tools calls from intermediate data.
+
+  Function calls that ADK itself emits to the client (for example
+  `adk_request_confirmation` for tools with `require_confirmation=True`) are
+  excluded, since the model did not choose them.
+  """
   if not intermediate_data:
     return []
 
@@ -241,13 +273,21 @@ def get_all_tool_calls(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return tool_calls
+  return [
+      call
+      for call in tool_calls
+      if call.name not in _FRAMEWORK_FUNCTION_CALL_NAMES
+  ]
 
 
 def get_all_tool_responses(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[genai_types.FunctionResponse]:
-  """A utility method to retrieve tools responses from intermediate data."""
+  """A utility method to retrieve tools responses from intermediate data.
+
+  Responses to ADK's own client function calls are excluded, matching
+  `get_all_tool_calls`.
+  """
   if not intermediate_data:
     return []
 
@@ -268,7 +308,11 @@ def get_all_tool_responses(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return tool_responses
+  return [
+      response
+      for response in tool_responses
+      if response.name not in _FRAMEWORK_FUNCTION_CALL_NAMES
+  ]
 
 
 ToolCallAndResponse: TypeAlias = tuple[

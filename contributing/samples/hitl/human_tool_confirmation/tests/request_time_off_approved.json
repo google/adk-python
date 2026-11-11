@@ -1,0 +1,190 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "I would like to request 5 days off."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "time_off_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "days": 5
+              },
+              "id": "fc-1",
+              "name": "request_time_off"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "time_off_agent@1"
+      }
+    },
+    {
+      "author": "time_off_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "originalFunctionCall": {
+                  "args": {
+                    "days": 5
+                  },
+                  "id": "fc-1",
+                  "name": "request_time_off"
+                },
+                "toolConfirmation": {
+                  "confirmed": false,
+                  "hint": "Please approve or reject the tool call request_time_off() by responding with a FunctionResponse with an expected ToolConfirmation payload.",
+                  "payload": {
+                    "approved_days": 0
+                  }
+                }
+              },
+              "id": "fc-2",
+              "name": "adk_request_confirmation"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-2"
+      ],
+      "nodeInfo": {
+        "path": "time_off_agent@1"
+      }
+    },
+    {
+      "actions": {
+        "requestedToolConfirmations": {
+          "fc-1": {
+            "confirmed": false,
+            "hint": "Please approve or reject the tool call request_time_off() by responding with a FunctionResponse with an expected ToolConfirmation payload.",
+            "payload": {
+              "approved_days": 0
+            }
+          }
+        }
+      },
+      "author": "time_off_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "request_time_off",
+              "response": {
+                "status": "Manager approval is required."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "time_off_agent@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "adk_request_confirmation",
+              "response": {
+                "confirmed": true,
+                "payload": {
+                  "approved_days": 3
+                }
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "time_off_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "request_time_off",
+              "response": {
+                "approved_days": 3,
+                "status": "ok"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "time_off_agent@1"
+      }
+    },
+    {
+      "author": "time_off_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Your time off request has been approved for 3 days."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-7",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "time_off_agent@1"
+      }
+    },
+    {
+      "actions": {
+        "endOfAgent": true
+      },
+      "author": "time_off_agent",
+      "id": "e-8",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "time_off_agent@1"
+      }
+    }
+  ]
+}

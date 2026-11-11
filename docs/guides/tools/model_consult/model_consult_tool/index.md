@@ -46,7 +46,7 @@ When `ModelConsultTool` prepares each outgoing executor request, it registers th
 When the executor calls `model_consult`, `ModelConsultTool` performs four steps and returns a structured dictionary to the executor:
 
 1. **Budget verification** — `ModelConsultTool` checks the per-turn counter against `max_uses` and the session-wide counter against `session_max_uses`. If either cap has been reached, the tool returns `"status": "limit_reached"` immediately without calling the advisor model, and instructs the executor to proceed with the information already gathered.
-1. **Context handover** — `ModelConsultTool` builds the advisor conversation from the non-partial, non-rewound events in `Session.events` according to `ModelConsultContextConfig`. Prior tool calls and tool responses in the session are flattened into readable text summaries so the advisor sees what actions have already been taken and what they returned, while any in-flight `model_consult` call is excluded. `ModelConsultTool` appends a final user handoff turn containing the active agent name, the executor's `question`, and any extra `context` string passed by the executor, and attaches the resolved executor instruction and sibling tool inventory to the advisor's system instruction when `include_agent_instruction` and `include_tool_inventory` are `True`.
+1. **Context handover** — `ModelConsultTool` packages the consultation into a single `role='user'` `types.Content` message. When `include_agent_instruction` and `include_tool_inventory` are `True`, the message begins with the resolved executor instruction and sibling tool inventory. Next, `ModelConsultTool` converts the non-partial, non-rewound events in `Session.events` according to `ModelConsultContextConfig`, labelling text parts by speaker and flattening prior tool calls and tool responses into readable text summaries while excluding any in-flight `model_consult` call. Finally, `ModelConsultTool` appends a handoff part containing the active agent name, the executor's `question`, and any extra `context` string passed by the executor.
 1. **Tool-less advisor call** — `ModelConsultTool` calls the configured advisor `BaseLlm` with tool calling disabled and the default advisor system instruction, or a custom `advisor_instruction` when provided. Because tool declarations are excluded from the advisor request, the advisor cannot execute tools or produce side effects on its own; it can only return text guidance naming which tools the executor should invoke next and with what arguments.
 1. **Structured tool response** — `ModelConsultTool` never raises an exception back into the agent loop:
    - `"ok"`: Increments both usage counters and returns `"guidance"`, `"advisor_model"`, `"thinking_level"`, `"consults"` budget metadata, token `"usage"` counts, and `"latency_ms"`.
@@ -101,7 +101,7 @@ A successful consultation returns the following dictionary structure:
 | `advisor_instruction`       | `str \| None`                         | `None`                     | Overrides the default system instruction sent to the advisor model.                                                                                                              |
 | `description`               | `str \| None`                         | `None`                     | Overrides the default tool description shown to the executor model.                                                                                                              |
 | `include_agent_instruction` | `bool`                                | `True`                     | Forwards the executor agent's own instruction to the advisor so guidance respects the executor's constraints.                                                                    |
-| `include_tool_inventory`    | `bool`                                | `True`                     | Includes the names and descriptions of the executor's other tools in the advisor system instruction.                                                                             |
+| `include_tool_inventory`    | `bool`                                | `True`                     | Includes the names and descriptions of the executor's other tools in the advisor consultation prompt.                                                                            |
 | `generate_content_config`   | `types.GenerateContentConfig \| None` | `None`                     | Base generation config cloned per advisor call, such as `temperature` or `safety_settings`.                                                                                      |
 | `name`                      | `str`                                 | `'model_consult'`          | Tool name exposed to the executor model.                                                                                                                                         |
 
@@ -115,29 +115,26 @@ A successful consultation returns the following dictionary structure:
 
 `executor_instruction`, `advisor_instruction`, and `description` override the built-in prompts that steer when the executor escalates and how the advisor formats its response. When `name` is customized without a custom `executor_instruction`, `ModelConsultTool` substitutes the custom tool name into the default escalation policy and scopes its per-turn and per-session state counters to `name`.
 
-`include_agent_instruction` and `include_tool_inventory` control whether the executor's resolved instruction and sibling tool list are appended to the advisor's system instruction. `generate_content_config` supplies a base `types.GenerateContentConfig` that is cloned for each advisor call with tool calling cleared.
+`include_agent_instruction` and `include_tool_inventory` control whether the executor's resolved instruction and sibling tool list are included in the advisor consultation prompt. `generate_content_config` supplies a base `types.GenerateContentConfig` that is cloned for each advisor call with tool calling cleared.
 
 ### ModelConsultContextConfig options
 
 `ModelConsultContextConfig` controls how `Session.events` is converted into the advisor's input contents:
 
-| Option             | Type          | Default    | Description                                                                                                                       |
-| :----------------- | :------------ | :--------- | :-------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`             | `ContextMode` | `'events'` | `'events'` preserves multi-turn `types.Content` structure; `'transcript'` flattens history into a single text transcript.         |
-| `include_session`  | `bool`        | `True`     | Sends the converted `Session.events` history when `True`, or only the `question` and `context` tool arguments when `False`.       |
-| `max_events`       | `int \| None` | `None`     | Keeps at most this many of the most recent non-partial session events before character budgeting. `None` keeps all events.        |
-| `max_chars`        | `int \| None` | `200000`   | Character budget across all handed-over session turns. `None` disables the character budget.                                      |
-| `max_part_chars`   | `int`         | `4000`     | Per-part character cap on rendered tool calls, tool results, and code blocks, with plain text parts allowed eight times this cap. |
-| `include_media`    | `bool`        | `True`     | Forwards inline media and file references in `'events'` mode when `True`, or replaces them with text placeholders when `False`.   |
-| `include_thoughts` | `bool`        | `False`    | Includes the executor's internal thought parts in the advisor handover when `True`.                                               |
+| Option             | Type          | Default  | Description                                                                                                                       |
+| :----------------- | :------------ | :------- | :-------------------------------------------------------------------------------------------------------------------------------- |
+| `include_session`  | `bool`        | `True`   | Sends the converted `Session.events` history when `True`, or omits prior session events when `False`.                             |
+| `max_events`       | `int \| None` | `None`   | Keeps at most this many of the most recent non-partial session events before character budgeting. `None` keeps all events.        |
+| `max_chars`        | `int \| None` | `200000` | Character budget across all handed-over session turns. `None` disables the character budget.                                      |
+| `max_part_chars`   | `int`         | `4000`   | Per-part character cap on rendered tool calls, tool results, and code blocks, with plain text parts allowed eight times this cap. |
+| `include_media`    | `bool`        | `True`   | Forwards inline media and file references when `True`, or replaces them with text placeholders when `False`.                      |
+| `include_thoughts` | `bool`        | `False`  | Includes the executor's internal thought parts in the advisor handover when `True`.                                               |
 
-`ModelConsultContextConfig` validates fields strictly and rejects unknown keyword arguments or non-positive limits, requiring `max_events`, `max_chars`, and `max_part_chars` to be at least `1` when set.
-
-`mode` selects how session history is formatted for the advisor. `'events'` preserves alternating `user` and `model` `types.Content` turns, while `'transcript'` renders the history into a single labeled text block inside the user prompt for text-only or strict-alternation models. Setting `include_session=False` skips prior `Session.events` altogether so the advisor sees only the `question` and `context` tool arguments.
+`ModelConsultContextConfig` validates fields strictly and rejects unknown keyword arguments or non-positive limits, requiring `max_events`, `max_chars`, and `max_part_chars` to be at least `1` when set. Setting `include_session=False` skips prior `Session.events` altogether so the advisor sees only the executor instruction, tool inventory, and the `question` and `context` tool arguments.
 
 `max_events` slices the most recent non-partial, non-rewound session events before part filtering and character budgeting. When the converted history exceeds `max_chars`, `ModelConsultTool` reserves up to one quarter of `max_chars` for leading turns so the initial goal remains visible when it fits, inserts a gap marker for dropped middle turns, and fills the remaining budget with the most recent turns. The newest turn is always kept and shortened in place if it exceeds the remaining character budget on its own.
 
-`max_part_chars` caps each rendered tool call argument string, tool response body, executable code snippet, and code execution result, while plain text and thought parts receive eight times `max_part_chars`. `include_media` forwards inline binary media and file references in `'events'` mode when `True`, or replaces them with text descriptors when `False`. `include_thoughts` defaults to `False` so the executor's internal reasoning does not anchor the advisor; when `True`, thought parts are prefixed with a thought marker.
+`max_part_chars` caps each rendered tool call argument string, tool response body, executable code snippet, and code execution result, while plain text and thought parts receive eight times `max_part_chars`. `include_media` forwards inline binary media and file references when `True`, or replaces them with text descriptors when `False`. `include_thoughts` defaults to `False` so the executor's internal reasoning does not anchor the advisor; when `True`, thought parts are prefixed with a thought marker.
 
 ## Advanced applications
 
@@ -145,7 +142,7 @@ The following patterns adapt `ModelConsultTool` for long-horizon sessions with l
 
 ### Customizing context handover budgets
 
-For long-running debugging sessions with verbose tool outputs, pass a custom `ModelConsultContextConfig` to tighten per-part limits or switch to `'transcript'` mode for text-only advisor models:
+For long-running debugging sessions with verbose tool outputs, pass a custom `ModelConsultContextConfig` to tighten per-part limits or disable media forwarding for text-only advisor models:
 
 ```python
 from google.adk.tools import ModelConsultContextConfig
@@ -155,7 +152,6 @@ consult_tool = ModelConsultTool(
     max_uses=2,
     session_max_uses=6,
     context_config=ModelConsultContextConfig(
-        mode="transcript",
         max_events=25,
         max_chars=24000,
         max_part_chars=3000,

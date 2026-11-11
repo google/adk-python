@@ -20,6 +20,7 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.cli import agent_test_runner
 from google.adk.cli.agent_test_runner import _has_unmapped_function_response
 from google.adk.cli.agent_test_runner import make_sort_key
@@ -251,6 +252,55 @@ def test_rebuild_tests_preserves_non_ascii_event_text(
   assert '日本語の質問' in rebuilt
   assert '日本語の回答' in rebuilt
   assert '\\u' not in rebuilt
+
+
+def test_in_memory_runner_run_raises_when_session_is_missing():
+  runner = agent_test_runner.InMemoryRunner(root_agent=LlmAgent(name='root'))
+  runner.session_id = 'missing'
+
+  with pytest.raises(ValueError, match='Session missing not found'):
+    runner.run('hello')
+
+
+def test_rebuild_tests_reports_missing_session(tmp_path, monkeypatch, capsys):
+  agent_dir = tmp_path / 'test_agent'
+  tests_dir = agent_dir / 'tests'
+  tests_dir.mkdir(parents=True)
+  (agent_dir / 'agent.py').write_text('', encoding='utf-8')
+  test_file = tests_dir / 'missing_session.json'
+  session_data = {
+      'events': [{
+          'author': 'user',
+          'content': {'role': 'user', 'parts': [{'text': 'hello'}]},
+      }]
+  }
+  test_file.write_text(json.dumps(session_data), encoding='utf-8')
+
+  loader = mock.create_autospec(
+      agent_test_runner.AgentLoader, instance=True, spec_set=True
+  )
+  loader.load_agent.return_value = object()
+  monkeypatch.setattr(
+      agent_test_runner,
+      'AgentLoader',
+      mock.create_autospec(
+          agent_test_runner.AgentLoader, spec_set=True, return_value=loader
+      ),
+  )
+  monkeypatch.setattr(
+      agent_test_runner,
+      'InMemoryRunner',
+      mock.create_autospec(
+          agent_test_runner.InMemoryRunner,
+          spec_set=True,
+          return_value=SimpleNamespace(session=None, session_id='missing'),
+      ),
+  )
+
+  agent_test_runner.rebuild_tests(str(agent_dir))
+
+  assert 'Session missing not found' in capsys.readouterr().out
+  assert json.loads(test_file.read_text(encoding='utf-8')) == session_data
 
 
 @pytest.mark.parametrize(

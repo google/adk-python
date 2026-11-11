@@ -16,9 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from pydantic import BaseModel
 import yaml
@@ -27,7 +25,7 @@ if TYPE_CHECKING:
   from pydantic.main import IncEx
 
 
-def load_yaml_file(file_path: Union[str, Path]) -> Any:
+def load_yaml_file(file_path: str | Path) -> Any:
   """Loads a YAML file and returns its content.
 
   Args:
@@ -48,13 +46,13 @@ def load_yaml_file(file_path: Union[str, Path]) -> Any:
 
 def dump_pydantic_to_yaml(
     model: BaseModel,
-    file_path: Union[str, Path],
+    file_path: str | Path,
     *,
     indent: int = 2,
     sort_keys: bool = True,
     exclude_none: bool = True,
     exclude_defaults: bool = True,
-    exclude: Optional[IncEx] = None,
+    exclude: IncEx | None = None,
 ) -> None:
   """Dump a Pydantic model to a YAML file with multiline strings using | style.
 
@@ -78,18 +76,23 @@ def dump_pydantic_to_yaml(
   file_path = Path(file_path)
   file_path.parent.mkdir(parents=True, exist_ok=True)
 
-  class _MultilineDumper(yaml.SafeDumper):
+  # PyYAML ships no types, so mypy sees SafeDumper as Any.
+  class _MultilineDumper(yaml.SafeDumper):  # type: ignore[misc]
 
-    def increase_indent(self, flow=False, indentless=False):
+    def increase_indent(
+        self, flow: bool = False, indentless: bool = False
+    ) -> None:
       """Override to force consistent indentation for sequences in mappings.
 
       By default, PyYAML uses indentless=True for sequences that are values
       in mappings, creating flush-left alignment. This override forces proper
       indentation for all sequences regardless of context.
       """
-      return super(_MultilineDumper, self).increase_indent(flow, False)
+      super(_MultilineDumper, self).increase_indent(flow, False)
 
-  def multiline_str_representer(dumper, data):
+  def multiline_str_representer(
+      dumper: _MultilineDumper, data: str
+  ) -> yaml.ScalarNode:
     if '\n' in data or '"' in data or "'" in data:
       return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
     return dumper.represent_scalar('tag:yaml.org,2002:str', data)

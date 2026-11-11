@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import json
@@ -21,6 +22,8 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
+import types as py_types
 from typing import Any
 from typing import AsyncIterator
 from typing import Iterator
@@ -30,9 +33,12 @@ from google.adk.apps.app import App
 from google.adk.cli.agent_test_runner import test_agent_replay as _test_agent_replay
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.events import Event
+from google.adk.tools.computer_use.base_computer import ComputerState
 from google.genai import types
 import pytest
 import requests
+
+from . import testing_utils
 
 CONTRIBUTING_DIR = Path(__file__).parent.parent.parent / "contributing"
 SAMPLES_DIR = CONTRIBUTING_DIR / "samples"
@@ -132,6 +138,9 @@ SKIP_LOAD = {
     "integrations/slack_agent": (
         "builds its agent inside main(), no module-level root_agent"
     ),
+    "integrations/teams_agent": (
+        "builds its agent inside main(), no module-level root_agent"
+    ),
     "adk_team/adk_documentation": (
         "package dir; its child agents are the samples"
     ),
@@ -154,9 +163,6 @@ XFAIL_LOAD = {
     ),
     "models/hello_world_litellm_add_function_to_prompt": (
         "langchain_core requires an explicit import of langchain_core.tools"
-    ),
-    "adk_team/adk_triaging_agent": (
-        "agent.py imports adk_triaging_agent.settings, which is not present"
     ),
 }
 
@@ -256,14 +262,20 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
     def refresh(self, request: google.auth.transport.Request) -> None:
       self.token = "dummy-token"
 
-  monkeypatch.setattr(
-      google.auth,
-      "default",
-      lambda *args, **kwargs: (
-          _DummyCredentials(),
-          "dummy-project",
-      ),
-  )
+  def _dummy_default(
+      *args: object, **kwargs: object
+  ) -> tuple[_DummyCredentials, str]:
+    return _DummyCredentials(), "dummy-project"
+
+  real_default = google.auth.default
+  monkeypatch.setattr(google.auth, "default", _dummy_default)
+  # Modules that ran `from google.auth import default` before this test hold
+  # their own reference to the real function.
+  for module_name, module in list(sys.modules.items()):
+    if module_name.startswith("google.adk."):
+      for attr, value in list(getattr(module, "__dict__", {}).items()):
+        if value is real_default:
+          monkeypatch.setattr(module, attr, _dummy_default)
   monkeypatch.setattr(
       mtls,
       "has_default_client_cert_source",
@@ -281,8 +293,21 @@ def test_knowledge_agent_requires_datastore_env(monkeypatch):
   for key, value in _DUMMY_ENV.items():
     monkeypatch.setenv(key, value)
   monkeypatch.delenv("VERTEXAI_DATASTORE_ID")
-  with pytest.raises(ValueError, match="VERTEXAI_DATASTORE_ID"):
+  with pytest.raises(RuntimeError, match="VERTEXAI_DATASTORE_ID") as exc_info:
     _load_root_agent(SAMPLES_DIR / "adk_team" / "adk_knowledge_agent")
+  assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+@pytest.mark.parametrize(
+    "sample", ["adk_stale_agent", "adk_issue_monitoring_agent"]
+)
+def test_issue_maintenance_agents_retry_model_errors(sample: str, monkeypatch):
+  """A transient model error must not fail the issue maintenance job."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  root_agent = _load_root_agent(SAMPLES_DIR / "adk_team" / sample)
+  retry_options = root_agent.canonical_model.retry_options
+  assert retry_options is not None and retry_options.attempts > 1
 
 
 @contextlib.contextmanager
@@ -298,6 +323,194 @@ def _sample_module(sample_dir: Path, module_name: str) -> Iterator[Any]:
     for name in list(sys.modules):
       if name == prefix or name.startswith(prefix + "."):
         del sys.modules[name]
+
+
+@pytest.mark.parametrize(
+    "sample", ["human_in_loop", "tool_human_in_the_loop_config"]
+)
+@pytest.mark.parametrize("decision", [None, "rejected", "approved"])
+@pytest.mark.parametrize("amount", [100, 200])
+async def test_reimbursement_requires_confirmation(sample, decision, amount):
+  """Reimbursements of $100+ pause until the confirmation is answered."""
+  root_agent = _load_root_agent(SAMPLES_DIR / "hitl" / sample)
+  model = testing_utils.MockModel.create([])
+  root_agent.model = model
+  runner = testing_utils.InMemoryRunner(root_agent)
+  args = {"purpose": "travel", "amount": amount}
+  message = testing_utils.UserContent(f"Please reimburse ${amount} for travel")
+
+  if decision is not None:
+    model.responses.extend(
+        testing_utils.MockModel.create([
+            types.Part.from_function_call(name="ask_for_approval", args=args),
+            "Waiting for the manager.",
+        ]).responses
+    )
+    events = await runner.run_async(message)
+    approval_call = next(
+        call
+        for event in events
+        for call in event.get_function_calls()
+        if call.name == "ask_for_approval"
+    )
+    message = testing_utils.UserContent(
+        types.Part(
+            function_response=types.FunctionResponse(
+                id=approval_call.id,
+                name=approval_call.name,
+                response={
+                    "status": decision,
+                    "ticketId": "reimbursement-ticket-001",
+                },
+            )
+        )
+    )
+
+  model.responses.extend(
+      testing_utils.MockModel.create([
+          types.Part.from_function_call(name="reimburse", args=args),
+          "Done.",
+      ]).responses
+  )
+  events = await runner.run_async(message)
+  responses = [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+      if response.name == "reimburse"
+  ]
+  assert responses and all("error" in response for response in responses)
+  assert not any(
+      part.text
+      for event in events
+      if event.content
+      for part in event.content.parts or []
+  )
+  confirmation = next(
+      call
+      for event in events
+      for call in event.get_function_calls()
+      if call.name == "adk_request_confirmation"
+  )
+  events = await runner.run_async(
+      testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation.id,
+                  name=confirmation.name,
+                  response={"confirmed": decision == "approved"},
+              )
+          )
+      )
+  )
+  responses = [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+      if response.name == "reimburse"
+  ]
+  assert len(responses) == 1
+  if decision == "approved":
+    assert responses == [{"status": "ok"}]
+  else:
+    assert "error" in responses[0]
+
+
+@pytest.mark.parametrize(
+    "sample", ["human_in_loop", "tool_human_in_the_loop_config"]
+)
+async def test_small_reimbursement_needs_no_confirmation(sample):
+  """Reimbursements under $100 pay out without a confirmation."""
+  root_agent = _load_root_agent(SAMPLES_DIR / "hitl" / sample)
+  root_agent.model = testing_utils.MockModel.create([
+      types.Part.from_function_call(
+          name="reimburse", args={"purpose": "meals", "amount": 50}
+      ),
+      "Done.",
+  ])
+  events = await testing_utils.InMemoryRunner(root_agent).run_async(
+      "Please reimburse $50 for meals"
+  )
+  assert [
+      call.name for event in events for call in event.get_function_calls()
+  ] == ["reimburse"]
+  assert [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+  ] == [{"status": "ok"}]
+
+
+@pytest.mark.parametrize(
+    "approval, purpose, amount, calls, paid",
+    [
+        (False, "conference travel", 200, 1, 1),
+        (True, "conference travel", 200, 1, 2),
+        (True, " Conference Travel", 200, 1, 2),
+        (True, "conference travel", 300, 1, 1),
+        (True, "other travel", 200, 1, 1),
+        (True, "conference travel", 200, 2, 2),
+    ],
+)
+async def test_reimbursement_main_confirms_only_approved_ticket(
+    approval, purpose, amount, calls, paid, monkeypatch
+):
+  """main.py confirms only one reimbursement matching the approved ticket."""
+  sample_dir = SAMPLES_DIR / "hitl" / "human_in_loop"
+  responses = [
+      [
+          types.Part.from_function_call(
+              name="reimburse", args={"purpose": "meals", "amount": 50}
+          )
+      ],
+      [types.Part(text="Meals reimbursed.")],
+  ]
+  if approval:
+    responses.extend([
+        [
+            types.Part.from_function_call(
+                name="ask_for_approval",
+                args={"purpose": "conference travel", "amount": 200},
+            )
+        ],
+        [types.Part(text="Waiting for the manager.")],
+    ])
+  responses.append([
+      types.Part.from_function_call(
+          name="reimburse", args={"purpose": purpose, "amount": amount}
+      )
+      for _ in range(calls)
+  ])
+  responses.extend([[types.Part(text="Done.")]] * calls)
+  with _sample_module(sample_dir, "agent") as agent_module:
+    agent_module.root_agent.model = testing_utils.MockModel.create(responses)
+    # main.py imports agent directly so it can also be run as a script.
+    monkeypatch.setitem(sys.modules, "agent", agent_module)
+    with _sample_module(sample_dir, "main") as main_module:
+      await main_module.main()
+      session = await main_module.session_service.get_session(
+          app_name=main_module.APP_NAME,
+          user_id=main_module.USER_ID,
+          session_id=main_module.SESSION_ID,
+      )
+  assert (
+      sum(
+          response.name == "reimburse" and response.response == {"status": "ok"}
+          for event in session.events
+          for response in event.get_function_responses()
+      )
+      == paid
+  )
+  confirmations = [
+      response
+      for event in session.events
+      for response in event.get_function_responses()
+      if response.name == "adk_request_confirmation"
+  ]
+  assert len(confirmations) == calls
+  assert sum(response.response["confirmed"] for response in confirmations) == (
+      paid - 1
+  )
 
 
 @pytest.mark.parametrize(
@@ -495,3 +708,148 @@ def test_issue_discovery_propagates_page_failure(
     monkeypatch.setattr(utils_module, "get_request", _get_request)
     with pytest.raises(requests.exceptions.ConnectionError):
       getattr(utils_module, discovery_name)("google", "adk-python")
+
+
+@pytest.mark.parametrize(
+    "assignable, expected",
+    [
+        ({"alice", "bob"}, ["alice", "bob", "alice", "bob"]),
+        ({"alice"}, ["alice", "alice", "alice", "alice"]),
+    ],
+)
+def test_pr_triage_owners_take_turns_by_pr_number(
+    assignable: set[str], expected: list[str], monkeypatch
+):
+  """A component's owners take turns, passing over any GitHub cannot assign."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  assigned: list[str] = []
+
+  def _post_request(url: str, payload: Any) -> dict[str, Any]:
+    del url
+    assigned.extend(payload["assignees"])
+    return {}
+
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / "adk_pr_triaging_agent", "agent"
+  ) as agent_module:
+    monkeypatch.setitem(agent_module.LABEL_TO_OWNER, "tools", ["alice", "bob"])
+    monkeypatch.setattr(
+        agent_module, "is_assignable", lambda login: login in assignable
+    )
+    monkeypatch.setattr(agent_module, "post_request", _post_request)
+    for pr_number in (10, 11, 12, 13):
+      agent_module.assign_owner_to_pr(pr_number, "tools")
+  assert assigned == expected
+
+
+def test_pr_triage_skips_a_pr_no_owner_can_take(monkeypatch):
+  """A PR none of the component's owners can be assigned is reported skipped."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  posted: list[str] = []
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / "adk_pr_triaging_agent", "agent"
+  ) as agent_module:
+    monkeypatch.setitem(agent_module.LABEL_TO_OWNER, "tools", ["alice", "bob"])
+    monkeypatch.setattr(agent_module, "is_assignable", lambda login: False)
+    monkeypatch.setattr(
+        agent_module, "post_request", lambda url, payload: posted.append(url)
+    )
+    result = agent_module.assign_owner_to_pr(11, "tools")
+  assert result["status"] == "skipped"
+  assert result["owners"] == ["alice", "bob"]
+  assert posted == []
+
+
+async def test_playwright_computer_sleeps_asynchronously(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """PlaywrightComputer must await asyncio.sleep instead of time.sleep."""
+  slept: list[float] = []
+
+  async def _fake_async_sleep(delay: float) -> None:
+    slept.append(delay)
+
+  monkeypatch.setattr(asyncio, "sleep", _fake_async_sleep)
+  monkeypatch.setattr(time, "sleep", lambda _: None)
+
+  class _FakePage:
+    url = "https://example.com"
+
+    def __init__(self) -> None:
+      self.evaluated: list[str] = []
+
+    async def set_viewport_size(self, size: dict[str, int]) -> None:
+      del size
+
+    async def wait_for_load_state(self) -> None:
+      pass
+
+    async def screenshot(self, *, type: str, full_page: bool) -> bytes:
+      assert type == "png"
+      assert not full_page
+      return b"png-bytes"
+
+    async def evaluate(self, script: str) -> None:
+      self.evaluated.append(script)
+
+  page = _FakePage()
+
+  class _FakeContext:
+
+    def __init__(self) -> None:
+      self.pages = [page]
+
+  class _FakeBrowser:
+
+    async def new_context(self) -> _FakeContext:
+      return _FakeContext()
+
+  class _FakeChromium:
+
+    async def launch(self, *, args: list[str], headless: bool) -> _FakeBrowser:
+      del args, headless
+      return _FakeBrowser()
+
+  class _FakePlaywright:
+
+    def __init__(self) -> None:
+      self.chromium = _FakeChromium()
+
+    async def start(self) -> _FakePlaywright:
+      return self
+
+  playwright_pkg = py_types.ModuleType("playwright")
+  async_api_mod = py_types.ModuleType("playwright.async_api")
+  setattr(async_api_mod, "async_playwright", _FakePlaywright)
+  termcolor_mod = py_types.ModuleType("termcolor")
+  setattr(termcolor_mod, "cprint", lambda *_args, **_kwargs: None)
+  monkeypatch.setitem(sys.modules, "playwright", playwright_pkg)
+  monkeypatch.setitem(sys.modules, "playwright.async_api", async_api_mod)
+  monkeypatch.setitem(sys.modules, "termcolor", termcolor_mod)
+
+  with _sample_module(
+      SAMPLES_DIR / "multimodal" / "computer_use", "playwright"
+  ) as playwright_module:
+    computer = playwright_module.PlaywrightComputer(
+        screen_size=(1280, 936), highlight_mouse=False
+    )
+    await computer.initialize()
+    await computer.highlight_mouse(10, 20)
+    assert page.evaluated == []
+    assert slept == []
+
+    state = await computer.current_state()
+    assert state == ComputerState(
+        screenshot=b"png-bytes", url="https://example.com"
+    )
+    assert slept == [0.5]
+
+    highlighted = playwright_module.PlaywrightComputer(
+        screen_size=(1280, 936), highlight_mouse=True
+    )
+    await highlighted.initialize()
+    await highlighted.highlight_mouse(10, 20)
+    assert len(page.evaluated) == 1
+    assert slept == [0.5, 1]

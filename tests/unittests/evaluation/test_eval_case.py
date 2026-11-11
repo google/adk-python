@@ -25,6 +25,8 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_case import SessionInput
+from google.adk.evaluation.eval_rubrics import Rubric
+from google.adk.evaluation.eval_rubrics import RubricContent
 from google.genai import types as genai_types
 import pytest
 
@@ -144,6 +146,45 @@ def test_eval_case_put_accepts_web_ui_transcript_indices():
   assert 'toolUseIndex' not in dumped_event
   tool_calls = get_all_tool_calls(invocation.intermediate_data)
   assert tool_calls[0].name == 'get_weather'
+
+
+def test_rubric_content_text_property_defaults_to_none():
+  """A RubricContent without text_property round-trips (required-Optional fix)."""
+  content = RubricContent(text_property=None)
+
+  assert content.text_property is None
+  # Simulates the GET(exclude_none=True) -> PUT cycle: an omitted text_property
+  # must still validate (Pydantic v2 treats Optional-without-default as required).
+  assert (
+      RubricContent.model_validate(
+          content.model_dump(exclude_none=True)
+      ).text_property
+      is None
+  )
+
+
+def test_eval_case_with_rubric_missing_text_property_round_trips():
+  """An EvalCase carrying a rubric whose text_property is None survives a
+
+  GET(exclude_none=True) -> PUT round-trip instead of raising a 422.
+  """
+  rubric = Rubric(
+      rubric_id='r1',
+      rubric_content=RubricContent(text_property=None),
+  )
+  eval_case = EvalCase(
+      eval_id='case_1',
+      conversation=[],
+      rubrics=[rubric],
+  )
+
+  # response_model_exclude_none=True drops text_property=None from the wire.
+  wire = eval_case.model_dump(by_alias=True, exclude_none=True)
+
+  # The PUT re-validates the wire; a required-Optional trap would 422 here.
+  revalidated = EvalCase.model_validate(wire)
+  assert revalidated.rubrics is not None
+  assert revalidated.rubrics[0].rubric_content.text_property is None
 
 
 def test_session_input_accepts_session_id():
@@ -451,3 +492,104 @@ def test_get_all_usage_metadata():
       ),
   )
   assert get_all_usage_metadata(inv_events) == [usage1, usage2]
+
+
+@pytest.mark.parametrize(
+    'client_call_name',
+    ['adk_request_confirmation', 'adk_request_credential'],
+)
+def test_get_all_tool_calls_excludes_client_function_calls(client_call_name):
+  """Framework-emitted client calls are not model tool calls."""
+  invocation_events = InvocationEvents(
+      invocation_events=[
+          InvocationEvent(
+              author='agent',
+              content=genai_types.Content(
+                  parts=[
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(
+                              id='1', name='cancel_order', args={}
+                          )
+                      ),
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(
+                              id='2', name=client_call_name, args={}
+                          )
+                      ),
+                  ]
+              ),
+          ),
+          InvocationEvent(
+              author='user',
+              content=genai_types.Content(
+                  parts=[
+                      genai_types.Part(
+                          function_response=genai_types.FunctionResponse(
+                              id='1', name='cancel_order', response={}
+                          )
+                      ),
+                      genai_types.Part(
+                          function_response=genai_types.FunctionResponse(
+                              id='2', name=client_call_name, response={}
+                          )
+                      ),
+                  ]
+              ),
+          ),
+      ]
+  )
+
+  assert [c.name for c in get_all_tool_calls(invocation_events)] == [
+      'cancel_order'
+  ]
+  assert [r.name for r in get_all_tool_responses(invocation_events)] == [
+      'cancel_order'
+  ]
+
+
+def test_get_all_tool_calls_excludes_client_calls_in_intermediate_data():
+  """Client calls recorded in IntermediateData are excluded too."""
+  intermediate_data = IntermediateData(
+      tool_uses=[
+          genai_types.FunctionCall(id='1', name='cancel_order', args={}),
+          genai_types.FunctionCall(
+              id='2', name='adk_request_confirmation', args={}
+          ),
+      ],
+      tool_responses=[
+          genai_types.FunctionResponse(
+              id='1', name='cancel_order', response={}
+          ),
+          genai_types.FunctionResponse(
+              id='2', name='adk_request_confirmation', response={}
+          ),
+      ],
+  )
+
+  assert [c.name for c in get_all_tool_calls(intermediate_data)] == [
+      'cancel_order'
+  ]
+  assert [r.name for r in get_all_tool_responses(intermediate_data)] == [
+      'cancel_order'
+  ]
+
+
+def test_get_all_tool_calls_keeps_model_chosen_request_input():
+  """The model-chosen request_input tool is a real tool call."""
+  intermediate_data = IntermediateData(
+      tool_uses=[
+          genai_types.FunctionCall(id='1', name='adk_request_input', args={}),
+      ],
+      tool_responses=[
+          genai_types.FunctionResponse(
+              id='1', name='adk_request_input', response={}
+          ),
+      ],
+  )
+
+  assert [c.name for c in get_all_tool_calls(intermediate_data)] == [
+      'adk_request_input'
+  ]
+  assert [r.name for r in get_all_tool_responses(intermediate_data)] == [
+      'adk_request_input'
+  ]

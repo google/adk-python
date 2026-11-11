@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
+from .eval_metrics import DurationDetails
 from .eval_metrics import EvalStatus as EvalStatus
 from .eval_metrics import TokenUsageDetails
 from .eval_rubrics import RubricScore
@@ -54,6 +55,9 @@ class PerInvocationResult(BaseModel):
   token_usage_details: Optional[TokenUsageDetails] = None
   """Per-type token counts, reported by the token usage metric."""
 
+  duration_details: Optional[DurationDetails] = None
+  """Where the seconds went, reported by the invocation duration metric."""
+
 
 class EvaluationResult(BaseModel):
   overall_score: Optional[float] = None
@@ -71,6 +75,9 @@ class EvaluationResult(BaseModel):
   overall_token_usage_details: Optional[TokenUsageDetails] = None
   """Per-type token counts, averaged over invocations."""
 
+  overall_duration_details: Optional[DurationDetails] = None
+  """Where the seconds went, averaged over invocations."""
+
 
 class Evaluator(ABC):
   """A metrics evaluator interface."""
@@ -84,6 +91,14 @@ class Evaluator(ABC):
       conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult | Awaitable[EvaluationResult]:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
+
+    `LocalEvalService` awaits an async implementation on the event loop and
+    runs a synchronous one on a worker thread, several at once when
+    `EvaluateConfig.parallelism` is above 1. A synchronous implementation
+    must not mutate unsynchronized shared state, and has no running event
+    loop: `asyncio.get_running_loop()` and `asyncio.ensure_future` raise
+    `RuntimeError` there, so it cannot return a `Task` or `Future` tied to
+    the loop.
 
     Args:
       actual_invocations: These are the invocations that are obtained from the

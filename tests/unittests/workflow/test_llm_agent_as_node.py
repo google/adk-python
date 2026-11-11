@@ -21,22 +21,35 @@ content isolation, output extraction, and both old/new workflow paths.
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 from typing import Any
+from typing import Literal
+from unittest import mock
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
+from google.adk.agents import run_config as _run_config
 from google.adk.agents.context import Context
 from google.adk.agents.llm.task._task_models import TaskResult
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.examples.example import Example
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
+from google.adk.flows.llm_flows.context._contents import _SINGLE_TURN_NUDGE
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.models.registry import LLMRegistry
 from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import _TaskAgentTool
+from google.adk.tools.example_tool import ExampleTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.preload_memory_tool import PreloadMemoryTool
+from google.adk.utils._agent_mode import AgentMode
 from google.adk.workflow import _llm_agent_wrapper as agent_wrapper
 from google.adk.workflow import node
 from google.adk.workflow import START
@@ -48,6 +61,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 import pytest
 
+from . import testing_utils as _testing_utils
 from .workflow_testing_utils import create_parent_invocation_context
 from .workflow_testing_utils import InputCapturingNode
 from .workflow_testing_utils import TestingNode
@@ -166,12 +180,14 @@ def _mock_leaf_run(agent, content_text=None):
   return _Ctx()
 
 
-def _new_workflow_runner(wf, test_name):
+def _new_workflow_runner(wf, test_name, *, check_invariants: bool = True):
   """Creates an InMemoryRunner for the new Workflow (root_agent path)."""
   from . import testing_utils
 
   app = App(name=test_name, root_agent=wf)
-  return testing_utils.InMemoryRunner(app=app)
+  return testing_utils.InMemoryRunner(
+      app=app, check_invariants=check_invariants
+  )
 
 
 async def _make_context(test_name: str, agent: LlmAgent) -> Context:
@@ -223,6 +239,63 @@ class TestValidation:
     """Wrapper defaults to rerun_on_resume=True."""
     wrapper = build_node(_make_agent())
     assert wrapper.rerun_on_resume is True
+
+
+@pytest.mark.parametrize('parallel_worker', [None, False])
+def test_agent_worker_limit_requires_parallel_worker(parallel_worker):
+  """An agent rejects a worker limit unless parallel worker mode is enabled."""
+  with pytest.raises(
+      ValidationError,
+      match='max_parallel_workers can only be set when parallel_worker is True',
+  ):
+    LlmAgent(
+        name='worker',
+        parallel_worker=parallel_worker,
+        max_parallel_workers=2,
+    )
+
+
+@pytest.mark.parametrize('max_parallel_workers', [0, -1])
+def test_agent_worker_limit_must_be_positive(max_parallel_workers):
+  """An agent rejects worker limits below one."""
+  with pytest.raises(ValidationError, match='greater than or equal to 1'):
+    LlmAgent(
+        name='worker',
+        parallel_worker=True,
+        max_parallel_workers=max_parallel_workers,
+    )
+
+
+def test_agent_worker_limit_check_skips_mocked_agent_field():
+  """An autospec LlmAgent mock is accepted as a field value of another model."""
+
+  class _Holder(BaseModel):
+    agent: LlmAgent
+
+  mocked = mock.create_autospec(LlmAgent, instance=True)
+
+  assert _Holder(agent=mocked).agent is mocked
+
+
+@pytest.mark.parametrize('max_parallel_workers', [None, 1, 4])
+def test_agent_worker_limit_survives_clone_and_serialization(
+    max_parallel_workers,
+):
+  """Cloned and restored agents retain their parallel worker configuration."""
+  agent = LlmAgent(
+      name='worker',
+      parallel_worker=True,
+      max_parallel_workers=max_parallel_workers,
+  )
+
+  cloned = agent.clone()
+  restored = LlmAgent.model_validate_json(agent.model_dump_json())
+  built = build_node(agent)
+
+  for worker in (cloned, restored, agent):
+    assert worker.parallel_worker is True
+    assert worker.max_parallel_workers == max_parallel_workers
+  assert built.max_parallel_workers == max_parallel_workers
 
 
 @pytest.mark.asyncio
@@ -278,6 +351,59 @@ async def test_single_turn_input_skipped_when_resuming(
   assert len(ic.session.events) == initial_len
   # Verify the resumed node still sees the initial user input from turn 1
   assert ic.session.events[-1].content.parts[0].text == 'turn 1 initial input'
+
+
+@pytest.mark.asyncio
+async def test_single_turn_input_removal_skips_comparing_history(
+    request: pytest.FixtureRequest,
+):
+  """Removing the node's input event compares ids, not every whole event."""
+  wrapper = build_node(_make_agent(mode='single_turn'))
+
+  async def fake_run_async(_):
+    yield Event(
+        invocation_id='inv',
+        author=wrapper.name,
+        content=types.Content(parts=[types.Part(text='ok')]),
+    )
+
+  object.__setattr__(wrapper, 'run_async', fake_run_async)
+  ic = await create_parent_invocation_context(
+      request.function.__name__, wrapper
+  )
+  history = [
+      Event(author='user', content=types.UserContent(f'message {i}'))
+      for i in range(20)
+  ]
+  ic.session.events.extend(history)
+
+  with mock.patch.object(
+      Event, '__eq__', autospec=True, side_effect=Event.__eq__
+  ) as event_eq:
+    async for _ in wrapper._run_impl(
+        ctx=Context(invocation_context=ic), node_input='hi'
+    ):
+      pass
+    event_eq.assert_not_called()
+
+  assert ic.session.events == history
+
+
+def test_remove_event_removes_the_first_equal_event():
+  """The first event equal to the target goes, as with `list.remove`."""
+  target = Event(author='user', content=types.UserContent('hi'))
+  other = Event(author='user', content=types.UserContent('other'))
+  equal_copy = target.model_copy()
+  events = [other, equal_copy, target]
+
+  agent_wrapper._remove_event(events, target)
+
+  assert len(events) == 2
+  assert events[0] is other
+  assert events[1] is target
+
+  agent_wrapper._remove_event(events, Event(author='user'))
+  assert len(events) == 2
 
 
 # --- Single-turn output extraction ---
@@ -379,9 +505,13 @@ class TestBuildNode:
       agent_kwargs: dict[str, Any],
       expected_include_contents: str,
   ):
-    """Single-turn workflow nodes preserve explicit content inclusion."""
-    from unittest.mock import MagicMock
+    """Single-turn nodes get the right effective include_contents on build,
 
+    without permanently mutating the original agent object: the node built
+    from the agent is configured once with include_contents='none' when unset,
+    preserving the input agent's configuration while reusing the node and its
+    resolved model across every future invocation.
+    """
     agent = LlmAgent(
         name='test_agent',
         model='gemini-2.5-flash',
@@ -389,17 +519,20 @@ class TestBuildNode:
         **agent_kwargs,
     )
     wrapper = build_node(agent)
+    assert wrapper.include_contents == expected_include_contents
     seen_include_contents = []
+    seen_self = []
 
-    async def mock_run_async(*args, **kwargs):
-      seen_include_contents.append(wrapper.include_contents)
+    async def mock_run_async(self, *args, **kwargs):
+      seen_self.append(self)
+      seen_include_contents.append(self.include_contents)
       yield Event(
           invocation_id='inv',
-          author=wrapper.name,
+          author=self.name,
           content=types.Content(parts=[types.Part(text='ok')]),
       )
 
-    object.__setattr__(wrapper, 'run_async', mock_run_async)
+    monkeypatch.setattr(LlmAgent, 'run_async', mock_run_async)
     monkeypatch.setattr(
         agent_wrapper,
         'prepare_llm_agent_context',
@@ -419,9 +552,122 @@ class TestBuildNode:
         event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
     ]
 
+    # The effective value used for this run is correct...
     assert seen_include_contents == [expected_include_contents]
-    assert wrapper.include_contents == expected_include_contents
+    # ...and execution runs directly on wrapper, not a throwaway clone.
+    assert seen_self == [wrapper]
+    # The original input agent is never mutated.
+    if 'include_contents' not in agent_kwargs:
+      assert agent.include_contents == 'default'
+      assert 'include_contents' not in agent.model_fields_set
     assert events[0].content.parts[0].text == 'ok'
+
+  @pytest.mark.asyncio
+  async def test_single_turn_node_reuses_model_across_runs(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+  ):
+    """Single-turn nodes reuse one resolved model across invocations."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash',
+        instruction='Test.',
+    )
+    wrapper = build_node(agent)
+
+    ctx = MagicMock(spec=Context)
+    ic = MagicMock()
+    ctx.get_invocation_context.return_value = ic
+    ic.model_copy.return_value = ic
+
+    models = []
+
+    async def mock_run_async(self, *args, **kwargs):
+      models.append(self.canonical_model)
+      yield Event(
+          invocation_id='inv',
+          author=self.name,
+          content=types.Content(parts=[types.Part(text='ok')]),
+      )
+
+    monkeypatch.setattr(LlmAgent, 'run_async', mock_run_async)
+    monkeypatch.setattr(
+        agent_wrapper,
+        'prepare_llm_agent_context',
+        lambda agent, ctx: ctx,
+    )
+    monkeypatch.setattr(
+        agent_wrapper,
+        'prepare_llm_agent_input',
+        lambda agent, ctx, node_input: None,
+    )
+
+    _ = [event async for event in wrapper._run_impl(ctx=ctx, node_input='1')]
+    _ = [event async for event in wrapper._run_impl(ctx=ctx, node_input='2')]
+
+    assert len(models) == 2
+    assert models[0] is models[1]
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      'path',
+      ['root', 'default', 'transfer', 'workflow', 'run_node', 'parallel'],
+  )
+  async def test_string_model_is_resolved_once_across_turns(
+      self,
+      path: str,
+      request: pytest.FixtureRequest,
+      monkeypatch: pytest.MonkeyPatch,
+  ):
+    """Each run copies the agent, and the copies reuse one resolved model."""
+
+    def agent(name: str, **kwargs: Any) -> LlmAgent:
+      return LlmAgent(
+          name=name, model=f'mock-{name}', instruction='Test.', **kwargs
+      )
+
+    def new_llm(model: str) -> _testing_utils.MockModel:
+      if model == 'mock-root' and path == 'transfer':
+        transfer = types.Part.from_function_call(
+            name='transfer_to_agent', args={'agent_name': 'sub'}
+        )
+        return _testing_utils.MockModel.create([transfer] * 4)
+      return _testing_utils.MockModel.create(['ok'] * 20)
+
+    if path == 'root':
+      root = agent('root')
+    elif path == 'default':
+      monkeypatch.setattr(LlmAgent, '_default_model', 'mock-root')
+      root = LlmAgent(name='root', instruction='Test.')
+    elif path == 'transfer':
+      sub = agent('sub', disallow_transfer_to_parent=True)
+      root = agent('root', sub_agents=[sub])
+    elif path == 'workflow':
+      root = Workflow(name='wf', edges=[(START, agent('a'), agent('b'))])
+    elif path == 'run_node':
+      inner = agent('inner')
+
+      @node(rerun_on_resume=True)
+      async def call_agent(*, ctx, node_input):
+        yield await ctx.run_node(inner, node_input='go')
+
+      root = Workflow(name='wf', edges=[(START, call_agent)])
+    else:
+
+      def two_items(node_input: Any) -> list[str]:
+        return ['a', 'b']
+
+      worker = node(agent('worker'), parallel_worker=True)
+      root = Workflow(name='wf', edges=[(START, two_items, worker)])
+    runner = _new_workflow_runner(root, request.function.__name__)
+    calls_after_each_turn = []
+    with patch.object(LLMRegistry, 'new_llm', side_effect=new_llm) as patched:
+      for turn in range(4):
+        await runner.run_async(_testing_utils.get_user_content(f'turn {turn}'))
+        calls_after_each_turn.append(patched.call_count)
+
+    assert calls_after_each_turn[0] > 0
+    assert calls_after_each_turn == [calls_after_each_turn[0]] * 4
 
   def test_name_override(self):
     """build_node respects explicit name override."""
@@ -482,6 +728,128 @@ async def test_single_turn_output_reaches_downstream(
     await runner.run_async(testing_utils.get_user_content('start'))
 
   assert capture.received_inputs == ['Done.']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_transfer_output_reaches_downstream(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """A transfer target's reply is the node output and the target runs once."""
+  from . import testing_utils
+
+  def transfer_to(agent_name: str) -> types.Part:
+    return types.Part.from_function_call(
+        name='transfer_to_agent', args={'agent_name': agent_name}
+    )
+
+  translate_model = testing_utils.MockModel.create(['Hello!', 'unused'])
+  summarize_model = testing_utils.MockModel.create(['Short.', 'unused'])
+  lead = LlmAgent(
+      name='lead',
+      model=testing_utils.MockModel.create(
+          [transfer_to('translate'), transfer_to('summarize')]
+      ),
+      instruction='Route.',
+      sub_agents=[
+          LlmAgent(
+              name='translate', model=translate_model, instruction='Translate.'
+          ),
+          LlmAgent(
+              name='summarize', model=summarize_model, instruction='Summarize.'
+          ),
+      ],
+  )
+  capture = InputCapturingNode(name='capture')
+  wf = Workflow(name='wf', edges=[('START', lead, capture)])
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content('Hola'))
+  await runner.run_async(testing_utils.get_user_content('Too long'))
+
+  assert capture.received_inputs == ['Hello!', 'Short.']
+  assert len(translate_model.requests) == 1
+  assert len(summarize_model.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    reason=(
+        'The replayed single_turn node still carries transfer_to_agent from'
+        ' its persisted function response, so the target runs again.'
+    ),
+    raises=AssertionError,
+    strict=True,
+)
+async def test_single_turn_transfer_target_not_rerun_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """Resuming a later node does not run the transfer target again."""
+  from . import testing_utils
+
+  def approve(request: str) -> None:
+    """Approve a request (long-running)."""
+    return None
+
+  translate_model = testing_utils.MockModel.create(['Hello!', 'unused'])
+  lead = LlmAgent(
+      name='lead',
+      model=testing_utils.MockModel.create([
+          types.Part.from_function_call(
+              name='transfer_to_agent', args={'agent_name': 'translate'}
+          )
+      ]),
+      instruction='Route.',
+      sub_agents=[
+          LlmAgent(
+              name='translate', model=translate_model, instruction='Translate.'
+          )
+      ],
+  )
+  approver = LlmAgent(
+      name='approver',
+      model=testing_utils.MockModel.create([
+          types.Part.from_function_call(
+              name='approve', args={'request': 'deploy'}
+          ),
+          'Approved.',
+      ]),
+      instruction='Get approval.',
+      tools=[LongRunningFunctionTool(approve)],
+  )
+  wf = Workflow(name='wf', edges=[('START', lead, approver)])
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('Hola'))
+  interrupt_event = next(e for e in events1 if e.long_running_tool_ids)
+  fc_id = list(interrupt_event.long_running_tool_ids)[0]
+  assert len(translate_model.requests) == 1
+
+  await runner.run_async(
+      new_message=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='approve', id=fc_id, response={'result': 'yes'}
+                  )
+              )
+          ],
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert len(translate_model.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -713,7 +1081,11 @@ async def test_task_mode_does_not_set_branch(
   from . import testing_utils
 
   wf = Workflow(name='wf', edges=[('START', wrapper)])
-  runner = _new_workflow_runner(wf, request.function.__name__)
+  # invariants: off because fake_run emits a bare finish_task FunctionCall
+  # without executing FinishTaskTool.
+  runner = _new_workflow_runner(
+      wf, request.function.__name__, check_invariants=False
+  )
 
   agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
   original = agent_clone.run_async
@@ -1554,6 +1926,13 @@ async def test_three_layer_llm_agent_transfer_round_trip(
       if p.text
   ]
   assert any('Welcome back to child!' in t for t in content_texts2)
+  # The grandchild is resumed under its static path, so child_agent's run is
+  # numbered after the reserved child_agent@1 instead of reusing its path.
+  assert [
+      (e.author, e.node_info.path)
+      for e in events2
+      if e.content and e.content.parts and e.content.parts[0].text
+  ] == [('child_agent', 'root_agent@1/child_agent@2')]
 
   # Turn 3: Go back to root (Child -> Root -> Root speaks)
   events3 = await runner.run_async(
@@ -1570,6 +1949,11 @@ async def test_three_layer_llm_agent_transfer_round_trip(
       if p.text
   ]
   assert any('Welcome back to root!' in t for t in content_texts3)
+  assert [
+      (e.author, e.node_info.path)
+      for e in events3
+      if e.content and e.content.parts and e.content.parts[0].text
+  ] == [('root_agent', 'root_agent@2')]
 
 
 @pytest.mark.asyncio
@@ -2083,6 +2467,423 @@ async def test_parallel_single_turn_nodes_only_see_own_node_input(
   assert not any('SECRET_FOR_A' in t for t in texts_b)
 
 
+def _request_parts(request_obj: Any) -> list[types.Part]:
+  parts: list[types.Part] = []
+  for content in request_obj.contents:
+    parts.extend(content.parts or [])
+  return parts
+
+
+@pytest.mark.parametrize('include_contents', ['none', 'default'])
+async def test_parallel_single_turn_nodes_with_sub_branch_see_own_node_input(
+    request: pytest.FixtureRequest,
+    include_contents: str,
+):
+  """use_sub_branch=True keeps each parallel single_turn node's own node_input.
+
+  Setup: Two parallel single_turn nodes run via ctx.run_node with
+    use_sub_branch=True; worker_b waits until worker_a has finished so
+    worker_a's reply is already in session.events.
+  Act: Run the workflow under include_contents 'none' and 'default'.
+  Assert: Each node's LLM request contains only its own node_input and
+    never the sibling's input or reply.
+  """
+  a_finished = _asyncio.Event()
+
+  async def wait_for_a(callback_context: Context) -> None:
+    del callback_context
+    await _asyncio.wait_for(a_finished.wait(), timeout=5.0)
+
+  async def mark_a_finished(callback_context: Context) -> None:
+    del callback_context
+    a_finished.set()
+
+  model_a = _testing_utils.MockModel.create(responses=['out-a'])
+  model_b = _testing_utils.MockModel.create(responses=['out-b'])
+  worker_a = LlmAgent(
+      name='worker_a',
+      model=model_a,
+      instruction='Worker A.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      after_agent_callback=mark_a_finished,
+  )
+  worker_b = LlmAgent(
+      name='worker_b',
+      model=model_b,
+      instruction='Worker B.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      before_agent_callback=wait_for_a,
+  )
+
+  @node(rerun_on_resume=True)
+  async def fanout(ctx: Context) -> dict[str, Any]:
+    res_a, res_b = await _asyncio.gather(
+        ctx.run_node(
+            worker_a, node_input='INPUT_A', run_id='a', use_sub_branch=True
+        ),
+        ctx.run_node(
+            worker_b, node_input='INPUT_B', run_id='b', use_sub_branch=True
+        ),
+    )
+    return {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='parallel_sub_branch_wf', edges=[(START, fanout)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+  await runner.run_async(_testing_utils.get_user_content('start'))
+
+  assert len(model_a.requests) == 1
+  texts_a = [p.text for p in _request_parts(model_a.requests[0]) if p.text]
+  assert any('INPUT_A' in t for t in texts_a)
+  assert not any('INPUT_B' in t for t in texts_a)
+  assert not any('out-b' in t for t in texts_a)
+
+  assert len(model_b.requests) == 1
+  texts_b = [p.text for p in _request_parts(model_b.requests[0]) if p.text]
+  assert any('INPUT_B' in t for t in texts_b)
+  assert not any('INPUT_A' in t for t in texts_b)
+  assert not any('out-a' in t for t in texts_b)
+
+
+@pytest.mark.parametrize('include_contents', ['none', 'default'])
+@pytest.mark.parametrize(
+    ('name_a', 'name_b'),
+    [('worker', 'worker'), ('worker_a', 'worker_b')],
+)
+async def test_parallel_single_turn_nodes_isolate_tool_calls_and_responses(
+    request: pytest.FixtureRequest,
+    include_contents: str,
+    name_a: str,
+    name_b: str,
+):
+  """Concurrent single_turn nodes do not leak tool calls or responses across runs.
+
+  Setup: Two parallel single_turn nodes execute concurrently via ctx.run_node
+    and synchronize inside echo_tool so both tool calls and responses overlap
+    in session.events.
+  Act: Run the workflow across include_contents modes and same/different agent
+    names.
+  Assert: Each node executes only its own tool call and sees only its own
+    function_call and function_response in its follow-up LLM request.
+  """
+  both_called = _asyncio.Event()
+  call_count = 0
+
+  async def echo_tool(token: str) -> dict[str, str]:
+    nonlocal call_count
+    call_count += 1
+    if call_count >= 2:
+      both_called.set()
+    await _asyncio.wait_for(both_called.wait(), timeout=5.0)
+    if token == 'TOKEN_B':
+      await _asyncio.sleep(0)
+    return {'result': f'ack:{token}'}
+
+  fc_a = types.Part.from_function_call(
+      name='echo_tool', args={'token': 'TOKEN_A'}
+  )
+  fc_b = types.Part.from_function_call(
+      name='echo_tool', args={'token': 'TOKEN_B'}
+  )
+  model_a = _testing_utils.MockModel.create(responses=[fc_a, 'done-a'])
+  model_b = _testing_utils.MockModel.create(responses=[fc_b, 'done-b'])
+  worker_a = LlmAgent(
+      name=name_a,
+      model=model_a,
+      instruction='Worker A.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      tools=[echo_tool],
+  )
+  worker_b = LlmAgent(
+      name=name_b,
+      model=model_b,
+      instruction='Worker B.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      tools=[echo_tool],
+  )
+
+  @node(rerun_on_resume=True)
+  async def fanout(ctx: Context) -> dict[str, Any]:
+    res_a, res_b = await _asyncio.gather(
+        ctx.run_node(worker_a, node_input='INPUT_A', run_id='a'),
+        ctx.run_node(worker_b, node_input='INPUT_B', run_id='b'),
+    )
+    return {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='parallel_wf', edges=[(START, fanout)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('start'))
+
+  assert len(model_a.requests) == 2
+  parts_a = _request_parts(model_a.requests[1])
+  assert [p.function_call.args for p in parts_a if p.function_call] == [
+      {'token': 'TOKEN_A'}
+  ]
+  assert [
+      p.function_response.response for p in parts_a if p.function_response
+  ] == [{'result': 'ack:TOKEN_A'}]
+
+  assert len(model_b.requests) == 2
+  parts_b = _request_parts(model_b.requests[1])
+  assert [p.function_call.args for p in parts_b if p.function_call] == [
+      {'token': 'TOKEN_B'}
+  ]
+  assert [
+      p.function_response.response for p in parts_b if p.function_response
+  ] == [{'result': 'ack:TOKEN_B'}]
+
+
+@pytest.mark.parametrize('include_contents', ['none', 'default'])
+@pytest.mark.parametrize(
+    'branch_mode', ['shared_parent_branch', 'mixed_sub_branch']
+)
+@pytest.mark.asyncio
+async def test_parallel_single_turn_nodes_in_branches_do_not_anchor_on_sibling_reply(
+    request: pytest.FixtureRequest,
+    include_contents: str,
+    branch_mode: str,
+):
+  """Parallel single_turn nodes on shared or sub-branches do not anchor on a sibling's model reply."""
+  a_finished = _asyncio.Event()
+
+  async def after_a(callback_context):
+    del callback_context
+    a_finished.set()
+
+  async def wait_for_a_finish(callback_context):
+    del callback_context
+    await _asyncio.wait_for(a_finished.wait(), timeout=5.0)
+    await _asyncio.sleep(0)
+
+  model_a = _testing_utils.MockModel.create(responses=['REPLY_FROM_A'])
+  model_b = _testing_utils.MockModel.create(responses=['REPLY_FROM_B'])
+  worker_a = LlmAgent(
+      name='worker_a',
+      model=model_a,
+      instruction='Worker A.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      after_agent_callback=after_a,
+  )
+  worker_b = LlmAgent(
+      name='worker_b',
+      model=model_b,
+      instruction='Worker B.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      before_agent_callback=wait_for_a_finish,
+  )
+
+  @node(rerun_on_resume=True)
+  async def fanout(ctx: Context) -> dict[str, Any]:
+    if branch_mode == 'shared_parent_branch':
+      res_a, res_b = await _asyncio.gather(
+          ctx.run_node(
+              worker_a,
+              node_input='SECRET_FOR_A',
+              run_id='a',
+              override_branch='parent@1',
+          ),
+          ctx.run_node(
+              worker_b,
+              node_input='SECRET_FOR_B',
+              run_id='b',
+              override_branch='parent@1',
+          ),
+      )
+    else:
+      res_a, res_b = await _asyncio.gather(
+          ctx.run_node(
+              worker_a,
+              node_input='SECRET_FOR_A',
+              run_id='a',
+              use_sub_branch=False,
+          ),
+          ctx.run_node(
+              worker_b,
+              node_input='SECRET_FOR_B',
+              run_id='b',
+              use_sub_branch=True,
+          ),
+      )
+    return {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='parallel_branch_wf', edges=[(START, fanout)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('root prompt'))
+
+  assert len(model_b.requests) == 1
+  texts_b = [p.text for p in _request_parts(model_b.requests[0]) if p.text]
+  assert any('SECRET_FOR_B' in t for t in texts_b)
+  assert not any('SECRET_FOR_A' in t for t in texts_b)
+  assert not any('REPLY_FROM_A' in t for t in texts_b)
+
+
+@pytest.mark.asyncio
+async def test_single_turn_sub_agent_with_default_contents_sees_parent_history(
+    request: pytest.FixtureRequest,
+):
+  """A single_turn sub-agent with include_contents='default' sees parent chat history."""
+  verifier_model = _testing_utils.MockModel.create(responses=['verified'])
+  verifier = LlmAgent(
+      name='verifier',
+      description='Verifies drafts.',
+      model=verifier_model,
+      instruction='Verify draft.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+  )
+  call_verifier = types.Part.from_function_call(
+      name='verifier', args={'request': 'check draft'}
+  )
+  editor_model = _testing_utils.MockModel.create(
+      responses=['PARENT_DRAFT_V1', call_verifier, 'done']
+  )
+  editor = LlmAgent(
+      name='editor',
+      model=editor_model,
+      instruction='Edit draft.',
+      sub_agents=[verifier],
+  )
+  runner = _new_workflow_runner(editor, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('write draft'))
+  await runner.run_async(_testing_utils.get_user_content('now verify it'))
+
+  assert len(verifier_model.requests) == 1
+  texts = [p.text for p in _request_parts(verifier_model.requests[0]) if p.text]
+  assert any('PARENT_DRAFT_V1' in t for t in texts)
+  assert any('check draft' in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_sequential_single_turn_nodes_receive_predecessor_only_via_node_input(
+    request: pytest.FixtureRequest,
+):
+  """Sequential single_turn nodes with include_contents='default' do not see predecessor node history."""
+  model_a = _testing_utils.MockModel.create(
+      responses=['STEP_A_HISTORY_ONLY_REPLY']
+  )
+  model_b = _testing_utils.MockModel.create(responses=['done-b'])
+  step_a = LlmAgent(
+      name='step_a',
+      model=model_a,
+      instruction='Step A.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+  )
+  step_b = LlmAgent(
+      name='step_b',
+      model=model_b,
+      instruction='Step B.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+  )
+
+  @node
+  def bridge(node_input: str) -> str:
+    assert node_input == 'STEP_A_HISTORY_ONLY_REPLY'
+    return 'EXPLICIT_NODE_INPUT_FOR_B'
+
+  wf = Workflow(
+      name='seq_single_turn_wf',
+      edges=[(START, step_a), (step_a, bridge), (bridge, step_b)],
+  )
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('root prompt'))
+
+  assert len(model_b.requests) == 1
+  texts_b = [p.text for p in _request_parts(model_b.requests[0]) if p.text]
+  assert any('EXPLICIT_NODE_INPUT_FOR_B' in t for t in texts_b)
+  assert not any('STEP_A_HISTORY_ONLY_REPLY' in t for t in texts_b)
+
+
+@pytest.mark.parametrize('use_sub_branch', [True, False])
+@pytest.mark.asyncio
+async def test_single_turn_child_node_sees_ancestor_history_with_or_without_sub_branch(
+    request: pytest.FixtureRequest,
+    use_sub_branch: bool,
+):
+  """A single_turn child node with include_contents='default' sees ancestor node history whether branched or unbranched, while excluding sibling node events."""
+  sibling_finished = _asyncio.Event()
+
+  model_sibling = _testing_utils.MockModel.create(
+      responses=['SIBLING_ONLY_REPLY']
+  )
+  model_target = _testing_utils.MockModel.create(responses=['TARGET_REPLY'])
+
+  async def after_sibling(callback_context):
+    del callback_context
+    sibling_finished.set()
+
+  async def wait_for_sibling(callback_context):
+    del callback_context
+    await _asyncio.wait_for(sibling_finished.wait(), timeout=5.0)
+    await _asyncio.sleep(0)
+
+  sibling_agent = LlmAgent(
+      name='sibling_agent',
+      model=model_sibling,
+      instruction='Sibling.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+      after_agent_callback=after_sibling,
+  )
+  target_agent = LlmAgent(
+      name='target_agent',
+      model=model_target,
+      instruction='Target.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+      before_agent_callback=wait_for_sibling,
+  )
+
+  @node(rerun_on_resume=True)
+  async def parent_node(ctx: Context):
+    yield Event(
+        author='parent_node',
+        content=types.Content(
+            role='model',
+            parts=[types.Part.from_text(text='ANCESTOR_CONTEXT_FACT')],
+        ),
+    )
+    res_a, res_b = await _asyncio.gather(
+        ctx.run_node(
+            sibling_agent,
+            node_input='SIBLING_INPUT',
+            run_id='a',
+            use_sub_branch=use_sub_branch,
+        ),
+        ctx.run_node(
+            target_agent,
+            node_input='TARGET_INPUT',
+            run_id='b',
+            use_sub_branch=use_sub_branch,
+        ),
+    )
+    yield {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='ancestor_consistency_wf', edges=[(START, parent_node)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('root prompt'))
+
+  assert len(model_target.requests) == 1
+  texts_target = [
+      p.text for p in _request_parts(model_target.requests[0]) if p.text
+  ]
+  assert any('ANCESTOR_CONTEXT_FACT' in t for t in texts_target)
+  assert any('TARGET_INPUT' in t for t in texts_target)
+  assert not any('SIBLING_INPUT' in t for t in texts_target)
+  assert not any('SIBLING_ONLY_REPLY' in t for t in texts_target)
+
+
 @pytest.mark.asyncio
 async def test_synthesized_task_fr_preserved_across_node_paths(
     request: pytest.FixtureRequest,
@@ -2142,3 +2943,487 @@ async def test_synthesized_task_fr_preserved_across_node_paths(
   assert len(frs) == 1
   assert frs[0].name == 'specialist'
   assert frs[0].response == {'result': '42'}
+
+
+@pytest.mark.asyncio
+async def test_shared_llm_agent_mode_not_mutated_in_place(
+    request: pytest.FixtureRequest,
+):
+  """Running an LlmAgent(mode=None) via Runner or Workflow does not mutate mode in place."""
+  from . import testing_utils
+
+  model = testing_utils.MockModel.create(
+      responses=['root reply', 'node reply', 'direct reply']
+  )
+  shared_agent = LlmAgent(
+      name='shared_agent',
+      model=model,
+      instruction='Helper.',
+  )
+  assert shared_agent.mode is None
+
+  root_runner = testing_utils.InMemoryRunner(shared_agent)
+  root_events = await root_runner.run_async('hello root')
+  assert any(e.content for e in root_events)
+  assert shared_agent.mode is None
+
+  captured: list[str] = []
+
+  def capture(node_input: str) -> str:
+    captured.append(node_input)
+    return node_input
+
+  wf = Workflow(
+      name='shared_wf',
+      edges=[(START, shared_agent, capture)],
+  )
+  wf_runner = _new_workflow_runner(wf, request.function.__name__)
+  await wf_runner.run_async(testing_utils.get_user_content('hello node'))
+  assert captured == ['node reply']
+  assert shared_agent.mode is None
+
+  from google.adk.agents.run_config import RunConfig
+
+  ctx = await _make_context(request.function.__name__, shared_agent)
+  ctx._invocation_context.run_config = RunConfig()
+  direct_events = [
+      ev
+      async for ev in agent_wrapper.run_llm_agent_as_node(
+          shared_agent, ctx=ctx, node_input='hello direct'
+      )
+  ]
+  assert any(ev.output == 'direct reply' for ev in direct_events)
+  assert shared_agent.mode is None
+
+
+def _user_text(text: str) -> types.Content:
+  return types.Content(role='user', parts=[types.Part.from_text(text=text)])
+
+
+def _extract_function_responses(
+    contents: list[types.Content],
+) -> list[types.FunctionResponse]:
+  responses: list[types.FunctionResponse] = []
+  for content in contents:
+    responses.extend(
+        part.function_response
+        for part in content.parts or []
+        if part.function_response is not None
+    )
+  return responses
+
+
+def _extract_session_texts(events: list[Event]) -> list[str]:
+  texts: list[str] = []
+  for event in events:
+    parts = event.content.parts if event.content and event.content.parts else []
+    texts.extend(part.text for part in parts if part.text)
+  return texts
+
+
+def _find_function_call_id(events: list[Event], name: str) -> str:
+  for event in events:
+    matches = [
+        fc.id for fc in event.get_function_calls() if fc.name == name and fc.id
+    ]
+    if matches:
+      return matches[0]
+  raise AssertionError(f'FunctionCall {name!r} not found in session events.')
+
+
+def _make_dispatched_runner(
+    worker: LlmAgent,
+    test_name: str,
+    *,
+    node_input: Any = 'worker input',
+    isolation_scope: str | None = 'worker-scope',
+    run_id: str | None = None,
+    raise_on_wait: bool = False,
+) -> Any:
+  """Builds a workflow runner that dispatches `worker` via `ctx.run_node`."""
+
+  @node(rerun_on_resume=True)
+  async def dispatch(ctx: Context) -> Any:
+    return await ctx.run_node(
+        worker,
+        node_input=node_input,
+        run_id=run_id,
+        override_isolation_scope=isolation_scope,
+        raise_on_wait=raise_on_wait,
+    )
+
+  wf = Workflow(name=f'{test_name}_wf', edges=[(START, dispatch)])
+  return _new_workflow_runner(wf, test_name)
+
+
+def _build_task_coordinator_with_sub() -> (
+    tuple[LlmAgent, _testing_utils.MockModel, _testing_utils.MockModel]
+):
+  """Builds a `task` coordinator with a `single_turn` sub-agent."""
+  sub_model = _testing_utils.MockModel.create(responses=['ok'])
+  sub = LlmAgent(
+      name='sub',
+      description='Handles requests.',
+      model=sub_model,
+      instruction='Sub.',
+      mode=AgentMode.SINGLE_TURN,
+  )
+  coord_model = _testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='sub', args={'request': 'R'}),
+          types.Part.from_function_call(
+              name='finish_task', args={'result': 'finished'}
+          ),
+      ]
+  )
+  coord = LlmAgent(
+      name='coord',
+      description='Coordinates a task.',
+      model=coord_model,
+      instruction='Coord.',
+      mode=AgentMode.TASK,
+      sub_agents=[sub],
+  )
+  return coord, coord_model, sub_model
+
+
+async def _seed_memory_event(runner: Any, text: str) -> None:
+  assert runner.runner.memory_service is not None
+  event = Event(author='user', content=_user_text(text))
+  await runner.runner.memory_service.add_events_to_memory(
+      app_name=runner.app_name,
+      user_id=runner.session.user_id,
+      events=[event],
+  )
+
+
+def _make_observing_instruction(observed: list[types.Content | None]) -> Any:
+  def _provide(ctx: ReadonlyContext) -> str:
+    observed.append(ctx.user_content)
+    return 'Worker.'
+
+  return _provide
+
+
+def _build_observing_worker(
+    observed: list[types.Content | None],
+) -> tuple[LlmAgent, _testing_utils.MockModel]:
+  """Builds a single_turn worker recording `ReadonlyContext.user_content`."""
+  reply = _testing_utils.ModelContent([types.Part.from_text(text='sample a')])
+  example = Example(input=_user_text('sample q'), output=[reply])
+  worker_model = _testing_utils.MockModel.create(responses=['worker done'])
+  worker = LlmAgent(
+      name='worker',
+      model=worker_model,
+      instruction=_make_observing_instruction(observed),
+      mode=AgentMode.SINGLE_TURN,
+      tools=[PreloadMemoryTool(), ExampleTool([example])],
+      before_agent_callback=lambda ctx: observed.append(ctx.user_content),
+  )
+  return worker, worker_model
+
+
+def _lookup_item(item: str) -> dict[str, str]:
+  return {'status': f'found:{item}'}
+
+
+def _approval_gate() -> None:
+  return None
+
+
+def _make_resume_fr_message(fc_id: str, name: str) -> types.Content:
+  fr = types.FunctionResponse(id=fc_id, name=name, response={'ok': True})
+  return types.Content(role='user', parts=[types.Part(function_response=fr)])
+
+
+_INPUT_AND_SCOPE_CASES: list[
+    tuple[
+        str | None, str | None, Literal['default', 'none'], list[types.Content]
+    ]
+] = [
+    ('worker input', 'worker-scope', 'none', [_user_text('worker input')]),
+    ('worker input', 'worker-scope', 'default', [_user_text('worker input')]),
+    ('worker input', None, 'none', [_user_text('worker input')]),
+    (
+        'worker input',
+        None,
+        'default',
+        [_user_text('root msg'), _user_text('worker input')],
+    ),
+    (None, 'worker-scope', 'none', []),
+    (None, 'worker-scope', 'default', []),
+    (None, None, 'none', [_user_text('root msg')]),
+    (None, None, 'default', [_user_text('root msg')]),
+]
+
+
+@pytest.mark.parametrize(
+    ('node_input', 'isolation_scope', 'include_contents', 'expected'),
+    _INPUT_AND_SCOPE_CASES,
+)
+@pytest.mark.asyncio
+async def test_single_turn_node_input_and_scope_isolation(
+    request: pytest.FixtureRequest,
+    node_input: str | None,
+    isolation_scope: str | None,
+    include_contents: Literal['default', 'none'],
+    expected: list[types.Content],
+) -> None:
+  """Scoped and unscoped single_turn nodes isolate or pass through input."""
+  worker_model = _testing_utils.MockModel.create(responses=['worker done'])
+  worker = LlmAgent(
+      name='worker',
+      model=worker_model,
+      instruction='Worker.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+  )
+  runner = _make_dispatched_runner(
+      worker,
+      request.function.__name__,
+      node_input=node_input,
+      isolation_scope=isolation_scope,
+  )
+  events = await runner.run_async(_user_text('root msg'))
+
+  assert any(e.output == 'worker done' for e in events)
+  assert len(worker_model.requests) == 1
+  assert worker_model.requests[0].contents == expected
+
+
+@pytest.mark.parametrize('include_contents', ['none', 'default'])
+@pytest.mark.asyncio
+async def test_scoped_single_turn_node_with_tool_call_isolates_turn_contents(
+    request: pytest.FixtureRequest,
+    include_contents: Literal['default', 'none'],
+) -> None:
+  """Scoped single_turn nodes keep exact turn contents across tool rounds."""
+  fc_part = types.Part.from_function_call(
+      name='_lookup_item', args={'item': 'x'}
+  )
+  worker_model = _testing_utils.MockModel.create(
+      responses=[fc_part, types.Part.from_text(text='worker done')]
+  )
+  worker = LlmAgent(
+      name='worker',
+      model=worker_model,
+      instruction='Worker.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      tools=[FunctionTool(_lookup_item)],
+  )
+  runner = _make_dispatched_runner(worker, request.function.__name__)
+  events = await runner.run_async(_user_text('root msg'))
+
+  assert any(e.output == 'worker done' for e in events)
+  expected_fr = types.Part.from_function_response(
+      name='_lookup_item', response={'status': 'found:x'}
+  )
+  assert len(worker_model.requests) == 2
+  assert worker_model.requests[0].contents == [_user_text('worker input')]
+  simplified = _testing_utils.simplify_contents(
+      worker_model.requests[1].contents
+  )
+  assert simplified == [
+      ('user', 'worker input'),
+      ('model', fc_part),
+      ('user', expected_fr),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_task_node_receives_node_input_without_single_turn_nudge(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Scoped task workflow nodes receive node_input via user_content fallback."""
+  finish_fc = types.Part.from_function_call(
+      name='finish_task', args={'result': 'task done'}
+  )
+  task_model = _testing_utils.MockModel.create(responses=[finish_fc])
+  task_worker = LlmAgent(
+      name='task_worker',
+      model=task_model,
+      instruction='Task worker.',
+      mode=AgentMode.TASK,
+  )
+  runner = _make_dispatched_runner(
+      task_worker,
+      request.function.__name__,
+      node_input='task input',
+      isolation_scope='task-scope',
+  )
+  events = await runner.run_async(_user_text('root msg'))
+
+  assert any(e.output == {'result': 'task done'} for e in events)
+  assert len(task_model.requests) == 1
+  assert task_model.requests[0].contents == [_user_text('task input')]
+
+
+@pytest.mark.parametrize('delegated_from_chat', [True, False])
+@pytest.mark.asyncio
+async def test_task_coordinator_single_turn_sub_agent_isolates_tool_request(
+    request: pytest.FixtureRequest,
+    delegated_from_chat: bool,
+) -> None:
+  """Single-turn sub-agent under task coordinator receives only tool request."""
+  coord, coord_model, sub_model = _build_task_coordinator_with_sub()
+  if delegated_from_chat:
+    root_model = _testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(
+                name='coord', args={'request': 'T-ARGS'}
+            ),
+            types.Part.from_text(text='done'),
+        ]
+    )
+    entry: Any = LlmAgent(
+        name='root',
+        model=root_model,
+        instruction='Root.',
+        mode=AgentMode.CHAT,
+        sub_agents=[coord],
+    )
+  else:
+    entry = Workflow(name='task_coord_wf', edges=[(START, coord)])
+
+  runner = _new_workflow_runner(entry, request.function.__name__)
+  await runner.run_async(_user_text('root prompt'))
+
+  assert len(sub_model.requests) == 1
+  assert sub_model.requests[0].contents == [_user_text('R')]
+  coord_frs = _extract_function_responses(coord_model.requests[1].contents)
+  assert len(coord_frs) == 1 and coord_frs[0].response == {'result': 'ok'}
+  assert 'R' not in _extract_session_texts(runner.session.events)
+
+
+def _extract_contents_text(contents: list[types.Content]) -> str:
+  texts: list[str] = []
+  for content in contents:
+    texts.extend(part.text for part in content.parts or [] if part.text)
+  return '\n'.join(texts)
+
+
+@pytest.mark.parametrize('isolation_scope', ['worker-scope', None])
+@pytest.mark.asyncio
+async def test_single_turn_node_user_content_consumers(
+    request: pytest.FixtureRequest,
+    isolation_scope: str | None,
+) -> None:
+  """Scoped and unscoped single_turn nodes expose node_input to consumers."""
+  observed: list[types.Content | None] = []
+  worker, worker_model = _build_observing_worker(observed)
+  runner = _make_dispatched_runner(
+      worker, request.function.__name__, isolation_scope=isolation_scope
+  )
+  await _seed_memory_event(runner, 'workflow message recalls secret zebra')
+  await _seed_memory_event(runner, 'worker input recalls helpful otter')
+  events = await runner.run_async(_user_text('workflow message'))
+
+  expected_uc = _user_text('worker input')
+  assert any(e.output == 'worker done' for e in events)
+  assert observed == [expected_uc, expected_uc]
+  sys_inst = str(worker_model.requests[0].config.system_instruction)
+  assert 'sample a' in sys_inst
+  req_contents = worker_model.requests[0].contents
+  contents_text = _extract_contents_text(req_contents)
+  assert req_contents[-1] == expected_uc
+  assert _SINGLE_TURN_NUDGE not in contents_text
+  assert 'helpful otter' in contents_text
+  assert 'secret zebra' not in contents_text
+
+
+@pytest.mark.asyncio
+async def test_scoped_single_turn_node_none_input_clears_user_content(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Scoped single_turn nodes with node_input=None clear user_content."""
+  observed: list[types.Content | None] = []
+  worker, worker_model = _build_observing_worker(observed)
+  runner = _make_dispatched_runner(
+      worker,
+      request.function.__name__,
+      node_input=None,
+      isolation_scope='worker-scope',
+  )
+  await _seed_memory_event(runner, 'workflow message recalls secret zebra')
+  events = await runner.run_async(_user_text('workflow message'))
+
+  assert any(e.output == 'worker done' for e in events)
+  assert observed == [None, None]
+  sys_inst = str(worker_model.requests[0].config.system_instruction)
+  assert 'sample a' not in sys_inst
+  assert not worker_model.requests[0].contents
+
+
+@pytest.mark.parametrize('isolation_scope', ['worker-scope', None])
+@pytest.mark.asyncio
+async def test_single_turn_node_places_model_input_context_before_input(
+    request: pytest.FixtureRequest,
+    isolation_scope: str | None,
+) -> None:
+  """Transient model_input_context precedes node_input without root prompt."""
+  worker_model = _testing_utils.MockModel.create(responses=['worker done'])
+  worker = LlmAgent(
+      name='worker',
+      model=worker_model,
+      instruction='Worker.',
+      mode=AgentMode.SINGLE_TURN,
+  )
+  runner = _make_dispatched_runner(
+      worker, request.function.__name__, isolation_scope=isolation_scope
+  )
+  transient = _user_text('transient context')
+  events = [
+      ev
+      async for ev in runner.runner.run_async(
+          user_id=runner.session.user_id,
+          session_id=runner.session.id,
+          new_message=_user_text('workflow message'),
+          run_config=_run_config.RunConfig(model_input_context=[transient]),
+      )
+  ]
+
+  assert any(e.output == 'worker done' for e in events)
+  assert worker_model.requests[0].contents == [
+      transient,
+      _user_text('worker input'),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_single_turn_node_pause_and_resume_excludes_root_prompt(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Resumed scoped single_turn nodes exclude the parent workflow prompt."""
+  gate_fc = types.Part.from_function_call(name='_approval_gate', args={})
+  responses = [gate_fc, types.Part.from_text(text='resumed done')]
+  worker_model = _testing_utils.MockModel.create(responses=responses)
+  worker = LlmAgent(
+      name='worker',
+      model=worker_model,
+      instruction='Worker.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+      tools=[LongRunningFunctionTool(func=_approval_gate)],
+  )
+  runner = _make_dispatched_runner(
+      worker, request.function.__name__, run_id='worker', raise_on_wait=True
+  )
+  turn1 = await runner.run_async(_user_text('root msg'))
+  resume_msg = _make_resume_fr_message(
+      _find_function_call_id(turn1, '_approval_gate'), '_approval_gate'
+  )
+  turn2 = await runner.run_async(
+      new_message=resume_msg, invocation_id=turn1[0].invocation_id
+  )
+
+  assert any(e.output == 'resumed done' for e in turn2)
+  assert worker_model.requests[0].contents == [_user_text('worker input')]
+  expected_fr = types.Part.from_function_response(
+      name='_approval_gate', response={'ok': True}
+  )
+  # Known limitation (#7650): ``finally`` removes the seeded ``node_input``
+  # event and ``resume_inputs`` skips re-seeding, so Turn 2 carries only the
+  # FC/FR pair (update if re-seeding lands; ``root msg`` must stay absent).
+  actual = _testing_utils.simplify_contents(worker_model.requests[1].contents)
+  assert actual == [('model', gate_fc), ('user', expected_fr)]

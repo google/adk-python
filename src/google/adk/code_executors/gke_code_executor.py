@@ -475,7 +475,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
         uid=owner_job.metadata.uid,
         controller=True,
     )
-    patch_body = {"metadata": {"ownerReferences": [owner_reference.to_dict()]}}
+    patch_body = {"metadata": {"ownerReferences": [owner_reference]}}
 
     try:
       self._core_v1.patch_namespaced_config_map(

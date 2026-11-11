@@ -14,15 +14,19 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from collections.abc import Iterable
 import enum
 import statistics
 from typing import Any
-from typing import cast
 from typing import Optional
+from typing import TypeVar
 from typing import Union
 
 from google.genai import types as genai_types
 
+from ..utils.content_utils import extract_text_from_content
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .eval_case import get_all_tool_calls_with_responses
@@ -32,6 +36,8 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import RubricScore
 from .evaluator import EvalStatus
+
+_T = TypeVar("_T")
 
 
 @enum.unique
@@ -55,6 +61,8 @@ def get_text_from_content(
   """Extracts text from a `Content` or an `Invocation`.
 
   When `content` is a `Content`, returns the concatenated text of its parts.
+  Thought parts (`Part.thought`) are skipped: they hold the model's internal
+  reasoning, which is not part of the response the user sees.
 
   When `content` is an `Invocation`, returns the text of the invocation's final
   response. If `include_intermediate_responses_in_final` is True, text from
@@ -87,7 +95,7 @@ def get_text_from_content(
     return "\n".join(parts) if parts else None
 
   if content and content.parts:
-    return "\n".join([p.text for p in content.parts if p.text])
+    return extract_text_from_content(content, splitter="\n")
 
   return None
 
@@ -96,6 +104,28 @@ def get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
   if score is None:
     return EvalStatus.NOT_EVALUATED
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
+
+
+def build_judge_request_config(
+    user_config: Optional[genai_types.GenerateContentConfig],
+) -> genai_types.GenerateContentConfig:
+  """Returns a judge-request config with Automatic Function Calling forced off.
+
+  Judge evaluators never pass tools, so google-genai's AFC branch is a no-op
+  for them; the only observable effect of leaving it on is a per-request
+  warning that floods eval runs. We override the flag regardless of what the
+  caller passed so a user config that merely tweaks e.g. temperature does not
+  silently re-enable AFC. The caller's object is not mutated.
+  """
+  config = (
+      user_config.model_copy(deep=True)
+      if user_config is not None
+      else genai_types.GenerateContentConfig()
+  )
+  config.automatic_function_calling = (
+      genai_types.AutomaticFunctionCallingConfig(disable=True)
+  )
+  return config
 
 
 def get_average_rubric_score(
@@ -227,14 +257,26 @@ def get_grounding_metadata_as_json_str(
   if not grounding_metadata:
     return "No grounding metadata was provided."
 
-  return cast(
-      str,
-      _GroundingMetadataEntries(
-          grounding_metadata=grounding_metadata
-      ).model_dump_json(
-          indent=2,
-          exclude_unset=True,
-          exclude_defaults=True,
-          exclude_none=True,
-      ),
+  return _GroundingMetadataEntries(
+      grounding_metadata=grounding_metadata
+  ).model_dump_json(
+      indent=2,
+      exclude_unset=True,
+      exclude_defaults=True,
+      exclude_none=True,
   )
+
+
+async def gather_cancelling_on_error(
+    coros: Iterable[Coroutine[object, object, _T]],
+) -> list[_T]:
+  """Runs coroutines concurrently, cancelling and draining siblings on error."""
+  tasks = [asyncio.create_task(coro) for coro in coros]
+  try:
+    return list(await asyncio.gather(*tasks))
+  except BaseException:
+    for task in tasks:
+      if not task.done():
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise

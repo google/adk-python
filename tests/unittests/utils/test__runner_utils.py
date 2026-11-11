@@ -16,30 +16,55 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.utils._runner_utils import _notify_run_error
-from google.adk.utils._runner_utils import _with_caller_context
-from opentelemetry import context
+from google.adk.utils._runner_utils import _stream_in_caller_scope
 import pytest
+
+_VAR = contextvars.ContextVar("_VAR", default="caller")
+
+
+async def _set_var_across_yields(seen_in_finally: list[str]):
+  """Holds a token across yields, like `start_as_current_span`."""
+  token = _VAR.set("gen")
+  try:
+    yield 1
+    yield 2
+  finally:
+    seen_in_finally.append(_VAR.get())
+    _VAR.reset(token)  # ValueError if run in another context than set()
 
 
 @pytest.mark.asyncio
-async def test_with_caller_context():
-  caller_ctx = context.get_current()
+async def test_stream_in_caller_scope_does_not_leak_into_consumer():
+  seen_in_finally = []
+  seen_by_consumer = []
 
-  async def dummy_generator():
-    yield 1
-    yield 2
+  async for _ in _stream_in_caller_scope(
+      _set_var_across_yields(seen_in_finally)
+  ):
+    seen_by_consumer.append(_VAR.get())
 
-  items = []
-  async for item in _with_caller_context(dummy_generator(), caller_ctx):
-    items.append(item)
+  assert seen_by_consumer == ["caller", "caller"]
+  assert seen_in_finally == ["gen"]
+  assert _VAR.get() == "caller"
 
-  assert items == [1, 2]
+
+@pytest.mark.asyncio
+async def test_stream_in_caller_scope_closes_from_another_task():
+  seen_in_finally = []
+  agen = _stream_in_caller_scope(_set_var_across_yields(seen_in_finally))
+
+  await asyncio.create_task(agen.__anext__())
+  await asyncio.create_task(agen.aclose())  # would raise ValueError unwrapped
+
+  assert seen_in_finally == ["gen"]
 
 
 @pytest.mark.asyncio

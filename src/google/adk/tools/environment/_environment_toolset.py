@@ -23,12 +23,13 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
-from ...utils.feature_decorator import experimental
 from ..base_toolset import BaseToolset
 from ._constants import ENVIRONMENT_INSTRUCTION
+from ._constants import ENVIRONMENT_WORKING_DIR_INSTRUCTION
 from ._edit_file_tool import EditFileTool
 from ._execute_tool import ExecuteTool
 from ._read_file_tool import ReadFileTool
+from ._utils import close_if_initialized
 from ._write_file_tool import WriteFileTool
 
 if TYPE_CHECKING:
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
 class EnvironmentToolset(BaseToolset):
   """Toolset providing tools to interact with an environment.
 
@@ -54,6 +54,9 @@ class EnvironmentToolset(BaseToolset):
   The toolset injects an environment-level system instruction on each
   LLM call that establishes environment identity and tool selection
   rules.
+
+  The environment is initialized on the first tool call that uses it, with
+  that call's context, so ``initialize`` can write to session state.
   """
 
   def __init__(
@@ -75,16 +78,35 @@ class EnvironmentToolset(BaseToolset):
     super().__init__(**kwargs)
     self._environment = environment
     self._max_output_chars = max_output_chars
-    self._environment_initialized = False
+
+  def __getstate__(self) -> dict[str, Any]:
+    state = dict(super().__getstate__())
+    # Cached prefixed tools wrap local functions, which cannot be pickled.
+    state['_cached_prefixed_tools'] = None
+    state['_cached_invocation_id'] = None
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    super_setstate = getattr(super(), '__setstate__', None)
+    if super_setstate is not None:
+      super_setstate(state)
+    else:
+      self.__dict__.update(state)
+    # What `initialize` set up, such as a temporary working directory, may not
+    # exist in the process that unpickles the environment, so make the first
+    # tool call initialize it again.
+    if self._environment.is_initialized:
+      try:
+        self._environment.is_initialized = False
+      except AttributeError:
+        # `is_initialized` is a read-only property the environment manages.
+        pass
 
   @override
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> list[BaseTool]:
-    if not self._environment_initialized:
-      await self._environment.initialize()
-      self._environment_initialized = True
     return [
         ExecuteTool(self._environment, max_output_chars=self._max_output_chars),
         ReadFileTool(
@@ -98,18 +120,27 @@ class EnvironmentToolset(BaseToolset):
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    """Inject environment-level system instruction."""
-    if not self._environment_initialized:
-      await self._environment.initialize()
-      self._environment_initialized = True
-    working_dir = self._environment.working_dir
-    instruction = ENVIRONMENT_INSTRUCTION.format(
-        working_dir=working_dir,
-    )
+    """Inject environment-level system instruction.
+
+    Does not initialize the environment. Until a tool call has, the
+    instruction leaves out the working directory, which may not exist yet.
+    """
+    instruction = ENVIRONMENT_INSTRUCTION
+    # TODO: Check initialization through a method that takes `ctx`, so a
+    # session-scoped environment can answer from `ctx.state`.
+    if self._environment.is_initialized:
+      instruction = (
+          ENVIRONMENT_WORKING_DIR_INSTRUCTION.format(
+              working_dir=self._environment.working_dir
+          )
+          + '\n'
+          + instruction
+      )
     llm_request.append_instructions([instruction])
 
   @override
   async def close(self) -> None:
-    if self._environment_initialized:
-      await self._environment.close()
-      self._environment_initialized = False
+    await close_if_initialized(self._environment)
+    self._cached_prefixed_tools = None
+    self._cached_invocation_id = None
+    await super().close()

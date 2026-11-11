@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -26,7 +27,46 @@ from typing import Optional
 
 from google.adk.tools.tool_context import ToolContext
 
+from ..utils._adk_symbols import adk_symbol_exists as _adk_symbol_exists
 from ..utils.resolve_root_directory import resolve_file_path
+
+
+def _unknown_adk_imports(file_path: str, content: str) -> List[str]:
+  """google.adk.* names a Python file imports that do not resolve here.
+
+  Only imports are inspected, and only in Python files. An import is a hard
+  promise the name exists; an attribute deeper in the body may be guarded, so
+  flagging those would reject working code.
+  """
+  if not file_path.endswith(".py"):
+    return []
+  try:
+    tree = ast.parse(content)
+  except SyntaxError:
+    return []  # a syntax error is a different complaint, reported elsewhere
+
+  names: List[str] = []
+  for node in ast.walk(tree):
+    if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+        "google.adk"
+    ):
+      names.extend(
+          f"{node.module}.{alias.name}"
+          for alias in node.names
+          if alias.name != "*"
+      )
+    elif isinstance(node, ast.Import):
+      names.extend(
+          alias.name
+          for alias in node.names
+          if alias.name.startswith("google.adk")
+      )
+
+  unknown: List[str] = []
+  for name in dict.fromkeys(names):
+    if not _adk_symbol_exists(name):
+      unknown.append(name)
+  return unknown
 
 
 async def write_files(
@@ -88,6 +128,23 @@ async def write_files(
           "error": None,
           "package_inits_created": [],
       }
+
+      unknown = _unknown_adk_imports(file_path, content)
+      if unknown:
+        # The file imports names that do not exist in the ADK installed here,
+        # so it cannot run. Catching it now costs one retry; letting it through
+        # costs a broken agent the developer has to debug. Measured over 483
+        # generated Python files from evaluation runs, this rejects only files
+        # that genuinely fail to import.
+        file_info["error"] = (
+            "Imports names that do not exist in the installed ADK: "
+            + ", ".join(unknown)
+            + ". Check each with search_adk_source before using it."
+        )
+        result["success"] = False
+        result["failed_writes"] = result.get("failed_writes", 0) + 1
+        result["files"][file_path] = file_info
+        continue
 
       try:
         # Check if file already exists

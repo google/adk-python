@@ -29,6 +29,7 @@ from typing import TypeVar
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import negotiate_auto
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
@@ -74,6 +75,41 @@ def _warn_probe_unavailable() -> None:
       'MCP_MODERN_PROTOCOL is enabled, but the installed MCP SDK has no era'
       ' probe ADK can use; MCP connections will use the legacy handshake.'
   )
+
+
+_CANCEL_DRAIN_TIMEOUT: float = 5.0
+
+
+async def _cancel_and_drain(
+    task: asyncio.Future[Any],
+    *,
+    timeout: float | None = None,
+) -> None:
+  """Cancels an in-flight call and waits for it to actually stop.
+
+  Returning before the call has unwound would let it keep reading the
+  transport after the caller believes it is finished. A timeout bound
+  prevents a call that does not unwind promptly from turning a
+  cancellation into an indefinite hang.
+  """
+  task.cancel()
+  if timeout is None:
+    timeout = _CANCEL_DRAIN_TIMEOUT
+  try:
+    done, _ = await asyncio.wait([task], timeout=timeout)
+    if task in done:
+      if not task.cancelled():
+        task.exception()
+    else:
+      task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+      logger.warning(
+          'Timed out after %ss waiting for cancelled task to unwind',
+          timeout,
+      )
+  except BaseException:
+    if not task.done():
+      task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+    raise
 
 
 def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
@@ -158,6 +194,7 @@ class SessionContext:
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
+      message_handler: MessageHandlerFnT | None = None,
   ):
     """Initializes SessionContext.
 
@@ -175,6 +212,10 @@ class SessionContext:
       sampling_capabilities: Optional capabilities for sampling.
       elicitation_callback: Optional callback to handle elicitation requests
         from the MCP server (``elicitation/create``).
+      message_handler: Optional async callback for incoming MCP messages,
+        including server notifications. On MCP SDK 1.x it runs inside the
+        session's receive loop, so it must not await requests on this
+        session; offload follow-up work with ``asyncio.create_task(...)``.
     """
     self._client = client
     self._timeout = timeout
@@ -188,6 +229,7 @@ class SessionContext:
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._message_handler = message_handler
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -311,10 +353,18 @@ class SessionContext:
 
     coro_task = asyncio.ensure_future(coro)
 
-    done, _ = await asyncio.wait(
-        [coro_task, self._task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    try:
+      done, _ = await asyncio.wait(
+          [coro_task, self._task],
+          return_when=asyncio.FIRST_COMPLETED,
+      )
+    except BaseException:
+      # asyncio.wait does not own what it waits on, so it leaves the call
+      # running when this frame is cancelled. The caller's `finally` then
+      # releases the session back to the pool while that call is still
+      # reading the transport, and the pool is free to evict it underneath.
+      await _cancel_and_drain(coro_task)
+      raise
 
     if coro_task in done:
       # If the coroutine itself raised, the exception propagates as-is
@@ -325,11 +375,7 @@ class SessionContext:
 
     # The background task finished first, indicating a transport crash.
     # Cancel the in-flight tool call and surface the original error.
-    coro_task.cancel()
-    try:
-      await coro_task
-    except BaseException:
-      pass
+    await _cancel_and_drain(coro_task)
 
     exc = self._task.exception() if not self._task.cancelled() else None
     raise ConnectionError(
@@ -402,14 +448,18 @@ class SessionContext:
         # to the read/write MemoryObjectStreams needed to build the
         # ClientSession. We limit to the first two values to be compatible
         # with all clients.
+        read_stream, write_stream = transports[:2]
         if self._is_stdio:
           session = await exit_stack.enter_async_context(
               ClientSession(
-                  *transports[:2],
-                  read_timeout_seconds=_read_timeout(self._timeout),
+                  read_stream,
+                  write_stream,
+                  # MCP SDK 1.x declares a timedelta here and 2.x a float.
+                  read_timeout_seconds=_read_timeout(self._timeout),  # type: ignore[arg-type]
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  message_handler=self._message_handler,
                   client_info=_CLIENT_INFO,
               )
           )
@@ -418,11 +468,14 @@ class SessionContext:
           # instead of the connection timeout as the read_timeout for the session.
           session = await exit_stack.enter_async_context(
               ClientSession(
-                  *transports[:2],
-                  read_timeout_seconds=_read_timeout(self._sse_read_timeout),
+                  read_stream,
+                  write_stream,
+                  # MCP SDK 1.x declares a timedelta here and 2.x a float.
+                  read_timeout_seconds=_read_timeout(self._sse_read_timeout),  # type: ignore[arg-type]
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  message_handler=self._message_handler,
                   client_info=_CLIENT_INFO,
               )
           )

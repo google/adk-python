@@ -41,6 +41,9 @@ from .sampler import _ExampleSet
 from .sampler import Sampler
 
 if TYPE_CHECKING:
+  from collections.abc import Mapping
+  from collections.abc import Sequence
+
   from gepa.core.result import GEPAResult
   from gepa.proposer.reflective_mutation.base import LanguageModel
 
@@ -315,7 +318,7 @@ def _create_agent_gepa_adapter_class() -> type[Any]:
     def propose_new_texts(
         self,
         candidate: dict[str, str],
-        reflective_dataset: dict[str, list[dict[str, Any]]],
+        reflective_dataset: Mapping[str, Sequence[Mapping[str, Any]]],
         components_to_update: list[str],
     ) -> dict[str, str]:
       new_texts: dict[str, str] = {}
@@ -384,7 +387,8 @@ class GEPARootAgentOptimizer(
     logger.info("Setting up the GEPA optimizer...")
 
     try:
-      import gepa  # lazy import as gepa is not in core ADK package
+      # lazy import as gepa is not in core ADK package
+      from gepa.api import optimize as gepa_optimize
 
       adapter_class = _create_agent_gepa_adapter_class()
     except ImportError as e:
@@ -437,7 +441,7 @@ class GEPARootAgentOptimizer(
       # selected by for loops (due to dict ordering)
       seed_candidate[_AGENT_PROMPT_KEY] = initial_instruction
 
-      return gepa.optimize(
+      return gepa_optimize(
           seed_candidate=seed_candidate,
           trainset=train_ids,
           valset=val_ids,

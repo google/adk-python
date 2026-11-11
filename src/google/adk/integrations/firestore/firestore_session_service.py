@@ -42,6 +42,7 @@ from ...sessions.state import State
 
 try:
   from google.cloud import firestore
+  from google.cloud.firestore_v1.base_query import FieldFilter
 except ImportError as e:
   raise ImportError(
       "FirestoreSessionService requires google-cloud-firestore. "
@@ -74,6 +75,51 @@ def _to_last_update_time(update_time: Any) -> float:
     return float(update_time)
   except (ValueError, TypeError):
     return 0.0
+
+
+_NESTED_LIST_KEY = "_adk_list"
+_ESCAPED_DICT_KEY = "_adk_dict"
+
+
+def _encode_firestore_value(value: Any, *, in_list: bool = False) -> Any:
+  """Wraps arrays nested in arrays, which Firestore rejects, in one-key maps."""
+  if isinstance(value, dict):
+    encoded = {k: _encode_firestore_value(v) for k, v in value.items()}
+    if (
+        in_list
+        and len(encoded) == 1
+        and (_NESTED_LIST_KEY in encoded or _ESCAPED_DICT_KEY in encoded)
+    ):
+      return {_ESCAPED_DICT_KEY: encoded}
+    return encoded
+  if isinstance(value, (list, tuple, set, frozenset)):
+    items = [_encode_firestore_value(x, in_list=True) for x in value]
+    return {_NESTED_LIST_KEY: items} if in_list else items
+  return value
+
+
+def _encode_firestore_map(data: dict[str, Any]) -> dict[str, Any]:
+  return {k: _encode_firestore_value(v) for k, v in data.items()}
+
+
+def _decode_firestore_value(value: Any, *, in_list: bool = False) -> Any:
+  """Unwraps nested-array and escaped-dict wrappers from a Firestore value."""
+  if isinstance(value, list):
+    return [_decode_firestore_value(x, in_list=True) for x in value]
+  if isinstance(value, dict):
+    if in_list and len(value) == 1:
+      if isinstance(inner_list := value.get(_NESTED_LIST_KEY), list):
+        return [_decode_firestore_value(x, in_list=True) for x in inner_list]
+      if isinstance(inner_dict := value.get(_ESCAPED_DICT_KEY), dict):
+        return {k: _decode_firestore_value(v) for k, v in inner_dict.items()}
+    return {k: _decode_firestore_value(v) for k, v in value.items()}
+  return value
+
+
+def _decode_firestore_map(data: dict[str, Any] | None) -> dict[str, Any]:
+  if not data:
+    return {}
+  return {k: _decode_firestore_value(v) for k, v in data.items()}
 
 
 class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
@@ -172,6 +218,8 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
   def _get_sessions_ref(
       self, app_name: str, user_id: str
   ) -> firestore.AsyncCollectionReference:
+    self._validate_identity_component("app_name", app_name)
+    self._validate_identity_component("user_id", user_id)
     return cast(
         "firestore.AsyncCollectionReference",
         self.client.collection(self.root_collection)
@@ -180,6 +228,34 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         .document(user_id)
         .collection(self.sessions_collection),
     )
+
+  def _get_session_doc_ref(
+      self, app_name: str, user_id: str, session_id: str
+  ) -> firestore.AsyncDocumentReference:
+    self._validate_identity_component("session_id", session_id)
+    return self._get_sessions_ref(app_name, user_id).document(session_id)
+
+  @staticmethod
+  def _validate_identity_component(name: str, value: str) -> None:
+    """Rejects an identity component that would alter the document path.
+
+    A reject-list rather than an allow-list, so ids such as email addresses
+    stay valid.
+    """
+    if not isinstance(value, str) or not value:
+      raise ValueError(f"{name} must be a non-empty string, got {value!r}.")
+    if "/" in value:
+      raise ValueError(
+          f"{name} must not contain '/': {value!r} would change the Firestore"
+          " document path."
+      )
+    if value in (".", ".."):
+      raise ValueError(f"{name} must not be '.' or '..', got {value!r}.")
+    if len(value) >= 4 and value.startswith("__") and value.endswith("__"):
+      raise ValueError(
+          f"{name} must not match the Firestore-reserved __.*__ pattern, got"
+          f" {value!r}."
+      )
 
   async def create_session(
       self,
@@ -196,7 +272,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     initial_state = state or {}
     now = firestore.SERVER_TIMESTAMP
 
-    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+    session_ref = self._get_session_doc_ref(app_name, user_id, session_id)
 
     # Extract state deltas. App and user state are written to Firestore
     # natively, which keeps datetime and other rich types, so only the session
@@ -239,20 +315,21 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       user_snap = await user_ref.get(transaction=transaction)
 
       current_app: dict[str, Any] = (
-          (app_snap.to_dict() or {}) if app_snap.exists else {}
+          _decode_firestore_map(app_snap.to_dict()) if app_snap.exists else {}
       )
       current_user: dict[str, Any] = (
-          (user_snap.to_dict() or {}) if user_snap.exists else {}
+          _decode_firestore_map(user_snap.to_dict()) if user_snap.exists else {}
       )
 
-      # 2. Writes
+      # 2. Writes. Documents are written whole: a merge write deep-merges
+      # nested maps and would keep keys that the new value dropped.
       if app_state_delta:
         current_app.update(app_state_delta)
-        transaction.set(app_ref, current_app, merge=True)
+        transaction.set(app_ref, _encode_firestore_map(current_app))
 
       if user_state_delta:
         current_user.update(user_state_delta)
-        transaction.set(user_ref, current_user, merge=True)
+        transaction.set(user_ref, _encode_firestore_map(current_user))
 
       transaction.set(session_ref, session_data)
       return current_app, current_user
@@ -286,7 +363,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     """Gets a session from Firestore."""
-    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+    session_ref = self._get_session_doc_ref(app_name, user_id, session_id)
     doc = await session_ref.get()
 
     if not doc.exists:
@@ -318,13 +395,13 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       query = events_ref.order_by("timestamp")
 
       if config:
-        if config.after_timestamp:
+        if config.after_timestamp is not None:
           # Stored event timestamps are aware UTC; a naive cursor is read as
           # UTC on the wire and would skew the filter by the host's UTC offset.
           after_dt = datetime.fromtimestamp(
               config.after_timestamp, tz=timezone.utc
           )
-          query = query.where("timestamp", ">=", after_dt)
+          query = query.where(filter=FieldFilter("timestamp", ">=", after_dt))
         if config.num_recent_events is not None:
           query = query.limit_to_last(config.num_recent_events)
 
@@ -339,14 +416,21 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       event_data = event_doc.to_dict()
       if event_data and "event_data" in event_data:
         ed = event_data["event_data"]
-        events.append(Event.model_validate(ed))
+        if isinstance(ed, str):
+          events.append(Event.model_validate_json(ed))
+        else:
+          events.append(Event.model_validate(ed))
 
     raw_state = data.get("state", {})
     session_state = (
         json.loads(raw_state) if isinstance(raw_state, str) else raw_state
     )
-    app_state = app_doc.to_dict() if app_doc.exists else {}
-    user_state = user_doc.to_dict() if user_doc.exists else {}
+    app_state = (
+        _decode_firestore_map(app_doc.to_dict()) if app_doc.exists else {}
+    )
+    user_state = (
+        _decode_firestore_map(user_doc.to_dict()) if user_doc.exists else {}
+    )
 
     merged_state = self._merge_state(app_state, user_state, session_state)
 
@@ -366,14 +450,18 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     """Lists sessions from Firestore."""
-    if user_id:
+    self._validate_identity_component("app_name", app_name)
+    if user_id == "":
+      # Firestore rejects an empty document ID, so no session can exist here.
+      return ListSessionsResponse()
+    if user_id is not None:
       query = self._get_sessions_ref(app_name, user_id).where(
-          "appName", "==", app_name
+          filter=FieldFilter("appName", "==", app_name)
       )
       docs = await query.get()
     else:
       query = self.client.collection_group(self.sessions_collection).where(
-          "appName", "==", app_name
+          filter=FieldFilter("appName", "==", app_name)
       )
       docs = await query.get()
 
@@ -387,10 +475,12 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         app_name
     )
     app_doc = await app_ref.get()
-    app_state = app_doc.to_dict() if app_doc.exists else {}
+    app_state = (
+        _decode_firestore_map(app_doc.to_dict()) if app_doc.exists else {}
+    )
 
     user_states_map = {}
-    if user_id:
+    if user_id is not None:
       user_ref = (
           self.client.collection(self.user_state_collection)
           .document(app_name)
@@ -399,7 +489,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       )
       user_doc = await user_ref.get()
       if user_doc.exists:
-        user_states_map[user_id] = user_doc.to_dict()
+        user_states_map[user_id] = _decode_firestore_map(user_doc.to_dict())
     else:
       unique_user_ids = {
           s["userId"] for s in _iter_sessions_data() if "userId" in s
@@ -413,7 +503,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         refs = [users_coll.document(uid) for uid in sorted(unique_user_ids)]
         async for u_doc in self.client.get_all(refs):
           if u_doc.exists:
-            user_states_map[u_doc.id] = u_doc.to_dict()
+            user_states_map[u_doc.id] = _decode_firestore_map(u_doc.to_dict())
 
     sessions = []
     for data in _iter_sessions_data():
@@ -441,11 +531,28 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
 
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    """Gets the user-scoped state from Firestore."""
+    self._validate_identity_component("app_name", app_name)
+    self._validate_identity_component("user_id", user_id)
+    user_ref = (
+        self.client.collection(self.user_state_collection)
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+    )
+    user_doc = await user_ref.get()
+    if not user_doc.exists:
+      return {}
+    return _decode_firestore_map(user_doc.to_dict())
+
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     """Deletes a session and its events from Firestore."""
-    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+    session_ref = self._get_session_doc_ref(app_name, user_id, session_id)
 
     @firestore.async_transactional  # type: ignore[untyped-decorator]
     async def _mark_deleting_txn(
@@ -485,9 +592,9 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     self._apply_temp_state(session, event)
     event = self._trim_temp_delta_state(event)
 
-    session_ref = self._get_sessions_ref(
-        session.app_name, session.user_id
-    ).document(session.id)
+    session_ref = self._get_session_doc_ref(
+        session.app_name, session.user_id, session.id
+    )
 
     state_delta = (
         event.actions.state_delta
@@ -544,16 +651,24 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             else None
         )
 
-        # 2. Writes
+        # 2. Writes. Documents are written whole, as in create_session.
         if app_updates and app_snap is not None:
-          current_app = (app_snap.to_dict() or {}) if app_snap.exists else {}
+          current_app = (
+              _decode_firestore_map(app_snap.to_dict())
+              if app_snap.exists
+              else {}
+          )
           current_app.update(app_updates)
-          transaction.set(app_ref, current_app, merge=True)
+          transaction.set(app_ref, _encode_firestore_map(current_app))
 
         if user_updates and user_snap is not None:
-          current_user = user_snap.to_dict() if user_snap.exists else {}
+          current_user = (
+              _decode_firestore_map(user_snap.to_dict())
+              if user_snap.exists
+              else {}
+          )
           current_user.update(user_updates)
-          transaction.set(user_ref, current_user, merge=True)
+          transaction.set(user_ref, _encode_firestore_map(current_user))
 
         new_revision = current_revision + 1
 
@@ -583,12 +698,15 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         event_ref = session_ref.collection(self.events_collection).document(
             event_id
         )
-        event_data = event.model_dump(exclude_none=True, mode="json")
+        event_data = event.model_dump_json(exclude_none=True)
         transaction.set(
             event_ref,
             {
                 "event_data": event_data,
-                "timestamp": firestore.SERVER_TIMESTAMP,
+                # Event time, not write time: after_timestamp filters on it.
+                "timestamp": datetime.fromtimestamp(
+                    event.timestamp, tz=timezone.utc
+                ),
                 "appName": session.app_name,
                 "userId": session.user_id,
             },

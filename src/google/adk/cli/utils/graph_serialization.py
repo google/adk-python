@@ -24,6 +24,7 @@ logger = logging.getLogger("google_adk." + __name__)
 from ...agents.base_agent import BaseAgent
 from ...models.base_llm import BaseLlm
 from ...tools.base_toolset import BaseToolset
+from ...workflow._base_node import BaseNode
 
 # Node type mapping for cleaner lookup
 NODE_TYPE_MAP = {
@@ -62,8 +63,9 @@ def serialize_node_like(item: Any) -> Any:
   class_name = type(item).__name__
   if "Agent" in class_name and hasattr(item, "model_fields"):
     return serialize_agent(item)
-  # Handle BaseNode
-  if "Node" in class_name and hasattr(item, "get_name"):
+  # Handle BaseNode. Only real BaseNode instances go through serialize_node,
+  # which reads rerun_on_resume; a name-only lookalike would raise there.
+  if isinstance(item, BaseNode):
     return serialize_node(item)
   # Handle callable
   if callable(item):
@@ -107,7 +109,7 @@ def serialize_node(node: Any) -> dict[str, Any]:
 
 def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
   """Recursively serialize an agent, excluding non-serializable fields."""
-  agent_dict = {}
+  agent_dict: dict[str, object] = {}
 
   for field_name, field_info in agent.__class__.model_fields.items():
     if field_name in SKIP_FIELDS or (field_info and field_info.exclude):
@@ -138,15 +140,15 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
     # Handle graph field (Graph with nodes and edges)
     elif field_name == "graph":
       try:
-        graph_dict = {}
+        graph_dict: dict[str, object] = {}
         # Serialize nodes
         if hasattr(value, "nodes") and value.nodes:
           graph_dict["nodes"] = [serialize_node(node) for node in value.nodes]
         # Serialize edges
         if hasattr(value, "edges") and value.edges:
-          serialized_edges = []
+          serialized_edges: list[object] = []
           for edge in value.edges:
-            edge_dict = {}
+            edge_dict: dict[str, object] = {}
             if hasattr(edge, "from_node"):
               edge_dict["from_node"] = serialize_node(edge.from_node)
             if hasattr(edge, "to_node"):
@@ -164,7 +166,7 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
         serialized_edges = []
         for edge_item in value:
           if isinstance(edge_item, tuple):
-            serialized = []
+            serialized: list[object] = []
             for elem in edge_item:
               if isinstance(elem, dict):
                 serialized.append(
@@ -198,7 +200,7 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
             if getattr(sa, "name", None)
         }
 
-        serialized_tools = []
+        serialized_tools: list[object] = []
         for tool in value:
           tool_name = None
           if callable(tool):

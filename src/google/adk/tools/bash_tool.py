@@ -66,8 +66,17 @@ class BashToolPolicy:
   Set allowed_command_prefixes to ("*",) to allow all commands (default),
   or explicitly list allowed prefixes.
 
+  Entries are matched on whole shell tokens, so ("ls",) permits `ls -la` but
+  not `lsof`, `./ls` or `/bin/ls`. Use ("/bin/ls",) to permit exactly that
+  path, and ("git status",) to permit only that subcommand. Commands run
+  without a shell, so operators such as `|`, `;` and `$(` reach the program
+  as literal arguments; list them in `blocked_operators` (empty by default)
+  to reject them outright.
+
   Values for max_memory_bytes, max_file_size_bytes, and max_child_processes
-  will be enforced upon the spawned subprocess.
+  will be enforced upon the spawned subprocess. None leaves a limit unset,
+  while 0 is enforced: for example, max_file_size_bytes=0 lets the command
+  write no bytes to files.
   """
 
   allowed_command_prefixes: tuple[str, ...] = ("*",)
@@ -76,6 +85,17 @@ class BashToolPolicy:
   max_memory_bytes: Optional[int] = None
   max_file_size_bytes: Optional[int] = None
   max_child_processes: Optional[int] = None
+
+  def __post_init__(self) -> None:
+    for prefix in self.allowed_command_prefixes:
+      try:
+        shlex.split(prefix)
+      except ValueError as e:
+        logger.warning(
+            "Ignoring unparsable allowed_command_prefixes entry %r: %s",
+            prefix,
+            e,
+        )
 
 
 def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
@@ -91,11 +111,25 @@ def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
   if "*" in policy.allowed_command_prefixes:
     return None
 
+  # Prefix match (`ls` -> `lsof`) is bypassable, and matching only the
+  # basename would accept a planted `./ls`. Parse both sides the same way and
+  # compare whole tokens, which also keeps a path entry meaningful.
+  try:
+    argv = shlex.split(stripped)
+  except ValueError:
+    return "Unable to parse command."
+  if not argv:
+    return "Command is required."
+
   for prefix in policy.allowed_command_prefixes:
-    if stripped.startswith(prefix):
+    try:
+      prefix_argv = shlex.split(prefix)
+    except ValueError:
+      continue
+    if prefix_argv and argv[: len(prefix_argv)] == prefix_argv:
       return None
 
-  allowed = ", ".join(policy.allowed_command_prefixes)
+  allowed = ", ".join(policy.allowed_command_prefixes) or "<none>"
   return f"Command blocked. Permitted prefixes are: {allowed}"
 
 
@@ -105,17 +139,17 @@ def _set_resource_limits(policy: BashToolPolicy) -> None:
     return
   try:
     _resource.setrlimit(_resource.RLIMIT_CORE, (0, 0))
-    if policy.max_memory_bytes:
+    if policy.max_memory_bytes is not None:
       _resource.setrlimit(
           _resource.RLIMIT_AS,
           (policy.max_memory_bytes, policy.max_memory_bytes),
       )
-    if policy.max_file_size_bytes:
+    if policy.max_file_size_bytes is not None:
       _resource.setrlimit(
           _resource.RLIMIT_FSIZE,
           (policy.max_file_size_bytes, policy.max_file_size_bytes),
       )
-    if policy.max_child_processes:
+    if policy.max_child_processes is not None:
       _resource.setrlimit(
           _resource.RLIMIT_NPROC,
           (policy.max_child_processes, policy.max_child_processes),
@@ -154,7 +188,7 @@ class ExecuteBashTool(BaseTool):
         if "*" in policy.allowed_command_prefixes
         else (
             "commands matching prefixes:"
-            f" {', '.join(policy.allowed_command_prefixes)}"
+            f" {', '.join(policy.allowed_command_prefixes) or '<none>'}"
         )
     )
     super().__init__(

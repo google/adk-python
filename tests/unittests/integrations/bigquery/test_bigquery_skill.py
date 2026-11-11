@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import re
 
-from google.adk.integrations.bigquery._bigquery_skill import _SKILL_DIR
+from google.adk.integrations.bigquery._bigquery_skill import _AVAILABLE_SKILLS
+from google.adk.integrations.bigquery._bigquery_skill import _SKILLS_BASE_DIR
 from google.adk.integrations.bigquery._bigquery_skill import get_bigquery_skill
 from google.adk.skills._utils import _validate_skill_dir
 from google.adk.tools.skill_toolset import ListSkillsTool
@@ -48,31 +49,44 @@ def test_skill_name_matches_spec():
   assert re.fullmatch(r"[a-z][a-z0-9]*(-[a-z0-9]+)*", skill.name)
 
   # Name must match the directory name
-  assert skill.name == _SKILL_DIR.name
+  assert skill.name == (_SKILLS_BASE_DIR / "bigquery-ai-ml").name
 
 
 def test_skill_has_expected_references():
   """Verify all expected reference files are present and non-empty."""
   skill = get_bigquery_skill()
 
+  # References are synced from the upstream BigQuery skill source.
+  # Check a required subset so new upstream references don't break this test.
   expected_refs = {
-      "bigquery_ai_classify.md",
-      "bigquery_ai_detect_anomalies.md",
-      "bigquery_ai_forecast.md",
-      "bigquery_ai_generate.md",
-      "bigquery_ai_generate_bool.md",
-      "bigquery_ai_generate_double.md",
-      "bigquery_ai_generate_int.md",
-      "bigquery_ai_if.md",
-      "bigquery_ai_score.md",
-      "bigquery_ai_search.md",
-      "bigquery_ai_similarity.md",
+      "ai_agg.md",
+      "ai_causal_effect.md",
+      "ai_classify.md",
+      "ai_detect_anomalies.md",
+      "ai_evaluate.md",
+      "ai_forecast.md",
+      "ai_generate.md",
+      "ai_generate_embedding.md",
+      "ai_generate_table.md",
+      "ai_if.md",
+      "ai_key_drivers.md",
+      "ai_score.md",
+      "ai_search.md",
+      "ai_similarity.md",
+      "ml_contribution_analysis.md",
+      "ml_correlation.md",
+      "ml_detect_change_points.md",
+      "ml_seasonality.md",
+      "ml_trend.md",
+      "remote_models.md",
+      "vector_search.md",
   }
   actual_refs = set(skill.resources.list_references())
 
-  assert expected_refs == actual_refs
+  missing = expected_refs - actual_refs
+  assert not missing, f"Missing references: {sorted(missing)}"
 
-  for ref_name in expected_refs:
+  for ref_name in actual_refs:
     content = skill.resources.get_reference(ref_name)
     assert content is not None, f"Reference {ref_name} returned None"
     assert len(content) > 0, f"Reference {ref_name} is empty"
@@ -97,10 +111,11 @@ async def test_skill_works_with_skill_toolset():
   assert tool_types == expected_types
 
 
-def test_skill_passes_validation():
-  """Verify the skill directory passes ADK's built-in validator."""
-  problems = _validate_skill_dir(_SKILL_DIR)
-  assert not problems, f"Validation problems: {problems}"
+@pytest.mark.parametrize("skill_name", _AVAILABLE_SKILLS)
+def test_skill_passes_validation(skill_name: str):
+  """Verify each built-in skill directory passes ADK's built-in validator."""
+  problems = _validate_skill_dir(_SKILLS_BASE_DIR / skill_name)
+  assert not problems, f"Validation problems for {skill_name}: {problems}"
 
 
 def test_skill_frontmatter_has_license():
@@ -114,3 +129,28 @@ def test_skill_frontmatter_has_metadata():
   skill = get_bigquery_skill()
   assert "author" in skill.frontmatter.metadata
   assert "version" in skill.frontmatter.metadata
+
+
+def test_get_bigquery_skill_supports_bigquery_graph():
+  """Verify get_bigquery_skill can load the built-in bigquery-graph skill."""
+  skill = get_bigquery_skill("bigquery-graph")
+
+  assert skill.name == "bigquery-graph"
+  assert skill.description
+  assert skill.instructions
+  assert skill.frontmatter.license == "Apache-2.0"
+  assert "semantic_queries.md" in set(skill.resources.list_references())
+
+
+def test_available_skills_matches_shipped_skill_dirs():
+  """Verify _AVAILABLE_SKILLS matches shipped skill dirs."""
+  shipped_dirs = {
+      d.name for d in _SKILLS_BASE_DIR.iterdir() if (d / "SKILL.md").is_file()
+  }
+  assert set(_AVAILABLE_SKILLS) == shipped_dirs
+
+
+def test_get_bigquery_skill_rejects_unknown_skill_name():
+  """Verify get_bigquery_skill raises ValueError for unknown skill names."""
+  with pytest.raises(ValueError, match="Unknown BigQuery skill 'nonexistent'"):
+    get_bigquery_skill("nonexistent")  # type: ignore[arg-type]

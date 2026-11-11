@@ -16,17 +16,18 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from collections.abc import Iterator
+from collections.abc import Mapping
 import inspect
 import logging
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
 from typing import ClassVar
 from typing import Literal
-from typing import Optional
-from typing import Type
-from typing import Union
+from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
@@ -35,15 +36,13 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 from pydantic import PrivateAttr
+from pydantic import ValidationInfo
 from typing_extensions import override
+from typing_extensions import Self
 from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..flows.llm_flows.auto_flow import AutoFlow
-from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
-from ..flows.llm_flows.single_flow import SingleFlow
-from ..flows.llm_flows.tools._functions import find_matching_function_call
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
@@ -53,8 +52,13 @@ from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
+from ..utils import _lazy
+from ..utils._agent_mode import AgentMode as _AgentMode
+from ..utils._agent_mode import LlmAgentMode as _LlmAgentMode
 from ..utils._callback_pipeline import _normalize_callbacks
+from ..utils._event_loop_cache import per_loop_value
 from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import top_level_input_keys
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
@@ -65,6 +69,12 @@ from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
+
+if TYPE_CHECKING:
+  from ..flows.llm_flows.auto_flow import AutoFlow as AutoFlow
+  from ..flows.llm_flows.base_llm_flow import BaseLlmFlow as BaseLlmFlow
+  from ..flows.llm_flows.single_flow import SingleFlow as SingleFlow
+
 
 with warnings.catch_warnings():
   # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
@@ -83,65 +93,59 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _SingleBeforeModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmRequest],
-    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+    Awaitable[LlmResponse | None] | LlmResponse | None,
 ]
 
-BeforeModelCallback: TypeAlias = Union[
-    _SingleBeforeModelCallback,
-    list[_SingleBeforeModelCallback],
-]
+BeforeModelCallback: TypeAlias = (
+    _SingleBeforeModelCallback | list[_SingleBeforeModelCallback]
+)
 
 _SingleAfterModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmResponse],
-    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+    Awaitable[LlmResponse | None] | LlmResponse | None,
 ]
 
-AfterModelCallback: TypeAlias = Union[
-    _SingleAfterModelCallback,
-    list[_SingleAfterModelCallback],
-]
+AfterModelCallback: TypeAlias = (
+    _SingleAfterModelCallback | list[_SingleAfterModelCallback]
+)
 
 _SingleOnModelErrorCallback: TypeAlias = Callable[
     [CallbackContext, LlmRequest, Exception],
-    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+    Awaitable[LlmResponse | None] | LlmResponse | None,
 ]
 
-OnModelErrorCallback: TypeAlias = Union[
-    _SingleOnModelErrorCallback,
-    list[_SingleOnModelErrorCallback],
-]
+OnModelErrorCallback: TypeAlias = (
+    _SingleOnModelErrorCallback | list[_SingleOnModelErrorCallback]
+)
 
 _SingleBeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
-    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
 ]
 
-BeforeToolCallback: TypeAlias = Union[
-    _SingleBeforeToolCallback,
-    list[_SingleBeforeToolCallback],
-]
+BeforeToolCallback: TypeAlias = (
+    _SingleBeforeToolCallback | list[_SingleBeforeToolCallback]
+)
 
 _SingleAfterToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, dict[str, Any]],
-    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
 ]
 
-AfterToolCallback: TypeAlias = Union[
-    _SingleAfterToolCallback,
-    list[_SingleAfterToolCallback],
-]
+AfterToolCallback: TypeAlias = (
+    _SingleAfterToolCallback | list[_SingleAfterToolCallback]
+)
 
 _SingleOnToolErrorCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, Exception],
-    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
 ]
 
-OnToolErrorCallback: TypeAlias = Union[
-    _SingleOnToolErrorCallback,
-    list[_SingleOnToolErrorCallback],
-]
+OnToolErrorCallback: TypeAlias = (
+    _SingleOnToolErrorCallback | list[_SingleOnToolErrorCallback]
+)
 
-ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
+ToolUnion: TypeAlias = Callable | BaseTool | BaseToolset  # type: ignore[type-arg]
 
 
 def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
@@ -161,8 +165,8 @@ def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
 
 async def _convert_tool_union_to_tools(
     tool_union: ToolUnion,
-    ctx: Optional[ReadonlyContext],
-    model: Union[str, BaseLlm],
+    ctx: ReadonlyContext | None,
+    model: str | BaseLlm,
     multiple_tools: bool = False,
 ) -> list[BaseTool]:
   from ..tools.google_search_tool import GoogleSearchTool
@@ -186,24 +190,7 @@ async def _convert_tool_union_to_tools(
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
-      try:
-        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-      except ImportError as e:
-        raise ImportError(
-            'VertexAiSearchTool with bypass_multi_tools_limit=True requires'
-            ' the google-cloud-discoveryengine package. Install it with'
-            ' `pip install google-adk[gcp]`.'
-        ) from e
-      return [
-          DiscoveryEngineSearchTool(
-              data_store_id=vais_tool.data_store_id,
-              data_store_specs=vais_tool.data_store_specs,
-              search_engine_id=vais_tool.search_engine_id,
-              filter=vais_tool.filter,
-              max_results=vais_tool.max_results,
-          )
-      ]
-  from ..workflow._base_node import BaseNode
+      return [vais_tool._to_discovery_engine_search_tool()]
 
   if isinstance(tool_union, BaseNode):
     return [_wrap_base_node_as_tool(tool_union)]
@@ -262,6 +249,17 @@ def _http_options_has_base_url(value: Any) -> bool:
   return bool(getattr(value, 'base_url', None))
 
 
+class _ModelCache:
+  """Models built from model names, one per name and running event loop."""
+
+  def get(self, key: str, build: Callable[[], BaseLlm]) -> BaseLlm:
+    return per_loop_value(self, key, build)
+
+  def __eq__(self, other: object) -> bool:
+    # Pydantic compares private attrs; a cache must not make agents unequal.
+    return isinstance(other, _ModelCache)
+
+
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
 # static type checkers.
 class LlmAgent(BaseAgent, abc.ABC):
@@ -289,13 +287,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   DEFAULT_LIVE_MODEL: ClassVar[str] = 'gemini-live-2.5-flash-native-audio'
   """System default model used for live mode when no model is set on an agent."""
 
-  _default_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_MODEL
+  _default_model: ClassVar[str | BaseLlm] = DEFAULT_MODEL
   """Current default model used when an agent has no model set."""
 
-  _default_live_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_LIVE_MODEL
+  _default_live_model: ClassVar[str | BaseLlm] = DEFAULT_LIVE_MODEL
   """Current default model used for live mode when an agent has no model set."""
 
-  model: Union[str, BaseLlm] = ''
+  model: str | BaseLlm = ''
   """The model to use for the agent.
 
   When not set, the agent will inherit the model from its ancestor. If no
@@ -303,22 +301,20 @@ class LlmAgent(BaseAgent, abc.ABC):
   LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
   """
 
-  _resolved_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(default=None)
-  """The model name last resolved by canonical_model, with its BaseLlm."""
+  _model_cache: _ModelCache = PrivateAttr(default_factory=_ModelCache)
+  """Models built from model names, shared with copies of this agent."""
 
-  _resolved_live_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(
-      default=None
-  )
-  """The model name last resolved by canonical_live_model, with its BaseLlm."""
+  _constructed_mode_tools: list[BaseTool] = PrivateAttr(default_factory=list)
+  """The mode tools construction added to `tools`, for clone() to replace."""
 
-  config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
+  config_type: ClassVar[type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent.
 
   DEPRECATED: This attribute is deprecated and will be removed in a future
   version, along with the AgentConfig YAML loader.
   """
 
-  instruction: Union[str, InstructionProvider] = ''
+  instruction: str | InstructionProvider = ''
   """Dynamic instructions for the LLM model, guiding the agent's behavior.
 
   These instructions can contain placeholders like {variable_name} that will be
@@ -332,7 +328,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   comes first in the prompt, followed by dynamic content (instruction).
   """
 
-  global_instruction: Union[str, InstructionProvider] = ''
+  global_instruction: str | InstructionProvider = ''
   """Instructions for all the agents in the entire agent tree.
 
   DEPRECATED: This field is deprecated and will be removed in a future version.
@@ -345,7 +341,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   or personality.
   """
 
-  static_instruction: Optional[types.ContentUnion] = None
+  static_instruction: types.ContentUnion | None = None
   """Static instruction content sent literally as system instruction at the beginning.
 
   This field is for content that never changes and doesn't contain placeholders.
@@ -399,7 +395,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   tools: list[ToolUnion] = Field(default_factory=list)
   """Tools available to this agent."""
 
-  generate_content_config: Optional[types.GenerateContentConfig] = None
+  generate_content_config: types.GenerateContentConfig | None = None
   """The additional content generation configurations.
 
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
@@ -409,7 +405,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   settings, etc.
   """
 
-  mode: Literal['chat', 'task', 'single_turn'] | None = None
+  mode: _LlmAgentMode | None = None
   """The delegation mode for this agent.
 
   Options:
@@ -422,6 +418,12 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   parallel_worker: bool | None = None
   """Whether to run the agent in parallel worker mode."""
+
+  max_parallel_workers: int | None = Field(default=None, ge=1)
+  """Maximum number of input items to run concurrently in parallel worker mode.
+
+  Requires parallel_worker=True. None means no limit on concurrency.
+  """
 
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
@@ -446,9 +448,9 @@ class LlmAgent(BaseAgent, abc.ABC):
   """
 
   # Controlled input/output configurations - Start
-  input_schema: Optional[type[BaseModel]] = None
+  input_schema: type[BaseModel] | None = None
   """The input schema when agent is used as a tool."""
-  output_schema: Optional[SchemaType] = None
+  output_schema: SchemaType | None = None
   """The output schema when agent replies.
 
   Supports all schema types that the underlying Google GenAI API supports:
@@ -463,7 +465,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     exposing tools during the thought loop and enforcing structure only on the
     final output.
   """
-  output_key: Optional[str] = None
+  output_key: str | None = None
   """The key in session state to store the output of the agent.
 
   Typically use cases:
@@ -473,7 +475,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   # Controlled input/output configurations - End
 
   # Advance features - Start
-  planner: Optional[BasePlanner] = None
+  planner: BasePlanner | None = None
   """Instructs the agent to make a plan and execute it step by step.
 
   NOTE:
@@ -481,7 +483,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     field in `google.adk.planners.built_in_planner`.
   """
 
-  code_executor: Optional[BaseCodeExecutor] = None
+  code_executor: BaseCodeExecutor | None = None
   """Allow agent to execute code blocks from model responses using the provided
   CodeExecutor.
 
@@ -493,7 +495,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   # Advance features - End
 
   # Callbacks - Start
-  before_model_callback: Optional[BeforeModelCallback] = None
+  before_model_callback: BeforeModelCallback | None = None
   """Callback or list of callbacks to be called before calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -508,7 +510,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     Optional[LlmResponse]: A response to use instead of calling the model.
       A truthy response skips the model call. Return None to continue.
   """
-  after_model_callback: Optional[AfterModelCallback] = None
+  after_model_callback: AfterModelCallback | None = None
   """Callback or list of callbacks to be called after calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -523,23 +525,32 @@ class LlmAgent(BaseAgent, abc.ABC):
       response. A truthy response replaces the model response. Return None
       to keep the original response.
   """
-  on_model_error_callback: Optional[OnModelErrorCallback] = None
+  on_model_error_callback: OnModelErrorCallback | None = None
   """Callback or list of callbacks to be called when a model call encounters an error.
 
   When a list of callbacks is provided, the callbacks will be called in the
   order they are listed until a callback does not return None.
 
+  The callbacks are also called with an `asyncio.CancelledError` when an
+  in-flight model call is cancelled or its response stream is closed before a
+  completed response arrives, so that resources acquired in a before-model
+  callback can be released. A cancelled call is never recovered: all callbacks
+  in the list are called, any returned responses are ignored, the cancellation
+  propagates, and an exception raised by a callback is logged instead of
+  replacing the cancellation.
+
   Args:
     callback_context: CallbackContext,
     llm_request: LlmRequest, The raw model request.
-    error: The error from the model call.
+    error: The error from the model call, or the `asyncio.CancelledError` if
+      the model call was cancelled.
 
   Returns:
     Optional[LlmResponse]: A recovery response to use instead of propagating
       the model error. Any non-None response stops the callback chain. Return
       None to allow subsequent callbacks to handle the error.
   """
-  before_tool_callback: Optional[BeforeToolCallback] = None
+  before_tool_callback: BeforeToolCallback | None = None
   """Callback or list of callbacks to be called before calling the tool.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -555,7 +566,7 @@ class LlmAgent(BaseAgent, abc.ABC):
       Any non-None response, including an empty dict, stops the callback chain
       and skips the tool call. Return None to continue.
   """
-  after_tool_callback: Optional[AfterToolCallback] = None
+  after_tool_callback: AfterToolCallback | None = None
   """Callback or list of callbacks to be called after calling the tool.
 
   When a list of callbacks is provided, the callbacks will be called in the
@@ -573,17 +584,26 @@ class LlmAgent(BaseAgent, abc.ABC):
       and replaces the tool result. Return None to keep the current result
       and allow subsequent callbacks to run.
   """
-  on_tool_error_callback: Optional[OnToolErrorCallback] = None
+  on_tool_error_callback: OnToolErrorCallback | None = None
   """Callback or list of callbacks to be called when a tool call encounters an error.
 
   When a list of callbacks is provided, the callbacks will be called in the
   order they are listed until a callback does not return None.
 
+  The callbacks are also called with an `asyncio.CancelledError` when the tool
+  call is cancelled, for example because a parallel tool call failed or the
+  invocation was cancelled, so that resources acquired in a before-tool
+  callback can be released. A cancelled call is never recovered: all callbacks
+  in the list are called, any returned responses are ignored, the cancellation
+  propagates, and an exception raised by a callback is logged instead of
+  replacing the cancellation.
+
   Args:
     tool: The tool to be called.
     args: The arguments to the tool.
     tool_context: ToolContext,
-    error: The error from the tool call.
+    error: The error from the tool call, or the `asyncio.CancelledError` if the
+      tool call was cancelled.
 
   Returns:
     Optional[dict[str, Any]]: A recovery response to use instead of propagating
@@ -596,7 +616,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   @override
   async def _handle_before_agent_callback(
       self, ctx: InvocationContext
-  ) -> Optional[Event]:
+  ) -> Event | None:
     event = await super()._handle_before_agent_callback(ctx)
     if event is not None:
       self.__maybe_save_output_to_state(event)
@@ -696,18 +716,22 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_model = resolved
-      return resolved[1]
+      name = self.model
+      return self._model_cache.get(
+          f'model:{name}', lambda: LLMRegistry.new_llm(name)
+      )
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_model
         ancestor_agent = ancestor_agent.parent_agent
-      return self._resolve_default_model()
+      default_model = self._default_model
+      if isinstance(default_model, BaseLlm):
+        return default_model
+      return self._model_cache.get(
+          f'model:{default_model}', lambda: LLMRegistry.new_llm(default_model)
+      )
 
   @property
   def canonical_live_model(self) -> BaseLlm:
@@ -718,18 +742,23 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_live_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_live_model = resolved
-      return resolved[1]
+      name = self.model
+      return self._model_cache.get(
+          f'live:{name}', lambda: LLMRegistry.new_llm(name)
+      )
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_live_model
         ancestor_agent = ancestor_agent.parent_agent
-      return self._resolve_default_live_model()
+      default_live_model = self._default_live_model
+      if isinstance(default_live_model, BaseLlm):
+        return default_live_model
+      return self._model_cache.get(
+          f'live:{default_live_model}',
+          lambda: LLMRegistry.new_llm(default_live_model),
+      )
 
   async def canonical_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
     """The resolved self.model field as BaseLlm, for one invocation.
@@ -767,7 +796,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     return self.canonical_live_model
 
   @classmethod
-  def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
+  def set_default_model(cls, model: str | BaseLlm) -> None:
     """Overrides the default model used when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
       raise TypeError(
@@ -780,14 +809,17 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   @classmethod
   def _resolve_default_model(cls) -> BaseLlm:
-    """Resolves the current default model to a BaseLlm instance."""
+    """Resolves the current default model to a BaseLlm instance.
+
+    Unused by ADK itself; kept because callers outside ADK use it.
+    """
     default_model = cls._default_model
     if isinstance(default_model, BaseLlm):
       return default_model
     return LLMRegistry.new_llm(default_model)
 
   @classmethod
-  def set_default_live_model(cls, model: Union[str, BaseLlm]) -> None:
+  def set_default_live_model(cls, model: str | BaseLlm) -> None:
     """Overrides the default model used for live mode when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
       raise TypeError(
@@ -797,14 +829,6 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(model, str) and not model:
       raise ValueError('Default live model must be a non-empty string.')
     cls._default_live_model = model
-
-  @classmethod
-  def _resolve_default_live_model(cls) -> BaseLlm:
-    """Resolves the current default live model to a BaseLlm instance."""
-    default_live_model = cls._default_live_model
-    if isinstance(default_live_model, BaseLlm):
-      return default_live_model
-    return LLMRegistry.new_llm(default_live_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -865,7 +889,7 @@ class LlmAgent(BaseAgent, abc.ABC):
       return global_instruction, True
 
   async def canonical_tools(
-      self, ctx: Optional[ReadonlyContext] = None
+      self, ctx: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     """The resolved self.tools field as a list of BaseTool based on the context.
 
@@ -889,6 +913,18 @@ class LlmAgent(BaseAgent, abc.ABC):
       resolved_tools.extend(tools)
 
     return resolved_tools
+
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children (sub-agents and node tools)."""
+    from ..tools._node_tool import NodeTool
+
+    yield from super()._iter_static_children()
+    for tool in self.tools:
+      if isinstance(tool, NodeTool):
+        yield tool.node
+      elif isinstance(tool, BaseNode):
+        yield tool
 
   @property
   def canonical_before_model_callbacks(
@@ -955,13 +991,11 @@ class LlmAgent(BaseAgent, abc.ABC):
         and self.disallow_transfer_to_peers
         and not self.sub_agents
     ):
-      return SingleFlow()
+      return _flow_class('SingleFlow')()
     else:
-      return AutoFlow()
+      return _flow_class('AutoFlow')()
 
-  def _get_subagent_to_resume(
-      self, ctx: InvocationContext
-  ) -> Optional[BaseAgent]:
+  def _get_subagent_to_resume(self, ctx: InvocationContext) -> BaseAgent | None:
     """Returns the sub-agent in the llm tree to resume if it exists.
 
     There are 2 cases where we need to transfer to and resume a sub-agent:
@@ -985,6 +1019,8 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Last event is from user or another agent.
     if last_event.author == 'user':
+      from ..flows.llm_flows.tools._functions import find_matching_function_call
+
       function_call_event = find_matching_function_call(
           ctx._get_events(current_invocation=True), last_event
       )
@@ -1057,7 +1093,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   def __get_transfer_to_agent_or_none(
       self, event: Event, from_agent: str
-  ) -> Optional[BaseAgent]:
+  ) -> BaseAgent | None:
     """Returns the agent to run if the event is a transfer to agent response."""
     function_responses = event.get_function_responses()
     if not function_responses:
@@ -1090,7 +1126,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Task mode agents deliver their final output via finish_task, not intermediate
     # conversational text turns. Skip output_key processing on text responses for task mode.
-    if getattr(self, 'mode', None) == 'task':
+    if getattr(self, 'mode', None) == _AgentMode.TASK:
       return
 
     # Handle text responses
@@ -1142,7 +1178,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     """
     if (
         not self.output_key
-        or getattr(self, 'mode', None) == 'task'
+        or getattr(self, 'mode', None) == _AgentMode.TASK
         or self.output_schema
         or event.author != self.name
         or event.partial
@@ -1163,6 +1199,21 @@ class LlmAgent(BaseAgent, abc.ABC):
     event.actions.state_delta[self.output_key] = accumulator
     return accumulator
 
+  # A field validator, unlike a model 'after' validator, does not run on an
+  # LlmAgent instance passed as a field value, such as an autospec mock.
+  @field_validator('max_parallel_workers', mode='after')
+  @classmethod
+  def _validate_parallel_worker_config(
+      cls, max_parallel_workers: int | None, info: ValidationInfo
+  ) -> int | None:
+    if max_parallel_workers is not None and not info.data.get(
+        'parallel_worker'
+    ):
+      raise ValueError(
+          'max_parallel_workers can only be set when parallel_worker is True.'
+      )
+    return max_parallel_workers
+
   @model_validator(mode='before')
   @classmethod
   def _reject_misplaced_generate_content_kwargs(cls, data: Any) -> Any:
@@ -1178,9 +1229,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not isinstance(data, dict):
       return data
 
-    agent_names = set(cls.model_fields) | {
-        f.alias for f in cls.model_fields.values() if f.alias is not None
-    }
+    agent_names = top_level_input_keys(cls.model_fields)
     redirected: list[tuple[str, str]] = []
     misplaced: dict[str, None] = {}
     extras: list[str] = []
@@ -1256,8 +1305,6 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.workflow._base_node import BaseNode
-
       data['tools'] = [
           _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
           for t in data['tools']
@@ -1267,7 +1314,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def validate_generate_content_config(
-      cls, generate_content_config: Optional[types.GenerateContentConfig]
+      cls, generate_content_config: types.GenerateContentConfig | None
   ) -> types.GenerateContentConfig:
     if not generate_content_config:
       return types.GenerateContentConfig()
@@ -1321,10 +1368,67 @@ class LlmAgent(BaseAgent, abc.ABC):
           stacklevel=3,
       )
 
-    if self.mode == 'task':
+    self._constructed_mode_tools = self._build_mode_tools()
+    self.tools.extend(self._constructed_mode_tools)
+
+  @override
+  def clone(self, update: Mapping[str, Any] | None = None) -> Self:
+    """Creates a copy of this agent, rebuilding its mode tools for the copy.
+
+    The finish_task tool and the tools for single_turn and task sub-agents that
+    construction added are replaced with tools built from the copy's own
+    `mode`, `output_schema` and `sub_agents`. Changes made to `tools` after
+    construction carry over: a tool added or swapped in is kept and no mode
+    tool is added under its name, and a mode tool that was removed is not
+    added back. A custom tool for a sub-agent therefore still wraps the
+    original sub-agent.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+
+    Returns:
+      A new agent instance with the fields in `update` applied.
+
+    Raises:
+      ValueError: If `update` sets `parent_agent` or names a field the agent
+        does not have.
+    """
+    cloned_agent = super().clone(update)
+    # model_copy does not run model_post_init again, so the copied mode tools
+    # still wrap this agent and its sub-agents. Tools are matched by identity
+    # against what construction added, because subclasses and model_post_init
+    # patches remove or swap in tools afterwards, and a stock tool next to a
+    # custom one gives the model two tools with the same name.
+    constructed_ids = {id(tool) for tool in self._constructed_mode_tools}
+    current_ids = {id(tool) for tool in self.tools}
+    kept_tools = [
+        tool for tool in cloned_agent.tools if id(tool) not in constructed_ids
+    ]
+    taken_names = {
+        tool.name for tool in kept_tools if isinstance(tool, BaseTool)
+    }
+    taken_names.update(
+        tool.name
+        for tool in self._constructed_mode_tools
+        if id(tool) not in current_ids
+    )
+    rebuilt_tools = [
+        tool
+        for tool in cloned_agent._build_mode_tools()
+        if tool.name not in taken_names
+    ]
+    kept_tools.extend(rebuilt_tools)
+    cloned_agent.tools = kept_tools
+    cloned_agent._constructed_mode_tools = rebuilt_tools
+    return cloned_agent
+
+  def _build_mode_tools(self) -> list[BaseTool]:
+    """Builds the tools implied by this agent's mode and its sub-agents' modes."""
+    tools: list[BaseTool] = []
+    if self.mode == _AgentMode.TASK:
       from .llm.task._finish_task_tool import FinishTaskTool
 
-      self.tools.append(FinishTaskTool(self))
+      tools.append(FinishTaskTool(self))
 
     # Add sub-agents as tools based on their mode
     from ..tools.agent_tool import _SingleTurnAgentTool
@@ -1339,12 +1443,29 @@ class LlmAgent(BaseAgent, abc.ABC):
         mode = getattr(sub_agent, 'mode', None)
         # LlmAgent sub-agents default to chat mode (unchanged behavior).
         if isinstance(sub_agent, LlmAgent) and mode is None:
-          sub_agent.mode = 'chat'
-          mode = 'chat'
-        if mode == 'single_turn':
-          self.tools.append(_SingleTurnAgentTool(sub_agent))
-        elif mode == 'task':
-          self.tools.append(_TaskAgentTool(sub_agent))
+          sub_agent.mode = _AgentMode.CHAT.value
+          mode = _AgentMode.CHAT.value
+        if mode == _AgentMode.SINGLE_TURN:
+          tools.append(_SingleTurnAgentTool(sub_agent))
+        elif mode == _AgentMode.TASK:
+          tools.append(_TaskAgentTool(sub_agent))
+    return tools
 
 
 Agent: TypeAlias = LlmAgent
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(),
+      {
+          'AutoFlow': 'google.adk.flows.llm_flows.auto_flow',
+          'BaseLlmFlow': 'google.adk.flows.llm_flows.base_llm_flow',
+          'SingleFlow': 'google.adk.flows.llm_flows.single_flow',
+      },
+  )
+
+
+def _flow_class(name: str) -> type[BaseLlmFlow]:
+  """Returns this module's `name` attribute, so a patched flow class is used."""
+  flow: type[BaseLlmFlow] = getattr(sys.modules[__name__], name)
+  return flow

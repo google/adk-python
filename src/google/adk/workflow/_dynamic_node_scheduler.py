@@ -31,7 +31,13 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..agents.context import _derive_node_path
+from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
+from ..events._node_path_builder import join_node_path
+from ..events._node_path_builder import parent_node_path
+from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DefaultLlmNodeMode
 from ._base_node import BaseNode
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
@@ -65,8 +71,14 @@ class DynamicNodeRun:
   output: Any = None
   """The final output of the node once it completes."""
 
+  route: Any = None
+  """The route selected by the node once it completes."""
+
+  branch: str | None = None
+  """The branch of the node once it completes."""
+
   task: asyncio.Task[Context] | None = None
-  """The running asyncio Task, or None for a run replayed from cache."""
+  """The running asyncio Task; None once it finishes or for a cached run."""
 
   transfer_to_agent: str | None = None
   """The target agent name if this node execution transferred."""
@@ -76,6 +88,38 @@ class DynamicNodeRun:
 
   is_static: bool = False
   """Whether this run was scheduled as a static graph node."""
+
+  def record_outcome(
+      self,
+      child_ctx: Context,
+      node: BaseNode,
+      interrupt_ids: set[str],
+  ) -> None:
+    """Record the outcome of ``child_ctx`` onto this run and ``interrupt_ids``."""
+    state = self.state
+    self.route = child_ctx.route
+    self.branch = child_ctx.branch
+    if child_ctx.error:
+      state.status = NodeStatus.FAILED
+    elif child_ctx.interrupt_ids:
+      state.status = NodeStatus.WAITING
+      state.interrupts = list(child_ctx.interrupt_ids)
+      interrupt_ids.update(child_ctx.interrupt_ids)
+    elif child_ctx.actions.transfer_to_agent:
+      state.status = NodeStatus.COMPLETED
+      self.output = child_ctx.output
+      self.transfer_to_agent = child_ctx.actions.transfer_to_agent
+    elif (
+        node.wait_for_output
+        and child_ctx.output is None
+        and child_ctx.route is None
+    ):
+      state.status = NodeStatus.WAITING
+    else:
+      state.status = NodeStatus.COMPLETED
+      if state.resume_inputs:
+        state.resume_inputs.clear()
+      self.output = child_ctx.output
 
 
 @dataclass(kw_only=True)
@@ -118,6 +162,58 @@ class DynamicNodeState:
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
 
+  def reserve_run_ids(self, node_path: str) -> None:
+    """Records every run_id in node_path as allocated under its parent path.
+
+    For a node that runs under a path ``next_run_id`` did not hand out, so that
+    a later run of the same node, or of one of its ancestors, is not given that
+    path again.
+
+    Args:
+      node_path: The path the node runs under, e.g. ``root_agent@1/sub@1``.
+    """
+    path: _NodePathBuilder | None = _NodePathBuilder.from_string(node_path)
+    while path is not None and str(path):
+      run_id = path.run_id
+      if run_id and run_id.isdigit():
+        parent_path = str(path.parent) if path.parent else ''
+        counters = self.run_counters.setdefault(parent_path, {})
+        counters[path.node_name] = max(
+            counters.get(path.node_name, 0), int(run_id)
+        )
+      path = path.parent
+
+  def _counter_paths_under(self, parent_path: str) -> list[str]:
+    prefix = f'{parent_path}/' if parent_path else ''
+    return [
+        k
+        for k in self.run_counters
+        if k == parent_path or (prefix and k.startswith(prefix))
+    ]
+
+  def snapshot_counters(self, parent_path: str) -> dict[str, dict[str, int]]:
+    """Copy the sequential run counters under parent_path."""
+    return {
+        path: dict(self.run_counters[path])
+        for path in self._counter_paths_under(parent_path)
+    }
+
+  def reset_for_retry(
+      self,
+      parent_path: str,
+      snapshot: dict[str, dict[str, int]],
+  ) -> None:
+    """Rewind sequential run counters under parent_path before a parent retry.
+
+    The counters go back to ``snapshot``, taken when the failed attempt began,
+    so the retry replays that attempt's completed children. Rewinding further
+    would replay children from earlier attempts the parent already rejected.
+    """
+    for path in self._counter_paths_under(parent_path):
+      del self.run_counters[path]
+    for path, counters in snapshot.items():
+      self.run_counters[path] = dict(counters)
+
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
     return [
@@ -155,10 +251,10 @@ class DynamicNodeScheduler:
 
     Args:
       state: The shared dynamic node state.
-      enable_replay: Whether to reconstruct prior runs from session events.
-        Set to False when the scheduler is installed only to drive sequential
-        agent transfers, so scheduling stays a direct pass-through to
-        NodeRunner without session event scanning.
+      enable_replay: Whether to reconstruct prior runs from session events. Set
+        to False when the scheduler is installed only to drive sequential agent
+        transfers, so scheduling stays a direct pass-through to NodeRunner
+        without session event scanning.
     """
     self._state = state
     self._replay_manager = state.replay_manager
@@ -309,7 +405,8 @@ class DynamicNodeScheduler:
     In workflow mode (enable_replay=True):
       - Allocates auto-incrementing sequential run IDs (_state.next_run_id).
       - Rehydrates and deduplicates executions from session events.
-      - Sets up chronological sequence barriers and registers runs in _state.runs.
+      - Sets up chronological sequence barriers and registers runs in
+      _state.runs.
 
     In standalone mode (enable_replay=False):
       - Defaults run_id to '1' to keep node paths stable across repeat runs.
@@ -318,23 +415,38 @@ class DynamicNodeScheduler:
     """
     curr_parent_path = ctx.node_path if ctx else ''
     target_node_name = node_name or node.name
+
+    # A sub-agent that runs with no parent context (the runner resumed it, or
+    # a transfer out of such an agent fell back to the root context) takes its
+    # Context path from the static agent tree, with every ancestor at run 1.
+    # Its run is keyed and numbered under that same parent path, so the key is
+    # the path its events carry and replay can find the run again.
+    run_parent_path = curr_parent_path
+    if self._enable_replay and not curr_parent_path:
+      run_parent_path = parent_node_path(
+          _derive_node_path(target_node_name, '1', None, None, node=node)[0]
+      )
+
     if not run_id:
       if self._enable_replay:
         run_id = self._state.next_run_id(
-            target_node_name, parent_path=curr_parent_path
+            target_node_name, parent_path=run_parent_path
         )
       else:
         run_id = '1'
 
-    base_path_builder = (
-        _NodePathBuilder.from_string(curr_parent_path)
-        if curr_parent_path
-        else _NodePathBuilder([])
-    )
-    node_path = str(base_path_builder.append(target_node_name, run_id))
+    node_path = join_node_path(run_parent_path, target_node_name, run_id)
+
+    if self._enable_replay and not curr_parent_path:
+      # Reserve the run ids of every ancestor on that path: otherwise a
+      # transfer to the parent and back to this agent is allocated that same
+      # path again, and this run is fast-forwarded instead of the agent
+      # running a second time.
+      self._state.reserve_run_ids(node_path)
+
     if (
         override_isolation_scope is None
-        and getattr(node, 'mode', None) == 'task'
+        and getattr(node, 'mode', None) == AgentMode.TASK
     ):
       override_isolation_scope = node_path
 
@@ -439,12 +551,14 @@ class DynamicNodeScheduler:
     result = check_interception(
         node=curr_node,
         recovered=run.recovered_state,
-        current_run=None if run.is_static else run,
+        current_run=run,
     )
+
+    parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
+    key = _NodePathBuilder.segment(curr_name, run_id=curr_run_id)
 
     if not result.should_run:
       if result.interrupts:
-        self._state.interrupt_ids.update(result.interrupts)
         logger.debug(
             'node %s schedule: Unresolved interrupts remain.', node_path
         )
@@ -452,9 +566,6 @@ class DynamicNodeScheduler:
         logger.debug(
             'node %s schedule: Fast-forwarding completed execution.', node_path
         )
-        # Sync output and transfer decisions with the current run state.
-        run.output = result.output
-        run.transfer_to_agent = result.transfer_to_agent
 
       if run.is_static:
         ancestor_path = (
@@ -468,6 +579,18 @@ class DynamicNodeScheduler:
         )
       else:
         ancestors = []
+      base_branch = (
+          override_branch
+          if override_branch is not None
+          else curr_parent_ctx._invocation_context.branch
+      )
+      scheduled_branch = (
+          _BranchPath.create_sub_branch(
+              base_branch, name=curr_name, run_id=curr_run_id
+          )
+          if use_sub_branch
+          else base_branch
+      )
       mock_ctx = create_mock_context(
           parent_ctx=curr_parent_ctx,
           node=curr_node,
@@ -475,13 +598,19 @@ class DynamicNodeScheduler:
           result=result,
           ancestors=ancestors,
           node_path=node_path,
-          branch=(run.recovered_state.branch if run.recovered_state else None),
+          branch=(
+              run.branch
+              or (run.recovered_state.branch if run.recovered_state else None)
+              or scheduled_branch
+          ),
       )
-
       # Chronological sequence barrier wait for replayed dynamic nodes
-      parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
-      key = f'{curr_name}@{curr_run_id}'
       await self._replay_manager.wait_sequence(parent_path, key)
+
+      # Static graph runs stay RUNNING until Workflow._handle_completion records
+      # their outcome in deterministic loop order.
+      if not run.is_static:
+        run.record_outcome(mock_ctx, curr_node, self._state.interrupt_ids)
 
       return mock_ctx, True
 
@@ -489,6 +618,7 @@ class DynamicNodeScheduler:
       # Rerun!
       run.state.resume_inputs = result.resume_inputs or {}
       logger.debug('node %s schedule: Rerunning execution.', node_path)
+      await self._replay_manager.release_pending_sequence(parent_path, key)
       actual_isolation_scope = (
           run.recovered_state.isolation_scope
           if (run.recovered_state and run.recovered_state.isolation_scope)
@@ -605,7 +735,7 @@ class DynamicNodeScheduler:
     else:
       target_node = node.model_copy(update={'name': name})
 
-    run.task = asyncio.create_task(
+    task = asyncio.create_task(
         ctx._run_node_standalone(
             target_node,
             node_input=node_input,
@@ -617,41 +747,20 @@ class DynamicNodeScheduler:
             resume_inputs=actual_resume_inputs,
         )
     )
+    run.task = task
     try:
-      child_ctx = await run.task
+      child_ctx = await task
     except asyncio.CancelledError:
       if node_path in self._state.runs:
         del self._state.runs[node_path]
       raise
-    self._record_result(run, child_ctx, node)
+    finally:
+      # The finished task holds the child Context, which holds this scheduler.
+      if run.task is task:
+        run.task = None
+    if not run.is_static:
+      run.record_outcome(child_ctx, node, self._state.interrupt_ids)
     return child_ctx
-
-  def _record_result(
-      self,
-      run: DynamicNodeRun,
-      child_ctx: Context,
-      node: BaseNode,
-  ) -> None:
-    """Update dynamic node state after execution."""
-    state = run.state
-    if child_ctx.error:
-      state.status = NodeStatus.FAILED
-    elif child_ctx.interrupt_ids:
-      state.status = NodeStatus.WAITING
-      state.interrupts = list(child_ctx.interrupt_ids)
-      self._state.interrupt_ids.update(child_ctx.interrupt_ids)
-    elif child_ctx.actions.transfer_to_agent:
-      state.status = NodeStatus.COMPLETED
-      run.transfer_to_agent = child_ctx.actions.transfer_to_agent
-    elif (
-        node.wait_for_output
-        and child_ctx.output is None
-        and child_ctx.route is None
-    ):
-      state.status = NodeStatus.WAITING
-    else:
-      state.status = NodeStatus.COMPLETED
-      run.output = child_ctx.output
 
 
 async def run_node_internal(
@@ -673,14 +782,24 @@ async def run_node_internal(
   from ._workflow import Workflow
 
   if not ctx._node_rerun_on_resume:
+    caller_name = ctx.node.name if ctx.node else ctx.node_path
     raise ValueError(
-        'A node must have rerun_on_resume=True. Reason is that dynamically'
+        f"Node '{caller_name}' calls ctx.run_node but has"
+        ' rerun_on_resume=False; set rerun_on_resume=True on it (e.g.'
+        ' @node(rerun_on_resume=True) or node(my_node, rerun_on_resume=True)).'
+        ' Reason is that dynamically'
         ' scheduled nodes might be interrupted, and the workflow'
         ' wakes-up/re-runs the parent node, so it can get the child node'
         ' response.'
     )
 
-  built_node = build_node(node)
+  is_root_agent_run = (
+      ctx.parent_ctx is None and ctx.node is None and not ctx.node_path
+  )
+  default_llm_mode: DefaultLlmNodeMode = (
+      AgentMode.CHAT if is_root_agent_run else AgentMode.SINGLE_TURN
+  )
+  built_node = build_node(node, default_llm_mode=default_llm_mode)
 
   if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
     built_node.parent_agent = node.parent_agent
@@ -744,7 +863,7 @@ async def run_node_internal(
       )
     if child_ctx.interrupt_ids:
       ctx._interrupt_ids.update(child_ctx.interrupt_ids)
-      raise NodeInterruptedError()
+      raise NodeInterruptedError(interrupt_ids=child_ctx.interrupt_ids)
     if raise_on_wait and child_ctx.output is None and not transfer_to_agent:
       executed_node = child_ctx.node
       if isinstance(executed_node, Workflow) or getattr(

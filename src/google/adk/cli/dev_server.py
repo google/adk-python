@@ -14,7 +14,8 @@
 
 """Development server with all ADK endpoints.
 
-This module provides the DevServer class which extends ApiServer with development-only endpoints.
+This module provides the DevServer class which extends ApiServer with
+development-only endpoints.
 All production endpoints are inherited from ApiServer.
 All dev-only endpoints (eval, debug, graph, test management, deploy) are added by DevServer.
 
@@ -26,12 +27,18 @@ dev-only endpoints additionally read and write agent files on disk and run
 evaluation and debugging code. This server is intended solely for local
 development on a trusted machine. Never expose it to an untrusted or public
 network, and never use it for a production or multi-user deployment.
+
+Mutating ``/dev`` endpoints (and the Agent Builder YAML readback) additionally
+reject callers that are not on the loopback interface, so that binding the
+server to a routable address does not by itself hand out write or code-execution
+access over the network. See ``_require_local_agent_builder_client``.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+import importlib.util
 import json
 import logging
 import os
@@ -42,15 +49,20 @@ import subprocess
 import sys
 import time
 from typing import Any
+from typing import cast
 from typing import Iterator
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import anyio
+from fastapi import Depends
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
+from fastapi import Response
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 import graphviz
@@ -61,7 +73,9 @@ from typing_extensions import deprecated
 import yaml
 
 from . import agent_graph
+from ..agents.base_agent import BaseAgent
 from ..apps.app import App
+from ..auth.auth_credential import _redact_credential_secrets
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -76,9 +90,15 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
+from ..sessions.session import Session
+from ..telemetry._web_ui import ui_telemetry_from_otel
+from ..telemetry._web_ui import WebUiLogExporter
+from ..telemetry._web_ui import WebUiSpan
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._dev_deploy import register_dev_deploy_endpoints
+from .api_server import _is_local_client
+from .api_server import _reject_foreign_origin
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -88,9 +108,16 @@ from .utils.graph_serialization import serialize_app_info
 from .utils.graph_visualization import plot_workflow_graph
 from .utils.state import create_empty_state
 
+if TYPE_CHECKING:
+  from opentelemetry.util.types import AttributeValue
+
+  from ..evaluation.eval_set_results_manager import EvalSetResultsManager
+  from ..evaluation.eval_sets_manager import EvalSetsManager
+
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_INITIAL_STATE_FILENAME = "initial_state.json"
 _PROCESS_TERMINATION_GRACE_SECONDS = 0.5
 _PROCESS_TERMINATOR_TIMEOUT_SECONDS = 1.0
 _TEST_OUTPUT_CHUNK_BYTES = 64 * 1024
@@ -99,9 +126,53 @@ _IS_WINDOWS = os.name == "nt"
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
 
+_ALLOW_REMOTE_AGENT_BUILDER_ENV = "ADK_ALLOW_REMOTE_AGENT_BUILDER"
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes"})
+
+
+def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
+  """Rejects mutating ``/dev`` and Agent Builder requests from remote callers.
+
+  Mutating ``/dev`` endpoints (and the Agent Builder YAML readback) read and
+  write files under ``agents_dir`` or spawn test, evaluation and deployment
+  runs, and like every other endpoint on this server, are unauthenticated. The
+  origin check in ``_OriginCheckMiddleware`` only stops a browser from being
+  used as a confused deputy; it lets a request through when ``Origin`` is
+  absent, so a non-browser client skips it just by omitting the header.
+  Restricting these endpoints to loopback peers is what keeps
+  ``adk web --host 0.0.0.0``, a forwarded container port or a tunnel from
+  handing anyone on the network access to them.
+
+  Args:
+    request: The incoming request.
+
+  Raises:
+    HTTPException: 403, if the caller is not on the loopback interface and
+      ``ADK_ALLOW_REMOTE_AGENT_BUILDER`` is not set, or if a browser sent it
+      from a foreign origin.
+  """
+  _reject_foreign_origin()
+  if _is_local_client(request.scope):
+    return
+  if (
+      os.environ.get(_ALLOW_REMOTE_AGENT_BUILDER_ENV, "").strip().lower()
+      in _TRUTHY_ENV_VALUES
+  ):
+    return
+  raise HTTPException(
+      status_code=403,
+      detail=(
+          "This /dev endpoint only accepts requests from the machine running"
+          " the server. Set"
+          f" {_ALLOW_REMOTE_AGENT_BUILDER_ENV}=1 to allow remote access, and"
+          " only on a network you trust: these endpoints are unauthenticated"
+          " and write agent files to disk."
+      ),
+  )
+
 
 class CreateTestRequest(common.BaseModel):
-  session_data: dict
+  session_data: dict[Any, Any]
 
 
 class AddSessionToEvalSetRequest(common.BaseModel):
@@ -251,25 +322,38 @@ def _is_adk_built_in(reference: str) -> bool:
   return False
 
 
-def _app_name_shadows_module(app_name: str) -> bool:
-  """Whether the app name collides with a module that can be imported."""
-  # "google" is a namespace package rather than a standard library module, so
-  # it has to be named explicitly.
-  return (
-      app_name in sys.builtin_module_names
-      or app_name in sys.stdlib_module_names
-      or app_name == "google"
+def _app_name_shadows_module(app_name: str, app_root: Path) -> bool:
+  """Whether importing the app name would load code from outside the app."""
+  # find_spec imports a dotted name's parents, so only look up the first part.
+  try:
+    spec = importlib.util.find_spec(app_name.partition(".")[0])
+  except ValueError:
+    return True
+  if spec is None:
+    return False
+  locations = list(spec.submodule_search_locations or [])
+  if spec.has_location and spec.origin is not None:
+    locations.append(spec.origin)
+  return not locations or not all(
+      Path(location).resolve().is_relative_to(app_root)
+      for location in locations
   )
 
 
 def _check_code_reference(
-    reference: str, *, app_name: str, filename: str, field_name: str
+    reference: str,
+    *,
+    app_name: str,
+    app_root: Path,
+    filename: str,
+    field_name: str,
 ) -> None:
   """Checks that a code reference stays inside the app being edited.
 
   Args:
     reference: The name found in the uploaded document.
     app_name: The app the document belongs to.
+    app_root: The app's resolved directory.
     filename: The uploaded path, used in the error message.
     field_name: The config field the reference came from.
 
@@ -287,7 +371,7 @@ def _check_code_reference(
         f" '{field_name}' field may only reference code under"
         f" '{app_name}' or an ADK built-in."
     )
-  if _app_name_shadows_module(app_name):
+  if _app_name_shadows_module(app_name, app_root):
     raise ValueError(
         f"Blocked code reference {reference!r} in {filename!r}. The app name"
         f" {app_name!r} shadows an importable Python module, so a reference to"
@@ -462,6 +546,69 @@ class DevServer(ApiServer):
 
     return str(resolved_path)
 
+  def _get_eval_sets_manager(self) -> EvalSetsManager:
+    if self.eval_sets_manager is None:
+      raise HTTPException(
+          status_code=500, detail="Eval sets manager is not configured"
+      )
+    return self.eval_sets_manager
+
+  def _get_eval_set_results_manager(self) -> EvalSetResultsManager:
+    if self.eval_set_results_manager is None:
+      raise HTTPException(
+          status_code=500, detail="Eval set results manager is not configured"
+      )
+    return self.eval_set_results_manager
+
+  def _load_initial_state(self, app_name: str) -> dict[str, Any]:
+    """Reads the optional ``initial_state.json`` next to an agent.
+
+    The file is read on every call, so edits apply to the next session without
+    restarting the server. A missing, unreadable or malformed file yields an
+    empty state rather than failing session creation.
+    """
+    try:
+      path = Path(self._get_agent_dir(app_name)) / _INITIAL_STATE_FILENAME
+    except HTTPException:
+      return {}
+    if not path.is_file():
+      return {}
+    try:
+      with open(path, "r", encoding="utf-8") as f:
+        initial_state = json.load(f)
+    except (OSError, ValueError) as e:
+      logger.warning("Ignoring %s: %s", path, e)
+      return {}
+    if not isinstance(initial_state, dict):
+      logger.warning("Ignoring %s: expected a JSON object", path)
+      return {}
+    return initial_state
+
+  async def _create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str] = None,
+      state: Optional[dict[str, Any]] = None,
+  ) -> Session:
+    """Creates a session seeded from the agent's ``initial_state.json``.
+
+    State supplied by the caller takes precedence over the file's values, key by
+    key. Only explicit session creation is seeded; a session that the runner
+    creates itself (``--auto_create_session``) is not. ``app:`` and ``user:``
+    keys in the file follow the usual state scoping.
+    """
+    initial_state = self._load_initial_state(app_name)
+    if initial_state:
+      state = {**initial_state, **(state or {})}
+    return await super()._create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state=state,
+    )
+
   def _get_test_file_path(self, *, app_name: str, test_name: str) -> str:
     """Resolves a test file to a path inside the app's own tests directory.
 
@@ -507,10 +654,11 @@ class DevServer(ApiServer):
   def _register_dev_endpoints(
       self,
       app: FastAPI,
-      trace_dict: dict,
+      trace_dict: dict[str, dict[str, AttributeValue]],
       memory_exporter: Any,
+      log_exporter: WebUiLogExporter,
       web_assets_dir: Optional[str] = None,
-  ):
+  ) -> None:
     """Register all development-only endpoints.
 
     This includes debug, evaluation, graph visualization, and telemetry consent
@@ -566,6 +714,7 @@ class DevServer(ApiServer):
         content: bytes, *, filename: str, app_name: str
     ) -> None:
       """Raise if the YAML would let the loader run code outside the app."""
+      app_root = _get_app_root(app_name)
       try:
         docs = list(yaml.safe_load_all(content))
       except yaml.YAMLError as exc:
@@ -585,6 +734,7 @@ class DevServer(ApiServer):
                 _check_code_reference(
                     reference,
                     app_name=app_name,
+                    app_root=app_root,
                     filename=filename,
                     field_name=key,
                 )
@@ -731,7 +881,9 @@ class DevServer(ApiServer):
       return True
 
     @app.post(
-        "/dev/apps/{app_name}/builder/save", response_model_exclude_none=True
+        "/dev/apps/{app_name}/builder/save",
+        response_model_exclude_none=True,
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def builder_build(
         app_name: str, files: list[UploadFile], tmp: Optional[bool] = False
@@ -783,21 +935,25 @@ class DevServer(ApiServer):
         return False
 
     @app.post(
-        "/dev/apps/{app_name}/builder/cancel", response_model_exclude_none=True
+        "/dev/apps/{app_name}/builder/cancel",
+        response_model_exclude_none=True,
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def builder_cancel(app_name: str) -> bool:
       return cleanup_tmp(app_name)
 
     @app.get(
         "/dev/apps/{app_name}/builder",
+        response_model=None,
         response_model_exclude_none=True,
         response_class=PlainTextResponse,
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def get_agent_builder(
         app_name: str,
         file_path: Optional[str] = None,
         tmp: Optional[bool] = False,
-    ):
+    ) -> str | FileResponse:
       try:
         app_root = _get_app_root(app_name)
       except ValueError as exc:
@@ -848,22 +1004,13 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/debug/trace/session/{session_id}",
         tags=[TAG_DEBUG],
     )
-    async def get_session_trace(app_name: str, session_id: str) -> Any:
+    async def get_session_trace(
+        app_name: str, session_id: str
+    ) -> list[WebUiSpan]:
       spans = memory_exporter.get_finished_spans(session_id)
       if not spans:
         return []
-      return [
-          {
-              "name": s.name,
-              "span_id": s.context.span_id,
-              "trace_id": s.context.trace_id,
-              "start_time": s.start_time,
-              "end_time": s.end_time,
-              "attributes": dict(s.attributes),
-              "parent_span_id": s.parent.span_id if s.parent else None,
-          }
-          for s in spans
-      ]
+      return ui_telemetry_from_otel(spans, log_exporter.get_finished_logs())
 
     if web_assets_dir:
       # TODO: remove this endpoint once build_graph_image is completed
@@ -948,7 +1095,10 @@ class DevServer(ApiServer):
       test_files = glob.glob(pattern)
       return sorted([os.path.basename(f) for f in test_files])
 
-    @app.post("/dev/apps/{app_name}/tests/rebuild")
+    @app.post(
+        "/dev/apps/{app_name}/tests/rebuild",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def rebuild_app_tests(
         app_name: str, test_name: Optional[str] = None
     ) -> dict[str, str]:
@@ -963,7 +1113,10 @@ class DevServer(ApiServer):
       await asyncio.to_thread(rebuild_tests, path)
       return {"status": "success"}
 
-    @app.post("/dev/apps/{app_name}/tests/run")
+    @app.post(
+        "/dev/apps/{app_name}/tests/run",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def run_app_tests(
         app_name: str, test_name: Optional[str] = None
     ) -> StreamingResponse:
@@ -974,7 +1127,10 @@ class DevServer(ApiServer):
           media_type="text/plain",
       )
 
-    @app.put("/dev/apps/{app_name}/tests/{test_name}")
+    @app.put(
+        "/dev/apps/{app_name}/tests/{test_name}",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def create_test(
         app_name: str, test_name: str, req: CreateTestRequest
     ) -> dict[str, str]:
@@ -992,7 +1148,10 @@ class DevServer(ApiServer):
 
       return {"status": "success", "file": os.path.basename(test_file_path)}
 
-    @app.delete("/dev/apps/{app_name}/tests/{test_name}")
+    @app.delete(
+        "/dev/apps/{app_name}/tests/{test_name}",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def delete_test(app_name: str, test_name: str) -> dict[str, str]:
       """Deletes a specific test file."""
       test_file_path = self._get_test_file_path(
@@ -1016,7 +1175,8 @@ class DevServer(ApiServer):
         raise HTTPException(status_code=404, detail="Test file not found")
 
       with open(test_file_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        # A test file is a serialized JSON object.
+        return cast(dict[str, Any], json.load(f))
 
     # ========== EVALUATION ENDPOINTS ==========
 
@@ -1024,12 +1184,13 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def create_eval_set(
         app_name: str, create_eval_set_request: CreateEvalSetRequest
     ) -> EvalSet:
       try:
-        return self.eval_sets_manager.create_eval_set(
+        return self._get_eval_sets_manager().create_eval_set(
             app_name=app_name,
             eval_set_id=create_eval_set_request.eval_set.eval_set_id,
         )
@@ -1042,8 +1203,10 @@ class DevServer(ApiServer):
     # TODO - remove after migration
     @app.post(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @deprecated(
         "Please use create_eval_set instead. This will be removed in future"
@@ -1052,7 +1215,7 @@ class DevServer(ApiServer):
     async def create_eval_set_legacy(
         app_name: str,
         eval_set_id: str,
-    ):
+    ) -> None:
       """Creates an eval set, given the id."""
       await create_eval_set(
           app_name=app_name,
@@ -1080,6 +1243,7 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @deprecated(
         "Please use run_eval instead. This will be removed in future releases."
@@ -1095,6 +1259,7 @@ class DevServer(ApiServer):
     # TODO - remove after migration
     @app.get(
         "/dev/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model=EvalSetResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
@@ -1105,13 +1270,22 @@ class DevServer(ApiServer):
     async def get_eval_result_legacy(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalSetResult:
+    ) -> Response:
       try:
-        return self.eval_set_results_manager.get_eval_set_result(
-            app_name, eval_result_id
+        eval_set_result = (
+            self._get_eval_set_results_manager().get_eval_set_result(
+                app_name, eval_result_id
+            )
         )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_set_result.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
+      except (NotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
@@ -1136,9 +1310,9 @@ class DevServer(ApiServer):
     )
     async def list_eval_sets(app_name: str) -> ListEvalSetsResponse:
       """Lists all eval sets for the given app."""
-      eval_sets = []
+      eval_sets: list[str] = []
       try:
-        eval_sets = self.eval_sets_manager.list_eval_sets(app_name)
+        eval_sets = self._get_eval_sets_manager().list_eval_sets(app_name)
       except NotFoundError as e:
         logger.warning(e)
 
@@ -1146,22 +1320,27 @@ class DevServer(ApiServer):
 
     @app.post(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.post(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def add_session_to_eval_set(
         app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
-    ):
+    ) -> None:
       # Get the session
       session = await self.session_service.get_session(
           app_name=app_name, user_id=req.user_id, session_id=req.session_id
       )
-      assert session, "Session not found."
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
 
       # Convert the session data to eval invocations
       invocations = evals.convert_session_to_eval_invocations(session)
@@ -1183,9 +1362,11 @@ class DevServer(ApiServer):
       )
 
       try:
-        self.eval_sets_manager.add_eval_case(
+        self._get_eval_sets_manager().add_eval_case(
             app_name, eval_set_id, new_eval_case
         )
+      except NotFoundError as nfe:
+        raise HTTPException(status_code=404, detail=str(nfe)) from nfe
       except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve)) from ve
 
@@ -1199,7 +1380,9 @@ class DevServer(ApiServer):
         eval_set_id: str,
     ) -> list[str]:
       """Lists all evals in an eval set."""
-      eval_set_data = self.eval_sets_manager.get_eval_set(app_name, eval_set_id)
+      eval_set_data = self._get_eval_sets_manager().get_eval_set(
+          app_name, eval_set_id
+      )
 
       if not eval_set_data:
         raise HTTPException(
@@ -1210,24 +1393,32 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     @app.get(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
-    ) -> EvalCase:
+    ) -> Response:
       """Gets an eval case in an eval set."""
-      eval_case_to_find = self.eval_sets_manager.get_eval_case(
+      eval_case_to_find = self._get_eval_sets_manager().get_eval_case(
           app_name, eval_set_id, eval_case_id
       )
 
       if eval_case_to_find:
-        return eval_case_to_find
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_case_to_find.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
 
       raise HTTPException(
           status_code=404,
@@ -1238,20 +1429,24 @@ class DevServer(ApiServer):
 
     @app.put(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.put(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def update_eval(
         app_name: str,
         eval_set_id: str,
         eval_case_id: str,
         updated_eval_case: EvalCase,
-    ):
+    ) -> None:
       if (
           updated_eval_case.eval_id
           and updated_eval_case.eval_id != eval_case_id
@@ -1267,7 +1462,7 @@ class DevServer(ApiServer):
       # field.
       updated_eval_case.eval_id = eval_case_id
       try:
-        self.eval_sets_manager.update_eval_case(
+        self._get_eval_sets_manager().update_eval_case(
             app_name, eval_set_id, updated_eval_case
         )
       except NotFoundError as nfe:
@@ -1276,16 +1471,18 @@ class DevServer(ApiServer):
     @app.delete(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.delete(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def delete_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
     ) -> None:
       try:
-        self.eval_sets_manager.delete_eval_case(
+        self._get_eval_sets_manager().delete_eval_case(
             app_name, eval_set_id, eval_case_id
         )
       except NotFoundError as nfe:
@@ -1295,6 +1492,7 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/run",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def run_eval(
         app_name: str, eval_set_id: str, req: RunEvalRequest
@@ -1303,12 +1501,14 @@ class DevServer(ApiServer):
       # Create a mapping from eval set file to all the evals that needed to be
       # run.
       try:
+        from ..evaluation.eval_config import append_default_efficiency_metrics
         from ..evaluation.local_eval_service import LocalEvalService
         from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
         from .cli_eval import _collect_eval_results
         from .cli_eval import _collect_inferences
 
-        eval_set = self.eval_sets_manager.get_eval_set(app_name, eval_set_id)
+        eval_sets_manager = self._get_eval_sets_manager()
+        eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
 
         if not eval_set:
           raise HTTPException(
@@ -1334,7 +1534,7 @@ class DevServer(ApiServer):
 
         eval_service = LocalEvalService(
             root_agent=root_agent,
-            eval_sets_manager=self.eval_sets_manager,
+            eval_sets_manager=eval_sets_manager,
             eval_set_results_manager=self.eval_set_results_manager,
             session_service=self.session_service,
             artifact_service=self.artifact_service,
@@ -1361,10 +1561,15 @@ class DevServer(ApiServer):
             eval_service=eval_service,
         )
 
+        # The request carries only what the user selected in the run dialog,
+        # and the efficiency metrics are not selectable there: they take no
+        # threshold, so the dialog has nothing to ask about. Adding them here
+        # is what makes "reported for every eval" hold for a run started from
+        # the Dev UI, and not only for one started from `adk eval`.
         eval_case_results = await _collect_eval_results(
             inference_results=inference_results,
             eval_service=eval_service,
-            eval_metrics=req.eval_metrics,
+            eval_metrics=append_default_efficiency_metrics(req.eval_metrics),
         )
       except ModuleNotFoundError as e:
         logger.exception("%s", e)
@@ -1391,21 +1596,31 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-results/{eval_result_id}",
+        response_model=EvalResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval_result(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalResult:
+    ) -> Response:
       """Gets the eval result for the given eval id."""
       try:
-        eval_set_result = self.eval_set_results_manager.get_eval_set_result(
-            app_name, eval_result_id
+        eval_set_result = (
+            self._get_eval_set_results_manager().get_eval_set_result(
+                app_name, eval_result_id
+            )
         )
-        return EvalResult(**eval_set_result.model_dump())
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
+        eval_result = EvalResult(**eval_set_result.model_dump())
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_result.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
+      except (NotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
@@ -1416,8 +1631,8 @@ class DevServer(ApiServer):
     )
     async def list_eval_results(app_name: str) -> ListEvalResultsResponse:
       """Lists all eval results for the given app."""
-      eval_result_ids = self.eval_set_results_manager.list_eval_set_results(
-          app_name
+      eval_result_ids = (
+          self._get_eval_set_results_manager().list_eval_set_results(app_name)
       )
       return ListEvalResultsResponse(eval_result_ids=eval_result_ids)
 
@@ -1433,27 +1648,15 @@ class DevServer(ApiServer):
 
         # Right now we ignore the app_name as eval metrics are not tied to the
         # app_name, but they could be moving forward.
-        # This endpoint feeds a surface that asks the user to pick metrics and
-        # set a threshold for each. Metrics that need no threshold are always
-        # on and have nothing for the user to choose, and they carry no value
-        # interval for a threshold control to bound itself by.
         #
-        # Hiding them is a compatibility shim for the Dev UI bundle vendored in
-        # cli/browser, which dereferences `metricValueInfo.interval`
-        # unconditionally while building the threshold form and so takes the
-        # whole form down on a metric that has none.
-        # TODO: Drop this filter once that
-        # bundle understands `requires_threshold=False` and renders those
-        # metrics as an always-on, non-selectable section instead. The bundle
-        # ships from this repo, so its refresh and this removal land together.
-        metrics_info = [
-            metric_info
-            for metric_info in (
-                DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
-            )
-            if metric_info.requires_threshold
-        ]
-        return ListMetricsInfoResponse(metrics_info=metrics_info)
+        # Every registered metric is listed, including the ones that need no
+        # threshold. A caller that asks the user to set thresholds decides for
+        # itself which to offer -- `MetricInfo.requires_threshold` says which
+        # those are -- while a caller that only describes metrics, such as the
+        # Dev UI's result tooltips, needs the whole list.
+        return ListMetricsInfoResponse(
+            metrics_info=DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+        )
       except ModuleNotFoundError as e:
         logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
         raise HTTPException(
@@ -1469,7 +1672,7 @@ class DevServer(ApiServer):
     )
     async def get_app_graph_dot(
         app_name: str, dark_mode: bool = False
-    ) -> GetEventGraphResult | dict:
+    ) -> GetEventGraphResult | dict[Any, Any]:
       """Returns the base agent graph in DOT format without any highlights.
 
       This endpoint allows the frontend to fetch the graph structure once
@@ -1481,6 +1684,9 @@ class DevServer(ApiServer):
       """
       agent_or_app = self.agent_loader.load_agent(app_name)
       root_agent = self._get_root_agent(agent_or_app)
+      # A Workflow root is drawn by the build_graph_image endpoint instead.
+      if not isinstance(root_agent, BaseAgent):
+        return {}
 
       # Get graph with NO highlights (empty list) and specified theme
       dot_graph = await agent_graph.get_agent_graph(
@@ -1495,12 +1701,13 @@ class DevServer(ApiServer):
     # TODO: This endpoint can be removed once we update adk web to stop consuming it
     @app.get(
         "/dev/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_DEBUG],
     )
     async def get_event_graph(
         app_name: str, user_id: str, session_id: str, event_id: str
-    ):
+    ) -> GetEventGraphResult | dict[str, object]:
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
@@ -1513,12 +1720,14 @@ class DevServer(ApiServer):
       function_responses = event.get_function_responses()
       agent_or_app = self.agent_loader.load_agent(app_name)
       root_agent = self._get_root_agent(agent_or_app)
+      if not isinstance(root_agent, BaseAgent):
+        return {}
       dot_graph = None
       if function_calls:
         function_call_highlights = []
         for function_call in function_calls:
-          from_name = event.author
-          to_name = function_call.name
+          from_name: str | None = event.author
+          to_name: str | None = function_call.name
           function_call_highlights.append((from_name, to_name))
           dot_graph = await agent_graph.get_agent_graph(
               root_agent, function_call_highlights
@@ -1543,9 +1752,15 @@ class DevServer(ApiServer):
       else:
         return {}
 
-    register_dev_deploy_endpoints(app, get_agent_dir=self._get_agent_dir)
+    register_dev_deploy_endpoints(
+        app,
+        get_agent_dir=self._get_agent_dir,
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
 
-  def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
+  def _navigate_to_node(
+      self, app_info: dict[str, Any], node_path: str
+  ) -> dict[str, Any] | None:
     """Navigate to a specific node in the agent hierarchy.
 
     Args:
@@ -1560,7 +1775,8 @@ class DevServer(ApiServer):
 
     # Strip leading/trailing slashes and split, filter out empty strings
     path_parts = [p for p in node_path.strip("/").split("/") if p]
-    current = app_info.get("root_agent")
+    # serialize_app_info emits every agent node as a dict.
+    current: dict[str, Any] | None = app_info.get("root_agent")
 
     if not current:
       return None
@@ -1571,7 +1787,7 @@ class DevServer(ApiServer):
       start_idx = 1
 
     for part in path_parts[start_idx:]:
-      found = None
+      found: dict[str, Any] | None = None
       # Check potential containers in order of preference
       containers = []
       if current.get("graph") and current["graph"].get("nodes"):
@@ -1596,8 +1812,8 @@ class DevServer(ApiServer):
     return current
 
   def _get_all_sub_workflows(
-      self, app_info: dict, current_path: str = ""
-  ) -> dict[str, dict]:
+      self, app_info: dict[str, Any], current_path: str = ""
+  ) -> dict[str, dict[str, Any]]:
     """Recursively discover all sub-workflows within the given app info.
 
     Args:
@@ -1607,7 +1823,7 @@ class DevServer(ApiServer):
     Returns:
       A dictionary mapping the node path to the corresponding agent info dict.
     """
-    workflows = {}
+    workflows: dict[str, dict[str, Any]] = {}
 
     agent_info = app_info.get("root_agent", app_info)
     if agent_info.get("graph"):
@@ -1632,7 +1848,8 @@ class DevServer(ApiServer):
 
     return workflows
 
-  def get_fast_api_app(self, **kwargs):
+  # Takes keyword arguments only, unlike ApiServer.get_fast_api_app.
+  def get_fast_api_app(self, **kwargs: Any) -> FastAPI:  # type: ignore[override]
     """Override to add dev endpoints after production endpoints.
 
     Calls parent's get_fast_api_app() to get the base app with production
@@ -1642,7 +1859,11 @@ class DevServer(ApiServer):
 
     web_assets_dir = kwargs.get("web_assets_dir", None)
     self._register_dev_endpoints(
-        app, self._trace_dict, self._memory_exporter, web_assets_dir
+        app,
+        self._trace_dict,
+        self._memory_exporter,
+        self._log_exporter,
+        web_assets_dir,
     )
 
     return app

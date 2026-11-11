@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
-import time
 from typing import Literal
-from typing import Optional
 
 from google.adk.tools.computer_use.base_computer import BaseComputer
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
@@ -80,7 +78,7 @@ class PlaywrightComputer(BaseComputer):
       initial_url: str = "https://www.google.com",
       search_engine_url: str = "https://www.google.com",
       highlight_mouse: bool = False,
-      user_data_dir: Optional[str] = None,
+      user_data_dir: str | None = None,
   ):
     self._initial_url = initial_url
     self._screen_size = screen_size
@@ -202,6 +200,18 @@ class PlaywrightComputer(BaseComputer):
     await self._page.wait_for_load_state()
     return await self.current_state()
 
+  async def type_text(
+      self,
+      text: str,
+      press_enter: bool = False,
+  ) -> ComputerState:
+    await self._page.keyboard.type(text)
+    await self._page.wait_for_load_state()
+
+    if press_enter:
+      return await self.key_combination(["Enter"])
+    return await self.current_state()
+
   async def _horizontal_document_scroll(
       self, direction: Literal["left", "right"]
   ) -> ComputerState:
@@ -313,7 +323,7 @@ class PlaywrightComputer(BaseComputer):
     await self._page.wait_for_load_state()
     # Even if Playwright reports the page as loaded, it may not be so.
     # Add a manual sleep to make sure the page has finished rendering.
-    time.sleep(0.5)
+    await asyncio.sleep(0.5)
     screenshot_bytes = await self._page.screenshot(type="png", full_page=False)
     return ComputerState(screenshot=screenshot_bytes, url=self._page.url)
 
@@ -347,4 +357,4 @@ class PlaywrightComputer(BaseComputer):
         }}
     """)
     # Wait a bit for the user to see the cursor.
-    time.sleep(1)
+    await asyncio.sleep(1)

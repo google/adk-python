@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from google.adk.utils._dependency import missing_extra
+from google.adk.utils._dependency import require_agentplatform_attributes
 import pytest
 
 
@@ -45,3 +48,27 @@ def test_missing_extra_returns_the_error_for_the_caller_to_raise():
   assert isinstance(error, ImportError)
   with pytest.raises(ImportError, match='vertexai'):
     raise error
+
+
+def test_require_agentplatform_attributes_passes_when_all_are_present():
+  """Returns without raising when the object has every named attribute."""
+  require_agentplatform_attributes(
+      SimpleNamespace(runtimes=object(), sandboxes=object()),
+      ('runtimes', 'sandboxes'),
+      'Feature',
+  )
+
+
+def test_require_agentplatform_attributes_names_each_missing_attribute():
+  """The ImportError names every attribute the object is missing."""
+  with pytest.raises(ImportError) as exc_info:
+    require_agentplatform_attributes(
+        SimpleNamespace(agent_engines=object()),
+        ('runtimes', 'sandboxes'),
+        'Feature',
+    )
+
+  assert str(exc_info.value).startswith(
+      'Feature needs google-cloud-agentplatform 2.2 or later, but the'
+      ' agentplatform package that loaded has no runtimes, sandboxes.'
+  )

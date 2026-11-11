@@ -14,8 +14,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+import functools
+import inspect
 from typing import Any
+from typing import get_type_hints
 from typing import List
 from typing import Optional
 from typing import Union
@@ -35,8 +39,43 @@ from .bigquery_credentials import BigQueryCredentialsConfig
 from .config import BigQueryToolConfig
 
 
+@functools.lru_cache(maxsize=None)
+def _wrap_async(func: Callable[..., Any]) -> Callable[..., Any]:
+  """Wraps a sync tool function in an async adapter running it in a thread."""
+  if inspect.iscoroutinefunction(func):
+    return func
+
+  @functools.wraps(func)
+  async def async_adapter(*args: Any, **kwargs: Any) -> Any:
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+  # Resolve string annotations in func's globals before FunctionType copies
+  # drop __wrapped__.
+  async_adapter.__annotations__ = get_type_hints(func)
+  return async_adapter
+
+
 class BigQueryToolset(BaseToolset):
-  """BigQuery Toolset contains tools for interacting with BigQuery data and metadata."""
+  """Toolset with tools for interacting with BigQuery data and metadata.
+
+  To equip your agent with curated instructions for BigQuery AI/ML functions
+  (``"bigquery-ai-ml"``) or Graph Query Language (GQL) / SQL/PGQ queries
+  (``"bigquery-graph"``) alongside these tools, pair ``BigQueryToolset`` with
+  :func:`get_bigquery_skill` and ``SkillToolset``:
+
+    from google.adk.integrations.bigquery import BigQueryToolset
+    from google.adk.integrations.bigquery import get_bigquery_skill
+    from google.adk.tools.skill_toolset import SkillToolset
+
+    bigquery_toolset = BigQueryToolset(...)
+    skill_toolset = SkillToolset(
+        skills=[
+            get_bigquery_skill("bigquery-ai-ml"),
+            get_bigquery_skill("bigquery-graph"),
+        ]
+    )
+    agent = LlmAgent(tools=[bigquery_toolset, skill_toolset])
+  """
 
   def __init__(
       self,
@@ -85,7 +124,7 @@ class BigQueryToolset(BaseToolset):
     ]
     all_tools = [
         BigQueryTool(
-            func=func,
+            func=_wrap_async(func),
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )

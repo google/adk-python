@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -60,3 +61,70 @@ def get_mongo_client(
       driver=DriverInfo(name="adk-mongodb-tool", version=version.__version__),
       **options,
   )
+
+
+def is_index_privilege_error(exc: Exception) -> bool:
+  """Returns whether `exc` is the deployment denying a `createIndex` call.
+
+  Code 13 is MongoDB's Unauthorized error. Atlas denies it as code 8000
+  ("user is not allowed to do action [createIndex]"); that code also covers
+  unrelated Atlas errors, so the message is matched instead.
+  """
+  if getattr(exc, "code", None) == 13:
+    return True
+  message = str(exc).lower()
+  return "not authorized" in message or "not allowed to do action" in message
+
+
+def drop_client_for_pickle(
+    state: dict[str, Any], *, owns_client: bool, owner: str
+) -> dict[str, Any]:
+  """Returns a picklable copy of an instance dict holding a MongoClient.
+
+  A MongoClient wraps sockets, locks and background threads, none of which
+  survive pickling — and pickling is how Agent Engine ships an app to the
+  runtime (cloudpickle). The client is dropped here and rebuilt from the
+  stored `_connection_string` when the object is restored on the destination.
+
+  Args:
+      state: The instance `__dict__` to make picklable.
+      owns_client: Whether the instance created its client from
+        `connection_string` (True) or received it via `mongo_client` (False).
+      owner: Class name used in the error message.
+
+  Returns:
+      A copy of `state` with `_client` set to None.
+
+  Raises:
+      TypeError: If the client was caller-provided (`mongo_client=`), because
+        it cannot be rebuilt on the destination.
+  """
+  if not owns_client:
+    raise TypeError(
+        f"{owner} cannot be pickled when constructed with `mongo_client`: a"
+        " caller-owned client cannot be rebuilt on the destination. Construct"
+        " it with `connection_string` when it must cross a pickle boundary"
+        " (e.g. Agent Engine deployments)."
+    )
+  state = dict(state)
+  state["_client"] = None
+  return state
+
+
+def connection_string_from_env(env_var: str) -> str:
+  """Reads the MongoDB connection string from an environment variable.
+
+  Used with `connection_string_env_var` so the value is resolved where the
+  client is built — on the runtime, not at packaging time — which keeps the
+  database password out of pickled deployment packages (Agent Engine).
+
+  Raises:
+      ValueError: If the environment variable is unset or empty.
+  """
+  value = os.environ.get(env_var)
+  if not value:
+    raise ValueError(
+        f"Environment variable {env_var} is not set or empty: it must hold the"
+        " MongoDB connection string."
+    )
+  return value

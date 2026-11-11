@@ -4,8 +4,13 @@ ADK models use Pydantic v2.
 
 ## Basic Model Structure
 
+- Config and argument models are Pydantic models with `extra='forbid'`, as
+  `RunConfig` is, so a misspelled field raises instead of being dropped. A
+  model that crosses a storage or network boundary keeps the default, so an
+  older reader tolerates a field a newer writer added.
 - Use `Field()` for validation, defaults, and descriptions.
 - Use `PrivateAttr()` for internal state that must not be serialized.
+- Mark a field that holds a client `exclude=True`, as `Gemini.client` is.
 - Use `model_post_init()` for setup logic, not `__init__` — overriding
   `__init__` on a Pydantic model bypasses validation ordering.
 - Use `model_dump()` / `model_dump_json()`, not the v1 `dict()` / `json()`.
@@ -27,7 +32,7 @@ Declare bounds on the field rather than writing a validator for them — it
 keeps the rule next to the data and shows up in the generated JSON schema.
 
 ```python
-compaction_interval: Optional[int] = Field(default=None, gt=0)
+compaction_interval: int | None = Field(default=None, gt=0)
 injected_latency_seconds: float = Field(default=0.0, le=120.0)
 ```
 
@@ -37,7 +42,7 @@ The house style is an attribute docstring directly under the field, which
 Sphinx picks up:
 
 ```python
-model: Union[str, BaseLlm] = ''
+model: str | BaseLlm = ''
 """The model to use for the agent.
 
 When not set, the agent inherits the model from its ancestor.
@@ -65,6 +70,20 @@ WebSocket message, a persisted event — should inherit from
 and defaults `model_dump_json()` to `by_alias=True`, so Python stays
 snake_case while the wire format stays camelCase without every call site
 remembering to pass `by_alias`.
+
+### Never Pollute Persisted Models with Transient Flags
+
+Do not add transient control or bookkeeping fields (such as `NodeInfo.flush`
+or temporary routing flags) as serialized fields on persisted models (`Event`,
+`NodeInfo`, `Session`, `Content`).
+
+- For in-memory state on a model instance, use `PrivateAttr()`.
+- For ADK-internal event metadata that must survive storage across a
+  pause/resume boundary without being writable by external callers or exposed
+  in public responses, use `google.adk.events._internal_metadata`
+  (`INTERNAL_METADATA_PREFIX = '__adk_internal_'`,
+  `without_internal_metadata()`, `public_metadata()`, `internal_metadata()`,
+  and `public_event()`).
 
 ## `field_validator` — Single-Field Validation
 

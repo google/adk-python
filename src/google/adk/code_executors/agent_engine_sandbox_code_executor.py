@@ -38,7 +38,7 @@ from .code_executor_context import _CONTEXT_KEY
 logger = logging.getLogger('google_adk.' + __name__)
 
 if TYPE_CHECKING:
-  import vertexai
+  import agentplatform
 
 
 class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
@@ -123,6 +123,36 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       self.agent_engine_resource_name = agent_engine_resource_name
 
   @override
+  def __deepcopy__(
+      self, memo: dict[int, Any] | None = None
+  ) -> AgentEngineSandboxCodeExecutor:
+    """Supports deepcopy (e.g., for AdkApp.clone()) and serialization."""
+    if memo is None:
+      memo = {}
+    if self._agent_engine_creation_lock is not None:
+      memo[id(self._agent_engine_creation_lock)] = threading.Lock()
+    return super().__deepcopy__(memo=memo)
+
+  def __getstate__(self) -> dict[str, Any]:
+    """Excludes threading.Lock from serialization state for cloudpickle."""
+    state = super().__getstate__()
+    if (
+        '__pydantic_private__' in state
+        and state['__pydantic_private__'] is not None
+    ):
+      state['__pydantic_private__'] = {
+          k: v
+          for k, v in state['__pydantic_private__'].items()
+          if k != '_agent_engine_creation_lock'
+      }
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    """Restores state and reinitializes threading.Lock upon unpickling."""
+    super().__setstate__(state)
+    self._agent_engine_creation_lock = threading.Lock()
+
+  @override
   def execute_code(
       self,
       invocation_context: InvocationContext,
@@ -140,7 +170,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           )
           try:
             # Create a default Agent Engine.
-            created_engine = self._get_api_client().agent_engines.create()
+            created_engine = self._get_api_client().runtimes.create()
             self.agent_engine_resource_name = cast(
                 str, created_engine.api_resource.name
             )
@@ -155,7 +185,10 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
     if self.sandbox_resource_name is None:
       from google.api_core import exceptions
       from google.genai import errors as genai_errors
-      from vertexai import types
+
+      from ..dependencies._agentplatform import agentplatform
+
+      types = agentplatform.types
 
       # use sandbox name stored in session if available.
       sandbox_name = cast(
@@ -174,9 +207,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       else:
         # Check if the sandbox is still running OR already expired due to ttl.
         try:
-          sandbox = self._get_api_client().agent_engines.sandboxes.get(
-              name=sandbox_name
-          )
+          sandbox = self._get_api_client().sandboxes.get(name=sandbox_name)
           if sandbox is None or sandbox.state != 'STATE_RUNNING':
             create_new_sandbox = True
         except exceptions.NotFound:
@@ -189,10 +220,10 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
 
       if create_new_sandbox:
         # Create a new sandbox and assign it to sandbox_name.
-        operation = self._get_api_client().agent_engines.sandboxes.create(
+        operation = self._get_api_client().sandboxes.create(
             spec={'code_execution_environment': {}},
             name=self.agent_engine_resource_name,
-            config=types.CreateAgentEngineSandboxConfig(
+            config=types.CreateRuntimeSandboxConfig(
                 # VertexAiSessionService has a default TTL of 1 year, so we set
                 # the sandbox TTL to 1 year as well. For the current code
                 # execution sandbox, if it hasn't been used for 14 days, the
@@ -222,11 +253,9 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           for f in code_execution_input.input_files
       ]
 
-    code_execution_response = (
-        self._get_api_client().agent_engines.sandboxes.execute_code(
-            name=sandbox_name,
-            input_data=input_data,
-        )
+    code_execution_response = self._get_api_client().sandboxes.execute_code(
+        name=sandbox_name,
+        input_data=input_data,
     )
     logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
     saved_files = []
@@ -272,7 +301,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
         output_files=saved_files,
     )
 
-  def _get_api_client(self) -> vertexai.Client:
+  def _get_api_client(self) -> agentplatform.Client:
     """Instantiates an API client for the given project and location.
 
     It needs to be instantiated inside each request so that the event loop
@@ -281,9 +310,16 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
     Returns:
       An API client for the given project and location.
     """
-    import vertexai
+    from ..dependencies._agentplatform import agentplatform
+    from ..utils._dependency import require_agentplatform_attributes
 
-    return vertexai.Client(project=self._project_id, location=self._location)
+    client = agentplatform.Client(
+        project=self._project_id, location=self._location
+    )
+    require_agentplatform_attributes(
+        client, ('runtimes', 'sandboxes'), 'AgentEngineSandboxCodeExecutor'
+    )
+    return client
 
   def _get_project_id_and_location_from_resource_name(
       self, resource_name: str, pattern: str

@@ -24,7 +24,7 @@ from typing import Optional
 import click
 from google.genai import types
 
-from ...agents.run_config import StreamingMode
+from ...agents._streaming_mode import StreamingMode
 from ..adk_web_server import RunAgentRequest
 from ._generate_markdown_utils import generate_markdown_report
 from ._generated_file_utils import load_recorded_session
@@ -130,7 +130,7 @@ class ConformanceTestRunner:
       test_case: TestCase,
   ) -> None:
     """Run all user messages for a test case."""
-    function_call_name_to_id_map = {}
+    function_call_name_to_id_map: dict[Optional[str], list[Optional[str]]] = {}
     for user_message_index, user_message in enumerate(
         test_case.test_spec.user_messages
     ):

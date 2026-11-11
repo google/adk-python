@@ -17,6 +17,7 @@
 from google.adk.cli.conformance._conformance_test_google_llm import _ConformanceTestGemini
 from google.adk.cli.conformance._conformance_test_google_llm import ReplayVerificationError
 from google.adk.cli.plugins.recordings_schema import Recordings
+from google.adk.models.llm_request import LlmRequest
 import pytest
 
 
@@ -51,3 +52,16 @@ def test_present_recordings_does_not_raise():
   model = _ConformanceTestGemini(config=config)
 
   assert model._agent_llm_recordings == []
+
+
+async def test_missing_replay_index_raises_value_error():
+  config = {
+      '_adk_replay_recordings': Recordings(recordings=[]),
+      'user_message_index': 0,
+      'agent_name': 'root_agent',
+  }
+  model = _ConformanceTestGemini(config=config)
+
+  with pytest.raises(ValueError, match='current_replay_index'):
+    async for _ in model.generate_content_async(LlmRequest()):
+      pass

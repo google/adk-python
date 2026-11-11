@@ -74,6 +74,12 @@ Confirm the changed files pass `pre-commit run --files {paths}`.
   `src/google/adk/`? A breaking change needs a deprecation cycle first, because
   the package is released under Semantic Versioning and users pin minor
   versions.
+- **Session, Artifact, and Memory service changes**: adding any new field to
+  `Session`, `ArtifactVersion`, `MemoryEntry`, or to `BaseSessionService`,
+  `BaseArtifactService`, `BaseMemoryService` and their schemas is a **breaking
+  change** (even if optional or defaulted), because existing downstream storage
+  subclasses and external backends will not persist or deserialize unknown
+  fields, causing silent state loss upon reload.
 - **Execution and resumption**: changes to workflows, nodes, or state must stay
   compatible with the event execution lifecycle and with session resumption
   (human-in-the-loop steps and checkpoints). See the `adk-architecture` skill.
@@ -87,6 +93,10 @@ Confirm the changed files pass `pre-commit run --files {paths}`.
   multi-container startup races (process-local `asyncio.Lock` does not prevent
   cross-container TOCTOU races on `checkfirst=True`) by wrapping creation in a
   `SAVEPOINT` (`connection.begin_nested()`) and tolerating concurrent creation.
+- **Scope**: a new public name, parameter or flag the fix did not need; a flag
+  that keeps the buggy behavior as the default; a fix in a shared layer when
+  one caller needed it; an existing test assertion edited to match the new
+  behavior.
 
 ### 5. Documentation impact
 
@@ -112,6 +122,13 @@ Confirm the changed files pass `pre-commit run --files {paths}`.
 - Tests follow the rules in the `adk-style` testing reference: one behavior per
   test, behavior-named tests, no assertions on private attributes, minimal
   fixtures, arrange/act/assert structure.
+
+## Ground each finding
+
+Before reporting a finding, resolve the symbol through base classes (`Event`
+extends `LlmResponse`). For a correctness finding, name the input that makes it
+fail; for any other finding, quote the rule or convention it breaks. A finding
+that is neither is a guess; leave it out.
 
 ## Report format
 

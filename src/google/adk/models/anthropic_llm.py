@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import copy
 import dataclasses
 from functools import cached_property
@@ -31,10 +32,8 @@ from typing import cast
 from typing import get_args
 from typing import Iterable
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeAlias
-from typing import Union
 import warnings
 
 from anthropic import AsyncAnthropic
@@ -53,8 +52,10 @@ from typing_extensions import override
 from . import _prompt_cache
 from ..utils import _json_utils
 from ..utils import streaming_utils
+from ..utils._dependency import missing_extra
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
+from ..utils._schema_utils import schema_to_json_schema
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
 from .llm_response import LlmResponse
@@ -75,22 +76,69 @@ _ImageMediaType: TypeAlias = Literal[
 ]
 _ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset[str](get_args(_ImageMediaType))
 
-_MessageBlockParam: TypeAlias = Union[
-    anthropic_types.TextBlockParam,
-    anthropic_types.ThinkingBlockParam,
-    anthropic_types.RedactedThinkingBlockParam,
-    anthropic_types.ImageBlockParam,
-    anthropic_types.DocumentBlockParam,
-    anthropic_types.ToolUseBlockParam,
-    anthropic_types.ToolResultBlockParam,
-]
+# Base64 grows a file by 4/3, so 21 MiB encodes to under 30 MB, the smallest
+# whole-request cap (Claude on Vertex AI). A coarse per-file guard: several
+# files in one request can still exceed it together.
+_MAX_FILE_DATA_SIZE = 21 * 1024 * 1024
+
+
+def _download_gcs_uri(uri: str, downloads: dict[str, bytes]) -> bytes:
+  """Downloads the object a gs:// file_data URI points at.
+
+  Claude accepts only inline base64 sources, so the bytes travel in the
+  request itself. The part stays a gs:// reference in session history, so the
+  object is fetched again on every later turn and must stay readable for the
+  life of the session. `downloads` caches objects by URI for one request.
+  Raises ValueError when the object exceeds `_MAX_FILE_DATA_SIZE`, or when the
+  URI does not name a bucket and an object.
+  """
+  if uri in downloads:
+    return downloads[uri]
+  bucket_name, _, object_name = uri.removeprefix("gs://").partition("/")
+  if not bucket_name or not object_name:
+    raise ValueError(f"gs:// URI must name a bucket and an object: {uri}")
+  try:
+    from google.cloud.storage import Client
+  except ImportError as e:
+    raise missing_extra("google-cloud-storage", "gcp") from e
+  # project=None skips project inference, which raises OSError under ADC
+  # without a project; reading an object needs no project.
+  with contextlib.closing(Client(project=None)) as client:
+    blob = client.bucket(bucket_name).get_blob(object_name)
+    if blob is None:
+      raise ValueError(f"gs:// object not found: {uri}")
+    size = blob.size
+    if size is not None and size > _MAX_FILE_DATA_SIZE:
+      raise ValueError(
+          f"gs:// object too large: {uri} is {size} bytes, over ADK's inline"
+          f" file size cap ({_MAX_FILE_DATA_SIZE} bytes)."
+      )
+    data: bytes = blob.download_as_bytes()
+  if len(data) > _MAX_FILE_DATA_SIZE:
+    raise ValueError(
+        f"gs:// object too large: {uri} is {len(data)} bytes, over ADK's"
+        f" inline file size cap ({_MAX_FILE_DATA_SIZE} bytes)."
+    )
+  downloads[uri] = data
+  return data
+
+
+_MessageBlockParam: TypeAlias = (
+    anthropic_types.TextBlockParam
+    | anthropic_types.ThinkingBlockParam
+    | anthropic_types.RedactedThinkingBlockParam
+    | anthropic_types.ImageBlockParam
+    | anthropic_types.DocumentBlockParam
+    | anthropic_types.ToolUseBlockParam
+    | anthropic_types.ToolResultBlockParam
+)
 
 # The subset of block types Claude accepts inside a tool result.
-_ToolResultContentBlockParam: TypeAlias = Union[
-    anthropic_types.TextBlockParam,
-    anthropic_types.ImageBlockParam,
-    anthropic_types.DocumentBlockParam,
-]
+_ToolResultContentBlockParam: TypeAlias = (
+    anthropic_types.TextBlockParam
+    | anthropic_types.ImageBlockParam
+    | anthropic_types.DocumentBlockParam
+)
 
 # Attributes an Anthropic client exposes once it has resolved a credential,
 # whichever source it came from: a static API key, a static bearer token, or a
@@ -108,6 +156,14 @@ _RATE_LIMIT_POSSIBLE_FIX_MESSAGE = (
 
 # Claude rejects a cache breakpoint on a reasoning block.
 _UNCACHEABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+# The tool a requested response schema is delivered as; see _OutputSchemaTool.
+_OUTPUT_SCHEMA_TOOL_NAME = "structured_output"
+_OUTPUT_SCHEMA_TOOL_DESCRIPTION = (
+    "Provide your final answer. Call this tool exactly once, with your whole "
+    "answer in the structure its input describes."
+)
+_OUTPUT_SCHEMA_VALUE_KEY = "response"
 
 
 # anthropic is an optional dependency, so mypy resolves the base class to Any.
@@ -145,13 +201,13 @@ class _ThinkingAccumulator:
 
 
 def _build_anthropic_thinking_param(
-    config: Optional[types.GenerateContentConfig],
-) -> Union[
-    anthropic_types.ThinkingConfigEnabledParam,
-    anthropic_types.ThinkingConfigDisabledParam,
-    anthropic_types.ThinkingConfigAdaptiveParam,
-    NotGiven,
-]:
+    config: types.GenerateContentConfig | None,
+) -> (
+    anthropic_types.ThinkingConfigEnabledParam
+    | anthropic_types.ThinkingConfigDisabledParam
+    | anthropic_types.ThinkingConfigAdaptiveParam
+    | NotGiven
+):
   """Maps genai ThinkingConfig to Anthropic's thinking parameter.
 
   Per ``google.genai.types.ThinkingConfig``, ``thinking_budget`` semantics are:
@@ -215,6 +271,59 @@ def _build_anthropic_thinking_param(
   )
 
 
+def _thinking_is_enabled(
+    thinking: (
+        anthropic_types.ThinkingConfigEnabledParam
+        | anthropic_types.ThinkingConfigDisabledParam
+        | anthropic_types.ThinkingConfigAdaptiveParam
+        | NotGiven
+    ),
+) -> bool:
+  """Whether the mapped thinking parameter asks Claude to reason."""
+  if not isinstance(thinking, dict):
+    return False
+  return thinking.get("type") in ("enabled", "adaptive")
+
+
+def _build_tool_choice(
+    config: types.GenerateContentConfig | None,
+    *,
+    forced_tool_use_blocked: bool,
+) -> anthropic_types.ToolChoiceParam:
+  """Maps the request's function calling mode to Claude's tool_choice.
+
+  Claude cannot restrict a call to a subset of several tools, so ``ANY`` with
+  more than one allowed function name becomes ``any``. Claude rejects forced
+  tool use with manual extended thinking, so ``ANY`` falls back to ``auto``
+  then.
+  """
+  function_calling_config = (
+      config.tool_config.function_calling_config
+      if config and config.tool_config
+      else None
+  )
+  if function_calling_config is None:
+    return anthropic_types.ToolChoiceAutoParam(type="auto")
+  mode = function_calling_config.mode
+  if mode == types.FunctionCallingConfigMode.NONE:
+    return anthropic_types.ToolChoiceNoneParam(type="none")
+  if mode == types.FunctionCallingConfigMode.ANY:
+    if forced_tool_use_blocked:
+      logger.warning(
+          "Claude does not allow forcing a tool call with manual extended"
+          " thinking; sending tool_choice 'auto' instead of the configured"
+          " function calling mode ANY."
+      )
+      return anthropic_types.ToolChoiceAutoParam(type="auto")
+    allowed_names = function_calling_config.allowed_function_names or []
+    if len(allowed_names) == 1:
+      return anthropic_types.ToolChoiceToolParam(
+          type="tool", name=allowed_names[0]
+      )
+    return anthropic_types.ToolChoiceAnyParam(type="any")
+  return anthropic_types.ToolChoiceAutoParam(type="auto")
+
+
 class AnthropicGenerateContentConfig(types.GenerateContentConfig):
   """Configuration options for Anthropic Claude content generation.
 
@@ -228,7 +337,7 @@ class AnthropicGenerateContentConfig(types.GenerateContentConfig):
       `thinking_budget` on newer Claude models.
   """
 
-  effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = Field(
+  effort: Literal["low", "medium", "high", "xhigh", "max"] | None = Field(
       default=None,
       description=(
           "Configures the Claude-specific reasoning effort level for adaptive"
@@ -238,7 +347,7 @@ class AnthropicGenerateContentConfig(types.GenerateContentConfig):
   )
 
   @model_validator(mode="after")
-  def validate_no_thinking_level(self) -> "AnthropicGenerateContentConfig":
+  def validate_no_thinking_level(self) -> AnthropicGenerateContentConfig:
     """Ensures thinking_level is not configured on Anthropic-specific config."""
 
     if self.thinking_config and self.thinking_config.thinking_level is not None:
@@ -250,8 +359,8 @@ class AnthropicGenerateContentConfig(types.GenerateContentConfig):
 
 
 def _build_effort_param(
-    config: Optional[types.GenerateContentConfig],
-) -> Optional[str]:
+    config: types.GenerateContentConfig | None,
+) -> str | None:
   """Extracts Anthropic's effort parameter from the configuration.
 
   To configure a specific reasoning effort level for Anthropic models,
@@ -300,31 +409,92 @@ class ClaudeRequest(BaseModel):
   tools: list[anthropic_types.ToolParam]
 
 
-def to_claude_role(role: Optional[str]) -> Literal["user", "assistant"]:
+def to_claude_role(role: str | None) -> Literal["user", "assistant"]:
   if role in ["model", "assistant"]:
     return "assistant"
   return "user"
 
 
 # Mapping of Anthropic stop_reason strings to FinishReason enum values
-_STOP_REASON_MAPPING: dict[anthropic_types.StopReason, types.FinishReason] = {
+# Keyed by str: "model_context_window_exceeded" is missing from the anthropic
+# SDK's StopReason literal.
+_STOP_REASON_MAPPING: dict[str, types.FinishReason] = {
     "end_turn": types.FinishReason.STOP,
     "stop_sequence": types.FinishReason.STOP,
     "tool_use": types.FinishReason.STOP,
     "pause_turn": types.FinishReason.STOP,
     "max_tokens": types.FinishReason.MAX_TOKENS,
+    # Generation stopped because the context window filled up, so the output
+    # is truncated just as with max_tokens.
+    "model_context_window_exceeded": types.FinishReason.MAX_TOKENS,
     "refusal": types.FinishReason.SAFETY,
 }
 
+# Stop reasons that can cut a tool_use block off before its input is complete.
+_TRUNCATING_STOP_REASONS = frozenset(
+    {"max_tokens", "model_context_window_exceeded"}
+)
+
 
 def to_google_genai_finish_reason(
-    anthropic_stop_reason: Optional[anthropic_types.StopReason],
+    anthropic_stop_reason: anthropic_types.StopReason | None,
 ) -> types.FinishReason | None:
   """Maps Anthropic stop_reason to Google GenAI FinishReason."""
   if anthropic_stop_reason is None:
     return None
   return _STOP_REASON_MAPPING.get(
       anthropic_stop_reason, types.FinishReason.FINISH_REASON_UNSPECIFIED
+  )
+
+
+def _truncated_tool_use_response(
+    *,
+    usage_metadata: types.GenerateContentResponseUsageMetadata,
+    cache_creation_token_count: int | None,
+    model_version: str | None,
+) -> LlmResponse:
+  """Reports a response that was cut off inside a tool_use block.
+
+  The last tool call's input is incomplete, so no call from the response is
+  returned: running one would act on arguments Claude never finished.
+  """
+  return LlmResponse(
+      error_code=types.FinishReason.MAX_TOKENS,
+      error_message=(
+          "The response was cut off by the max_tokens or context window limit"
+          " before a tool call or structured output was complete, so it was"
+          " not returned. Increase `max_output_tokens` or shorten the context"
+          " and retry."
+      ),
+      finish_reason=types.FinishReason.MAX_TOKENS,
+      usage_metadata=usage_metadata,
+      cache_creation_token_count=cache_creation_token_count,
+      model_version=model_version,
+  )
+
+
+def _empty_response_error(
+    *,
+    stop_reason: anthropic_types.StopReason | None,
+    finish_reason: types.FinishReason | None,
+    parts: list[types.Part],
+) -> tuple[types.FinishReason | None, str | None]:
+  """Returns the error code and message for a non-STOP turn with no content.
+
+  Only non-thought text or a function call counts as content.
+  """
+  if (
+      any(
+          not part.thought and (part.text or part.function_call)
+          for part in parts
+      )
+      or finish_reason is None
+      or finish_reason == types.FinishReason.STOP
+  ):
+    return None, None
+  return finish_reason, (
+      f"Claude stopped with {finish_reason.value} ({stop_reason!r}) and no"
+      " content."
   )
 
 
@@ -363,6 +533,17 @@ _PART_CONTENT_FIELDS = (
 )
 
 
+def _is_empty_text_part(part: types.Part) -> bool:
+  """Returns True for parts that carry nothing but an empty text string.
+
+  ADK itself can produce such parts (e.g. code execution with no output writes
+  `Part(text='')` into the content), and Anthropic rejects empty text blocks.
+  """
+  if part.text != "" or part.thought_signature:
+    return False
+  return not any(getattr(part, f, None) for f in _PART_CONTENT_FIELDS)
+
+
 def _is_content_free_signature(part: types.Part) -> bool:
   """Whether a part is a thought signature with nothing to send beside it.
 
@@ -383,6 +564,7 @@ def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
 
 def _function_response_media_blocks(
     function_response: types.FunctionResponse,
+    downloads: dict[str, bytes],
 ) -> list[_ToolResultContentBlockParam]:
   """Converts media a tool attached to its response into tool result blocks.
 
@@ -394,10 +576,40 @@ def _function_response_media_blocks(
   blocks: list[_ToolResultContentBlockParam] = []
   for response_part in function_response.parts or []:
     blob = response_part.inline_data
-    if blob is None or blob.data is None or not blob.mime_type:
+    file_data = response_part.file_data
+    raw: bytes | None
+    uri = ""
+    if blob is not None and blob.data is not None and blob.mime_type:
+      mime_type, raw = blob.mime_type, blob.data
+    elif file_data is not None and file_data.file_uri and file_data.mime_type:
+      mime_type, uri, raw = file_data.mime_type, file_data.file_uri, None
+    else:
       continue
-    media_type = blob.mime_type.split(";", 1)[0].strip().lower()
-    data = base64.b64encode(blob.data).decode()
+    media_type = mime_type.split(";", 1)[0].strip().lower()
+    if (
+        media_type not in _ANTHROPIC_IMAGE_MEDIA_TYPES
+        and media_type != "application/pdf"
+    ):
+      logger.warning(
+          "Dropping tool result media of type %s, which Claude cannot receive"
+          " in a tool result.",
+          media_type,
+      )
+      continue
+    if raw is None:
+      if not uri.startswith("gs://"):
+        logger.warning(
+            "Dropping tool result file %s; only gs:// URIs can be sent.", uri
+        )
+        continue
+      try:
+        raw = _download_gcs_uri(uri, downloads)
+      # Auth, network and missing-extra errors are dropped too: the part stays
+      # in history, so raising would fail every later turn.
+      except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Dropping tool result file %s: %s", uri, e)
+        continue
+    data = base64.b64encode(raw).decode()
     if media_type in _ANTHROPIC_IMAGE_MEDIA_TYPES:
       blocks.append(
           anthropic_types.ImageBlockParam(
@@ -410,7 +622,7 @@ def _function_response_media_blocks(
               ),
           )
       )
-    elif media_type == "application/pdf":
+    else:
       blocks.append(
           anthropic_types.DocumentBlockParam(
               type="document",
@@ -420,12 +632,6 @@ def _function_response_media_blocks(
                   data=data,
               ),
           )
-      )
-    else:
-      logger.warning(
-          "Dropping tool result media of type %s, which Claude cannot receive"
-          " in a tool result.",
-          media_type,
       )
   return blocks
 
@@ -489,8 +695,9 @@ class _ToolUseIdSanitizer:
 def _part_to_message_block(
     part: types.Part,
     sanitizer: _ToolUseIdSanitizer,
+    downloads: dict[str, bytes],
 ) -> _MessageBlockParam:
-  if part.thought and part.text:
+  if part.thought and part.text is not None:
     signature = ""
     if part.thought_signature:
       signature = part.thought_signature.decode("utf-8")
@@ -570,8 +777,8 @@ def _part_to_message_block(
     # A tool can attach media alongside the serializable part of its result.
     # It travels in a dedicated field, so it has to be mapped over explicitly
     # or the model never sees it.
-    media_blocks = _function_response_media_blocks(function_response)
-    tool_result_content: Union[str, list[_ToolResultContentBlockParam]]
+    media_blocks = _function_response_media_blocks(function_response, downloads)
+    tool_result_content: str | list[_ToolResultContentBlockParam]
     if media_blocks:
       leading_text: list[_ToolResultContentBlockParam] = (
           [anthropic_types.TextBlockParam(type="text", text=content)]
@@ -582,6 +789,12 @@ def _part_to_message_block(
     else:
       tool_result_content = content
 
+    # An MCP CallToolResult reports a failed call with `isError`, spelled
+    # `is_error` in dumps made with MCP SDK 2.x field names.
+    is_error = bool(
+        response_data.get("isError") or response_data.get("is_error")
+    )
+
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=sanitizer.sanitize(
             function_response.id,
@@ -590,7 +803,7 @@ def _part_to_message_block(
         ),
         type="tool_result",
         content=tool_result_content,
-        is_error=False,
+        is_error=is_error,
     )
   elif _is_image_part(part):
     inline_data = part.inline_data
@@ -624,6 +837,36 @@ def _part_to_message_block(
         type="document",
         source=pdf_source,
     )
+  elif part.file_data:
+    file_data = part.file_data
+    uri = file_data.file_uri or ""
+    mime_type = (file_data.mime_type or "").split(";", 1)[0].strip().lower()
+    # Claude rejects URL sources upstream, so gs:// objects are downloaded
+    # and sent inline as base64. Any other URI scheme stays unsupported.
+    if not uri.startswith("gs://"):
+      raise NotImplementedError(f"Not supported yet: {part}")
+    is_pdf = mime_type == "application/pdf"
+    if not is_pdf and not mime_type.startswith("image/"):
+      raise NotImplementedError(f"Not supported yet: {part}")
+    if is_pdf:
+      return anthropic_types.DocumentBlockParam(
+          type="document",
+          source=anthropic_types.Base64PDFSourceParam(
+              type="base64",
+              media_type="application/pdf",
+              data=base64.b64encode(_download_gcs_uri(uri, downloads)).decode(),
+          ),
+      )
+    # Validated before the download so an unsupported image is never fetched.
+    media_type = _normalize_image_media_type(mime_type)
+    return anthropic_types.ImageBlockParam(
+        type="image",
+        source=anthropic_types.Base64ImageSourceParam(
+            type="base64",
+            media_type=media_type,
+            data=base64.b64encode(_download_gcs_uri(uri, downloads)).decode(),
+        ),
+    )
   elif part.executable_code:
     return anthropic_types.TextBlockParam(
         type="text",
@@ -643,8 +886,10 @@ def _part_to_message_block(
 def _content_to_message_param(
     content: types.Content,
     sanitizer: _ToolUseIdSanitizer,
+    downloads: dict[str, bytes],
 ) -> anthropic_types.MessageParam:
   message_block = []
+  had_empty_text = False
   for part in content.parts or []:
     # Image data is not supported in Claude for assistant turns.
     if content.role != "user" and _is_image_part(part):
@@ -658,16 +903,42 @@ def _content_to_message_param(
       logger.warning("PDF data is not supported in Claude for assistant turns.")
       continue
 
+    # Claude takes no image or document block on an assistant turn, so file
+    # media there would fail the whole request.
+    if content.role != "user" and part.file_data:
+      logger.warning(
+          "File data is not supported in Claude for assistant turns."
+      )
+      continue
+
     # A signature with nothing to send beside it: there is no block to build
     # from it, and it used to raise and wedge the session for good.
     if _is_content_free_signature(part):
       logger.warning("Dropping a thought signature from another model.")
       continue
 
-    message_block.append(_part_to_message_block(part, sanitizer))
+    # Anthropic rejects empty text blocks; skip them rather than failing the
+    # whole request with NotImplementedError.
+    if _is_empty_text_part(part):
+      logger.debug("Skipping empty text part for Claude request.")
+      had_empty_text = True
+      continue
+
+    message_block.append(_part_to_message_block(part, sanitizer, downloads))
+
+  # Anthropic rejects empty text blocks, but dropping a turn whose only part
+  # was empty text causes problems: e.g. code execution with no output produces
+  # a user turn holding `Part(text='')` as the final message, and dropping it
+  # would end the conversation on an assistant turn, which Anthropic treats
+  # as assistant prefill. A non-whitespace placeholder keeps the turn valid,
+  # but only for user turns: a trailing assistant message is treated as
+  # assistant prefill.
+  role = to_claude_role(content.role)
+  if not message_block and had_empty_text and role == "user":
+    message_block.append(anthropic_types.TextBlockParam(type="text", text="."))
 
   return {
-      "role": to_claude_role(content.role),
+      "role": role,
       "content": message_block,
   }
 
@@ -675,13 +946,13 @@ def _content_to_message_param(
 def part_to_message_block(
     part: types.Part,
 ) -> _MessageBlockParam:
-  return _part_to_message_block(part, _ToolUseIdSanitizer())
+  return _part_to_message_block(part, _ToolUseIdSanitizer(), {})
 
 
 def content_to_message_param(
     content: types.Content,
 ) -> anthropic_types.MessageParam:
-  return _content_to_message_param(content, _ToolUseIdSanitizer())
+  return _content_to_message_param(content, _ToolUseIdSanitizer(), {})
 
 
 def content_block_to_part(
@@ -723,7 +994,15 @@ def _extract_cached_token_count(usage: Any) -> int | None:
   return cached if isinstance(cached, int) else None
 
 
-def _extract_prompt_token_count(usage: anthropic_types.Usage) -> int:
+def _extract_uncached_input_token_count(usage: Any) -> int | None:
+  """Returns ``input_tokens``, the part of the prompt outside the cache."""
+  value = getattr(usage, "input_tokens", None)
+  return value if isinstance(value, int) else None
+
+
+def _prompt_token_count(
+    *, uncached: int | None, cached: int | None, cache_creation: int | None
+) -> int:
   """Returns every input token billed for the turn.
 
   Anthropic reports tokens served from the prompt cache and tokens written to
@@ -731,16 +1010,7 @@ def _extract_prompt_token_count(usage: anthropic_types.Usage) -> int:
   instead expects a single prompt count with the cached portion folded in --
   ``cached_content_token_count`` is a breakdown of it, not an addition to it.
   """
-  total = 0
-  for field in (
-      "input_tokens",
-      "cache_read_input_tokens",
-      "cache_creation_input_tokens",
-  ):
-    value = getattr(usage, field, None)
-    if isinstance(value, int):
-      total += value
-  return total
+  return (uncached or 0) + (cached or 0) + (cache_creation or 0)
 
 
 def _extract_thinking_token_count(
@@ -779,9 +1049,13 @@ def message_to_generate_content_response(
       message.model_dump_json(indent=2, exclude_none=True),
   )
 
-  parts = [content_block_to_part(cb) for cb in message.content]
-
-  prompt_tokens = _extract_prompt_token_count(message.usage)
+  cached = _extract_cached_token_count(message.usage)
+  cache_creation = _extract_cache_creation_token_count(message.usage)
+  prompt_tokens = _prompt_token_count(
+      uncached=_extract_uncached_input_token_count(message.usage),
+      cached=cached,
+      cache_creation=cache_creation,
+  )
   thinking_tokens = _extract_thinking_token_count(message.usage)
   usage_metadata = types.GenerateContentResponseUsageMetadata(
       prompt_token_count=prompt_tokens,
@@ -789,22 +1063,42 @@ def message_to_generate_content_response(
           message.usage.output_tokens - (thinking_tokens or 0)
       ),
       total_token_count=prompt_tokens + message.usage.output_tokens,
-      cached_content_token_count=_extract_cached_token_count(message.usage),
+      cached_content_token_count=cached,
       thoughts_token_count=thinking_tokens,
   )
-  cache_creation = _extract_cache_creation_token_count(message.usage)
   if cache_creation is not None:
     object.__setattr__(
         usage_metadata, "cache_creation_input_tokens", cache_creation
     )
 
+  if (
+      message.stop_reason in _TRUNCATING_STOP_REASONS
+      and message.content
+      and message.content[-1].type == "tool_use"
+  ):
+    return _truncated_tool_use_response(
+        usage_metadata=usage_metadata,
+        cache_creation_token_count=cache_creation,
+        model_version=message.model,
+    )
+
+  parts = [content_block_to_part(cb) for cb in message.content]
+  finish_reason = to_google_genai_finish_reason(message.stop_reason)
+  error_code, error_message = _empty_response_error(
+      stop_reason=message.stop_reason,
+      finish_reason=finish_reason,
+      parts=parts,
+  )
   return LlmResponse(
       content=types.Content(
           role="model",
           parts=parts,
       ),
       usage_metadata=usage_metadata,
-      finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      cache_creation_token_count=cache_creation,
+      finish_reason=finish_reason,
+      error_code=error_code,
+      error_message=error_message,
       model_version=message.model,
   )
 
@@ -842,6 +1136,103 @@ def function_declaration_to_tool_param(
       description=function_declaration.description or "",
       input_schema=input_schema,
   )
+
+
+@dataclasses.dataclass(frozen=True)
+class _OutputSchemaTool:
+  """A response schema delivered as the one tool Claude is asked to call.
+
+  Claude takes a schema natively only through ``output_config.format`` on its
+  newest models, so a request that asks for structured output and declares no
+  tools of its own carries the schema as a tool definition instead. The call
+  Claude makes is turned back into the response text the rest of the framework
+  already expects.
+  """
+
+  param: anthropic_types.ToolParam
+  nests_value: bool
+  """Whether the schema had to be nested to make the tool input an object."""
+
+  @classmethod
+  def for_schema(cls, response_schema: types.SchemaUnion) -> _OutputSchemaTool:
+    """Builds the tool that carries ``response_schema``."""
+    if isinstance(response_schema, types.Schema):
+      input_schema = response_schema.model_dump(
+          by_alias=True, exclude_none=True, mode="json"
+      )
+    else:
+      input_schema = copy.deepcopy(schema_to_json_schema(response_schema))
+    lowercase_schema_types(input_schema)
+
+    # A tool's input schema must be an object, so a list or a scalar schema
+    # becomes the single property of one.
+    nests_value = input_schema.get("type") != "object"
+    if nests_value:
+      # A $ref is resolved from the document root, so the $defs it points at
+      # have to stay there rather than move under the new property.
+      defs = input_schema.pop("$defs", None)
+      input_schema = {
+          "type": "object",
+          "properties": {_OUTPUT_SCHEMA_VALUE_KEY: input_schema},
+          "required": [_OUTPUT_SCHEMA_VALUE_KEY],
+      }
+      if defs:
+        input_schema["$defs"] = defs
+
+    return cls(
+        param=anthropic_types.ToolParam(
+            name=_OUTPUT_SCHEMA_TOOL_NAME,
+            description=_OUTPUT_SCHEMA_TOOL_DESCRIPTION,
+            input_schema=input_schema,
+        ),
+        nests_value=nests_value,
+    )
+
+  def choice(
+      self, *, thinking_enabled: bool
+  ) -> anthropic_types.ToolChoiceParam:
+    """The tool choice that asks for exactly one call to this tool.
+
+    Claude rejects forced tool use outright while extended thinking is on, so
+    a thinking request offers the tool and takes back whatever text it gets.
+    """
+    if thinking_enabled:
+      return anthropic_types.ToolChoiceAutoParam(
+          type="auto",
+          disable_parallel_tool_use=True,
+      )
+    return anthropic_types.ToolChoiceToolParam(
+        type="tool",
+        name=_OUTPUT_SCHEMA_TOOL_NAME,
+        disable_parallel_tool_use=True,
+    )
+
+  def to_text(self, args: dict[str, Any]) -> str:
+    """Returns the structured response a call to this tool carries."""
+    value = args.get(_OUTPUT_SCHEMA_VALUE_KEY) if self.nests_value else args
+    return json.dumps(value, ensure_ascii=False)
+
+  def unwrap(self, response: LlmResponse) -> LlmResponse:
+    """Replaces the tool call, in place, with the response it carries."""
+    if not response.content or not response.content.parts:
+      return response
+    call = next(
+        (
+            part.function_call
+            for part in response.content.parts
+            if part.function_call is not None
+            and part.function_call.name == _OUTPUT_SCHEMA_TOOL_NAME
+        ),
+        None,
+    )
+    if call is None:
+      return response
+    # Offered rather than forced, Claude may narrate before it calls the tool,
+    # and that prose would be read as part of the structured answer.
+    parts = [part for part in response.content.parts if part.thought]
+    parts.append(types.Part.from_text(text=self.to_text(call.args or {})))
+    response.content.parts = parts
+    return response
 
 
 def _to_cache_control(
@@ -946,6 +1337,33 @@ def _apply_cache_breakpoints(
   return system
 
 
+def _ensure_messages_end_with_user(
+    messages: list[anthropic_types.MessageParam],
+) -> None:
+  """Appends a user turn when the conversation does not end on one.
+
+  Claude treats a final assistant message as prefill: Claude 4.6 and later
+  reject it with a 400, and older models continue the previous reply instead
+  of answering again. The texts match `BaseLlm._maybe_append_user_content`,
+  which the other model classes call on `llm_request.contents`. This runs on
+  the converted messages instead, so that a turn dropped for having no content
+  is accounted for and the synthetic turn stays outside the cached prefix.
+  """
+  if messages and messages[-1]["role"] == "user":
+    return
+  if messages:
+    text = (
+        "Continue processing previous requests as instructed."
+        " Exit or provide a summary if no more outputs are needed."
+    )
+  else:
+    text = "Handle the requests as specified in the System Instruction."
+  messages.append({
+      "role": "user",
+      "content": [anthropic_types.TextBlockParam(type="text", text=text)],
+  })
+
+
 class AnthropicLlm(BaseLlm):
   """Integration with Claude models via the Anthropic API.
 
@@ -965,20 +1383,22 @@ class AnthropicLlm(BaseLlm):
   model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
 
-  client: Optional[Union[AsyncAnthropic, AsyncAnthropicVertex]] = Field(
+  client: AsyncAnthropic | AsyncAnthropicVertex | None = Field(
       default=None, exclude=True
   )
   """An optional pre-configured Anthropic client."""
 
   # Coordinates concurrent coroutines initializing the client.
-  _client_init_task: asyncio.Task | None = PrivateAttr(default=None)
+  _client_init_task: (
+      asyncio.Task[AsyncAnthropic | AsyncAnthropicVertex] | None
+  ) = PrivateAttr(default=None)
 
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
     return [r"claude-.*"]
 
-  def _resolve_model_name(self, model: Optional[str]) -> str:
+  def _resolve_model_name(self, model: str | None) -> str:
     if not model:
       return self.model
     if model.startswith("projects/"):
@@ -994,14 +1414,14 @@ class AnthropicLlm(BaseLlm):
       self,
       llm_request: LlmRequest,
       messages: list[anthropic_types.MessageParam],
-      tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
-      tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
-      thinking: Union[
-          anthropic_types.ThinkingConfigEnabledParam,
-          anthropic_types.ThinkingConfigDisabledParam,
-          anthropic_types.ThinkingConfigAdaptiveParam,
-          NotGiven,
-      ],
+      tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven,
+      tool_choice: anthropic_types.ToolChoiceParam | NotGiven,
+      thinking: (
+          anthropic_types.ThinkingConfigEnabledParam
+          | anthropic_types.ThinkingConfigDisabledParam
+          | anthropic_types.ThinkingConfigAdaptiveParam
+          | NotGiven
+      ),
   ) -> dict[str, Any]:
     system: str | NotGiven = NOT_GIVEN
     if llm_request.config:
@@ -1019,6 +1439,9 @@ class AnthropicLlm(BaseLlm):
           tools=tools,
       )
 
+    # After the cache breakpoints, so the synthetic turn is never cached.
+    _ensure_messages_end_with_user(messages)
+
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
         "model": model_to_use,
@@ -1033,13 +1456,7 @@ class AnthropicLlm(BaseLlm):
     if effort:
       kwargs["output_config"] = {"effort": effort}
 
-    # Determine if thinking is enabled to avoid parameter conflicts.
-    thinking_enabled = False
-    if thinking is not NOT_GIVEN and thinking is not None:
-      if isinstance(thinking, dict):
-        thinking_enabled = thinking.get("type") in ["enabled", "adaptive"]
-
-    exclude_sampling = thinking_enabled or (effort is not None)
+    exclude_sampling = _thinking_is_enabled(thinking) or (effort is not None)
 
     if llm_request.config:
       # Models released after Claude Opus 4.6 do not support setting
@@ -1081,18 +1498,24 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     sanitizer = _ToolUseIdSanitizer()
+    downloads: dict[str, bytes] = {}
+
     # A turn whose parts are all dropped above leaves no blocks behind, and
     # Anthropic rejects a message with empty content. Sending one re-wedges the
     # session exactly as the NotImplementedError did: the offending part stays
     # in history, so every later turn fails the same way.
-    messages = [
-        message
-        for message in (
-            _content_to_message_param(content, sanitizer)
-            for content in llm_request.contents or []
-        )
-        if message["content"]
-    ]
+    def _build_messages() -> list[anthropic_types.MessageParam]:
+      return [
+          message
+          for message in (
+              _content_to_message_param(content, sanitizer, downloads)
+              for content in llm_request.contents or []
+          )
+          if message["content"]
+      ]
+
+    # Converting a gs:// file part downloads it, which would block the loop.
+    messages = await asyncio.to_thread(_build_messages)
     tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
     function_declarations: list[types.FunctionDeclaration] = []
     if llm_request.config and llm_request.config.tools:
@@ -1106,12 +1529,32 @@ class AnthropicLlm(BaseLlm):
           function_declaration_to_tool_param(tool)
           for tool in function_declarations
       ]
-    tool_choice = (
-        anthropic_types.ToolChoiceAutoParam(type="auto")
+    thinking = _build_anthropic_thinking_param(llm_request.config)
+    tool_choice: anthropic_types.ToolChoiceParam | NotGiven = (
+        _build_tool_choice(
+            llm_request.config,
+            forced_tool_use_blocked=(
+                isinstance(thinking, dict) and thinking.get("type") == "enabled"
+            ),
+        )
         if llm_request.tools_dict
         else NOT_GIVEN
     )
-    thinking = _build_anthropic_thinking_param(llm_request.config)
+    # A requested schema rides along as a tool, since forcing a call on a
+    # request that already declares tools would cut that turn short.
+    output_schema_tool: _OutputSchemaTool | None = None
+    if (
+        llm_request.config
+        and llm_request.config.response_schema
+        and not function_declarations
+    ):
+      output_schema_tool = _OutputSchemaTool.for_schema(
+          llm_request.config.response_schema
+      )
+      tools = [output_schema_tool.param]
+      tool_choice = output_schema_tool.choice(
+          thinking_enabled=_thinking_is_enabled(thinking)
+      )
 
     try:
       client = await self._get_anthropic_client()
@@ -1120,10 +1563,18 @@ class AnthropicLlm(BaseLlm):
             llm_request, messages, tools, tool_choice, thinking
         )
         message = await client.messages.create(**kwargs)
-        yield message_to_generate_content_response(message)
+        response = message_to_generate_content_response(message)
+        if output_schema_tool is not None:
+          response = output_schema_tool.unwrap(response)
+        yield response
       else:
         async for response in self._generate_content_streaming(
-            llm_request, messages, tools, tool_choice, thinking
+            llm_request,
+            messages,
+            tools,
+            tool_choice,
+            thinking,
+            output_schema_tool=output_schema_tool,
         ):
           yield response
     except RateLimitError as rate_limit_error:
@@ -1133,14 +1584,16 @@ class AnthropicLlm(BaseLlm):
       self,
       llm_request: LlmRequest,
       messages: list[anthropic_types.MessageParam],
-      tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
-      tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
-      thinking: Union[
-          anthropic_types.ThinkingConfigEnabledParam,
-          anthropic_types.ThinkingConfigDisabledParam,
-          anthropic_types.ThinkingConfigAdaptiveParam,
-          NotGiven,
-      ] = NOT_GIVEN,
+      tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven,
+      tool_choice: anthropic_types.ToolChoiceParam | NotGiven,
+      thinking: (
+          anthropic_types.ThinkingConfigEnabledParam
+          | anthropic_types.ThinkingConfigDisabledParam
+          | anthropic_types.ThinkingConfigAdaptiveParam
+          | NotGiven
+      ) = NOT_GIVEN,
+      *,
+      output_schema_tool: _OutputSchemaTool | None = None,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -1150,6 +1603,8 @@ class AnthropicLlm(BaseLlm):
       tools: Optional tool configurations.
       tool_choice: Optional tool choice setting.
       thinking: Optional thinking details.
+      output_schema_tool: The tool carrying a requested response schema, whose
+        call is streamed as the response text rather than as a function call.
 
     Yields:
       Partial LlmResponse objects as content arrives, followed by
@@ -1170,17 +1625,19 @@ class AnthropicLlm(BaseLlm):
     tool_use_blocks: dict[int, _ToolUseAccumulator] = {}
     thinking_blocks: dict[int, _ThinkingAccumulator] = {}
     redacted_thinking_blocks: dict[int, str] = {}
-    input_tokens = 0
+    uncached_input_tokens: int | None = None
     output_tokens = 0
     thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
-    stop_reason: Optional[anthropic_types.StopReason] = None
-    model_version: Optional[str] = None
+    stop_reason: anthropic_types.StopReason | None = None
+    model_version: str | None = None
 
     async for event in raw_stream:
       if event.type == "message_start":
-        input_tokens = _extract_prompt_token_count(event.message.usage)
+        uncached_input_tokens = _extract_uncached_input_token_count(
+            event.message.usage
+        )
         output_tokens = event.message.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
@@ -1207,6 +1664,10 @@ class AnthropicLlm(BaseLlm):
               name=block.name,
               args_json="",
           )
+          if output_schema_tool is not None and (
+              block.name == _OUTPUT_SCHEMA_TOOL_NAME
+          ):
+            continue
           yield LlmResponse(
               partial=True,
               content=types.Content(
@@ -1269,6 +1730,21 @@ class AnthropicLlm(BaseLlm):
           if event.index in tool_use_blocks:
             tool_use_blocks[event.index].args_json += delta.partial_json
             accumulator = tool_use_blocks[event.index]
+            if output_schema_tool is not None and (
+                accumulator.name == _OUTPUT_SCHEMA_TOOL_NAME
+            ):
+              # The streamed tool input is the structured answer itself, except
+              # where the schema had to be nested to become an object.
+              if delta.partial_json and not output_schema_tool.nests_value:
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part.from_text(text=delta.partial_json)],
+                    ),
+                    model_version=model_version,
+                    partial=True,
+                )
+              continue
             partial_args = None
             if delta.partial_json:
               if accumulator.tracker is None:
@@ -1299,8 +1775,36 @@ class AnthropicLlm(BaseLlm):
         # thinking detail is refreshed alongside the total it is nested in.
         output_tokens = event.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.usage)
+        # The input and cache counts are cumulative here too, and are final
+        # where ``message_start`` could only report what it knew up front.
+        final_uncached = _extract_uncached_input_token_count(event.usage)
+        if final_uncached is not None:
+          uncached_input_tokens = final_uncached
+        final_cached = _extract_cached_token_count(event.usage)
+        if final_cached is not None:
+          cached_input_tokens = final_cached
+        final_creation = _extract_cache_creation_token_count(event.usage)
+        if final_creation is not None:
+          cache_creation_tokens = final_creation
         if event.delta and event.delta.stop_reason:
           stop_reason = event.delta.stop_reason
+
+    input_tokens = _prompt_token_count(
+        uncached=uncached_input_tokens,
+        cached=cached_input_tokens,
+        cache_creation=cache_creation_tokens,
+    )
+    usage_metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=input_tokens,
+        candidates_token_count=output_tokens - (thinking_tokens or 0),
+        total_token_count=input_tokens + output_tokens,
+        cached_content_token_count=cached_input_tokens,
+        thoughts_token_count=thinking_tokens,
+    )
+    if cache_creation_tokens is not None:
+      object.__setattr__(
+          usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
+      )
 
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
@@ -1312,6 +1816,17 @@ class AnthropicLlm(BaseLlm):
             + list(tool_use_blocks.keys())
         )
     )
+    if (
+        stop_reason in _TRUNCATING_STOP_REASONS
+        and all_indices
+        and all_indices[-1] in tool_use_blocks
+    ):
+      yield _truncated_tool_use_response(
+          usage_metadata=usage_metadata,
+          cache_creation_token_count=cache_creation_tokens,
+          model_version=model_version,
+      )
+      return
     for idx in all_indices:
       if idx in thinking_blocks:
         thinking_acc = thinking_blocks[idx]
@@ -1344,25 +1859,25 @@ class AnthropicLlm(BaseLlm):
         function_call.id = tool_acc.id
         all_parts.append(part)
 
-    usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=input_tokens,
-        candidates_token_count=output_tokens - (thinking_tokens or 0),
-        total_token_count=input_tokens + output_tokens,
-        cached_content_token_count=cached_input_tokens,
-        thoughts_token_count=thinking_tokens,
+    finish_reason = to_google_genai_finish_reason(stop_reason)
+    error_code, error_message = _empty_response_error(
+        stop_reason=stop_reason,
+        finish_reason=finish_reason,
+        parts=all_parts,
     )
-    if cache_creation_tokens is not None:
-      object.__setattr__(
-          usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
-      )
-
-    yield LlmResponse(
+    final_response = LlmResponse(
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
-        finish_reason=to_google_genai_finish_reason(stop_reason),
+        cache_creation_token_count=cache_creation_tokens,
+        finish_reason=finish_reason,
+        error_code=error_code,
+        error_message=error_message,
         model_version=model_version,
         partial=False,
     )
+    if output_schema_tool is not None:
+      final_response = output_schema_tool.unwrap(final_response)
+    yield final_response
 
   async def _get_anthropic_client(
       self,
@@ -1378,7 +1893,9 @@ class AnthropicLlm(BaseLlm):
           asyncio.to_thread(lambda: self._anthropic_client)
       )
 
-      def _on_done(t: asyncio.Task) -> None:
+      def _on_done(
+          t: asyncio.Task[AsyncAnthropic | AsyncAnthropicVertex],
+      ) -> None:
         if self._client_init_task is t:
           self._client_init_task = None
         if not t.cancelled():
