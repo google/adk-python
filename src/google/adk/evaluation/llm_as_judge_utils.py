@@ -100,6 +100,38 @@ def get_text_from_content(
   return None
 
 
+def get_final_response_author(invocation: Invocation) -> Optional[str]:
+  """Returns the author of the event that carried the final response.
+
+  `EvaluationGenerator.convert_events_to_eval_invocations` keeps that event
+  among the invocation events and moves its content to `final_response`, so it
+  is the last agent event left without content. An event after it that has
+  content, such as a tool call another agent made later in the turn, is not
+  it.
+
+  An invocation that was put together some other way may have no such event,
+  and the last agent event is used instead.
+
+  Args:
+    invocation: The invocation whose final response is being attributed.
+
+  Returns:
+    The author, or None if the invocation has no agent events.
+  """
+  intermediate_data = invocation.intermediate_data
+  if not isinstance(intermediate_data, InvocationEvents):
+    return None
+  agent_events = [
+      event
+      for event in intermediate_data.invocation_events
+      if not (event.author and event.author.lower() == "user")
+  ]
+  for event in reversed(agent_events):
+    if not (event.content and event.content.parts):
+      return event.author
+  return agent_events[-1].author if agent_events else None
+
+
 def get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
   if score is None:
     return EvalStatus.NOT_EVALUATED
