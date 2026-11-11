@@ -20,7 +20,61 @@ from abc import ABC
 from abc import abstractmethod
 from collections.abc import AsyncGenerator
 import dataclasses
+import functools
+import inspect
 from pathlib import Path
+from typing import Any
+from typing import Callable
+from typing import TYPE_CHECKING
+import warnings
+
+if TYPE_CHECKING:
+  from ..agents.context import Context
+
+# Methods that callers pass a `ctx` keyword argument to.
+_CONTEXT_METHODS = (
+    "initialize",
+    "execute",
+    "read_file",
+    "read_file_stream",
+    "write_file",
+)
+
+
+def _accepts_context(method: Callable[..., Any]) -> bool:
+  """Returns whether a method can be called with a `ctx` keyword."""
+  try:
+    parameters = inspect.signature(method).parameters.values()
+  except (TypeError, ValueError):
+    return True
+  return any(
+      p.kind is inspect.Parameter.VAR_KEYWORD
+      or (p.name == "ctx" and p.kind is not inspect.Parameter.POSITIONAL_ONLY)
+      for p in parameters
+  )
+
+
+def _drop_context(method: Callable[..., Any]) -> Callable[..., Any]:
+  """Wraps a method written before `ctx` existed so callers can pass it."""
+  if inspect.iscoroutinefunction(method):
+
+    @functools.wraps(method)
+    async def async_wrapper(
+        self: Any, *args: Any, ctx: Any = None, **kwargs: Any
+    ) -> Any:
+      del ctx
+      return await method(self, *args, **kwargs)
+
+    return async_wrapper
+
+  # Also covers async generators such as `read_file_stream`: the wrapper
+  # returns the generator the method creates.
+  @functools.wraps(method)
+  def wrapper(self: Any, *args: Any, ctx: Any = None, **kwargs: Any) -> Any:
+    del ctx
+    return method(self, *args, **kwargs)
+
+  return wrapper
 
 
 @dataclasses.dataclass
@@ -53,9 +107,40 @@ class BaseEnvironment(ABC):
     2. Call ``initialize()`` before first use.
     3. Use ``execute``, ``read_file``, ``read_file_stream``, ``write_file``.
     4. Call ``close()`` when done.
+
+  Callers inside an agent run pass the current context as ``ctx`` to
+  ``initialize``, ``execute``, ``read_file``, ``read_file_stream`` and
+  ``write_file``, so an implementation can key its resources off the
+  session or user, read and write session state, or request credentials.
+  ``ctx`` is ``None`` when the environment is used outside an agent run.
   """
 
   _is_initialized: bool = False
+
+  def __init_subclass__(cls, **kwargs: Any) -> None:
+    super().__init_subclass__(**kwargs)
+    # Subclasses written before these methods took `ctx` would fail with a
+    # TypeError once callers pass it. Wrap them so they keep working and the
+    # context is dropped.
+    # TODO: Remove the wrapping once overrides without `ctx` are no longer
+    # supported.
+    outdated = []
+    for name in _CONTEXT_METHODS:
+      method = cls.__dict__.get(name)
+      if not inspect.isfunction(method) or _accepts_context(method):
+        continue
+      setattr(cls, name, _drop_context(method))
+      outdated.append(name)
+    if outdated:
+      warnings.warn(
+          f"{cls.__qualname__} overrides {', '.join(outdated)} without a"
+          " `ctx` keyword argument. Add `*, ctx=None` to the"
+          " signature; overrides without it will break when this"
+          " compatibility support is removed in a future release.",
+          DeprecationWarning,
+          # Skip this method and ABCMeta.__new__ to point at the class body.
+          stacklevel=3,
+      )
 
   @property
   def is_initialized(self) -> bool:
@@ -66,11 +151,22 @@ class BaseEnvironment(ABC):
   def is_initialized(self, value: bool) -> None:
     self._is_initialized = value
 
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     """Initialize the environment (e.g. create working directory).
 
     Called before first use. The default implementation is a
     no-op. Sub-classes should ensure this method is idempotent.
+
+    The environment and skill toolsets call it before every tool call
+    that uses the environment, with that call's ``ctx``, so it should
+    return quickly once the environment is set up. An environment that
+    keeps resources per session, such as a sandbox whose name it stores
+    in ``ctx.state``, looks them up here and creates them when missing;
+    ``is_initialized`` describes only the environment as a whole.
+
+    Args:
+      ctx: Context of the agent run that triggered initialization, or
+        ``None`` when called outside an agent run.
     """
 
   async def close(self) -> None:
@@ -92,6 +188,7 @@ class BaseEnvironment(ABC):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     """Execute a shell command in the working directory.
 
@@ -99,6 +196,8 @@ class BaseEnvironment(ABC):
       command: The shell command string to execute.
       timeout: Maximum execution time in seconds.  ``None`` means
         no limit.
+      ctx: Context of the calling agent run, or ``None`` when called
+        outside an agent run.
 
     Returns:
       An ``ExecutionResult`` with exit code, stdout, stderr, and
@@ -106,11 +205,13 @@ class BaseEnvironment(ABC):
     """
 
   @abstractmethod
-  async def read_file(self, path: Path) -> bytes:
+  async def read_file(self, path: Path, *, ctx: Context | None = None) -> bytes:
     """Read a file from the environment filesystem.
 
     Args:
       path: Absolute or working-dir-relative path to the file.
+      ctx: Context of the calling agent run, or ``None`` when called
+        outside an agent run.
 
     Returns:
       The raw file contents as bytes.
@@ -119,13 +220,17 @@ class BaseEnvironment(ABC):
       FileNotFoundError: If the file does not exist.
     """
 
-  async def read_file_stream(self, path: Path) -> AsyncGenerator[bytes, None]:
+  async def read_file_stream(
+      self, path: Path, *, ctx: Context | None = None
+  ) -> AsyncGenerator[bytes, None]:
     """Yields the same bytes read_file(path) returns, in chunks.
 
     The default yields the whole file at once; override it to stream.
 
     Args:
       path: Absolute or working-dir-relative path to the file.
+      ctx: Context of the calling agent run, or ``None`` when called
+        outside an agent run.
 
     Yields:
       Consecutive chunks of the raw file contents.
@@ -133,10 +238,16 @@ class BaseEnvironment(ABC):
     Raises:
       FileNotFoundError: If the file does not exist.
     """
-    yield await self.read_file(path)
+    yield await self.read_file(path, ctx=ctx)
 
   @abstractmethod
-  async def write_file(self, path: Path, content: str | bytes) -> None:
+  async def write_file(
+      self,
+      path: Path,
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
+  ) -> None:
     """Write content to a file in the environment's filesystem.
 
     Parent directories are created automatically if they do not
@@ -145,4 +256,6 @@ class BaseEnvironment(ABC):
     Args:
       path: Absolute or working-dir-relative path to the file.
       content: The string or raw bytes to write.
+      ctx: Context of the calling agent run, or ``None`` when called
+        outside an agent run.
     """

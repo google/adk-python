@@ -256,7 +256,8 @@ class DebugLoggingPlugin(BasePlugin):
   answer, an MCP `CallToolResult` with `isError` set, or a result that
   `tool_result_classifier` classifies as an error. A raised error is recorded
   once, even when a later plugin's answer to it reaches `after_tool_callback`
-  as the call's result.
+  as the call's result. An invocation that ends in an unhandled exception is
+  still written, ending in an `invocation_error` entry.
 
   The output is written as YAML format for human readability. Each invocation
   is appended to the file as a separate YAML document (separated by ---).
@@ -594,6 +595,32 @@ class DebugLoggingPlugin(BasePlugin):
       self, *, invocation_context: InvocationContext
   ) -> None:
     """Finalize and write debug data to file."""
+    self._flush_invocation(invocation_context)
+
+  @override
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Record an unhandled run error and write debug data to file."""
+    if invocation_context.invocation_id not in self._invocation_states:
+      logger.debug(
+          "No debug state for invocation %s, not recording %s",
+          invocation_context.invocation_id,
+          type(error).__name__,
+      )
+      return
+    self._flush_invocation(invocation_context, error=error)
+
+  def _flush_invocation(
+      self,
+      invocation_context: InvocationContext,
+      *,
+      error: Exception | None = None,
+  ) -> None:
+    """Finalize and write debug data for an invocation, then free its state."""
     invocation_id = invocation_context.invocation_id
 
     if invocation_id not in self._invocation_states:
@@ -614,7 +641,15 @@ class DebugLoggingPlugin(BasePlugin):
           event_count=len(session.events),
       )
 
-    self._add_entry(invocation_id, "invocation_end")
+    if error is None:
+      self._add_entry(invocation_id, "invocation_end")
+    else:
+      self._add_entry(
+          invocation_id,
+          "invocation_error",
+          error_type=type(error).__name__,
+          error_message=str(error),
+      )
 
     # Write to file as YAML
     try:

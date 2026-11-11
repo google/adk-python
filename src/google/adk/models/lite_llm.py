@@ -1023,7 +1023,9 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
-_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset(
+    {"openai", "azure", "lm_studio", "vertex_ai"}
+)
 
 
 def _is_gemma4_model(
@@ -1040,8 +1042,9 @@ def _is_gemma4_model(
   results.
 
   OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
-  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
-  excluded.
+  "lm_studio/google/gemma-4-e4b", or Vertex AI Model Garden MaaS
+  "vertex_ai/google/gemma-4-26b-a4b-it-maas") require the standard role='tool'
+  and are excluded.
 
   Args:
     model: The model name to check.
@@ -1678,8 +1681,9 @@ async def _content_to_message_param(
       )
       # gemma4 requires role='tool_responses' for recognizing function_response
       # parts as responses from the tool call, except on OpenAI-compatible
-      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
-      # role. Earlier Gemma versions before version 4 do not support tool use.
+      # endpoints (openai, azure, lm_studio, vertex_ai) which require the
+      # standard 'tool' role. Earlier Gemma versions before version 4 do not
+      # support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
           "tool_responses"
           if _is_gemma4_model(

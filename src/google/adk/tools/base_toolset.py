@@ -74,18 +74,30 @@ class BaseToolset(ABC):
       *,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       tool_name_prefix: Optional[str] = None,
+      disable_invocation_cache: bool = False,
   ):
     """Initialize the toolset.
 
     Args:
       tool_filter: Filter to apply to tools.
       tool_name_prefix: The prefix to prepend to the names of the tools returned by the toolset.
+      disable_invocation_cache: Whether to list the tools again before each
+        request instead of reusing them for the rest of the invocation. Set it
+        to True if the tools can change within one.
     """
     self.tool_filter = tool_filter
     self.tool_name_prefix = tool_name_prefix
+    self._use_invocation_cache = not disable_invocation_cache
     self._cached_invocation_id: Optional[str] = None
     self._cached_prefixed_tools: Optional[list[BaseTool]] = None
-    self._use_invocation_cache = True
+
+  @property
+  def use_invocation_cache(self) -> bool:
+    """Whether the tools are listed once per invocation and reused.
+
+    Set by the `disable_invocation_cache` constructor argument.
+    """
+    return self._use_invocation_cache
 
   @abstractmethod
   async def get_tools(

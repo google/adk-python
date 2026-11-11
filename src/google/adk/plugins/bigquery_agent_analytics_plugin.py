@@ -32,7 +32,6 @@ from datetime import timezone
 import decimal
 import enum
 import functools
-import importlib.resources
 import inspect
 import json
 import logging
@@ -111,6 +110,10 @@ from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
+from ._bigquery_agent_analytics_eval_sql import _build_eval_session_view_sql
+from ._bigquery_agent_analytics_eval_sql import _build_eval_turn_view_sql
+from ._bigquery_agent_analytics_eval_sql import _EVAL_TABLE_ID_UNQUOTABLE_RE
+from ._bigquery_agent_analytics_eval_sql import _validate_payload_column_denylist
 from ._callback_helpers import _classify_tool_result_error
 from ._callback_helpers import _imported_types
 from ._callback_helpers import _is_durable_node_error
@@ -125,10 +128,28 @@ if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
   from ..events.event import Event
 
-# Defined in _callback_helpers, which the observability plugins share, and
-# still importable from this module: _LLM_RESPONSE_ERROR_CODES was defined
-# here, and ToolResultClassification is what a tool_result_classifier returns.
+# Defined elsewhere and still importable from this module.  The names of
+# _bigquery_agent_analytics_eval_sql were defined here: that module builds the
+# eval SQL with the standard library alone, so a caller can build the eval
+# queries without this module's pyarrow and BigQuery Storage imports.
+# _callback_helpers is shared with the observability plugins:
+# _LLM_RESPONSE_ERROR_CODES was defined here, and ToolResultClassification is
+# what a tool_result_classifier returns.
 # pylint: disable=unused-import
+from ._bigquery_agent_analytics_eval_sql import _blank_eval_sql_comments  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _build_eval_view_ctes  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_DIRNAME  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_LEADING_WHERE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_OPENING_QUOTE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _eval_view_dataset_ref  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_outer_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_raw_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _load_eval_sql_template  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _normalize_eval_where_condition  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _PROJECTABLE_PAYLOAD_COLUMNS  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _read_eval_sql_file  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql  # noqa: F401
 from ._callback_helpers import _LLM_RESPONSE_ERROR_CODES  # noqa: F401
 from ._callback_helpers import ToolResultClassification  # noqa: F401
 
@@ -5085,39 +5106,6 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
   ]
 
 
-# Payload columns eligible for physical projection.  Every other
-# schema column is an identity / correlation / view-critical column and is
-# *protected* — it cannot be projected out, because the BQAA execution tree
-# and the per-event views depend on it.
-_PROJECTABLE_PAYLOAD_COLUMNS = frozenset(
-    {"content", "content_parts", "attributes", "latency_ms"}
-)
-
-
-def _validate_payload_column_denylist(
-    denylist: Optional[list[str]],
-) -> frozenset[str]:
-  """Validates ``payload_column_denylist`` and returns the denied set.
-
-  Only the projectable payload columns may be denied.  Anything else —
-  an identity/correlation column or an unknown name — is a hard error,
-  so a typo or an attempt to drop a join key fails loudly at construction
-  rather than producing malformed rows or broken views.
-  """
-  denied = frozenset(denylist or ())
-  invalid = denied - _PROJECTABLE_PAYLOAD_COLUMNS
-  if invalid:
-    raise ValueError(
-        "payload_column_denylist may only contain projectable payload"
-        f" columns {sorted(_PROJECTABLE_PAYLOAD_COLUMNS)}; got"
-        f" {sorted(invalid)}. Identity/correlation columns (timestamp,"
-        " event_type, session_id, invocation_id, trace_id, span_id,"
-        " parent_span_id, is_truncated, ...) are protected and cannot be"
-        " projected out."
-    )
-  return denied
-
-
 def _project_schema(
     schema: list[bigquery.SchemaField], denied: frozenset[str]
 ) -> list[bigquery.SchemaField]:
@@ -5550,8 +5538,13 @@ WHERE
 #   ``is_truncated`` is a protected column, so the builders reject it in
 #   ``denied_columns``: read as FALSE, it would mark truncated turns eval
 #   ready.
-# - Every column is aggregated per session or turn, so filters on the output
-#   timestamps cannot prune the events table's ``timestamp`` partitions.
+# - Every column is aggregated per session or turn, so a filter on the views'
+#   output timestamps cannot prune the events table's ``timestamp``
+#   partitions.  The query builders, ``build_eval_session_query_sql`` and
+#   ``build_eval_turn_query_sql``, take a ``raw_where_clause`` for that, a
+#   lookback on ``timestamp`` that keeps every event of the sessions to read,
+#   and a ``where_clause`` that then picks output rows, such as those of a
+#   time window, without dropping the earlier events that they need.
 # - ``eval_view_mode`` picks the events that must be logged for the views to be
 #   created (``_EVAL_VIEW_EVENTS_BY_MODE``): all of
 #   ``_EVAL_VIEW_REQUIRED_EVENTS`` for ``"full"``, but only
@@ -5585,274 +5578,6 @@ _EVAL_VIEW_EVENTS_BY_MODE = {
     "full": _EVAL_VIEW_REQUIRED_EVENTS,
     "conversation_only": _EVAL_VIEW_CORE_EVENTS,
 }
-
-# The eval SQL templates live in ``bigquery_agent_analytics_sql/``, the one
-# copy of that SQL, which services that cannot import this module embed and
-# run too.  Each file is a block of ``--`` comment lines (the license and the
-# substitution contract), a blank line, and then the template, which has
-# ``{name}`` placeholders and no doubled braces, so ``str.format`` and any
-# other textual replacement give the same SQL.  The builders below load a
-# template with ``_load_eval_sql_template``, which drops the header, and
-# format it.
-_EVAL_SQL_DIRNAME = "bigquery_agent_analytics_sql"
-
-
-def _read_eval_sql_file(filename: str) -> str:
-  """Reads a file of ``bigquery_agent_analytics_sql/`` beside this module.
-
-  The directory is looked up beside this file's unresolved path first: a build
-  may link this file and the templates into one tree, as Blaze does with
-  runfiles that point into its content-addressed cache, and the target of a
-  link has no neighbours there.  It is then looked up beside the resolved
-  path, for a checkout that links this file alone, and last among the
-  package's resources, for an install that keeps them in an archive.
-
-  Args:
-    filename: The bare file name.
-
-  Returns:
-    The text of the file.  It is read in text mode, which turns the CRLF line
-    breaks of a Windows checkout into newlines.
-
-  Raises:
-    OSError: The file cannot be found or read.
-  """
-  module_path = pathlib.Path(os.path.abspath(__file__))
-  for directory in (module_path.parent, module_path.resolve().parent):
-    path = directory / _EVAL_SQL_DIRNAME / filename
-    if path.is_file():
-      return path.read_text(encoding="utf-8")
-  resource = (
-      importlib.resources.files(__package__ or "google.adk.plugins")
-      .joinpath(_EVAL_SQL_DIRNAME)
-      .joinpath(filename)
-  )
-  if resource.is_file():
-    return resource.read_text(encoding="utf-8")
-  raise FileNotFoundError(
-      f"Cannot find {_EVAL_SQL_DIRNAME}/{filename} beside {__file__} or among"
-      " the package's resources."
-  )
-
-
-@functools.lru_cache(maxsize=None)
-def _load_eval_sql_template(filename: str) -> str:
-  """Loads an eval SQL template of ``bigquery_agent_analytics_sql/``.
-
-  A template file is a block of ``--`` comment lines (the license and the
-  substitution contract), a blank line, and then the template.  The header is
-  dropped: it names the placeholders, so it must not be formatted.  Each file
-  is read once.
-
-  Args:
-    filename: The bare file name, such as ``eval_view_ctes_v1.sql``.
-
-  Returns:
-    The template text that follows the header.
-
-  Raises:
-    OSError: The file cannot be found or read.
-    ValueError: ``filename`` is not a bare file name, or the file does not
-      begin with a block of ``--`` comment lines and a blank line.
-  """
-  if (
-      not filename
-      or filename in {".", ".."}
-      or pathlib.PurePath(filename).name != filename
-  ):
-    raise ValueError(f"filename must be a bare file name; got {filename!r}.")
-  text = _read_eval_sql_file(filename)
-  header, separator, template = text.partition("\n\n")
-  header_lines = header.splitlines()
-  if not (
-      separator
-      and header_lines
-      and all(line.startswith("--") for line in header_lines)
-  ):
-    raise ValueError(
-        f"{filename} must begin with a block of '--' comment lines (the"
-        " license header) and a blank line."
-    )
-  return template
-
-
-# A character that cannot be part of the table name that the eval SQL quotes in
-# backticks: a backtick would end the name early, a backslash would start an
-# escape sequence, and a control or line-break character would split it.  A
-# space is legal: BigQuery allows one in a table name.
-_EVAL_TABLE_ID_UNQUOTABLE_RE = re.compile(
-    r"[`\\\x00-\x1f\x7f-\x9f\u2028\u2029]"
-)
-
-
-def _eval_view_dataset_ref(
-    full_table_id: str,
-    denied_columns: frozenset[str],
-    view_prefix: str = "v",
-) -> str:
-  """Validates the eval view inputs and returns the table's dataset ref."""
-  # A protected column such as is_truncated cannot be denied: read as FALSE,
-  # it would mark truncated turns eval ready.
-  _validate_payload_column_denylist(list(denied_columns))
-  if "content" in denied_columns:
-    raise ValueError(
-        "Cannot build eval view SQL when 'content' is in"
-        " payload_column_denylist."
-    )
-  dataset_ref, _, table = full_table_id.rpartition(".")
-  if not dataset_ref or not table:
-    raise ValueError(
-        "full_table_id must be a dataset-qualified table name such as"
-        f" 'project.dataset.table'; got {full_table_id!r}."
-    )
-  if _EVAL_TABLE_ID_UNQUOTABLE_RE.search(full_table_id):
-    raise ValueError(
-        "full_table_id must not contain a backtick, backslash, control or"
-        " line-break character, because the SQL quotes it in backticks; got"
-        f" {full_table_id!r}."
-    )
-  if not view_prefix or _EVAL_TABLE_ID_UNQUOTABLE_RE.search(view_prefix):
-    raise ValueError(
-        "view_prefix must be a non-empty string without a backtick, backslash,"
-        f" control or line-break character; got {view_prefix!r}."
-    )
-  return dataset_ref
-
-
-def _build_eval_view_ctes(
-    full_table_id: str, denied_columns: frozenset[str], scope_columns: str
-) -> str:
-  """Returns the CTE chain shared by the eval session and turn views.
-
-  Args:
-    full_table_id: The events table.
-    denied_columns: Payload columns projected out of the table.  A denied
-      ``content_parts``, ``attributes``, or ``latency_ms`` column reads as an
-      empty array or NULL JSON, so the SQL never references it.
-    scope_columns: The columns that scope ``trace.agents``: ``session_id``
-      for the session view, ``session_id, invocation_id`` for the turn view.
-
-  Returns:
-    The ``WITH`` clause, without a trailing newline.
-
-  Raises:
-    OSError: The template file cannot be found or read.
-  """
-  ctes = _load_eval_sql_template("eval_view_ctes_v1.sql").format(
-      full_table_id=full_table_id,
-      content_parts_column=(
-          "ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
-          " part_attributes STRING, storage_mode STRING>>[] AS content_parts"
-          if "content_parts" in denied_columns
-          else "content_parts"
-      ),
-      attributes_column=(
-          "CAST(NULL AS JSON) AS attributes"
-          if "attributes" in denied_columns
-          else "attributes"
-      ),
-      latency_ms_column=(
-          "CAST(NULL AS JSON) AS latency_ms"
-          if "latency_ms" in denied_columns
-          else "latency_ms"
-      ),
-      scope_columns=scope_columns,
-  )
-  # The template ends in a newline, as its file does; the view templates
-  # continue the chain after it.
-  return ctes.rstrip("\n")
-
-
-def _build_eval_session_view_sql(
-    full_table_id: str,
-    view_prefix: str = "v",
-    denied_columns: frozenset[str] = frozenset(),
-) -> str:
-  """Builds the ``{view_prefix}_eval_session`` view DDL.
-
-  The view has one row per session.  Its ``trace`` column is an ``AgentData``
-  object holding every turn of the session, numbered from 0 in start order.
-
-  ``eval_ready`` is FALSE for a session that has ``has_truncated_content``,
-  because a row that puts an event in its trace and is flagged
-  ``is_truncated`` left the trace without part of a payload.  No other row
-  counts, such as an ``LLM_REQUEST`` row, which repeats the conversation so
-  far.  ``has_truncated_content`` tells a caller that truncation keeps a
-  session from being ready, but not whether it is the only reason: no column
-  of the view holds the other conditions of ``eval_ready``, so a truncated
-  session may also have a turn that is unfinished or lacks user text.
-
-  Args:
-    full_table_id: The events table as ``project.dataset.table``.  The view is
-      created in the same dataset.
-    view_prefix: Prefix for the view name.
-    denied_columns: Payload columns projected out of the table.
-
-  Returns:
-    A ``CREATE OR REPLACE VIEW`` statement.
-
-  Raises:
-    ValueError: ``denied_columns`` holds ``content`` or a column that is not a
-      projectable payload column, such as the protected ``is_truncated``,
-      ``full_table_id`` has no dataset or has a backtick, backslash, control
-      or line-break character, or ``view_prefix`` is empty or has one of those
-      characters.
-  """
-  dataset_ref = _eval_view_dataset_ref(
-      full_table_id, denied_columns, view_prefix
-  )
-  return _load_eval_sql_template("eval_session_view_v1.sql").format(
-      view_ref=f"{dataset_ref}.{view_prefix}_eval_session",
-      ctes=_build_eval_view_ctes(full_table_id, denied_columns, "session_id"),
-  )
-
-
-def _build_eval_turn_view_sql(
-    full_table_id: str,
-    view_prefix: str = "v",
-    denied_columns: frozenset[str] = frozenset(),
-) -> str:
-  """Builds the ``{view_prefix}_eval_turn`` view DDL.
-
-  The view has one row per ``(session_id, invocation_id)`` turn.  Its
-  ``trace`` column is an ``AgentData`` object whose ``turns`` array holds only
-  that turn, with ``turn_index`` 0 as single-turn metrics require; the
-  ``turn_index`` column keeps the turn's position in its session.
-
-  ``eval_ready`` is FALSE for a turn that has ``has_truncated_content``,
-  because a row that puts an event in its trace and is flagged
-  ``is_truncated`` left the trace without part of a payload.  No other row
-  counts, such as an ``LLM_REQUEST`` row, which repeats the conversation so
-  far.  ``has_truncated_content`` tells a caller that truncation keeps a turn
-  from being ready, but not whether it is the only reason: no column of the
-  view holds the other conditions of ``eval_ready``, so a truncated turn may
-  also be unfinished or lack user text.
-
-  Args:
-    full_table_id: The events table as ``project.dataset.table``.  The view is
-      created in the same dataset.
-    view_prefix: Prefix for the view name.
-    denied_columns: Payload columns projected out of the table.
-
-  Returns:
-    A ``CREATE OR REPLACE VIEW`` statement.
-
-  Raises:
-    ValueError: ``denied_columns`` holds ``content`` or a column that is not a
-      projectable payload column, such as the protected ``is_truncated``,
-      ``full_table_id`` has no dataset or has a backtick, backslash, control
-      or line-break character, or ``view_prefix`` is empty or has one of those
-      characters.
-  """
-  dataset_ref = _eval_view_dataset_ref(
-      full_table_id, denied_columns, view_prefix
-  )
-  return _load_eval_sql_template("eval_turn_view_v1.sql").format(
-      view_ref=f"{dataset_ref}.{view_prefix}_eval_turn",
-      ctes=_build_eval_view_ctes(
-          full_table_id, denied_columns, "session_id, invocation_id"
-      ),
-  )
 
 
 # ==============================================================================

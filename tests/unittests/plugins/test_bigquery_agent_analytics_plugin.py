@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from collections.abc import Collection
 import concurrent.futures
 import contextlib
 import contextvars
@@ -51,6 +52,7 @@ from google.adk.models import google_llm
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
 from google.adk.platform import thread as platform_thread
+from google.adk.plugins import _bigquery_agent_analytics_eval_sql
 from google.adk.plugins import _callback_helpers
 from google.adk.plugins import bigquery_agent_analytics_plugin
 from google.adk.plugins import plugin_manager as plugin_manager_lib
@@ -13709,6 +13711,13 @@ class TestEvalViews:
         ),
     ]
 
+  @staticmethod
+  def _condition_sql(param: str, condition: str) -> str:
+    """Returns the SQL that a query builder makes of a condition argument."""
+    if param == "raw_where_clause":
+      return f"\n      AND (\n        {condition}\n      )\n  ),"
+    return f"\nWHERE\n  (\n    {condition}\n  )\n"
+
   def test_config_create_eval_views_default_false(self):
     """Eval views are opt-in, so default setup only creates analytics views."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
@@ -14139,12 +14148,11 @@ class TestEvalViews:
           "WHEN event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL"
           in sql
       )
-      trace_keys = [
-          line.strip().split(",", 1)[0]
-          for line in self._final_select(sql).splitlines()
-          if line.startswith("    '")
-      ]
-      assert trace_keys == ["'agents'", "'turns'"]
+      # The trace holds the AgentData fields and no others.
+      (row,) = _EvalViewSqlEvaluator(sql).run(
+          self._finished_turn("s1", "inv-1", 0)
+      )
+      assert list(row["trace"]) == ["agents", "turns"]
     # The turn view's trace holds its one turn re-indexed to 0; the turn's
     # position in the session is the turn_index column.
     assert "'turn_index', 0," in turn_sql
@@ -16357,7 +16365,7 @@ class TestEvalViews:
       build_view_sql("p.d.t", denied_columns=frozenset({"is_truncated"}))
 
   def test_eval_view_ctes_end_without_a_newline(self) -> None:
-    """The shared CTEs end at the closing paren, for the view templates."""
+    """The shared CTEs end at the closing paren, for the query templates."""
     ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
         "p.d.t", frozenset(), "session_id"
     )
@@ -16386,8 +16394,10 @@ class TestEvalViews:
       [
           bigquery_agent_analytics_plugin._build_eval_session_view_sql,
           bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
       ],
-      ids=["session_view", "turn_view"],
+      ids=["session_view", "turn_view", "session_query", "turn_query"],
   )
   def test_eval_builders_substitute_the_ctes_only_once(
       self, build_sql: Callable[..., str]
@@ -16395,8 +16405,9 @@ class TestEvalViews:
     """Braces in the CTE text reach the statement as written."""
     ctes = "WITH x AS (SELECT r'\\d{4}', '{\"a\": {}}', '{x}', '{{}}', '{0}')"
 
+    # The builders look _build_eval_view_ctes up in the module they live in.
     with mock.patch.object(
-        bigquery_agent_analytics_plugin,
+        _bigquery_agent_analytics_eval_sql,
         "_build_eval_view_ctes",
         return_value=ctes,
     ):
@@ -16409,8 +16420,10 @@ class TestEvalViews:
       [
           bigquery_agent_analytics_plugin._build_eval_session_view_sql,
           bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
       ],
-      ids=["session_view", "turn_view"],
+      ids=["session_view", "turn_view", "session_query", "turn_query"],
   )
   @pytest.mark.parametrize(
       "full_table_id",
@@ -16491,19 +16504,728 @@ class TestEvalViews:
 
     assert f"\n      `{full_table_id}`\n" in sql
 
+  @pytest.mark.parametrize("raw_where_clause", ["", "  ", "\n\t "])
+  def test_eval_raw_where_clause_blank_adds_no_filter(
+      self, raw_where_clause: str
+  ) -> None:
+    """A blank raw_where_clause leaves the CTEs that the views read."""
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id", raw_where_clause
+    )
+
+    assert ctes == bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id"
+    )
+
+  def test_eval_raw_where_clause_narrows_the_raw_event_filter(self) -> None:
+    """The condition is ANDed into the one filter on the events table."""
+    condition = "timestamp >= @lookback_start AND timestamp < @window_end"
+
+    ctes = bigquery_agent_analytics_plugin._build_eval_view_ctes(
+        "p.d.t", frozenset(), "session_id", condition
+    )
+
+    raw_events = ctes.split("RawEvents AS (", 1)[1].split("\n  ),", 1)[0]
+    assert raw_events.endswith(
+        "      AND invocation_id IS NOT NULL\n"
+        "      AND (\n"
+        f"        {condition}\n"
+        "      )"
+    )
+    # Every other CTE reads RawEvents, so the condition appears only once.
+    assert ctes.count("@lookback_start") == 1
+    assert ctes.count("@window_end") == 1
+
+  def test_eval_raw_where_clause_with_a_top_level_or_keeps_the_event_filters(
+      self,
+  ) -> None:
+    """An OR in the condition cannot widen the session and invocation filter."""
+    event = self._event
+    rows = [
+        event("inv-1", 0, "USER_MESSAGE_RECEIVED", session_id="s1"),
+        event("inv-2", 1, "USER_MESSAGE_RECEIVED", session_id="s2"),
+        # Outside the invocation filter, which an unparenthesized OR would let
+        # the condition's second branch skip.
+        event(None, 2, "USER_MESSAGE_RECEIVED", session_id="s2"),
+        event("inv-3", 3, "USER_MESSAGE_RECEIVED", session_id="s3"),
+    ]
+    query_sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", raw_where_clause="session_id = 's1' OR session_id = 's2'"
+    )
+
+    raw_events = _EvalViewSqlEvaluator(query_sql).run(rows, cte="RawEvents")
+
+    assert [
+        (row["session_id"], row["invocation_id"]) for row in raw_events
+    ] == [("s1", "inv-1"), ("s2", "inv-2")]
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause",
+      [
+          "WHERE session_id = 's1'",
+          "where session_id = 's1'",
+          "  WHERE\n  session_id = 's1'  \n",
+          "Where\tsession_id = 's1'",
+      ],
+  )
+  def test_eval_conditions_may_begin_with_the_where_keyword(
+      self, build_query_sql: Callable[..., str], param: str, clause: str
+  ) -> None:
+    """A leading WHERE keyword, in any case, is not part of a condition."""
+    bare = build_query_sql("p.d.t", **{param: "session_id = 's1'"})
+
+    sql = build_query_sql("p.d.t", **{param: clause})
+
+    assert sql == bare
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  def test_eval_conditions_keep_a_name_that_starts_with_where(
+      self, param: str
+  ) -> None:
+    """Only the WHERE keyword is dropped, not a word that begins with it."""
+    sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: "whereabouts = 'x'"}
+    )
+
+    assert self._condition_sql(param, "whereabouts = 'x'") in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause", ["WHERE", " where \n", "WHERE\t", "where\n\n"]
+  )
+  def test_eval_where_keyword_without_a_condition_is_rejected(
+      self, param: str, clause: str
+  ) -> None:
+    """The WHERE keyword alone is an error that names its argument."""
+    with pytest.raises(ValueError, match=f"^{param} has no condition"):
+      bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, condition",
+      [
+          ("eval_ready;", "eval_ready"),
+          ("WHERE eval_ready; ; ", "eval_ready"),
+          ("timestamp >= @lookback_start;", "timestamp >= @lookback_start"),
+          ("session_id = 's1' ;\n;\t", "session_id = 's1'"),
+      ],
+  )
+  def test_eval_conditions_drop_trailing_semicolons(
+      self,
+      build_query_sql: Callable[..., str],
+      param: str,
+      clause: str,
+      condition: str,
+  ) -> None:
+    """A semicolon that ends a condition stays out of its parentheses."""
+    bare = build_query_sql("p.d.t", **{param: condition})
+
+    sql = build_query_sql("p.d.t", **{param: clause})
+
+    assert sql == bare
+    assert self._condition_sql(param, condition) in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize("clause", [";", " ; ;\n", "WHERE ;", "where;"])
+  def test_eval_semicolons_without_a_condition_are_rejected(
+      self, param: str, clause: str
+  ) -> None:
+    """Only semicolons, after WHERE or not, are an error naming the argument."""
+    with pytest.raises(ValueError, match=f"^{param} has no condition"):
+      bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  def test_eval_condition_comment_does_not_swallow_the_closing_paren(
+      self, param: str
+  ) -> None:
+    """A trailing comment in a condition ends before the closing paren."""
+    condition = "session_id = 's1' -- only s1"
+
+    sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: condition}
+    )
+
+    assert self._condition_sql(param, condition) in sql
+    # The statement parses, so the comment ends at the end of its line.
+    _EvalViewSqlEvaluator(sql)
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, condition",
+      [
+          ("eval_ready; -- note", "eval_ready -- note"),
+          ("WHERE eval_ready;\n-- note", "eval_ready\n-- note"),
+          ("eval_ready; /* note */ ; # note", "eval_ready /* note */  # note"),
+          ("-- note\nWHERE eval_ready;", "-- note\neval_ready"),
+          ("/* note */ WHERE(eval_ready)", "/* note */ (eval_ready)"),
+      ],
+  )
+  def test_eval_conditions_find_where_and_semicolons_around_comments(
+      self,
+      build_query_sql: Callable[..., str],
+      param: str,
+      clause: str,
+      condition: str,
+  ) -> None:
+    """The WHERE keyword and the semicolons are found outside comments."""
+    sql = build_query_sql("p.d.t", **{param: clause})
+
+    assert self._condition_sql(param, condition) in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, condition",
+      [
+          ("session_id = 'a;' -- b;", "session_id = 'a;' -- b;"),
+          (
+              "session_id = '-- a' OR user_id = '# b';",
+              "session_id = '-- a' OR user_id = '# b'",
+          ),
+          (
+              "session_id = \"/* a */\" AND user_id = 'WHERE';",
+              "session_id = \"/* a */\" AND user_id = 'WHERE'",
+          ),
+          ("session_id = 'a\\' -- b';", "session_id = 'a\\' -- b'"),
+          ("session_id = '''a'; -- b''';", "session_id = '''a'; -- b'''"),
+          ("`session;id` = 'a';", "`session;id` = 'a'"),
+      ],
+  )
+  def test_eval_conditions_keep_what_is_inside_a_literal_or_identifier(
+      self, param: str, clause: str, condition: str
+  ) -> None:
+    """A semicolon or comment marker in a literal or identifier is kept."""
+    sql = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: clause}
+    )
+
+    assert self._condition_sql(param, condition) in sql
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause",
+      [
+          "-- note",
+          "# note",
+          "WHERE -- todo",
+          "/* note */; -- todo",
+          "WHERE /* note */ ;\n# todo",
+      ],
+  )
+  def test_eval_conditions_with_only_comments_are_rejected(
+      self, param: str, clause: str
+  ) -> None:
+    """A condition needs SQL outside its comments besides WHERE and ';'."""
+    with pytest.raises(ValueError, match=f"^{param} has no condition"):
+      bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "clause, token",
+      [
+          ("eval_ready /* note", "block comment"),
+          ("session_id = 's1", "string literal"),
+          ('session_id = "s1', "string literal"),
+          ("session_id = 's1\\'", "string literal"),
+          ("session_id = '''s1''", "string literal"),
+          ("`session_id = 's1'", "quoted identifier"),
+      ],
+  )
+  def test_eval_conditions_with_an_unclosed_token_are_rejected(
+      self, param: str, clause: str, token: str
+  ) -> None:
+    """An unclosed comment, literal or identifier would swallow the paren."""
+    with pytest.raises(
+        ValueError, match=f"^{param} has an unterminated {token}"
+    ):
+      bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+          "p.d.t", **{param: clause}
+      )
+
+  def test_eval_conditions_with_a_semicolon_before_a_comment_run(
+      self,
+  ) -> None:
+    """Such conditions leave statements that parse and filter as written."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0, is_truncated=True),
+        *self._finished_turn("s2", "inv-1", 10),
+        *self._finished_turn("s3", "inv-1", 20),
+    ]
+    session_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+            "p.d.t", where_clause="WHERE eval_ready; -- ready only"
+        )
+    )
+    turn_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+            "p.d.t", raw_where_clause="session_id = 's1'; -- one session"
+        )
+    )
+
+    assert sorted(row["session_id"] for row in session_query.run(rows)) == [
+        "s2",
+        "s3",
+    ]
+    assert [row["session_id"] for row in turn_query.run(rows)] == ["s1"]
+
+  @pytest.mark.parametrize("param", ["where_clause", "raw_where_clause"])
+  @pytest.mark.parametrize(
+      "condition",
+      [
+          "session_id != '{x}' AND user_id != '{{}}'",
+          "session_id != '{0}' AND user_id != '{}'",
+          "REGEXP_CONTAINS(session_id, r'^s\\d{2}$')",
+          "JSON_VALUE(attributes, '$.k') != '{\"a\": {}}'",
+      ],
+  )
+  def test_eval_conditions_are_not_formatted_again(
+      self, param: str, condition: str
+  ) -> None:
+    """Braces in a condition reach both queries' SQL as written."""
+    expected = self._condition_sql(param, condition)
+
+    session_query = (
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+            "p.d.t", **{param: condition}
+        )
+    )
+    turn_query = bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+        "p.d.t", **{param: condition}
+    )
+
+    assert expected in session_query
+    assert expected in turn_query
+
+  @pytest.mark.parametrize(
+      "build_query_sql, cte",
+      [
+          (
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              "EvalSessions",
+          ),
+          (
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              "EvalTurns",
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_where_clause_filters_the_output_rows_last(
+      self, build_query_sql: Callable[..., str], cte: str
+  ) -> None:
+    """The where_clause follows the CTE of output rows that the query reads."""
+    sql = build_query_sql("p.d.t", where_clause="eval_ready")
+
+    assert sql.endswith(f"\nFROM\n  {cte}\nWHERE\n  (\n    eval_ready\n  )\n")
+    assert build_query_sql("p.d.t").endswith(f"\nFROM\n  {cte}\n")
+
+  @pytest.mark.parametrize(
+      "build_query_sql, columns, key_columns, expected_keys",
+      [
+          (
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              _SESSION_COLUMNS,
+              (
+                  "session_id",
+                  "turn_count",
+                  "has_truncated_content",
+                  "eval_ready",
+              ),
+              [("s1", 2, True, False), ("s2", 1, False, True)],
+          ),
+          (
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              _TURN_COLUMNS,
+              (
+                  "session_id",
+                  "invocation_id",
+                  "turn_index",
+                  "has_truncated_content",
+                  "eval_ready",
+              ),
+              [
+                  ("s1", "inv-1", 0, False, True),
+                  ("s1", "inv-2", 1, True, False),
+                  ("s2", "inv-1", 0, False, True),
+              ],
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_without_conditions_reads_the_view_rows(
+      self,
+      build_query_sql: Callable[..., str],
+      columns: list[str],
+      key_columns: tuple[str, ...],
+      expected_keys: list[tuple[Any, ...]],
+  ) -> None:
+    """With no condition, a query returns the rows and columns of its view."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0),
+        *self._finished_turn("s1", "inv-2", 10, is_truncated=True),
+        *self._finished_turn("s2", "inv-1", 20),
+    ]
+
+    query_sql = build_query_sql("p.d.t")
+
+    assert self._output_columns(query_sql) == columns
+    assert "@" not in query_sql
+    # Every session or turn comes out, the truncated one too, not eval ready.
+    assert (
+        sorted(
+            tuple(row[column] for column in key_columns)
+            for row in _EvalViewSqlEvaluator(query_sql).run(rows)
+        )
+        == expected_keys
+    )
+
+  @pytest.mark.parametrize(
+      "build_view_sql, build_query_sql, view_name",
+      [
+          (
+              bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              "x_eval_session",
+          ),
+          (
+              bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              "x_eval_turn",
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_view_sql_creates_a_view_of_its_query(
+      self,
+      build_view_sql: Callable[..., str],
+      build_query_sql: Callable[..., str],
+      view_name: str,
+  ) -> None:
+    """A view runs the SQL of its query builder, with no conditions."""
+    denied_columns = frozenset({"attributes"})
+
+    view_sql = build_view_sql(
+        "p.d.t", view_prefix="x", denied_columns=denied_columns
+    )
+
+    assert view_sql == (
+        f"CREATE OR REPLACE VIEW `p.d.{view_name}` AS\n"
+        + build_query_sql("p.d.t", denied_columns=denied_columns)
+    )
+
+  def test_eval_where_clause_picks_the_rebuilt_rows(self) -> None:
+    """The where_clause filters the output rows after they are rebuilt."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0),
+        *self._finished_turn("s1", "inv-2", 10, is_truncated=True),
+        *self._finished_turn("s2", "inv-1", 20),
+    ]
+    session_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+            "p.d.t", where_clause="eval_ready"
+        )
+    )
+    turn_query = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+            "p.d.t", where_clause="session_id = 's1' AND turn_index = 1"
+        )
+    )
+
+    assert [row["session_id"] for row in session_query.run(rows)] == ["s2"]
+    assert [
+        (row["invocation_id"], row["turn_index"])
+        for row in turn_query.run(rows)
+    ] == [("inv-2", 1)]
+
+  def test_eval_where_clause_keeps_the_context_that_raw_where_clause_drops(
+      self,
+  ) -> None:
+    """A row that the where_clause picks keeps its session's earlier turns.
+
+    The where_clause picks rows that are rebuilt from every event, so a turn
+    keeps its turn_index and the system prompt that its session logged first.
+    A raw_where_clause that drops the earlier turn's events rebuilds the
+    session without them.
+    """
+    event = self._event
+    rows = []
+    for turn_index, invocation_id in enumerate(["inv-0", "inv-1"]):
+      second = 10 * turn_index
+      rows += [
+          event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              {"text_summary": "Hi"},
+          ),
+          # The instruction is a callable, so the event logs none.
+          event(invocation_id, second + 1, "AGENT_STARTING"),
+          event(
+              invocation_id,
+              second + 2,
+              "LLM_REQUEST",
+              {"system_prompt": f"Prompt of turn {turn_index}"},
+          ),
+          event(
+              invocation_id,
+              second + 3,
+              "AGENT_RESPONSE",
+              {"response": "text: 'Done.'"},
+          ),
+          event(invocation_id, second + 4, "INVOCATION_COMPLETED"),
+      ]
+    second_turn = "invocation_id = 'inv-1'"
+
+    def only_row(sql: str, column: str) -> tuple[Any, Any]:
+      """Returns ``column`` and the root agent's instruction of the one row."""
+      (row,) = _EvalViewSqlEvaluator(sql).run(rows)
+      return row[column], row["trace"]["agents"]["root_agent"]["instruction"]
+
+    build_session_query = (
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql
+    )
+    build_turn_query = bigquery_agent_analytics_plugin.build_eval_turn_query_sql
+
+    assert only_row(
+        build_turn_query("p.d.t", where_clause=second_turn), "turn_index"
+    ) == (1, "Prompt of turn 0")
+    assert only_row(
+        build_turn_query("p.d.t", raw_where_clause=second_turn), "turn_index"
+    ) == (0, "Prompt of turn 1")
+    assert only_row(
+        build_session_query("p.d.t", where_clause="turn_count = 2"),
+        "turn_count",
+    ) == (2, "Prompt of turn 0")
+    assert only_row(
+        build_session_query("p.d.t", raw_where_clause=second_turn),
+        "turn_count",
+    ) == (1, "Prompt of turn 1")
+
+  @pytest.mark.parametrize(
+      "build_query_sql, window_column",
+      [
+          (
+              bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+              "session_end_timestamp",
+          ),
+          (
+              bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+              "turn_start_timestamp",
+          ),
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_declares_only_the_parameters_of_its_conditions(
+      self, build_query_sql: Callable[..., str], window_column: str
+  ) -> None:
+    """The job supplies the parameters that the two conditions name."""
+    raw_where_clause = (
+        "timestamp >= @lookback_start AND timestamp < @window_end"
+    )
+    where_clause = (
+        f"{window_column} >= @window_start AND {window_column} < @window_end"
+    )
+
+    query_sql = build_query_sql(
+        "p.d.t", where_clause=where_clause, raw_where_clause=raw_where_clause
+    )
+
+    assert "@" not in build_query_sql("p.d.t")
+    assert query_sql.count("@lookback_start") == 1
+    assert query_sql.count("@window_start") == 1
+    assert query_sql.count("@window_end") == 2
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_applies_denied_columns(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """A query reads denied columns as the views do, without naming them."""
+    query_sql = build_query_sql(
+        "p.d.t",
+        denied_columns=frozenset({"content_parts", "attributes", "latency_ms"}),
+    )
+
+    assert (
+        "\n      ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
+        " part_attributes STRING, storage_mode STRING>>[] AS content_parts,\n"
+        "      CAST(NULL AS JSON) AS attributes,\n"
+        "      CAST(NULL AS JSON) AS latency_ms,\n"
+    ) in query_sql
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_rejects_invalid_arguments(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """The query builders validate as the view builders do, and the filters."""
+    with pytest.raises(ValueError, match="dataset-qualified"):
+      build_query_sql("agent_events")
+    with pytest.raises(ValueError, match="Cannot build eval view SQL"):
+      build_query_sql("p.d.t", denied_columns=frozenset({"content"}))
+    with pytest.raises(ValueError, match=r"got \['is_truncated'\]"):
+      build_query_sql("p.d.t", denied_columns=frozenset({"is_truncated"}))
+    with pytest.raises(ValueError, match=r"got \['is_truncated'\]"):
+      build_query_sql("p.d.t", denied_columns=["is_truncated"])
+    with pytest.raises(ValueError, match="^where_clause has no condition"):
+      build_query_sql("p.d.t", where_clause="WHERE")
+    with pytest.raises(ValueError, match="^raw_where_clause has no condition"):
+      build_query_sql("p.d.t", raw_where_clause="WHERE")
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_takes_only_the_table_id_by_position(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """Only the table id is positional, so the conditions cannot be swapped."""
+    with pytest.raises(TypeError, match="1 positional argument"):
+      build_query_sql("p.d.t", frozenset())
+    with pytest.raises(TypeError, match="1 positional argument"):
+      build_query_sql("p.d.t", frozenset(), "eval_ready", "TRUE")
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize(
+      "denied_columns",
+      [
+          ["attributes", "latency_ms"],
+          ("latency_ms", "attributes", "latency_ms"),
+          {"attributes": 0, "latency_ms": 0}.keys(),
+      ],
+      ids=["list", "tuple", "dict_keys"],
+  )
+  def test_eval_query_sql_takes_denied_columns_in_any_collection(
+      self,
+      build_query_sql: Callable[..., str],
+      denied_columns: Collection[str],
+  ) -> None:
+    """A list, such as a payload_column_denylist, denies what a set does."""
+    sql = build_query_sql("p.d.t", denied_columns=denied_columns)
+
+    assert sql == build_query_sql(
+        "p.d.t", denied_columns=frozenset({"attributes", "latency_ms"})
+    )
+    assert "      CAST(NULL AS JSON) AS attributes,\n" in sql
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  def test_eval_query_sql_takes_the_default_payload_column_denylist(
+      self, build_query_sql: Callable[..., str]
+  ) -> None:
+    """None, the default of payload_column_denylist, denies no column."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+
+    sql = build_query_sql(
+        "p.d.t", denied_columns=config.payload_column_denylist
+    )
+
+    assert config.payload_column_denylist is None
+    assert sql == build_query_sql("p.d.t")
+    assert build_query_sql("p.d.t", denied_columns=None) == sql
+
+  @pytest.mark.parametrize(
+      "build_query_sql",
+      [
+          bigquery_agent_analytics_plugin.build_eval_session_query_sql,
+          bigquery_agent_analytics_plugin.build_eval_turn_query_sql,
+      ],
+      ids=["session", "turn"],
+  )
+  @pytest.mark.parametrize("where_clause", ["", "eval_ready -- ready only"])
+  def test_eval_query_sql_lets_a_caller_append_to_it(
+      self, build_query_sql: Callable[..., str], where_clause: str
+  ) -> None:
+    """A query ends without a ';', so a caller can append ORDER BY to it."""
+    rows = [
+        *self._finished_turn("s1", "inv-1", 0),
+        *self._finished_turn("s2", "inv-1", 10),
+        *self._finished_turn("s3", "inv-1", 20),
+    ]
+    query_sql = build_query_sql("p.d.t", where_clause=where_clause)
+
+    ordered = _EvalViewSqlEvaluator(f"{query_sql}ORDER BY session_id DESC\n")
+
+    assert ";" not in query_sql
+    assert query_sql.startswith("WITH\n")
+    assert [row["session_id"] for row in ordered.run(rows)] == [
+        "s3",
+        "s2",
+        "s1",
+    ]
+
   @pytest.fixture
   def eval_sql_dir(self, tmp_path, monkeypatch):
-    """Yields an empty SQL directory beside where the plugin module now is.
+    """Yields an empty SQL directory beside where the SQL module now is.
 
-    The module's ``__file__`` points into ``tmp_path``, and the loader's cache
-    is cleared before and after the test.
+    The ``__file__`` of the module that loads the templates points into
+    ``tmp_path``, and the loader's cache is cleared before and after the test.
     """
     sql_dir = tmp_path / "plugins" / "bigquery_agent_analytics_sql"
     sql_dir.mkdir(parents=True)
     monkeypatch.setattr(
-        bigquery_agent_analytics_plugin,
+        _bigquery_agent_analytics_eval_sql,
         "__file__",
-        str(sql_dir.parent / "bigquery_agent_analytics_plugin.py"),
+        str(sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py"),
     )
     bigquery_agent_analytics_plugin._load_eval_sql_template.cache_clear()
     yield sql_dir
@@ -16608,8 +17330,8 @@ class TestEvalViews:
     target_sql_dir = tmp_path / "cache" / "bigquery_agent_analytics_sql"
     target_sql_dir.mkdir(parents=True)
     target = target_sql_dir.parent / "0123abcd"
-    target.write_text("# The plugin module.\n", encoding="utf-8")
-    (eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py").symlink_to(
+    target.write_text("# The SQL module.\n", encoding="utf-8")
+    (eval_sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py").symlink_to(
         target
     )
     for sql_dir, place in [(eval_sql_dir, "link"), (target_sql_dir, "target")]:
@@ -16630,12 +17352,14 @@ class TestEvalViews:
       monkeypatch: pytest.MonkeyPatch,
   ) -> None:
     """A link to the module, alone in its directory, finds its target's SQL."""
-    module = eval_sql_dir.parent / "bigquery_agent_analytics_plugin.py"
-    module.write_text("# The plugin module.\n", encoding="utf-8")
-    link = tmp_path / "checkout" / "bigquery_agent_analytics_plugin.py"
+    module = eval_sql_dir.parent / "_bigquery_agent_analytics_eval_sql.py"
+    module.write_text("# The SQL module.\n", encoding="utf-8")
+    link = tmp_path / "checkout" / "_bigquery_agent_analytics_eval_sql.py"
     link.parent.mkdir()
     link.symlink_to(module)
-    monkeypatch.setattr(bigquery_agent_analytics_plugin, "__file__", str(link))
+    monkeypatch.setattr(
+        _bigquery_agent_analytics_eval_sql, "__file__", str(link)
+    )
     (eval_sql_dir / "test_target.sql").write_text(
         "-- License.\n\nSELECT 'beside the target'\n", encoding="utf-8"
     )
@@ -16652,12 +17376,11 @@ class TestEvalViews:
   ) -> None:
     """With no SQL beside the module, the package's resource is read."""
     template = bigquery_agent_analytics_plugin._load_eval_sql_template(
-        "eval_turn_view_v1.sql"
+        "eval_turn_query_v1.sql"
     )
 
-    assert template.startswith(
-        "CREATE OR REPLACE VIEW `{view_ref}` AS\n{ctes}\nSELECT\n"
-    )
+    assert template.startswith("{ctes},\n")
+    assert template.endswith("\nFROM\n  EvalTurns{where_clause}\n")
 
   def test_eval_view_evaluator_requires_an_else_in_every_case(self) -> None:
     """The evaluator rejects a CASE without an ELSE, as the SQL lint does."""

@@ -3748,10 +3748,11 @@ async def test_streaming_sets_model_version():
   assert final_response.model_version == "claude-sonnet-4-20250514"
 
 
-def test_part_to_message_block_thinking_roundtrip():
+@pytest.mark.parametrize("thinking_text", ["My reasoning steps.", ""])
+def test_part_to_message_block_thinking_roundtrip(thinking_text):
   """Part with thought=True and signature creates ThinkingBlockParam."""
   part = Part(
-      text="My reasoning steps.",
+      text=thinking_text,
       thought=True,
       thought_signature=b"roundtrip_sig",
   )
@@ -3760,7 +3761,7 @@ def test_part_to_message_block_thinking_roundtrip():
 
   assert isinstance(result, dict)
   assert result["type"] == "thinking"
-  assert result["thinking"] == "My reasoning steps."
+  assert result["thinking"] == thinking_text
   assert result["signature"] == "roundtrip_sig"
 
 
@@ -4062,7 +4063,8 @@ async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
 
 
 @pytest.mark.asyncio
-async def test_streaming_thinking_captures_signature_delta():
+@pytest.mark.parametrize("thinking_deltas", [["Reason."], []])
+async def test_streaming_thinking_captures_signature_delta(thinking_deltas):
   """A streamed signature_delta must land on the final thinking Part.
 
   Without this the aggregated thinking Part has no ``thought_signature`` and
@@ -4086,13 +4088,16 @@ async def test_streaming_thinking_captures_signature_delta():
               thinking="", signature="", type="thinking"
           ),
       ),
-      MagicMock(
-          type="content_block_delta",
-          index=0,
-          delta=anthropic_types.ThinkingDelta(
-              thinking="Reason.", type="thinking_delta"
-          ),
-      ),
+      *[
+          MagicMock(
+              type="content_block_delta",
+              index=0,
+              delta=anthropic_types.ThinkingDelta(
+                  thinking=text, type="thinking_delta"
+              ),
+          )
+          for text in thinking_deltas
+      ],
       MagicMock(
           type="content_block_delta",
           index=0,
@@ -4130,15 +4135,20 @@ async def test_streaming_thinking_captures_signature_delta():
   assert not final.partial
   thinking_part = final.content.parts[0]
   assert thinking_part.thought
-  assert thinking_part.text == "Reason."
+  assert thinking_part.text == "".join(thinking_deltas)
   assert thinking_part.thought_signature == b"sig_stream_123"
 
-  # The aggregated Part must round-trip back to a valid Anthropic thinking
-  # block -- this is exactly what fails today (missing signature) on a
-  # tool-call turn.
+  # Preserve the thinking block on the follow-up request, including when
+  # the stream contains a signature without any thinking text deltas.
   block = part_to_message_block(thinking_part)
   assert block["type"] == "thinking"
+  assert block["thinking"] == "".join(thinking_deltas)
   assert block["signature"] == "sig_stream_123"
+  assert final.content is not None
+  assert content_to_message_param(final.content) == {
+      "role": "assistant",
+      "content": [block],
+  }
 
 
 @pytest.mark.asyncio
@@ -4973,23 +4983,38 @@ def test_to_google_genai_finish_reason(stop_reason, expected_finish_reason):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "stop_reason,expected_finish_reason",
+    "stop_reason,has_content,expected_finish_reason,expected_error_code",
     [
-        ("end_turn", types.FinishReason.STOP),
-        ("max_tokens", types.FinishReason.MAX_TOKENS),
-        ("refusal", types.FinishReason.SAFETY),
+        ("end_turn", True, types.FinishReason.STOP, None),
+        ("max_tokens", True, types.FinishReason.MAX_TOKENS, None),
+        ("refusal", True, types.FinishReason.SAFETY, None),
+        ("end_turn", False, types.FinishReason.STOP, None),
+        (
+            "max_tokens",
+            False,
+            types.FinishReason.MAX_TOKENS,
+            types.FinishReason.MAX_TOKENS,
+        ),
+        (
+            "refusal",
+            False,
+            types.FinishReason.SAFETY,
+            types.FinishReason.SAFETY,
+        ),
     ],
 )
 async def test_non_streaming_sets_finish_reason(
-    stop_reason, expected_finish_reason
+    stop_reason, has_content, expected_finish_reason, expected_error_code
 ):
-  """finish_reason is populated on the non-streaming LlmResponse."""
+  """finish_reason and error_code are set on the non-streaming LlmResponse."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   mock_message = anthropic_types.Message(
       id="msg_test",
-      content=[
-          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
-      ],
+      content=(
+          [anthropic_types.TextBlock(text="Hi", type="text", citations=None)]
+          if has_content
+          else []
+      ),
       model="claude-sonnet-4-20250514",
       role="assistant",
       stop_reason=stop_reason,
@@ -5020,11 +5045,48 @@ async def test_non_streaming_sets_finish_reason(
 
   assert len(responses) == 1
   assert responses[0].finish_reason == expected_finish_reason
+  assert responses[0].error_code == expected_error_code
+  if expected_error_code:
+    assert repr(stop_reason) in responses[0].error_message
+  else:
+    assert responses[0].error_message is None
+  assert responses[0].usage_metadata.prompt_token_count == 5
+  assert responses[0].usage_metadata.candidates_token_count == 2
+  assert responses[0].model_version == "claude-sonnet-4-20250514"
 
 
 @pytest.mark.asyncio
-async def test_streaming_sets_finish_reason():
-  """finish_reason is populated on the final streaming LlmResponse."""
+@pytest.mark.parametrize(
+    "stop_reason,has_content,expected_finish_reason,expected_error_code",
+    [
+        ("end_turn", True, types.FinishReason.STOP, None),
+        ("max_tokens", True, types.FinishReason.MAX_TOKENS, None),
+        ("refusal", True, types.FinishReason.SAFETY, None),
+        ("end_turn", False, types.FinishReason.STOP, None),
+        (
+            "max_tokens",
+            False,
+            types.FinishReason.MAX_TOKENS,
+            types.FinishReason.MAX_TOKENS,
+        ),
+        (
+            "refusal",
+            False,
+            types.FinishReason.SAFETY,
+            types.FinishReason.SAFETY,
+        ),
+        (
+            "unknown",
+            False,
+            types.FinishReason.FINISH_REASON_UNSPECIFIED,
+            types.FinishReason.FINISH_REASON_UNSPECIFIED,
+        ),
+    ],
+)
+async def test_streaming_sets_finish_reason(
+    stop_reason, has_content, expected_finish_reason, expected_error_code
+):
+  """finish_reason and error_code are set on the final streaming LlmResponse."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
 
   events = [
@@ -5048,11 +5110,15 @@ async def test_streaming_sets_finish_reason():
       MagicMock(type="content_block_stop", index=0),
       MagicMock(
           type="message_delta",
-          delta=MagicMock(stop_reason="max_tokens"),
+          delta=MagicMock(stop_reason=stop_reason),
           usage=MagicMock(output_tokens=1),
       ),
       MagicMock(type="message_stop"),
   ]
+  if not has_content:
+    events = [
+        event for event in events if not event.type.startswith("content_")
+    ]
 
   mock_client = MagicMock()
   mock_client.messages.create = AsyncMock(
@@ -5071,7 +5137,103 @@ async def test_streaming_sets_finish_reason():
     ]
 
   final = responses[-1]
-  assert final.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final.finish_reason == expected_finish_reason
+  assert final.error_code == expected_error_code
+  if expected_error_code:
+    assert repr(stop_reason) in final.error_message
+  else:
+    assert final.error_message is None
+  assert final.usage_metadata.prompt_token_count == 5
+  assert final.usage_metadata.candidates_token_count == 1
+  assert final.model_version == "claude-sonnet-4-20250514"
+
+
+def test_non_streaming_thinking_and_empty_text_max_tokens_sets_error_code():
+  """A max_tokens turn with only thinking and empty text is an error."""
+  message = anthropic_types.Message(
+      id="msg_test",
+      content=[
+          anthropic_types.ThinkingBlock(
+              thinking="Reason.", signature="sig", type="thinking"
+          ),
+          anthropic_types.RedactedThinkingBlock(
+              data="hidden", type="redacted_thinking"
+          ),
+          anthropic_types.TextBlock(text="", type="text"),
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="max_tokens",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(input_tokens=5, output_tokens=2),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 3
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert "'max_tokens'" in response.error_message
+
+
+@pytest.mark.asyncio
+async def test_streaming_thinking_and_empty_text_max_tokens_sets_error_code():
+  """A streamed max_tokens turn of thinking and empty text is an error."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ThinkingBlock(
+              thinking="", signature="", type="thinking"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.ThinkingDelta(
+              thinking="Reason.", type="thinking_delta"
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="content_block_start",
+          index=1,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="max_tokens"),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  final = responses[-1]
+  assert [part.thought for part in final.content.parts] == [True, None]
+  assert final.error_code == types.FinishReason.MAX_TOKENS
+  assert "'max_tokens'" in final.error_message
 
 
 @pytest.mark.parametrize(
@@ -5543,10 +5705,11 @@ async def test_cache_breakpoint_skips_a_reasoning_block(
 
   kwargs = await _sent_anthropic_kwargs(request)
 
-  blocks = kwargs["messages"][-1]["content"]
+  blocks = kwargs["messages"][1]["content"]
   assert blocks[-1]["type"] == expected_block_type
   assert "cache_control" not in blocks[-1]
   assert blocks[-2]["cache_control"] == _EPHEMERAL
+  assert "cache_control" not in kwargs["messages"][-1]["content"][0]
 
 
 @pytest.mark.asyncio
@@ -5577,6 +5740,61 @@ async def test_cache_breakpoint_skips_a_turn_left_with_no_blocks():
       "tools[1]": _EPHEMERAL,
       "messages[0][0]": _EPHEMERAL,
   }
+
+
+_HAIKU_USER = Content(role="user", parts=[Part.from_text(text="Write a haiku")])
+_HAIKU_MODEL = Content(
+    role="model", parts=[Part.from_text(text="An old silent pond")]
+)
+_CONTINUE_TEXT = (
+    "Continue processing previous requests as instructed."
+    " Exit or provide a summary if no more outputs are needed."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "contents,expected_roles,expected_text",
+    [
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="ends_on_assistant",
+        ),
+        pytest.param(
+            [_HAIKU_USER, _HAIKU_MODEL, Content(role="user", parts=[])],
+            ["user", "assistant", "user"],
+            _CONTINUE_TEXT,
+            id="trailing_user_turn_dropped",
+        ),
+        pytest.param(
+            [],
+            ["user"],
+            "Handle the requests as specified in the System Instruction.",
+            id="no_contents",
+        ),
+        pytest.param(
+            [_HAIKU_USER],
+            ["user"],
+            "Write a haiku",
+            id="ends_on_user",
+        ),
+    ],
+)
+async def test_request_ends_on_a_user_turn(
+    contents, expected_roles, expected_text, stream
+):
+  """Claude reads a trailing assistant turn as prefill, which 4.6+ rejects."""
+  request = LlmRequest(model="claude-sonnet-4-20250514", contents=contents)
+
+  kwargs = await _sent_anthropic_kwargs(request, stream=stream)
+
+  assert [m["role"] for m in kwargs["messages"]] == expected_roles
+  assert kwargs["messages"][-1]["content"] == [
+      {"type": "text", "text": expected_text}
+  ]
 
 
 @pytest.mark.asyncio

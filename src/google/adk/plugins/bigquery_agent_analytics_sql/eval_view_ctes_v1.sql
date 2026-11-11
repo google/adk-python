@@ -14,7 +14,7 @@
 --
 -- Shared CTE chain of the BigQuery Agent Analytics eval session and eval turn
 -- views.  It rebuilds the events of each session or turn into an AgentData
--- trace and the metrics beside it; the view templates continue it.
+-- trace and the metrics beside it; the query templates continue it.
 --
 -- Substitution contract: strip this header (everything up to the first blank
 -- line), then replace each placeholder named below, a name in single braces,
@@ -40,6 +40,31 @@
 -- {scope_columns}
 --     session_id for one trace per session, or session_id, invocation_id for
 --     one trace per turn.
+-- {raw_where_clause}
+--     Empty, or a trusted condition that narrows the events table's rows
+--     that every CTE reads.  The template puts it right after the last
+--     filter, so it starts with a newline and has this shape, with the closing
+--     parenthesis on a line of its own so that a trailing line comment in the
+--     condition cannot swallow it:
+--
+--       AND (
+--         condition
+--       )
+--
+--     The condition:
+--     * is SQL: bind its values as query parameters that the running job
+--       supplies, and never splice in untrusted text;
+--     * must keep every event of each session or turn to read: its lower
+--       bound is no later than the first event of any such session, and its
+--       upper bound is after the last event of those sessions plus the delay
+--       before the plugin's writes are readable, or the session or turn comes
+--       out partial;
+--     * never filters on a column that varies within a session, such as agent
+--       or event_type.
+--     A lookback on timestamp, one that starts well before the window to
+--     read, lets BigQuery prune the table's partitions.  To pick the sessions
+--     or turns of a time window, keep this lookback wide and filter the
+--     output columns with the where_clause of the query templates instead.
 --
 -- Truncated content: a row that has is_truncated set lacks part of its
 -- payload.  When the row puts an event in the trace, has_truncated_content
@@ -79,7 +104,7 @@ WITH
       `{full_table_id}`
     WHERE
       session_id IS NOT NULL
-      AND invocation_id IS NOT NULL
+      AND invocation_id IS NOT NULL{raw_where_clause}
   ),
   -- Each event with the fields that later steps read parsed out of its JSON
   -- payload: its author, the tool name and args, whether the tool is a
