@@ -1229,6 +1229,46 @@ def test_construct_payload_rejects_non_genai_tools() -> None:
     client._construct_payload(request, stream=False)
 
 
+@pytest.mark.parametrize(
+    ('allowed_names', 'expected_choice'),
+    [
+        (
+            ['lookup_order'],
+            {'type': 'function', 'function': {'name': 'lookup_order'}},
+        ),
+        (['lookup_order', 'issue_refund'], 'required'),
+        (None, 'required'),
+    ],
+)
+def test_construct_payload_any_mode_with_allowed_function_names(
+    allowed_names: list[str] | None, expected_choice: object
+) -> None:
+  request = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name='lookup_order'),
+                      types.FunctionDeclaration(name='issue_refund'),
+                  ]
+              )
+          ],
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY,
+                  allowed_function_names=allowed_names,
+              )
+          ),
+      ),
+  )
+
+  client = CompletionsHTTPClient(base_url='http://test')
+  payload = client._construct_payload(request, stream=False)
+  assert payload['tool_choice'] == expected_choice
+
+
 def test_content_conversion_rejects_unnamed_function_call() -> None:
   content = types.Content(
       role='model',
