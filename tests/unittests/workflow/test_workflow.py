@@ -40,6 +40,8 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
+from google.adk.workflow._graph import Edge
+from google.adk.workflow._graph import Graph
 from google.adk.workflow._join_node import JoinNode
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import get_common_branch_prefix
@@ -1969,6 +1971,47 @@ async def test_terminal_node_output_dedup_nested():
       if e.node_info.path in ('outer@1', 'outer@1/inner@1')
   ]
   assert len(wf_output_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_nested_workflow_given_a_graph_passes_its_output_on():
+  """A nested Workflow built with graph= hands its terminal output on."""
+
+  def inner_node(node_input: str) -> str:
+    return node_input.upper()
+
+  inner_wf = Workflow(
+      name='inner', graph=Graph.from_edge_items([(START, inner_node)])
+  )
+
+  def outer_node(node_input: str) -> str:
+    return f'wrapped: {node_input}'
+
+  outer_wf = Workflow(name='outer', edges=[(START, inner_wf, outer_node)])
+  events, _, _ = await _run_workflow(outer_wf, 'test')
+
+  by_node = _output_by_node(events)
+  assert by_node == [('inner_node', 'TEST'), ('outer_node', 'wrapped: TEST')]
+  inner_event = next(e for e in events if e.output == 'TEST')
+  assert inner_event.node_info.output_for == [
+      'outer@1/inner@1/inner_node@1',
+      'outer@1/inner@1',
+  ]
+
+
+def test_workflow_validates_a_graph_passed_directly():
+  """A graph passed with graph= is validated like one built from edges."""
+  a = _OutputNode(name='a', value='A')
+  b = _OutputNode(name='b', value='B')
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=a),
+          Edge(from_node=b, to_node=a),
+      ]
+  )
+
+  with pytest.raises(ValueError, match='unreachable from START'):
+    Workflow(name='wf', graph=graph)
 
 
 # --- wait_for_output + HITL resume ---
