@@ -473,6 +473,31 @@ def _truncated_tool_use_response(
   )
 
 
+def _empty_response_error(
+    *,
+    stop_reason: anthropic_types.StopReason | None,
+    finish_reason: types.FinishReason | None,
+    parts: list[types.Part],
+) -> tuple[types.FinishReason | None, str | None]:
+  """Returns the error code and message for a non-STOP turn with no content.
+
+  Only non-thought text or a function call counts as content.
+  """
+  if (
+      any(
+          not part.thought and (part.text or part.function_call)
+          for part in parts
+      )
+      or finish_reason is None
+      or finish_reason == types.FinishReason.STOP
+  ):
+    return None, None
+  return finish_reason, (
+      f"Claude stopped with {finish_reason.value} ({stop_reason!r}) and no"
+      " content."
+  )
+
+
 def _is_image_part(part: types.Part) -> bool:
   inline_data = part.inline_data
   return bool(
@@ -1058,6 +1083,12 @@ def message_to_generate_content_response(
     )
 
   parts = [content_block_to_part(cb) for cb in message.content]
+  finish_reason = to_google_genai_finish_reason(message.stop_reason)
+  error_code, error_message = _empty_response_error(
+      stop_reason=message.stop_reason,
+      finish_reason=finish_reason,
+      parts=parts,
+  )
   return LlmResponse(
       content=types.Content(
           role="model",
@@ -1065,7 +1096,9 @@ def message_to_generate_content_response(
       ),
       usage_metadata=usage_metadata,
       cache_creation_token_count=cache_creation,
-      finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      finish_reason=finish_reason,
+      error_code=error_code,
+      error_message=error_message,
       model_version=message.model,
   )
 
@@ -1826,11 +1859,19 @@ class AnthropicLlm(BaseLlm):
         function_call.id = tool_acc.id
         all_parts.append(part)
 
+    finish_reason = to_google_genai_finish_reason(stop_reason)
+    error_code, error_message = _empty_response_error(
+        stop_reason=stop_reason,
+        finish_reason=finish_reason,
+        parts=all_parts,
+    )
     final_response = LlmResponse(
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
         cache_creation_token_count=cache_creation_tokens,
-        finish_reason=to_google_genai_finish_reason(stop_reason),
+        finish_reason=finish_reason,
+        error_code=error_code,
+        error_message=error_message,
         model_version=model_version,
         partial=False,
     )

@@ -83,7 +83,7 @@ class _ChildScanState:
   """The agent the child asked to transfer to, or None if it asked for none."""
 
   interrupt_ids: set[str] = field(default_factory=set)
-  """Every interrupt the child raised."""
+  """Every unsealed interrupt the child raised."""
 
   resolved_ids: set[str] = field(default_factory=set)
   """The subset of ``interrupt_ids`` a user response has come back for."""
@@ -407,9 +407,40 @@ def _reconstruct_node_states(
                   o_state.finished_after_resume = False
       continue
 
-    # 2. Match events under base_path
-    event_node_path = event.node_info.path or ''
+    event_node_path = (event.node_info.path if event.node_info else None) or ''
     event_path_builder = _NodePathBuilder.from_string(event_node_path)
+
+    if event.error_code is not None and event.content and event.content.parts:
+      # A synthetic error FunctionResponse seals an unanswered interrupt
+      # without supplying an answer the node should resume with, so `fr.id` is
+      # dropped from `interrupt_ids` rather than written to
+      # `resolved_responses`. Path-scoped seals reach step 5 below (`elif
+      # event.error_code is not None`) for direct children without tainting a
+      # surviving parent when only a nested sub-branch was sealed; pathless
+      # abort seals skip step 2 and set `error_code` here instead.
+      has_event_path = bool(event_node_path)
+      is_direct_seal = has_event_path and (
+          event_path_builder.is_direct_child_of(base_path_builder)
+          if group_by_direct_child
+          else event_path_builder == base_path_builder
+      )
+      for part in event.content.parts:
+        fr = part.function_response
+        if fr and fr.id:
+          schemas_by_id.pop(fr.id, None)
+          owner = interrupt_owner.pop(fr.id, None)
+          if owner and owner in scan_states:
+            o_state = scan_states[owner]
+            o_state.interrupt_ids.discard(fr.id)
+            if not has_event_path or is_direct_seal:
+              o_state.output = None
+              o_state.route = None
+              o_state.transfer_to_agent = None
+              o_state.finished_after_resume = False
+            if not has_event_path:
+              o_state.error_code = event.error_code
+
+    # 2. Match events under base_path
     owner_key = get_owner_key(event_path_builder)
 
     if not owner_key:

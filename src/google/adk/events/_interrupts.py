@@ -78,11 +78,13 @@ def is_interrupt_event(event: Event) -> bool:
 
 
 def index_open_interrupts(events: Sequence[Event]) -> dict[str, OpenInterrupt]:
-  """Indexes interrupts in `events` that have not yet been answered.
+  """Indexes interrupts in `events` that have not yet been answered or sealed.
 
   An interrupt is considered answered when a subsequent user `FunctionResponse`
-  in `events` carries `fr.id == interrupt_id`, or arrives on a sub-branch whose
-  run IDs contain `interrupt_id`.
+  in `events` carries `fr.id == interrupt_id` or arrives on a sub-branch whose
+  run IDs contain `interrupt_id`, and sealed when a synthetic error
+  `FunctionResponse` (`event.error_code is not None`) carries
+  `fr.id == interrupt_id`.
   """
   index: dict[str, OpenInterrupt] = {}
   call_author_by_id: dict[str, str] = {}
@@ -98,15 +100,20 @@ def index_open_interrupts(events: Sequence[Event]) -> dict[str, OpenInterrupt]:
         if fc.id:
           call_author_by_id[fc.id] = event.author
 
-    if event.author == 'user':
+    if event.author == 'user' or event.error_code is not None:
       for fr in event.get_function_responses():
         if fr.id and fr.id in index:
           del index[fr.id]
 
-      if branch_run_ids and event.get_function_responses() and index:
-        for int_id in list(index):
-          if int_id in branch_run_ids:
-            del index[int_id]
+    if (
+        event.author == 'user'
+        and branch_run_ids
+        and event.get_function_responses()
+        and index
+    ):
+      for int_id in list(index):
+        if int_id in branch_run_ids:
+          del index[int_id]
 
     interrupt_ids = extract_event_interrupt_ids(event)
     if not interrupt_ids:
