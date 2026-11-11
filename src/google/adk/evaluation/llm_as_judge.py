@@ -31,8 +31,8 @@ from typing_extensions import override
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
+from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
 from .common import EvalBaseModel
 from .eval_case import ConversationScenario
@@ -49,8 +49,6 @@ from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
-from .llm_as_judge_utils import get_model_name
-from .llm_as_judge_utils import resolve_llm
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -68,7 +66,6 @@ _CriterionT = TypeVar(
 )
 
 
-@experimental
 class LlmAsJudge(Evaluator, Generic[_CriterionT]):
   """Evaluator based on a LLM.
 
@@ -102,10 +99,8 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       if self._eval_metric.criterion is None:
         raise expected_criterion_type_error
 
-      # Use dict() instead of model_dump() so the field serializer does not
-      # convert a BaseLlm judge into its name string.
       self._criterion: _CriterionT = criterion_type.model_validate(
-          dict(self._eval_metric.criterion)
+          self._eval_metric.criterion.model_dump()
       )
     except ValidationError as e:
       raise expected_criterion_type_error from e
@@ -143,6 +138,31 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
   ) -> EvaluationResult:
     """Aggregates the per invocation results to get the overall score."""
 
+  def _convert_auto_rater_response_to_score_for_invocation(
+      self,
+      auto_rater_response: LlmResponse,
+      *,
+      actual: Invocation,
+      expected: Invocation | None,
+  ) -> AutoRaterScore:
+    """Returns the score in a judge response to the prompt for an invocation.
+
+    `evaluate_invocations` formats the prompts of all invocations before any
+    judge response arrives. A subclass that keeps per-invocation state while
+    formatting a prompt overrides this method to restore that state before the
+    response is parsed.
+
+    Args:
+      auto_rater_response: The judge response to parse.
+      actual: The actual invocation the prompt was formatted for.
+      expected: The expected invocation the prompt was formatted for, if any.
+
+    Returns:
+      The score parsed from the response.
+    """
+    del actual, expected  # Parsing needs only the response by default.
+    return self.convert_auto_rater_response_to_score(auto_rater_response)
+
   async def _evaluate_single_sample(
       self,
       llm_request: LlmRequest,
@@ -164,8 +184,10 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     ) as agen:
       async for llm_response in agen:
         # Non-streaming call, so there is only one response content.
-        auto_rater_score = self.convert_auto_rater_response_to_score(
-            llm_response
+        auto_rater_score = (
+            self._convert_auto_rater_response_to_score_for_invocation(
+                llm_response, actual=actual, expected=expected
+            )
         )
         return PerInvocationResult(
             actual_invocation=actual,
@@ -222,7 +244,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     ):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
       llm_request = LlmRequest(
-          model=get_model_name(self._judge_model_options.judge_model),
+          model=self._judge_model_options.judge_model,
           contents=[
               genai_types.Content(
                   parts=[genai_types.Part(text=auto_rater_prompt)],
@@ -285,4 +307,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     return EvaluationResult()
 
   def _setup_auto_rater(self) -> BaseLlm:
-    return resolve_llm(self._judge_model_options.judge_model)
+    model_id = self._judge_model_options.judge_model
+    llm_registry = LLMRegistry()
+    llm_class = llm_registry.resolve(model_id)
+    return llm_class(model=model_id)

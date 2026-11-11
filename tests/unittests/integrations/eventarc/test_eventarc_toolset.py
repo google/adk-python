@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import os
 import unittest
 from unittest import mock
 import warnings
@@ -71,7 +72,11 @@ class TestEventarcToolset(unittest.IsolatedAsyncioTestCase):
     await toolset.close()
     mock_client.cleanup_clients.assert_called_once()
 
+  @mock.patch.dict(
+      os.environ, {"ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS": "0"}
+  )
   def test_eventarc_toolset_experimental_warning(self):
+    """Test that EventarcToolset warns when instantiated."""
     _WARNED_FEATURES.clear()
     with warnings.catch_warnings(record=True) as w:
       warnings.simplefilter("always")
@@ -84,7 +89,11 @@ class TestEventarcToolset(unittest.IsolatedAsyncioTestCase):
           any("EVENTARC_TOOLSET is enabled." in str(warn.message) for warn in w)
       )
 
+  @mock.patch.dict(
+      os.environ, {"ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS": "0"}
+  )
   def test_eventarc_tool_config_experimental_warning(self):
+    """Test that EventarcToolConfig warns when instantiated."""
     _WARNED_FEATURES.clear()
     with warnings.catch_warnings(record=True) as w:
       warnings.simplefilter("always")

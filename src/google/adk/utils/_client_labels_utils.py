@@ -19,7 +19,6 @@ from contextlib import contextmanager
 import contextvars
 import os
 import sys
-from typing import List
 
 from .. import version
 
@@ -35,13 +34,19 @@ EVAL_CLIENT_LABEL = f"google-adk-eval/{version.__version__}"
 MODEL_CONSULT_CLIENT_LABEL = f"google-adk-model-consult/{version.__version__}"
 """Label used to denote advisor LLM calls made by ModelConsultTool."""
 
+
+def classifier_client_label(kind: str) -> str:
+  """Returns the label for calls made by a classifier, such as "llm"."""
+  return f"google-adk-classifier/{version.__version__}+{kind}"
+
+
 # The ContextVar holds client label collected for the current request.
 _LABEL_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_LABEL_CONTEXT", default=None
 )
 
 
-def _get_default_labels(framework_label: str | None = None) -> List[str]:
+def _get_default_labels(framework_label: str | None = None) -> list[str]:
   """Returns a list of labels that are always added.
 
   Args:
@@ -80,7 +85,7 @@ def client_label_context(client_label: str) -> Iterator[None]:
     _LABEL_CONTEXT.reset(token)
 
 
-def get_client_labels(framework_label: str | None = None) -> List[str]:
+def get_client_labels(framework_label: str | None = None) -> list[str]:
   """Returns the current list of client labels that can be added to HTTP Headers.
 
   Args:

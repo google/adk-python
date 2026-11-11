@@ -96,8 +96,10 @@ implementation applies the event's `actions.state_delta` to the in-memory
 write the event to storage as well. Partial events (`event.partial` is true) are
 returned untouched and never stored, which is how streaming chunks stay out of
 the history. Appending to a session that storage does not know about raises
-`SessionNotFoundError` on every backend, so a deleted or never-created session
-fails loudly instead of dropping the event.
+`SessionNotFoundError` on `InMemorySessionService`, `DatabaseSessionService`,
+and `SqliteSessionService`, while `VertexAiSessionService` surfaces the
+underlying API `ClientError`, so a deleted or never-created session fails
+loudly instead of dropping the event.
 
 ### State scoping
 
@@ -199,10 +201,12 @@ name, unless you pass `agent_engine_id` to the constructor.
 
 *   **Problem solved**: two workers hold the same `Session` object and both
     append, so one would silently overwrite the other's history.
-*   **Implementation**: nothing to write. `DatabaseSessionService` tracks a
-    storage revision per session and raises `ValueError` from `append_event`
-    when the in-memory copy has fallen behind. Recover by calling `get_session`
-    again and replaying the append against the fresh session.
+*   **Implementation**: nothing to write. `DatabaseSessionService` and
+    `SqliteSessionService` compare the session's `last_update_time` against
+    storage and raise `StaleSessionError`, a `ValueError` subclass exported from
+    `google.adk.errors`, from `append_event` when the in-memory copy has fallen
+    behind. Recover by calling `get_session` again and replaying the append
+    against the fresh session.
 
 ## Limitations
 

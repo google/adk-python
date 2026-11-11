@@ -74,7 +74,9 @@ class BashToolPolicy:
   to reject them outright.
 
   Values for max_memory_bytes, max_file_size_bytes, and max_child_processes
-  will be enforced upon the spawned subprocess.
+  will be enforced upon the spawned subprocess. None leaves a limit unset,
+  while 0 is enforced: for example, max_file_size_bytes=0 lets the command
+  write no bytes to files.
   """
 
   allowed_command_prefixes: tuple[str, ...] = ("*",)
@@ -137,17 +139,17 @@ def _set_resource_limits(policy: BashToolPolicy) -> None:
     return
   try:
     _resource.setrlimit(_resource.RLIMIT_CORE, (0, 0))
-    if policy.max_memory_bytes:
+    if policy.max_memory_bytes is not None:
       _resource.setrlimit(
           _resource.RLIMIT_AS,
           (policy.max_memory_bytes, policy.max_memory_bytes),
       )
-    if policy.max_file_size_bytes:
+    if policy.max_file_size_bytes is not None:
       _resource.setrlimit(
           _resource.RLIMIT_FSIZE,
           (policy.max_file_size_bytes, policy.max_file_size_bytes),
       )
-    if policy.max_child_processes:
+    if policy.max_child_processes is not None:
       _resource.setrlimit(
           _resource.RLIMIT_NPROC,
           (policy.max_child_processes, policy.max_child_processes),

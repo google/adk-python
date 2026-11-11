@@ -421,6 +421,27 @@ class TestMCPSessionManager:
     })
     assert merged == expected
 
+  def test_merge_headers_override_replaces_base_header_in_any_case(self):
+    """A request header replaces a static header that differs only in case."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="https://example.com/mcp",
+            headers={
+                "authorization": "Bearer shared-service-token",
+                "X-Static": "kept",
+            },
+        )
+    )
+
+    merged = manager._merge_headers(  # pylint: disable=protected-access
+        {"Authorization": "Bearer per-user-token"}
+    )
+
+    assert httpx.Headers(merged).get_list("authorization") == [
+        "Bearer per-user-token"
+    ]
+    assert merged["X-Static"] == "kept"
+
   def test_merge_headers_adds_adk_user_agent(self):
     """An MCP server can attribute the request to ADK."""
     manager = MCPSessionManager(
@@ -445,6 +466,85 @@ class TestMCPSessionManager:
     assert "User-Agent" not in merged
     assert merged["user-agent"].startswith("google-adk/")
     assert merged["user-agent"].endswith(" my-app/1.0")
+
+  @pytest.mark.parametrize(
+      "base_headers, additional",
+      [
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "user-agent": "base-client/2",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "x-goog-api-client": "base-sdk/2",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+      ],
+  )
+  def test_merge_headers_additional_overrides_base_tracking_headers(
+      self, base_headers, additional
+  ):
+    """Additional tracking headers replace base ones regardless of casing."""
+    original_base = base_headers.copy()
+    original_additional = additional.copy()
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp", headers=base_headers)
+    )
+
+    merged = manager._merge_headers(additional)
+
+    assert merged == merge_tracking_headers({
+        "user-agent": "extra-client/1",
+        "x-goog-api-client": "extra-sdk/1",
+        "X-Custom": "extra",
+    })
+    assert "base-client/" not in merged["user-agent"]
+    assert merged["user-agent"].endswith(" extra-client/1")
+    assert "base-sdk/" not in merged["x-goog-api-client"]
+    assert merged["x-goog-api-client"].endswith(" extra-sdk/1")
+    assert base_headers == original_base
+    assert additional == original_additional
 
   def test_is_session_disconnected(self):
     """Test session disconnection detection."""
@@ -1619,6 +1719,31 @@ class TestMCPSessionManager:
     ):
       transport = await manager._get_mtls_transport()
       assert transport is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      ("use_client_cert", "expected_probes"), [(False, 0), (True, 1)]
+  )
+  async def test_mtls_probe_follows_google_auth_client_cert_decision(
+      self, monkeypatch, use_client_cert, expected_probes
+  ):
+    """An unset GOOGLE_API_USE_CLIENT_CERTIFICATE defers to google-auth."""
+    monkeypatch.delenv("GOOGLE_API_USE_CLIENT_CERTIFICATE", raising=False)
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://localhost:8000/mcp")
+    )
+
+    with patch(
+        "google.auth.transport.mtls.should_use_client_cert",
+        return_value=use_client_cert,
+    ):
+      with patch(
+          "google.auth.default", side_effect=Exception("no credentials")
+      ) as mock_auth_default:
+        assert await manager._get_mtls_transport() is None
+
+    assert mock_auth_default.call_count == expected_probes
 
   @pytest.mark.asyncio
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")

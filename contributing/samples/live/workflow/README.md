@@ -45,7 +45,7 @@ graph TD
 1. **Sequence live agents with `mode='task'`**: Each stage is an `Agent` set to
    `mode='task'`, so it runs its own turn-taking loop and completes before the
    next stage begins. Because the agents use a live model
-   (`gemini-live-2.5-flash-native-audio`), the whole workflow runs as a voice
+   (`gemini-3.8-live`), the whole workflow runs as a voice
    conversation.
 
 1. **Pass typed handoffs between stages**: Give each stage an `output_schema`

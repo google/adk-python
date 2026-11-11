@@ -15,10 +15,13 @@
 import logging
 from unittest import mock
 
+from google.adk.events.event import Event
 from google.adk.memory.base_memory_service import SearchMemoryResponse
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.models.gemini_context_cache_manager import GeminiContextCacheManager
 from google.adk.models.llm_request import LlmRequest
+from google.adk.sessions.session import Session
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.genai import types
 import pytest
@@ -39,6 +42,132 @@ def _memory(text: str) -> MemoryEntry:
       author='user',
       timestamp='2026-07-13T12:00:00Z',
   )
+
+
+@pytest.mark.parametrize('thought', [True, False, None])
+@pytest.mark.asyncio
+async def test_preload_memory_preserves_visible_text_only(
+    thought: bool | None,
+) -> None:
+  """Recalled reasoning is not presented as a previous conversation answer."""
+  memory = MemoryEntry(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='Consider a zeppelin.', thought=thought),
+              types.Part(text='Take the train to Paris.'),
+          ],
+      ),
+      author='assistant',
+  )
+  request = LlmRequest()
+  original_content = memory.content.model_copy(deep=True)
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=_tool_context(memory), llm_request=request
+  )
+
+  assert request.contents[0].parts
+  recalled_text = request.contents[0].parts[0].text
+  assert recalled_text is not None
+  assert 'Take the train to Paris.' in recalled_text
+  assert ('Consider a zeppelin.' in recalled_text) == (not thought)
+  assert memory.content == original_content
+
+
+@pytest.mark.parametrize(
+    'parts',
+    [
+        [],
+        [types.Part(text='Consider a zeppelin.', thought=True)],
+        [
+            types.Part(
+                inline_data=types.Blob(data=b'hello', mime_type='text/plain')
+            )
+        ],
+    ],
+)
+@pytest.mark.asyncio
+async def test_preload_memory_omits_entries_without_visible_text(
+    parts: list[types.Part],
+) -> None:
+  """Empty, non-text and thought-only memories do not add conversation text."""
+  memory = MemoryEntry(
+      content=types.Content(role='model', parts=parts),
+      author='assistant',
+      timestamp='2026-07-13T12:00:00Z',
+  )
+  request = LlmRequest()
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=_tool_context(memory), llm_request=request
+  )
+
+  assert not request.contents
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_in_memory_service_skips_thought_parts() -> None:
+  """Thought-only events do not match or crowd out visible search results."""
+  memory_service = InMemoryMemoryService()
+  events = [
+      Event(
+          id=f'thought-{i}',
+          author='model',
+          timestamp=float(i),
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(text='Paris travel plan', thought=True),
+                  types.Part.from_function_call(name='lookup', args={}),
+              ],
+          ),
+      )
+      for i in range(10)
+  ]
+  events.append(
+      Event(
+          id='visible',
+          author='model',
+          timestamp=11.0,
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(text='Secret internal note', thought=True),
+                  types.Part(text='Take the train to Paris.'),
+              ],
+          ),
+      )
+  )
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name='app',
+          user_id='user',
+          id='session-1',
+          events=events,
+      )
+  )
+
+  async def search_memory(query: str) -> SearchMemoryResponse:
+    return await memory_service.search_memory(
+        app_name='app', user_id='user', query=query
+    )
+
+  tool_context = mock.Mock()
+  tool_context.user_content = types.UserContent('Paris')
+  tool_context.search_memory = search_memory
+  request = LlmRequest()
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=tool_context, llm_request=request
+  )
+
+  assert request.contents[0].parts
+  recalled_text = request.contents[0].parts[0].text
+  assert recalled_text is not None
+  assert 'Take the train to Paris.' in recalled_text
+  assert 'Paris travel plan' not in recalled_text
+  assert 'Secret internal note' not in recalled_text
 
 
 @pytest.mark.asyncio

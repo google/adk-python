@@ -38,6 +38,7 @@ from .functional._digests import SpanDigest
 from .functional._recording import FunctionalTestCase
 from .functional_node_test_cases import ALL_NODE_CASES
 from .functional_test_cases import ALL_CASES
+from .functional_test_cases import GROUNDING_CASE
 from .functional_test_cases import MCP_CASE
 
 if TYPE_CHECKING:
@@ -45,7 +46,12 @@ if TYPE_CHECKING:
 
 # Every recorded case, so a property is asserted over the whole corpus rather
 # than the one scenario a test file happens to drive.
-_EVERY_CASE: list[FunctionalTestCase] = [*ALL_CASES, *ALL_NODE_CASES, MCP_CASE]
+_EVERY_CASE: list[FunctionalTestCase] = [
+    *ALL_CASES,
+    *ALL_NODE_CASES,
+    GROUNDING_CASE,
+    MCP_CASE,
+]
 
 # The operation each metric measures, named as the ``gen_ai.operation.name`` of
 # the span covering it. A metric point and that span describe one operation, so
@@ -53,6 +59,17 @@ _EVERY_CASE: list[FunctionalTestCase] = [*ALL_CASES, *ALL_NODE_CASES, MCP_CASE]
 _OPERATION_BY_METRIC: dict[str, str] = {
     "gen_ai.client.operation.duration": "generate_content",
     "gen_ai.client.token.usage": "generate_content",
+    "gen_ai.client.inference.usage.input_tokens": "generate_content",
+    "gen_ai.client.inference.usage.output_tokens": "generate_content",
+    "gen_ai.client.inference.usage.cache_read.input_tokens": "generate_content",
+    "gen_ai.client.inference.usage.cache_write.input_tokens": (
+        "generate_content"
+    ),
+    "gen_ai.client.inference.usage.reasoning.output_tokens": "generate_content",
+    "gen_ai.client.inference.operation.input_tokens": "generate_content",
+    "gen_ai.client.inference.operation.output_tokens": "generate_content",
+    "gen_ai.client.inference.time_to_first_chunk": "generate_content",
+    "gen_ai.client.inference.time_per_output_chunk": "generate_content",
     "gen_ai.execute_tool.duration": "execute_tool",
     "gen_ai.invoke_agent.duration": "invoke_agent",
     "gen_ai.invoke_agent.inference_calls": "invoke_agent",
@@ -87,6 +104,7 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     "adk.experimental.invoke_workflow.inference_calls": "invoke_workflow",
     "adk.experimental.invoke_workflow.tool_calls": "invoke_workflow",
     "adk.experimental.invoke_workflow.skill.loads": "invoke_workflow",
+    "adk.experimental.invoke_workflow.compactions": "invoke_workflow",
 }
 
 # Attributes that split a histogram into series rather than state a fact about
@@ -95,6 +113,10 @@ _METRIC_ONLY_DIMENSIONS: dict[str, str] = {
     "gen_ai.token.type": (
         "one series per direction, while a span reports both directions at"
         " once under gen_ai.usage.*"
+    ),
+    "gen_ai.token.modality": (
+        "one series per modality, while a span reports each call's tokens"
+        " without a modality breakdown"
     ),
     "adk.experimental.skill.script.ended_with_error": (
         "too many possible exit codes for metrics, but span does report"
@@ -134,22 +156,13 @@ _REDUCED_CARDINALITY: dict[str, list[AttributeValue]] = {
 
 # The facts the metrics record and the spans still do not.
 _FACTS_MISSING_FROM_SPANS: dict[str, str] = {
-    "error.type": "resolved for the metric, then never set on the span",
+    "error.type": (
+        "skill-script metric points pair with the span of the script that"
+        " succeeded"
+    ),
     "gen_ai.provider.name": "spans carry only the deprecated gen_ai.system",
     "gen_ai.response.model": "spans carry the requested model only",
 }
-
-# The cases whose spans are marked ERROR without naming the error.
-_CASES_MISSING_ERROR_TYPE: frozenset[str] = frozenset({
-    "agent-inference-error-resource-exhausted-schema-v1",
-    "agent-inference-error-resource-exhausted-schema-v2",
-    "agent-inference-error-valueerror-schema-v2",
-    "agent-tool-error-valueerror-schema-v2",
-})
-
-_MISSING_ERROR_TYPE_REASON: str = (
-    "the metric for the same operation records error.type; the span does not"
-)
 
 
 def _case_id(case: FunctionalTestCase) -> str:
@@ -209,18 +222,7 @@ def _xfail(reason: str | None) -> list[pytest.MarkDecorator]:
 
 @pytest.mark.parametrize(
     "case",
-    [
-        pytest.param(
-            case,
-            id=_case_id(case),
-            marks=_xfail(
-                _MISSING_ERROR_TYPE_REASON
-                if _case_id(case) in _CASES_MISSING_ERROR_TYPE
-                else None
-            ),
-        )
-        for case in _EVERY_CASE
-    ],
+    [pytest.param(case, id=_case_id(case)) for case in _EVERY_CASE],
 )
 def test_error_status_implies_error_type(case: FunctionalTestCase) -> None:
   """A span that ended in an error says which error, as semconv requires."""

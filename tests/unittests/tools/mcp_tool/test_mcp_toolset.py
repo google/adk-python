@@ -14,6 +14,7 @@
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 from io import StringIO
 import itertools
 import pickle
@@ -23,7 +24,9 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
+import warnings
 
+import anyio
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
@@ -36,6 +39,10 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.dependencies._mcp import Context as McpContext
+from google.adk.dependencies._mcp import FastMCP
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool import mcp_toolset as mcp_toolset_module
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
@@ -44,12 +51,14 @@ from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_configs import ToolArgsConfig
+from google.adk.tools.tool_context import ToolContext
 from mcp import StdioServerParameters
+from mcp.shared.memory import create_client_server_memory_streams
 from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
 from mcp.types import ReadResourceResult
@@ -57,6 +66,7 @@ from mcp.types import Resource
 from mcp.types import TextResourceContents
 import pytest
 
+from ._in_memory_session import _lowlevel_server
 from ._sdk_compat import make_mcp_error
 
 
@@ -370,11 +380,13 @@ class TestMcpToolset:
     )
     toolset._mcp_session_manager = self.mock_session_manager
 
-    tools = await toolset.get_tools()
+    with warnings.catch_warnings():
+      warnings.simplefilter("error", DeprecationWarning)
+      tools = await toolset.get_tools()
 
     assert len(tools) == 4
     for tool in tools[:3]:
-      assert isinstance(tool, MCPTool)
+      assert type(tool) is McpTool
     assert isinstance(tools[3], LoadMcpResourceTool)
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
@@ -447,6 +459,26 @@ class TestMcpToolset:
     assert len(tools) == 2
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool3"
+
+  @pytest.mark.asyncio
+  async def test_tool_filter_does_not_remove_load_mcp_resource(self):
+    """tool_filter selects server tools only; load_mcp_resource stays."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(
+            [MockMCPTool("read_file"), MockMCPTool("write_file")]
+        )
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        tool_filter=["read_file"],
+        use_mcp_resources=True,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["read_file", "load_mcp_resource"]
 
   @pytest.mark.asyncio
   async def test_get_tools_with_function_filter(self):
@@ -525,6 +557,38 @@ class TestMcpToolset:
     assert len(tools) == 2
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
+    )
+
+  @pytest.mark.asyncio
+  async def test_get_tools_auth_overrides_duplicate_provider_header(self):
+    """Explicit auth is authoritative when provider headers overlap."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult([MockMCPTool("tool1")])
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=Mock(
+            return_value={
+                "authorization": "Bearer provider-token",
+                "X-Tenant-ID": "test-tenant",
+            }
+        ),
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with patch.object(
+        toolset,
+        "_get_auth_headers",
+        return_value={"Authorization": "Bearer auth-token"},
+    ):
+      await toolset.get_tools(readonly_context=mock_readonly_context)
+
+    self.mock_session_manager.create_session.assert_awaited_once_with(
+        headers={
+            "Authorization": "Bearer auth-token",
+            "X-Tenant-ID": "test-tenant",
+        }
     )
 
   @pytest.mark.asyncio
@@ -1037,6 +1101,81 @@ class TestMcpToolset:
     assert toolset._elicitation_callback is None
     assert toolset._mcp_session_manager._elicitation_callback is None
     # pylint: enable=protected-access
+
+  @pytest.mark.parametrize("transport", ["stdio", "sse", "streamable_http"])
+  @pytest.mark.parametrize("with_handler", [False, True])
+  @pytest.mark.parametrize("graceful_errors", [False, True])
+  async def test_server_notifications_reach_message_handler(
+      self, monkeypatch, transport, with_handler, graceful_errors
+  ):
+    """Server notifications reach the message_handler given to McpToolset."""
+    monkeypatch.setenv("GOOGLE_API_USE_CLIENT_CERTIFICATE", "false")
+    server = FastMCP("notifications")
+    received = []
+    notification_received = asyncio.Event()
+
+    @server.tool()
+    async def notify(ctx: McpContext) -> str:
+      await ctx.session.send_tool_list_changed()
+      return "sent"
+
+    async def message_handler(message):
+      received.append(message)
+      notification_received.set()
+
+    @asynccontextmanager
+    async def memory_client(*args, **kwargs):
+      async with create_client_server_memory_streams() as (client, peer):
+        lowlevel = _lowlevel_server(server)
+        async with anyio.create_task_group() as task_group:
+          task_group.start_soon(
+              lambda: lowlevel.run(
+                  *peer,
+                  lowlevel.create_initialization_options(),
+                  raise_exceptions=True,
+              )
+          )
+          try:
+            yield client
+          finally:
+            task_group.cancel_scope.cancel()
+
+    connection_params = {
+        "stdio": StdioConnectionParams(server_params=self.mock_stdio_params),
+        "sse": SseConnectionParams(url="http://mcp.test/sse"),
+        "streamable_http": StreamableHTTPConnectionParams(
+            url="http://mcp.test/mcp"
+        ),
+    }[transport]
+    client_name = {
+        "stdio": "stdio_client",
+        "sse": "sse_client",
+        "streamable_http": "streamable_http_client",
+    }[transport]
+    monkeypatch.setattr(
+        f"google.adk.tools.mcp_tool.mcp_session_manager.{client_name}",
+        memory_client,
+    )
+    options = {"message_handler": message_handler} if with_handler else {}
+    toolset = McpToolset(connection_params=connection_params, **options)
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, graceful_errors
+    ):
+      try:
+        tools = await toolset.get_tools()
+        result = await tools[0].run_async(
+            args={}, tool_context=ToolContext(invocation_context=Mock())
+        )
+        if with_handler:
+          await asyncio.wait_for(notification_received.wait(), timeout=5)
+      finally:
+        await toolset.close()
+
+    assert result["content"][0]["text"] == "sent"
+    assert [
+        getattr(message, "root", message).method for message in received
+    ] == (["notifications/tools/list_changed"] if with_handler else [])
 
   @pytest.mark.asyncio
   async def test_get_auth_headers_includes_additional_headers(self):

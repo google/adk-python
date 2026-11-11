@@ -14,16 +14,19 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from collections.abc import Iterable
 import enum
 import statistics
 from typing import Any
 from typing import Optional
+from typing import TypeVar
 from typing import Union
 
 from google.genai import types as genai_types
 
-from ..models.base_llm import BaseLlm
-from ..models.registry import LLMRegistry
+from ..utils.content_utils import extract_text_from_content
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .eval_case import get_all_tool_calls_with_responses
@@ -34,19 +37,7 @@ from .eval_case import InvocationEvents
 from .eval_metrics import RubricScore
 from .evaluator import EvalStatus
 
-
-def get_model_name(model: Union[str, BaseLlm]) -> str:
-  """Returns the model name string from a model name or BaseLlm instance."""
-  return model if isinstance(model, str) else model.model
-
-
-def resolve_llm(model: Union[str, BaseLlm]) -> BaseLlm:
-  """Returns the BaseLlm instance or resolves a model name via LLMRegistry."""
-  if isinstance(model, BaseLlm):
-    return model
-  llm_registry = LLMRegistry()
-  llm_class = llm_registry.resolve(model)
-  return llm_class(model=model)
+_T = TypeVar("_T")
 
 
 @enum.unique
@@ -70,6 +61,8 @@ def get_text_from_content(
   """Extracts text from a `Content` or an `Invocation`.
 
   When `content` is a `Content`, returns the concatenated text of its parts.
+  Thought parts (`Part.thought`) are skipped: they hold the model's internal
+  reasoning, which is not part of the response the user sees.
 
   When `content` is an `Invocation`, returns the text of the invocation's final
   response. If `include_intermediate_responses_in_final` is True, text from
@@ -102,7 +95,7 @@ def get_text_from_content(
     return "\n".join(parts) if parts else None
 
   if content and content.parts:
-    return "\n".join([p.text for p in content.parts if p.text])
+    return extract_text_from_content(content, splitter="\n")
 
   return None
 
@@ -272,3 +265,18 @@ def get_grounding_metadata_as_json_str(
       exclude_defaults=True,
       exclude_none=True,
   )
+
+
+async def gather_cancelling_on_error(
+    coros: Iterable[Coroutine[object, object, _T]],
+) -> list[_T]:
+  """Runs coroutines concurrently, cancelling and draining siblings on error."""
+  tasks = [asyncio.create_task(coro) for coro in coros]
+  try:
+    return list(await asyncio.gather(*tasks))
+  except BaseException:
+    for task in tasks:
+      if not task.done():
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise

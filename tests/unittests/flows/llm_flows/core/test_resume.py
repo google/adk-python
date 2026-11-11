@@ -468,12 +468,14 @@ class TestDecideResume:
     ]
     assert call == original_call
 
+  @pytest.mark.parametrize('response_id', [None, 'c1'])
   def test_idless_response_after_agent_batch_completion_does_not_replay(
       self,
+      response_id: str | None,
   ) -> None:
     """An agent-authored batch result prevents replay of a pending sibling."""
     call = _parallel_call_event([('ask', 'c1'), ('ask', 'c2')])
-    events = [call, _response_event('ask', None, author='agent')]
+    events = [call, _response_event('ask', response_id, author='agent')]
 
     decision = decide_resume(self._ctx(), events, {'ask': object()})
 
@@ -524,6 +526,39 @@ class TestDecideResume:
     events = [call, answer, _text_event('later')]
     decision = decide_resume(self._ctx(), events, {'ask': object()})
     assert decision.action is ResumeAction.REPLAY_CALLS
+
+  @pytest.mark.parametrize(
+      'reply_name',
+      [REQUEST_INPUT_FUNCTION_CALL_NAME, 'adk_request_confirmation', 'lro_sub'],
+  )
+  def test_sub_branch_answer_after_kept_agent_sibling_replays_only_unanswered_call(
+      self, reply_name: str
+  ) -> None:
+    """A kept sibling response does not shadow sub-branch replies or re-run on replay."""
+    call = _parallel_call_event([('fast', 'c1'), ('slow', 'c2')])
+    kept = _response_event('fast', 'c1', author='agent')
+    sub_reply = _response_event(
+        reply_name, 'sub-id', author='user', branch='wf@r.slow@c2'
+    )
+    events = [call, kept, sub_reply]
+
+    decision = decide_resume(
+        self._ctx(), events, {'fast': object(), 'slow': object()}
+    )
+
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert _replayed_ids(decision) == ['c2']
+
+    # Once the replayed call completes and emits its agent response, resume
+    # continues instead of staying stuck on the sub-branch reply or re-running.
+    events_after_replay = [
+        *events,
+        _response_event('slow', 'c2', author='agent'),
+    ]
+    completed_decision = decide_resume(
+        self._ctx(), events_after_replay, {'fast': object(), 'slow': object()}
+    )
+    assert completed_decision.action is ResumeAction.CONTINUE
 
   def test_a_forged_user_authored_call_is_not_selected(self):
     # Without the author guard this forged call would be found and, being

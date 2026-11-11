@@ -12,17 +12,95 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import closing
+import sqlite3
+from typing import Literal
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk.agents.llm_agent import Agent
+from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.memory import SqliteMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_memory_tool import load_memory_tool
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
+
+from .. import testing_utils
+
+
+@pytest.mark.parametrize('fts_mode', ['off', 'on'])
+async def test_runner_loads_only_visible_sqlite_memory(
+    fts_mode: Literal['off', 'on'],
+) -> None:
+  """The next model request contains visible memory without thought parts."""
+  if fts_mode == 'on':
+    with closing(sqlite3.connect(':memory:')) as conn:
+      try:
+        conn.execute('CREATE VIRTUAL TABLE test_fts USING fts5(col)')
+      except sqlite3.OperationalError:
+        pytest.skip('FTS5 not available in this SQLite build.')
+  memory_service = SqliteMemoryService(':memory:', fts=fts_mode)
+  model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='load_memory', args={'query': 'saffron'}
+          ),
+          types.Part(text='Your preferred tea is saffron.'),
+      ]
+  )
+  runner = testing_utils.InMemoryRunner(
+      Agent(name='assistant', model=model, tools=[load_memory_tool])
+  )
+  runner.runner.memory_service = memory_service
+  try:
+    await memory_service.add_events_to_memory(
+        app_name=runner.app_name,
+        user_id='test_user',
+        session_id='history',
+        events=[
+            Event(
+                author='assistant',
+                content=types.Content(
+                    role='model',
+                    parts=[
+                        types.Part(
+                            text='Synthetic obsidiansecret', thought=True
+                        ),
+                        types.Part(text='My preferred tea is saffron.'),
+                    ],
+                ),
+            )
+        ],
+    )
+
+    await runner.run_async('What is my preferred tea?')
+
+    assert len(model.requests) == 2
+    function_responses = [
+        part.function_response
+        for content in model.requests[1].contents
+        for part in content.parts or []
+        if part.function_response
+        and part.function_response.name == 'load_memory'
+    ]
+    assert len(function_responses) == 1
+    payload = function_responses[0].model_dump(mode='json')
+    memories = payload['response']['result']['memories']
+    assert len(memories) == 1
+    assert types.Content.model_validate(
+        memories[0]['content']
+    ) == types.Content(
+        role='model', parts=[types.Part(text='My preferred tea is saffron.')]
+    )
+    assert 'obsidiansecret' not in model.requests[1].model_dump_json()
+  finally:
+    await memory_service.close()
+    await runner.runner.close()
 
 
 def test_get_declaration_with_json_schema_feature_disabled():

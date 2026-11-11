@@ -23,7 +23,10 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.cli.agent_graph import get_agent_graph
+from google.adk.events.event import Event
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.workflow import DEFAULT_ROUTE
+from google.adk.workflow import Workflow
 import pytest
 
 _DARK_GREEN = '#0F5223'
@@ -188,6 +191,36 @@ async def test_build_graph_parallel_agent_fans_out_from_the_parent():
   # No edge between the branches: the parent points at each of them.
   assert set(edges) == {('root', 'first'), ('root', 'second')}
   assert 'subgraph "cluster_fanout (Parallel Agent)"' in graph.source
+
+
+@pytest.mark.asyncio
+async def test_build_graph_workflow_draws_nodes_and_edges_from_its_graph():
+  def check(node_input: str):
+    return Event(route='retry')
+
+  def done(node_input: str):
+    return node_input
+
+  writer = LlmAgent(name='writer', model='gemini-2.0-flash')
+  workflow = Workflow(
+      name='flow',
+      edges=[
+          ('START', writer, check),
+          (check, {'retry': writer, DEFAULT_ROUTE: done}),
+      ],
+  )
+
+  graph = await get_agent_graph(workflow, [])
+
+  nodes, edges = _parse(graph.source)
+  # START is never drawn, and back-edges (the retry loop) are kept.
+  assert set(nodes) == {'writer', 'check', 'done'}
+  assert set(edges) == {
+      ('writer', 'check'),
+      ('check', 'writer'),
+      ('check', 'done'),
+  }
+  assert 'subgraph cluster_flow' in graph.source
 
 
 @pytest.mark.asyncio

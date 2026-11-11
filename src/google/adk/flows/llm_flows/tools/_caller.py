@@ -20,35 +20,32 @@ import asyncio
 import base64
 import binascii
 from collections.abc import Awaitable
-import contextlib
 import contextvars
 import copy
 import dataclasses
+import enum
 import json
 import logging
 from typing import Any
 from typing import Callable
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from . import _error_handler as _tool_error_handler
+from ....agents._callback_metadata import CallbackType
 from ....events.event import Event
 from ....telemetry import _instrumentation
 from ....tools._confirmation_utils import apply_confirmation_gate
 from ....tools.base_tool import BaseTool
-from ....tools.function_tool import FunctionTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....tools.tool_context import ToolContext
 from ....utils._callback_pipeline import _run_callbacks
 from ....utils._callback_pipeline import _stop_on_non_none
+from ....utils._sync_runner import _use_sync_callable_context
 from ..core._utils import require_agent_name as _require_agent_name
-from ._thread_pool import _get_tool_thread_pool
-from ._thread_pool import _is_sync_tool
-from ._thread_pool import _use_executor_for_sync_callables
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext
@@ -105,7 +102,7 @@ def _get_tool(
 def _create_tool_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> ToolContext:
   """Creates a ToolContext object."""
   return ToolContext(
@@ -119,7 +116,7 @@ def _get_tool_and_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> tuple[BaseTool, ToolContext]:
   """Returns the tool and tool context corresponding to the function call."""
   tool = _get_tool(function_call, tools_dict)
@@ -134,7 +131,7 @@ def _get_tool_and_context(
 def _try_decode_computer_use_image(
     tool: BaseTool,
     function_result: dict[str, object],
-) -> Optional[list[types.FunctionResponsePart]]:
+) -> list[types.FunctionResponsePart] | None:
   """Decodes the image from the function result for a computer use tool.
 
   Args:
@@ -174,7 +171,7 @@ def _try_decode_computer_use_image(
 
 def _as_function_response_part(
     value: object,
-) -> Optional[types.FunctionResponsePart]:
+) -> types.FunctionResponsePart | None:
   """Converts a tool-returned part into a function response part.
 
   Returns None when the value is not a part carrying usable media.
@@ -227,7 +224,7 @@ def _extract_media_from_entry(
 def _extract_multimodal_parts(
     function_result: object,
     depth: int = 0,
-) -> tuple[object, Optional[list[types.FunctionResponsePart]]]:
+) -> tuple[object, list[types.FunctionResponsePart] | None]:
   """Moves media in a tool result into function response parts.
 
   A tool result is otherwise required to be JSON-serializable, which leaves no
@@ -269,11 +266,27 @@ def _extract_multimodal_parts(
   return remaining or {}, parts
 
 
+def _unwrap_enums(value: object) -> object:
+  """Returns a copy with Enum members in dicts, lists and tuples as values."""
+  if isinstance(value, enum.Enum):
+    return value.value
+  if isinstance(value, dict):
+    return {
+        (k.value if isinstance(k, enum.Enum) else k): _unwrap_enums(v)
+        for k, v in value.items()
+    }
+  if isinstance(value, list):
+    return [_unwrap_enums(item) for item in value]
+  if isinstance(value, tuple):
+    return tuple(_unwrap_enums(item) for item in value)
+  return value
+
+
 def _build_function_response_content(
     tool: BaseTool,
     function_result: object,
-    function_call_id: Optional[str],
-    function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
+    function_call_id: str | None,
+    function_response_parts: list[types.FunctionResponsePart] | None = None,
 ) -> types.Content:
   """Builds the content carrying a tool result as a FunctionResponse."""
   # A streaming tool that wants a different Live scheduling mode for one
@@ -298,7 +311,7 @@ def _build_function_response_content(
 
   part_function_response = types.Part.from_function_response(
       name=tool.name,
-      response=function_result,
+      response=cast(dict[str, Any], _unwrap_enums(function_result)),
       parts=function_response_parts,
   )
   function_response = part_function_response.function_response
@@ -416,7 +429,7 @@ class _PreparedFunctionCall:
   function_args: dict[str, Any]
   contextvars_snapshot: contextvars.Context
   tools_dict: dict[str, BaseTool] = dataclasses.field(default_factory=dict)
-  tool_lookup_error: Optional[Exception] = None
+  tool_lookup_error: Exception | None = None
 
 
 async def _prepare_single(
@@ -424,7 +437,7 @@ async def _prepare_single(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> _PreparedFunctionCall:
   """Resolves one call to the tool it names and the context it will run in.
 
@@ -474,7 +487,7 @@ async def _execute_single_prepared_call(
     agent: LlmAgent,
     *,
     tool_runner: Callable[[], Awaitable[Any]],
-) -> Optional[Event]:
+) -> Event | None:
   """Runs one prepared function call and builds its response event.
 
   Args:
@@ -491,7 +504,7 @@ async def _execute_single_prepared_call(
   tool_context = prepared_call.tool_context
   function_args = prepared_call.function_args
   function_response: object | None = None
-  detected_error_type: Optional[str] = None
+  detected_error_type: str | None = None
   response_source: _instrumentation.ToolResponseSource | None = None
 
   async def _run_with_trace() -> Event | None:
@@ -523,6 +536,7 @@ async def _execute_single_prepared_call(
           tool=tool,
           args=function_args,
           tool_context=tool_context,
+          callback_type=CallbackType.BEFORE_TOOL,
       )
     if function_response is not None:
       response_source = 'before_tool_callback'
@@ -563,15 +577,16 @@ async def _execute_single_prepared_call(
     # a before-tool callback set up can be released, and stays cancelled.
     if function_response is None:
       try:
-        function_response = await apply_confirmation_gate(
-            tool, function_args, tool_context
-        )
-        if function_response is None:
-          function_response = await tool_runner()
-        elif tool_context.tool_confirmation is None:
-          # The pause is not a tool result for the model to summarize; without
-          # this the flow re-invokes the model, which calls the tool again.
-          tool_context.actions.skip_summarization = True
+        with _use_sync_callable_context(tool_context):
+          function_response = await apply_confirmation_gate(
+              tool, function_args, tool_context
+          )
+          if function_response is None:
+            function_response = await tool_runner()
+          elif tool_context.tool_confirmation is None:
+            # The pause is not a tool result for the model to summarize; without
+            # this the flow re-invokes the model, which calls the tool again.
+            tool_context.actions.skip_summarization = True
       except asyncio.CancelledError as cancelled:
         await _tool_error_handler.notify_tool_cancelled(
             invocation_context=invocation_context,
@@ -619,6 +634,7 @@ async def _execute_single_prepared_call(
           args=function_args,
           tool_context=tool_context,
           tool_response=callback_tool_response,
+          callback_type=CallbackType.AFTER_TOOL,
       )
 
     # Step 6: If alternative response exists from after_tool_callback, use it
@@ -674,7 +690,7 @@ async def _execute_single_prepared_call_async(
     invocation_context: InvocationContext,
     prepared_call: _PreparedFunctionCall,
     agent: LlmAgent,
-) -> Optional[Event]:
+) -> Event | None:
   """Runs one prepared function call and builds its response event.
 
   This is steps 1 to 6 of the tool pipeline: run the before-tool callbacks, run
@@ -688,33 +704,14 @@ async def _execute_single_prepared_call_async(
   other tool, async function tools included, runs on the event loop as it does
   without the config.
   """
-  tool = prepared_call.tool
-  run_config = invocation_context.run_config
-  thread_pool_config = (
-      run_config.tool_thread_pool_config if run_config else None
-  )
-
-  async def call_tool() -> object:
-    from ....tools._node_tool import NodeTool
-
-    sync_callables: contextlib.AbstractContextManager[None] = (
-        contextlib.nullcontext()
-    )
-    if (
-        thread_pool_config is not None
-        and _is_sync_tool(tool)
-        and isinstance(tool, (FunctionTool, NodeTool))
-    ):
-      sync_callables = _use_executor_for_sync_callables(
-          _get_tool_thread_pool(thread_pool_config.max_workers)
-      )
-    with sync_callables:
-      return await _call_tool_async(
-          tool,
-          args=prepared_call.function_args,
-          tool_context=prepared_call.tool_context,
-      )
 
   return await _execute_single_prepared_call(
-      invocation_context, prepared_call, agent, tool_runner=call_tool
+      invocation_context,
+      prepared_call,
+      agent,
+      tool_runner=lambda: _call_tool_async(
+          prepared_call.tool,
+          args=prepared_call.function_args,
+          tool_context=prepared_call.tool_context,
+      ),
   )

@@ -25,11 +25,7 @@ import pydantic
 if TYPE_CHECKING:
   from ..tool_context import ToolContext
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.COMPUTER_USE)
 class ComputerEnvironment(str, Enum):
   """Case insensitive enum for computer environments."""
 
@@ -39,16 +35,16 @@ class ComputerEnvironment(str, Enum):
   """Operates in a web browser."""
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class ComputerState(pydantic.BaseModel):
   """Represents the current state of the computer environment.
 
   Attributes:
-    screenshot: The screenshot in PNG format as bytes.
+    screenshot: The screenshot in PNG format as bytes, or None if none was
+      captured.
     url: The current URL of the webpage being displayed.
   """
 
-  screenshot: bytes = pydantic.Field(
+  screenshot: Optional[bytes] = pydantic.Field(
       default=None, description="Screenshot in PNG format"
   )
   url: Optional[str] = pydantic.Field(
@@ -56,7 +52,6 @@ class ComputerState(pydantic.BaseModel):
   )
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class BaseComputer(abc.ABC):
   """async defines an interface for computer environments.
 

@@ -13,22 +13,30 @@
 # limitations under the License.
 
 import asyncio
+from collections.abc import Awaitable
+from collections.abc import Callable
 import gc
 import logging
 from typing import Any
 from typing import AsyncGenerator
 
 from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import BaseNode
 from google.adk.workflow import START
+from google.adk.workflow._node import Node
 from google.adk.workflow._node import node
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._parallel_worker import _ParallelWorker as ParallelWorker
+from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
 from pydantic import BaseModel
@@ -45,6 +53,220 @@ from .workflow_testing_utils import simplify_events_with_node
 # concurrently. Reaching it means they are not, so the waiting test fails on
 # its own assertions rather than blocking until the whole target times out.
 _MAX_WAIT_S = 5.0
+
+
+@pytest.mark.parametrize('max_parallel_workers', [None, 1, 2])
+async def test_agent_parallel_worker_limits_concurrency_and_preserves_outputs(
+    max_parallel_workers: int | None,
+):
+  """Agent workers obey their limit and return every result in input order.
+
+  Setup: Five agent inputs wait on separate gates inside their model calls.
+  Act: Release the newest active item first, allowing another to start.
+  Assert: In-flight calls never exceed the limit, and all ordered outputs reach
+    the next node. Without an explicit limit, all five calls start together.
+  """
+  items = ['item1', 'item2', 'item3', 'item4', 'item5']
+  limit = max_parallel_workers or len(items)
+  gates = {item: asyncio.Event() for item in items}
+  started: asyncio.Queue[str] = asyncio.Queue()
+  completed: list[str] = []
+  active = 0
+  peak_active = 0
+
+  class GatedModel(testing_utils.MockModel):
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      nonlocal active, peak_active
+      item = llm_request.contents[-1].parts[0].text
+      active += 1
+      peak_active = max(peak_active, active)
+      started.put_nowait(item)
+      try:
+        assert active <= limit
+        await gates[item].wait()
+        completed.append(item)
+        yield LlmResponse(
+            content=types.Content(
+                role='model', parts=[types.Part(text=f'{item}_processed')]
+            )
+        )
+      finally:
+        active -= 1
+
+  kwargs = (
+      {'max_parallel_workers': max_parallel_workers}
+      if max_parallel_workers is not None
+      else {}
+  )
+  worker = LlmAgent(
+      name='worker',
+      model=GatedModel(responses=[]),
+      parallel_worker=True,
+      **kwargs,
+  )
+  captured: list[list[str]] = []
+
+  def produce() -> list[str]:
+    return items
+
+  def capture(node_input: list[str]) -> list[str]:
+    captured.append(node_input)
+    return node_input
+
+  workflow = Workflow(
+      name='agent_worker', edges=[(START, produce, worker, capture)]
+  )
+  runner = testing_utils.InMemoryRunner(node=workflow)
+  run_task = asyncio.create_task(runner.run_async('start'))
+
+  try:
+    in_flight = [
+        await asyncio.wait_for(started.get(), timeout=_MAX_WAIT_S)
+        for _ in range(limit)
+    ]
+    remaining = len(items) - limit
+    while in_flight:
+      gates[in_flight.pop()].set()
+      if remaining:
+        in_flight.append(
+            await asyncio.wait_for(started.get(), timeout=_MAX_WAIT_S)
+        )
+        remaining -= 1
+    await asyncio.wait_for(run_task, timeout=_MAX_WAIT_S)
+  finally:
+    run_task.cancel()
+    await asyncio.gather(run_task, return_exceptions=True)
+
+  assert peak_active == limit
+  assert active == 0
+  assert sorted(completed) == items
+  if limit > 1:
+    assert completed != items
+  assert captured == [[f'{item}_processed' for item in items]]
+  assert worker.parallel_worker is True
+  assert worker.max_parallel_workers == max_parallel_workers
+
+
+async def test_agent_parallel_worker_failure_cancels_active_sibling():
+  """A failed agent cancels its sibling without starting queued inputs."""
+  started: list[str] = []
+  cancelled: list[str] = []
+  sibling_waiting = asyncio.Event()
+  never_finish = asyncio.Event()
+
+  class FailingModel(testing_utils.MockModel):
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      item = llm_request.contents[-1].parts[0].text
+      started.append(item)
+      if item == 'fail':
+        await asyncio.wait_for(sibling_waiting.wait(), timeout=_MAX_WAIT_S)
+        raise RuntimeError('worker failed')
+      try:
+        sibling_waiting.set()
+        await never_finish.wait()
+      except asyncio.CancelledError:
+        cancelled.append(item)
+        raise
+      yield LlmResponse()
+
+  worker = LlmAgent(
+      name='worker',
+      model=FailingModel(responses=[]),
+      parallel_worker=True,
+      max_parallel_workers=2,
+  )
+
+  def produce() -> list[str]:
+    return ['fail', 'blocked', 'queued']
+
+  workflow = Workflow(name='agent_worker', edges=[(START, produce, worker)])
+  runner = testing_utils.InMemoryRunner(node=workflow)
+
+  with pytest.raises(RuntimeError, match='worker failed'):
+    await asyncio.wait_for(runner.run_async('start'), timeout=_MAX_WAIT_S)
+
+  assert started == ['fail', 'blocked']
+  assert cancelled == ['blocked']
+
+
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_agent_parallel_worker_resumes_without_repeating_finished_items(
+    is_resumable: bool,
+):
+  """A bounded agent worker resumes its queue without repeating finished work.
+
+  Setup: Three items run with a limit of one. The second requests approval.
+  Act: Run until interrupted, then answer the pending approval.
+  Assert: The first result is replayed, the second resumes, and the queued
+    third item runs exactly once before all outputs reach the next node.
+  """
+
+  def approve() -> None:
+    """Request approval to continue."""
+
+  model = testing_utils.MockModel.create(
+      responses=[
+          'first_done',
+          types.Part.from_function_call(name='approve', args={}),
+          'second_done',
+          'third_done',
+      ]
+  )
+  worker = LlmAgent(
+      name='worker',
+      model=model,
+      tools=[LongRunningFunctionTool(approve)],
+      parallel_worker=True,
+      max_parallel_workers=1,
+  )
+  captured: list[list[str]] = []
+
+  def produce() -> list[str]:
+    return ['first', 'second', 'third']
+
+  def capture(node_input: list[str]) -> list[str]:
+    captured.append(node_input)
+    return node_input
+
+  workflow = Workflow(
+      name='agent_worker', edges=[(START, produce, worker, capture)]
+  )
+  app = App(
+      name='agent_worker_resume',
+      root_agent=workflow,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async('start')
+  assert len(model.requests) == 2
+  assert captured == []
+  interrupt = next(event for event in events if event.long_running_tool_ids)
+  call_id = next(iter(interrupt.long_running_tool_ids))
+  await runner.run_async(
+      new_message=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='approve',
+                      id=call_id,
+                      response={'result': 'approved'},
+                  )
+              )
+          ],
+      ),
+      invocation_id=interrupt.invocation_id,
+  )
+
+  assert len(model.requests) == 4
+  assert captured == [['first_done', 'second_done', 'third_done']]
 
 
 class _ProducerNode(BaseNode):
@@ -1571,3 +1793,218 @@ async def test_parallel_worker_fans_out_json_list_without_thoughts(
       if structured
       else ['first', 'second']
   )
+
+
+def test_parallel_worker_iter_static_children():
+  """_ParallelWorker._iter_static_children yields the wrapped node."""
+  inner = BaseNode(name='wrapped_node')
+  worker = ParallelWorker(node=inner)
+  children = list(worker._iter_static_children())
+  assert children == [inner]
+
+
+def _make_retry_worker(
+    style: str,
+    fn: Callable[[str], Awaitable[str]],
+    retry_config: RetryConfig,
+) -> BaseNode:
+  """Builds a parallel worker with retry_config in the requested style."""
+  if style == 'agent':
+
+    class _RetryModel(testing_utils.MockModel):
+
+      async def generate_content_async(
+          self, llm_request: LlmRequest, stream: bool = False
+      ) -> AsyncGenerator[LlmResponse, None]:
+        result = await fn(llm_request.contents[-1].parts[0].text)
+        yield LlmResponse(
+            content=types.Content(role='model', parts=[types.Part(text=result)])
+        )
+
+    return LlmAgent(
+        name='worker',
+        model=_RetryModel(responses=[]),
+        parallel_worker=True,
+        max_parallel_workers=2,
+        retry_config=retry_config,
+    )
+  if style == 'decorator':
+
+    @node(name='worker', parallel_worker=True, retry_config=retry_config)
+    async def worker_node(node_input: str) -> str:
+      return await fn(node_input)
+
+    return worker_node
+  if style == 'node_subclass':
+
+    class _CustomRetryWorker(Node):
+      parallel_worker: bool = True
+
+      async def run_node_impl(
+          self, *, ctx: Context, node_input: Any
+      ) -> AsyncGenerator[Any, None]:
+        yield await fn(node_input)
+
+    return _CustomRetryWorker(name='worker', retry_config=retry_config)
+  if style == 'direct':
+    worker_node = ParallelWorker(node=fn, retry_config=retry_config)
+    worker_node.name = 'worker'
+    return worker_node
+  if style == 'node_override':
+    worker_node = ParallelWorker(node=fn)
+    worker_node.name = 'worker'
+    return node(worker_node, retry_config=retry_config)
+  raise ValueError(f'Unknown style: {style}')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'style', ['agent', 'decorator', 'node_subclass', 'direct', 'node_override']
+)
+async def test_parallel_worker_retries_only_failed_item(
+    request: pytest.FixtureRequest,
+    style: str,
+) -> None:
+  """Retrying a parallel worker re-runs only the failed item in place."""
+  counts: dict[str, int] = {}
+  item3_started = asyncio.Event()
+  item2_failed_once = asyncio.Event()
+  item3_cancelled = False
+
+  async def _item_logic(node_input: str) -> str:
+    nonlocal item3_cancelled
+    counts[node_input] = counts.get(node_input, 0) + 1
+    if node_input == 'item1':
+      return 'item1_ok'
+    if node_input == 'item2':
+      await item3_started.wait()
+      if counts['item2'] < 3:
+        item2_failed_once.set()
+        raise ValueError('item2 transient failure')
+      return 'item2_ok'
+    if node_input == 'item3':
+      item3_started.set()
+      try:
+        await item2_failed_once.wait()
+        await asyncio.sleep(0.02)
+      except asyncio.CancelledError:
+        item3_cancelled = True
+        raise
+      return 'item3_ok'
+    return f'{node_input}_ok'
+
+  retry_cfg = RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0)
+  worker_node = _make_retry_worker(style, _item_logic, retry_cfg)
+
+  producer = _ProducerNode(items=['item1', 'item2', 'item3'], name='Producer')
+  wf = Workflow(
+      name=f'pw_retry_{style}',
+      edges=[(START, producer, worker_node)],
+  )
+  app = App(name=f'{request.function.__name__}_{style}', root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert item3_cancelled is False
+  assert counts == {'item1': 1, 'item2': 3, 'item3': 1}
+  assert _outputs_for(events, f'pw_retry_{style}@1/worker@1') == [
+      ['item1_ok', 'item2_ok', 'item3_ok']
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'style', ['agent', 'decorator', 'node_subclass', 'direct', 'node_override']
+)
+async def test_parallel_worker_does_not_multiply_attempts(
+    request: pytest.FixtureRequest,
+    style: str,
+) -> None:
+  """An item that always fails runs exactly max_attempts times.
+
+  Setup: one item that always fails, in a worker given
+    RetryConfig(max_attempts=3) in each declaration style: a bounded agent,
+    the @node decorator, a Node subclass, direct construction, and node()
+    applied to an existing worker.
+  Assert: the item runs 3 times before its error propagates, rather than 3
+    times for every retry of the whole worker.
+  """
+  attempts = 0
+
+  async def _always_fails(node_input: str) -> str:
+    nonlocal attempts
+    attempts += 1
+    raise ValueError('permanent failure')
+
+  retry_cfg = RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0)
+  worker = _make_retry_worker(style, _always_fails, retry_cfg)
+
+  producer = _ProducerNode(items=['only_item'], name='Producer')
+  wf = Workflow(
+      name=f'pw_no_multiply_{style}', edges=[(START, producer, worker)]
+  )
+  app = App(name=f'{request.function.__name__}_{style}', root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  with pytest.raises(ValueError, match='permanent failure'):
+    await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert attempts == 3
+
+
+def test_parallel_worker_model_copy_can_clear_retry_config() -> None:
+  """model_copy(update={'retry_config': None}) clears the item node policy."""
+
+  async def _fn(node_input: str) -> str:
+    return node_input
+
+  worker = ParallelWorker(node=_fn, retry_config=RetryConfig(max_attempts=3))
+  cleared = worker.model_copy(update={'retry_config': None})
+
+  assert cleared.retry_config is None
+  assert cleared._node.retry_config is None
+  assert worker._node.retry_config is not None
+
+
+def test_parallel_worker_with_retry_config_preserves_agent_parent() -> None:
+  """Wrapping a sub-agent with retry_config preserves its parent_agent link."""
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      sub_agents=[
+          LlmAgent(
+              name='item_agent',
+              sub_agents=[LlmAgent(name='sub_agent')],
+          )
+      ],
+  )
+  item_agent = parent_agent.sub_agents[0]
+  assert item_agent.parent_agent is parent_agent
+
+  worker = ParallelWorker(
+      node=item_agent,
+      retry_config=RetryConfig(max_attempts=2),
+  )
+
+  assert isinstance(worker._node, LlmAgent)
+  assert worker._node.parent_agent is parent_agent
+  assert worker._node.sub_agents[0].parent_agent is worker._node
+  assert worker._node.retry_config == RetryConfig(max_attempts=2)
+
+
+def test_retry_config_applies_to_non_agent_node_with_unrelated_clone_method() -> (
+    None
+):
+  """A non-agent BaseNode that defines its own clone() still receives retry_config."""
+
+  class _NodeWithCloneHelper(BaseNode):
+
+    def clone(self, **_kwargs: Any) -> BaseNode:
+      raise AssertionError('Non-agent BaseNode should use model_copy')
+
+  custom_worker = ParallelWorker(
+      node=_NodeWithCloneHelper(name='custom_item'),
+      retry_config=RetryConfig(max_attempts=2),
+  )
+
+  assert custom_worker._node.retry_config == RetryConfig(max_attempts=2)

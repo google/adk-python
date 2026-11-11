@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.base_tool import BaseTool
@@ -35,7 +33,7 @@ class _CountingTool(BaseTool):
     self.declaration_calls = 0
     self._declared = declared
 
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
     self.declaration_calls += 1
     if not self._declared:
       return None
@@ -51,7 +49,7 @@ class _CountingToolset(BaseToolset):
     self._tools = tools
 
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     return self._tools
 

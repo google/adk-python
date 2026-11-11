@@ -157,6 +157,15 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     computer = AgentEngineSandboxComputer(vertexai_client=mock_client)
     self.assertEqual(computer._client, mock_client)
 
+  @patch("agentplatform.Client")
+  def test_get_client_rejects_agentplatform_before_2_2(self, mock_client):
+    """Test _get_client raises ImportError on a pre-2.2 agentplatform."""
+    mock_client.return_value = MagicMock(spec=["agent_engines"])
+    computer = AgentEngineSandboxComputer(project_id=self.project_id)
+
+    with self.assertRaisesRegex(ImportError, "has no runtimes, sandboxes"):
+      computer._get_client()
+
   async def test_screen_size(self):
     """Test screen_size returns hardcoded size."""
     computer = AgentEngineSandboxComputer()

@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from collections.abc import Collection
 from collections.abc import Mapping
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 import hashlib
 import itertools
 from pathlib import Path
-import re
 import sqlite3
 from typing import Any
 from typing import Literal
@@ -37,6 +37,7 @@ from google.genai import types
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -299,11 +300,17 @@ class SqliteMemoryService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    await self.add_events_to_memory(
+    """Stores live events and deletes those a rewind took back."""
+    live_events = _apply_rewinds(session.events)
+    live_ids = {event.id for event in live_events}
+    await self._write_events_to_memory(
         app_name=session.app_name,
         user_id=session.user_id,
-        events=session.events,
+        events=live_events,
         session_id=session.id,
+        rewound_event_ids={
+            event.id for event in session.events if event.id not in live_ids
+        },
     )
 
   @override
@@ -317,6 +324,22 @@ class SqliteMemoryService(BaseMemoryService):
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     _ = custom_metadata
+    await self._write_events_to_memory(
+        app_name=app_name,
+        user_id=user_id,
+        events=events,
+        session_id=session_id,
+    )
+
+  async def _write_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      rewound_event_ids: Collection[str] = (),
+  ) -> None:
     scoped_session_id = session_id or _UNKNOWN_SESSION_ID
 
     events_to_insert: list[tuple[str, str, str, str, str, float, str, str]] = []
@@ -326,8 +349,11 @@ class SqliteMemoryService(BaseMemoryService):
       search_text = _extract_event_text(event)
       if not search_text:
         continue
-      search_text = unicodedata.normalize("NFC", search_text).lower()
-      search_text = _split_script_runs(search_text)
+      # Split script runs before lowercasing, the same order _extract_tokens
+      # uses for queries. "İ".lower() is "i" plus U+0307, which is not a
+      # Latin character, so splitting after lowercasing breaks the word apart.
+      search_text = unicodedata.normalize("NFC", search_text)
+      search_text = _split_script_runs(search_text).lower()
       search_text = _truncate_bytes(search_text, self._max_event_bytes)
       event_timestamp = float(
           event.timestamp
@@ -352,10 +378,20 @@ class SqliteMemoryService(BaseMemoryService):
           search_text,
       ))
 
-    if not events_to_insert:
+    if not events_to_insert and not rewound_event_ids:
       return
 
     async with self._get_db_connection() as db:
+      await db.executemany(
+          """
+          DELETE FROM memory_events
+          WHERE app_name = ? AND user_id = ? AND session_id = ? AND event_id = ?
+          """,
+          [
+              (app_name, user_id, scoped_session_id, event_id)
+              for event_id in rewound_event_ids
+          ],
+      )
       for row_data in events_to_insert:
         await db.execute(
             """
@@ -386,7 +422,12 @@ class SqliteMemoryService(BaseMemoryService):
 
     async with self._get_db_connection() as db:
       # self._fts_available is initialized during _ensure_schema within _get_db_connection.
-      if self._fts_available:
+      # FTS5's unicode61 tokenizer indexes a run of Chinese, Japanese, Korean
+      # or Thai text as one token, so a word inside the run never matches.
+      # LIKE matches it as a substring instead.
+      if self._fts_available and not any(
+          _has_unspaced_script(token) for token in tokens
+      ):
         fts_query = " OR ".join(_escape_fts_token(token) for token in tokens)
         async with db.execute(
             """
@@ -513,6 +554,27 @@ def _is_latin(c: str) -> bool:
   return unicodedata.name(c, "").startswith("LATIN")
 
 
+# Chinese, Japanese and Thai put no spaces between words, and Korean attaches
+# particles to nouns. Matched as substrings of the character name so that
+# halfwidth forms such as "HALFWIDTH KATAKANA LETTER A" are included.
+_UNSPACED_SCRIPT_NAMES = (
+    "CJK UNIFIED IDEOGRAPH",
+    "CJK COMPATIBILITY IDEOGRAPH",
+    "HIRAGANA",
+    "KATAKANA",
+    "HANGUL",
+    "THAI",
+)
+
+
+def _has_unspaced_script(token: str) -> bool:
+  return any(
+      name in unicodedata.name(c, "")
+      for c in token
+      for name in _UNSPACED_SCRIPT_NAMES
+  )
+
+
 def _split_script_runs(text: str) -> str:
   if text.isascii():
     return text
@@ -526,14 +588,28 @@ def _split_script_runs(text: str) -> str:
   return " ".join(chunks)
 
 
+def _is_mark(c: str) -> bool:
+  return unicodedata.category(c).startswith("M")
+
+
+# Combining marks count as word characters: \w alone would split a word at
+# them, such as the Thai vowel and tone marks in ข้าว.
+def _is_token_char(c: str) -> bool:
+  return c.isalnum() or c in "_%" or _is_mark(c)
+
+
 def _extract_tokens(query: str) -> list[str]:
   normalized = unicodedata.normalize("NFC", query)
   normalized = _split_script_runs(normalized)
   seen = set()
   tokens = []
-  for word in re.findall(r"[\w%]+", normalized):
-    lowered = word.lower()
-    if lowered not in seen:
+  for is_token, group in itertools.groupby(normalized, _is_token_char):
+    if not is_token:
+      continue
+    # Marks with no letter before them are dropped: the emoji variation
+    # selector U+FE0F is a mark, and as a token it would match any emoji.
+    lowered = "".join(itertools.dropwhile(_is_mark, group)).lower()
+    if lowered and lowered not in seen:
       seen.add(lowered)
       tokens.append(lowered)
   return tokens
@@ -550,6 +626,8 @@ def _escape_like_query(word: str) -> str:
 
 def _row_to_memory_entry(row: aiosqlite.Row) -> MemoryEntry:
   content = types.Content.model_validate_json(row["content_json"])
+  if content.parts:
+    content.parts = [part for part in content.parts if not part.thought]
   return MemoryEntry(
       id=str(row["id"]),
       content=content,

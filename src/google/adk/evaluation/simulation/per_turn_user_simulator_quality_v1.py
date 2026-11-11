@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import ClassVar
 from typing import Optional
@@ -25,8 +26,8 @@ from typing_extensions import override
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
-from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..eval_case import ConversationScenario
 from ..eval_case import Invocation
@@ -38,11 +39,10 @@ from ..evaluator import Evaluator
 from ..evaluator import PerInvocationResult
 from ..llm_as_judge import AutoRaterScore
 from ..llm_as_judge_utils import build_judge_request_config
+from ..llm_as_judge_utils import gather_cancelling_on_error
 from ..llm_as_judge_utils import get_eval_status
-from ..llm_as_judge_utils import get_model_name
 from ..llm_as_judge_utils import get_text_from_content
 from ..llm_as_judge_utils import Label
-from ..llm_as_judge_utils import resolve_llm
 from .per_turn_user_simulator_quality_prompts import get_per_turn_user_simulator_quality_prompt
 
 
@@ -105,7 +105,6 @@ def _get_stop_signal_invocation(stop_signal: str) -> Invocation:
   )
 
 
-@experimental
 class PerTurnUserSimulatorQualityV1(Evaluator):
   """Per turn user simulator evaluator.
 
@@ -155,10 +154,8 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       if self._eval_metric.criterion is None:
         raise expected_criterion_type_error
 
-      # Use dict() instead of model_dump() so the field serializer does not
-      # convert a BaseLlm judge into its name string.
       return self.criterion_type.model_validate(
-          dict(self._eval_metric.criterion)
+          self._eval_metric.criterion.model_dump()
       )
     except ValidationError as e:
       raise expected_criterion_type_error from e
@@ -179,27 +176,29 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
         self._evaluate_first_turn(actual_invocations[0], conversation_scenario)
     ]
 
-    # Evaluate the rest of the invocations.
-    for i, invocation in enumerate(actual_invocations):
-      # skip the first invocation.
-      if i == 0:
-        continue
+    semaphore = asyncio.Semaphore(self._llm_options.parallelism_limit)
 
-      result = await self._evaluate_intermediate_turn(
-          invocation_at_step=invocation,
-          invocation_history=actual_invocations[:i],
-          conversation_scenario=conversation_scenario,
-      )
-      results.append(result)
-
-    if not results:
-      return EvaluationResult()
-
-    # Evaluate whether the conversation ended correctly.
-    stop_signal_evaluation = await self._evaluate_stop_signal_turn(
-        invocation_history=actual_invocations,
-        conversation_scenario=conversation_scenario,
+    # Evaluate the rest of the invocations and whether the conversation ended
+    # correctly under the shared judge parallelism limit.
+    coros = [
+        self._evaluate_intermediate_turn(
+            invocation_at_step=invocation,
+            invocation_history=actual_invocations[:i],
+            conversation_scenario=conversation_scenario,
+            semaphore=semaphore,
+        )
+        for i, invocation in enumerate(actual_invocations[1:], start=1)
+    ]
+    coros.append(
+        self._evaluate_stop_signal_turn(
+            invocation_history=actual_invocations,
+            conversation_scenario=conversation_scenario,
+            semaphore=semaphore,
+        )
     )
+    gathered_results = await gather_cancelling_on_error(coros)
+    results.extend(gathered_results[:-1])
+    stop_signal_evaluation = gathered_results[-1]
 
     # If the conversation did not end correctly, indicate so by marking the
     # last user turn as failed.
@@ -209,7 +208,10 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     return self._aggregate_conversation_results(results)
 
   def _setup_llm(self) -> BaseLlm:
-    return resolve_llm(self._llm_options.judge_model)
+    model_id = self._llm_options.judge_model
+    llm_registry = LLMRegistry()
+    llm_class = llm_registry.resolve(model_id)
+    return llm_class(model=model_id)
 
   def _format_llm_prompt(
       self,
@@ -333,6 +335,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       invocation_at_step: Invocation,
       invocation_history: list[Invocation],
       conversation_scenario: ConversationScenario,
+      semaphore: asyncio.Semaphore | None = None,
   ) -> PerInvocationResult:
 
     auto_rater_prompt = self._format_llm_prompt(
@@ -342,7 +345,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     )
 
     llm_request = LlmRequest(
-        model=get_model_name(self._llm_options.judge_model),
+        model=self._llm_options.judge_model,
         contents=[
             genai_types.Content(
                 parts=[genai_types.Part(text=auto_rater_prompt)],
@@ -353,18 +356,26 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     )
     add_default_retry_options_if_not_present(llm_request)
     num_samples = self._llm_options.num_samples
-    samples = []
-    for _ in range(num_samples):
-      llm_score = await self._sample_llm(llm_request)
-      samples.append(
-          PerInvocationResult(
-              eval_status=get_eval_status(
-                  llm_score.score, self._criterion.threshold
-              ),
-              score=llm_score.score,
-              actual_invocation=invocation_at_step,
-          )
-      )
+    if semaphore is None:
+      semaphore = asyncio.Semaphore(self._llm_options.parallelism_limit)
+
+    async def _sample() -> AutoRaterScore:
+      async with semaphore:
+        return await self._sample_llm(llm_request)
+
+    llm_scores = await gather_cancelling_on_error(
+        _sample() for _ in range(num_samples)
+    )
+    samples = [
+        PerInvocationResult(
+            eval_status=get_eval_status(
+                llm_score.score, self._criterion.threshold
+            ),
+            score=llm_score.score,
+            actual_invocation=invocation_at_step,
+        )
+        for llm_score in llm_scores
+    ]
     if not samples:
       return PerInvocationResult(
           eval_status=EvalStatus.NOT_EVALUATED,
@@ -377,11 +388,13 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       self,
       invocation_history: list[Invocation],
       conversation_scenario: ConversationScenario,
+      semaphore: asyncio.Semaphore | None = None,
   ) -> PerInvocationResult:
     return await self._evaluate_intermediate_turn(
         invocation_at_step=_get_stop_signal_invocation(self._stop_signal),
         invocation_history=invocation_history,
         conversation_scenario=conversation_scenario,
+        semaphore=semaphore,
     )
 
   async def _sample_llm(self, llm_request: LlmRequest) -> AutoRaterScore:

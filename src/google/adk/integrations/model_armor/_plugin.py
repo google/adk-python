@@ -44,6 +44,8 @@ from ...models.llm_response import LlmResponse
 from ...plugins.base_plugin import BasePlugin
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext
+from ...utils import _mtls_utils
+from ...utils._event_loop_cache import per_loop_value
 from ._config import ModelArmorConfig
 
 try:
@@ -85,7 +87,7 @@ class ModelArmorPlugin(BasePlugin):
       config: The Model Armor configuration.
       name: A unique identifier for this plugin instance.
       client: An optional pre-constructed async client (e.g. for testing). If
-        ``None``, one is lazily constructed on first use.
+        ``None``, one is constructed for each event loop on first use.
       credentials: Optional credentials used when constructing the client. If
         ``None``, Application Default Credentials are used.
     """
@@ -93,7 +95,6 @@ class ModelArmorPlugin(BasePlugin):
     self._config = config
 
     self._supplied_client = client
-    self._client: Optional[modelarmor_v1.ModelArmorAsyncClient] = None
     self._credentials = credentials
 
     self._location = _shared_template_location(
@@ -166,23 +167,31 @@ class ModelArmorPlugin(BasePlugin):
 
   @property
   def client(self) -> modelarmor_v1.ModelArmorAsyncClient:
-    """Returns the underlying async client, constructing it lazily.
+    """Returns the async client for the running event loop.
 
-    A ``grpc.aio`` channel binds to the event loop running when it is created.
-    Plugins are usually built at import time with no loop, so the channel has
-    to be created on first use to land on the loop that serves requests.
+    A ``grpc.aio`` channel binds to the event loop running when it is created,
+    and each synchronous ``Runner.run`` call runs a new loop, so every loop
+    gets its own client, constructed on first use.
     """
     if self._supplied_client:
       return self._supplied_client
-    if self._client is None:
-      self._client = modelarmor_v1.ModelArmorAsyncClient(
-          credentials=self._credentials,
-          client_info=ClientInfo(user_agent=USER_AGENT),
-          client_options=ClientOptions(
-              api_endpoint=_regional_endpoint(self._location)
-          ),
+    clients = self._clients_on_running_loop()
+    if not clients:
+      clients.append(
+          modelarmor_v1.ModelArmorAsyncClient(
+              credentials=self._credentials,
+              client_info=ClientInfo(user_agent=USER_AGENT),
+              client_options=ClientOptions(
+                  api_endpoint=_regional_endpoint(self._location)
+              ),
+          )
       )
-    return self._client
+    return clients[0]
+
+  def _clients_on_running_loop(
+      self,
+  ) -> list[modelarmor_v1.ModelArmorAsyncClient]:
+    return per_loop_value(self, '_clients_per_loop', list)
 
   async def _sanitize_user_prompt(
       self, text: str, template_name: str
@@ -247,9 +256,10 @@ class ModelArmorPlugin(BasePlugin):
     return None
 
   async def close(self) -> None:
-    """Closes the underlying client."""
-    if self._client:
-      await self._client.transport.close()
+    """Closes the client built for the running event loop."""
+    clients = self._clients_on_running_loop()
+    if clients:
+      await clients.pop().transport.close()
 
   def _handle_sanitization_result(
       self,
@@ -474,8 +484,12 @@ def _extract_tool_result_text(result: Any) -> Optional[str]:
 
 
 def _regional_endpoint(location: str) -> str:
-  """Builds the Model Armor regional endpoint for a location."""
-  return f'modelarmor.{location}.rep.googleapis.com'
+  """Returns the regional Model Armor endpoint, the mTLS one if enabled."""
+  return _mtls_utils.get_api_endpoint(
+      location=location,
+      default_template='modelarmor.{location}.rep.googleapis.com',
+      mtls_template='modelarmor.{location}.rep.mtls.googleapis.com',
+  )
 
 
 def _shared_template_location(*template_names: Optional[str]) -> str:
