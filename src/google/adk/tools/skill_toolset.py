@@ -58,6 +58,7 @@ from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
+from .environment import _utils as _env_utils
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
@@ -859,6 +860,16 @@ class SearchSkillsTool(BaseTool):
       }
 
 
+def _list_skill_resources(skill: models.Skill) -> list[str]:
+  """Returns the relative resource paths bundled with a skill."""
+  resources = skill.resources
+  return [
+      *(f"references/{name}" for name in resources.list_references()),
+      *(f"assets/{name}" for name in resources.list_assets()),
+      *(f"scripts/{name}" for name in resources.list_scripts()),
+  ]
+
+
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
@@ -944,6 +955,8 @@ class LoadSkillTool(BaseTool):
         "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
+    if resources := _list_skill_resources(skill):
+      result["resources"] = resources
     if evicted:
       # Tell the model, rather than letting the declarations quietly vanish.
       result["unloaded_skills"] = evicted
@@ -2011,6 +2024,7 @@ class RunSkillScriptTool(BaseTool):
             ),
             "error_code": "UNSUPPORTED_SCRIPT_TYPE",
         }
+      await _env_utils.ensure_initialized(env, tool_context)
       try:
         script_path = await self._ensure_skill_materialized_in_env(
             skill, file_path, env, tool_context
@@ -2785,17 +2799,28 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    if self._env is not None and not self._env.is_initialized:
-      await self._env.initialize(ctx=tool_context)
     selected_core_tools = {
         t.name for t in self._tools if self._is_tool_selected(t, tool_context)
     }
+
+    # The environment is initialized on the first script run. Until then its
+    # working_dir, and so the default skills folder, may not exist yet.
+    # TODO: Check initialization through a method that takes `ctx`, so a
+    # session-scoped environment can answer from `ctx.state`.
+    if (
+        self._skills_folder is None
+        and self._env is not None
+        and not self._env.is_initialized
+    ):
+      skills_folder = None
+    else:
+      skills_folder = self.skills_folder
 
     instructions = [
         _build_skill_system_instruction(
             prefix=self.tool_name_prefix,
             allowed_tools=selected_core_tools,
-            skills_folder=self.skills_folder,
+            skills_folder=skills_folder,
             script_execution_enabled=self._offers_script_tool(tool_context),
             unload_enabled=self._lifecycle_enabled,
         )
@@ -2932,20 +2957,27 @@ class SkillToolset(BaseToolset):
     Only writes. `BaseEnvironment` has no delete, so a resource the new version
     dropped stays on disk; the re-stated instructions no longer mention it.
 
+    Does nothing while the environment is uninitialized: nothing has been
+    copied into it yet, and the first script run writes the current version.
+    This runs while the model request is built, so it must not initialize the
+    environment itself.
+
     Args:
       skill: The changed skill to write.
       tool_context: Context of the request being built, passed to the
         environment.
     """
     env = self._env
+    # TODO: Check initialization through a method that takes `ctx`, so a
+    # session-scoped environment can answer from `ctx.state`.
+    if env is None or not env.is_initialized:
+      return
     skills_folder = self.skills_folder
-    if env is None or skills_folder is None:
+    if skills_folder is None:
       return
     content_hash = _skill_content_hash(skill)
     if self._materialized_skill_hashes.get(skill.name) == content_hash:
       return
-    if not env.is_initialized:
-      await env.initialize(ctx=tool_context)
     await _write_skill_resources_to_env(
         skill, skills_folder / skill.name, env, tool_context
     )
@@ -2954,8 +2986,8 @@ class SkillToolset(BaseToolset):
   @override
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset."""
-    if self._env is not None and self._env.is_initialized:
-      await self._env.close()
+    if self._env is not None:
+      await _env_utils.close_if_initialized(self._env)
     for turn_cache in self._fetched_skill_cache.values():
       for cached in turn_cache.values():
         if isinstance(cached, asyncio.Future) and not cached.done():

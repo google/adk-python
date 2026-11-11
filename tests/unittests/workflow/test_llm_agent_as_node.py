@@ -731,6 +731,128 @@ async def test_single_turn_output_reaches_downstream(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_transfer_output_reaches_downstream(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """A transfer target's reply is the node output and the target runs once."""
+  from . import testing_utils
+
+  def transfer_to(agent_name: str) -> types.Part:
+    return types.Part.from_function_call(
+        name='transfer_to_agent', args={'agent_name': agent_name}
+    )
+
+  translate_model = testing_utils.MockModel.create(['Hello!', 'unused'])
+  summarize_model = testing_utils.MockModel.create(['Short.', 'unused'])
+  lead = LlmAgent(
+      name='lead',
+      model=testing_utils.MockModel.create(
+          [transfer_to('translate'), transfer_to('summarize')]
+      ),
+      instruction='Route.',
+      sub_agents=[
+          LlmAgent(
+              name='translate', model=translate_model, instruction='Translate.'
+          ),
+          LlmAgent(
+              name='summarize', model=summarize_model, instruction='Summarize.'
+          ),
+      ],
+  )
+  capture = InputCapturingNode(name='capture')
+  wf = Workflow(name='wf', edges=[('START', lead, capture)])
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content('Hola'))
+  await runner.run_async(testing_utils.get_user_content('Too long'))
+
+  assert capture.received_inputs == ['Hello!', 'Short.']
+  assert len(translate_model.requests) == 1
+  assert len(summarize_model.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    reason=(
+        'The replayed single_turn node still carries transfer_to_agent from'
+        ' its persisted function response, so the target runs again.'
+    ),
+    raises=AssertionError,
+    strict=True,
+)
+async def test_single_turn_transfer_target_not_rerun_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """Resuming a later node does not run the transfer target again."""
+  from . import testing_utils
+
+  def approve(request: str) -> None:
+    """Approve a request (long-running)."""
+    return None
+
+  translate_model = testing_utils.MockModel.create(['Hello!', 'unused'])
+  lead = LlmAgent(
+      name='lead',
+      model=testing_utils.MockModel.create([
+          types.Part.from_function_call(
+              name='transfer_to_agent', args={'agent_name': 'translate'}
+          )
+      ]),
+      instruction='Route.',
+      sub_agents=[
+          LlmAgent(
+              name='translate', model=translate_model, instruction='Translate.'
+          )
+      ],
+  )
+  approver = LlmAgent(
+      name='approver',
+      model=testing_utils.MockModel.create([
+          types.Part.from_function_call(
+              name='approve', args={'request': 'deploy'}
+          ),
+          'Approved.',
+      ]),
+      instruction='Get approval.',
+      tools=[LongRunningFunctionTool(approve)],
+  )
+  wf = Workflow(name='wf', edges=[('START', lead, approver)])
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('Hola'))
+  interrupt_event = next(e for e in events1 if e.long_running_tool_ids)
+  fc_id = list(interrupt_event.long_running_tool_ids)[0]
+  assert len(translate_model.requests) == 1
+
+  await runner.run_async(
+      new_message=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='approve', id=fc_id, response={'result': 'yes'}
+                  )
+              )
+          ],
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert len(translate_model.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_valid_input_schema_accepted(
     request: pytest.FixtureRequest,
 ):

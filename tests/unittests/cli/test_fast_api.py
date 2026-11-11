@@ -8056,11 +8056,18 @@ def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
 #################################################
 
 
-def test_finalize_agent_identity_credentials_success(test_app):
+@pytest.mark.parametrize(
+    "connector_name",
+    [
+        "projects/p/locations/l/connectors/c",
+        "projects/p/locations/l/authProviders/c",
+    ],
+)
+def test_finalize_agent_identity_credentials_success(test_app, connector_name):
   """Test successful credential finalization and Base64 padding decoding."""
   import base64
 
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   raw_bytes = b"test-validation-state-bytes"
   # Unpadded url-safe base64 string
@@ -8068,12 +8075,12 @@ def test_finalize_agent_identity_credentials_success(test_app):
 
   with (
       patch.object(
-          iamconnectorcredentials_v1alpha,
-          "IAMConnectorCredentialsServiceClient",
+          agentidentitycredentials_v1,
+          "AuthProviderCredentialsServiceClient",
           autospec=True,
       ) as mock_client_cls,
       patch.object(
-          iamconnectorcredentials_v1alpha,
+          agentidentitycredentials_v1,
           "FinalizeCredentialsRequest",
           autospec=True,
       ) as mock_req_cls,
@@ -8084,7 +8091,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     response = test_app.post(
         "/agent-identity/finalize",
         json={
-            "connector_name": "projects/p/locations/l/connectors/c",
+            "connector_name": connector_name,
             "user_id": "user-123",
             "user_id_validation_state": b64_str,
             "consent_nonce": "nonce-456",
@@ -8094,7 +8101,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     assert response.json() == {"status": "ok"}
 
     mock_req_cls.assert_called_once_with(
-        connector="projects/p/locations/l/connectors/c",
+        auth_provider="projects/p/locations/l/authProviders/c",
         user_id="user-123",
         user_id_validation_state=raw_bytes,
         consent_nonce="nonce-456",
@@ -8105,11 +8112,11 @@ def test_finalize_agent_identity_credentials_success(test_app):
 @pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
 def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ):
     response = test_app.post(
@@ -8128,9 +8135,9 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
 
 
 def test_finalize_agent_identity_credentials_missing_dependency(test_app):
-  """Test error handling when google-cloud-iamconnectorcredentials is not installed."""
+  """Test error handling when google-cloud-agentidentitycredentials is not installed."""
   with patch.dict(
-      "sys.modules", {"google.cloud.iamconnectorcredentials_v1alpha": None}
+      "sys.modules", {"google.cloud.agentidentitycredentials_v1": None}
   ):
     response = test_app.post(
         "/agent-identity/finalize",
@@ -8147,11 +8154,11 @@ def test_finalize_agent_identity_credentials_missing_dependency(test_app):
 
 def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
   """Test backend InvalidArgument API error handling (400 response)."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -8174,14 +8181,14 @@ def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
 
 def test_finalize_agent_identity_credentials_api_call_error(test_app):
   """Test backend GoogleAPICallError error handling with status code propagation."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   err = GoogleAPICallError("Permission denied")
   err.code = 403
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value

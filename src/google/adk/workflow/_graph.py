@@ -185,7 +185,10 @@ class Graph(BaseModel):
           routes_to_match,
       )
 
-    return next_pending_nodes
+    # Edges between the same two nodes may carry disjoint routes, so a list of
+    # routes can match more than one of them. Trigger the target once, as a
+    # single edge with all those routes would.
+    return list(dict.fromkeys(next_pending_nodes))
 
   def validate_graph(self) -> None:
     """Validates the workflow graph."""

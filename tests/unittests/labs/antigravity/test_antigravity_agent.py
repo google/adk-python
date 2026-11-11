@@ -2001,6 +2001,7 @@ async def test_last_turn_usage_populates_usage_metadata_on_trailing_event():
   active_agent = _fake_active_agent(_steps_once)
   active_agent.conversation.last_turn_usage = types.SimpleNamespace(
       prompt_token_count=100,
+      cached_content_token_count=40,
       candidates_token_count=50,
       thoughts_token_count=20,
       total_token_count=170,
@@ -2018,9 +2019,32 @@ async def test_last_turn_usage_populates_usage_metadata_on_trailing_event():
   terminal_event = events[-1]
   assert terminal_event.usage_metadata is not None
   assert terminal_event.usage_metadata.prompt_token_count == 100
+  assert terminal_event.usage_metadata.cached_content_token_count == 40
   assert terminal_event.usage_metadata.candidates_token_count == 50
   assert terminal_event.usage_metadata.thoughts_token_count == 20
   assert terminal_event.usage_metadata.total_token_count == 170
+
+
+@pytest.mark.asyncio
+async def test_last_turn_usage_without_cached_count_leaves_it_none():
+  active_agent = _fake_active_agent(_steps_once)
+  active_agent.conversation.last_turn_usage = types.SimpleNamespace(
+      prompt_token_count=100,
+      candidates_token_count=50,
+      thoughts_token_count=20,
+      total_token_count=170,
+  )
+
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(), mode='single_turn'
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', lambda config: active_agent):
+    events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
+
+  assert events[-1].usage_metadata is not None
+  assert events[-1].usage_metadata.cached_content_token_count is None
+  assert events[-1].usage_metadata.prompt_token_count == 100
 
 
 @pytest.mark.asyncio

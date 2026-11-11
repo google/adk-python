@@ -61,11 +61,13 @@ def _fr_event(
     response_id: str,
     response_name: str,
     branch: str | None = None,
+    error_code: str | None = None,
 ) -> Event:
   return Event(
       author=author,
       invocation_id='inv-1',
       branch=branch,
+      error_code=error_code,
       content=types.Content(
           role='user',
           parts=[
@@ -73,7 +75,9 @@ def _fr_event(
                   function_response=types.FunctionResponse(
                       id=response_id,
                       name=response_name,
-                      response={'ok': True},
+                      response={'error': error_code}
+                      if error_code
+                      else {'ok': True},
                   )
               )
           ],
@@ -247,6 +251,60 @@ class TestIndexOpenInterrupts:
         response_name='slow_op',
     )
     assert index_open_interrupts([*events_after_initial, user_ans_ev]) == {}
+
+  def test_error_coded_function_response_closes_open_interrupt(self):
+    """Error FunctionResponses close open interrupts without user author."""
+    lro_ev = _fc_event(
+        author='root_agent',
+        call_id='lro-1',
+        call_name='slow_op',
+        lro_ids={'lro-1'},
+    )
+    req_ev = _fc_event(
+        author='input_node',
+        call_id='req-1',
+        call_name=REQUEST_INPUT_FUNCTION_CALL_NAME,
+        branch='wf@fc-0.input_node@1',
+        lro_ids={'req-1'},
+    )
+    outer_ev = _fc_event(
+        author='root_agent',
+        call_id='fc-0',
+        call_name='wf',
+        lro_ids={'fc-0'},
+    )
+    seal_lro = _fr_event(
+        author='root_agent',
+        response_id='lro-1',
+        response_name='slow_op',
+        error_code='INVOCATION_ABORTED',
+    )
+    seal_req = _fr_event(
+        author='input_node',
+        response_id='req-1',
+        response_name=REQUEST_INPUT_FUNCTION_CALL_NAME,
+        branch='wf@fc-0.input_node@1',
+        error_code='RuntimeError',
+    )
+
+    # Direct IDs are closed; outer fc-0 on the branch stays open until sealed.
+    open_map = index_open_interrupts(
+        [outer_ev, lro_ev, req_ev, seal_lro, seal_req]
+    )
+    assert set(open_map.keys()) == {'fc-0'}
+
+    seal_outer = _fr_event(
+        author='root_agent',
+        response_id='fc-0',
+        response_name='wf',
+        error_code='INVOCATION_ABORTED',
+    )
+    assert (
+        index_open_interrupts(
+            [outer_ev, lro_ev, req_ev, seal_lro, seal_req, seal_outer]
+        )
+        == {}
+    )
 
   def test_tracks_ancestor_authors_across_nested_tool_sub_branches(self):
     outer_call = _fc_event(

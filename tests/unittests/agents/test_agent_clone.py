@@ -15,14 +15,24 @@
 """Testings for the clone functionality of agents."""
 
 from typing import Any
+from typing import Callable
 from typing import cast
 from typing import Iterable
 
+from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.tools.agent_tool import _SingleTurnAgentTool
+from google.adk.tools.agent_tool import _TaskAgentTool
+from google.adk.tools.agent_tool import AgentTool
+from google.genai import types
+from pydantic import BaseModel
 import pytest
+from typing_extensions import override
+
+from .. import testing_utils
 
 
 def test_llm_agent_clone():
@@ -629,6 +639,301 @@ def test_clone_keeps_callbacks_bound_to_another_object():
 
   assert cloned.before_agent_callback.__self__ is recorder
   assert len(recorder.contexts) == 1
+
+
+def _sub_agent_tools(agent: LlmAgent) -> list[Any]:
+  return [
+      tool
+      for tool in agent.tools
+      if isinstance(tool, (_SingleTurnAgentTool, _TaskAgentTool))
+  ]
+
+
+def _ids(items: Iterable[Any]) -> list[int]:
+  """Agents and tools are pydantic models, so compare them by identity."""
+  return [id(item) for item in items]
+
+
+def _wrapped_agent_ids(agent: LlmAgent) -> list[int]:
+  return _ids(tool.agent for tool in _sub_agent_tools(agent))
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_wraps_its_own_sub_agents(mode: str):
+  """The clone's sub-agent tools run the clone's sub-agents."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+
+  cloned = original.clone()
+
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+  assert cloned.sub_agents[0] is not original.sub_agents[0]
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_of_a_clone_wraps_its_own_sub_agents(mode: str):
+  """Cloning a clone rebuilds the sub-agent tools again for the new copy."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+
+  cloned = original.clone().clone()
+
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_leaves_the_original_sub_agent_tools_unchanged(mode: str):
+  """Cloning does not touch the original agent's sub-agent tools."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+  original_tools = list(original.tools)
+
+  original.clone()
+
+  assert _ids(original.tools) == _ids(original_tools)
+  assert _wrapped_agent_ids(original) == _ids(original.sub_agents)
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_with_sub_agents_update_wraps_the_new_sub_agents(mode: str):
+  """Sub-agents passed in the update replace the original's sub-agent tools."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+  new_sub_agent = LlmAgent(name="other", description="Other", mode=mode)
+
+  cloned = original.clone(update={"sub_agents": [new_sub_agent]})
+
+  assert _wrapped_agent_ids(cloned) == _ids([new_sub_agent])
+
+
+def test_clone_with_tools_update_keeps_sub_agent_tools():
+  """Tools passed in the update are used alongside the sub-agent tools."""
+
+  def lookup() -> str:
+    return "found"
+
+  original = LlmAgent(
+      name="root",
+      sub_agents=[
+          LlmAgent(name="helper", description="Helps", mode="single_turn")
+      ],
+  )
+  tools = [lookup]
+
+  cloned = original.clone(update={"tools": tools})
+
+  assert cloned.tools[0] is lookup
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+  assert tools == [lookup]
+
+
+@pytest.mark.parametrize(
+    ("start_mode", "new_mode", "expected_tool_types"),
+    [
+        ("chat", "task", [FinishTaskTool]),
+        ("task", "chat", []),
+    ],
+)
+def test_clone_with_mode_update_follows_the_new_mode(
+    start_mode: str, new_mode: str, expected_tool_types: list[type[Any]]
+):
+  """finish_task follows the clone's mode."""
+  original = LlmAgent(name="agent", mode=start_mode)
+
+  cloned = original.clone(update={"mode": new_mode})
+
+  assert [type(tool) for tool in cloned.tools] == expected_tool_types
+
+
+def test_clone_of_task_agent_gets_its_own_finish_task():
+  """A task-mode clone gets a finish_task built for it, not the original's."""
+  original = LlmAgent(name="agent", mode="task")
+
+  cloned = original.clone()
+
+  assert [type(tool) for tool in cloned.tools] == [FinishTaskTool]
+  assert cloned.tools[0] is not original.tools[0]
+
+
+def test_clone_keeps_other_tools_first_and_mode_tools_after():
+  """Other tools keep their order and the rebuilt mode tools follow them."""
+
+  def lookup() -> str:
+    return "found"
+
+  def search() -> str:
+    return "searched"
+
+  original = LlmAgent(
+      name="root",
+      mode="task",
+      tools=[lookup, search],
+      sub_agents=[
+          LlmAgent(name="helper", description="Helps", mode="single_turn"),
+          LlmAgent(name="worker", description="Works", mode="task"),
+      ],
+  )
+
+  cloned = original.clone()
+
+  assert cloned.tools[:2] == [lookup, search]
+  assert [type(tool) for tool in cloned.tools[2:]] == [
+      FinishTaskTool,
+      _SingleTurnAgentTool,
+      _TaskAgentTool,
+  ]
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+
+
+def test_clone_with_output_schema_update_rebuilds_finish_task():
+  """finish_task validates against the clone's output schema."""
+
+  class _Output(BaseModel):
+    answer: str
+
+  original = LlmAgent(name="agent", mode="task")
+
+  cloned = original.clone(update={"output_schema": _Output})
+
+  assert [tool.output_schema for tool in cloned.tools] == [_Output]
+
+
+@pytest.mark.asyncio
+async def test_clone_delegates_to_its_own_single_turn_sub_agent():
+  """A single-turn call from a clone runs the clone's sub-agent."""
+  helper_model = testing_utils.MockModel.create(responses=["helped"])
+  original = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  types.Part.from_function_call(
+                      name="helper", args={"request": "help"}
+                  )
+              ],
+              "done",
+          ]
+      ),
+      sub_agents=[
+          LlmAgent(
+              name="helper",
+              description="Helps",
+              mode="single_turn",
+              instruction="original instruction",
+              model=helper_model,
+          )
+      ],
+  )
+  cloned = original.clone()
+  cloned.sub_agents[0].instruction = "cloned instruction"
+
+  await testing_utils.InMemoryRunner(root_agent=cloned).run_async("hi")
+
+  assert [
+      request.config.system_instruction for request in helper_model.requests
+  ] == ["cloned instruction"]
+
+
+class _CustomSubAgentTool(AgentTool):
+  """A sub-agent tool a caller swaps in for ADK's own."""
+
+
+class _AgentWithCustomSubAgentTools(LlmAgent):
+  """Replaces the stock sub-agent tools after construction."""
+
+  @override
+  def model_post_init(self, context: Any) -> None:
+    super().model_post_init(context)
+    self.tools = [
+        _CustomSubAgentTool(tool.agent)
+        if isinstance(tool, (_SingleTurnAgentTool, _TaskAgentTool))
+        else tool
+        for tool in self.tools
+    ]
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_keeps_sub_agent_tools_a_subclass_swapped_in(mode: str):
+  """A custom sub-agent tool is not joined by a stock one on the clone."""
+  original = _AgentWithCustomSubAgentTools(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+
+  cloned = original.clone()
+
+  assert [type(tool) for tool in cloned.tools] == [_CustomSubAgentTool]
+  assert cloned.tools[0] is original.tools[0]
+
+
+def test_clone_does_not_duplicate_a_tool_added_for_a_sub_agent():
+  """A tool added later under a sub-agent's name is the only one for it."""
+  helper = LlmAgent(name="helper", description="Helps")
+  original = LlmAgent(name="root", sub_agents=[helper])
+  custom_tool = AgentTool(helper)
+  original.tools.append(custom_tool)
+  helper.mode = "task"
+
+  cloned = original.clone()
+
+  assert _ids(cloned.tools) == _ids([custom_tool])
+
+
+def test_clone_keeps_a_finish_task_added_outside_task_mode():
+  """A finish_task added to a non-task agent is kept, not dropped."""
+  original = LlmAgent(name="agent", mode="chat")
+  finish_task = FinishTaskTool(original)
+  original.tools.append(finish_task)
+
+  cloned = original.clone()
+
+  assert _ids(cloned.tools) == _ids([finish_task])
+
+
+def test_clone_drops_the_tool_of_a_sub_agent_switched_to_chat():
+  """A sub-agent moved to chat mode after construction gets no tool."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode="task")],
+  )
+  original.sub_agents[0].mode = "chat"
+
+  cloned = original.clone()
+
+  assert cloned.tools == []
+
+
+@pytest.mark.parametrize(
+    "agent_factory",
+    [
+        lambda: LlmAgent(name="agent", mode="task"),
+        lambda: LlmAgent(
+            name="root",
+            sub_agents=[
+                LlmAgent(name="helper", description="Helps", mode="task")
+            ],
+        ),
+    ],
+    ids=["finish_task", "sub_agent_tool"],
+)
+def test_clone_does_not_add_back_a_removed_mode_tool(
+    agent_factory: Callable[[], LlmAgent],
+):
+  """A mode tool removed after construction stays removed on the clone."""
+  original = agent_factory()
+  original.tools.clear()
+
+  cloned = original.clone()
+
+  assert cloned.tools == []
 
 
 if __name__ == "__main__":
