@@ -94,6 +94,11 @@ class Text(TypedDict):
   type: Literal['text']
 
 
+class Reasoning(TypedDict):
+  content: str
+  type: Literal['reasoning']
+
+
 class Blob(TypedDict):
   mime_type: str
   data: bytes
@@ -119,7 +124,7 @@ class ToolCallResponse(TypedDict):
   type: Literal['tool_call_response']
 
 
-Part = Text | Blob | FileData | ToolCall | ToolCallResponse
+Part = Text | Reasoning | Blob | FileData | ToolCall | ToolCallResponse
 
 
 class InputMessage(TypedDict):
@@ -277,6 +282,11 @@ def _to_part(part: types.Part, idx: int) -> Part | None:
     return None
 
   if (text := part.text) is not None:
+    # A thought part is the model's reasoning, not its answer; the semconv
+    # keeps the two apart (ReasoningPart vs TextPart) and a consumer that
+    # only sees `text` cannot tell them apart again.
+    if part.thought:
+      return Reasoning(content=text, type='reasoning')
     return Text(content=text, type='text')
 
   if inline_data := part.inline_data:
