@@ -379,6 +379,18 @@ def test_empty_operation_servers_fall_back_to_path_servers(
   assert parsed_operations[0].endpoint.base_url == "https://path.example.com"
 
 
+def test_empty_path_servers_fall_back_to_root_servers(openapi_spec_generator):
+  """An empty servers list on a path does not override the root servers."""
+  openapi_spec = create_minimal_openapi_spec()
+  openapi_spec["servers"] = [{"url": "https://root.example.com"}]
+  openapi_spec["paths"]["/test"]["servers"] = []
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+  assert parsed_operations[0].endpoint.base_url == "https://root.example.com"
+
+
 def test_parse_spec_with_description(openapi_spec_generator):
   openapi_spec = create_minimal_openapi_spec()
   expected_description = "This is a test description."
