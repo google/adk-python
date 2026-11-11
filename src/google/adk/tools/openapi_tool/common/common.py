@@ -127,6 +127,7 @@ class ApiParameter(BaseModel):
         'param_schema': self.param_schema,
         'description': self.description,
         'py_name': self.py_name,
+        'required': self.required,
         'style': self.style,
         'explode': self.explode,
     }

@@ -147,7 +147,21 @@ class TestApiParameter:
         'param_schema': {'type': 'string', 'description': 'test description'},
         'description': 'test description',
         'py_name': 'test_param_custom',
+        'required': False,
     }
+
+  def test_api_parameter_model_serializer_covers_every_stored_field(self):
+    param = ApiParameter(
+        original_name='p',
+        param_location='query',
+        param_schema=Schema(type='string'),
+    )
+
+    serialized_keys = set(param.model_dump())
+
+    # type_value and type_hint are rebuilt by model_post_init.
+    derived = {'type_value', 'type_hint'}
+    assert serialized_keys == set(ApiParameter.model_fields) - derived
 
   def test_api_parameter_model_serializer_preserves_style_and_explode(self):
     schema = Schema(type='object')
