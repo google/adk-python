@@ -619,7 +619,8 @@ class OCIGenAILlm(BaseLlm):
     chunks = await asyncio.to_thread(self._call_oci_stream, llm_request)
 
     text_acc: str = ""
-    tool_acc: dict[int, dict[str, Any]] = {}
+    tool_acc: dict[int | str, dict[str, Any]] = {}
+    last_key: int | str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
@@ -651,25 +652,35 @@ class OCIGenAILlm(BaseLlm):
               partial=True,
           )
 
-      # Tool calls: OCI emits the whole call in one chunk for Gemini, but
-      # accumulate name/arguments defensively in case other providers split
-      # them across events.
-      for tc_idx, tc in enumerate(message.get("toolCalls") or []):
-        idx = tc.get("index", tc_idx)
-        if idx not in tool_acc:
-          tool_acc[idx] = {"id": "", "name": "", "arguments": ""}
+      # Tool calls: OCI's tool calls carry no "index". Gemini sends each
+      # whole call in its own chunk; other providers may send the id and name
+      # first, then argument pieces that carry neither. Group pieces by index
+      # when one is sent, else by id. A piece with a name but no id starts a
+      # new call; a piece with neither continues the call resolved last.
+      for tc in message.get("toolCalls") or []:
+        if tc.get("index") is not None:
+          key = tc["index"]
+        elif tc.get("id"):
+          key = tc["id"]
+        elif tc.get("name") or last_key is None:
+          key = len(tool_acc)
+        else:
+          key = last_key
+        last_key = key
+        if key not in tool_acc:
+          tool_acc[key] = {"id": "", "name": "", "arguments": ""}
         if tc.get("id"):
-          tool_acc[idx]["id"] = tc["id"]
+          tool_acc[key]["id"] = tc["id"]
         if tc.get("name"):
-          tool_acc[idx]["name"] = tc["name"]
+          tool_acc[key]["name"] = tc["name"]
         if tc.get("arguments"):
-          tool_acc[idx]["arguments"] += tc["arguments"]
+          tool_acc[key]["arguments"] += tc["arguments"]
 
     # Build final aggregated response
     all_parts: list[types.Part] = []
     if text_acc:
       all_parts.append(types.Part.from_text(text=text_acc))
-    for tc in sorted(tool_acc.values(), key=lambda x: x.get("name", "")):
+    for tc in tool_acc.values():
       args: dict[str, Any] = {}
       try:
         args = json.loads(tc["arguments"]) if tc["arguments"] else {}

@@ -16,9 +16,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import threading
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -27,13 +25,14 @@ from typing_extensions import override
 
 from ..base_toolset import BaseToolset
 from ._constants import ENVIRONMENT_INSTRUCTION
+from ._constants import ENVIRONMENT_WORKING_DIR_INSTRUCTION
 from ._edit_file_tool import EditFileTool
 from ._execute_tool import ExecuteTool
 from ._read_file_tool import ReadFileTool
+from ._utils import close_if_initialized
 from ._write_file_tool import WriteFileTool
 
 if TYPE_CHECKING:
-  from ...agents.context import Context
   from ...agents.readonly_context import ReadonlyContext
   from ...environment._base_environment import BaseEnvironment
   from ...models.llm_request import LlmRequest
@@ -55,6 +54,9 @@ class EnvironmentToolset(BaseToolset):
   The toolset injects an environment-level system instruction on each
   LLM call that establishes environment identity and tool selection
   rules.
+
+  The environment is initialized on the first tool call that uses it, with
+  that call's context, so ``initialize`` can write to session state.
   """
 
   def __init__(
@@ -76,31 +78,10 @@ class EnvironmentToolset(BaseToolset):
     super().__init__(**kwargs)
     self._environment = environment
     self._max_output_chars = max_output_chars
-    self._environment_initialized = False
-    self._init_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
-    self._lock_map_lock = threading.Lock()
-
-  def _get_init_lock(self) -> asyncio.Lock:
-    # Note: Mutual exclusion for lazy initialization is guaranteed per event
-    # loop; concurrent threads running distinct event loops on a shared toolset
-    # instance each acquire their own loop-local lock.
-    current_loop = asyncio.get_running_loop()
-    with self._lock_map_lock:
-      lock = self._init_lock_map.get(current_loop)
-      if lock is None:
-        for stale_loop in [
-            loop for loop in self._init_lock_map if loop.is_closed()
-        ]:
-          del self._init_lock_map[stale_loop]
-        lock = asyncio.Lock()
-        self._init_lock_map[current_loop] = lock
-      return lock
 
   def __getstate__(self) -> dict[str, Any]:
     state = dict(super().__getstate__())
-    state.pop('_lock_map_lock', None)
-    state['_init_lock_map'] = {}
-    state['_environment_initialized'] = False
+    # Cached prefixed tools wrap local functions, which cannot be pickled.
     state['_cached_prefixed_tools'] = None
     state['_cached_invocation_id'] = None
     return state
@@ -111,16 +92,15 @@ class EnvironmentToolset(BaseToolset):
       super_setstate(state)
     else:
       self.__dict__.update(state)
-    self._init_lock_map = {}
-    self._lock_map_lock = threading.Lock()
-
-  async def _ensure_initialized(self, ctx: Context) -> None:
-    if self._environment_initialized:
-      return
-    async with self._get_init_lock():
-      if not self._environment_initialized:
-        await self._environment.initialize(ctx=ctx)
-        self._environment_initialized = True
+    # What `initialize` set up, such as a temporary working directory, may not
+    # exist in the process that unpickles the environment, so make the first
+    # tool call initialize it again.
+    if self._environment.is_initialized:
+      try:
+        self._environment.is_initialized = False
+      except AttributeError:
+        # `is_initialized` is a read-only property the environment manages.
+        pass
 
   @override
   async def get_tools(
@@ -140,20 +120,27 @@ class EnvironmentToolset(BaseToolset):
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    """Inject environment-level system instruction."""
-    await self._ensure_initialized(tool_context)
-    working_dir = self._environment.working_dir
-    instruction = ENVIRONMENT_INSTRUCTION.format(
-        working_dir=working_dir,
-    )
+    """Inject environment-level system instruction.
+
+    Does not initialize the environment. Until a tool call has, the
+    instruction leaves out the working directory, which may not exist yet.
+    """
+    instruction = ENVIRONMENT_INSTRUCTION
+    # TODO: Check initialization through a method that takes `ctx`, so a
+    # session-scoped environment can answer from `ctx.state`.
+    if self._environment.is_initialized:
+      instruction = (
+          ENVIRONMENT_WORKING_DIR_INSTRUCTION.format(
+              working_dir=self._environment.working_dir
+          )
+          + '\n'
+          + instruction
+      )
     llm_request.append_instructions([instruction])
 
   @override
   async def close(self) -> None:
-    async with self._get_init_lock():
-      if self._environment_initialized:
-        await self._environment.close()
-        self._environment_initialized = False
-      self._cached_prefixed_tools = None
-      self._cached_invocation_id = None
+    await close_if_initialized(self._environment)
+    self._cached_prefixed_tools = None
+    self._cached_invocation_id = None
     await super().close()
