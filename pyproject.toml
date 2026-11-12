@@ -248,12 +248,11 @@ optional-dependencies.extensions = [
   "toolbox-adk>=1,<2",
 ]
 optional-dependencies.fsspec = [
-  # FsspecArtifactService; the backend (gcsfs, s3fs, adlfs, ...) is installed
-  # separately by the user. >=2026.4 matches the fsspec version already locked
-  # by ADK's other dependencies. GCS Rapid bucket support is provided by
-  # gcsfs>=2026.3.0, which declares its own fsspec floor.
-  # TODO: raise the floor to >=2026.9 to pick up fsspec's adaptive readahead
-  # prefetcher (fsspec#2093, used by gcsfs>=2026.9) once the write path lands.
+  # FsspecArtifactService; the storage backend (gcsfs, s3fs, adlfs, ...) is
+  # installed separately by the user. GCS Rapid bucket support is provided by
+  # gcsfs>=2026.3.0, which declares its own fsspec floor. Kept at >=2026.4 in
+  # the initial rollout to avoid transitive dependency churn; raise to >=2026.9
+  # in a follow-up change to pick up fsspec's adaptive readahead prefetcher.
   "fsspec>=2026.4",
 ]
 optional-dependencies.gcp = [
