@@ -192,6 +192,26 @@ class TestToAdk:
     assert event.actions.escalate is True
     assert event.content is None
 
+  def test_convert_a2a_message_to_event_returns_metadata_only_event(self):
+    """Test A2A message conversion keeps events with only custom metadata."""
+    message = Message(
+        message_id="msg-1",
+        role=_compat.ROLE_AGENT,
+        parts=[],
+        metadata={_get_adk_metadata_key("custom_metadata"): {"flag": True}},
+    )
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is not None
+    assert event.custom_metadata == {"flag": True}
+    assert event.content is None
+
   def test_convert_a2a_task_to_event_success(self):
     """Test successful conversion of A2A task to Event."""
     a2a_part = _make_a2a_part_for_test({})
