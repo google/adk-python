@@ -258,6 +258,48 @@ class TestDefaultAutoRaterResponseParser:
     assert parsed[0].rubric_id is None
     assert parsed[0].property_text == "Is the response good?"
 
+  @pytest.mark.parametrize(
+      ("verdict", "expected_score"),
+      [
+          ("yes", 1.0),
+          ("no", 0.0),
+          ("Yes", 1.0),
+          ("NO", 0.0),
+          ("**no**", 0.0),
+          ("**Yes**", 1.0),
+          ("`yes`", 1.0),
+          ("_no_", 0.0),
+          ('"yes"', 1.0),
+          ("'no'", 0.0),
+          ("yes.", 1.0),
+          ("[yes]", 1.0),
+          ("[[no]]", 0.0),
+          ("no - the agent did not say yes", 0.0),
+          ("yes, but it did not say no", 1.0),
+          ("[yes|no]", None),
+          ("[[yes|no]]", None),
+          ("yes|no", None),
+          ("not applicable", None),
+          ("unknown", None),
+          ("none", None),
+          ("nobody", None),
+          ("yesterday", None),
+          ("maybe yes", None),
+      ],
+  )
+  def test_parse_auto_rater_response_verdict_uses_first_token(
+      self, verdict, expected_score
+  ):
+    """The verdict is decided by its first token, not by a substring match."""
+    response = f"""
+      Property: Is the response good?
+      Rationale: Some rationale.
+      Verdict: {verdict}
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].score == expected_score
+
 
 class TestMajorityVotePerInvocationResultsAggregator:
 

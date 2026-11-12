@@ -62,6 +62,13 @@ _ID_PATTERN = r"(?m)^\s*ID: (.*)$"
 _PROPERTY_PATTERN = r"(?m)^\s*Property: (.*)$"
 _RATIONALE_PATTERN = r"(?<=Rationale: )(.*)"
 _VERDICT_PATTERN = r"(?<=Verdict: )(.*)"
+# Decides from the first token only, after any markdown, quote or bracket
+# chars, so "no - ... yes" is not read as yes. The token must not be followed
+# by a letter or digit (so "not", "none" and "yesterday" are rejected; "_"
+# is allowed for "_no_"), and an echoed "[yes|no]" placeholder is rejected.
+_VERDICT_TOKEN_PATTERN = re.compile(
+    r"^[\s*_`'\"\[]*(yes|no)(?![^\W_])(?!\s*\|)", re.IGNORECASE
+)
 
 
 class DefaultAutoRaterResponseParser(AutoRaterResponseParser):
@@ -75,12 +82,13 @@ class DefaultAutoRaterResponseParser(AutoRaterResponseParser):
     scores = []
 
     for verdict in re.findall(_VERDICT_PATTERN, auto_rater_response):
-      if "yes" in verdict.lower():
-        score = 1.0
-      elif "no" in verdict.lower():
-        score = 0.0
-      else:
+      token_match = _VERDICT_TOKEN_PATTERN.match(verdict)
+      if token_match is None:
         score = None
+      elif token_match.group(1).lower() == "yes":
+        score = 1.0
+      else:
+        score = 0.0
 
       scores.append(score)
 
