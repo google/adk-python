@@ -182,6 +182,17 @@ def calendar_api_spec():
                                       "enum": ["startTime", "updated"],
                                       "location": "query",
                                   },
+                                  "eventTypes": {
+                                      "type": "string",
+                                      "description": "Event types to return",
+                                      "enum": [
+                                          "default",
+                                          "focusTime",
+                                          "outOfOffice",
+                                      ],
+                                      "repeated": True,
+                                      "location": "query",
+                                  },
                               },
                               "response": {"$ref": "Events"},
                               "scopes": [
@@ -581,6 +592,32 @@ class TestGoogleApiToOpenApiConverter:
               {"type": "string", "enum": ["option1", "option2"]},
               {"type": "string", "enum": ["option1", "option2"]},
           ),
+          # Repeated parameter
+          (
+              {"type": "string", "repeated": True},
+              {"type": "array", "items": {"type": "string"}},
+          ),
+          # Repeated enum parameter
+          (
+              {
+                  "type": "string",
+                  "enum": ["option1", "option2"],
+                  "repeated": True,
+              },
+              {
+                  "type": "array",
+                  "items": {"type": "string", "enum": ["option1", "option2"]},
+              },
+          ),
+          # Repeated parameter with default
+          (
+              {"type": "string", "default": "LIVE", "repeated": True},
+              {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "default": ["LIVE"],
+              },
+          ),
       ],
   )
   def test_convert_parameter_schema(
@@ -738,6 +775,24 @@ class TestGoogleApiToOpenApiConverter:
     assert max_results["in"] == "query"
     assert max_results["schema"]["type"] == "integer"
     assert max_results["schema"]["default"] == "250"
+
+  def test_convert_repeated_query_parameter_to_array(
+      self, converter_with_patched_build
+  ):
+    """A query parameter marked repeated accepts a list of values."""
+    openapi_spec = converter_with_patched_build.convert()
+
+    get_events = openapi_spec["paths"]["/calendars/{calendarId}/events"]["get"]
+    param_dict = {p["name"]: p for p in get_events["parameters"]}
+    event_types = param_dict["eventTypes"]
+    assert event_types["in"] == "query"
+    assert event_types["schema"] == {
+        "type": "array",
+        "items": {
+            "type": "string",
+            "enum": ["default", "focusTime", "outOfOffice"],
+        },
+    }
 
 
 @pytest.fixture
