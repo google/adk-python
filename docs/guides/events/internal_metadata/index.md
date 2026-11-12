@@ -46,6 +46,10 @@ On restore, the reserved keys are removed first and the marker is set afterwards
 
 Keys that ADK code sets on its own events are kept. Agents, plugins, and callbacks run inside ADK, so the reserved namespace is available to them. When a plugin's `on_event_callback` returns a replacement event with its own `custom_metadata`, the reserved keys of the original event are carried over.
 
+Gemini Live usage events also carry reserved connection and sequence metadata. Model- and restore-owned provenance keys (`LIVE_USAGE_KEY` and `RESTORED_EVENT_KEY`) present on the incoming response or event are restored between callbacks, including in-place edits. Plugin-owned reserved keys, such as tool-integrity signatures, retain the plugin's updates across in-place edits and `after_model_callback` replacements. For `on_event_callback` replacements, reserved keys already present on the original event are carried over from that event. Replacement responses are copied before provenance is merged, so a callback can reuse its own response safely. Partial on-event replacements inherit public metadata when they leave it unset. On-event plugins retain their usual early-exit behaviour.
+
+These keys stay on stored events and Python Runner output. Custom servers that publish Runner events directly should use `public_event` (and `public_session` for sessions) at their output boundary. For native Live analytics, register the analytics plugin before an on-event plugin that returns a replacement: returning an event skips later plugins. Public exports below remove reserved keys.
+
 Reserved keys stay on stored events. So that API output does not change, they are removed from these outputs:
 
 - **API server**: events returned by the session endpoints (create, get, list and update) and streamed by `/run`, `/run_sse` and `/run_live`.

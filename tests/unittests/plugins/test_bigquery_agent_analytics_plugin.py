@@ -48,9 +48,13 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import event as event_lib
 from google.adk.events import event_actions as event_actions_lib
+from google.adk.events._internal_metadata import LIVE_USAGE_KEY
+from google.adk.events._internal_metadata import public_event
+from google.adk.events._internal_metadata import public_session
 from google.adk.models import google_llm
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
+from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.platform import thread as platform_thread
 from google.adk.plugins import _bigquery_agent_analytics_eval_sql
 from google.adk.plugins import _callback_helpers
@@ -58,6 +62,7 @@ from google.adk.plugins import bigquery_agent_analytics_plugin
 from google.adk.plugins import plugin_manager as plugin_manager_lib
 from google.adk.sessions import base_session_service as base_session_service_lib
 from google.adk.sessions import session as session_lib
+from google.adk.sessions.session import Session
 from google.adk.tools import base_tool as base_tool_lib
 from google.adk.tools import function_tool
 from google.adk.tools import tool_context as tool_context_lib
@@ -87,6 +92,2223 @@ TABLE_ID = "agent_events"
 DEFAULT_STREAM_NAME = (
     f"projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}/_default"
 )
+
+
+@pytest.fixture
+def live_usage_event():
+  return event_lib.Event(
+      author="MyTestAgent",
+      model_version="gemini-live",
+      live_session_id="resumed-session",
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10,
+          candidates_token_count=5,
+          total_token_count=15,
+          cached_content_token_count=2,
+          thoughts_token_count=1,
+          traffic_type="ON_DEMAND",
+          prompt_tokens_details=[
+              types.ModalityTokenCount(modality="AUDIO", token_count=10)
+          ],
+          candidates_tokens_details=[
+              types.ModalityTokenCount(modality="AUDIO", token_count=5)
+          ],
+      ),
+      custom_metadata={
+          LIVE_USAGE_KEY: {
+              "connection_id": "connection-1",
+              "sequence": 1,
+              "api_backend": "GEMINI_API",
+              "service_tier": "priority",
+          },
+      },
+  )
+
+
+@pytest.mark.parametrize("route", ["unary", "live_event", "live_model"])
+async def test_usage_serialization_does_not_warn_with_sensitive_values(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    route,
+):
+  """Malformed usage values stay redacted in rows and never appear in warnings."""
+  secret = "synthetic_usage_warning_value"
+  live_usage_event.usage_metadata.prompt_tokens_details[0].token_count = {
+      "access_token": secret,
+  }
+  if route == "unary":
+    live_usage_event.custom_metadata = None
+  with warnings.catch_warnings(record=True) as emitted:
+    warnings.simplefilter("always")
+    if route == "live_event":
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+    else:
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+    await bq_plugin_inst.flush()
+
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert len(rows) == 1
+  assert secret not in json.dumps(rows, default=str)
+  usage = json.loads(rows[0]["attributes"])["usage_metadata"]
+  assert usage["traffic_type"] == "ON_DEMAND"
+  assert usage["prompt_tokens_details"][0]["modality"] == "AUDIO"
+
+
+@pytest.mark.parametrize("route", ["unary", "live_event", "live_model"])
+@pytest.mark.parametrize("failure", ["serializer", "override", "unsupported"])
+async def test_usage_serialization_failure_preserves_private_token_counts(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    route,
+    failure,
+):
+  """Unsupported usage stays private without losing the valid token counts."""
+  secret = "synthetic_usage_serializer_value"
+  override_calls = []
+
+  class FailingUsage(types.GenerateContentResponseUsageMetadata):
+
+    @field_serializer("prompt_tokens_details")
+    def serialize_details(self, value):
+      raise ValueError(secret)
+
+  class OverriddenUsage(types.GenerateContentResponseUsageMetadata):
+
+    def model_dump(self, **kwargs):
+      override_calls.append(True)
+      raise ValueError(secret)
+
+  usage = live_usage_event.usage_metadata
+  if failure == "serializer":
+    usage = FailingUsage(**usage.model_dump())
+  elif failure == "override":
+    usage = OverriddenUsage(**usage.model_dump())
+  else:
+    usage.prompt_tokens_details[0].token_count = object()
+  live_usage_event.usage_metadata = usage
+  if route == "unary":
+    live_usage_event.custom_metadata = None
+
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    if route == "live_event":
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+    else:
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+    await bq_plugin_inst.flush()
+
+  assert secret not in caplog.text
+  assert not override_calls
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert len(rows) == 1
+  assert rows[0]["event_type"] == (
+      "LLM_RESPONSE" if route == "unary" else "LIVE_USAGE"
+  )
+  assert json.loads(rows[0]["content"])["usage"] == {
+      "prompt": 10,
+      "completion": 5,
+      "total": 15,
+  }
+  assert json.loads(rows[0]["attributes"])["usage_metadata"] == (
+      "[UNPARSEABLE_JSON_BLOB]"
+  )
+  assert rows[0]["is_truncated"] is True
+  assert secret not in json.dumps(rows, default=str)
+
+
+@pytest.mark.parametrize(
+    "target", ["next_agent", {"access_token": "synthetic_action_warning_value"}]
+)
+async def test_live_usage_actions_preserve_private_transfer_handling(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    target,
+):
+  """Transfers still run after Live usage without exposing malformed actions."""
+  secret = "synthetic_action_warning_value"
+  live_usage_event.actions.transfer_to_agent = target
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await bq_plugin_inst.flush()
+
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE", "AGENT_TRANSFER"]
+  assert secret not in json.dumps(rows, default=str)
+  transfer = json.loads(rows[1]["content"])
+  assert transfer["from_agent"] == live_usage_event.author
+  if isinstance(target, str):
+    assert transfer["to_agent"] == target
+
+
+@pytest.mark.parametrize("failure", ["serializer", "override", "nested_state"])
+async def test_live_usage_action_serializers_cannot_leak_or_hide_transfers(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    failure,
+):
+  """Action inspection preserves transfer and checkpoint rows without dumping."""
+  secret = "synthetic_action_serializer_value"
+  calls = []
+
+  class FailingActions(event_actions_lib.EventActions):
+
+    @field_serializer("transfer_to_agent")
+    def serialize_transfer(self, value):
+      calls.append(True)
+      raise ValueError(secret)
+
+  class OverriddenActions(event_actions_lib.EventActions):
+
+    def model_dump(self, **kwargs):
+      calls.append(True)
+      raise ValueError(secret)
+
+  class FailingPayload(BaseModel):
+    value: str = secret
+
+    @field_serializer("value")
+    def serialize_value(self, value):
+      calls.append(True)
+      raise ValueError(secret)
+
+  if failure == "serializer":
+    actions = FailingActions(transfer_to_agent="next_agent")
+  elif failure == "override":
+    actions = OverriddenActions(transfer_to_agent="next_agent")
+  else:
+    actions = event_actions_lib.EventActions(
+        transfer_to_agent="next_agent", agent_state={"nested": FailingPayload()}
+    )
+  live_usage_event.actions = actions
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await bq_plugin_inst.flush()
+
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == (
+      ["LIVE_USAGE", "AGENT_TRANSFER", "AGENT_STATE_CHECKPOINT"]
+      if failure == "nested_state"
+      else ["LIVE_USAGE", "AGENT_TRANSFER"]
+  )
+  assert secret not in json.dumps(rows, default=str)
+  assert json.loads(rows[1]["content"])["to_agent"] == "next_agent"
+  if failure != "nested_state":
+    assert not calls
+
+
+@pytest.mark.parametrize("route", ["unary", "live_event", "live_model"])
+async def test_usage_field_access_stays_private(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    route,
+):
+  secret = "synthetic_token_attribute_secret"
+
+  class PrivateUsage(types.GenerateContentResponseUsageMetadata):
+
+    def model_dump(self, **kwargs):
+      raise ValueError(secret)
+
+    def __getattribute__(self, name):
+      if name in {
+          "prompt_token_count",
+          "candidates_token_count",
+          "total_token_count",
+          "cached_content_token_count",
+      }:
+        raise ValueError(secret)
+      return super().__getattribute__(name)
+
+  live_usage_event.usage_metadata = PrivateUsage(
+      prompt_token_count=10,
+      candidates_token_count=5,
+      total_token_count=15,
+      cached_content_token_count=2,
+  )
+  if route == "unary":
+    live_usage_event.custom_metadata = None
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    if route == "live_event":
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+    else:
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+    await bq_plugin_inst.flush()
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert len(rows) == 1
+  assert json.loads(rows[0]["content"])["usage"] == {
+      "prompt": 10,
+      "completion": 5,
+      "total": 15,
+  }
+  assert rows[0]["is_truncated"] is True
+  assert secret not in json.dumps(rows, default=str)
+
+
+@pytest.mark.parametrize("kind", ["array", "factory", "checkpoint"])
+async def test_live_action_presence_does_not_execute_payloads(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    kind,
+):
+  secret = "synthetic_action_factory_secret"
+  calls = []
+
+  def destination():
+    calls.append(True)
+    if len(calls) > 1:
+      raise ValueError(secret)
+    return "next_agent"
+
+  class FactoryActions(event_actions_lib.EventActions):
+    transfer_to_agent: str = Field(default_factory=destination)
+
+  if kind == "array":
+    import numpy as np
+
+    live_usage_event.actions.set_model_response = np.array([1, 2])
+    live_usage_event.long_running_tool_ids = {"pending_tool"}
+    expected = "TOOL_PAUSED"
+  elif kind == "factory":
+    live_usage_event.actions = FactoryActions()
+    expected = "AGENT_TRANSFER"
+  else:
+    live_usage_event.actions.agent_state = {}
+    expected = "AGENT_STATE_CHECKPOINT"
+  with caplog.at_level(logging.WARNING):
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE", expected]
+  assert secret not in caplog.text
+  assert "BigQuery analytics plugin error" not in caplog.text
+  assert secret not in json.dumps(rows, default=str)
+  if kind == "factory":
+    assert calls == [True]
+    assert json.loads(rows[1]["content"])["to_agent"] == "next_agent"
+
+
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("failure", ["comparison", "truth"])
+async def test_cached_comparison_stays_private(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    live,
+    failure,
+):
+  """Cache classification failures cannot disclose values or discard content."""
+  secret = "synthetic_cached_comparison_secret"
+
+  class FailingTruth:
+
+    def __bool__(self):
+      raise ValueError(secret)
+
+  class FailingComparison(int):
+
+    def __gt__(self, other):
+      if failure == "comparison":
+        raise ValueError(secret)
+      return FailingTruth()
+
+  live_usage_event.usage_metadata = live_usage_event.usage_metadata.model_copy(
+      update={"cached_content_token_count": FailingComparison(2)}
+  )
+  live_usage_event.content = types.Content(
+      role="model", parts=[types.Part(text="kept")]
+  )
+  if not live:
+    live_usage_event.custom_metadata = None
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    await bq_plugin_inst.after_model_callback(
+        callback_context=CallbackContext(invocation_context),
+        llm_response=live_usage_event,
+    )
+    await bq_plugin_inst.flush()
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == (
+      ["LIVE_USAGE", "LLM_RESPONSE"] if live else ["LLM_RESPONSE"]
+  )
+  assert json.loads(rows[0]["content"])["usage"] == {
+      "prompt": 10,
+      "completion": 5,
+      "total": 15,
+  }
+  response = rows[-1]
+  assert "kept" in json.loads(response["content"])["response"]
+  assert response["is_truncated"] is True
+  assert json.loads(response["attributes"])["cache_type"] == "none"
+  assert secret not in json.dumps(rows, default=str)
+
+
+@pytest.mark.parametrize("analytics_first", [False, True])
+async def test_native_live_registration_order_preserves_replacement_contract(
+    bq_plugin_inst, invocation_context, live_usage_event, analytics_first
+):
+  """The documented analytics-first order captures usage before early exit."""
+  replacement = live_usage_event.model_copy()
+
+  class ReplacingPlugin(bigquery_agent_analytics_plugin.BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      return replacement
+
+  replacing = ReplacingPlugin(name="replacement")
+  plugins = (
+      [bq_plugin_inst, replacing]
+      if analytics_first
+      else [replacing, bq_plugin_inst]
+  )
+  manager = plugin_manager_lib.PluginManager(plugins=plugins)
+  with mock.patch.object(
+      bq_plugin_inst, "_log_event", return_value=True
+  ) as log_event:
+    result = await manager.run_on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+  assert result == replacement
+  assert log_event.await_count == int(analytics_first)
+  if analytics_first:
+    assert log_event.await_args.args[0] == "LIVE_USAGE"
+
+
+async def test_live_usage_records_raw_counts_and_modality_details(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Standalone usage reaches the same content and attributes as unary usage."""
+  live_usage_event.cache_metadata = CacheMetadata(
+      fingerprint="cache", contents_count=1
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  usage_rows = [row for row in rows if row["event_type"] == "LIVE_USAGE"]
+  assert len(usage_rows) == 1
+  row = usage_rows[0]
+  assert json.loads(row["content"])["usage"] == {
+      "prompt": 10,
+      "completion": 5,
+      "total": 15,
+  }
+  attributes = json.loads(row["attributes"])
+  assert attributes["cache_metadata"]["fingerprint"] == "cache"
+  usage_metadata = attributes["usage_metadata"]
+  assert usage_metadata["cached_content_token_count"] == 2
+  assert usage_metadata["thoughts_token_count"] == 1
+  assert usage_metadata["traffic_type"] == types.TrafficType.ON_DEMAND.value
+  assert usage_metadata["prompt_tokens_details"] == [
+      {"modality": types.MediaModality.AUDIO.value, "token_count": 10}
+  ]
+  assert usage_metadata["candidates_tokens_details"] == [
+      {"modality": types.MediaModality.AUDIO.value, "token_count": 5}
+  ]
+  assert attributes["model_version"] == "gemini-live"
+  assert attributes["live_usage"] == {
+      "connection_id": "connection-1",
+      "sequence": 1,
+      "live_session_id": "resumed-session",
+      "api_backend": "GEMINI_API",
+      "service_tier": "priority",
+  }
+  assert attributes["adk"]["source_event_id"] == live_usage_event.id
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        None,
+        "invalid",
+        {},
+        {"connection_id": "c"},
+        {"connection_id": "c", "sequence": True},
+        {"connection_id": "", "sequence": 1},
+        {"connection_id": "c", "sequence": 0},
+    ],
+)
+async def test_live_usage_invalid_marker_keeps_legacy_usage(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    marker,
+):
+  """Malformed markers do not discard otherwise valid model usage."""
+  live_usage_event.custom_metadata[LIVE_USAGE_KEY] = marker
+  await bq_plugin_inst.after_model_callback(
+      callback_context=CallbackContext(invocation_context),
+      llm_response=live_usage_event,
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [r["event_type"] for r in rows] == ["LLM_RESPONSE"]
+  assert json.loads(rows[0]["content"])["usage"]["total"] == 15
+
+
+async def test_live_usage_after_model_alone_records_usage(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Evaluation's agent route has no subsequent on-event callback."""
+  bq_plugin_inst.config.max_content_length = 1
+  response = llm_response_lib.LlmResponse(
+      usage_metadata=live_usage_event.usage_metadata,
+      custom_metadata=live_usage_event.custom_metadata,
+      model_version=live_usage_event.model_version,
+  )
+  for _ in range(2):
+    await bq_plugin_inst.after_model_callback(
+        callback_context=CallbackContext(invocation_context),
+        llm_response=response,
+    )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+  assert (
+      json.loads(rows[0]["attributes"])["live_usage"]["connection_id"]
+      == "connection-1"
+  )
+
+
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+async def test_live_usage_failed_observation_can_be_retried(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    error,
+):
+  """A failed callback attempt must not suppress the later event observer."""
+  with mock.patch.object(
+      bq_plugin_inst,
+      "_log_event",
+      wraps=bq_plugin_inst._log_event,
+      side_effect=error("interrupted"),
+  ):
+    if error is asyncio.CancelledError:
+      with pytest.raises(asyncio.CancelledError):
+        await bq_plugin_inst.after_model_callback(
+            callback_context=CallbackContext(invocation_context),
+            llm_response=live_usage_event,
+        )
+    else:
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+async def test_live_usage_concurrent_callbacks_record_one_observation(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Both hooks can observe the same report without adding duplicate rows."""
+  await asyncio.gather(
+      bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      ),
+      bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      ),
+      bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      ),
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+@pytest.mark.parametrize("first_succeeds", [False, True])
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_live_usage_waits_for_pending_admission(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    first_succeeds,
+    cancel_waiter,
+):
+  """Concurrent observers retry failed admission without cancelling its owner."""
+  entered = asyncio.Event()
+  release = asyncio.Event()
+  original = bq_plugin_inst._log_event
+  calls = 0
+
+  async def admit(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      entered.set()
+      await release.wait()
+      if not first_succeeds:
+        return False
+    return await original(*args, **kwargs)
+
+  with mock.patch.object(bq_plugin_inst, "_log_event", side_effect=admit):
+    owner = asyncio.create_task(
+        bq_plugin_inst.after_model_callback(
+            callback_context=CallbackContext(invocation_context),
+            llm_response=live_usage_event,
+        )
+    )
+    await entered.wait()
+    waiter = asyncio.create_task(
+        bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context, event=live_usage_event
+        )
+    )
+    await asyncio.sleep(0)
+    try:
+      assert not waiter.done()
+      if cancel_waiter:
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+          await waiter
+        waiter = asyncio.create_task(
+            bq_plugin_inst.on_event_callback(
+                invocation_context=invocation_context, event=live_usage_event
+            )
+        )
+        await asyncio.sleep(0)
+      release.set()
+      await asyncio.gather(owner, waiter)
+    finally:
+      release.set()
+      for task in (owner, waiter):
+        if not task.done():
+          task.cancel()
+      await asyncio.gather(owner, waiter, return_exceptions=True)
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert calls == (1 if first_succeeds else 2)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+@pytest.mark.parametrize("caller_cancelled", [False, True])
+async def test_owner_admission_cancellation_preserves_caller_cancellation(
+    mock_write_client,
+    dummy_arrow_schema,
+    caller_cancelled,
+):
+  """Owner cancellation is a rejected admission; caller cancellation propagates."""
+  loop = asyncio.new_event_loop()
+  pending = concurrent.futures.Future()
+  scheduled = asyncio.Event()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+
+  callbacks = []
+
+  def schedule(callback):
+    callbacks.append(callback)
+    scheduled.set()
+    if not caller_cancelled:
+      pending.cancel()
+
+  try:
+    with (
+        mock.patch.object(loop, "is_running", return_value=True),
+        mock.patch.object(loop, "call_soon_threadsafe", side_effect=schedule),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "ConcurrentFuture",
+            return_value=pending,
+        ),
+    ):
+      task = asyncio.create_task(processor.append({"event_type": "LIVE_USAGE"}))
+      await scheduled.wait()
+      if caller_cancelled:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+          await task
+      else:
+        assert await task is False
+    for callback in callbacks:
+      callback()
+    assert processor._queue.empty()
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 1
+  finally:
+    loop.close()
+
+
+async def test_live_usage_retries_owner_cancelled_admission(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Analytics owner cancellation stays contained and permits a later retry."""
+  loop = asyncio.new_event_loop()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+
+  pending = concurrent.futures.Future()
+  pending.cancel()
+
+  try:
+    with (
+        mock.patch.object(
+            bq_plugin_inst,
+            "_get_loop_state",
+            return_value=SimpleNamespace(batch_processor=processor),
+        ),
+        mock.patch.object(loop, "is_running", return_value=True),
+        mock.patch.object(
+            loop,
+            "call_soon_threadsafe",
+            side_effect=lambda callback: callback(),
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "ConcurrentFuture",
+            side_effect=[concurrent.futures.Future(), pending],
+        ),
+    ):
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+  finally:
+    loop.close()
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+@pytest.mark.parametrize("drop", ["setup", "parser", "queue"])
+async def test_live_usage_retries_a_dropped_first_observation(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    drop,
+):
+  """A later hook retries when the first hook could not queue its row."""
+  context = CallbackContext(invocation_context)
+  if drop == "setup":
+    with (
+        mock.patch.object(bq_plugin_inst, "_started", False),
+        mock.patch.object(
+            bq_plugin_inst, "_ensure_started", return_value="failed"
+        ),
+    ):
+      await bq_plugin_inst.after_model_callback(
+          callback_context=context, llm_response=live_usage_event
+      )
+  else:
+    await bq_plugin_inst._ensure_started()
+    if drop == "parser":
+      with mock.patch.object(bq_plugin_inst, "parser", None):
+        await bq_plugin_inst.after_model_callback(
+            callback_context=context, llm_response=live_usage_event
+        )
+    else:
+      state = await bq_plugin_inst._get_loop_state()
+      with mock.patch.object(
+          state.batch_processor._queue,
+          "put_nowait",
+          side_effect=asyncio.QueueFull,
+      ):
+        await bq_plugin_inst.after_model_callback(
+            callback_context=context, llm_response=live_usage_event
+        )
+  await bq_plugin_inst.flush()
+  assert (
+      await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+      == []
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+@pytest.mark.parametrize("cross_loop", [False, True])
+async def test_batch_admission_reports_queue_full_and_recovery(
+    mock_write_client,
+    dummy_arrow_schema,
+    cross_loop,
+):
+  """Admission acknowledges the owning loop, including queue-full rejections."""
+  loop = asyncio.new_event_loop() if cross_loop else asyncio.get_running_loop()
+  thread = None
+  if cross_loop:
+    ready = threading.Event()
+    loop.call_soon(ready.set)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    assert await asyncio.to_thread(ready.wait, 5)
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      queue_max_size=1,
+      loop=loop,
+  )
+  try:
+    assert (
+        await processor.append({"event_type": "LIVE_USAGE", "sequence": 1})
+        is True
+    )
+    assert (
+        await processor.append({"event_type": "LIVE_USAGE", "sequence": 2})
+        is False
+    )
+    if cross_loop:
+      row = await asyncio.wrap_future(
+          asyncio.run_coroutine_threadsafe(processor._queue.get(), loop)
+      )
+      loop.call_soon_threadsafe(processor._queue.task_done)
+    else:
+      row = processor._queue.get_nowait()
+      processor._queue.task_done()
+    assert row["sequence"] == 1
+    assert (
+        await processor.append({"event_type": "LIVE_USAGE", "sequence": 2})
+        is True
+    )
+    assert processor.get_drop_stats()["queue_full"] == 1
+  finally:
+    if thread is not None:
+      loop.call_soon_threadsafe(loop.stop)
+      await asyncio.to_thread(thread.join, 5)
+      assert not thread.is_alive()
+      loop.close()
+
+
+@pytest.mark.parametrize("closed", [False, True])
+async def test_batch_admission_rejects_a_stopped_owner_loop(
+    mock_write_client,
+    dummy_arrow_schema,
+    closed,
+):
+  """A stopped owner loop cannot admit rows and must not leave callers waiting."""
+  loop = asyncio.new_event_loop()
+  if closed:
+    loop.close()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+  )
+  try:
+    assert (
+        await asyncio.wait_for(
+            processor.append({"event_type": "LIVE_USAGE"}), 1
+        )
+        is False
+    )
+  finally:
+    if not closed:
+      loop.close()
+
+
+async def test_batch_admission_handles_owner_loop_closing_before_schedule(
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Closing after the running check rejects admission without leaking a coroutine."""
+  loop = asyncio.new_event_loop()
+  loop.close()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+  )
+  with mock.patch.object(loop, "is_running", return_value=True):
+    assert await processor.append({"event_type": "LIVE_USAGE"}) is False
+
+
+async def test_batch_admission_bounds_wait_for_a_stalled_owner_loop(
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """A stalled owner cannot block an agent indefinitely waiting for admission."""
+  loop = asyncio.new_event_loop()
+  entered = threading.Event()
+  release = threading.Event()
+
+  def block_owner():
+    entered.set()
+    release.wait(5)
+
+  loop.call_soon(block_owner)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+      shutdown_timeout=0.01,
+  )
+  try:
+    assert await asyncio.to_thread(entered.wait, 5)
+    assert (
+        await asyncio.wait_for(
+            processor.append({"event_type": "LIVE_USAGE"}), 1
+        )
+        is False
+    )
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 1
+  finally:
+    release.set()
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+  assert processor._queue.empty()
+
+
+async def test_batch_admission_timeout_does_not_claim_an_admitted_row_was_dropped(
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """A lost acknowledgement cannot be counted as a confirmed row loss."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  caller_loop = asyncio.get_running_loop()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+      shutdown_timeout=0.01,
+  )
+  admitted = []
+  wrap_future = asyncio.wrap_future
+
+  def delay_acknowledgement(pending):
+    admitted.append(pending.result(timeout=2))
+    if len(admitted) == 1:
+      return caller_loop.create_future()
+    return wrap_future(pending)
+
+  try:
+    assert await asyncio.to_thread(ready.wait, 5)
+    with mock.patch.object(
+        asyncio, "wrap_future", side_effect=delay_acknowledgement
+    ):
+      assert await processor.append({"event_type": "LIVE_USAGE"}) is True
+    assert all(admitted)
+    assert processor._queue.qsize() == 1
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+  finally:
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+async def test_batch_admission_waits_for_an_already_claimed_row(
+    mock_write_client, dummy_arrow_schema
+):
+  """A deadline after the owner claims admission still returns its true outcome."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  entered = threading.Event()
+  release = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+      shutdown_timeout=0.01,
+  )
+  append_nowait = processor._append_nowait
+
+  def blocked_append(row):
+    entered.set()
+    release.wait(5)
+    return append_nowait(row)
+
+  task = None
+  try:
+    assert await asyncio.to_thread(ready.wait, 5)
+    with mock.patch.object(
+        processor, "_append_nowait", side_effect=blocked_append
+    ):
+      task = asyncio.create_task(processor.append({"event_type": "LIVE_USAGE"}))
+      assert await asyncio.to_thread(entered.wait, 5)
+      await asyncio.sleep(0.05)
+      assert not task.done()
+      release.set()
+      assert await task is True
+    assert processor._queue.qsize() == 1
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+  finally:
+    release.set()
+    if task is not None and not task.done():
+      task.cancel()
+      await asyncio.gather(task, return_exceptions=True)
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+@pytest.mark.parametrize(
+    "event_type", ["LLM_REQUEST", "TOOL_STARTING", "INVOCATION_COMPLETED"]
+)
+async def test_other_events_do_not_wait_for_background_admission(
+    mock_write_client, dummy_arrow_schema, event_type
+):
+  """Ordinary events return while the background owner is still blocked."""
+  loop = asyncio.new_event_loop()
+  entered = threading.Event()
+  release = threading.Event()
+
+  def block_owner():
+    entered.set()
+    release.wait(5)
+
+  loop.call_soon(block_owner)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+  task = None
+  try:
+    assert await asyncio.to_thread(entered.wait, 5)
+    task = asyncio.create_task(processor.append({"event_type": event_type}))
+    await asyncio.sleep(0)
+    assert task.done()
+    assert await task is True
+    assert processor._queue.empty()
+    release.set()
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+    )
+    assert processor._queue.qsize() == 1
+  finally:
+    if task is not None and not task.done():
+      task.cancel()
+      await asyncio.gather(task, return_exceptions=True)
+    release.set()
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+async def test_live_usage_history_keeps_pending_reports(
+    bq_plugin_inst, invocation_context, live_usage_event
+):
+  """Eviction of completed reports must not permit a pending duplicate."""
+  entered = asyncio.Event()
+  release = asyncio.Event()
+  sequences = []
+
+  async def log_event(*args, **kwargs):
+    sequence = kwargs["event_data"].extra_attributes["live_usage"]["sequence"]
+    sequences.append(sequence)
+    if sequence == 1:
+      entered.set()
+      await release.wait()
+    return True
+
+  context = CallbackContext(invocation_context)
+  owner = None
+  waiter = None
+  try:
+    with mock.patch.object(bq_plugin_inst, "_log_event", side_effect=log_event):
+      owner = asyncio.create_task(
+          bq_plugin_inst.after_model_callback(
+              callback_context=context, llm_response=live_usage_event
+          )
+      )
+      await entered.wait()
+      for sequence in range(
+          2, bigquery_agent_analytics_plugin._LIVE_USAGE_HISTORY_SIZE + 2
+      ):
+        event = live_usage_event.model_copy(deep=True)
+        event.custom_metadata[LIVE_USAGE_KEY]["sequence"] = sequence
+        await bq_plugin_inst.after_model_callback(
+            callback_context=context, llm_response=event
+        )
+      waiter = asyncio.create_task(
+          bq_plugin_inst.on_event_callback(
+              invocation_context=invocation_context, event=live_usage_event
+          )
+      )
+      await asyncio.sleep(0)
+      assert not waiter.done()
+      release.set()
+      await asyncio.gather(owner, waiter)
+    assert sequences.count(1) == 1
+  finally:
+    release.set()
+    for task in (owner, waiter):
+      if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "first_result", ["before_enqueue", "after_enqueue", "rejected"]
+)
+async def test_cancelled_live_producer_keeps_its_actual_admission(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    first_result,
+):
+  """Cancelling the reporting caller must not turn an accepted row into a retry."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  entered = threading.Event()
+  release = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+  append_nowait = processor._append_nowait
+  calls = 0
+
+  def blocked_append(row):
+    nonlocal calls
+    calls += 1
+    if calls != 1:
+      return append_nowait(row)
+    accepted = append_nowait(row) if first_result == "after_enqueue" else None
+    entered.set()
+    release.wait(5)
+    if first_result == "rejected":
+      with mock.patch.object(
+          processor._queue, "put_nowait", side_effect=asyncio.QueueFull
+      ):
+        return append_nowait(row)
+    return accepted if accepted is not None else append_nowait(row)
+
+  owner = None
+  waiter = None
+  caller_loop = asyncio.get_running_loop()
+  try:
+    assert await caller_loop.run_in_executor(None, ready.wait, 5)
+    with (
+        mock.patch.object(
+            processor, "_append_nowait", side_effect=blocked_append
+        ),
+        mock.patch.object(
+            bq_plugin_inst,
+            "_get_loop_state",
+            return_value=SimpleNamespace(batch_processor=processor),
+        ),
+    ):
+      owner = asyncio.create_task(
+          bq_plugin_inst.after_model_callback(
+              callback_context=CallbackContext(invocation_context),
+              llm_response=live_usage_event,
+          )
+      )
+      assert await caller_loop.run_in_executor(None, entered.wait, 5)
+      waiter = asyncio.create_task(
+          bq_plugin_inst.on_event_callback(
+              invocation_context=invocation_context, event=live_usage_event
+          )
+      )
+      await asyncio.sleep(0)
+      owner.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(owner, 1)
+      assert not waiter.done()
+      release.set()
+      await waiter
+    assert processor._queue.qsize() == 1
+    assert calls == (2 if first_result == "rejected" else 1)
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+    assert processor.get_drop_stats()["queue_full"] == (
+        first_result == "rejected"
+    )
+  finally:
+    release.set()
+    for task in (owner, waiter):
+      if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await caller_loop.run_in_executor(None, thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+async def test_live_admission_survives_reporting_loop_close(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """A confirmed report stays deduplicated after its reporting loop closes."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  entered = threading.Event()
+  release = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+  append_nowait = processor._append_nowait
+  calls = 0
+
+  def blocked_append(row):
+    nonlocal calls
+    calls += 1
+    accepted = append_nowait(row)
+    if calls == 1:
+      entered.set()
+      release.wait(5)
+    return accepted
+
+  async def report_and_cancel():
+    report = asyncio.create_task(
+        bq_plugin_inst.after_model_callback(
+            callback_context=CallbackContext(invocation_context),
+            llm_response=live_usage_event,
+        )
+    )
+    try:
+      assert await asyncio.get_running_loop().run_in_executor(
+          None, entered.wait, 5
+      )
+      report.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await report
+    finally:
+      if not report.done():
+        report.cancel()
+        await asyncio.gather(report, return_exceptions=True)
+
+  caller_loop = asyncio.get_running_loop()
+  waiter = None
+  try:
+    assert await caller_loop.run_in_executor(None, ready.wait, 5)
+    with (
+        mock.patch.object(
+            processor, "_append_nowait", side_effect=blocked_append
+        ),
+        mock.patch.object(
+            bq_plugin_inst,
+            "_get_loop_state",
+            return_value=SimpleNamespace(batch_processor=processor),
+        ),
+    ):
+      # asyncio.run closes this separate reporting loop before admission finishes.
+      await caller_loop.run_in_executor(None, asyncio.run, report_and_cancel())
+      waiter = asyncio.create_task(
+          bq_plugin_inst.on_event_callback(
+              invocation_context=invocation_context, event=live_usage_event
+          )
+      )
+      await asyncio.sleep(0)
+      assert not waiter.done()
+      release.set()
+      await waiter
+    assert calls == 1
+    assert processor._queue.qsize() == 1
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+  finally:
+    release.set()
+    if waiter is not None and not waiter.done():
+      waiter.cancel()
+      await asyncio.gather(waiter, return_exceptions=True)
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await caller_loop.run_in_executor(None, thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+@pytest.mark.parametrize("outcome", ["complete", "timeout", "cancel"])
+async def test_shutdown_retains_pending_live_admission_until_settled(
+    bq_plugin_inst, invocation_context, live_usage_event, outcome
+):
+  """Closing cannot forget a pending receipt or cancel another observer's wait."""
+  entered = asyncio.Event()
+  release = asyncio.Event()
+
+  async def admit(*args, **kwargs):
+    receipt = kwargs["admission_result"]
+    receipt.set_running_or_notify_cancel()
+    entered.set()
+    await release.wait()
+    receipt.set_result(True)
+    return True
+
+  owner = None
+  closing = None
+  try:
+    with mock.patch.object(bq_plugin_inst, "_log_event", side_effect=admit):
+      owner = asyncio.create_task(
+          bq_plugin_inst.after_model_callback(
+              callback_context=CallbackContext(invocation_context),
+              llm_response=live_usage_event,
+          )
+      )
+      await entered.wait()
+      closing = asyncio.create_task(
+          bq_plugin_inst.shutdown(timeout=0.01 if outcome == "timeout" else 1)
+      )
+      await asyncio.sleep(0)
+      assert not closing.done()
+      if outcome == "timeout":
+        with pytest.raises(
+            bigquery_agent_analytics_plugin._ShutdownIncompleteError
+        ):
+          await closing
+      elif outcome == "cancel":
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+          await closing
+      release.set()
+      await owner
+      if outcome == "complete":
+        await closing
+    await bq_plugin_inst.shutdown()
+    assert not bq_plugin_inst._is_shutting_down
+  finally:
+    release.set()
+    for task in (owner, closing):
+      if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_live_usage_duplicate_history_is_bounded(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+):
+  """Recent duplicates are suppressed without retaining every past report."""
+  with mock.patch.object(bq_plugin_inst, "_log_event") as log_event:
+    size = bigquery_agent_analytics_plugin._LIVE_USAGE_HISTORY_SIZE
+    for sequence in [*range(1, size + 2), size + 1, 1]:
+      live_usage_event.custom_metadata[LIVE_USAGE_KEY]["sequence"] = sequence
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+  assert log_event.await_count == size + 2
+
+
+async def test_live_and_unary_usage_share_json_enum_encoding(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Queries see the same traffic and modality values in both event types."""
+  context = CallbackContext(invocation_context)
+  await bq_plugin_inst.after_model_callback(
+      callback_context=context, llm_response=live_usage_event
+  )
+  live_usage_event.custom_metadata = None
+  await bq_plugin_inst.after_model_callback(
+      callback_context=context, llm_response=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE", "LLM_RESPONSE"]
+  usages = [json.loads(row["attributes"])["usage_metadata"] for row in rows]
+  assert usages[0] == usages[1]
+  assert usages[0]["traffic_type"] == types.TrafficType.ON_DEMAND.value
+  assert usages[1]["prompt_tokens_details"] == [
+      {"modality": "AUDIO", "token_count": 10}
+  ]
+  assert "tool_use_prompt_token_count" not in usages[1]
+
+
+async def test_filtered_live_usage_preserves_span_and_eval_totals(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Fallback usage keeps accounting while a later text response ends timing."""
+  bq_plugin_inst.config.event_denylist = ["LIVE_USAGE"]
+  tm = bigquery_agent_analytics_plugin.TraceManager
+  context = CallbackContext(invocation_context)
+  tm.ensure_invocation_span(context)
+  await bq_plugin_inst.on_user_message_callback(
+      invocation_context=invocation_context,
+      user_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+  tm.push_span(context, "agent")
+  agent_span = tm.get_current_span_id()
+  tm.push_span(context, "llm_request")
+  pending_span = tm.get_current_span_id()
+  try:
+    await bq_plugin_inst.after_model_callback(
+        callback_context=context, llm_response=live_usage_event
+    )
+    assert tm.get_current_span_id() == pending_span
+    assert tm.get_first_token_time(pending_span) is None
+    await bq_plugin_inst.after_model_callback(
+        callback_context=context,
+        llm_response=llm_response_lib.LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text="done")]
+            ),
+            turn_complete=True,
+        ),
+    )
+    assert tm.get_current_span_id() == agent_span
+    await bq_plugin_inst.flush()
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    turn = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin._build_eval_turn_view_sql("p.d.t")
+    ).run(rows)[0]
+    assert turn["total_tokens"] == 15
+  finally:
+    tm.clear_stack()
+
+
+@pytest.mark.parametrize("metadata", ["pause", "a2a"])
+async def test_live_usage_keeps_noncontent_event_handlers(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    metadata,
+):
+  """A usage report may also carry a tool pause or an A2A interaction."""
+  if metadata == "pause":
+    live_usage_event.long_running_tool_ids = {"paused-call"}
+    expected = "TOOL_PAUSED"
+  else:
+    live_usage_event.custom_metadata["a2a:response"] = {"message": "ready"}
+    expected = "A2A_INTERACTION"
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE", expected]
+
+
+async def test_live_usage_control_id_is_sanitized_without_truncation(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Control IDs still pass the credential-redaction boundary."""
+  bq_plugin_inst.config.max_content_length = 1
+  live_usage_event.custom_metadata[LIVE_USAGE_KEY][
+      "connection_id"
+  ] = '{"access_token":"test-only-credential"}'
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert len(rows) == 1
+  assert "test-only-credential" not in rows[0]["attributes"]
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("error", [False, True])
+async def test_live_usage_agent_completion_closes_only_its_own_spans(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    filtered,
+    error,
+):
+  """Usage-only terminal turns retain the agent and invocation span IDs."""
+  if filtered:
+    bq_plugin_inst.config.event_denylist = ["LIVE_USAGE"]
+  tm = bigquery_agent_analytics_plugin.TraceManager
+  context = CallbackContext(invocation_context)
+  tm.ensure_invocation_span(context)
+  invocation_span = tm.get_current_span_id()
+  tm.push_span(context, "agent")
+  agent_span = tm.get_current_span_id()
+  tm.push_span(context, "llm_request")
+  request_span = tm.get_current_span_id()
+  try:
+    await bq_plugin_inst.after_model_callback(
+        callback_context=context, llm_response=live_usage_event
+    )
+    assert tm.get_current_span_id() == request_span
+    assert tm.get_first_token_time(request_span) is None
+    if error:
+      await bq_plugin_inst.on_agent_error_callback(
+          agent=invocation_context.agent,
+          callback_context=context,
+          error=ValueError("post-model failure"),
+      )
+    else:
+      await bq_plugin_inst.after_agent_callback(
+          agent=invocation_context.agent, callback_context=context
+      )
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+    await bq_plugin_inst.flush()
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    completed = {row["event_type"]: row for row in rows}
+    assert (
+        completed["AGENT_ERROR" if error else "AGENT_COMPLETED"]["span_id"]
+        == agent_span
+    )
+    assert completed["INVOCATION_COMPLETED"]["span_id"] == invocation_span
+  finally:
+    tm.clear_stack()
+
+
+async def test_live_usage_does_not_observe_workflow_nodes(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+):
+  """Wire usage does not become a workflow node observation."""
+  with mock.patch.object(
+      bq_plugin_inst, "_record_workflow_node_observation"
+  ) as observe:
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+  observe.assert_not_called()
+
+
+async def test_live_usage_keeps_callback_state_changes(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """A usage frame carrying a callback's state update is not wire-only."""
+  live_usage_event.actions.state_delta.update({"phase": "listening"})
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE", "STATE_DELTA"]
+
+
+async def test_live_usage_identity_survives_payload_truncation(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Small payload limits preserve distinct control-plane connection IDs."""
+  bq_plugin_inst.config.max_content_length = 1
+  ids = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+  ]
+  for connection_id in ids:
+    event = live_usage_event.model_copy(deep=True)
+    event.custom_metadata[LIVE_USAGE_KEY]["connection_id"] = connection_id
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [
+      json.loads(r["attributes"])["live_usage"]["connection_id"] for r in rows
+  ] == ids
+
+
+async def test_live_usage_with_content_keeps_the_model_response(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Content-bearing frames keep their response without counting usage twice."""
+  live_usage_event.content = types.Content(
+      role="model", parts=[types.Part(text="hello")]
+  )
+  live_usage_event.finish_reason = types.FinishReason.STOP
+  await bq_plugin_inst.after_model_callback(
+      callback_context=CallbackContext(invocation_context),
+      llm_response=live_usage_event,
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  responses = [r for r in rows if r["event_type"] == "LLM_RESPONSE"]
+  assert len(responses) == 1
+  assert "hello" in json.loads(responses[0]["content"])["response"]
+  assert "usage" not in json.loads(responses[0]["content"])
+  assert json.loads(responses[0]["attributes"])["cache_type"] == "implicit"
+  assert len([r for r in rows if r["event_type"] == "LIVE_USAGE"]) == 1
+
+
+def test_live_usage_marker_is_private_at_export_boundaries(live_usage_event):
+  """Stored/Python events keep identity while public exports remove it."""
+  session = Session(
+      id="s", app_name="a", user_id="u", events=[live_usage_event]
+  )
+  assert public_event(live_usage_event).custom_metadata is None
+  assert public_session(session).events[0].custom_metadata is None
+  assert LIVE_USAGE_KEY in live_usage_event.custom_metadata
+
+
+async def test_live_usage_is_not_counted_again_by_after_model(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """The first callback records usage and the later callback adds no duplicate."""
+  await bq_plugin_inst.after_model_callback(
+      callback_context=CallbackContext(invocation_context),
+      llm_response=live_usage_event,
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+async def test_unary_usage_event_does_not_add_another_usage_row(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Unary usage still belongs exclusively to after-model logging."""
+  live_usage_event.custom_metadata = None
+  await bq_plugin_inst.after_model_callback(
+      callback_context=CallbackContext(invocation_context),
+      llm_response=live_usage_event,
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LLM_RESPONSE"]
+
+
+@pytest.mark.parametrize("filtered", ["deny", "allow"])
+async def test_live_usage_respects_event_filters(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    filtered,
+):
+  """Live usage passes through the normal allowlist and denylist."""
+  if filtered == "deny":
+    bq_plugin_inst.config.event_denylist = ["LIVE_USAGE"]
+  else:
+    bq_plugin_inst.config.event_allowlist = ["LLM_RESPONSE"]
+  await bq_plugin_inst.after_model_callback(
+      callback_context=CallbackContext(invocation_context),
+      llm_response=live_usage_event,
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [r["event_type"] for r in rows] == ["LLM_RESPONSE"]
+  assert json.loads(rows[0]["content"])["usage"]["total"] == 15
+
+
+async def test_live_usage_keeps_internal_metadata_out_of_custom_capture(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Wildcard capture includes user tags without leaking internal markers."""
+  live_usage_event.custom_metadata["user_tag"] = "voice"
+  live_usage_event.custom_metadata["__adk_internal_other"] = "private"
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      custom_metadata_allowlist=["*", LIVE_USAGE_KEY]
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, TABLE_ID, config=config
+  ) as plugin:
+    await plugin.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await plugin.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  attributes = json.loads(rows[0]["attributes"])
+  assert attributes["custom_metadata"] == {"user_tag": "voice"}
+  assert attributes["live_usage"]["connection_id"] == "connection-1"
+
+
+async def test_live_usage_does_not_close_the_pending_model_span(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+):
+  """Usage snapshots are not response boundaries for latency measurements."""
+  trace_manager = bigquery_agent_analytics_plugin.TraceManager
+  callback_context = CallbackContext(invocation_context)
+  trace_manager.ensure_invocation_span(callback_context)
+  trace_manager.push_span(callback_context, "llm_request")
+  pending_span = trace_manager.get_current_span_id()
+  try:
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context, llm_response=live_usage_event
+    )
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    assert trace_manager.get_current_span_id() == pending_span
+  finally:
+    trace_manager.clear_stack()
+
+
+async def test_live_usage_previous_model_span_ends_before_next_call(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+):
+  """A new model call cannot retain a span from a usage-only predecessor."""
+  tm = bigquery_agent_analytics_plugin.TraceManager
+  context = CallbackContext(invocation_context)
+  tm.ensure_invocation_span(context)
+  invocation_span = tm.get_current_span_id()
+  request = llm_request_lib.LlmRequest(model="gemini-live")
+  try:
+    await bq_plugin_inst.before_model_callback(
+        callback_context=context, llm_request=request
+    )
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await bq_plugin_inst.before_model_callback(
+        callback_context=context, llm_request=request
+    )
+    tm.pop_span(expected_kind="llm_request")
+    assert tm.get_current_span_id() == invocation_span
+  finally:
+    tm.clear_stack()
+
+
+@pytest.mark.parametrize(
+    "mode, callback_kind",
+    [
+        ("live", None),
+        ("live_cfc_flag", None),
+        ("cfc_flow", None),
+        ("cfc", None),
+        ("cfc", "copy"),
+        ("cfc", "fresh"),
+        ("cfc", "inplace"),
+        ("cfc", "nested"),
+        ("cfc", "plugin_first"),
+        ("cfc", "plugin_last"),
+        ("live_trailing", None),
+        ("live_closed", None),
+    ],
+)
+async def test_live_usage_is_logged_once_through_runner_and_cfc_flow(
+    bq_plugin_inst,
+    mock_write_client,
+    dummy_arrow_schema,
+    mode,
+    callback_kind,
+):
+  """Runner and CFC flow callbacks preserve each provider snapshot once."""
+  from google.adk.agents.run_config import RunConfig
+  from google.adk.agents.run_config import StreamingMode
+  from google.adk.apps import App
+  from google.adk.flows.llm_flows.single_flow import SingleFlow
+  from google.adk.live.live_request_queue import LiveRequestQueue
+  from google.adk.models.gemini_llm_connection import GeminiLlmConnection
+  from google.adk.runners import Runner
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+  from .. import testing_utils
+
+  model = google_llm.Gemini(model="gemini-2.5-flash-native-audio-preview")
+
+  def after_model(callback_context, llm_response):
+    del callback_context
+    if not llm_response.usage_metadata or callback_kind is None:
+      return None
+    if callback_kind == "copy":
+      return llm_response.model_copy(
+          update={"custom_metadata": {"user_tag": "voice"}}
+      )
+    if callback_kind == "fresh":
+      return event_lib.Event(
+          author="voice_agent", custom_metadata={"user_tag": "voice"}
+      )
+    if callback_kind == "nested":
+      llm_response.custom_metadata[LIVE_USAGE_KEY]["sequence"] = 999
+    else:
+      llm_response.custom_metadata = {"user_tag": "voice"}
+
+  plugin_editor = callback_kind in ("plugin_first", "plugin_last")
+  agent = llm_agent.LlmAgent(
+      name="voice_agent",
+      model=model,
+      after_model_callback=None if plugin_editor else after_model,
+  )
+  plugins = [bq_plugin_inst]
+  if plugin_editor:
+    editor = bigquery_agent_analytics_plugin.BasePlugin(name="metadata-editor")
+    editor.after_model_callback = mock.AsyncMock(side_effect=after_model)
+    if callback_kind == "plugin_first":
+      plugins.insert(0, editor)
+    else:
+      plugins.append(editor)
+  runner = Runner(
+      app=App(name="voice", root_agent=agent, plugins=plugins),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      app_name="voice", user_id="test_user"
+  )
+  wire_session = mock.AsyncMock()
+  wire_session.session_id = "resumed-session"
+  closed = asyncio.Event()
+  wire_session.close.side_effect = closed.set
+
+  messages = iter(
+      [
+          types.LiveServerMessage(
+              usage_metadata=types.UsageMetadata(
+                  prompt_token_count=count - 5,
+                  response_token_count=5,
+                  total_token_count=count,
+                  service_tier=types.ServiceTier.PRIORITY,
+              )
+          )
+          for count in (15, 25)
+      ]
+      + [
+          types.LiveServerMessage(
+              server_content=types.LiveServerContent(
+                  model_turn=types.Content(
+                      role="model", parts=[types.Part(text="done")]
+                  ),
+                  turn_complete=True,
+              )
+          )
+      ]
+  )
+  if mode in ("live_trailing", "live_closed"):
+    wire_messages = list(messages)
+    messages = iter([wire_messages[-1], *wire_messages[:-1]])
+
+  async def receive():
+    for message in messages:
+      yield message
+    await closed.wait()
+
+  wire_session.receive = mock.Mock(side_effect=receive)
+
+  @contextlib.asynccontextmanager
+  async def connect(self, llm_request):
+    connection = GeminiLlmConnection(wire_session, model_version=self.model)
+    try:
+      yield connection
+    finally:
+      await connection.close()
+
+  run_config = RunConfig(
+      support_cfc=mode != "live", streaming_mode=StreamingMode.SSE
+  )
+
+  with (
+      mock.patch.object(google_llm.Gemini, "connect", connect),
+      mock.patch.object(
+          google_llm.Gemini,
+          "generate_content_async",
+          side_effect=AssertionError("Expected the Live API connection"),
+      ),
+  ):
+    if mode == "cfc_flow":
+      context = await testing_utils.create_invocation_context(
+          agent=agent,
+          user_content="hi",
+          run_config=run_config,
+          plugins=[bq_plugin_inst],
+      )
+      events = []
+      async with asyncio.timeout(10):
+        await context.plugin_manager.run_before_run_callback(
+            invocation_context=context
+        )
+        try:
+          async for event in SingleFlow().run_async(context):
+            events.append(event)
+            await context.plugin_manager.run_on_event_callback(
+                invocation_context=context, event=event
+            )
+        finally:
+          await context.plugin_manager.run_after_run_callback(
+              invocation_context=context
+          )
+    elif mode == "cfc":
+      async with asyncio.timeout(10):
+        events = [
+            event
+            async for event in runner.run_async(
+                user_id=session.user_id,
+                session_id=session.id,
+                new_message=types.Content(
+                    role="user", parts=[types.Part(text="hi")]
+                ),
+                run_config=run_config,
+            )
+        ]
+    else:
+      queue = LiveRequestQueue()
+      queue.send_content(
+          types.Content(role="user", parts=[types.Part(text="hi")])
+      )
+      events = []
+      async with contextlib.aclosing(
+          runner.run_live(
+              user_id=session.user_id,
+              session_id=session.id,
+              live_request_queue=queue,
+              run_config=run_config,
+          )
+      ) as responses:
+        async for event in responses:
+          events.append(event)
+          if (
+              mode == "live_trailing"
+              and event.usage_metadata
+              and event.usage_metadata.total_token_count == 25
+          ) or (mode != "live_trailing" and event.turn_complete):
+            break
+      queue.close()
+
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  usage_rows = [row for row in rows if row["event_type"] == "LIVE_USAGE"]
+  if mode == "live_closed":
+    assert usage_rows == []
+    return
+  snapshots = {
+      (
+          event.custom_metadata[LIVE_USAGE_KEY]["connection_id"],
+          event.custom_metadata[LIVE_USAGE_KEY]["sequence"],
+      )
+      for event in events
+      if event.usage_metadata
+  }
+  assert len(snapshots) == 2
+  assert [
+      json.loads(row["content"])["usage"]["total"] for row in usage_rows
+  ] == [15, 25]
+  assert [
+      json.loads(row["attributes"])["live_usage"]["sequence"]
+      for row in usage_rows
+  ] == [1, 2]
+  llm_response_rows = [
+      row for row in rows if row["event_type"] == "LLM_RESPONSE"
+  ]
+  # CFC emits a text fragment, final text, and an empty turn-complete frame.
+  assert len(llm_response_rows) == (3 if mode in ("cfc", "cfc_flow") else 0)
+  final_text_rows = [
+      row
+      for row in llm_response_rows
+      if json.loads(row["attributes"]).get("cache_type") is not None
+      and (json.loads(row["content"] or "{}") or {}).get("response")
+  ]
+  assert len(final_text_rows) == (1 if mode in ("cfc", "cfc_flow") else 0)
+  assert not any(
+      json.loads(row["attributes"]).get("usage_metadata")
+      for row in rows
+      if row["event_type"] == "LLM_RESPONSE"
+  )
+  assert {
+      json.loads(row["attributes"])["live_usage"]["service_tier"]
+      for row in usage_rows
+  } == {"priority"}
+  for build_sql in (
+      bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+      bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+  ):
+    metrics = _EvalViewSqlEvaluator(build_sql("p.d.t")).run(rows)
+    assert sum(row["total_tokens"] for row in metrics) == 40
+    assert sum(row["total_prompt_tokens"] for row in metrics) == 30
+
+
+@pytest.mark.parametrize("event_type", ["LIVE_USAGE", "LLM_RESPONSE"])
+@pytest.mark.parametrize(
+    "traffic_type", ["TrafficType.ON_DEMAND", "ON_DEMAND", None]
+)
+def test_usage_views_normalize_historical_and_current_traffic_type(
+    event_type, traffic_type
+):
+  """Existing enum-prefixed rows and new JSON values remain queryable together."""
+  columns = ", ".join(
+      list(bigquery_agent_analytics_plugin._VIEW_COMMON_COLUMNS)
+      + bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS[event_type]
+  )
+  sql = bigquery_agent_analytics_plugin._VIEW_SQL_TEMPLATE.format(
+      project="p",
+      dataset="d",
+      view_name="v_usage",
+      table="t",
+      columns=columns,
+      event_type=event_type,
+  )
+  row = {
+      **{
+          column: None
+          for column in bigquery_agent_analytics_plugin._VIEW_COMMON_COLUMNS
+      },
+      "event_type": event_type,
+      "content": {"usage": {"prompt": 10, "completion": 5, "total": 15}},
+      "latency_ms": {},
+      "attributes": {"usage_metadata": {"traffic_type": traffic_type}},
+  }
+
+  query = sql.split(" AS\n", 1)[1]
+  result = _EvalViewSqlEvaluator(
+      f"WITH snapshots AS ({query}) SELECT * FROM snapshots"
+  ).run([row])
+
+  assert len(result) == 1
+  assert result[0]["traffic_type"] == (
+      None if traffic_type is None else "ON_DEMAND"
+  )
+
+
+def test_live_usage_view_preserves_reports_and_numeric_sequence():
+  """Typed reports tolerate redaction without imposing a cumulative policy."""
+  columns = ", ".join(
+      list(bigquery_agent_analytics_plugin._VIEW_COMMON_COLUMNS)
+      + bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["LIVE_USAGE"]
+  )
+  sql = bigquery_agent_analytics_plugin._VIEW_SQL_TEMPLATE.format(
+      project="p",
+      dataset="d",
+      view_name="v_live_usage",
+      table="t",
+      columns=columns,
+      event_type="LIVE_USAGE",
+  )
+  query = sql.split(" AS\n", 1)[1]
+  assert "ROW_NUMBER" not in query
+  rows = []
+  for connection_id, sequence, total in [
+      ("first", 2, 10),
+      ("first", 10, 25),
+      ("first", 11, 4),
+      ("second", 2, 4),
+      ("second", 10, 7),
+      (None, 1, 9),
+      (None, "[REDACTED]", "[REDACTED]"),
+  ]:
+    rows.append({
+        **{
+            column: None
+            for column in bigquery_agent_analytics_plugin._VIEW_COMMON_COLUMNS
+        },
+        "event_type": "LIVE_USAGE",
+        "session_id": "session",
+        "event_id": str(len(rows)),
+        "timestamp": 10 - len(rows),
+        "content": {"usage": {"prompt": 10, "total": total}},
+        "attributes": {
+            "usage_metadata": {
+                "traffic_type": "TrafficType.ON_DEMAND",
+                "cached_content_token_count": 2,
+                "thoughts_token_count": 3,
+                "tool_use_prompt_token_count": 4,
+            },
+            "cache_metadata": {"fingerprint": "cache"},
+            "live_usage": {
+                "connection_id": connection_id,
+                "sequence": sequence,
+                "live_session_id": "same-provider-session",
+                "api_backend": "GEMINI_API",
+                "service_tier": "priority",
+            },
+        },
+    })
+  projected = _EvalViewSqlEvaluator(
+      f"WITH snapshots AS ({query}) SELECT * FROM snapshots"
+  ).run(rows)
+  assert len(projected) == len(rows)
+  assert projected[-1]["sequence"] is None
+  assert projected[-1]["usage_total_tokens"] is None
+  for row in projected:
+    assert row["traffic_type"] == "ON_DEMAND"
+    assert row["usage_cached_tokens"] == 2
+    assert row["usage_thinking_tokens"] == 3
+    assert row["usage_tool_use_tokens"] == 4
+    assert row["context_cache_hit_rate"] == 0.2
+    assert row["cache_metadata"] == {"fingerprint": "cache"}
+    assert row["service_tier"] == "priority"
+    assert row["api_backend"] == "GEMINI_API"
+  # Cumulative sources can opt in after applying their own time/session filter.
+  latest = _EvalViewSqlEvaluator(f"""WITH snapshots AS ({query}), ranked AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY session_id, connection_id
+        ORDER BY sequence DESC, timestamp DESC, event_id DESC) AS snapshot_rank
+      FROM snapshots WHERE connection_id IS NOT NULL
+    ) SELECT * FROM ranked WHERE snapshot_rank = 1""").run(rows)
+  assert {
+      (row["connection_id"], row["sequence"], row["usage_total_tokens"])
+      for row in latest
+  } == {("first", 11, 4), ("second", 10, 7)}
 
 
 # --- Pytest Fixtures ---
@@ -12948,7 +15170,7 @@ class _EvalViewSqlEvaluator:
     while pos < len(sql):
       match = self._TOKEN_RE.match(sql, pos)
       assert match, f"Unexpected SQL text: {sql[pos:pos + 40]!r}"
-      if match.lastgroup != "space":
+      if match.lastgroup not in {"space", "comment"}:
         self._tokens.append((match.lastgroup, match.group()))
       pos = match.end()
     self._pos, self._end = 0, len(self._tokens)
@@ -13481,6 +15703,13 @@ class _EvalViewSqlEvaluator:
     return self._eval(call_args[0], partition[index], None)
 
   def _call(self, name, args):
+    if name == "SAFE_DIVIDE":
+      numerator, denominator = args
+      return (
+          None
+          if numerator is None or denominator in (None, 0)
+          else numerator / denominator
+      )
     if name == "COALESCE":
       return next((arg for arg in args if arg is not None), None)
     if name == "NULLIF":
@@ -13717,6 +15946,19 @@ class TestEvalViews:
     if param == "raw_where_clause":
       return f"\n      AND (\n        {condition}\n      )\n  ),"
     return f"\nWHERE\n  (\n    {condition}\n  )\n"
+
+  def test_live_usage_typed_view_is_created(self):
+    plugin = self._make_plugin(create_views=True)
+    assert plugin._ensure_schema_exists() is True
+    sql = next(
+        sql
+        for sql in self._queried_sql(plugin.client)
+        if "v_live_usage`" in sql
+    )
+    assert "SAFE_CAST" in sql
+    assert "usage_cached_tokens" in sql
+    assert "api_backend" in sql
+    assert "ROW_NUMBER" not in sql
 
   def test_config_create_eval_views_default_false(self):
     """Eval views are opt-in, so default setup only creates analytics views."""
@@ -14233,8 +16475,9 @@ class TestEvalViews:
               " usage_completion"
           ),
           (
-              "( event_type = 'LLM_RESPONSE' AND (is_final_llm_response OR NOT"
-              " turn_has_final_llm_response) ) AS is_usage_row"
+              "( (event_type = 'LLM_RESPONSE' AND (is_final_llm_response OR NOT"
+              " turn_has_final_llm_response)) OR event_type = 'LIVE_USAGE' ) AS"
+              " is_usage_row"
           ),
           (
               "COALESCE(SUM(IF(is_usage_row, usage_prompt, NULL)), 0) AS"
