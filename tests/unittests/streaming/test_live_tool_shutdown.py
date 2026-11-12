@@ -49,6 +49,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
+from websockets.exceptions import ConnectionClosed
 
 from .. import testing_utils
 
@@ -1099,6 +1100,58 @@ async def test_tool_call_finishes_when_the_live_run_ends():
       for event in events
       for response in event.get_function_responses()
   ] == ['slow_lookup']
+
+
+@pytest.mark.asyncio
+async def test_connection_error_saves_responses_of_finished_calls(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A call that finished before the connection drops has its response saved."""
+  lookup, finish_lookup = _blocked_lookup()
+
+  class _Connection(testing_utils.MockLlmConnection):
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      yield _call('lookup')
+      # The flow has stopped taking responses, so only the drain can save it.
+      await finish_lookup()
+      raise ConnectionClosed(None, None)
+
+  @asynccontextmanager
+  async def _connect(*args: Any, **kwargs: Any) -> AsyncGenerator[Any, None]:
+    yield _Connection([])
+
+  monkeypatch.setattr(testing_utils.MockModel, 'connect', _connect)
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([]),
+      tools=[lookup],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=agent, session_service=session_service)
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+  names: list[str] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        names.extend(r.name for r in event.get_function_responses())
+
+  with pytest.raises(ConnectionClosed):
+    await asyncio.wait_for(_consume(), timeout=5.0)
+
+  assert names == ['lookup']
 
 
 @pytest.mark.asyncio
