@@ -55,6 +55,7 @@ try:
   from openai.types.responses import ResponseOutputRefusal
   from openai.types.responses import ResponseOutputText
   from openai.types.responses import ResponseReasoningItem
+  from openai.types.responses import ResponseReasoningItemParam
   from openai.types.responses import ResponseStreamEvent
   from openai.types.responses import ResponseUsage
   from openai.types.responses import ToolParam
@@ -295,23 +296,85 @@ def _text_part_to_response_content(part: types.Part) -> ResponseInputTextParam:
   return ResponseInputTextParam(type='input_text', text=part.text or '')
 
 
+# Thought parts captured from a Responses reasoning item carry the item's
+# replay state (item id + encrypted_content) in ``thought_signature`` as a JSON
+# envelope so the next request can rebuild the reasoning item. The key
+# namespaces the payload against other users of the same slot (Gemini thought
+# signatures, Anthropic thinking blocks) and against pre-envelope sessions that
+# stored the raw encrypted content directly.
+_REASONING_SIGNATURE_KEY = 'adk_openai_reasoning'
+
+
+def _reasoning_item_signature(
+    item_id: str | None, encrypted_content: str | None
+) -> bytes | None:
+  """Builds the replay envelope stored on the first captured thought part.
+
+  The item id is the anchor: the Responses API requires reasoning input items
+  to reference a real item, so parts without one stay unreplayable. The
+  encrypted payload rides along for stateless replay (``store: false``).
+  """
+  if not item_id:
+    return None
+  captured: dict[str, Any] = {'id': item_id}
+  if encrypted_content:
+    captured['encrypted_content'] = encrypted_content
+  return json.dumps({_REASONING_SIGNATURE_KEY: captured}).encode('utf-8')
+
+
+def _replayed_reasoning_input_item(
+    part: types.Part,
+) -> ResponseReasoningItemParam | None:
+  """Rebuilds a Responses reasoning input item from a captured thought part.
+
+  Returns ``None`` when the part carries no replay envelope. Locally authored
+  thoughts, plain summaries, another provider's signature, and encrypted
+  content captured before envelopes existed all stay skipped, because the API
+  rejects reasoning items that reference nothing it can resolve.
+  """
+  if not part.thought_signature:
+    return None
+  try:
+    decoded = json.loads(part.thought_signature.decode('utf-8'))
+  except (UnicodeDecodeError, ValueError):
+    return None
+  if not isinstance(decoded, dict):
+    return None
+  captured = decoded.get(_REASONING_SIGNATURE_KEY)
+  if not isinstance(captured, dict) or not captured.get('id'):
+    return None
+  item = ResponseReasoningItemParam(
+      type='reasoning',
+      id=captured['id'],
+      summary=(
+          [{'type': 'summary_text', 'text': part.text}] if part.text else []
+      ),
+  )
+  if captured.get('encrypted_content'):
+    item['encrypted_content'] = captured['encrypted_content']
+  return item
+
+
 def _skip_replayed_reasoning_part(part: types.Part) -> None:
   """Skips ADK thought replay that cannot be addressed in Responses input.
 
-  Responses reasoning input items must reference real reasoning item IDs from a
-  prior response. ADK thought parts do not currently carry those IDs, and
-  synthetic IDs are rejected by the API. Continuity is handled through
-  previous_response_id when available.
+  Responses reasoning input items must reference real reasoning items from a
+  prior response: synthetic IDs are rejected by the API. Parts captured from a
+  real response carry the item id and encrypted content in an envelope (see
+  ``_reasoning_item_signature``) and are rebuilt by
+  ``_replayed_reasoning_input_item``; anything without that envelope -- locally
+  authored thoughts, plain summaries, or pre-envelope encrypted payloads -- is
+  skipped here.
   """
   if part.thought_signature:
     logger.debug(
-        'Skipping replayed OpenAI Responses reasoning part with encrypted '
-        'content because no prior reasoning item id is available.'
+        'Skipping replayed OpenAI Responses reasoning part: no captured '
+        'reasoning item envelope is available on the part.'
     )
   else:
     logger.debug(
         'Skipping replayed OpenAI Responses reasoning summary because no prior '
-        'reasoning item id is available.'
+        'reasoning item is available.'
     )
 
 
@@ -429,8 +492,12 @@ def _content_to_response_input_items(
           _function_call_to_response_item(part.function_call, sanitizer)
       )
     elif part.thought and (part.text or part.thought_signature):
-      flush_message_parts()
-      _skip_replayed_reasoning_part(part)
+      replayed_item = _replayed_reasoning_input_item(part)
+      if replayed_item is not None:
+        flush_message_parts()
+        items.append(replayed_item)
+      else:
+        _skip_replayed_reasoning_part(part)
     elif part.text:
       if role == 'assistant':
         append_assistant_text(part.text)
@@ -593,21 +660,31 @@ def _reasoning_parts(
   parts = []
   metadata: dict[str, Any] = {}
   encrypted_content = _get_value(item, 'encrypted_content')
+  item_id = _get_value(item, 'id')
+  # The replay envelope goes on the first captured part only, so a rebuilt
+  # input contains exactly one reasoning item per captured response item.
+  signature = _reasoning_item_signature(item_id, encrypted_content)
+  envelope_attached = False
+
+  def _capture_replay_state(part: types.Part) -> None:
+    nonlocal envelope_attached
+    if signature is not None and not envelope_attached:
+      part.thought_signature = signature
+      envelope_attached = True
+
   summary = _get_value(item, 'summary', []) or []
   for summary_part in summary:
     text = _get_value(summary_part, 'text')
     if text:
       part = types.Part(text=text, thought=True)
-      if encrypted_content:
-        part.thought_signature = encrypted_content.encode('utf-8')
+      _capture_replay_state(part)
       parts.append(part)
   content = _get_value(item, 'content', []) or []
   for content_part in content:
     text = _get_value(content_part, 'text')
     if text:
       part = types.Part(text=text, thought=True)
-      if encrypted_content:
-        part.thought_signature = encrypted_content.encode('utf-8')
+      _capture_replay_state(part)
       parts.append(part)
   if encrypted_content:
     metadata['encrypted_content'] = encrypted_content
@@ -615,10 +692,9 @@ def _reasoning_parts(
       parts.append(
           types.Part(
               thought=True,
-              thought_signature=encrypted_content.encode('utf-8'),
+              thought_signature=signature,
           )
       )
-  item_id = _get_value(item, 'id')
   if item_id:
     metadata['id'] = item_id
   return parts, metadata
