@@ -31,6 +31,7 @@ from .prompt import _identity
 from .prompt import _instructions
 from .prompt import _schema as _output_schema_processor
 from .tools import _confirmation as request_confirmation
+from .tools import _skill_classification
 
 if TYPE_CHECKING:
   from ._base_llm_processor import BaseLlmRequestProcessor
@@ -53,6 +54,9 @@ def _create_request_processors() -> list[BaseLlmRequestProcessor]:
       basic.request_processor,
       auth_preprocessor.request_processor,
       request_confirmation.request_processor,
+      # Emits a `load_skill` call and response, so it must run before
+      # contents for this request to include them.
+      _skill_classification.request_processor,
       _instructions.request_processor,
       _identity.request_processor,
       # Compaction should run before contents so compacted events are reflected
