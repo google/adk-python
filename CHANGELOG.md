@@ -5,10 +5,9 @@
 
 ### Highlights
 
-<one sentence describing the theme of this release>
+This release restores trace export for agents deployed on Agent Engine with FastAPI 0.142.0 or later.
 
-* **<Feature>**: <what it unlocks for the user, in one line>. (<commit>)
-* **<Feature>**: <user benefit>. (<commit>)
+* **Tracing on Agent Engine**: ADK spans are exported again when FastAPI 0.142.0 or later is installed. FastAPI's native tracing is now turned off on Agent Engine, where it continued the platform's mostly unsampled `traceparent` and caused most traces to be dropped. ([87e5399](https://github.com/google/adk-python/commit/87e53990addc68f59c45538fe17b21e4783e1c96))
 
 ### Bug Fixes
 
