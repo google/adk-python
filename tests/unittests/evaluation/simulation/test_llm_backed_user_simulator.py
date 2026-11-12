@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.evaluation import conversation_scenarios
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
@@ -418,3 +419,8 @@ class TestLlmBackedUserSimulator:
 
     assert next_user_message.status == Status.SUCCESS
     assert next_user_message.user_message == expected_user_message
+
+
+def test_config_default_model_follows_llm_agent_default():
+  """The default simulator model tracks LlmAgent.DEFAULT_MODEL."""
+  assert LlmBackedUserSimulatorConfig().model == LlmAgent.DEFAULT_MODEL
