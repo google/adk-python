@@ -36,8 +36,10 @@ from google.adk.models.lite_llm import _build_function_declaration_log
 from google.adk.models.lite_llm import _build_tool_call_from_json_dict
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
+from google.adk.models.lite_llm import _decode_reasoning_details_envelope
 from google.adk.models.lite_llm import _extract_gemini_model_from_litellm
 from google.adk.models.lite_llm import _extract_json_from_deepseek_args
+from google.adk.models.lite_llm import _extract_reasoning_details
 from google.adk.models.lite_llm import _extract_reasoning_value
 from google.adk.models.lite_llm import _extract_thought_signature_from_tool_call
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
@@ -14419,3 +14421,276 @@ class TestParseToolCallArguments:
     with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
     assert "Repaired" not in caplog.text
+
+
+_OPENROUTER_REASONING_DETAILS = [
+    {
+        "type": "reasoning.text",
+        "text": "Let me think about this step by step.",
+        "signature": "sig-abc123",
+        "id": "reasoning-text-1",
+        "format": "anthropic-claude-v1",
+        "index": 0,
+    },
+    {
+        "type": "reasoning.encrypted",
+        "data": "RW5jcnlwdGVkUmVhc29uaW5nPT0=",
+        "id": "reasoning-encrypted-1",
+        "format": "openai-gpt-oss-v1",
+        "index": 1,
+    },
+    {
+        "type": "reasoning.summary",
+        "summary": "Weighed the two options.",
+        "id": "reasoning-summary-1",
+        "format": "openai-gpt-oss-v1",
+        "index": 2,
+    },
+]
+
+
+def _details_envelope(details):
+  return json.dumps(
+      {"adk_reasoning_details": details}, separators=(",", ":")
+  ).encode("utf-8")
+
+
+def test_extract_reasoning_details_from_provider_specific_fields():
+  message = {
+      "role": "assistant",
+      "content": "",
+      "provider_specific_fields": {
+          "reasoning_details": _OPENROUTER_REASONING_DETAILS
+      },
+  }
+
+  assert _extract_reasoning_details(message) == _OPENROUTER_REASONING_DETAILS
+
+
+def test_extract_reasoning_details_ignores_empty_or_invalid_lists():
+  assert _extract_reasoning_details(None) is None
+  assert _extract_reasoning_details({"role": "assistant"}) is None
+  assert (
+      _extract_reasoning_details(
+          {"provider_specific_fields": {"reasoning_details": []}}
+      )
+      is None
+  )
+  assert (
+      _extract_reasoning_details(
+          {"provider_specific_fields": {"reasoning_details": ["opaque"]}}
+      )
+      is None
+  )
+
+
+def test_message_to_generate_content_response_captures_reasoning_details():
+  message = {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "Let me think about this step by step.",
+      "provider_specific_fields": {
+          "reasoning_details": _OPENROUTER_REASONING_DETAILS
+      },
+  }
+
+  response = _message_to_generate_content_response(message)
+
+  thought_parts = [p for p in response.content.parts if p.thought]
+  assert thought_parts
+  assert (
+      "".join(p.text for p in thought_parts if p.text)
+      == "Let me think about this step by step."
+  )
+  assert (
+      _decode_reasoning_details_envelope(thought_parts[-1].thought_signature)
+      == _OPENROUTER_REASONING_DETAILS
+  )
+
+
+def test_message_to_generate_content_response_reasoning_details_encrypted_only():
+  encrypted_only = [_OPENROUTER_REASONING_DETAILS[1]]
+  message = {
+      "role": "assistant",
+      "content": "",
+      "provider_specific_fields": {"reasoning_details": encrypted_only},
+  }
+
+  response = _message_to_generate_content_response(message)
+
+  thought_parts = [p for p in response.content.parts if p.thought]
+  assert len(thought_parts) == 1
+  carrier = thought_parts[0]
+  assert not carrier.text
+  assert _decode_reasoning_details_envelope(carrier.thought_signature) == (
+      encrypted_only
+  )
+
+
+def test_message_to_generate_content_response_without_details_unchanged():
+  message = {
+      "role": "assistant",
+      "content": "answer",
+      "reasoning_content": "internal reasoning",
+  }
+
+  response = _message_to_generate_content_response(message)
+
+  thought_parts = [p for p in response.content.parts if p.thought]
+  assert len(thought_parts) == 1
+  assert thought_parts[0].thought_signature is None
+  assert thought_parts[0].text == "internal reasoning"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_replays_reasoning_details():
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(_OPENROUTER_REASONING_DETAILS),
+  )
+  call = types.Part(
+      function_call=types.FunctionCall(
+          id="call_1", name="get_weather", args={"city": "Zurich"}
+      )
+  )
+  content = types.Content(role="model", parts=[thought, call])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/openai/gpt-5"
+  )
+
+  assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
+  assert message["reasoning_content"] is None
+  assert message["tool_calls"][0]["id"] == "call_1"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_openrouter_claude_replays_reasoning_details():
+  # OpenRouter-routed Claude models must take the reasoning_details replay
+  # path, not the Anthropic thinking_blocks branches: the OpenRouter response
+  # carries the thinking as reasoning_details, never as thinking_blocks.
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(_OPENROUTER_REASONING_DETAILS),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/anthropic/claude-sonnet-4"
+  )
+
+  assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
+  assert "thinking_blocks" not in message
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_reasoning_text_without_details_unchanged():
+  part = types.Part.from_text(text="internal reasoning")
+  part.thought = True
+  content = types.Content(role="assistant", parts=[part])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/openai/gpt-5"
+  )
+
+  assert message["reasoning_content"] == "internal reasoning"
+  assert "reasoning_details" not in message
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_does_not_decode_opaque_signature_as_details():
+  part = types.Part.from_text(text="internal reasoning")
+  part.thought = True
+  part.thought_signature = b"\x89not-a-json-gemini-signature"
+  content = types.Content(role="assistant", parts=[part])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/openai/gpt-5"
+  )
+
+  assert "reasoning_details" not in message
+  assert message["reasoning_content"] == "internal reasoning"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_replays_reasoning_details_next_turn():
+  first_response = ModelResponse(
+      id="resp-1",
+      choices=[
+          Choices(
+              finish_reason="tool_calls",
+              message={
+                  "role": "assistant",
+                  "content": None,
+                  "reasoning_content": "Let me think about this step by step.",
+                  "provider_specific_fields": {
+                      "reasoning_details": _OPENROUTER_REASONING_DETAILS
+                  },
+                  "tool_calls": [{
+                      "type": "function",
+                      "id": "call_1",
+                      "function": {
+                          "name": "get_weather",
+                          "arguments": '{"city": "Zurich"}',
+                      },
+                  }],
+              },
+          )
+      ],
+  )
+  second_response = ModelResponse(
+      id="resp-2",
+      choices=[
+          Choices(
+              finish_reason="stop",
+              message={"role": "assistant", "content": "It is sunny."},
+          )
+      ],
+  )
+  acompletion = AsyncMock(side_effect=[first_response, second_response])
+  client = MockLLMClient(acompletion, Mock())
+  model = LiteLlm(model="openrouter/openai/gpt-5", llm_client=client)
+
+  first_llm_response = None
+  async for response in model.generate_content_async(
+      LLM_REQUEST_WITH_FUNCTION_DECLARATION
+  ):
+    first_llm_response = response
+
+  function_call_part = next(
+      p for p in first_llm_response.content.parts if p.function_call
+  )
+  follow_up_request = LlmRequest(
+      contents=[
+          *LLM_REQUEST_WITH_FUNCTION_DECLARATION.contents,
+          first_llm_response.content,
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_part.function_call.id,
+                          name=function_call_part.function_call.name,
+                          response={"result": "sunny"},
+                      )
+                  )
+              ],
+          ),
+      ],
+      config=LLM_REQUEST_WITH_FUNCTION_DECLARATION.config,
+  )
+  async for _ in model.generate_content_async(follow_up_request):
+    pass
+
+  assert acompletion.await_count == 2
+  second_messages = acompletion.await_args_list[1].kwargs["messages"]
+  with_details = [
+      m
+      for m in second_messages
+      if m.get("role") == "assistant" and m.get("reasoning_details") is not None
+  ]
+  assert len(with_details) == 1
+  assert with_details[0]["reasoning_details"] == (_OPENROUTER_REASONING_DETAILS)
+  assert with_details[0]["tool_calls"][0]["id"] == "call_1"
