@@ -6509,6 +6509,57 @@ class TestFindFinishTaskArgsFromHistory:
     )
     assert args is None
 
+  def test_find_finish_task_args_from_a2a_response_history_metadata(self):
+    """Unary A2A Task responses keep finish_task FC in custom_metadata history."""
+    fr_event = Event(
+        author="remote_worker",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(
+                    function_response=genai_types.FunctionResponse(
+                        id="fc-1",
+                        name="finish_task",
+                        response={"result": "Task completed."},
+                    )
+                )
+            ],
+        ),
+        custom_metadata={
+            "a2a:response": {
+                "id": "task-1",
+                "history": [{
+                    "role": "ROLE_AGENT",
+                    "parts": [
+                        {
+                            "data": {
+                                "id": "fc-1",
+                                "name": "finish_task",
+                                "args": {"result": "42"},
+                            },
+                            "metadata": {"adk_type": "function_call"},
+                        },
+                        {
+                            "data": {
+                                "id": "fc-1",
+                                "name": "finish_task",
+                                "response": {"result": "Task completed."},
+                            },
+                            "metadata": {"adk_type": "function_response"},
+                        },
+                    ],
+                }],
+            }
+        },
+    )
+    session = Mock(spec=Session)
+    session.events = []
+
+    args = remote_a2a_agent._find_finish_task_args_from_history(
+        session, completed_fr_event=fr_event
+    )
+    assert args == {"result": "42"}
+
 
 class _TestSingleFieldOutput(BaseModel):
   result: str
@@ -9243,3 +9294,73 @@ async def test_after_request_metadata_overrides_are_preserved():
     assert turn[-1].custom_metadata["a2a:task_id"] == "caller-task"
     assert turn[-1].custom_metadata["a2a:context_id"] == "caller-context"
     assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "unary"])
+async def test_task_mode_sub_agent_returns_remote_task_output(
+    streaming: bool,
+):
+  """RemoteA2aAgent(mode='task') sub_agent returns output for streaming and unary A2A."""
+  from google.adk.a2a.utils.agent_to_a2a import to_a2a
+  from google.adk.agents.llm_agent import LlmAgent
+
+  from tests.unittests import testing_utils
+
+  remote_worker = LlmAgent(
+      name="remote_worker",
+      model=testing_utils.MockModel.create(
+          responses=[
+              genai_types.Part.from_function_call(
+                  name="finish_task", args={"result": "42"}
+              )
+          ]
+      ),
+      mode="task",
+  )
+  agent_card = (
+      None
+      if streaming
+      else _compat.build_agent_card(
+          name="remote_worker",
+          description="remote worker",
+          version="0.0.1",
+          url="http://localhost:8000",
+          protocol_binding=_compat.TP_JSONRPC,
+          capabilities={"streaming": False, "push_notifications": False},
+      )
+  )
+  a2a_app = to_a2a(remote_worker, agent_card=agent_card)
+  async with a2a_app.router.lifespan_context(a2a_app):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=a2a_app),
+        base_url="http://localhost:8000",
+    ) as http_client:
+      proxy = RemoteA2aAgent(
+          name="remote_worker",
+          agent_card="http://localhost:8000/.well-known/agent-card.json",
+          httpx_client=http_client,
+          mode="task",
+      )
+      host = LlmAgent(
+          name="host",
+          model=testing_utils.MockModel.create(
+              responses=[
+                  genai_types.Part.from_function_call(
+                      name="remote_worker", args={"request": "q"}
+                  ),
+                  "done",
+              ]
+          ),
+          sub_agents=[proxy],
+      )
+      runner = testing_utils.InMemoryRunner(host)
+      events = await runner.run_async("go")
+
+  tool_responses = [
+      fr
+      for event in events
+      for fr in event.get_function_responses()
+      if fr.name == "remote_worker"
+  ]
+  assert len(tool_responses) == 1
+  assert tool_responses[0].response == {"result": "42"}

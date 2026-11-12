@@ -27,6 +27,8 @@ from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import patch
 
+from fastapi.openapi.models import APIKey
+from fastapi.openapi.models import APIKeyIn
 from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
@@ -44,6 +46,9 @@ from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.errors import StaleSessionError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -63,6 +68,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.adk.workflow import BaseNode
 from google.adk.workflow import node
 from google.adk.workflow import RetryConfig
@@ -6129,6 +6135,303 @@ async def test_run_early_break_base_agent_skips_compaction_leaves_lro():
   )
   assert not _abort_events(sess.events)
   assert [fc.id for fc in sess.events[-1].get_function_calls()] == ["lro_1"]
+
+
+async def _cancel_run_on_fc(
+    runner: Runner, fc_name: str, abort_signal: asyncio.Event | None = None
+) -> str:
+  """Cancels the consuming task as soon as a ``fc_name`` call is yielded.
+
+  If ``abort_signal`` is given, it is set right before the cancel.
+  """
+  call_id = asyncio.get_running_loop().create_future()
+
+  async def _consume():
+    async for event in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id="s",
+        new_message=types.Content(role="user", parts=[types.Part(text="Go")]),
+        abort_signal=abort_signal,
+    ):
+      for fc in event.get_function_calls():
+        if fc.name == fc_name and not call_id.done():
+          call_id.set_result(fc.id)
+
+  task = asyncio.create_task(_consume())
+  result = await call_id
+  if abort_signal is not None:
+    abort_signal.set()
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  return result
+
+
+@pytest.mark.asyncio
+async def test_run_async_task_cancel_leaves_long_running_call_unsealed():
+  """Task cancel while a long-running call runs leaves the call open."""
+  runner = _abort_runner(
+      LlmAgent(
+          name="tool_agent",
+          model=testing_utils.MockModel.create(responses=[_slow_tool_call()]),
+          tools=[LongRunningFunctionTool(_slow_tool)],
+      )
+  )
+
+  call_id = await _cancel_run_on_fc(runner, "_slow_tool")
+
+  sess = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  assert not _abort_events(sess.events)
+  assert not [e for e in sess.events if e.get_function_responses()]
+  assert [fc.id for fc in sess.events[-1].get_function_calls()] == [call_id]
+
+
+@pytest.mark.asyncio
+async def test_run_async_abort_signal_then_cancel_seals_long_running_call():
+  """Setting abort_signal before the task cancel still seals the call."""
+  runner = _abort_runner(
+      LlmAgent(
+          name="tool_agent",
+          model=testing_utils.MockModel.create(responses=[_slow_tool_call()]),
+          tools=[LongRunningFunctionTool(_slow_tool)],
+      )
+  )
+
+  call_id = await _cancel_run_on_fc(runner, "_slow_tool", asyncio.Event())
+
+  sess = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  sealed = [
+      fr.id
+      for e in _abort_events(sess.events)
+      for fr in e.get_function_responses()
+  ]
+  assert sealed == [call_id]
+
+
+async def _slow_job() -> dict[str, str]:
+  """A long-running job that is still running."""
+  await asyncio.sleep(5.0)
+  return {}
+
+
+def _pending_job() -> dict[str, str]:
+  """A long-running job that reports an interim status at once."""
+  return {"status": "pending"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("job", "responses"),
+    [
+        (
+            _slow_job,
+            [[
+                types.Part.from_function_call(name="_slow_job", args={}),
+                _slow_tool_call(),
+            ]],
+        ),
+        (
+            _pending_job,
+            [
+                types.Part.from_function_call(name="_pending_job", args={}),
+                _slow_tool_call(),
+            ],
+        ),
+    ],
+    ids=["parallel", "after_interim_response"],
+)
+async def test_run_async_task_cancel_seals_ordinary_call_beside_long_running(
+    job, responses
+):
+  """Task cancel seals an ordinary call but not a long-running one beside it."""
+  runner = _abort_runner(
+      LlmAgent(
+          name="tool_agent",
+          model=testing_utils.MockModel.create(responses=responses),
+          tools=[LongRunningFunctionTool(job), _slow_tool],
+      )
+  )
+
+  await _cancel_run_on_fc(runner, "_slow_tool")
+
+  sess = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  sealed = []
+  for e in _abort_events(sess.events):
+    sealed.extend(fr.name for fr in e.get_function_responses())
+  assert sealed == ["_slow_tool"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_task_cancel_at_confirmation_resumes_cleanly():
+  """Task cancel at a confirmation seals nothing; approval runs the tool."""
+  paid = []
+
+  def pay(amount: int) -> dict[str, int]:
+    """Pays an amount."""
+    paid.append(amount)
+    return {"paid": amount}
+
+  runner = _abort_runner(
+      LlmAgent(
+          name="payer",
+          model=testing_utils.MockModel.create(
+              responses=[
+                  types.Part.from_function_call(name="pay", args={"amount": 5}),
+                  "Paid",
+              ]
+          ),
+          tools=[FunctionTool(pay, require_confirmation=True)],
+      )
+  )
+
+  confirmation_id = await _cancel_run_on_fc(runner, "adk_request_confirmation")
+  approval = types.Content(
+      role="user",
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation_id,
+                  name="adk_request_confirmation",
+                  response={"confirmed": True},
+              )
+          )
+      ],
+  )
+  async for _ in runner.run_async(
+      user_id=TEST_USER_ID, session_id="s", new_message=approval
+  ):
+    pass
+
+  sess = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  responses = []
+  for e in sess.events:
+    responses.extend(
+        (fr.name, fr.response) for fr in e.get_function_responses()
+    )
+  assert paid == [5]
+  assert not _abort_events(sess.events)
+  assert responses == [
+      ("adk_request_confirmation", {"confirmed": True}),
+      ("pay", {"paid": 5}),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_run_async_task_cancel_at_credential_request_resumes_cleanly():
+  """Task cancel at a credential seals nothing; granting it runs the tool."""
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+      credential_key="api_key",
+  )
+  fetched = []
+
+  def fetch(tool_context: ToolContext) -> dict[str, str]:
+    """Fetches data with a credential."""
+    if not tool_context.get_auth_response(auth_config):
+      tool_context.request_credential(auth_config)
+      return {"status": "pending_auth"}
+    fetched.append(1)
+    return {"result": "fetched"}
+
+  runner = _abort_runner(
+      LlmAgent(
+          name="fetcher",
+          model=testing_utils.MockModel.create(
+              responses=[
+                  types.Part.from_function_call(name="fetch", args={}),
+                  "Fetched",
+              ]
+          ),
+          tools=[FunctionTool(fetch)],
+      )
+  )
+
+  request_id = await _cancel_run_on_fc(runner, "adk_request_credential")
+  credential = AuthConfig(
+      auth_scheme=auth_config.auth_scheme,
+      credential_key=auth_config.credential_key,
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY, api_key="secret"
+      ),
+  )
+  answer = types.Content(
+      role="user",
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=request_id,
+                  name="adk_request_credential",
+                  response=credential.model_dump(
+                      exclude_none=True, by_alias=True
+                  ),
+              )
+          )
+      ],
+  )
+  async for _ in runner.run_async(
+      user_id=TEST_USER_ID, session_id="s", new_message=answer
+  ):
+    pass
+
+  sess = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  responses = []
+  for e in sess.events:
+    responses.extend(fr.name for fr in e.get_function_responses())
+  assert fetched == [1]
+  assert not _abort_events(sess.events)
+  assert responses == ["adk_request_credential", "fetch"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_task_cancel_leaves_call_to_paused_sub_agent_unsealed():
+  """Task cancel leaves the call to a sub-agent in a long-running call open."""
+
+  def approve() -> None:
+    """Starts an approval."""
+
+  helper = LlmAgent(
+      name="helper",
+      mode="single_turn",
+      model=testing_utils.MockModel.create(
+          responses=[types.Part.from_function_call(name="approve", args={})]
+      ),
+      tools=[LongRunningFunctionTool(approve)],
+  )
+  runner = _abort_runner(
+      LlmAgent(
+          name="root_agent",
+          model=testing_utils.MockModel.create(
+              responses=[
+                  types.Part.from_function_call(
+                      name="helper", args={"request": "approve"}
+                  )
+              ]
+          ),
+          sub_agents=[helper],
+      )
+  )
+
+  await _cancel_run_on_fc(runner, "approve")
+
+  sess = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  calls = []
+  for e in sess.events:
+    calls.extend(fc.name for fc in e.get_function_calls())
+  assert calls == ["helper", "approve"]
+  assert not _abort_events(sess.events)
+  assert not [e for e in sess.events if e.get_function_responses()]
 
 
 @pytest.mark.asyncio

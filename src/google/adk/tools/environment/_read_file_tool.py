@@ -29,6 +29,7 @@ from typing_extensions import override
 from ...environment._base_environment import BaseEnvironment
 from ..base_tool import BaseTool
 from ._constants import MAX_OUTPUT_CHARS
+from ._utils import ensure_initialized
 from ._utils import truncate as _truncate
 
 if TYPE_CHECKING:
@@ -165,13 +166,15 @@ class ReadFileTool(BaseTool):
             'error': f'`{name}` must be an integer if provided.',
         }
 
+    await ensure_initialized(self._environment, tool_context)
+
     try:
       start = max(1, start_line or 1)
       # end_line=0 reads to the end of the file, as before.
       end_line = end_line or None
       max_bytes = self._max_output_chars * 4
       async with contextlib.aclosing(
-          self._environment.read_file_stream(path)
+          self._environment.read_file_stream(path, ctx=tool_context)
       ) as chunks:
         selected_bytes, total = await _read_line_range(
             chunks,

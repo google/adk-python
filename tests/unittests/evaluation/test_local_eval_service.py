@@ -14,11 +14,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
+import contextlib
 import logging
 import re
 import sys
 import textwrap
+import threading
 from typing import Optional
 
 from google.adk import runners
@@ -28,6 +31,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation import local_eval_service
+from google.adk.evaluation import metric_evaluator_registry
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
 from google.adk.evaluation.base_eval_service import InferenceConfig
@@ -67,6 +71,8 @@ from google.adk.models.registry import LLMRegistry
 from google.adk.tools.mcp_tool import mcp_toolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
+from google.adk.utils._client_labels_utils import get_client_labels
 from google.genai import types as genai_types
 from mcp import StdioServerParameters
 import pytest
@@ -730,6 +736,179 @@ async def test_evaluate_success(
   assert isinstance(results[1], EvalCaseResult)
   assert mock_eval_sets_manager.get_eval_case.call_count == 2
   assert mock_eval_set_results_manager.save_eval_set_result.call_count == 1
+
+
+async def test_evaluate_runs_sync_evaluators_off_event_loop(
+    dummy_agent, mock_eval_sets_manager
+):
+  """Blocking sync evaluators run in worker threads, off the event loop.
+
+  Setup: Two inference results evaluated with parallelism=2 using a synchronous
+    Evaluator that synchronizes across a 2-party threading.Barrier and waits
+    for an asyncio heartbeat task to release it.
+  Act: Consume LocalEvalService.evaluate concurrently with an event-loop
+    heartbeat task.
+  Assert: Both EvalCaseResults pass, which needs both evaluations to run at
+    the same time while the heartbeat keeps running on the event loop.
+  """
+  both_workers_entered = threading.Event()
+  release_workers = threading.Event()
+  barrier = threading.Barrier(2, action=both_workers_entered.set, timeout=2.0)
+
+  class _BlockingSyncEvaluator(Evaluator):
+
+    def __init__(self, eval_metric: EvalMetric):
+      self._eval_metric = eval_metric
+
+    @override
+    def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: list[Invocation] | None = None,
+        conversation_scenario: ConversationScenario | None = None,
+    ) -> EvaluationResult:
+      barrier.wait()
+      if not release_workers.wait(timeout=2.0):
+        raise TimeoutError(
+            "Event loop heartbeat did not run while workers blocked."
+        )
+      return EvaluationResult(
+          overall_score=1.0,
+          overall_eval_status=EvalStatus.PASSED,
+          per_invocation_results=[
+              PerInvocationResult(
+                  actual_invocation=actual,
+                  expected_invocation=expected,
+                  score=1.0,
+                  eval_status=EvalStatus.PASSED,
+              )
+              for actual, expected in zip(
+                  actual_invocations, expected_invocations or []
+              )
+          ],
+      )
+
+  registry = metric_evaluator_registry.MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=MetricInfo(
+          metric_name="blocking_sync_metric",
+          description="Blocking synchronous test metric.",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      ),
+      evaluator=_BlockingSyncEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="world")]
+      ),
+  )
+  mock_eval_sets_manager.get_eval_case.side_effect = lambda **kwargs: EvalCase(
+      eval_id=kwargs["eval_case_id"],
+      conversation=[invocation.model_copy(deep=True)],
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id=f"case_{idx}",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id=f"session_{idx}",
+          )
+          for idx in range(2)
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[
+              EvalMetric(metric_name="blocking_sync_metric", threshold=0.5)
+          ],
+          parallelism=2,
+      ),
+  )
+
+  async def _heartbeat() -> None:
+    while not both_workers_entered.is_set():
+      await asyncio.sleep(0.001)
+    release_workers.set()
+
+  heartbeat_task = asyncio.create_task(_heartbeat())
+  try:
+    results = [result async for result in service.evaluate(evaluate_request)]
+  finally:
+    both_workers_entered.set()
+    release_workers.set()
+    heartbeat_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await heartbeat_task
+
+  assert len(results) == 2
+  assert all(
+      result.final_eval_status == EvalStatus.PASSED for result in results
+  )
+
+
+async def test_evaluate_sync_evaluator_sees_eval_client_label(
+    dummy_agent, mock_eval_sets_manager
+):
+  """A sync evaluator on a worker thread sees the eval client label."""
+  labels_seen: list[bool] = []
+
+  class _LabelRecordingEvaluator(FakeEvaluator):
+
+    @override
+    def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: list[Invocation] | None = None,
+        conversation_scenario: ConversationScenario | None = None,
+    ) -> EvaluationResult:
+      labels_seen.append(EVAL_CLIENT_LABEL in get_client_labels())
+      return super().evaluate_invocations(
+          actual_invocations, expected_invocations, conversation_scenario
+      )
+
+  registry = metric_evaluator_registry.MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=FakeEvaluator.get_metric_info(),
+      evaluator=_LabelRecordingEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case_0", conversation=[invocation.model_copy(deep=True)]
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id="case_0",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id="session_0",
+          )
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)]
+      ),
+  )
+
+  results = [result async for result in service.evaluate(evaluate_request)]
+
+  assert len(results) == 1
+  assert labels_seen == [True]
 
 
 @pytest.mark.asyncio
@@ -1749,6 +1928,97 @@ async def test_batch_with_a_zero_event_turn_scores_every_eval_case(
       == EvalStatus.PASSED
   )
   mock_eval_set_results_manager.save_eval_set_result.assert_called_once()
+
+
+async def _run_eval_case(
+    eval_sets_manager, root_agent: BaseAgent, eval_case: EvalCase
+) -> EvalCaseResult:
+  """Runs inference and then evaluation of `eval_case` for app `test_app`."""
+  eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set", eval_cases=[eval_case]
+  )
+  eval_sets_manager.get_eval_case.return_value = eval_case
+  service = LocalEvalService(
+      root_agent=root_agent, eval_sets_manager=eval_sets_manager
+  )
+  inference_results = [
+      result
+      async for result in service.perform_inference(
+          InferenceRequest(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              inference_config=InferenceConfig(),
+          )
+      )
+  ]
+  [eval_case_result] = [
+      result
+      async for result in service.evaluate(
+          EvaluateRequest(
+              inference_results=inference_results,
+              evaluate_config=EvaluateConfig(eval_metrics=[]),
+          )
+      )
+  ]
+  return eval_case_result
+
+
+@pytest.mark.parametrize(
+    "session_input",
+    [
+        None,
+        SessionInput(app_name="other_app", user_id="test_user"),
+        SessionInput(app_name="test_app", user_id=""),
+    ],
+    ids=[
+        "no_session_input",
+        "session_input_for_another_app",
+        "session_input_with_empty_user_id",
+    ],
+)
+async def test_evaluate_reports_the_session_the_case_ran_in(
+    mock_eval_sets_manager, session_input
+):
+  """The result carries the details of the session the eval case ran in.
+
+  The session is found under the app name and user id it was created with,
+  which can differ from `test_app`, the app name of the eval request.
+  """
+  agent = LlmAgent(
+      name="test_agent", model=MockModel.create(responses=["hello"])
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[Invocation(user_content=_user_content("hi"))],
+      session_input=session_input,
+  )
+
+  result = await _run_eval_case(mock_eval_sets_manager, agent, eval_case)
+
+  assert result.session_details is not None
+  assert result.session_details.id == result.session_id
+
+
+async def test_evaluate_reports_the_session_of_a_failed_inference(
+    mock_eval_sets_manager,
+):
+  """A case whose inference failed carries the session it partly ran in."""
+  agent = LlmAgent(
+      name="test_agent",
+      model=MockModel.create(
+          responses=[], error=RuntimeError("model unavailable")
+      ),
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[Invocation(user_content=_user_content("hi"))],
+  )
+
+  result = await _run_eval_case(mock_eval_sets_manager, agent, eval_case)
+
+  assert result.final_eval_status == EvalStatus.FAILED
+  assert result.session_details is not None
+  assert result.session_details.events[0].content == _user_content("hi")
 
 
 def test_default_user_simulator_provider_is_not_shared_between_services(

@@ -230,6 +230,13 @@ def _parse_sentences(response_text: str) -> list[str]:
   return re.findall(r"<sentence>(.*?)</sentence>", response_text, re.DOTALL)
 
 
+def _normalize_sentence(text: str) -> str:
+  """Normalizes a sentence for comparing the validator's echo with it."""
+  text = re.sub(r"</?sentence>", "", text, flags=re.IGNORECASE)
+  text = text.strip().strip("\"'`\u201c\u201d\u2018\u2019")
+  return " ".join(text.split()).lower()
+
+
 def _parse_validation_results(
     response_text: str,
 ) -> list[dict[str, Optional[str]]]:
@@ -586,7 +593,8 @@ class HallucinationsV1Evaluator(Evaluator):
         logger.debug("No label found for sentence: %s", result)
         continue
 
-      label = label.strip().lower()
+      # The prompt lists labels in backticks, so the validator may echo them.
+      label = label.strip().strip("`").strip().lower()
       if label in _POSITIVE_LABELS:
         scores.append(1)
       elif label in _NEGATIVE_LABELS:
@@ -594,7 +602,47 @@ class HallucinationsV1Evaluator(Evaluator):
       else:
         logger.debug("Unexpected label: %s", label)
 
-    accuracy_score = statistics.mean(scores) if scores else None
+    # A sentence without a usable label would drop out of the mean and inflate
+    # the score, so a partial parse leaves the response unscored. Blocks are
+    # matched to sentences by echoed text so a repeat cannot stand in for one.
+    num_sentences = len(sentences)
+    mismatch_index = next(
+        (
+            i
+            for i, (result, sentence) in enumerate(
+                zip(validation_results, sentences)
+            )
+            if _normalize_sentence(result["sentence"] or "")
+            != _normalize_sentence(sentence)
+        ),
+        None,
+    )
+    if len(validation_results) != num_sentences:
+      logger.warning(
+          "Sentence validator returned %d blocks for %d sentences; this"
+          " response will not be scored.",
+          len(validation_results),
+          num_sentences,
+      )
+      return None, json.dumps(validation_results, indent=2)
+    if mismatch_index is not None:
+      logger.warning(
+          "Sentence validator block %d does not echo sentence %d; this"
+          " response will not be scored.",
+          mismatch_index,
+          mismatch_index,
+      )
+      return None, json.dumps(validation_results, indent=2)
+    if len(scores) != num_sentences:
+      logger.warning(
+          "Sentence validator returned %d usable labels for %d sentences; this"
+          " response will not be scored.",
+          len(scores),
+          num_sentences,
+      )
+      return None, json.dumps(validation_results, indent=2)
+
+    accuracy_score = statistics.mean(scores)
     return accuracy_score, json.dumps(validation_results, indent=2)
 
   def _get_steps_to_evaluate(self, actual: Invocation) -> list[EvaluationStep]:
@@ -735,17 +783,24 @@ class HallucinationsV1Evaluator(Evaluator):
       actual: Invocation,
       expected: Invocation | None,
       semaphore: asyncio.Semaphore,
-  ) -> PerInvocationResult:
-    """Evaluates all natural language steps within a single invocation."""
+  ) -> tuple[PerInvocationResult, float | None]:
+    """Evaluates all natural language steps within a single invocation.
+
+    Returns the result and, when a step is unscored, the invocation's mean with
+    each unscored step counted as 1.0.
+    """
     step_evaluations = self._get_steps_to_evaluate(actual)
 
     if not step_evaluations:
-      return PerInvocationResult(
-          actual_invocation=actual,
-          expected_invocation=expected,
-          score=None,
-          eval_status=EvalStatus.NOT_EVALUATED,
-          rubric_scores=[],
+      return (
+          PerInvocationResult(
+              actual_invocation=actual,
+              expected_invocation=expected,
+              score=None,
+              eval_status=EvalStatus.NOT_EVALUATED,
+              rubric_scores=[],
+          ),
+          None,
       )
 
     async def _evaluate_step(step: EvaluationStep) -> tuple[float | None, str]:
@@ -755,22 +810,34 @@ class HallucinationsV1Evaluator(Evaluator):
     step_results = await gather_cancelling_on_error(
         _evaluate_step(step) for step in step_evaluations
     )
+    # An unscored step would drop out of the mean and inflate the score, so
+    # the invocation is scored only when every step is, or when it fails
+    # even with each unscored step counted as 1.0.
     scores_per_step = [
         fs_score for fs_score, _ in step_results if fs_score is not None
     ]
 
-    invocation_score = (
-        statistics.mean(scores_per_step) if scores_per_step else None
+    best_case_score = statistics.mean(
+        scores_per_step + [1.0] * (len(step_evaluations) - len(scores_per_step))
     )
+    invocation_score: float | None = best_case_score
+    unscored_best_case_score: float | None = None
+    if len(scores_per_step) < len(step_evaluations):
+      unscored_best_case_score = best_case_score
+      if best_case_score >= self._criterion.threshold:
+        invocation_score = None
 
-    return PerInvocationResult(
-        actual_invocation=actual,
-        expected_invocation=expected,
-        score=invocation_score,
-        eval_status=get_eval_status(
-            invocation_score, self._criterion.threshold
+    return (
+        PerInvocationResult(
+            actual_invocation=actual,
+            expected_invocation=expected,
+            score=invocation_score,
+            eval_status=get_eval_status(
+                invocation_score, self._criterion.threshold
+            ),
+            rubric_scores=[],
         ),
-        rubric_scores=[],
+        unscored_best_case_score,
     )
 
   @override
@@ -792,7 +859,7 @@ class HallucinationsV1Evaluator(Evaluator):
     )
 
     semaphore = asyncio.Semaphore(self._judge_model_options.parallelism_limit)
-    per_invocation_results = await gather_cancelling_on_error(
+    evaluated = await gather_cancelling_on_error(
         self._evaluate_invocation(
             actual=actual, expected=expected, semaphore=semaphore
         )
@@ -800,7 +867,30 @@ class HallucinationsV1Evaluator(Evaluator):
             actual_invocations, expected_by_invocation, strict=True
         )
     )
+    per_invocation_results = [result for result, _ in evaluated]
 
+    # Likewise for the case: an unscored response leaves it unscored unless it
+    # fails even at best; an invocation with no response to judge does not.
+    if any(unscored is not None for _, unscored in evaluated):
+      best_case_scores = [
+          result.score if unscored is None else unscored
+          for result, unscored in evaluated
+      ]
+      case_best_score = statistics.mean(
+          score for score in best_case_scores if score is not None
+      )
+      overall_score = (
+          case_best_score
+          if case_best_score < self._criterion.threshold
+          else None
+      )
+      return EvaluationResult(
+          overall_score=overall_score,
+          overall_eval_status=get_eval_status(
+              overall_score, self._criterion.threshold
+          ),
+          per_invocation_results=per_invocation_results,
+      )
     if per_invocation_results:
       return self._aggregate_invocation_results(per_invocation_results)
     return EvaluationResult()

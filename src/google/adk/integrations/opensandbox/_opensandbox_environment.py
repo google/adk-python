@@ -40,6 +40,8 @@ if TYPE_CHECKING:
   from opensandbox.models.sandboxes import NetworkPolicy
   from opensandbox.models.sandboxes import SandboxImageSpec
 
+  from ...agents.context import Context
+
 logger = logging.getLogger("google_adk." + __name__)
 
 _DEFAULT_IMAGE = "python:3.11"
@@ -151,7 +153,7 @@ class OpenSandboxEnvironment(BaseEnvironment):
     return Path(_SANDBOX_HOME)
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     if self._sandbox is not None:
       return
 
@@ -192,6 +194,7 @@ class OpenSandboxEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     if timeout is not None and timeout < 0:
       raise ValueError("timeout must be non-negative or None")
@@ -238,7 +241,12 @@ class OpenSandboxEnvironment(BaseEnvironment):
     )
 
   @override
-  async def read_file(self, path: str | os.PathLike[str]) -> bytes:
+  async def read_file(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> bytes:
     from opensandbox.exceptions import SandboxApiException
 
     sandbox = await self._get_sandbox()
@@ -252,7 +260,11 @@ class OpenSandboxEnvironment(BaseEnvironment):
 
   @override
   async def write_file(
-      self, path: str | os.PathLike[str], content: str | bytes
+      self,
+      path: str | os.PathLike[str],
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
   ) -> None:
     from opensandbox.models.filesystem import WriteEntry
 
