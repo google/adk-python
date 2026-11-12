@@ -68,6 +68,7 @@ except ImportError as e:
   ) from e
 
 from . import _openai_common
+from ...models._capabilities import LlmCapabilities
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -1140,6 +1141,24 @@ class OpenAIResponsesLlm(BaseLlm):
   service_tier: str | None = None
   include_response_metadata: bool = True
   extra_request_args: dict[str, Any] = Field(default_factory=dict)
+
+  @property
+  @override
+  def capabilities(self) -> LlmCapabilities:
+    """Declares native ``text.format`` + tools support on the real OpenAI host.
+
+    OpenAI accepts a JSON-schema ``text.format`` alongside function tools in
+    one Responses request. An OpenAI-compatible backend (injected ``client``,
+    custom ``base_url``, Azure, or ``OPENAI_BASE_URL``) may not, so it keeps the
+    ``SetModelResponseTool`` fallback; subclass to opt such a backend in.
+    """
+    return LlmCapabilities(
+        output_schema_and_tools=_openai_common.targets_default_openai_host(
+            client=self.client,
+            base_url=self.base_url,
+            azure_endpoint=getattr(self, 'azure_endpoint', None),
+        )
+    )
 
   @classmethod
   @override
