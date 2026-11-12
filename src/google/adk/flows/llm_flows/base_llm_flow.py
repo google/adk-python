@@ -68,9 +68,6 @@ _handle_after_model_callback = handle_after_model_callback
 _run_and_handle_error = run_and_handle_error
 _resolve_toolset_auth = _toolset_auth.resolve_toolset_auth
 _process_agent_tools = _agent_tools.process_agent_tools
-_mark_live_async_tools_non_blocking = (
-    _agent_tools.mark_live_async_tools_non_blocking
-)
 _finalize_dynamic_instructions = (
     _dynamic_instructions.finalize_dynamic_instructions
 )
@@ -317,8 +314,9 @@ class BaseLlmFlow(ABC):
 
     A node that interrupts mid-call raises `NodeInterruptedError`, which is a
     `BaseException` specifically so intermediate handlers do not swallow it.
-    It is left to propagate: `NodeRunner` catches it and reads the interrupt
-    ids off the context, which `ctx.run_node` populated before raising.
+    It is left to propagate: `NodeRunner` catches it and merges the interrupt
+    ids it carries into the node's context, since a tool's context is not the
+    node's.
     """
     async with Aclosing(
         self._postprocess_handle_function_calls_async(
@@ -381,8 +379,8 @@ class BaseLlmFlow(ABC):
         if run_config.support_cfc:
           # When support_cfc is True, _call_llm_async delegates to run_live,
           # which already performs full live postprocessing (including tool
-          # execution via handle_function_calls_live). Yield the event directly
-          # to prevent duplicate tool execution in _postprocess_async.
+          # execution). Yield the event directly to prevent duplicate tool
+          # execution in _postprocess_async.
           yield cast(Event, llm_response)
           continue
 

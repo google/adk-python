@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events._abort_events import _build_abort_events
 from google.adk.events._node_path_builder import _NodePathBuilder
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
@@ -1180,11 +1181,29 @@ def _multi_invocation_history():
       _prompt("inv-b"),
       _node_ev("wf@1/a@1", "inv-b", output="a2"),
       _node_ev("wf@1/br@1/child@1", "inv-b", interrupt_ids=["fc-10"]),
+      _node_ev("wf@1/aborted@1", "inv-b", interrupt_ids=["fc-abort"]),
       _node_ev("other@1/c@1", "inv-b", output="c"),
       _node_ev("wf@1/a@1", "", output="orphan"),
       _user_reply("fc-a", "inv-a"),
       _node_ev("wf@1/ask@1", "inv-a", output="answered"),
       _user_reply("resp-1", "inv-b", branch="wf@1.child@fc-10"),
+      Event(
+          author="node",
+          invocation_id="inv-b",
+          error_code="INVOCATION_ABORTED",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="adk_request_input",
+                          id="fc-abort",
+                          response={"error": "aborted"},
+                      )
+                  )
+              ],
+          ),
+      ),
       _prompt("inv-c"),
       _user_reply("fc-a", "inv-c"),
       _node_ev("wf@1/a@1/x@1/y@1", "inv-c", output="y"),
@@ -1213,6 +1232,7 @@ def test_growing_a_session_matches_indexing_it_from_scratch():
       "wf@1/a@1/x@1",
       "wf@1/a@1/x@1/y@1",
       "wf@1/ask@1",
+      "wf@1/aborted@1",
       "wf@1/br@1",
       "wf@1/br@1/child@1",
       "other@1",
@@ -1303,3 +1323,294 @@ def test_workflow_scans_read_only_the_current_invocation():
   assert [id(e) for e in scanned] == [id(current)] * 3
   assert recovered["step0@1"].output == "now"
   assert sequence == ["step0@1"]
+
+
+def test_abort_seal_rehydrates_static_and_dynamic_children() -> None:
+  """Pathless abort seals reach child rehydration scans and drop sequence."""
+  partial_out = Event(
+      author="asker",
+      invocation_id="inv-1",
+      output="partial",
+      node_info=NodeInfo(path="wf@1/asker@1", run_id="1"),
+  )
+  interrupt_ev = Event(
+      author="asker",
+      invocation_id="inv-1",
+      node_info=NodeInfo(path="wf@1/asker@1", run_id="1"),
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="adk_request_input",
+                      id="int-1",
+                  )
+              )
+          ]
+      ),
+      long_running_tool_ids={"int-1"},
+  )
+  sibling_ev = Event(
+      author="sibling",
+      invocation_id="inv-1",
+      output="sibling_out",
+      node_info=NodeInfo(path="wf@1/sibling@1", run_id="1"),
+  )
+  peer_ev = Event(
+      author="peer",
+      invocation_id="inv-1",
+      output="peer_out",
+      node_info=NodeInfo(path="wf@1/other_branch@1/peer@1", run_id="1"),
+  )
+  history = [partial_out, interrupt_ev, sibling_ev, peer_ev]
+  seals = _build_abort_events(
+      history,
+      invocation_id="inv-1",
+      root_agent_name="wf",
+      branch=None,
+  )
+  assert len(seals) == 1
+  [abort_seal] = seals
+  assert not abort_seal.node_info.path
+
+  ctx = _workflow_ctx(history + seals)
+  mgr = ReplayManager()
+  recovered, sequence = mgr.scan_workflow_events(ctx)
+
+  assert recovered["asker@1"].interrupt_ids == set()
+  assert recovered["asker@1"].output is None
+  assert recovered["asker@1"].error_code == "INVOCATION_ABORTED"
+  assert recovered["sibling@1"].output == "sibling_out"
+  assert sequence == ["sibling@1"]
+
+  asker_events = mgr.get_events_for_rehydration(ctx, "wf@1/asker@1")
+  assert any(e is abort_seal for e in asker_events)
+  peer_events = mgr.get_events_for_rehydration(
+      ctx, "wf@1/other_branch@1/peer@1"
+  )
+  assert all(e is not abort_seal for e in peer_events)
+
+
+@pytest.mark.parametrize(
+    ("events", "owner_key", "expected_interrupts", "expected_sequence"),
+    [
+        pytest.param(
+            [
+                Event(
+                    author="node_a",
+                    invocation_id="inv-1",
+                    output="partial work",
+                    node_info=NodeInfo(path="wf@1/node_a@1", run_id="1"),
+                ),
+                Event(
+                    author="node_a",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(path="wf@1/node_a@1", run_id="1"),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="int-a",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"int-a"},
+                ),
+                Event(
+                    author="node_a",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(path="wf@1/node_a@1", run_id="1"),
+                    error_code="RuntimeError",
+                    error_message="boom",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="int-a",
+                                    name="adk_request_input",
+                                    response={"error": "boom"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+                Event(
+                    author="sibling",
+                    invocation_id="inv-1",
+                    output="sibling_out",
+                    node_info=NodeInfo(path="wf@1/sibling@1", run_id="1"),
+                ),
+            ],
+            "node_a@1",
+            set(),
+            ["sibling@1"],
+            id="direct_seal_after_partial_output",
+        ),
+        pytest.param(
+            [
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-0",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-0"},
+                ),
+                Event(
+                    author="ask_1",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_1@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-1",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-1"},
+                ),
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    error_code="RuntimeError",
+                    error_message="sub_0 crashed",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="sub-0",
+                                    name="adk_request_input",
+                                    response={"error": "sub_0 crashed"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+            ],
+            "worker@1",
+            {"sub-1"},
+            ["worker@1"],
+            id="nested_sub_branch_partial_seal",
+        ),
+        pytest.param(
+            [
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-0",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-0"},
+                ),
+                Event(
+                    author="ask_1",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_1@1", run_id="1"
+                    ),
+                    content=types.Content(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="adk_request_input",
+                                    id="sub-1",
+                                )
+                            )
+                        ]
+                    ),
+                    long_running_tool_ids={"sub-1"},
+                ),
+                Event(
+                    author="ask_0",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_0@1", run_id="1"
+                    ),
+                    error_code="RuntimeError",
+                    error_message="sub_0 crashed",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="sub-0",
+                                    name="adk_request_input",
+                                    response={"error": "sub_0 crashed"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+                Event(
+                    author="ask_1",
+                    invocation_id="inv-1",
+                    node_info=NodeInfo(
+                        path="wf@1/worker@1/sub_1@1", run_id="1"
+                    ),
+                    error_code="RuntimeError",
+                    error_message="sub_1 crashed",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id="sub-1",
+                                    name="adk_request_input",
+                                    response={"error": "sub_1 crashed"},
+                                )
+                            )
+                        ],
+                    ),
+                ),
+            ],
+            "worker@1",
+            set(),
+            [],
+            id="nested_sub_branch_all_sealed",
+        ),
+    ],
+)
+def test_error_function_response_seal_updates_sequence(
+    events: list[Event],
+    owner_key: str,
+    expected_interrupts: set[str],
+    expected_sequence: list[str],
+) -> None:
+  """Path-scoped error seals drop segments once all pauses close."""
+  ctx = _workflow_ctx(events)
+  mgr = ReplayManager()
+  recovered, sequence = mgr.scan_workflow_events(ctx)
+
+  assert recovered[owner_key].interrupt_ids == expected_interrupts
+  assert sequence == expected_sequence

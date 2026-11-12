@@ -41,6 +41,10 @@ DEFAULT_TASK_COMPLETION_DELAY = 1.0
 # streaming tool it cancels.
 _TOOL_SHUTDOWN_TIMEOUT_SECONDS = 1.0
 
+# How long a live run that ends normally waits for its running non-streaming
+# tool calls to finish before it stops them.
+_TOOL_FINISH_TIMEOUT_SECONDS = 10.0
+
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 # Statistics configuration
@@ -89,13 +93,46 @@ def run_config_for_new_live_session(run_config: RunConfig) -> RunConfig:
   return copied
 
 
+async def wait_for_tool_calls(
+    invocation_context: InvocationContext,
+) -> None:
+  """Waits for the running non-streaming tool calls to finish.
+
+  Streaming calls run until they are stopped, so they are not waited for. A
+  call still running after ``_TOOL_FINISH_TIMEOUT_SECONDS`` is logged and left
+  for ``stop_background_tool_tasks`` to stop.
+  """
+  running = [
+      active
+      for active in (invocation_context._active_background_tools or {}).values()
+      if not active.is_generator
+      and active.task is not None
+      and not active.task.done()
+  ]
+  if running:
+    await asyncio.wait(
+        [active.task for active in running if active.task is not None],
+        timeout=_TOOL_FINISH_TIMEOUT_SECONDS,
+    )
+    if still_running := [
+        a for a in running if a.task is not None and not a.task.done()
+    ]:
+      logger.warning(
+          'Tool calls still running after %s seconds will be cancelled: %s',
+          _TOOL_FINISH_TIMEOUT_SECONDS,
+          ', '.join(
+              f'{a.tool_name} ({a.function_call_id})' for a in still_running
+          ),
+      )
+
+
 async def stop_background_tool_tasks(
     invocation_context: InvocationContext,
 ) -> None:
   """Cancels the background tool tasks this live run started.
 
-  A live run starts two kinds of tools as bare asyncio tasks, streaming
-  tools and non-blocking tools, and registers both on the invocation context.
+  A live run starts each function call as a bare asyncio task and registers
+  it on the invocation context.
 
   The tools stop when the run that started them ends, whether that is a
   handoff to another agent, ``task_completed``, the connection closing, or

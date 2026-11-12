@@ -21,6 +21,7 @@ from typing import Optional
 
 from typing_extensions import override
 
+from ..utils.content_utils import extract_text_from_content
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvents
@@ -193,11 +194,9 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     for turn_index, invocation in enumerate(actual_invocations):
       # USER TURN
       if invocation.user_content and invocation.user_content.parts:
-        text_parts = [p.text for p in invocation.user_content.parts if p.text]
-        if text_parts:
-          dialogue_lines.append(
-              f"USER TURN {turn_index + 1}: {' '.join(text_parts)}"
-          )
+        text = extract_text_from_content(invocation.user_content, splitter=" ")
+        if text:
+          dialogue_lines.append(f"USER TURN {turn_index + 1}: {text}")
 
       # INTERMEDIATE TOOL EVENTS
       if isinstance(invocation.intermediate_data, InvocationEvents):
@@ -208,11 +207,9 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
               else f"AGENT ({event.author})"
           )
           if event.content and event.content.parts:
-            text_parts = [p.text for p in event.content.parts if p.text]
-            if text_parts:
-              dialogue_lines.append(
-                  f"{role} TURN {turn_index + 1}: {' '.join(text_parts)}"
-              )
+            text = extract_text_from_content(event.content, splitter=" ")
+            if text:
+              dialogue_lines.append(f"{role} TURN {turn_index + 1}: {text}")
             for p in event.content.parts:
               if p.function_call:
                 args = (
@@ -245,11 +242,11 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
         ):
           agent_name = intermediate_data.invocation_events[0].author
         role = f"AGENT ({agent_name})"
-        text_parts = [p.text for p in invocation.final_response.parts if p.text]
-        if text_parts:
-          dialogue_lines.append(
-              f"{role} TURN {turn_index + 1}: {' '.join(text_parts)}"
-          )
+        text = extract_text_from_content(
+            invocation.final_response, splitter=" "
+        )
+        if text:
+          dialogue_lines.append(f"{role} TURN {turn_index + 1}: {text}")
 
     self._formatted_dialogue = "\n".join(dialogue_lines)
 

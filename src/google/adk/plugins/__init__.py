@@ -23,6 +23,8 @@ from .plugin_manager import PluginManager
 if TYPE_CHECKING:
   from ..tools.model_consult._force_escalation_plugin import ForceEscalationPlugin
   from ..tools.model_consult._observability_plugin import ModelConsultObservabilityPlugin
+  from ._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql
+  from ._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql
   from ._callback_helpers import ToolResultClassification
   from ._callback_helpers import ToolResultClassifier
   from ._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
@@ -55,6 +57,8 @@ __all__ = [
     "ToolCallIntegrityPlugin",
     "ToolResultClassification",
     "ToolResultClassifier",
+    "build_eval_session_query_sql",
+    "build_eval_turn_query_sql",
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
@@ -75,6 +79,9 @@ _LAZY_MEMBERS: dict[str, str] = {
     "ToolCallIntegrityPlugin": "_tool_call_integrity_plugin",
     "ToolResultClassification": "_callback_helpers",
     "ToolResultClassifier": "_callback_helpers",
+    # Need only the standard library, unlike BigQueryAgentAnalyticsPlugin.
+    "build_eval_session_query_sql": "_bigquery_agent_analytics_eval_sql",
+    "build_eval_turn_query_sql": "_bigquery_agent_analytics_eval_sql",
 }
 
 

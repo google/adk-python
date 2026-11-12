@@ -461,6 +461,26 @@ class TestMcpToolset:
     assert tools[1].name == "tool3"
 
   @pytest.mark.asyncio
+  async def test_tool_filter_does_not_remove_load_mcp_resource(self):
+    """tool_filter selects server tools only; load_mcp_resource stays."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(
+            [MockMCPTool("read_file"), MockMCPTool("write_file")]
+        )
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        tool_filter=["read_file"],
+        use_mcp_resources=True,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["read_file", "load_mcp_resource"]
+
+  @pytest.mark.asyncio
   async def test_get_tools_with_function_filter(self):
     """Test getting tools with function-based filtering."""
     # Mock tools from MCP server

@@ -37,6 +37,7 @@ from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.auth_credential import _redact_credential_secrets
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
@@ -854,6 +855,218 @@ def test_api_server_get_runner_async_rejects_internal_special_agent_name(
       "Access to internal special agents is disabled in API server mode"
       in exc_info.value.detail
   )
+
+
+_NO_EVAL_SETS_MANAGER = "Eval sets manager is not configured"
+_NO_EVAL_SET_RESULTS_MANAGER = "Eval set results manager is not configured"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "detail"),
+    [
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets",
+            {"eval_set": {"eval_set_id": "s", "eval_cases": []}},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        ("GET", "/dev/apps/test_app/eval-sets", None, _NO_EVAL_SETS_MANAGER),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/add-session",
+            {"eval_id": "e", "session_id": "session", "user_id": "user"},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_sets/s/evals",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "PUT",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            {"eval_id": "e", "conversation": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "DELETE",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/run",
+            {"eval_ids": [], "eval_metrics": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+    ],
+)
+async def test_eval_endpoints_without_eval_managers_return_500(
+    method,
+    path,
+    body,
+    detail,
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+
+  await mock_session_service.create_session(
+      app_name="test_app", user_id="user", session_id="session"
+  )
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.request(method, path, json=body)
+
+  assert response.status_code == 500
+  assert response.json() == {"detail": detail}
+
+
+def test_run_eval_without_eval_set_results_manager_succeeds(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set("test_app", "s")
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=eval_sets_manager,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.post(
+      "/dev/apps/test_app/eval-sets/s/run",
+      json={"eval_ids": [], "eval_metrics": []},
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {"runEvalResults": []}
+
+
+@pytest.fixture
+def workflow_root_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  workflow = Workflow(name="wf", edges=[(START, BaseNode(name="leaf"))])
+
+  class WorkflowLoader(BaseAgentLoader):
+
+    def load_agent(self, agent_name: str) -> Workflow:
+      return workflow
+
+    def list_agents(self) -> list[str]:
+      return ["wf_app"]
+
+  dev_server = DevServer(
+      agent_loader=WorkflowLoader(),
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  return TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+
+def test_app_graph_for_workflow_root_is_empty(workflow_root_client):
+  """A Workflow root gets an empty app graph instead of a 500."""
+  response = workflow_root_client.get("/dev/apps/wf_app/graph")
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
+async def test_event_graph_for_workflow_root_is_empty(
+    workflow_root_client, mock_session_service
+):
+  """A Workflow root gets an empty event graph instead of a 500."""
+  session = await mock_session_service.create_session(
+      app_name="wf_app", user_id="user"
+  )
+  event = Event(author="leaf", invocation_id="invocation_id")
+  await mock_session_service.append_event(session=session, event=event)
+
+  response = workflow_root_client.get(
+      f"/dev/apps/wf_app/users/user/sessions/{session.id}/events/"
+      f"{event.id}/graph"
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {}
 
 
 @pytest.mark.parametrize(
@@ -5369,7 +5582,7 @@ def test_save_artifact_returns_400_on_validation_error(
 def test_save_artifact_returns_500_on_unexpected_error(
     test_app, create_test_session, mock_artifact_service
 ):
-  """Test save artifact endpoint surfaces unexpected errors as HTTP 500."""
+  """Test save artifact endpoint reports unexpected errors as HTTP 500."""
   info = create_test_session
   url = (
       f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
@@ -5382,12 +5595,12 @@ def test_save_artifact_returns_500_on_unexpected_error(
   }
 
   mock_artifact_service.save_artifact_side_effect = RuntimeError(
-      "unexpected failure"
+      "bucket my-bucket object a/b.txt agent@example.iam.gserviceaccount.com"
   )
 
   response = test_app.post(url, json=payload)
   assert response.status_code == 500
-  assert response.json()["detail"] == "unexpected failure"
+  assert response.json()["detail"] == "Failed to save artifact"
 
 
 def test_get_artifact_version_metadata(
@@ -7843,11 +8056,18 @@ def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
 #################################################
 
 
-def test_finalize_agent_identity_credentials_success(test_app):
+@pytest.mark.parametrize(
+    "connector_name",
+    [
+        "projects/p/locations/l/connectors/c",
+        "projects/p/locations/l/authProviders/c",
+    ],
+)
+def test_finalize_agent_identity_credentials_success(test_app, connector_name):
   """Test successful credential finalization and Base64 padding decoding."""
   import base64
 
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   raw_bytes = b"test-validation-state-bytes"
   # Unpadded url-safe base64 string
@@ -7855,12 +8075,12 @@ def test_finalize_agent_identity_credentials_success(test_app):
 
   with (
       patch.object(
-          iamconnectorcredentials_v1alpha,
-          "IAMConnectorCredentialsServiceClient",
+          agentidentitycredentials_v1,
+          "AuthProviderCredentialsServiceClient",
           autospec=True,
       ) as mock_client_cls,
       patch.object(
-          iamconnectorcredentials_v1alpha,
+          agentidentitycredentials_v1,
           "FinalizeCredentialsRequest",
           autospec=True,
       ) as mock_req_cls,
@@ -7871,7 +8091,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     response = test_app.post(
         "/agent-identity/finalize",
         json={
-            "connector_name": "projects/p/locations/l/connectors/c",
+            "connector_name": connector_name,
             "user_id": "user-123",
             "user_id_validation_state": b64_str,
             "consent_nonce": "nonce-456",
@@ -7881,7 +8101,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     assert response.json() == {"status": "ok"}
 
     mock_req_cls.assert_called_once_with(
-        connector="projects/p/locations/l/connectors/c",
+        auth_provider="projects/p/locations/l/authProviders/c",
         user_id="user-123",
         user_id_validation_state=raw_bytes,
         consent_nonce="nonce-456",
@@ -7892,11 +8112,11 @@ def test_finalize_agent_identity_credentials_success(test_app):
 @pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
 def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ):
     response = test_app.post(
@@ -7915,9 +8135,9 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
 
 
 def test_finalize_agent_identity_credentials_missing_dependency(test_app):
-  """Test error handling when google-cloud-iamconnectorcredentials is not installed."""
+  """Test error handling when google-cloud-agentidentitycredentials is not installed."""
   with patch.dict(
-      "sys.modules", {"google.cloud.iamconnectorcredentials_v1alpha": None}
+      "sys.modules", {"google.cloud.agentidentitycredentials_v1": None}
   ):
     response = test_app.post(
         "/agent-identity/finalize",
@@ -7934,11 +8154,11 @@ def test_finalize_agent_identity_credentials_missing_dependency(test_app):
 
 def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
   """Test backend InvalidArgument API error handling (400 response)."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -7961,14 +8181,14 @@ def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
 
 def test_finalize_agent_identity_credentials_api_call_error(test_app):
   """Test backend GoogleAPICallError error handling with status code propagation."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   err = GoogleAPICallError("Permission denied")
   err.code = 403
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
