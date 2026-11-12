@@ -279,25 +279,35 @@ class SessionContext:
 
         self._task.add_done_callback(_retrieve_exception)
 
-    if (
-        is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)  # pylint: disable=protected-access
-        and self._timeout is not None
-    ):
-      # `_ready_event` is a plain asyncio.Event, so bounding this wait only
-      # cancels a bare future waiter and never crosses an AnyIO cancel
-      # scope. The scopes live inside `self._task` and are unwound there,
-      # in the task that entered them -- the same thing `close()` does for
-      # an abandoned start.
-      try:
-        await asyncio.wait_for(self._ready_event.wait(), timeout=self._timeout)
-      except asyncio.TimeoutError as e:
-        self._task.cancel()
-        raise ConnectionError(
-            'Failed to create MCP session: timed out after'
-            f' {self._timeout}s waiting for the session to become ready'
-        ) from e
-    else:
-      await self._ready_event.wait()
+    try:
+      if (
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)  # pylint: disable=protected-access
+          and self._timeout is not None
+      ):
+        # `_ready_event` is a plain asyncio.Event, so bounding this wait only
+        # cancels a bare future waiter and never crosses an AnyIO cancel
+        # scope. The scopes live inside `self._task` and are unwound there,
+        # in the task that entered them -- the same thing `close()` does for
+        # an abandoned start.
+        try:
+          await asyncio.wait_for(
+              self._ready_event.wait(), timeout=self._timeout
+          )
+        except asyncio.TimeoutError as e:
+          self._task.cancel()
+          raise ConnectionError(
+              'Failed to create MCP session: timed out after'
+              f' {self._timeout}s waiting for the session to become ready'
+          ) from e
+      else:
+        await self._ready_event.wait()
+    except asyncio.CancelledError:
+      # The caller gave up on this start, so nothing will call `close()` for
+      # it: an exit stack only registers `__aexit__` once `__aenter__` has
+      # returned. Left running, the connect finishes later and holds the
+      # connection open with no owner, so stop it here.
+      await _cancel_and_drain(self._task)
+      raise
 
     if self._task.cancelled():
       raise ConnectionError('Failed to create MCP session: task cancelled')
