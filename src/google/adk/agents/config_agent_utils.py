@@ -1110,7 +1110,14 @@ def resolve_agent_reference(
     The created agent instance.
   """
   if ref_config.config_path:
-    if os.path.isabs(ref_config.config_path):
+    # `os.path.isabs` is platform-dependent: on Windows a root-relative path
+    # such as `/etc/passwd` has no drive, so it is not "absolute" and would
+    # slip past this guard into the traversal check below, which reports a
+    # different error (or, across drives, an unhandled commonpath error). A
+    # config_path rooted under either platform's spelling is absolute here.
+    if os.path.isabs(
+        ref_config.config_path
+    ) or ref_config.config_path.startswith(("/", "\\")):
       raise ValueError(
           "Absolute paths are not allowed in AgentRefConfig config_path:"
           f" {ref_config.config_path!r}"
