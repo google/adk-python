@@ -153,6 +153,11 @@ Formulate a new plan based on your analysis and try a corrected or different app
       llm_response: LlmResponse,
   ) -> LlmResponse | None:
     """Checks for model errors or reserved tool calls and triggers retry logic."""
+    # A streamed chunk repeats what the final response reports, so only the
+    # final response counts toward the retry limit.
+    if llm_response.partial:
+      return None
+
     if self._has_reserved_tool_call(llm_response):
       return await self._handle_reserved_tool_call(
           callback_context=callback_context, llm_response=llm_response
