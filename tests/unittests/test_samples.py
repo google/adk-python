@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
-import json
 import logging
 import os
 from pathlib import Path
@@ -853,3 +852,44 @@ async def test_playwright_computer_sleeps_asynchronously(
     await highlighted.highlight_mouse(10, 20)
     assert len(page.evaluated) == 1
     assert slept == [0.5, 1]
+
+
+@pytest.mark.parametrize(
+    "sample_rel",
+    [
+        "a2a/a2a_human_in_loop",
+        "a2a/a2a_human_in_loop/remote_a2a/human_in_loop",
+    ],
+)
+async def test_a2a_human_in_loop_reimbursement_confirmation(sample_rel: str):
+  """Verify A2A HITL reimbursement tools require confirmation for >= $100."""
+  from unittest.mock import MagicMock
+  from google.adk.tools.function_tool import FunctionTool
+  from google.adk.tools.tool_context import ToolContext
+
+  root_agent = _load_root_agent(SAMPLES_DIR / sample_rel)
+  reimburse_tool = next(
+      (t for t in root_agent.tools if getattr(t, "name", None) == "reimburse"),
+      None,
+  )
+  assert isinstance(reimburse_tool, FunctionTool)
+  mock_ctx = MagicMock(spec=ToolContext)
+  assert (
+      await reimburse_tool.check_require_confirmation(
+          {"purpose": "lunch", "amount": 50}, mock_ctx
+      )
+      is False
+  )
+  assert (
+      await reimburse_tool.check_require_confirmation(
+          {"purpose": "conference", "amount": 100}, mock_ctx
+      )
+      is True
+  )
+  assert (
+      await reimburse_tool.check_require_confirmation(
+          {"purpose": "travel", "amount": 250}, mock_ctx
+      )
+      is True
+  )
+
