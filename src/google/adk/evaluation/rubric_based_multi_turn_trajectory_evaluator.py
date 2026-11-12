@@ -19,6 +19,7 @@ import logging
 from typing import ClassVar
 from typing import Optional
 
+from pydantic_core import to_jsonable_python
 from typing_extensions import override
 
 from ..utils.content_utils import extract_text_from_content
@@ -213,7 +214,10 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
             for p in event.content.parts:
               if p.function_call:
                 args = (
-                    json.dumps(dict(p.function_call.args))
+                    json.dumps(
+                        to_jsonable_python(p.function_call.args),
+                        ensure_ascii=False,
+                    )
                     if p.function_call.args
                     else "{}"
                 )
@@ -223,7 +227,10 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
                 )
               if p.function_response:
                 resp = (
-                    json.dumps(dict(p.function_response.response))
+                    json.dumps(
+                        to_jsonable_python(p.function_response.response),
+                        ensure_ascii=False,
+                    )
                     if p.function_response.response
                     else "{}"
                 )
