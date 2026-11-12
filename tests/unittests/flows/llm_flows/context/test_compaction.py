@@ -14,6 +14,7 @@
 
 """Tests for request-phase token compaction processor."""
 
+import asyncio
 from unittest.mock import AsyncMock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -353,3 +354,57 @@ async def test_compaction_request_processor_not_marked_when_not_compacted():
   assert not invocation_context.token_compaction_checked
   mock_summarizer.maybe_summarize_events.assert_not_called()
   session_service.append_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['pre_abort', 'inflight'])
+async def test_compaction_request_processor_aborts_cleanly(mode: str):
+  """Skips or cancels compaction when InvocationContext aborts."""
+  started, cancelled = asyncio.Event(), asyncio.Event()
+
+  async def _slow(*, events):
+    del events
+    started.set()
+    try:
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      cancelled.set()
+      raise
+
+  ev = _create_event(
+      timestamp=1.0, invocation_id='i1', text='x' * 400, prompt_token_count=100
+  )
+  svc = AsyncMock(spec=BaseSessionService)
+  summarizer = AsyncMock(spec=LlmEventSummarizer)
+  summarizer.maybe_summarize_events.side_effect = _slow
+  cfg = EventsCompactionConfig(
+      summarizer=summarizer,
+      compaction_interval=1,
+      overlap_size=0,
+      token_threshold=50,
+      event_retention_size=0,
+  )
+  ic = InvocationContext(
+      invocation_id='i2',
+      agent=LlmAgent(name='agent'),
+      session=Session(app_name='a', user_id='u', id='s', events=[ev]),
+      session_service=svc,
+      events_compaction_config=cfg,
+  )
+
+  async def _drain():
+    gen = compaction.CompactionRequestProcessor().run_async(ic, LlmRequest())
+    return [e async for e in gen]
+
+  if mode == 'pre_abort':
+    ic.abort()
+    assert not await _drain()
+    assert not started.is_set()
+  else:
+    task = asyncio.create_task(_drain())
+    await started.wait()
+    ic.abort()
+    assert not await asyncio.wait_for(task, timeout=0.5)
+    assert cancelled.is_set()
+  assert not ic.token_compaction_checked
+  svc.append_event.assert_not_called()

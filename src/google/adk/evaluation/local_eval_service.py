@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -24,7 +25,6 @@ import uuid
 
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -34,7 +34,8 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
-from ..utils.feature_decorator import experimental
+from ..utils._sync_runner import _is_async_callable
+from ..workflow._base_node import BaseNode
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -52,6 +53,7 @@ from .eval_result import EvalCaseResult
 from .eval_set import EvalCase
 from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
+from .evaluation_generator import _get_eval_session_app_name_and_user_id
 from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -85,6 +87,35 @@ def _parallelism_semaphore(parallelism: int) -> asyncio.Semaphore:
   if parallelism < 1:
     raise ValueError(f"`parallelism` must be at least 1, got {parallelism}.")
   return asyncio.Semaphore(value=parallelism)
+
+
+def _without_pinned_session_id(
+    eval_case: EvalCase, *, num_runs: int
+) -> EvalCase:
+  """Returns `eval_case` with any pinned `session_input.session_id` cleared.
+
+  The eval case asked for that session, so clearing it logs a warning.
+
+  Args:
+    eval_case: An eval case that is run more than once.
+    num_runs: How many times the eval case is run, for the warning.
+  """
+  if eval_case.session_input is None or not eval_case.session_input.session_id:
+    return eval_case
+  logger.warning(
+      "Eval case %s pins session %s, but num_runs is %d, so each run starts a"
+      " fresh session and the pinned session is not used.",
+      eval_case.eval_id,
+      eval_case.session_input.session_id,
+      num_runs,
+  )
+  return eval_case.model_copy(
+      update={
+          "session_input": eval_case.session_input.model_copy(
+              update={"session_id": None}
+          )
+      }
+  )
 
 
 def _add_rubrics_to_invocation(
@@ -127,13 +158,12 @@ def _copy_invocation_rubrics_to_actual_invocations(
         )
 
 
-@experimental
 class LocalEvalService(BaseEvalService):
   """An implementation of BaseEvalService, that runs the evals locally."""
 
   def __init__(
       self,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       eval_sets_manager: EvalSetsManager,
       metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
       session_service: Optional[BaseSessionService] = None,
@@ -207,7 +237,9 @@ class LocalEvalService(BaseEvalService):
         inference_request.inference_config.parallelism
     )
 
-    async def run_inference(eval_case: EvalCase) -> InferenceResult:
+    async def run_inference(
+        eval_case: EvalCase, repetition_index: int
+    ) -> InferenceResult:
       async with semaphore:
         return await self._perform_inference_single_eval_item(
             app_name=inference_request.app_name,
@@ -216,9 +248,29 @@ class LocalEvalService(BaseEvalService):
             root_agent=self._root_agent,
             use_live=inference_request.inference_config.use_live,
             live_timeout_seconds=inference_request.inference_config.live_timeout_seconds,
+            repetition_index=repetition_index,
         )
 
-    inference_results = [run_inference(eval_case) for eval_case in eval_cases]
+    # Each eval case is inferenced `num_runs` times. Running the repeats here
+    # (rather than in the caller) lets the parallelism semaphore above cover the
+    # repeated runs as well.
+    num_runs = inference_request.inference_config.num_runs
+    if num_runs > 1:
+      # A pinned session id would make every repeat after the first reuse the
+      # session left behind by an earlier run, skipping `initial_session.state`.
+      # Drop the pin so each repeat starts from a fresh session. Each eval case
+      # is handled once here, so a dropped pin is reported once, not per run.
+      eval_cases = [
+          _without_pinned_session_id(eval_case, num_runs=num_runs)
+          for eval_case in eval_cases
+      ]
+    inference_results = [
+        run_inference(eval_case, repetition_index)
+        for eval_case in eval_cases
+        for repetition_index in range(num_runs)
+    ]
+    # Results are yielded in completion order, so the runs of one eval case can
+    # arrive interleaved with other cases; `repetition_index` tells them apart.
     for inference_result in asyncio.as_completed(inference_results):
       yield await inference_result
 
@@ -305,10 +357,10 @@ class LocalEvalService(BaseEvalService):
     # would be the score for the eval case.
     overall_eval_metric_results: list[EvalMetricResult] = []
 
-    user_id = (
-        eval_case.session_input.user_id
-        if eval_case.session_input and eval_case.session_input.user_id
-        else "test_user_id"
+    # Inference created the session under the eval case's own app name and
+    # user id, which can differ from the app name of the request.
+    session_app_name, user_id = _get_eval_session_app_name_and_user_id(
+        eval_case.session_input
     )
 
     actual_invocations = inference_result.inferences
@@ -319,7 +371,7 @@ class LocalEvalService(BaseEvalService):
       session_details = None
       if inference_result.session_id is not None:
         session_details = await self._session_service.get_session(
-            app_name=inference_result.app_name,
+            app_name=session_app_name,
             user_id=user_id,
             session_id=inference_result.session_id,
         )
@@ -335,6 +387,7 @@ class LocalEvalService(BaseEvalService):
               session_id=inference_result.session_id or "",
               session_details=session_details,
               user_id=user_id,
+              repetition_index=inference_result.repetition_index,
           ),
       )
 
@@ -391,7 +444,7 @@ class LocalEvalService(BaseEvalService):
     session_details = None
     if session_id is not None:
       session_details = await self._session_service.get_session(
-          app_name=inference_result.app_name,
+          app_name=session_app_name,
           user_id=user_id,
           session_id=session_id,
       )
@@ -406,6 +459,7 @@ class LocalEvalService(BaseEvalService):
         session_id=session_id or "",
         session_details=session_details,
         user_id=user_id,
+        repetition_index=inference_result.repetition_index,
     )
 
     return (inference_result, eval_case_result)
@@ -542,11 +596,23 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
-    result = metric_evaluator.evaluate_invocations(
-        actual_invocations=actual_invocations,
-        expected_invocations=expected_invocations,
-        conversation_scenario=conversation_scenario,
-    )
+    result: EvaluationResult | Awaitable[EvaluationResult]
+    if _is_async_callable(metric_evaluator.evaluate_invocations):
+      result = metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
+    else:
+      # Offload synchronous evaluators (such as the Vertex Gen AI Evaluation SDK
+      # facade) to a worker thread so blocking I/O does not stall the event
+      # loop.
+      result = await asyncio.to_thread(
+          metric_evaluator.evaluate_invocations,
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
     if inspect.isawaitable(result):
       return await result
     return result
@@ -582,9 +648,11 @@ class LocalEvalService(BaseEvalService):
       app_name: str,
       eval_set_id: str,
       eval_case: EvalCase,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       use_live: bool,
       live_timeout_seconds: int,
+      *,
+      repetition_index: int = 0,
   ) -> InferenceResult:
     initial_session = eval_case.session_input
     pinned_session_id = initial_session.session_id if initial_session else None
@@ -598,6 +666,7 @@ class LocalEvalService(BaseEvalService):
         eval_set_id=eval_set_id,
         eval_case_id=eval_case.eval_id,
         session_id=session_id,
+        repetition_index=repetition_index,
     )
 
     try:

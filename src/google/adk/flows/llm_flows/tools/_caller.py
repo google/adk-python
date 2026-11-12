@@ -23,18 +23,19 @@ from collections.abc import Awaitable
 import contextvars
 import copy
 import dataclasses
+import enum
 import json
 import logging
 from typing import Any
 from typing import Callable
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from . import _error_handler as _tool_error_handler
+from ....agents._callback_metadata import CallbackType
 from ....events.event import Event
 from ....telemetry import _instrumentation
 from ....tools._confirmation_utils import apply_confirmation_gate
@@ -101,7 +102,7 @@ def _get_tool(
 def _create_tool_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> ToolContext:
   """Creates a ToolContext object."""
   return ToolContext(
@@ -115,7 +116,7 @@ def _get_tool_and_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> tuple[BaseTool, ToolContext]:
   """Returns the tool and tool context corresponding to the function call."""
   tool = _get_tool(function_call, tools_dict)
@@ -130,7 +131,7 @@ def _get_tool_and_context(
 def _try_decode_computer_use_image(
     tool: BaseTool,
     function_result: dict[str, object],
-) -> Optional[list[types.FunctionResponsePart]]:
+) -> list[types.FunctionResponsePart] | None:
   """Decodes the image from the function result for a computer use tool.
 
   Args:
@@ -170,7 +171,7 @@ def _try_decode_computer_use_image(
 
 def _as_function_response_part(
     value: object,
-) -> Optional[types.FunctionResponsePart]:
+) -> types.FunctionResponsePart | None:
   """Converts a tool-returned part into a function response part.
 
   Returns None when the value is not a part carrying usable media.
@@ -223,7 +224,7 @@ def _extract_media_from_entry(
 def _extract_multimodal_parts(
     function_result: object,
     depth: int = 0,
-) -> tuple[object, Optional[list[types.FunctionResponsePart]]]:
+) -> tuple[object, list[types.FunctionResponsePart] | None]:
   """Moves media in a tool result into function response parts.
 
   A tool result is otherwise required to be JSON-serializable, which leaves no
@@ -265,11 +266,27 @@ def _extract_multimodal_parts(
   return remaining or {}, parts
 
 
+def _unwrap_enums(value: object) -> object:
+  """Returns a copy with Enum members in dicts, lists and tuples as values."""
+  if isinstance(value, enum.Enum):
+    return value.value
+  if isinstance(value, dict):
+    return {
+        (k.value if isinstance(k, enum.Enum) else k): _unwrap_enums(v)
+        for k, v in value.items()
+    }
+  if isinstance(value, list):
+    return [_unwrap_enums(item) for item in value]
+  if isinstance(value, tuple):
+    return tuple(_unwrap_enums(item) for item in value)
+  return value
+
+
 def _build_function_response_content(
     tool: BaseTool,
     function_result: object,
-    function_call_id: Optional[str],
-    function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
+    function_call_id: str | None,
+    function_response_parts: list[types.FunctionResponsePart] | None = None,
 ) -> types.Content:
   """Builds the content carrying a tool result as a FunctionResponse."""
   # A streaming tool that wants a different Live scheduling mode for one
@@ -294,7 +311,7 @@ def _build_function_response_content(
 
   part_function_response = types.Part.from_function_response(
       name=tool.name,
-      response=function_result,
+      response=cast(dict[str, Any], _unwrap_enums(function_result)),
       parts=function_response_parts,
   )
   function_response = part_function_response.function_response
@@ -412,7 +429,7 @@ class _PreparedFunctionCall:
   function_args: dict[str, Any]
   contextvars_snapshot: contextvars.Context
   tools_dict: dict[str, BaseTool] = dataclasses.field(default_factory=dict)
-  tool_lookup_error: Optional[Exception] = None
+  tool_lookup_error: Exception | None = None
 
 
 async def _prepare_single(
@@ -420,7 +437,7 @@ async def _prepare_single(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    tool_confirmation: Optional[ToolConfirmation] = None,
+    tool_confirmation: ToolConfirmation | None = None,
 ) -> _PreparedFunctionCall:
   """Resolves one call to the tool it names and the context it will run in.
 
@@ -470,7 +487,7 @@ async def _execute_single_prepared_call(
     agent: LlmAgent,
     *,
     tool_runner: Callable[[], Awaitable[Any]],
-) -> Optional[Event]:
+) -> Event | None:
   """Runs one prepared function call and builds its response event.
 
   Args:
@@ -487,7 +504,7 @@ async def _execute_single_prepared_call(
   tool_context = prepared_call.tool_context
   function_args = prepared_call.function_args
   function_response: object | None = None
-  detected_error_type: Optional[str] = None
+  detected_error_type: str | None = None
   response_source: _instrumentation.ToolResponseSource | None = None
 
   async def _run_with_trace() -> Event | None:
@@ -519,6 +536,7 @@ async def _execute_single_prepared_call(
           tool=tool,
           args=function_args,
           tool_context=tool_context,
+          callback_type=CallbackType.BEFORE_TOOL,
       )
     if function_response is not None:
       response_source = 'before_tool_callback'
@@ -616,6 +634,7 @@ async def _execute_single_prepared_call(
           args=function_args,
           tool_context=tool_context,
           tool_response=callback_tool_response,
+          callback_type=CallbackType.AFTER_TOOL,
       )
 
     # Step 6: If alternative response exists from after_tool_callback, use it
@@ -671,7 +690,7 @@ async def _execute_single_prepared_call_async(
     invocation_context: InvocationContext,
     prepared_call: _PreparedFunctionCall,
     agent: LlmAgent,
-) -> Optional[Event]:
+) -> Event | None:
   """Runs one prepared function call and builds its response event.
 
   This is steps 1 to 6 of the tool pipeline: run the before-tool callbacks, run

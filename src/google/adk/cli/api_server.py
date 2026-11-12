@@ -107,8 +107,8 @@ from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from ..version import __version__
+from ..workflow._base_node import BaseNode
 from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
@@ -124,6 +124,9 @@ if typing.TYPE_CHECKING:
   from opentelemetry.util.types import AttributeValue
   # watchdog types Observer as a factory, so type checkers see its base class.
   from watchdog.observers.api import BaseObserver as Observer
+
+  from ..evaluation.eval_set_results_manager import EvalSetResultsManager
+  from ..evaluation.eval_sets_manager import EvalSetsManager
 else:
   from watchdog.observers import Observer
 
@@ -411,6 +414,45 @@ def _is_request_origin_allowed(
   return origin == request_origin
 
 
+_request_from_foreign_origin: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("request_from_foreign_origin", default=False)
+)
+
+
+def _is_foreign_origin(
+    scope: Mapping[str, Any], allowed_literal_origins: list[str]
+) -> bool:
+  """Returns True if Origin is neither the request's own nor listed literally."""
+  origin = _get_scope_header(scope, b"origin")
+  if origin is None or origin in allowed_literal_origins:
+    return False
+  # Only the real Host header: a cross-origin fetch may set X-Forwarded-Host.
+  host = _get_scope_header(scope, b"host")
+  scheme = _normalize_origin_scheme(scope.get("scheme", "http"))
+  return origin != f"{scheme}://{host}"
+
+
+def _reject_foreign_origin() -> None:
+  """Refuses a code-writing request a browser sent from a foreign origin.
+
+  ``*`` and ``regex:`` entries in ``allow_origins`` open the API to other
+  sites, but not the mutating ``/dev`` endpoints or the internal agents, which
+  write agent files.
+
+  Raises:
+    HTTPException: 403, if the current request is from a foreign origin.
+  """
+  if _request_from_foreign_origin.get():
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "This endpoint writes agent files or starts runs, so it accepts"
+            " browser requests only from this server's own origin or an"
+            " origin listed literally in allow_origins."
+        ),
+    )
+
+
 async def _send_forbidden(send: Any, reason: str) -> None:
   """Sends a plain-text 403 over the ASGI send channel."""
   response_body = f"Forbidden: {reason}".encode()
@@ -471,6 +513,33 @@ def _with_abort_signal_kwarg(
   return kwargs
 
 
+async def _monitor_client_disconnect(
+    request: Request,
+    session_id: str,
+    abort_signal: asyncio.Event,
+    task_to_cancel: asyncio.Task[Any],
+    on_disconnect: Optional[Callable[[], None]] = None,
+) -> None:
+  """Monitors the ASGI receive channel and aborts on client disconnect."""
+  try:
+    while True:
+      message = await request.receive()
+      if message.get("type") == "http.disconnect":
+        logger.warning(
+            "Client disconnected. Aborting agent run for session %s.",
+            session_id,
+        )
+        abort_signal.set()
+        if on_disconnect is not None:
+          on_disconnect()
+        task_to_cancel.cancel()
+        break
+  except asyncio.CancelledError:
+    pass
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
+
+
 _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
@@ -515,6 +584,10 @@ class _OriginCheckMiddleware:
       receive: Any,
       send: Any,
   ) -> None:
+    _request_from_foreign_origin.set(
+        ("*" in self._allowed_origins or self._allowed_origin_regex is not None)
+        and _is_foreign_origin(scope, self._allowed_origins)
+    )
     if scope["type"] != "http":
       await self._app(scope, receive, send)
       return
@@ -971,9 +1044,11 @@ class ApiServer:
       credential_service: An instance of BaseCredentialService for managing
         credentials.
       eval_sets_manager: An instance of EvalSetsManager for managing evaluation
-        sets.
+        sets, or None. The dev server's eval set endpoints return a 500 when it
+        is None.
       eval_set_results_manager: An instance of EvalSetResultsManager for
-        managing evaluation set results.
+        managing evaluation set results, or None. The dev server's eval result
+        endpoints return a 500 when it is None.
       agents_dir: Root directory containing subdirs for agents with those
         containing resources (e.g. .env files, eval sets, etc.) for the agents.
       extra_plugins: A list of fully qualified names of extra plugins to load.
@@ -999,8 +1074,8 @@ class ApiServer:
       memory_service: BaseMemoryService,
       artifact_service: BaseArtifactService,
       credential_service: BaseCredentialService,
-      eval_sets_manager: EvalSetsManager,
-      eval_set_results_manager: EvalSetResultsManager,
+      eval_sets_manager: EvalSetsManager | None,
+      eval_set_results_manager: EvalSetResultsManager | None,
       agents_dir: str,
       extra_plugins: Optional[list[str]] = None,
       logo_text: Optional[str] = None,
@@ -1154,6 +1229,8 @@ class ApiServer:
               " loopback address."
           ),
       )
+    if app_name.startswith("__"):
+      _reject_foreign_origin()
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -1249,7 +1326,7 @@ class ApiServer:
     self.runner_dict[app_name] = runner
     return runner
 
-  def _load_agent_or_raise(self, app_name: str) -> BaseAgent | App:
+  def _load_agent_or_raise(self, app_name: str) -> BaseNode | App:
     """Loads an agent, mapping a load failure onto an HTTP status code.
 
     Args:
@@ -1272,12 +1349,11 @@ class ApiServer:
       logger.exception("Failed to load agent %s", app_name)
       raise HTTPException(status_code=500, detail="Failed to load agent") from e
 
-  def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
-    """Extract root agent from either a BaseAgent or App object."""
+  def _get_root_agent(self, agent_or_app: BaseNode | App) -> BaseNode:
+    """Extract the root node from either a BaseNode or App object."""
     if isinstance(agent_or_app, App):
-      # App.root_agent is a BaseNode; every caller here needs an agent, and the
-      # App validator already rejects a missing root.
-      return cast(BaseAgent, agent_or_app.root_agent)
+      # The App validator rejects a missing root.
+      return cast(BaseNode, agent_or_app.root_agent)
     return agent_or_app
 
   def _create_runner(self, agentic_app: App, app_name: str) -> Runner:
@@ -1506,6 +1582,12 @@ class ApiServer:
     app = FastAPI(
         lifespan=cast("Lifespan[FastAPI]", internal_lifespan),
         root_path=root_path,
+        # FastAPI >= 0.142 continues the incoming traceparent in its server
+        # span. On Agent Engine that header is the platform's, mostly
+        # unsampled, so the default sampler would drop every span of the
+        # request; get_propagated_context ignores it there for the same reason.
+        # Older FastAPI keeps this unused in `app.extra`.
+        telemetry={"tracing": not os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")},
     )
 
     has_configured_allowed_origins = bool(allow_origins)
@@ -1674,8 +1756,8 @@ class ApiServer:
         from google.api_core.client_options import ClientOptions
         from google.api_core.exceptions import GoogleAPICallError
         from google.api_core.exceptions import InvalidArgument
-        from google.cloud.iamconnectorcredentials_v1alpha import FinalizeCredentialsRequest
-        from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient
+        from google.cloud.agentidentitycredentials_v1 import AuthProviderCredentialsServiceClient
+        from google.cloud.agentidentitycredentials_v1 import FinalizeCredentialsRequest
       except ImportError as e:
         raise HTTPException(
             status_code=500,
@@ -1686,13 +1768,13 @@ class ApiServer:
         ) from e
 
       # Optional endpoint override (defaults to the prod
-      # iamconnectorcredentials.googleapis.com when unset). Mirrors the retrieve
-      # client so finalize targets the same service instance; developers do not
-      # normally set this.
+      # agentidentitycredentials.googleapis.com when unset). Mirrors the
+      # retrieve client so finalize targets the same service instance;
+      # developers do not normally set this.
       client_options = None
-      if host := os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST"):
+      if host := os.environ.get("AGENT_IDENTITY_CREDENTIALS_TARGET_HOST"):
         client_options = ClientOptions(api_endpoint=host)
-      client = IAMConnectorCredentialsServiceClient(
+      client = AuthProviderCredentialsServiceClient(
           client_options=client_options, transport="rest"
       )
 
@@ -1712,7 +1794,9 @@ class ApiServer:
         ) from e
 
       finalize_request = FinalizeCredentialsRequest(
-          connector=req.connector_name,
+          auth_provider=req.connector_name.replace(
+              "/connectors/", "/authProviders/"
+          ),
           user_id=req.user_id,
           user_id_validation_state=state_bytes,
           consent_nonce=req.consent_nonce,
@@ -1756,7 +1840,6 @@ class ApiServer:
       return self.agent_loader.list_agents()
 
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
-    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
@@ -1768,6 +1851,8 @@ class ApiServer:
                 " loopback address."
             ),
         )
+      if app_name.startswith("__"):
+        _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
@@ -2087,7 +2172,9 @@ class ApiServer:
             exc,
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to save artifact"
+        ) from exc
       artifact_version = await self.artifact_service.get_artifact_version(
           app_name=app_name,
           user_id=user_id,
@@ -2304,25 +2391,11 @@ class ApiServer:
           )
 
       worker_task = asyncio.create_task(worker())
-
-      async def monitor() -> None:
-        try:
-          while True:
-            message = await request.receive()
-            if message.get("type") == "http.disconnect":
-              logger.warning(
-                  "Client disconnected. Aborting agent run for session %s.",
-                  req.session_id,
-              )
-              abort_signal.set()
-              worker_task.cancel()
-              break
-        except asyncio.CancelledError:
-          pass
-        except Exception as e:  # pylint: disable=broad-exception-caught
-          logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
-
-      monitor_task = asyncio.create_task(monitor())
+      monitor_task = asyncio.create_task(
+          _monitor_client_disconnect(
+              request, req.session_id, abort_signal, worker_task
+          )
+      )
 
       try:
         events = await worker_task
@@ -2351,7 +2424,10 @@ class ApiServer:
           )
 
     @app.post("/run_sse")
-    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+    async def run_agent_sse(
+        req: RunAgentRequest,
+        request: Request,
+    ) -> StreamingResponse:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -2456,11 +2532,26 @@ class ApiServer:
             await event_queue.put(None)
 
         producer_task = asyncio.create_task(_produce_events())
+
+        def _on_sse_disconnect() -> None:
+          nonlocal is_closing
+          is_closing = True
+          next_step_event.set()
+
+        monitor_task = asyncio.create_task(
+            _monitor_client_disconnect(
+                request,
+                req.session_id,
+                abort_signal,
+                producer_task,
+                on_disconnect=_on_sse_disconnect,
+            )
+        )
         try:
           try:
             while True:
               event = await event_queue.get()
-              if event is None:
+              if event is None or is_closing:
                 break
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -2480,6 +2571,8 @@ class ApiServer:
                 events_to_stream = [content_event, artifact_event]
 
               for event_to_stream in events_to_stream:
+                if is_closing:
+                  break
                 sse_event = pydantic_core.to_json(
                     _redact_credential_secrets(
                         public_event(event_to_stream).model_dump(
@@ -2504,6 +2597,7 @@ class ApiServer:
             abort_signal.set()
             raise
           finally:
+            monitor_task.cancel()
             with anyio.CancelScope(shield=True):
               if not producer_task.done():
                 producer_task.cancel()
@@ -2658,29 +2752,49 @@ class ApiServer:
                 ).decode("utf-8")
             )
 
-      async def process_messages() -> None:
-        try:
-          while True:
-            data = await websocket.receive_text()
-            # Validate and send the received message to the live queue.
-            live_request_queue.send(LiveRequest.model_validate_json(data))
-        except ValidationError as ve:
-          logger.error("Validation error in process_messages: %s", ve)
+      close_code: int | None = None
+      close_reason = ""
 
-      # Run both tasks concurrently and cancel all if one fails.
+      async def process_messages() -> None:
+        nonlocal close_code, close_reason
+        while True:
+          data = await websocket.receive_text()
+          # Guarded here, not around both tasks, so a ValidationError from the
+          # runner or a tool is not reported as a bad client frame.
+          try:
+            live_request = LiveRequest.model_validate_json(data)
+          except ValidationError as e:
+            # Only pydantic's error identifiers are logged: the rejected
+            # payload and even the field names it invents are end-user content.
+            logger.warning(
+                "Invalid live request: %s",
+                ", ".join(sorted({error["type"] for error in e.errors()})),
+            )
+            close_code = 1007
+            close_reason = "Invalid live request"
+            return
+          live_request_queue.send(live_request)
+
+      # Stop when either side finishes so its sibling cannot remain blocked.
       tasks = [
           asyncio.create_task(forward_events()),
           asyncio.create_task(process_messages()),
       ]
-      done, pending = await asyncio.wait(
-          tasks, return_when=asyncio.FIRST_EXCEPTION
-      )
       try:
-        # This will re-raise any exception from the completed tasks.
-        for task in done:
-          task.result()
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Iterate the task list rather than the `done` set so that the outcome
+        # reported below is stable when both tasks finish in the same pass.
+        for task in tasks:
+          if task in done:
+            # This will re-raise any exception from the completed tasks.
+            task.result()
+        # The stream is over, so close cleanly instead of letting the server
+        # drop the transport, which clients cannot tell from a network failure.
+        if close_code is None:
+          close_code = 1000
       except SessionNotFoundError:
-        await websocket.close(code=1002, reason="Session not found")
+        close_code = 1002
+        close_reason = "Session not found"
       except WebSocketDisconnect:
         # Disconnection could happen when receive or send text via websocket
         logger.info("Client disconnected during live session.")
@@ -2689,10 +2803,14 @@ class ApiServer:
         traceback.print_exc()
         WEBSOCKET_INTERNAL_ERROR_CODE = 1011
         WEBSOCKET_MAX_BYTES_FOR_REASON = 123
-        await websocket.close(
-            code=WEBSOCKET_INTERNAL_ERROR_CODE,
-            reason=str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON],
-        )
+        close_code = WEBSOCKET_INTERNAL_ERROR_CODE
+        close_reason = str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON]
       finally:
-        for task in pending:
+        live_request_queue.close()
+        for task in tasks:
           task.cancel()
+        # cancel() only requests it, so returning now would strand the runner.
+        await asyncio.wait(tasks)
+      # Skipped after a disconnect, when the server may cancel this handler.
+      if close_code is not None:
+        await websocket.close(code=close_code, reason=close_reason)

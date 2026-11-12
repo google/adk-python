@@ -140,6 +140,38 @@ class TestSingleTurnVertexAiEvalFacade:
         vertexai_types.PrebuiltMetric.COHERENCE.name
     ]
 
+  def test_evaluate_invocations_excludes_thought_parts(self, mocker):
+    """Thought parts are not sent to Vertex as part of the response."""
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
+    mock_perform_eval.return_value = vertexai_types.EvaluationResult(
+        summary_metrics=[vertexai_types.AggregatedMetricResult(mean_score=0.9)],
+        eval_case_results=[],
+    )
+    actual_invocation = Invocation(
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="This is a test query.")]
+        ),
+        final_response=genai_types.Content(
+            parts=[
+                genai_types.Part(text="The user wants a test.", thought=True),
+                genai_types.Part(text="This is a test candidate response."),
+            ]
+        ),
+    )
+    evaluator = _SingleTurnVertexAiEvalFacade(
+        threshold=0.8, metric_name=vertexai_types.PrebuiltMetric.COHERENCE
+    )
+
+    evaluator.evaluate_invocations([actual_invocation])
+
+    dataset = mock_perform_eval.call_args.kwargs["dataset"]
+    assert dataset.eval_dataset_df["response"].tolist() == [
+        "This is a test candidate response."
+    ]
+
   @pytest.mark.parametrize(
       "summary_metric_with_no_score",
       [
@@ -596,6 +628,37 @@ class TestMultiTurnVertexAiEvalFacade:
         0, invocation
     )
     assert [e.author for e in conversation_turn.events] == ["user", "agent"]
+
+  def test_map_invocation_turn_keeps_thought_parts(self):
+    """Thought parts are sent to Vertex unchanged, with their thought flag."""
+    intermediate_content = genai_types.Content(
+        parts=[genai_types.Part(text="Look it up.", thought=True)]
+    )
+    final_response = genai_types.Content(
+        parts=[
+            genai_types.Part(text="Say hello back.", thought=True),
+            genai_types.Part(text="hello"),
+        ]
+    )
+    invocation = Invocation(
+        invocation_id="inv1",
+        user_content=genai_types.Content(parts=[genai_types.Part(text="hi")]),
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(author="agent1", content=intermediate_content)
+            ]
+        ),
+        final_response=final_response,
+    )
+
+    conversation_turn = _MultiTurnVertexiAiEvalFacade._map_invocation_turn(
+        0, invocation
+    )
+
+    assert [event.content for event in conversation_turn.events[1:]] == [
+        intermediate_content,
+        final_response,
+    ]
 
   def test_get_turns(self):
     invocations = [

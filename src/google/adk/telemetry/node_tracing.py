@@ -30,6 +30,7 @@ from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.trace import set_span_in_context
 from opentelemetry.trace import Span
 from opentelemetry.trace import Status
@@ -39,7 +40,9 @@ from . import _metrics
 from ..agents.context import Context
 from ..workflow._base_node import BaseNode
 from .context import TelemetryConfig
+from .tracing import _start_as_current_span
 from .tracing import _telemetry_config_from_invocation_context
+from .tracing import resolve_error_type
 from .tracing import tracer
 
 if TYPE_CHECKING:
@@ -199,7 +202,7 @@ def _invoke_node_span(
   Holds the span attached across the yield, so the caller must only await
   inside the block. See `start_as_current_node_span`.
   """
-  with tracer.start_as_current_span(
+  with _start_as_current_span(
       f"invoke_node {node.name}",
       attributes={
           GEN_AI_OPERATION_NAME: "invoke_node",
@@ -323,6 +326,7 @@ def _use_invoke_workflow_span(
           recorded_error = get_recorded_error()
           if recorded_error is not None:
             span.record_exception(recorded_error)
+            span.set_attribute(ERROR_TYPE, resolve_error_type(recorded_error))
             span.set_status(Status(StatusCode.ERROR, str(recorded_error)))
   finally:
     _metrics.record_workflow_invocation_duration(

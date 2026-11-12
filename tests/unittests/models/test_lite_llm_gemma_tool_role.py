@@ -363,6 +363,7 @@ class TestEnsureToolResults:
           ("lm_studio/google/gemma-4-e4b", None, "tool"),
           ("google/gemma-4-e4b", "lm_studio", "tool"),
           ("google/gemma-4-e4b", "openai", "tool"),
+          ("vertex_ai/google/gemma-4-26b-a4b-it-maas", None, "tool"),
       ],
   )
   def test_gemma4_healed_tool_result_role(
@@ -496,6 +497,8 @@ class TestLiteLlmGenerateContent:
           ),
           ("google/gemma-4-e4b", "lm_studio", "tool"),
           ("google/gemma-4-e4b", "openai", "tool"),
+          ("vertex_ai/google/gemma-4-26b-a4b-it-maas", None, "tool"),
+          ("google/gemma-4-26b-a4b-it-maas", "vertex_ai", "tool"),
           ("ollama/gemma4:e2b", None, "tool_responses"),
           ("hosted_vllm/google/gemma-4-26B-A4B", None, "tool_responses"),
       ],

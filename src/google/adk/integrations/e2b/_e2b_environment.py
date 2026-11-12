@@ -16,21 +16,39 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
+import contextlib
 import logging
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+from typing import cast
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
-from ...features import experimental
-from ...features import FeatureName
 
 if TYPE_CHECKING:
   from e2b import AsyncSandbox
+
+  from ...agents.context import Context
+
+
+class _ClosableBytesStream(Protocol):
+
+  def __aiter__(self) -> AsyncIterator[bytes]:
+    ...
+
+  async def __anext__(self) -> bytes:
+    ...
+
+  async def aclose(self) -> object:
+    ...
+
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -39,7 +57,6 @@ _DEFAULT_TIMEOUT = 300
 _SANDBOX_HOME = "/home/user"
 
 
-@experimental(FeatureName.E2B_ENVIRONMENT)
 class E2BEnvironment(BaseEnvironment):
   """A persistent remote workspace backed by an E2B sandbox.
 
@@ -90,7 +107,7 @@ class E2BEnvironment(BaseEnvironment):
     return Path(_SANDBOX_HOME)
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     if self._sandbox is not None:
       return
     self._sandbox = await self._create_sandbox()
@@ -109,6 +126,7 @@ class E2BEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     from e2b import CommandExitException
     from e2b import TimeoutException
@@ -133,7 +151,12 @@ class E2BEnvironment(BaseEnvironment):
     )
 
   @override
-  async def read_file(self, path: str | os.PathLike[str]) -> bytes:
+  async def read_file(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> bytes:
     from e2b import FileNotFoundException
 
     sandbox = await self._ensure_sandbox()
@@ -145,8 +168,35 @@ class E2BEnvironment(BaseEnvironment):
     return bytes(content)
 
   @override
+  async def read_file_stream(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> AsyncGenerator[bytes, None]:
+    from e2b import FileNotFoundException
+
+    sandbox = await self._ensure_sandbox()
+    resolved = self._resolve_path(path)
+    try:
+      # SDK stub types the stream as AsyncIterator, omitting aclose().
+      chunks = cast(
+          _ClosableBytesStream,
+          await sandbox.files.read(resolved, format="stream"),
+      )
+      async with contextlib.aclosing(chunks):
+        async for chunk in chunks:
+          yield bytes(chunk)
+    except FileNotFoundException as e:
+      raise FileNotFoundError(resolved) from e
+
+  @override
   async def write_file(
-      self, path: str | os.PathLike[str], content: str | bytes
+      self,
+      path: str | os.PathLike[str],
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
   ) -> None:
     sandbox = await self._ensure_sandbox()
     resolved = self._resolve_path(path)

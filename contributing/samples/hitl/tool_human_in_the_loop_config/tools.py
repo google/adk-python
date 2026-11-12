@@ -17,8 +17,19 @@ from typing import Any
 from google.adk.tools.tool_context import ToolContext
 
 
-def reimburse(purpose: str, amount: float) -> dict[str, str]:
+def reimburse(
+    purpose: str, amount: float, tool_context: ToolContext
+) -> dict[str, str]:
   """Reimburse the amount of money to the employee."""
+  if amount >= 100:
+    if not tool_context.tool_confirmation:
+      tool_context.request_confirmation(
+          hint=f'Confirm the reimbursement of ${amount} for {purpose}.',
+      )
+      tool_context.actions.skip_summarization = True
+      return {'error': 'This reimbursement needs manager approval.'}
+    if not tool_context.tool_confirmation.confirmed:
+      return {'error': 'The reimbursement was rejected.'}
   return {
       'status': 'ok',
   }

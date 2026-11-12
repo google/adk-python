@@ -87,14 +87,19 @@ Orchestrator
   then hands out the same run ids and replays the children the failed attempt
   completed, at any depth. A retry for the node's own exception keeps the
   counters, so its children run again.
+- A parallel worker (`_ParallelWorker`, or a `Node` with
+  `parallel_worker=True`) is not retried for an item's `DynamicNodeFailError`
+  (`_delegates_item_retry`): the item node already applied the retry policy
+  to that item.
 - A `Workflow` reports a failing child by setting `ctx.error` rather than
   raising, and NodeRunner applies the retry policy to that error as well.
 - When retries are exhausted, the error is recorded on `ctx.error` and
   `ctx.error_node_path` and the Context is returned normally — NodeRunner does
   not re-raise to the orchestrator.
-- `NodeInterruptedError` from a dynamic child is swallowed here: the child's
-  interrupt IDs are already on `ctx`, so the caller just reads
-  `ctx.interrupt_ids`.
+- `NodeInterruptedError` from a dynamic child is swallowed here, and the
+  interrupt IDs it carries are merged into `ctx`. `ctx.run_node()` writes them
+  only onto the context it was called on, which is a separate `ToolContext`
+  when the child runs from a tool, so `ctx` may not have them yet.
 - When `abort_signal` is triggered (`ic.is_aborted` is `True`), active node
   tasks are cancelled without retrying. In `_node_runner_utils`, the outer
   workflow runner loop catches the cancellation, calls
@@ -107,7 +112,8 @@ Orchestrator
 When a child is scheduled with `use_as_output=True`, its output Event also
 counts as the parent's output. NodeRunner sets `ctx._output_delegated`, drops
 the output field from the parent's own event (keeping the event if it still
-carries deltas), stamps `node_info.output_for` with the ancestor paths, and
-publishes non-tool output events on the outermost explicit claiming ancestor's
-branch (leaving tool responses such as `finish_task` paired on the child's
-branch).
+carries content, an error code or message, deltas or a route, and keeping the
+output beside an error code so rehydration does not read the node as failed),
+stamps `node_info.output_for` with the ancestor paths, and publishes non-tool
+output events on the outermost explicit claiming ancestor's branch (leaving
+tool responses such as `finish_task` paired on the child's branch).

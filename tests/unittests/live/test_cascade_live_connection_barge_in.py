@@ -656,3 +656,74 @@ async def test_completed_turn_records_full_spoken_text(monkeypatch):
 
   await connection.close()
   await reader
+
+
+class TaskReadingTts(LiveEgress):
+  """Reads the first chunk from a task of its own, then parks until `cancel`.
+
+  `GeminiTTS` reads `text` from a separate task, so the turn closes the text
+  stream from a different task than the one that last advanced it. `FakeTts`
+  reads in the turn's own task and cannot show that.
+  """
+
+  PREFIX = b'<tts>'
+
+  def __init__(self) -> None:
+    self.synthesized: list[str] = []
+    self.speaking = asyncio.Event()
+
+  async def __call__(
+      self, text: AsyncIterator[str], *, cancel: asyncio.Event
+  ) -> AsyncGenerator[AudioChunk | AgentSpokenOutput, None]:
+    async def read_first() -> str:
+      return await anext(text)
+
+    chunk = await asyncio.create_task(read_first())
+    self.synthesized.append(chunk)
+    yield AudioChunk(
+        blob=types.Blob(data=self.PREFIX + chunk.encode(), mime_type=_MIME_TYPE)
+    )
+    yield AgentSpokenOutput(text=chunk)
+    self.speaking.set()
+    await cancel.wait()
+
+
+@pytest.mark.asyncio
+async def test_barge_in_cancels_turn_when_tts_reads_text_in_its_own_task(
+    monkeypatch, caplog
+):
+  """Barge-in cancels a labeled turn whose text another task was reading.
+
+  The reasoning request carries the CascadeLive label. Closing the text stream
+  from the turn's task must not fail the turn, as it would if the label were
+  tied to the task that started the stream.
+  """
+  clock = _FakeClock(0.0)
+  monkeypatch.setattr(_cascade_live_connection, '_now', clock)
+  monkeypatch.setattr(
+      _cascade_live_connection,
+      '_sends_google_tracking_headers',
+      lambda llm: True,
+  )
+
+  stt, tts = BargingStt(), TaskReadingTts()
+  reasoner = ScriptedReasoner(turns=[_fragments('Hello ', 'Hello world.')])
+  connection = await _open(reasoner, stt, tts)
+  received, reader = _collect(connection)
+
+  await connection.send_realtime(_blob(_UTTERANCE))
+  await asyncio.wait_for(tts.speaking.wait(), timeout=5.0)
+  turn = connection._turn
+  assert turn is not None
+
+  clock.value = 1.0
+  await connection.send_realtime(_blob(BargingStt.BARGE))
+
+  await _wait_until(lambda: any(r.interrupted for r in received))
+  await asyncio.wait([turn], timeout=5.0)
+  assert turn.cancelled()
+  assert 'Cascade reasoning turn failed.' not in caplog.text
+  assert tts.synthesized == ['Hello ']
+
+  await connection.close()
+  await reader

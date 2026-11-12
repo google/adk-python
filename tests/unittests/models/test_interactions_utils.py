@@ -23,13 +23,21 @@ from datetime import timezone
 import json
 import logging
 import typing
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from google.adk.agents._streaming_mode import StreamingMode
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.models import interactions_utils
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import InMemoryRunner
+from google.genai import Client
 from google.genai import interactions
 from google.genai import types
+from google.genai import version as genai_version
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionResultStep
@@ -37,6 +45,7 @@ from google.genai.interactions import ImageContent
 from google.genai.interactions import Interaction
 from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
+from google.genai.interactions import InteractionSSEEvent
 from google.genai.interactions import InteractionSseEventInteraction
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import StepDelta
@@ -374,6 +383,191 @@ class TestConvertPartToInteractionContent:
         'condition': 'sunny',
     }
 
+  @pytest.mark.parametrize(
+      ('mime_type', 'content_type'),
+      [
+          ('image/png', 'image'),
+          ('audio/wav', 'audio'),
+          ('video/mp4', 'video'),
+          ('application/pdf', 'document'),
+      ],
+  )
+  def test_function_response_with_media(
+      self, monkeypatch, mime_type, content_type
+  ):
+    """Media a tool attached to its response is sent after its JSON."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'media-bytes', mime_type=mime_type
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': content_type,
+                'data': base64.b64encode(b'media-bytes').decode(),
+                'mime_type': mime_type,
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_with_media_uri(self, monkeypatch):
+    """Media a tool returned as a uri is sent by uri."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='fetch_report',
+            response={'pages': 2},
+            parts=[
+                types.FunctionResponsePart.from_uri(
+                    file_uri='gs://bucket/report.pdf',
+                    mime_type='application/pdf',
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='fetch_report',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"pages": 2}'},
+            {
+                'type': 'document',
+                'uri': 'gs://bucket/report.pdf',
+                'mime_type': 'application/pdf',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_drops_only_the_media_the_client_cannot_send(
+      self, monkeypatch
+  ):
+    """Media the client can send still goes out after a part it cannot."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                ),
+                types.FunctionResponsePart.from_bytes(
+                    data=b'png-bytes', mime_type='image/png'
+                ),
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': 'image',
+                'data': base64.b64encode(b'png-bytes').decode(),
+                'mime_type': 'image/png',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_media_the_client_cannot_send_is_dropped(
+      self, monkeypatch, caplog
+  ):
+    """Media the client cannot send is dropped, warned about once."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='record_audio',
+            response={'duration': 3},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                )
+            ],
+        )
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils._convert_part_to_interaction_content(part)
+      # History is reconverted every turn; the drop is reported only once.
+      interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='record_audio',
+        call_id='call_123',
+        result={'duration': 3},
+        is_error=False,
+    )
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert warnings == [
+        'Dropping tool result media of type audio/wav, which the installed'
+        ' google-genai cannot send in a function result; google-genai 2.33'
+        ' and later can.'
+    ]
+
+  def test_function_response_media_types_follow_the_client_release(self):
+    """google-genai 2.33 added audio, video and document to image."""
+    release = tuple(int(n) for n in genai_version.__version__.split('.')[:2])
+    expected = (
+        {'image', 'audio', 'video', 'document'}
+        if release >= (2, 33)
+        else {'image'}
+    )
+    assert interactions_utils._FUNCTION_RESULT_MEDIA_TYPES == expected
+
   def test_function_response_simple(self):
     """Test converting a function response Part with simple response."""
     part = types.Part(
@@ -406,6 +600,43 @@ class TestConvertPartToInteractionContent:
         result={'error': 'something went wrong'},
         is_error=True,
     )
+
+  @pytest.mark.parametrize('error_key', ['isError', 'is_error'])
+  def test_function_response_failed_mcp_result_is_error(self, error_key):
+    """A failed MCP CallToolResult reports the error with isError/is_error."""
+    mcp_result = {
+        'content': [{'type': 'text', 'text': 'Permission denied: /etc/shadow'}],
+        error_key: True,
+    }
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            name='read_file', id='call_123', response=mcp_result
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result['is_error'] is True
+    assert result['result'] == mcp_result
+
+  @pytest.mark.parametrize('error_key', ['isError', 'is_error'])
+  def test_function_response_successful_mcp_result_is_not_error(
+      self, error_key
+  ):
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            name='read_file',
+            id='call_123',
+            response={
+                'content': [{'type': 'text', 'text': 'ok'}],
+                error_key: False,
+            },
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result['is_error'] is False
 
   def test_function_response_dict_not_double_serialized(self):
     """Regression test: avoid double-serializing bash tool outputs.
@@ -1343,7 +1574,7 @@ class TestConvertInteractionToLlmResponse:
     assert result.usage_metadata.total_token_count == 120
     assert result.model_version == 'gemini-2.5-flash'
 
-  def test_failed_response(self):
+  def test_failed_response(self) -> None:
     """Test converting a failed response."""
     interaction = Interaction(
         id='interaction_123',
@@ -1351,14 +1582,79 @@ class TestConvertInteractionToLlmResponse:
         created=datetime.now(timezone.utc).isoformat(),
         updated=datetime.now(timezone.utc).isoformat(),
         steps=[],
+        errors=[
+            interactions.Error(code='INVALID_REQUEST', message='Bad request')
+        ],
     )
-    interaction.error = MagicMock(code='INVALID_REQUEST', message='Bad request')
 
     result = interactions_utils.convert_interaction_to_llm_response(interaction)
 
     assert result.interaction_id == 'interaction_123'
     assert result.error_code == 'INVALID_REQUEST'
     assert result.error_message == 'Bad request'
+
+  @pytest.mark.parametrize(
+      ('errors', 'expected_code', 'expected_message'),
+      [
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='RESOURCE_EXHAUSTED',
+                      message='Quota exceeded for model',
+                  ),
+                  interactions.Error(
+                      code='INVALID_ARGUMENT',
+                      message='Retry after quota reset',
+                  ),
+              ],
+              'RESOURCE_EXHAUSTED',
+              'Quota exceeded for model; Retry after quota reset',
+              id='multiple_errors_uses_first_code_and_joins_messages',
+          ),
+          pytest.param(
+              [
+                  interactions.Error(message='First detail'),
+                  interactions.Error(code='PERMISSION_DENIED'),
+              ],
+              'PERMISSION_DENIED',
+              'First detail',
+              id='partial_error_fields',
+          ),
+          pytest.param(
+              [interactions.Error()],
+              'UNKNOWN_ERROR',
+              'Unknown error',
+              id='empty_error_fields',
+          ),
+          pytest.param(
+              None,
+              'UNKNOWN_ERROR',
+              'Unknown error',
+              id='no_errors',
+          ),
+      ],
+  )
+  def test_failed_response_error_variants(
+      self,
+      errors: list[interactions.Error] | None,
+      expected_code: str,
+      expected_message: str,
+  ) -> None:
+    """Failed interactions surface SDK errors and fall back cleanly."""
+    interaction = Interaction(
+        id='interaction_err',
+        status='failed',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[],
+        errors=errors,
+    )
+
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.interaction_id == 'interaction_err'
+    assert result.error_code == expected_code
+    assert result.error_message == expected_message
 
   def test_requires_action_response(self):
     """Test converting a requires_action response (function call)."""
@@ -1486,6 +1782,21 @@ class TestBuildGenerationConfig:
     result = interactions_utils.build_generation_config(config)
     assert result == {}
 
+  @pytest.mark.parametrize(
+      ('level', 'expected'),
+      [
+          (types.ThinkingLevel.HIGH, {'thinking_level': 'high'}),
+          (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, {}),
+      ],
+  )
+  def test_thinking_level(self, level, expected):
+    """A thinking level is sent in lowercase; an unspecified one is not."""
+    config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_level=level)
+    )
+
+    assert interactions_utils.build_generation_config(config) == expected
+
   def test_every_key_is_a_real_generation_config_field(self):
     """Against the installed client, exactly its declared keys are sent.
 
@@ -1501,13 +1812,19 @@ class TestBuildGenerationConfig:
         presence_penalty=0.5,
         frequency_penalty=0.3,
         seed=7,
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW
+        ),
     )
     result = interactions_utils.build_generation_config(config)
     supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
     sampling = {'temperature', 'top_p', 'top_k'}
-    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'} | (
-        sampling & supported
-    )
+    assert set(result) == {
+        'max_output_tokens',
+        'stop_sequences',
+        'seed',
+        'thinking_level',
+    } | (sampling & supported)
     assert set(result) <= supported
 
   def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
@@ -1911,8 +2228,15 @@ class TestConvertInteractionEventToLlmResponse:
     assert result is None
     assert state.parts == []
 
-  def test_thought_signature_delta_attaches_to_last_thought(self):
-    """thought_signature mutates the last thought part and emits no event."""
+  def test_thought_signature_delta_after_a_summary_gets_its_own_part(
+      self,
+  ) -> None:
+    """The signature follows the summary on a text-free part of its own.
+
+    A part that also carries text is re-encoded as a text step, which has no
+    signature field, so a signature written onto the summary part would be
+    dropped on the next request.
+    """
     state = interactions_utils._StreamState()
     interactions_utils.convert_interaction_event_to_llm_response(
         StepDelta(
@@ -1936,8 +2260,14 @@ class TestConvertInteractionEventToLlmResponse:
         state,
         interaction_id='int_ts',
     )
+
     assert result is None
-    assert state.parts[-1].thought_signature == b'sig-bytes'
+    assert len(state.parts) == 2
+    assert state.parts[0].text == 'reasoning'
+    assert state.parts[0].thought_signature is None
+    assert state.parts[1].thought is True
+    assert state.parts[1].text is None
+    assert state.parts[1].thought_signature == b'sig-bytes'
 
   def test_thought_signature_delta_alone_becomes_its_own_part(self):
     """A signature with no preceding thought summary still reaches the stream.
@@ -2011,6 +2341,67 @@ class TestConvertInteractionEventToLlmResponse:
 
     assert result is None
     assert state.parts == []
+
+  def test_thought_signature_deltas_of_two_thought_steps_are_both_kept(
+      self,
+  ) -> None:
+    """Each thought step keeps its own signature, in step order.
+
+    The non-streaming conversion gives every thought step a part of its own,
+    so a later step's signature must not overwrite an earlier one's.
+    """
+    state = interactions_utils._StreamState()
+    events: list[InteractionSSEEvent] = [
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'first-sig').decode('utf-8'),
+            },
+        ),
+        StepStart(
+            event_type='step.start',
+            index=1,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        StepStop(event_type='step.stop', index=1),
+        StepDelta(
+            event_type='step.delta',
+            index=2,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'second-sig').decode('utf-8'),
+            },
+        ),
+        StepStart(
+            event_type='step.start',
+            index=3,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_2',
+                name='get_time',
+                arguments={},
+            ),
+        ),
+        StepStop(event_type='step.stop', index=3),
+    ]
+    for event in events:
+      interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_ts'
+      )
+
+    assert [part.thought_signature for part in state.parts] == [
+        b'first-sig',
+        None,
+        b'second-sig',
+        None,
+    ]
 
   def test_audio_delta_with_data(self):
     """audio delta becomes an inline_data part via the shared media handler."""
@@ -2931,6 +3322,193 @@ class TestConvertInteractionEventToLlmResponse:
     assert state.parts[0].function_call.args == {'city': 'Paris'}
 
 
+class TestThoughtSignatureRoundTrip:
+  """A tool-calling turn's thought signature reaches the request that follows.
+
+  With thought summaries on, the summary streams ahead of the signature. Kept
+  on the summary part, the signature is lost on the ``previous_interaction_id``
+  path: the summary is echoed back as ``model_output`` text and the signature
+  is dropped. A stateless Gemini 3 request carrying the tool result without
+  the signature is rejected.
+  """
+
+  _SIGNATURE = base64.b64encode(b'sig-bytes').decode('utf-8')
+  _SUMMARY = 'I should check the weather.'
+
+  def _streamed_events(self) -> list[InteractionSSEEvent]:
+    return [
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_summary',
+                'content': {'type': 'text', 'text': self._SUMMARY},
+            },
+        ),
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'thought_signature', 'signature': self._SIGNATURE},
+        ),
+        StepStart(
+            event_type='step.start',
+            index=1,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        StepDelta(
+            event_type='step.delta',
+            index=1,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Tokyo"}'},
+        ),
+        StepStop(event_type='step.stop', index=1),
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_1', status='requires_action', steps=[]
+            ),
+        ),
+    ]
+
+  def _streamed_turn(self) -> types.Content:
+    state = interactions_utils._StreamState()
+    responses = [
+        interactions_utils.convert_interaction_event_to_llm_response(
+            event, state, interaction_id='int_1'
+        )
+        for event in self._streamed_events()
+    ]
+    final_response = responses[-1]
+    assert final_response is not None
+    assert final_response.content is not None
+    return final_response.content
+
+  def _unary_turn(self) -> types.Content:
+    now = datetime.now(timezone.utc).isoformat()
+    interaction = Interaction(
+        id='int_1',
+        created=now,
+        updated=now,
+        status='requires_action',
+        steps=[
+            ThoughtStep(
+                type='thought',
+                signature=self._SIGNATURE,
+                summary=[TextContent(type='text', text=self._SUMMARY)],
+            ),
+            FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={'city': 'Tokyo'},
+            ),
+        ],
+    )
+    response = interactions_utils.convert_interaction_to_llm_response(
+        interaction
+    )
+    assert response.content is not None
+    return response.content
+
+  @pytest.mark.parametrize('streamed', [True, False], ids=['streamed', 'unary'])
+  def test_signature_is_sent_back_with_the_tool_result(
+      self, streamed: bool
+  ) -> None:
+    """The follow-up request echoes the signature and not the summary."""
+    model_turn = self._streamed_turn() if streamed else self._unary_turn()
+    contents = [
+        types.Content(role='user', parts=[types.Part(text='Weather?')]),
+        model_turn,
+        types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id='call_1',
+                        name='get_weather',
+                        response={'weather': 'sunny'},
+                    )
+                )
+            ],
+        ),
+    ]
+
+    steps = interactions_utils._convert_contents_to_steps(
+        interactions_utils._get_latest_user_contents(contents)
+    )
+
+    assert [step['type'] for step in steps] == ['thought', 'function_result']
+    assert steps[0] == {'type': 'thought', 'signature': self._SIGNATURE}
+
+  async def test_runner_sends_the_streamed_signature_back(self) -> None:
+    """An agent streaming over the interactions API echoes the signature."""
+    client = MagicMock(spec=Client)
+    client.vertexai = False
+    client.aio.interactions.create = AsyncMock(
+        side_effect=[
+            _MockAsyncIterator([*self._streamed_events()]),
+            _MockAsyncIterator([
+                StepDelta(
+                    event_type='step.delta',
+                    index=0,
+                    delta={'type': 'text', 'text': 'It is sunny.'},
+                ),
+                InteractionCompletedEvent(
+                    event_type='interaction.completed',
+                    interaction=InteractionSseEventInteraction(
+                        id='int_2', status='completed', steps=[]
+                    ),
+                ),
+            ]),
+        ]
+    )
+
+    def get_weather(city: str) -> dict[str, str]:
+      """Returns the weather in a city."""
+      del city
+      return {'weather': 'sunny'}
+
+    runner = InMemoryRunner(
+        agent=LlmAgent(
+            name='weather_agent',
+            model=Gemini(
+                model='gemini-3-flash-preview',
+                use_interactions_api=True,
+                client=client,
+            ),
+            tools=[get_weather],
+        ),
+        app_name='weather_app',
+    )
+    session = await runner.session_service.create_session(
+        app_name='weather_app', user_id='user'
+    )
+    async for _ in runner.run_async(
+        user_id='user',
+        session_id=session.id,
+        new_message=types.Content(
+            role='user', parts=[types.Part(text='Weather in Tokyo?')]
+        ),
+        run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+    ):
+      pass
+
+    follow_up = client.aio.interactions.create.call_args_list[1].kwargs
+    assert follow_up['previous_interaction_id'] == 'int_1'
+    assert [step['type'] for step in follow_up['input']] == [
+        'thought',
+        'function_result',
+    ]
+    assert follow_up['input'][0] == {
+        'type': 'thought',
+        'signature': self._SIGNATURE,
+    }
+
+
 @pytest.mark.parametrize(
     ('streamed_events_factory', 'expected_ids'),
     [
@@ -3653,6 +4231,47 @@ class TestBuildInteractionsResponseLog:
     log = interactions_utils.build_interactions_response_log(interaction)
 
     assert '  function_call: get_weather({"city": "London"})' in log
+
+  @pytest.mark.parametrize(
+      ('errors', 'expected_error_section'),
+      [
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='RESOURCE_EXHAUSTED',
+                      message='Quota exceeded for model',
+                  )
+              ],
+              'Error:\nRESOURCE_EXHAUSTED: Quota exceeded for model\n',
+              id='single_error',
+          ),
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='INVALID_ARGUMENT', message='Bad field'
+                  ),
+                  interactions.Error(),
+              ],
+              'Error:\nINVALID_ARGUMENT: Bad field\nunknown: unknown\n',
+              id='multiple_and_unset_error_fields',
+          ),
+      ],
+  )
+  def test_failed_interaction_logs_errors(
+      self,
+      errors: list[interactions.Error],
+      expected_error_section: str,
+  ) -> None:
+    """Recorded interaction errors are rendered in the Error log section."""
+    interaction = Interaction(
+        id='interaction_failed',
+        status='failed',
+        errors=errors,
+    )
+
+    log = interactions_utils.build_interactions_response_log(interaction)
+
+    assert expected_error_section in log
 
 
 class TestBuildInteractionsEventLog:

@@ -32,6 +32,10 @@ class _Sample(BaseModel):
   label: str = 'hi'
 
 
+class _BinarySample(BaseModel):
+  raw: bytes = b'\x89PNG\r\n\x1a\n'
+
+
 class TestMakeJsonSerializable:
   """Tests for the `_make_json_serializable` fallback helper."""
 
@@ -48,10 +52,18 @@ class TestMakeJsonSerializable:
 
   def test_nested_rich_types_are_serialized(self):
     dt = datetime.datetime(2024, 5, 6, tzinfo=datetime.timezone.utc)
-    result = _make_json_serializable({'when': dt, 'model': _Sample(), 'n': [1]})
+    result = _make_json_serializable({
+        'when': dt,
+        'model': _Sample(),
+        'binary_model': _BinarySample(),
+        'png': b'\x89PNG\r\n\x1a\n',
+        'n': [1],
+    })
     assert result == {
         'when': '2024-05-06T00:00:00Z',
         'model': {'x': 5, 'label': 'hi'},
+        'binary_model': {'raw': 'iVBORw0KGgo='},
+        'png': 'iVBORw0KGgo=',
         'n': [1],
     }
 
@@ -65,14 +77,39 @@ class TestMakeJsonSerializable:
     assert result['ok'] == 2
     assert isinstance(result['cb'], str)
 
+  def test_bytes_are_base64_encoded(self):
+    result = _make_json_serializable(
+        {'png': b'\x89PNG\r\n\x1a\n', 'cb': lambda: 1}
+    )
+    assert result['png'] == 'iVBORw0KGgo='
+    assert isinstance(result['cb'], str)
+
 
 class TestStateDeltaSerialization:
   """Tests for the `state_delta` wrap serializer."""
 
-  def test_serializable_state_delta_round_trips(self):
-    actions = EventActions(state_delta={'a': 1, 'b': [1, 2], 'c': {'d': 'e'}})
-    dumped = actions.model_dump(mode='json')
-    assert dumped['state_delta'] == {'a': 1, 'b': [1, 2], 'c': {'d': 'e'}}
+  def test_serializable_state_delta_round_trips(self, caplog):
+    actions = EventActions(
+        state_delta={
+            'a': 1,
+            'b': [1, 2],
+            'c': {'d': 'e'},
+            'utf8_bytes': b'hello',
+            'png': b'\x89PNG\r\n\x1a\n',
+            'high_bytes': b'\xfb\xff\xfe',
+        }
+    )
+    with caplog.at_level(logging.WARNING):
+      dumped = actions.model_dump(mode='json')
+    assert dumped['state_delta'] == {
+        'a': 1,
+        'b': [1, 2],
+        'c': {'d': 'e'},
+        'utf8_bytes': 'hello',
+        'png': 'iVBORw0KGgo=',
+        'high_bytes': '+//+',
+    }
+    assert not caplog.records
 
   def test_non_serializable_state_delta_does_not_raise(self):
     actions = EventActions(state_delta={'cb': lambda: 1, 'ok': 2})
@@ -90,12 +127,22 @@ class TestStateDeltaSerialization:
     )
 
   def test_datetime_preserved_when_fallback_triggered(self):
-    # A callable forces the fallback path; the datetime must still serialize
-    # faithfully rather than being discarded.
+    # A callable forces the fallback path; the datetime, nested binary models,
+    # and binary bytes must still serialize faithfully rather than being
+    # discarded or raising.
     dt = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
-    actions = EventActions(state_delta={'when': dt, 'cb': lambda: 1})
+    actions = EventActions(
+        state_delta={
+            'when': dt,
+            'png': b'\x89PNG\r\n\x1a\n',
+            'binary_model': _BinarySample(),
+            'cb': lambda: 1,
+        }
+    )
     dumped = actions.model_dump(mode='json')
     assert dumped['state_delta']['when'] == '2024-01-02T03:04:05Z'
+    assert dumped['state_delta']['png'] == 'iVBORw0KGgo='
+    assert dumped['state_delta']['binary_model'] == {'raw': 'iVBORw0KGgo='}
 
   def test_exclude_is_respected_for_serializable_state(self):
     actions = EventActions(
@@ -105,6 +152,34 @@ class TestStateDeltaSerialization:
         mode='json', exclude={'state_delta': {'_adk_replay_config': True}}
     )
     assert dumped['state_delta'] == {'foo': 1}
+
+  def test_binary_bytes_are_base64_encoded_without_warning(self, caplog):
+    """Non-UTF-8 bytes in state_delta dump as base64 and log nothing."""
+    actions = EventActions(state_delta={'png': b'\x89PNG\r\n\x1a\n'})
+
+    with caplog.at_level(logging.WARNING):
+      dumped = actions.model_dump(mode='json')
+
+    assert dumped['state_delta'] == {'png': 'iVBORw0KGgo='}
+    assert not caplog.records
+
+  def test_utf8_bytes_vs_non_utf8_bytes_serialization(self, caplog):
+    """Valid UTF-8 bytes stay decoded while non-UTF-8 bytes use base64."""
+    utf8_actions = EventActions(state_delta={'text': b'hi'})
+    mixed_actions = EventActions(
+        state_delta={'text': b'hi', 'png': b'\x89PNG\r\n\x1a\n'}
+    )
+
+    with caplog.at_level(logging.WARNING):
+      assert utf8_actions.model_dump(mode='json')['state_delta'] == {
+          'text': 'hi'
+      }
+      assert mixed_actions.model_dump(mode='json')['state_delta'] == {
+          'text': 'hi',
+          'png': 'iVBORw0KGgo=',
+      }
+
+    assert not caplog.records
 
   def test_exclude_is_respected_in_fallback_path(self):
     # Even when sanitization is required (callable present), caller `exclude`
@@ -142,6 +217,16 @@ class TestAgentStateSerialization:
     dumped = actions.model_dump(mode='json')
     assert dumped['agent_state']['n'] == 3
     assert isinstance(dumped['agent_state']['cb'], str)
+
+  def test_binary_bytes_are_base64_encoded_without_warning(self, caplog):
+    """Non-UTF-8 bytes in agent_state dump as base64 and log nothing."""
+    actions = EventActions(agent_state={'png': b'\x89PNG\r\n\x1a\n'})
+
+    with caplog.at_level(logging.WARNING):
+      dumped = actions.model_dump(mode='json')
+
+    assert dumped['agent_state'] == {'png': 'iVBORw0KGgo='}
+    assert not caplog.records
 
   def test_non_serializable_agent_state_logs_warning(self, caplog):
     actions = EventActions(agent_state={'cb': lambda: 1})

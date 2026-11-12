@@ -28,15 +28,11 @@ import collections.abc
 import functools
 import inspect
 import logging
-import sys
 from types import UnionType
 from typing import Any
 from typing import Callable
-from typing import cast
-from typing import ForwardRef
 from typing import get_args
 from typing import get_origin
-from typing import Literal
 from typing import Optional
 from typing import Type
 from typing import Union
@@ -50,8 +46,12 @@ from typing_extensions import Annotated
 
 from ..events.event import Event
 from ..events.request_input import RequestInput
+from ..utils._callable_utils import get_adk_context_localns
 from ..utils._callable_utils import get_callable_doc
+from ..utils._callable_utils import get_callable_globals
 from ..utils._callable_utils import get_type_hints_cached
+from ..utils._callable_utils import is_unresolvable
+from ..utils._callable_utils import resolve_annotation
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -137,102 +137,6 @@ def _collapse_redundant_outer_optional(tp: Any) -> Any:
   return tp
 
 
-def _get_callable_globals(func: Callable[..., Any]) -> dict[str, Any]:
-  """Extracts the globals dictionary from a callable."""
-  while True:
-    if isinstance(func, functools.partial):
-      func = func.func
-    elif hasattr(func, '__wrapped__'):
-      func = inspect.unwrap(func)
-      if isinstance(func, functools.partial):
-        func = func.func
-      else:
-        break
-    else:
-      break
-  if hasattr(func, '__globals__'):
-    return func.__globals__
-  if hasattr(func, '__call__') and hasattr(func.__call__, '__globals__'):
-    return cast(dict[str, Any], func.__call__.__globals__)
-  module_name = getattr(func, '__module__', None)
-  if module_name and module_name in sys.modules:
-    return cast(
-        dict[str, Any], getattr(sys.modules[module_name], '__dict__', {})
-    )
-  return {}
-
-
-def _resolve_annotation(ann: Any, globalns: dict[str, Any]) -> Any:
-  """Resolves string, ForwardRef, and generic type annotations in globalns.
-
-  Paired with `_is_unresolvable`; both functions must cover the same type
-  shapes (Annotated, containers/generics, ForwardRef, str).
-  """
-  while isinstance(ann, str):
-    if globalns:
-      try:
-        resolved = eval(ann, globalns)
-        if resolved == ann:
-          break
-        ann = resolved
-      except Exception:
-        break
-    else:
-      break
-
-  if isinstance(ann, ForwardRef):
-    if globalns:
-      try:
-        resolved = eval(ann.__forward_arg__, globalns)
-        return _resolve_annotation(resolved, globalns)
-      except Exception:
-        return ann
-    return ann
-
-  origin = get_origin(ann)
-  if origin is not None:
-    if origin is Literal:
-      return ann
-    args = get_args(ann)
-    if not args:
-      return ann
-    if origin is Annotated:
-      resolved_inner = _resolve_annotation(args[0], globalns)
-      if resolved_inner is not args[0]:
-        return Annotated[(resolved_inner, *args[1:])]
-      return ann
-    resolved_args = tuple(_resolve_annotation(arg, globalns) for arg in args)
-    if resolved_args != args:
-      try:
-        if _is_union_type(origin):
-          return Union[resolved_args]
-        if len(resolved_args) == 1:
-          return origin[resolved_args[0]]
-        return origin[resolved_args]
-      except Exception:
-        return ann
-  return ann
-
-
-def _is_unresolvable(ann: Any) -> bool:
-  """Returns True if ann contains an unresolvable string or ForwardRef.
-
-  Paired with `_resolve_annotation`; both functions must cover the same type
-  shapes (Annotated, containers/generics, ForwardRef, str).
-  """
-  if isinstance(ann, (str, ForwardRef)):
-    return True
-  origin = get_origin(ann)
-  if origin is not None:
-    if origin is Literal:
-      return False
-    args = get_args(ann)
-    if origin is Annotated:
-      return bool(args and _is_unresolvable(args[0]))
-    return any(_is_unresolvable(arg) for arg in args)
-  return False
-
-
 def _get_function_fields(
     func: Callable[..., Any],
     ignore_params: Optional[list[str]] = None,
@@ -262,7 +166,8 @@ def _get_function_fields(
     # reference at runtime. Fall back to resolving individual annotations below.
     type_hints = {}
 
-  func_globals = _get_callable_globals(func)
+  func_globals = get_callable_globals(func)
+  func_localns = get_adk_context_localns(func)
 
   for name, param in sig.parameters.items():
     if name in ignore_params:
@@ -283,10 +188,10 @@ def _get_function_fields(
     else:
       ann = Any
 
-    if _is_unresolvable(ann):
-      ann = _resolve_annotation(ann, func_globals)
+    if is_unresolvable(ann):
+      ann = resolve_annotation(ann, func_globals, func_localns)
 
-    if _is_unresolvable(ann):
+    if is_unresolvable(ann):
       logger.warning(
           'Parameter %r of %r has unresolvable type annotation %r; dropping'
           ' parameter schema.',
@@ -469,14 +374,20 @@ def _build_response_json_schema(
     type_hints = get_type_hints_cached(func, include_extras=True)
     return_annotation = type_hints.get('return', return_annotation)
   except (TypeError, NameError, AttributeError):
-    func_globals = _get_callable_globals(func)
-    return_annotation = _resolve_annotation(return_annotation, func_globals)
+    func_globals = get_callable_globals(func)
+    func_localns = get_adk_context_localns(func)
+    return_annotation = resolve_annotation(
+        return_annotation, func_globals, func_localns
+    )
 
-  if _is_unresolvable(return_annotation):
-    func_globals = _get_callable_globals(func)
-    return_annotation = _resolve_annotation(return_annotation, func_globals)
+  if is_unresolvable(return_annotation):
+    func_globals = get_callable_globals(func)
+    func_localns = get_adk_context_localns(func)
+    return_annotation = resolve_annotation(
+        return_annotation, func_globals, func_localns
+    )
 
-  if _is_unresolvable(return_annotation):
+  if is_unresolvable(return_annotation):
     return None
 
   return_annotation = _get_generator_output_annotation(return_annotation)

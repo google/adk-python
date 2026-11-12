@@ -345,6 +345,57 @@ def test_cross_turn_no_outcome_static_vs_dynamic_run(
   assert dynamic_result.should_run
 
 
+class _AgentNode(BaseAgent):
+  """A minimal agent, standing in for a task- or chat-mode LlmAgent."""
+
+  async def _run_async_impl(self, ctx):
+    yield  # pragma: no cover
+
+
+@pytest.mark.parametrize('is_static', [True, False])
+def test_cross_turn_no_outcome_wait_for_output_node_like_plain_node(
+    is_static: bool,
+):
+  """Case 6 treats a plain wait_for_output node like any other node.
+
+  Its next trigger starts a new run, so a static run is fast-forwarded rather
+  than rerun with the input it already handled. A dynamic run still reruns.
+  """
+  recovered = _ChildScanState(run_id='1')
+  node = BaseNode(name='node', wait_for_output=True)
+  run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=is_static,
+  )
+
+  result = check_interception(node=node, recovered=recovered, current_run=run)
+
+  assert result.should_run == (not is_static)
+
+
+@pytest.mark.parametrize(
+    'node',
+    [
+        BaseNode(name='node', wait_for_output=True, rerun_on_resume=True),
+        _AgentNode(name='agent', wait_for_output=True),
+    ],
+    ids=['rerun_on_resume', 'agent'],
+)
+def test_cross_turn_no_outcome_waiting_agent_or_rerun_node_reruns(
+    node: BaseNode,
+):
+  """Case 6 reruns a waiting agent or rerun_on_resume node to take new input."""
+  recovered = _ChildScanState(run_id='1')
+  run = DynamicNodeRun(
+      state=NodeState(run_id='1'), recovered_state=recovered, is_static=True
+  )
+
+  result = check_interception(node=node, recovered=recovered, current_run=run)
+
+  assert result.should_run
+
+
 # --- create_mock_context ---
 
 
@@ -476,6 +527,55 @@ def test_cross_turn_tool_node_resolved_interrupts(
   # Then it is fast-forwarded only if it already reran
   assert result.should_run is expected_should_run
   assert result.output is None
+
+
+@pytest.mark.parametrize(
+    (
+        'output',
+        'wait_for_output',
+        'finished_after_resume',
+        'expected_should_run',
+        'expected_output',
+        'expected_resume_inputs',
+    ),
+    [
+        ('done', False, True, False, 'done', None),
+        ('done', True, True, False, 'done', None),
+        (None, False, True, False, None, None),
+        (None, True, True, True, None, {'fc-1': 'ans'}),
+        ('done', False, False, True, None, {'fc-1': 'ans'}),
+    ],
+)
+def test_cross_turn_partial_resume_finished_after_resume(
+    *,
+    output: str | None,
+    wait_for_output: bool,
+    finished_after_resume: bool,
+    expected_should_run: bool,
+    expected_output: str | None,
+    expected_resume_inputs: dict[str, str] | None,
+) -> None:
+  """A partially resumed rerun_on_resume node fast-forwards once finished."""
+  recovered = _ChildScanState(
+      run_id='1',
+      output=output,
+      interrupt_ids={'fc-1', 'fc-2'},
+      resolved_ids={'fc-1'},
+      resolved_responses={'fc-1': 'ans'},
+      finished_after_resume=finished_after_resume,
+  )
+  node = BaseNode(
+      name='dummy',
+      rerun_on_resume=True,
+      wait_for_output=wait_for_output,
+  )
+
+  result = check_interception(node=node, recovered=recovered)
+
+  assert result.should_run is expected_should_run
+  assert result.output == expected_output
+  assert result.resume_inputs == expected_resume_inputs
+  assert result.interrupts == set()
 
 
 def test_cross_turn_function_call_event_still_reruns_node():

@@ -1759,6 +1759,14 @@ def test_analyze_contribution_with_query_statement(
         ),
         ({"top_k_insights": "invalid"}, "top_k_insights must be an integer"),
         ({"pruning_method": "invalid"}, "Invalid pruning_method"),
+        (
+            {"settings": BigQueryToolConfig(write_mode=WriteMode.BLOCKED)},
+            (
+                "analyze_contribution is not allowed in this session. To enable"
+                " analyze_contribution, set write_mode to WriteMode.PROTECTED"
+                " or WriteMode.ALLOWED in BigQueryToolConfig."
+            ),
+        ),
     ],
 )
 def test_analyze_contribution_invalid_inputs(
@@ -2200,6 +2208,14 @@ def test_detect_anomalies_returns_target_data_subquery_validation_error(
         (
             {"anomaly_prob_threshold": None},
             "anomaly_prob_threshold must be a number",
+        ),
+        (
+            {"settings": BigQueryToolConfig(write_mode=WriteMode.BLOCKED)},
+            (
+                "anomaly detection is not allowed in this session. To enable"
+                " anomaly detection, set write_mode to WriteMode.PROTECTED or"
+                " WriteMode.ALLOWED in BigQueryToolConfig."
+            ),
         ),
     ],
 )

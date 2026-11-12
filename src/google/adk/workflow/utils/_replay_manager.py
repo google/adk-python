@@ -20,8 +20,10 @@ import logging
 
 from ...agents.context import Context
 from ...events._branch_path import _BranchPath
+from ...events._interrupts import extract_event_interrupt_ids
 from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
+from ...events._node_path_builder import parent_node_path
 from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ._rehydration_utils import _ChildScanState
@@ -43,6 +45,7 @@ class ReplayManager:
     self._transitive_events_by_parent: dict[str, list[Event]] = {}
     self._fc_to_parent: dict[str, str] = {}
     self._live_events: list[Event] = []
+    self._indexed_invocation_id: str | None = None
     self._indexed_event_count: int = 0
     self._indexed_last_event: Event | None = None
 
@@ -67,11 +70,18 @@ class ReplayManager:
     The index is rebuilt only when the events it describes are no longer a
     prefix of the session -- after a compaction or a rewind -- because the
     existing buckets then hold events the session no longer has.
+
+    Only `ctx`'s invocation is indexed. A ReplayManager belongs to one workflow
+    run, so every query it answers is for that run's invocation; indexing the
+    rest of the session would cost time and memory nothing reads back. An empty
+    invocation id indexes everything.
     """
     ic = ctx._invocation_context
     raw_events = ic.session.events
-    if self._indexed_event_count > 0 and self._indexed_prefix_is_intact(
-        raw_events
+    if (
+        self._indexed_event_count > 0
+        and self._indexed_invocation_id == ic.invocation_id
+        and self._indexed_prefix_is_intact(raw_events)
     ):
       delta = raw_events[self._indexed_event_count :]
       has_new_rewind = any(
@@ -79,15 +89,22 @@ class ReplayManager:
       )
       if not has_new_rewind:
         if delta:
-          self._live_events.extend(delta)
+          self._live_events.extend(e for e in delta if self._in_scope(e))
           self._index_events(delta)
           self._record_indexed_through(raw_events)
         return self._live_events
 
-    self._live_events = _apply_rewinds(raw_events)
-    self._build_event_index(self._live_events)
+    self._indexed_invocation_id = ic.invocation_id
+    self._build_event_index(_apply_rewinds(raw_events))
     self._record_indexed_through(raw_events)
     return self._live_events
+
+  def _in_scope(self, event: Event) -> bool:
+    """Whether `event` belongs to the invocation the index describes."""
+    return (
+        not self._indexed_invocation_id
+        or event.invocation_id == self._indexed_invocation_id
+    )
 
   def _indexed_prefix_is_intact(self, events: list[Event]) -> bool:
     """Whether the already-indexed events are still a prefix of `events`.
@@ -112,15 +129,13 @@ class ReplayManager:
   def _build_event_index(self, events: list[Event]) -> None:
     """Builds index of events grouped by parent path (both direct and transitive).
 
-    The index intentionally spans every invocation in the session so multi-turn
-    conversation context stays visible during rehydration. Consumers that need
-    a single invocation must therefore filter by `invocation_id` themselves,
-    which is why this method takes no invocation id of its own.
+    Only the indexed invocation's events are grouped, so the queries that read
+    these buckets need no filtering of their own.
     """
     self._events_by_parent = {}
     self._transitive_events_by_parent = {}
     self._fc_to_parent = {}
-    self._live_events = list(events)
+    self._live_events = [e for e in events if self._in_scope(e)]
     self._index_events(events)
     self._record_indexed_through(events)
 
@@ -128,36 +143,40 @@ class ReplayManager:
     """Adds `events` to the index, continuing from what is already there.
 
     Interrupt ownership (`_fc_to_parent`) carries across calls: a user response
-    indexed now may answer a function call indexed in an earlier batch.
+    or pathless error seal indexed now may close a function call indexed in an
+    earlier batch. It is tracked for every event rather than only the indexed
+    invocation's, so a reply still routes to an interrupt raised by an earlier
+    invocation.
     """
-    from ...events._interrupts import extract_event_interrupt_ids
-
     for event in events:
       if event.author == "user":
-        self._index_user_event(event, self._fc_to_parent)
+        if self._in_scope(event):
+          self._index_user_event(event, self._fc_to_parent)
         continue
 
-      path = event.node_info.path or ""
+      path = (event.node_info.path if event.node_info else None) or ""
       if not path:
+        if event.error_code is not None and self._in_scope(event):
+          # Routes pathless error seals to the owning interrupt's parent.
+          self._index_event_by_response_ids(event, self._fc_to_parent)
         continue
 
-      path_builder = _NodePathBuilder.from_string(path)
-      parent_path = str(path_builder.parent) if path_builder.parent else ""
+      parent_path = parent_node_path(path)
 
-      self._add_event_to_index(parent_path, event)
+      if self._in_scope(event):
+        self._add_event_to_index(parent_path, event)
 
-      # Track interrupts to route future user responses
+      # Track interrupts to route future user responses and error seals.
       for fid in extract_event_interrupt_ids(event):
         self._fc_to_parent[fid] = parent_path
 
-  def _index_user_event(
+  def _index_event_by_response_ids(
       self, event: Event, fc_to_parent: dict[str, str]
-  ) -> None:
-    """Routes user response events to parent path based on function call IDs."""
-    if not event.content or not event.content.parts:
-      return
-    matched = False
+  ) -> set[str]:
+    """Indexes ``event`` under parents owning its FunctionResponse IDs."""
     added_parents: set[str] = set()
+    if not event.content or not event.content.parts:
+      return added_parents
     for part in event.content.parts:
       fr = part.function_response
       if fr and fr.id and fr.id in fc_to_parent:
@@ -165,7 +184,16 @@ class ReplayManager:
         if parent not in added_parents:
           self._add_event_to_index(parent, event)
           added_parents.add(parent)
-          matched = True
+    return added_parents
+
+  def _index_user_event(
+      self, event: Event, fc_to_parent: dict[str, str]
+  ) -> None:
+    """Routes user response events to parent path based on function call IDs."""
+    if not event.content or not event.content.parts:
+      return
+    added_parents = self._index_event_by_response_ids(event, fc_to_parent)
+    matched = bool(added_parents)
 
     if event.branch:
       # Match the branch's run ids exactly. A substring test on the raw branch
@@ -191,17 +219,16 @@ class ReplayManager:
     Instead of performing an O(N) linear scan over all session events, this
     queries pre-indexed transitive events under the node's parent path. Top-level
     user prompts are merged in to ensure multi-turn conversation context is visible
-    while preserving strict session chronological ordering.
+    while preserving strict session chronological ordering. The index holds only
+    the current invocation's events, so the result is limited to them.
     """
     if not node_path:
       return []
 
     session_events = self._ensure_index(ctx)
-    path_builder = _NodePathBuilder.from_string(node_path)
-    parent_builder = path_builder.parent
-    if not parent_builder or not str(parent_builder):
+    parent_path = parent_node_path(node_path)
+    if not parent_path:
       return session_events
-    parent_path = str(parent_builder)
 
     node_events = self._transitive_events_by_parent.get(parent_path, [])
     if not node_events:
@@ -229,18 +256,22 @@ class ReplayManager:
     event_ids = node_event_ids.union(id(e) for e in user_prompts)
     return [e for e in session_events if id(e) in event_ids]
 
+  def indexed_invocation_events(self, ctx: Context) -> list[Event] | None:
+    """Returns ctx's invocation's live events, or None before any indexing."""
+    if not self._indexed_event_count:
+      return None
+    return self._ensure_index(ctx)
+
   def _add_event_to_index(self, parent_path: str, event: Event) -> None:
     """Indexes an event under its direct parent and all ancestor paths up to root."""
     self._events_by_parent.setdefault(parent_path, []).append(event)
 
     # Propagate event up through all ancestor paths so parent and grandparent nodes
     # can query all sub-tree events in O(1) via _transitive_events_by_parent.
-    curr: _NodePathBuilder | None = (
-        _NodePathBuilder.from_string(parent_path) if parent_path else None
-    )
-    while curr is not None and str(curr):
-      self._transitive_events_by_parent.setdefault(str(curr), []).append(event)
-      curr = curr.parent
+    curr = parent_path
+    while curr:
+      self._transitive_events_by_parent.setdefault(curr, []).append(event)
+      curr = parent_node_path(curr)
 
     self._transitive_events_by_parent.setdefault("", []).append(event)
 
@@ -250,23 +281,62 @@ class ReplayManager:
       ctx: Context,
       base_path: str,
       strict_direct_child: bool = False,
-  ) -> list[str]:
-    """Extract chronological child completion sequence under base_path."""
+  ) -> tuple[list[str], set[str]]:
+    """Extract chronological child completion sequence under base_path.
+
+    Returns the sequence and the keys in it placed by a recorded result rather
+    than an interrupt.
+    """
     base_path_builder = _NodePathBuilder.from_string(base_path)
     sequence: list[str] = []
     completed: set[str] = set()
+    interrupt_owner: dict[str, str] = {}
+    open_interrupts: dict[str, set[str]] = {}
     invocation_id = ctx._invocation_context.invocation_id
 
     for event in events:
-      # The event index spans the whole session so multi-turn context stays
-      # visible during rehydration. The replay sequence, however, must describe
-      # only the current invocation: a terminal event from an earlier completed
-      # invocation would otherwise block the barrier on a node that never runs
-      # during this resume.
+      # An earlier invocation's terminal event would block the barrier on a
+      # node that never runs during this resume.
       if invocation_id and event.invocation_id != invocation_id:
         continue
 
-      event_node_path = event.node_info.path or ""
+      if event.author == "user" and event.content and event.content.parts:
+        for part in event.content.parts:
+          fr = part.function_response
+          if fr and fr.id:
+            owner_seg = interrupt_owner.pop(fr.id, None)
+            if owner_seg is not None:
+              open_interrupts[owner_seg].discard(fr.id)
+            elif event.branch:
+              branch_run_ids = _BranchPath.from_string(event.branch).run_ids
+              for int_id in [
+                  fid for fid in interrupt_owner if fid in branch_run_ids
+              ]:
+                owner_seg = interrupt_owner.pop(int_id)
+                open_interrupts[owner_seg].discard(int_id)
+        continue
+
+      event_node_path = (
+          event.node_info.path if event.node_info else None
+      ) or ""
+      if event.error_code is not None and event.content and event.content.parts:
+        for part in event.content.parts:
+          fr = part.function_response
+          if fr and fr.id:
+            owner_seg = interrupt_owner.pop(fr.id, None)
+            if owner_seg is not None:
+              open_set = open_interrupts.get(owner_seg)
+              if open_set is not None:
+                open_set.discard(fr.id)
+                if not open_set and (
+                    not event_node_path or owner_seg not in completed
+                ):
+                  completed.discard(owner_seg)
+                  if owner_seg in sequence:
+                    sequence.remove(owner_seg)
+      if not event_node_path:
+        continue
+
       event_path_builder = _NodePathBuilder.from_string(event_node_path)
 
       if not event_path_builder.is_descendant_of(base_path_builder):
@@ -278,6 +348,7 @@ class ReplayManager:
 
       # Only direct child events, events with delegated output for the child,
       # or descendant interrupt events represent terminal outcomes for the child itself.
+      is_interrupt = is_interrupt_event(event)
       is_child_event = (
           event_path_builder == child_path
           or bool(
@@ -285,7 +356,7 @@ class ReplayManager:
               and event.node_info.output_for
               and str(child_path) in event.node_info.output_for
           )
-          or is_interrupt_event(event)
+          or is_interrupt
       )
       if not is_child_event:
         continue
@@ -294,14 +365,15 @@ class ReplayManager:
 
       if is_terminal_event(event):
         has_result = _event_has_result(event)
+        if is_interrupt:
+          completed.discard(segment)
+          for fid in extract_event_interrupt_ids(event):
+            interrupt_owner[fid] = segment
+            open_interrupts.setdefault(segment, set()).add(fid)
         # An error with no result means the child did not complete: on resume
         # it runs again rather than being replayed, so it holds no place in
         # the replay order. A later attempt that succeeds places it there.
-        if (
-            event.error_code is not None
-            and not has_result
-            and not is_interrupt_event(event)
-        ):
+        if event.error_code is not None and not has_result and not is_interrupt:
           if segment in sequence and segment not in completed:
             sequence.remove(segment)
           continue
@@ -312,10 +384,10 @@ class ReplayManager:
           sequence.remove(segment)
         sequence.append(segment)
         # Only non-interrupt terminal outcomes mark the child completed.
-        if not is_interrupt_event(event) and has_result:
+        if not is_interrupt and has_result:
           completed.add(segment)
 
-    return sequence
+    return sequence, completed
 
   def scan_workflow_events(
       self, ctx: Context
@@ -326,21 +398,22 @@ class ReplayManager:
     self._ensure_index(ctx)
 
     # Use transitive parent events for static child nodes so deeper descendant events (e.g. delegated outputs/interrupts) are recovered
-    filtered_events = self._transitive_events_by_parent.get(ctx.node_path, [])
+    transitive_events = self._transitive_events_by_parent.get(ctx.node_path, [])
     raw_results = _reconstruct_node_states(
-        events=filtered_events,
+        events=transitive_events,
         base_path=ctx.node_path,
         group_by_direct_child=True,
         invocation_id=ic.invocation_id,
     )
 
     # Use transitive events for sequence (strict_direct_child = False)
-    transitive_events = self._transitive_events_by_parent.get(ctx.node_path, [])
-    sequence = self._scan_sequence(
+    sequence, completed = self._scan_sequence(
         transitive_events, ctx, ctx.node_path, strict_direct_child=False
     )
 
-    self._sequence_barrier = ReplaySequenceBarrier(sequence)
+    self._sequence_barrier = ReplaySequenceBarrier(
+        sequence, pending=frozenset(sequence) - completed
+    )
     self._parent_sequence_barriers[ctx.node_path] = self._sequence_barrier
     return raw_results, sequence
 
@@ -354,16 +427,28 @@ class ReplayManager:
       # Dynamic parent path uses strict_direct_child=True.
       # So we use the direct parent index.
       events = self._events_by_parent.get(parent_path, [])
-      seq = self._scan_sequence(
+      seq, completed = self._scan_sequence(
           events, ctx, parent_path, strict_direct_child=True
       )
-      self._parent_sequence_barriers[parent_path] = ReplaySequenceBarrier(seq)
+      self._parent_sequence_barriers[parent_path] = ReplaySequenceBarrier(
+          seq, pending=frozenset(seq) - completed
+      )
     return self._parent_sequence_barriers[parent_path]
 
   async def advance_sequence(self, parent_path: str, key: str) -> None:
     """Advance sequence barrier if initialized for parent_path."""
     if parent_path in self._parent_sequence_barriers:
       self._parent_sequence_barriers[parent_path].check_and_advance(key)
+
+  async def release_pending_sequence(self, parent_path: str, key: str) -> None:
+    """Advance past `key` if its place came from an interrupt, not a result.
+
+    A rerun produces its result live, so a place its interrupt took must not
+    hold back replayed siblings recorded after that interrupt.
+    """
+    barrier = self._parent_sequence_barriers.get(parent_path)
+    if barrier is not None and key in barrier.pending:
+      barrier.check_and_advance(key)
 
   async def wait_sequence(self, parent_path: str, key: str) -> None:
     """Wait for sequence barrier if initialized for parent_path."""

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pub/Sub Tools (Experimental).
+"""Pub/Sub Tools.
 
 Pub/Sub Tools under this module are handcrafted and customized while the tools
 under google.adk.tools.google_api_tool are auto generated based on API

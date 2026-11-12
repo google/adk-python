@@ -33,11 +33,14 @@ from typing import AsyncGenerator
 from typing import AsyncIterator
 from typing import NamedTuple
 from typing import Optional
+from unittest import mock
 
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.live import _cascade_live_connection
 from google.adk.live import AgentSpokenOutput
 from google.adk.live import AudioChunk
 from google.adk.live import CascadeLive
@@ -46,11 +49,14 @@ from google.adk.live import LiveIngress
 from google.adk.live import UserTurnFinished
 from google.adk.live._cascade_live_connection import CascadeLiveConnection
 from google.adk.models.base_llm import BaseLlm
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.utils import _client_labels_utils
+from google.adk.utils._google_client_headers import merge_tracking_headers
 from google.genai import types
 import pytest
 from typing_extensions import override
@@ -809,6 +815,155 @@ async def test_partial_client_content_is_not_recorded():
   ]
 
 
+@pytest.mark.asyncio
+async def test_history_ending_with_a_user_turn_is_answered():
+  """Seeded history ending with a user turn gets a reply, as in native live.
+
+  A workflow node's input and an agent transfer reach the connection this way,
+  with no new user input to start the turn (base_llm_connection.py:38-47).
+  """
+  stt, tts = FakeStt(), FakeTts()
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+  connection = CascadeLiveConnection(LlmRequest(), reasoner, stt, tts)
+
+  await connection.send_history([_user(_UTTERANCE)])
+  responses = await _drain_turn(connection)
+  await connection.close()
+
+  assert _replayed(reasoner.requests[0]) == [f'user:{_UTTERANCE}']
+  assert tts.synthesized == [_ANSWER]
+  assert responses[-1].turn_complete
+
+
+@pytest.mark.asyncio
+async def test_history_ending_with_a_model_turn_waits_for_input():
+  """Seeded history that the model already answered starts no turn."""
+  stt, tts = FakeStt(), FakeTts()
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+  connection = CascadeLiveConnection(LlmRequest(), reasoner, stt, tts)
+
+  await connection.send_history([
+      _user(_UTTERANCE),
+      types.Content(role='model', parts=[types.Part(text=_ANSWER)]),
+  ])
+  # Long enough for a started turn to reach the reasoner.
+  await asyncio.sleep(0.1)
+  await connection.close()
+
+  assert not reasoner.requests
+
+
+def _has_media(contents: list[types.Content]) -> bool:
+  """Whether any part carries audio or a file reference."""
+  for content in contents:
+    if any(part.file_data or part.inline_data for part in content.parts or []):
+      return True
+  return False
+
+
+async def _ask_in_new_connection(
+    runner: Runner,
+    session_id: str,
+    utterance: str,
+    *,
+    resumption_handle: Optional[str] = None,
+) -> None:
+  """Opens a live connection with `save_live_blob`, for one spoken turn."""
+  run_config = RunConfig(response_modalities=['AUDIO'], save_live_blob=True)
+  if resumption_handle:
+    run_config.session_resumption = types.SessionResumptionConfig(
+        handle=resumption_handle
+    )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(_blob(utterance))
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session_id,
+            live_request_queue=live_request_queue,
+            run_config=run_config,
+        )
+    ) as agen:
+      async for event in agen:
+        if event.turn_complete:
+          return
+
+  await asyncio.wait_for(_consume(), timeout=_TIMEOUT_S)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'resumption_handle',
+    [
+        # The history arrives through `send_history`.
+        None,
+        # With a handle the flow skips `send_history`, so the history comes
+        # only from the connect request.
+        'client-handle',
+    ],
+    ids=['send_history', 'connect_request'],
+)
+async def test_saved_live_audio_is_not_replayed_to_the_reasoner(
+    resumption_handle: Optional[str],
+):
+  """A later connection replays the transcripts, not the saved audio.
+
+  With `save_live_blob`, the session keeps each turn's audio as an
+  `artifact://` reference beside its transcription. A Gemini request carrying
+  such a reference fails, so a resumed conversation could not take a turn.
+  """
+  reasoner = ScriptedReasoner(
+      turns=[[_model_text('First answer.')], [_model_text('Second answer.')]]
+  )
+  agent = Agent(
+      name='root_agent',
+      model=CascadeLive(model=reasoner, stt=FakeStt(), tts=FakeTts()),
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(
+      app_name='app',
+      agent=agent,
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  # One connection per question, as when a user comes back to a session.
+  with mock.patch.object(
+      CascadeLiveConnection,
+      'send_history',
+      autospec=True,
+      side_effect=CascadeLiveConnection.send_history,
+  ) as send_history:
+    await _ask_in_new_connection(runner, session.id, 'first question')
+    await _ask_in_new_connection(
+        runner,
+        session.id,
+        'second question',
+        resumption_handle=resumption_handle,
+    )
+
+  # The first connection has no history to send; the second one sends it
+  # unless resuming.
+  assert send_history.call_count == (0 if resumption_handle else 1)
+
+  stored = await session_service.get_session(
+      app_name='app', user_id='u', session_id=session.id
+  )
+  assert _has_media(
+      [event.content for event in stored.events if event.content]
+  ), 'the session should hold the saved audio this test is about'
+  second_request = reasoner.requests[1]
+  assert _replayed(second_request) == [
+      'user:first question',
+      'model:First answer.',
+      'user:second question',
+  ]
+  assert not _has_media(second_request.contents)
+
+
 class _ClosingReasoner(ScriptedReasoner):
   """Records when its response stream is closed."""
 
@@ -1144,3 +1299,160 @@ async def test_stt_failure_is_raised_from_run_live():
   with pytest.raises(RuntimeError, match='invalid API key'):
     await asyncio.wait_for(_consume(), timeout=_TIMEOUT_S)
   assert not reasoner.requests
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_replies_right_after_an_agent_transfer():
+  """After a transfer, the sub-agent speaks without waiting for the user.
+
+  The sub-agent's new connection is seeded with the history, which ends with
+  the transfer quoted as user turns, as in native live.
+  """
+  root_reasoner = ScriptedReasoner(
+      turns=[[_call('transfer_to_agent', {'agent_name': 'helper'})]]
+  )
+  helper_reasoner = ScriptedReasoner(turns=[[_model_text('Helper here.')]])
+  helper = Agent(
+      name='helper',
+      model=CascadeLive(model=helper_reasoner, stt=FakeStt(), tts=FakeTts()),
+  )
+  root = Agent(
+      name='root_agent',
+      model=CascadeLive(model=root_reasoner, stt=FakeStt(), tts=FakeTts()),
+      sub_agents=[helper],
+  )
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=root, session_service=session_service)
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(_blob(_UTTERANCE))
+  helper_events: list[Event] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['AUDIO']),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.author != 'helper':
+          continue
+        helper_events.append(event)
+        if event.turn_complete:
+          return
+
+  try:
+    await asyncio.wait_for(_consume(), timeout=_TIMEOUT_S)
+  except asyncio.TimeoutError:
+    pytest.fail('The sub-agent never replied after the transfer.')
+
+  assert _spoken(helper_events) == 'Helper here.'
+  # One request, sent before the user said anything else: the user's request
+  # and the quoted transfer.
+  assert len(helper_reasoner.requests) == 1
+  replayed = _replayed(helper_reasoner.requests[0])
+  assert replayed[0] == f'user:{_UTTERANCE}'
+  assert replayed[-1].startswith('user:')
+  assert 'transfer_to_agent' in replayed[-1]
+
+
+@pytest.fixture
+def _google_reasoner(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Treats any reasoner as one that calls Google APIs, as `Gemini` does."""
+  monkeypatch.setattr(
+      _cascade_live_connection,
+      '_sends_google_tracking_headers',
+      lambda llm: True,
+  )
+
+
+def _api_client_header(request: LlmRequest) -> list[str]:
+  """The `x-goog-api-client` tokens `Gemini` would send for `request`.
+
+  Call it in the label context the request ran in: `Gemini` merges the
+  context's label at request time.
+  """
+  http_options = request.config.http_options
+  headers = http_options.headers if http_options else None
+  return merge_tracking_headers(headers)['x-goog-api-client'].split()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('_google_reasoner')
+async def test_reasoning_request_carries_cascade_live_label():
+  """The text reasoning request is labeled as coming from CascadeLive."""
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+
+  await _run_live(reasoner, FakeStt(), FakeTts())
+
+  header = _api_client_header(reasoner.requests[0])
+  assert _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL in header
+  assert any(token.startswith('google-adk/') for token in header)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('_google_reasoner')
+async def test_reasoning_request_keeps_outer_eval_label():
+  """Under eval, the request carries both the eval and CascadeLive labels."""
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+
+  with _client_labels_utils.client_label_context(
+      _client_labels_utils.EVAL_CLIENT_LABEL
+  ):
+    await _run_live(reasoner, FakeStt(), FakeTts())
+    header = _api_client_header(reasoner.requests[0])
+
+  assert _client_labels_utils.EVAL_CLIENT_LABEL in header
+  assert _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL in header
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('_google_reasoner')
+async def test_cascade_live_label_is_added_once_per_turn():
+  """Each turn labels a copy, so the label does not pile up across turns."""
+  reasoner = ScriptedReasoner(
+      turns=[[_model_text(_ANSWER)], [_model_text(_ANSWER)]]
+  )
+
+  await _run_live(
+      reasoner, FakeStt(), FakeTts(), utterances=(_UTTERANCE, _UTTERANCE)
+  )
+
+  assert len(reasoner.requests) == 2
+  for request in reasoner.requests:
+    assert (
+        _api_client_header(request).count(
+            _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_google_reasoner_gets_no_label_header():
+  """Other providers get no Google headers, which LiteLlm would forward."""
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+
+  await _run_live(reasoner, FakeStt(), FakeTts())
+
+  http_options = reasoner.requests[0].config.http_options
+  headers = (http_options.headers if http_options else None) or {}
+  assert not any(
+      _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL in value
+      for value in headers.values()
+  )
+
+
+def test_only_gemini_sends_google_tracking_headers():
+  """`Gemini` models get the label header; other models do not."""
+  assert _cascade_live_connection._sends_google_tracking_headers(
+      Gemini(model='gemini-2.5-flash')
+  )
+  assert not _cascade_live_connection._sends_google_tracking_headers(
+      ScriptedReasoner()
+  )

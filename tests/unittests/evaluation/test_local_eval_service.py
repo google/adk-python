@@ -14,16 +14,24 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncGenerator
+import contextlib
 import logging
 import re
 import sys
 import textwrap
+import threading
 from typing import Optional
 
 from google.adk import runners
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
+from google.adk.evaluation import local_eval_service
+from google.adk.evaluation import metric_evaluator_registry
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
 from google.adk.evaluation.base_eval_service import InferenceConfig
@@ -33,6 +41,7 @@ from google.adk.evaluation.base_eval_service import InferenceStatus
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import SessionInput
+from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import Interval
@@ -57,10 +66,13 @@ from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
+from google.adk.events.event import Event
 from google.adk.models.registry import LLMRegistry
 from google.adk.tools.mcp_tool import mcp_toolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
+from google.adk.utils._client_labels_utils import get_client_labels
 from google.genai import types as genai_types
 from mcp import StdioServerParameters
 import pytest
@@ -265,6 +277,301 @@ async def test_perform_inference_success(
 
 
 @pytest.mark.asyncio
+async def test_perform_inference_repeats_each_case_num_runs_times(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+    mocker,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+          EvalCase(eval_id="case2", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mock_inference_result
+  )
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=2, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  # 2 eval cases, each inferenced 3 times.
+  assert len(results) == 6
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_num_runs_runs_pinned_case_in_fresh_sessions(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="case1",
+              conversation=[],
+              session_input=SessionInput(
+                  app_name="test_app",
+                  user_id="test_user",
+                  session_id="pinned_session",
+                  state={"counter": 0},
+              ),
+          ),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=1, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  # Each repeat runs in its own session instead of reusing the pinned one.
+  session_ids = {result.session_id for result in results}
+  assert len(results) == 3
+  assert len(session_ids) == 3
+  assert "pinned_session" not in session_ids
+  # The eval set itself is left untouched.
+  assert eval_set.eval_cases[0].session_input.session_id == "pinned_session"
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_warns_once_when_runs_drop_a_pinned_session(
+    eval_service,
+    mock_eval_sets_manager,
+    mocker,
+    caplog,
+):
+  """A case that pins a session and runs twice logs one warning, not two."""
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="case1",
+              conversation=[],
+              session_input=SessionInput(
+                  app_name="test_app",
+                  user_id="test_user",
+                  session_id="pinned_session",
+              ),
+          )
+      ],
+  )
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mocker.MagicMock()
+  )
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(num_runs=2),
+  )
+
+  with caplog.at_level(logging.WARNING, logger=local_eval_service.logger.name):
+    async for _ in eval_service.perform_inference(inference_request):
+      pass
+
+  assert [
+      record.getMessage()
+      for record in caplog.records
+      if record.name == local_eval_service.logger.name
+  ] == [
+      "Eval case case1 pins session pinned_session, but num_runs is 2, so"
+      " each run starts a fresh session and the pinned session is not used."
+  ]
+
+
+@pytest.mark.parametrize(
+    ("num_runs", "session_id"),
+    [(1, "pinned_session"), (2, None)],
+    ids=["one_run_with_a_pin", "runs_without_a_pin"],
+)
+@pytest.mark.asyncio
+async def test_perform_inference_warns_only_when_a_pinned_session_is_dropped(
+    eval_service,
+    mock_eval_sets_manager,
+    mocker,
+    caplog,
+    num_runs,
+    session_id,
+):
+  """A case run once keeps its pin, and a case with no pin has none to drop."""
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="case1",
+              conversation=[],
+              session_input=SessionInput(
+                  app_name="test_app",
+                  user_id="test_user",
+                  session_id=session_id,
+              ),
+          )
+      ],
+  )
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mocker.MagicMock()
+  )
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(num_runs=num_runs),
+  )
+
+  with caplog.at_level(logging.WARNING, logger=local_eval_service.logger.name):
+    async for _ in eval_service.perform_inference(inference_request):
+      pass
+
+  assert not [
+      record
+      for record in caplog.records
+      if record.name == local_eval_service.logger.name
+  ]
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_labels_each_run_with_its_index(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+):
+  """Each run of an eval case carries its 0-based run index."""
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+          EvalCase(eval_id="case2", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=2, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  run_indices_by_case: dict[str, list[int]] = {}
+  for result in results:
+    run_indices_by_case.setdefault(result.eval_case_id, []).append(
+        result.repetition_index
+    )
+  assert {
+      case_id: sorted(run_indices)
+      for case_id, run_indices in run_indices_by_case.items()
+  } == {"case1": [0, 1, 2], "case2": [0, 1, 2]}
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_labels_a_single_run_as_run_zero(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+):
+  """With the default single run, each result is labeled as run 0."""
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=1),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  assert [result.repetition_index for result in results] == [0]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_labels_each_result_with_its_run_index(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """An EvalCaseResult carries the run index of the inference it scored.
+
+  Setup: two runs of one case; run 0 succeeded, run 1 failed to inference.
+  Assert: both results, including the failed run's, keep their run index.
+  """
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_results = [
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case1",
+          inferences=[invocation.model_copy(deep=True)],
+          session_id="session0",
+          status=InferenceStatus.SUCCESS,
+          repetition_index=0,
+      ),
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case1",
+          inferences=None,
+          session_id="session1",
+          status=InferenceStatus.FAILURE,
+          error_message="model unavailable",
+          repetition_index=1,
+      ),
+  ]
+  evaluate_request = EvaluateRequest(
+      inference_results=inference_results,
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)],
+          parallelism=1,
+      ),
+  )
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [invocation.model_copy(deep=True)]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  results = []
+  async for result in eval_service.evaluate(evaluate_request):
+    results.append(result)
+
+  run_index_by_session = {
+      result.session_id: result.repetition_index for result in results
+  }
+  assert run_index_by_session == {"session0": 0, "session1": 1}
+
+
+@pytest.mark.asyncio
 async def test_perform_inference_with_case_ids(
     eval_service,
     dummy_agent,
@@ -305,6 +612,7 @@ async def test_perform_inference_with_case_ids(
       root_agent=dummy_agent,
       use_live=False,
       live_timeout_seconds=300,
+      repetition_index=0,
   )
   eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
@@ -313,6 +621,7 @@ async def test_perform_inference_with_case_ids(
       root_agent=dummy_agent,
       use_live=False,
       live_timeout_seconds=300,
+      repetition_index=0,
   )
 
 
@@ -356,6 +665,7 @@ async def test_perform_inference_with_use_live(
       root_agent=dummy_agent,
       use_live=True,
       live_timeout_seconds=600,
+      repetition_index=0,
   )
 
 
@@ -426,6 +736,179 @@ async def test_evaluate_success(
   assert isinstance(results[1], EvalCaseResult)
   assert mock_eval_sets_manager.get_eval_case.call_count == 2
   assert mock_eval_set_results_manager.save_eval_set_result.call_count == 1
+
+
+async def test_evaluate_runs_sync_evaluators_off_event_loop(
+    dummy_agent, mock_eval_sets_manager
+):
+  """Blocking sync evaluators run in worker threads, off the event loop.
+
+  Setup: Two inference results evaluated with parallelism=2 using a synchronous
+    Evaluator that synchronizes across a 2-party threading.Barrier and waits
+    for an asyncio heartbeat task to release it.
+  Act: Consume LocalEvalService.evaluate concurrently with an event-loop
+    heartbeat task.
+  Assert: Both EvalCaseResults pass, which needs both evaluations to run at
+    the same time while the heartbeat keeps running on the event loop.
+  """
+  both_workers_entered = threading.Event()
+  release_workers = threading.Event()
+  barrier = threading.Barrier(2, action=both_workers_entered.set, timeout=2.0)
+
+  class _BlockingSyncEvaluator(Evaluator):
+
+    def __init__(self, eval_metric: EvalMetric):
+      self._eval_metric = eval_metric
+
+    @override
+    def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: list[Invocation] | None = None,
+        conversation_scenario: ConversationScenario | None = None,
+    ) -> EvaluationResult:
+      barrier.wait()
+      if not release_workers.wait(timeout=2.0):
+        raise TimeoutError(
+            "Event loop heartbeat did not run while workers blocked."
+        )
+      return EvaluationResult(
+          overall_score=1.0,
+          overall_eval_status=EvalStatus.PASSED,
+          per_invocation_results=[
+              PerInvocationResult(
+                  actual_invocation=actual,
+                  expected_invocation=expected,
+                  score=1.0,
+                  eval_status=EvalStatus.PASSED,
+              )
+              for actual, expected in zip(
+                  actual_invocations, expected_invocations or []
+              )
+          ],
+      )
+
+  registry = metric_evaluator_registry.MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=MetricInfo(
+          metric_name="blocking_sync_metric",
+          description="Blocking synchronous test metric.",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      ),
+      evaluator=_BlockingSyncEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="world")]
+      ),
+  )
+  mock_eval_sets_manager.get_eval_case.side_effect = lambda **kwargs: EvalCase(
+      eval_id=kwargs["eval_case_id"],
+      conversation=[invocation.model_copy(deep=True)],
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id=f"case_{idx}",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id=f"session_{idx}",
+          )
+          for idx in range(2)
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[
+              EvalMetric(metric_name="blocking_sync_metric", threshold=0.5)
+          ],
+          parallelism=2,
+      ),
+  )
+
+  async def _heartbeat() -> None:
+    while not both_workers_entered.is_set():
+      await asyncio.sleep(0.001)
+    release_workers.set()
+
+  heartbeat_task = asyncio.create_task(_heartbeat())
+  try:
+    results = [result async for result in service.evaluate(evaluate_request)]
+  finally:
+    both_workers_entered.set()
+    release_workers.set()
+    heartbeat_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await heartbeat_task
+
+  assert len(results) == 2
+  assert all(
+      result.final_eval_status == EvalStatus.PASSED for result in results
+  )
+
+
+async def test_evaluate_sync_evaluator_sees_eval_client_label(
+    dummy_agent, mock_eval_sets_manager
+):
+  """A sync evaluator on a worker thread sees the eval client label."""
+  labels_seen: list[bool] = []
+
+  class _LabelRecordingEvaluator(FakeEvaluator):
+
+    @override
+    def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: list[Invocation] | None = None,
+        conversation_scenario: ConversationScenario | None = None,
+    ) -> EvaluationResult:
+      labels_seen.append(EVAL_CLIENT_LABEL in get_client_labels())
+      return super().evaluate_invocations(
+          actual_invocations, expected_invocations, conversation_scenario
+      )
+
+  registry = metric_evaluator_registry.MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=FakeEvaluator.get_metric_info(),
+      evaluator=_LabelRecordingEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case_0", conversation=[invocation.model_copy(deep=True)]
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id="case_0",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id="session_0",
+          )
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)]
+      ),
+  )
+
+  results = [result async for result in service.evaluate(evaluate_request)]
+
+  assert len(results) == 1
+  assert labels_seen == [True]
 
 
 @pytest.mark.asyncio
@@ -989,8 +1472,9 @@ async def test_perform_inference_pinned_session_id_across_runs(
 ):
   """A pinned session_id survives repeated runs and keeps artifacts reachable.
 
-  Reusing one eval service across runs (as num_runs > 1 does) must not collide
-  on the pinned session_id, and an artifact pre-loaded under it stays loadable.
+  Reusing one eval service across runs (as `AgentEvaluator` does when its
+  `num_runs` is above 1) must not collide on the pinned session_id, and an
+  artifact pre-loaded under it stays loadable.
   """
   eval_case = EvalCase(
       eval_id="case1",
@@ -1029,7 +1513,7 @@ async def test_perform_inference_pinned_session_id_across_runs(
   mock_runner.__aexit__ = mocker.AsyncMock(return_value=None)
 
   results = []
-  for _ in range(2):  # Mirrors the default num_runs=2.
+  for _ in range(2):  # Mirrors AgentEvaluator's default num_runs=2.
     async for inference_result in eval_service.perform_inference(
         inference_request=InferenceRequest(
             app_name="test_app",
@@ -1281,6 +1765,260 @@ async def test_eval_injects_session_input_state_into_instruction(
   instruction_text = app_details.get_developer_instructions("stateful_agent")
   assert "secret-value" in instruction_text
   assert "{some_key}" not in instruction_text
+
+
+class _SilentAckAgent(BaseAgent):
+  """Agent that handles 'ack only' silently without yielding events."""
+
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    text = (
+        ctx.user_content.parts[0].text
+        if ctx.user_content and ctx.user_content.parts
+        else ""
+    )
+    if text == "ack only":
+      return
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="hello")]
+        ),
+    )
+
+
+def _user_content(text: str) -> genai_types.Content:
+  return genai_types.Content(role="user", parts=[genai_types.Part(text=text)])
+
+
+def _model_content(text: str) -> genai_types.Content:
+  return genai_types.Content(role="model", parts=[genai_types.Part(text=text)])
+
+
+def _arrange_silent_turn_eval_set(
+    eval_service, mock_eval_sets_manager, mocker
+) -> set[str]:
+  """Points the service at a two-case set whose second case goes silent."""
+  eval_cases = [
+      EvalCase(
+          eval_id="passing_case",
+          conversation=[
+              Invocation(
+                  user_content=_user_content("hi"),
+                  final_response=_model_content("hello"),
+              )
+          ],
+      ),
+      EvalCase(
+          eval_id="silent_turn_case",
+          conversation=[
+              Invocation(
+                  user_content=_user_content("ack only"),
+                  final_response=_model_content("acknowledged"),
+              ),
+              Invocation(
+                  user_content=_user_content("hi"),
+                  final_response=_model_content("hello"),
+              ),
+          ],
+      ),
+  ]
+  cases_by_id = {case.eval_id: case for case in eval_cases}
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set1", eval_cases=eval_cases
+  )
+  mock_eval_sets_manager.get_eval_case.side_effect = (
+      lambda app_name, eval_set_id, eval_case_id: cases_by_id[eval_case_id]
+  )
+  mocker.patch.object(
+      eval_service, "_root_agent", _SilentAckAgent(name="silent_ack_agent")
+  )
+  return set(cases_by_id)
+
+
+async def _perform_silent_turn_inference(eval_service) -> list[InferenceResult]:
+  return [
+      result
+      async for result in eval_service.perform_inference(
+          InferenceRequest(
+              app_name="test_app",
+              eval_set_id="set1",
+              inference_config=InferenceConfig(parallelism=2),
+          )
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_zero_event_turn_records_an_empty_invocation(
+    eval_service,
+    mock_eval_sets_manager,
+    mocker,
+):
+  """A zero-event turn records an invocation with no final response."""
+  _arrange_silent_turn_eval_set(eval_service, mock_eval_sets_manager, mocker)
+
+  inference_results = await _perform_silent_turn_inference(eval_service)
+
+  inferences_by_case = {r.eval_case_id: r for r in inference_results}
+  silent_inference = inferences_by_case["silent_turn_case"]
+  assert silent_inference.status == InferenceStatus.SUCCESS
+  assert silent_inference.inferences is not None
+  assert len(silent_inference.inferences) == 2
+  first_turn, second_turn = silent_inference.inferences
+  assert first_turn.user_content == _user_content("ack only")
+  assert first_turn.final_response is None
+  assert not first_turn.intermediate_data.invocation_events
+  assert first_turn.duration is not None
+  assert second_turn.user_content == _user_content("hi")
+  assert second_turn.final_response == _model_content("hello")
+
+
+@pytest.mark.asyncio
+async def test_batch_with_a_zero_event_turn_scores_every_eval_case(
+    eval_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    mocker,
+):
+  """A zero-event turn in one case does not abort scoring of the batch."""
+  case_ids = _arrange_silent_turn_eval_set(
+      eval_service, mock_eval_sets_manager, mocker
+  )
+  inference_results = await _perform_silent_turn_inference(eval_service)
+
+  eval_results = [
+      result
+      async for result in eval_service.evaluate(
+          EvaluateRequest(
+              inference_results=inference_results,
+              evaluate_config=EvaluateConfig(
+                  eval_metrics=[
+                      EvalMetric(
+                          metric_name="response_match_score",
+                          criterion=BaseCriterion(threshold=0.8),
+                      )
+                  ],
+                  parallelism=2,
+              ),
+          )
+      )
+  ]
+
+  eval_results_by_case = {r.eval_id: r for r in eval_results}
+  assert set(eval_results_by_case) == case_ids
+  assert (
+      eval_results_by_case["passing_case"].final_eval_status
+      == EvalStatus.PASSED
+  )
+  silent_eval_result = eval_results_by_case["silent_turn_case"]
+  assert silent_eval_result.final_eval_status == EvalStatus.FAILED
+  assert (
+      silent_eval_result.eval_metric_result_per_invocation[0]
+      .eval_metric_results[0]
+      .eval_status
+      == EvalStatus.FAILED
+  )
+  assert (
+      silent_eval_result.eval_metric_result_per_invocation[1]
+      .eval_metric_results[0]
+      .eval_status
+      == EvalStatus.PASSED
+  )
+  mock_eval_set_results_manager.save_eval_set_result.assert_called_once()
+
+
+async def _run_eval_case(
+    eval_sets_manager, root_agent: BaseAgent, eval_case: EvalCase
+) -> EvalCaseResult:
+  """Runs inference and then evaluation of `eval_case` for app `test_app`."""
+  eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set", eval_cases=[eval_case]
+  )
+  eval_sets_manager.get_eval_case.return_value = eval_case
+  service = LocalEvalService(
+      root_agent=root_agent, eval_sets_manager=eval_sets_manager
+  )
+  inference_results = [
+      result
+      async for result in service.perform_inference(
+          InferenceRequest(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              inference_config=InferenceConfig(),
+          )
+      )
+  ]
+  [eval_case_result] = [
+      result
+      async for result in service.evaluate(
+          EvaluateRequest(
+              inference_results=inference_results,
+              evaluate_config=EvaluateConfig(eval_metrics=[]),
+          )
+      )
+  ]
+  return eval_case_result
+
+
+@pytest.mark.parametrize(
+    "session_input",
+    [
+        None,
+        SessionInput(app_name="other_app", user_id="test_user"),
+        SessionInput(app_name="test_app", user_id=""),
+    ],
+    ids=[
+        "no_session_input",
+        "session_input_for_another_app",
+        "session_input_with_empty_user_id",
+    ],
+)
+async def test_evaluate_reports_the_session_the_case_ran_in(
+    mock_eval_sets_manager, session_input
+):
+  """The result carries the details of the session the eval case ran in.
+
+  The session is found under the app name and user id it was created with,
+  which can differ from `test_app`, the app name of the eval request.
+  """
+  agent = LlmAgent(
+      name="test_agent", model=MockModel.create(responses=["hello"])
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[Invocation(user_content=_user_content("hi"))],
+      session_input=session_input,
+  )
+
+  result = await _run_eval_case(mock_eval_sets_manager, agent, eval_case)
+
+  assert result.session_details is not None
+  assert result.session_details.id == result.session_id
+
+
+async def test_evaluate_reports_the_session_of_a_failed_inference(
+    mock_eval_sets_manager,
+):
+  """A case whose inference failed carries the session it partly ran in."""
+  agent = LlmAgent(
+      name="test_agent",
+      model=MockModel.create(
+          responses=[], error=RuntimeError("model unavailable")
+      ),
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[Invocation(user_content=_user_content("hi"))],
+  )
+
+  result = await _run_eval_case(mock_eval_sets_manager, agent, eval_case)
+
+  assert result.final_eval_status == EvalStatus.FAILED
+  assert result.session_details is not None
+  assert result.session_details.events[0].content == _user_content("hi")
 
 
 def test_default_user_simulator_provider_is_not_shared_between_services(

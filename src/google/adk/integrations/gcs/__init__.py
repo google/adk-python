@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GCS Tools (Experimental)."""
+"""GCS Tools."""
 
 from .admin_toolset import GCSAdminToolset
 from .gcs_credentials import GCSCredentialsConfig

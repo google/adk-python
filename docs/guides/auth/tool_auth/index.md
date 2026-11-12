@@ -237,9 +237,6 @@ alternative, keeping the credential in session state under the same key.
 
 ## Limitations
 
-*   **Experimental.** `CredentialManager`, the credential services, and the
-    credential exchangers are all experimental. They are on by default and warn
-    once on first use, but their APIs may change.
 *   **The OAuth2 helpers need `authlib`.** Without it no authorization URL is
     generated and no code is exchanged for a token; the credential passes
     through unchanged and the client must run the OAuth flow itself.

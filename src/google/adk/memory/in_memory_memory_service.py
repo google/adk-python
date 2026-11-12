@@ -24,6 +24,7 @@ import unicodedata
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
 
-_UNKNOWN_SESSION_ID = '__unknown_session_id__'
 _MAX_SEARCH_RESULTS = 10
 
 
@@ -53,23 +53,30 @@ def _extract_words_lower(text: str) -> set[str]:
 
 
 def _extract_searchable_words(text: str) -> set[str]:
-  r"""Extracts the words an event can be matched on, in lowercase.
+  r"""Extracts the words a query or an event is matched on, in lowercase.
 
   The tokens of _extract_words_lower, plus, for a token that mixes Latin and
   non-Latin scripts, each of its single-script runs. Japanese and Chinese are
   written without spaces, so 私はPythonを使う is a single \w+ token and a query
   for Python matches nothing. Splitting on the boundary between Latin and
   non-Latin scripts makes the embedded Latin word a token of its own, while
-  still keeping a partial word such as thon from matching.
+  still keeping a partial word such as thon from matching. Queries and events
+  go through this same function, so a query such as Pythonについて教えて finds
+  an English memory about Python too.
 
   Args:
-    text: The text of an event.
+    text: The text of a query or an event.
   """
-  words = _extract_words_lower(text)
-  for word in list(words):
+  words: set[str] = set()
+  for word in re.findall(r'\w+', unicodedata.normalize('NFC', text)):
+    words.add(word.lower())
     if not word.isascii():
-      for _, group in itertools.groupby(word, _is_latin):
-        words.add(''.join(group))
+      # Split before lowercasing: "İ".lower() is "i" plus U+0307, which is
+      # not Latin, so splitting afterwards yields a stray "i" word.
+      words.update(
+          ''.join(group).lower()
+          for _, group in itertools.groupby(word, _is_latin)
+      )
   return words
 
 
@@ -86,9 +93,12 @@ class InMemoryMemoryService(BaseMemoryService):
   def __init__(self) -> None:
     self._lock = threading.Lock()
 
-    self._session_events: dict[tuple[str, str], dict[str, list[Event]]] = {}
+    self._session_events: dict[
+        tuple[str, str], dict[str | None, list[Event]]
+    ] = {}
     """Keys are (app_name, user_id). Values are dicts of session_id to
-    session event lists.
+    session event lists. Events added without a session ID are kept under the
+    None key, which no caller-provided session ID can alias.
     """
     self._deleted_memory_ids: dict[tuple[str, str], set[str]] = {}
     """Keys are (app_name, user_id). Values are sets of deleted memory_ids
@@ -104,7 +114,7 @@ class InMemoryMemoryService(BaseMemoryService):
       self._session_events[user_key] = self._session_events.get(user_key, {})
       self._session_events[user_key][session.id] = [
           event.model_copy(deep=True)
-          for event in session.events
+          for event in _apply_rewinds(session.events)
           if event.content
           and event.content.parts
           and event.id not in deleted_ids
@@ -122,7 +132,7 @@ class InMemoryMemoryService(BaseMemoryService):
   ) -> None:
     _ = custom_metadata
     user_key = _user_key(app_name, user_id)
-    scoped_session_id = session_id or _UNKNOWN_SESSION_ID
+    scoped_session_id = session_id or None
     events_to_add = [
         event for event in events if event.content and event.content.parts
     ]
@@ -156,7 +166,8 @@ class InMemoryMemoryService(BaseMemoryService):
           for events in self._session_events.get(user_key, {}).values()
       ]
 
-    words_in_query = _extract_words_lower(query)
+    whole_words_in_query = _extract_words_lower(query)
+    words_in_query = _extract_searchable_words(query)
     scored_memories: list[tuple[int, MemoryEntry]] = []
 
     for session_events in session_event_lists:
@@ -178,7 +189,13 @@ class InMemoryMemoryService(BaseMemoryService):
             1
             for query_word in words_in_query
             if query_word in words_in_event
-            or (not query_word.isascii() and query_word in event_text_lower)
+            # A script run split out of a query word, such as と from
+            # Pythonと, would match nearly any Japanese text as a substring.
+            or (
+                query_word in whole_words_in_query
+                and not query_word.isascii()
+                and query_word in event_text_lower
+            )
         )
         if matched_words:
           scored_memories.append((

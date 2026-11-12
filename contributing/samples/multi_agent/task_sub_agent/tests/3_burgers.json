@@ -107,6 +107,9 @@
       }
     },
     {
+      "actions": {
+        "skipSummarization": true
+      },
       "author": "order_collector",
       "branch": "order_collector@fc-1",
       "content": {
@@ -288,6 +291,9 @@
       }
     },
     {
+      "actions": {
+        "skipSummarization": true
+      },
       "author": "payment_collector",
       "branch": "payment_collector@fc-3",
       "content": {

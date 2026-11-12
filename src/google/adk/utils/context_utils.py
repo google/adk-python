@@ -29,7 +29,7 @@ from typing import get_args
 from typing import get_origin
 from typing import Union
 
-from ._callable_utils import get_type_hints_cached
+from ._callable_utils import get_best_effort_type_hints
 from ._callable_utils import lru_cache_allowing_unhashable
 
 # Re-export aclosing for backward compatibility
@@ -87,11 +87,10 @@ def find_context_parameter(func: Callable[..., Any]) -> str | None:
     return None
   # Resolve string annotations (e.g., 'Context')
   try:
-    type_hints = get_type_hints_cached(func)
+    type_hints = get_best_effort_type_hints(func)
   except Exception:
-    # get_type_hints_cached can fail for various reasons (e.g., unresolvable
-    # forward references). In such cases, we fall back to inspecting the
-    # parameter annotations directly.
+    # Type hint resolution can still fail on unusual callables or descriptors.
+    # In such cases, fall back to inspecting parameter annotations directly.
     type_hints = {}
 
   for name, param in signature.parameters.items():

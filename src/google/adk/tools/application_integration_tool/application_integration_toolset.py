@@ -35,6 +35,7 @@ from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from ..openapi_tool.openapi_spec_parser.openapi_spec_parser import OpenApiSpecParser
+from ..openapi_tool.openapi_spec_parser.openapi_toolset import _disambiguate_tool_names
 from ..openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 from .clients.connections_client import ConnectionsClient
@@ -296,6 +297,10 @@ class ApplicationIntegrationToolset(BaseToolset):
               credential_key=self._credential_key,
           )
       )
+
+    _disambiguate_tool_names(self._tools)
+    for tool in self._tools:
+      tool._rest_api_tool.name = tool.name
 
   def _clone_connector_tool_with_auth_credential(
       self,

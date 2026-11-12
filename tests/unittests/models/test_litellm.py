@@ -33,9 +33,9 @@ from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _apply_provider_finish_reason
 from google.adk.models.lite_llm import _BraceDepthTracker
 from google.adk.models.lite_llm import _build_function_declaration_log
+from google.adk.models.lite_llm import _build_tool_call_from_json_dict
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
-from google.adk.models.lite_llm import _enforce_strict_openai_schema
 from google.adk.models.lite_llm import _extract_gemini_model_from_litellm
 from google.adk.models.lite_llm import _extract_json_from_deepseek_args
 from google.adk.models.lite_llm import _extract_reasoning_value
@@ -79,6 +79,7 @@ from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.utils._schema_utils import enforce_strict_openai_schema
 from google.genai import types
 import litellm
 from litellm import ChatCompletionAssistantMessage
@@ -463,7 +464,7 @@ def test_enforce_strict_openai_schema_adds_additional_properties_recursively():
   """additionalProperties: false must appear on all object schemas."""
   schema = _OuterModel.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   # Root level
   assert schema["additionalProperties"] is False
@@ -476,7 +477,7 @@ def test_enforce_strict_openai_schema_marks_all_properties_required():
   """All properties must appear in 'required', including optional fields."""
   schema = _InnerModel.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   assert sorted(schema["required"]) == ["optional_field", "value"]
 
@@ -489,17 +490,135 @@ def test_enforce_strict_openai_schema_strips_ref_sibling_keywords():
   assert "$ref" in inner_prop, "Expected Pydantic to generate a $ref property"
   assert len(inner_prop) > 1, "Expected sibling keywords alongside $ref"
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   inner_prop = schema["properties"]["inner"]
   assert list(inner_prop.keys()) == ["$ref"]
+
+
+class _TreeNode(BaseModel):
+  name: str
+  children: list["_TreeNode"] = []
+
+
+_STRICT_TREE_NODE_SCHEMA = {
+    "properties": {
+        "name": {"title": "Name", "type": "string"},
+        "children": {
+            "default": [],
+            "items": {"$ref": "#/$defs/_TreeNode"},
+            "title": "Children",
+            "type": "array",
+        },
+    },
+    "required": ["children", "name"],
+    "title": "_TreeNode",
+    "type": "object",
+    "additionalProperties": False,
+}
+_EXPECTED_STRICT_RECURSIVE_SCHEMA = {
+    **_STRICT_TREE_NODE_SCHEMA,
+    "$defs": {"_TreeNode": _STRICT_TREE_NODE_SCHEMA},
+}
+
+
+def test_enforce_strict_openai_schema_inlines_root_ref():
+  """A self-referencing model must keep the $defs its root $ref points to."""
+  schema = _TreeNode.model_json_schema()
+  # Pydantic v2 emits a root {"$defs": ..., "$ref": ...} for recursive models.
+  assert sorted(schema) == ["$defs", "$ref"]
+
+  enforce_strict_openai_schema(schema)
+
+  assert schema == _EXPECTED_STRICT_RECURSIVE_SCHEMA
+
+
+def test_to_litellm_response_format_recursive_schema():
+  """A recursive model must keep $defs in _to_litellm_response_format."""
+  result = _to_litellm_response_format(_TreeNode, model="openai/gpt-4o-mini")
+
+  assert result == {
+      "type": "json_schema",
+      "json_schema": {
+          "name": "_TreeNode",
+          "strict": True,
+          "schema": _EXPECTED_STRICT_RECURSIVE_SCHEMA,
+      },
+  }
+
+
+_STRICT_X_OBJECT = {
+    "type": "object",
+    "properties": {"x": {"type": "integer"}},
+    "additionalProperties": False,
+    "required": ["x"],
+}
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        pytest.param(
+            {
+                "$ref": "#/$defs/A",
+                "$defs": {
+                    "A": {"$ref": "#/$defs/B"},
+                    "B": {
+                        "type": "object",
+                        "properties": {"x": {"type": "integer"}},
+                    },
+                },
+            },
+            {
+                **_STRICT_X_OBJECT,
+                "$defs": {"A": {"$ref": "#/$defs/B"}, "B": _STRICT_X_OBJECT},
+            },
+            id="multi_hop_chain",
+        ),
+        pytest.param(
+            {
+                "$ref": "#/$defs/A",
+                "$defs": {
+                    "A": {"$ref": "#/$defs/B"},
+                    "B": {"$ref": "#/$defs/A"},
+                },
+            },
+            {"$ref": "#/$defs/A"},
+            id="cycle",
+        ),
+        pytest.param(
+            {
+                "$ref": "#/$defs/A",
+                "description": "root",
+                "$defs": {
+                    "A": {
+                        "type": "object",
+                        "description": "def",
+                        "properties": {"x": {"type": "integer"}},
+                    }
+                },
+            },
+            {
+                **_STRICT_X_OBJECT,
+                "description": "root",
+                "$defs": {"A": {**_STRICT_X_OBJECT, "description": "def"}},
+            },
+            id="root_keys_win",
+        ),
+    ],
+)
+def test_enforce_strict_openai_schema_root_ref_edge_cases(schema, expected):
+  """Root $ref chains resolve, cycles stop, and root keys are kept."""
+  enforce_strict_openai_schema(schema)
+
+  assert schema == expected
 
 
 def test_enforce_strict_openai_schema_handles_array_items():
   """Array item schemas should also be recursively transformed."""
   schema = _WithList.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   assert schema["additionalProperties"] is False
   inner_def = schema["$defs"]["_InnerModel"]
@@ -511,7 +630,7 @@ def test_enforce_strict_openai_schema_preserves_anyof_and_default():
   """anyOf structure and default value for Optional fields must be preserved."""
   schema = _InnerModel.model_json_schema()
 
-  _enforce_strict_openai_schema(schema)
+  enforce_strict_openai_schema(schema)
 
   opt_prop = schema["properties"]["optional_field"]
   assert opt_prop["anyOf"] == [{"type": "string"}, {"type": "null"}]
@@ -2652,6 +2771,7 @@ async def test_generate_content_async_with_bedrock_cache_tokens(
     assert response.usage_metadata.total_token_count == 15
     assert response.usage_metadata.cached_content_token_count == 8
     assert response.usage_metadata.cache_creation_input_tokens == 4
+    assert response.cache_creation_token_count == 4
 
   mock_acompletion.assert_called_once()
 
@@ -3589,6 +3709,84 @@ def test_message_to_generate_content_response_reports_non_object_tool_call(
   assert [part.text for part in response.content.parts] == ["Looking that up."]
 
 
+# Deeper than the json decoder can go. Its limit depends on the Python version
+# and the stack size (3.14 decodes 100,000 levels on some machines), so leave
+# a wide margin.
+_DEEPLY_NESTED = "[" * 1_000_000 + "]" * 1_000_000
+# Balanced braces, so a stream also checks it for completion as it arrives.
+_DEEPLY_NESTED_OBJECT = '{"a":' * 1_000_000 + "1" + "}" * 1_000_000
+
+# Arguments that used to raise out of response parsing instead of being
+# reported, either from the parsers or from building the function call.
+_UNUSABLE_TOOL_CALL_ARGUMENTS = [
+    pytest.param("{[]: 1}", id="unhashable_key"),
+    pytest.param("{1: 2}", id="non_string_key"),
+    pytest.param("{'a': {1: 2}}", id="nested_non_string_key"),
+    pytest.param("{'a': [{1: 2}]}", id="non_string_key_in_list"),
+    pytest.param("{'a': ({1: 2},)}", id="non_string_key_in_tuple"),
+    pytest.param("{'a': {1, 2}}", id="set_value"),
+    pytest.param("{'a': b'x'}", id="bytes_value"),
+    pytest.param(_DEEPLY_NESTED, id="deeply_nested"),
+    pytest.param(_DEEPLY_NESTED_OBJECT, id="deeply_nested_object"),
+    # Over the int max str digits limit, which raises a plain ValueError.
+    pytest.param('{"a": ' + "1" * 5000 + "}", id="huge_integer"),
+]
+
+
+@pytest.mark.parametrize("arguments", _UNUSABLE_TOOL_CALL_ARGUMENTS)
+def test_message_to_generate_content_response_reports_unusable_tool_call(
+    arguments,
+):
+  """Arguments no repair can turn into a function call are reported."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments=arguments,
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+def test_build_tool_call_from_json_dict_too_deep_to_encode_returns_none():
+  """Arguments that decoded but cannot be re-encoded leave the text as text.
+
+  How deep that is depends on the Python version and the stack size, so the
+  encoder is made to fail instead.
+  """
+  candidate = {"name": "test_function", "arguments": {"a": 1}}
+
+  with patch.object(json, "dumps", side_effect=RecursionError):
+    tool_call = _build_tool_call_from_json_dict(candidate, index=0)
+
+  assert tool_call is None
+
+
+def test_message_to_generate_content_response_keeps_deeply_nested_text():
+  """Text that only looks like the start of a JSON tool call stays text."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=_DEEPLY_NESTED,
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert [part.text for part in response.content.parts] == [_DEEPLY_NESTED]
+
+
 @pytest.mark.parametrize("arguments", [42, 3.14, True, ["test_arg"]])
 def test_message_to_generate_content_response_reports_non_string_arguments(
     arguments,
@@ -3703,6 +3901,40 @@ def test_message_to_generate_content_response_leaves_partial_unstamped():
   response = _message_to_generate_content_response(message, is_partial=True)
 
   assert response.partial
+  assert response.finish_reason is None
+  assert response.error_code is None
+  assert response.error_message is None
+
+
+def test_message_to_generate_content_response_tool_call_without_arguments():
+  """A tool call carrying no arguments is kept, not reported as malformed."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments="",
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  function_calls = [
+      part.function_call
+      for part in response.content.parts
+      if part.function_call is not None
+  ]
+  assert len(function_calls) == 1
+  assert function_calls[0].name == "test_function"
+  assert function_calls[0].id == "test_tool_call_id"
+  assert isinstance(function_calls[0].args, dict)
+  assert not function_calls[0].args
   assert response.finish_reason is None
   assert response.error_code is None
   assert response.error_message is None
@@ -4691,7 +4923,6 @@ async def test_thought_signature_round_trip():
 def test_parse_tool_calls_from_text_multiple_calls():
   text = (
       '{"name":"alpha","arguments":{"value":1}}\n'
-      "Some filler text "
       '{"id":"custom","name":"beta","arguments":{"timezone":"Asia/Taipei"}} '
       "ignored suffix"
   )
@@ -4704,7 +4935,21 @@ def test_parse_tool_calls_from_text_multiple_calls():
   assert json.loads(tool_calls[1].function.arguments) == {
       "timezone": "Asia/Taipei"
   }
-  assert remainder == "Some filler text  ignored suffix"
+  assert remainder == "ignored suffix"
+
+
+def test_parse_tool_calls_from_text_stops_at_text_between_calls():
+  """A tool call that follows prose is quoted text, not another call."""
+  beta = '{"name":"beta","arguments":{"timezone":"Asia/Taipei"}}'
+  text = (
+      '{"name":"alpha","arguments":{"value":1}}\n'
+      f"Some filler text {beta} ignored suffix"
+  )
+
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+
+  assert [call.function.name for call in tool_calls] == ["alpha"]
+  assert remainder == f"Some filler text {beta} ignored suffix"
 
 
 def test_parse_tool_calls_from_text_invalid_json_returns_remainder():
@@ -4821,12 +5066,33 @@ def test_parse_tool_calls_from_text_mixed_formats():
   """DeepSeek tokens + standard inline JSON in the same text."""
   ds_part = _ds_wrapped(_ds_tool_call("ds_func", '{"a": 1}'))
   standard_part = '{"name": "std_func", "arguments": {"b": 2}}'
-  text = ds_part + " some text " + standard_part
+  text = ds_part + "\n" + standard_part + " some text"
   tool_calls, remainder = _parse_tool_calls_from_text(text)
   assert len(tool_calls) == 2
   assert tool_calls[0].function.name == "ds_func"
   assert tool_calls[1].function.name == "std_func"
   assert remainder == "some text"
+
+
+def test_parse_tool_calls_from_text_deepseek_indexes_follow_earlier_calls():
+  """DeepSeek calls after other calls take the next indexes, not 0 again."""
+  ds_part = _ds_wrapped(
+      _ds_tool_call("ds_one", '{"a": 1}') + _ds_tool_call("ds_two", '{"b": 2}')
+  )
+  text = (
+      '{"name": "bare", "arguments": {}}\n'
+      '<tool_call>{"name": "tagged", "arguments": {}}</tool_call>\n'
+      + ds_part
+  )
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+  assert [tc.function.name for tc in tool_calls] == [
+      "bare",
+      "tagged",
+      "ds_one",
+      "ds_two",
+  ]
+  assert [tc.index for tc in tool_calls] == [0, 1, 2, 3]
+  assert remainder is None
 
 
 def test_parse_deepseek_empty_text():
@@ -4853,18 +5119,636 @@ def test_extract_json_from_deepseek_args_invalid_fence_returns_none():
   assert _extract_json_from_deepseek_args('```json\n{"a": 1,}\n```') is None
 
 
-def test_split_message_content_and_tool_calls_inline_text():
-  message = {
-      "role": "assistant",
-      "content": (
-          'Intro {"name":"alpha","arguments":{"value":1}} trailing content'
-      ),
-  }
+@pytest.mark.parametrize(
+    "args_text",
+    [
+        pytest.param(_DEEPLY_NESTED_OBJECT, id="bare"),
+        pytest.param(
+            "```json\n" + _DEEPLY_NESTED_OBJECT + "\n```", id="fenced"
+        ),
+    ],
+)
+def test_extract_json_from_deepseek_args_deeply_nested_returns_none(
+    args_text,
+):
+  """Arguments nested past the decoder's limit are rejected, not raised."""
+  assert _extract_json_from_deepseek_args(args_text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            "The README shows this example request:\n"
+            '{"name":"delete_file","arguments":{"path":"/data/prod.db"}}\n'
+            "It is used to remove files."
+        ),
+        (
+            '```json\n{"name": "delete_file", "arguments": {"path":'
+            ' "/data/prod.db"}}\n```'
+        ),
+        (
+            "```xml\n<tool_call>\n"
+            '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}\n'
+            "</tool_call>\n```"
+        ),
+        (
+            'Here is the tag syntax: `<tool_call>{"name": "delete_file",'
+            ' "arguments": {"path": "/data/prod.db"}}</tool_call>`.'
+        ),
+        (
+            "```\n"
+            + _ds_wrapped(
+                _ds_tool_call("delete_file", '{"path": "/data/prod.db"}')
+            )
+            + "\n```"
+        ),
+        (
+            f"Here is the token syntax: `{_DS_BEGIN_CALL}function{_DS_SEP}"
+            f'delete_file\n{{"path": "/data/prod.db"}}{_DS_END_CALL}`.'
+        ),
+        (
+            "Start:\n```\nfoo\n```xml\n<tool_call>"
+            '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}'
+            "</tool_call>\n```"
+        ),
+        (
+            f"```\nThe token {_DS_BEGIN_CALL} starts a call,"
+            ' e.g.\n<tool_call>{"name": "delete_file", "arguments": {"path":'
+            ' "/data/prod.db"}}</tool_call>\n```'
+        ),
+        (
+            "```\r\n<tool_call>"
+            '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}'
+            "</tool_call>\r\n```\r\nThat is the syntax."
+        ),
+        (
+            "Example:\n\n    <tool_call>"
+            '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}'
+            "</tool_call>\n\nThat is the syntax."
+        ),
+        (
+            "Here is the token syntax: `"
+            + _ds_tool_call("delete_file", '{"path": "/data/prod.db"}')
+            + "`."
+        ),
+        (
+            '    {"name": "delete_file", "arguments": {"path":'
+            ' "/data/prod.db"}}\n\nThat is the syntax.'
+        ),
+        (
+            "<think>I could run <tool_call>"
+            '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}'
+            "</tool_call> but should not.</think>\nI will not delete it."
+        ),
+        (
+            "<think>Maybe "
+            + _ds_tool_call("delete_file", '{"path": "/data/prod.db"}')
+            + "</think>"
+        ),
+        (
+            f"```\nThe token {_DS_BEGIN_CALL} opens a call.\n```\nAnd"
+            f" `{_DS_END_CALL}` closes it, unlike `<tool_call>"
+            '{"name": "delete_file", "arguments": {}}</tool_call>`.'
+        ),
+        (
+            "# Usage\n    <tool_call>"
+            '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}'
+            "</tool_call>\n"
+        ),
+        (
+            "<think>Should I mention `foo?</think>Use `<tool_call>"
+            '{"name": "delete_file", "arguments": {}}</tool_call>`.'
+        ),
+        (
+            "Let me think. <think>Maybe <tool_call>"
+            '{"name": "delete_file", "arguments": {}}</tool_call></think> No.'
+        ),
+        (
+            'Let me check.\n\n    <think>\nMaybe <tool_call>{"name":'
+            ' "delete_file", "arguments": {}}</tool_call>\n</think>\nNo.'
+        ),
+        (
+            '<think>Maybe call <tool_call>{"name": "delete_file", "arguments":'
+            ' {"tag": "</think>"}}</tool_call> or <tool_call>{"name":'
+            ' "delete_file", "arguments": {}}</tool_call></think>\nDone.'
+        ),
+    ],
+    ids=[
+        "after_prose",
+        "code_fence",
+        "tool_call_tags_in_code_fence",
+        "tool_call_tags_in_inline_code",
+        "deepseek_in_code_fence",
+        "deepseek_in_inline_code",
+        "tool_call_tags_in_fence_after_info_string_line",
+        "tool_call_tags_in_fence_explaining_deepseek_token",
+        "tool_call_tags_in_crlf_code_fence",
+        "tool_call_tags_in_indented_code",
+        "deepseek_with_fenced_args_in_inline_code",
+        "bare_json_in_indented_code",
+        "tool_call_tags_in_think_block",
+        "deepseek_in_think_block",
+        "tool_call_tags_in_inline_code_after_lone_deepseek_tokens",
+        "tool_call_tags_in_indented_code_after_heading",
+        "tool_call_tags_in_inline_code_after_think_with_backtick",
+        "tool_call_tags_in_think_block_after_preamble",
+        "tool_call_tags_in_think_block_opened_on_indented_line",
+        "tool_call_tags_in_think_block_after_close_tag_in_arguments",
+    ],
+)
+def test_split_message_content_keeps_tool_call_json_quoted_in_text(text):
+  """JSON shaped like a tool call in prose or a code fence stays text."""
+  message = {"role": "assistant", "content": text}
+
   content, tool_calls = _split_message_content_and_tool_calls(message)
-  assert content == "Intro  trailing content"
+
+  assert tool_calls == []
+  assert content == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_content"),
+    [
+        ('\n{"name": "alpha", "arguments": {"value": 1}}\n', None),
+        (
+            (
+                '<tool_call>\n{"name": "alpha", "arguments": {"value":'
+                " 1}}\n</tool_call>"
+            ),
+            None,
+        ),
+        (
+            (
+                "Let me check that for you.\n<tool_call>\n"
+                '{"name": "alpha", "arguments": {"value": 1}}\n</tool_call>'
+            ),
+            "Let me check that for you.",
+        ),
+        (
+            (
+                "Using `<tool_call>` now:\n<tool_call>\n"
+                '{"name": "alpha", "arguments": {"value": 1}}\n</tool_call>\n'
+                "Done with `alpha`."
+            ),
+            "Using `<tool_call>` now:\n\nDone with `alpha`.",
+        ),
+        (
+            (
+                "Here is an unclosed fence:\n```\n<tool_call>\n"
+                '{"name": "alpha", "arguments": {"value": 1}}\n</tool_call>'
+            ),
+            "Here is an unclosed fence:\n```",
+        ),
+        (
+            (
+                "<think>The user wants alpha.</think>\n"
+                '{"name": "alpha", "arguments": {"value": 1}}'
+            ),
+            "<think>The user wants alpha.</think>",
+        ),
+        (
+            '<|python_tag|>{"name": "alpha", "arguments": {"value": 1}}',
+            "<|python_tag|>",
+        ),
+        ('[{"name": "alpha", "arguments": {"value": 1}}]', None),
+        (
+            (
+                "Run `foo\r\n\r\n<tool_call>"
+                '{"name": "alpha", "arguments": {"value": 1}}</tool_call>'
+                "\r\n\r\nthen `bar"
+            ),
+            "Run `foo\r\n\r\n\r\n\r\nthen `bar",
+        ),
+        (
+            (
+                "Run \\`foo: <tool_call>"
+                '{"name": "alpha", "arguments": {"value": 1}}</tool_call>'
+                " then `bar`"
+            ),
+            "Run \\`foo:  then `bar`",
+        ),
+        (
+            (
+                '<tool_call>\n```json\n{"name": "alpha", "arguments":'
+                ' {"value": 1}}\n```\n</tool_call>'
+            ),
+            None,
+        ),
+        (
+            (
+                'Let me check.\n<tool_call>\n~~~JSON\n{"name": "alpha",'
+                ' "arguments": {"value": 1}}\n~~~\n</tool_call>'
+            ),
+            "Let me check.",
+        ),
+        (
+            (
+                '<think>Not <tool_call>{"name": "delete_file", "arguments":'
+                ' {}}</tool_call>.</think>\n<tool_call>{"name": "alpha",'
+                ' "arguments": {"value": 1}}</tool_call>'
+            ),
+            (
+                "<think>Not <tool_call>"
+                '{"name": "delete_file", "arguments": {}}</tool_call>.</think>'
+            ),
+        ),
+        (
+            '[TOOL_CALLS][{"name": "alpha", "arguments": {"value": 1}}]',
+            "[TOOL_CALLS]",
+        ),
+        (
+            '<tool_call>{"name": "alpha", "arguments": {"value": 1}}',
+            "<tool_call>",
+        ),
+        (
+            (
+                '<tool_call>{"name": "alpha", "arguments": {"value": 1}}\n'
+                "Note: omit `</tool_call>` when streaming."
+            ),
+            "<tool_call>Note: omit `</tool_call>` when streaming.",
+        ),
+        (
+            (
+                "<think>First.</think>\n<think>Second.</think>\n"
+                '{"name": "alpha", "arguments": {"value": 1}}'
+            ),
+            "<think>First.</think>\n<think>Second.</think>",
+        ),
+        (
+            (
+                "<think>Maybe call alpha.\n<tool_call>"
+                '{"name": "alpha", "arguments": {"value": 1}}</tool_call>'
+            ),
+            "<think>Maybe call alpha.",
+        ),
+    ],
+    ids=[
+        "bare",
+        "tool_call_tags",
+        "tool_call_tags_with_preamble",
+        "tool_call_tags_after_inline_code_tag",
+        "tool_call_tags_after_unclosed_fence",
+        "after_think_block",
+        "after_python_tag",
+        "json_array",
+        "tool_call_tags_between_backticks_across_crlf_blank_lines",
+        "tool_call_tags_after_escaped_backtick",
+        "tool_call_tags_with_fenced_payload",
+        "tool_call_tags_with_tilde_fenced_payload_after_preamble",
+        "tool_call_tags_after_think_block_holding_one",
+        "after_mistral_tool_calls_prefix",
+        "unclosed_leading_tool_call_tag",
+        "unclosed_leading_tool_call_tag_before_quoted_close_tag",
+        "after_two_think_blocks",
+        "tool_call_tags_after_unclosed_think_tag",
+    ],
+)
+def test_split_message_content_parses_text_that_is_a_tool_call(
+    text, expected_content
+):
+  """A message whose text is a tool call becomes that tool call."""
+  message = {"role": "assistant", "content": text}
+
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+
+  assert content == expected_content
   assert len(tool_calls) == 1
   assert tool_calls[0].function.name == "alpha"
   assert json.loads(tool_calls[0].function.arguments) == {"value": 1}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            '<tool_call>{"name": "alpha", "arguments": {}}\n'
+            '<tool_call>{"name": "beta", "arguments": {}}</tool_call>'
+        ),
+        (
+            '<tool_call>{"name": "alpha", "arguments": {}}</tool_call>\n'
+            '<tool_call>{"name": "beta", "arguments": {}}'
+        ),
+    ],
+    ids=["first_tag_unclosed", "second_tag_unclosed"],
+)
+def test_parse_tool_calls_from_text_unclosed_tag_in_opening_run(text):
+  """An unclosed `<tool_call>` in the opening run of calls still opens one."""
+  tool_calls, _ = _parse_tool_calls_from_text(text)
+
+  assert [call.function.name for call in tool_calls] == ["alpha", "beta"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_names"),
+    [
+        (
+            (
+                '<think>Maybe call alpha.\n<tool_call>{"name": "alpha",'
+                ' "arguments": {"tag": "</think>"}}</tool_call>'
+            ),
+            ["alpha"],
+        ),
+        (
+            (
+                '{"name": "alpha", "arguments": {"text": "use `foo"}}\n'
+                '<tool_call>{"name": "beta", "arguments": {}}</tool_call>\n'
+                "See `bar`."
+            ),
+            ["alpha", "beta"],
+        ),
+        (
+            (
+                '{"name": "alpha", "arguments": {"text": "use <think>"}}\n'
+                '<tool_call>{"name": "beta", "arguments": {}}</tool_call>\n'
+                "See </think>."
+            ),
+            ["alpha", "beta"],
+        ),
+        (
+            (
+                "<think>Let me plan:\n# Step 1</think>"
+                '{"name": "alpha", "arguments": {"cmd": "`ls`"}}\n'
+                '    <tool_call>{"name": "beta", "arguments": {}}</tool_call>'
+            ),
+            ["alpha", "beta"],
+        ),
+    ],
+    ids=[
+        "think_close_tag_in_arguments",
+        "backtick_in_leading_bare_json",
+        "think_tag_in_leading_bare_json",
+        "backtick_in_bare_json_after_think_block",
+    ],
+)
+def test_parse_tool_calls_from_text_tags_in_arguments_are_not_markdown(
+    text, expected_names
+):
+  """Backticks and `<think>` tags in call arguments open no code or block."""
+  tool_calls, _ = _parse_tool_calls_from_text(text)
+
+  assert [call.function.name for call in tool_calls] == expected_names
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_names"),
+    [
+        (
+            (
+                "<think>Let me plan:\n# Step 1</think>\n    <tool_call>"
+                '{"name": "alpha", "arguments": {"value": 1}}</tool_call>'
+            ),
+            ["alpha"],
+        ),
+        (
+            (
+                "<think>Let me plan:\n# Step 1</think>\n"
+                '    {"name": "alpha", "arguments": {"value": 1}}'
+            ),
+            ["alpha"],
+        ),
+        (
+            (
+                'Here:\n<tool_call>{\n\n    "name": "alpha",\n'
+                '    "arguments": {"value": 1}\n    }</tool_call>\n'
+                '    <tool_call>{"name": "beta", "arguments": {"value": 2}}'
+                "</tool_call>"
+            ),
+            ["alpha", "beta"],
+        ),
+        (
+            (
+                '# Heading <tool_call>{"name": "alpha",\n"arguments": {}}'
+                "</tool_call>\n"
+                '    <tool_call>{"name": "beta", "arguments": {}}</tool_call>'
+            ),
+            ["alpha", "beta"],
+        ),
+        (
+            (
+                "    <think>\nthinking\n</think>"
+                '{"name": "alpha", "arguments": {"value": 1}}'
+            ),
+            ["alpha"],
+        ),
+        (
+            (
+                '{\n\n    "name": "alpha",\n    "arguments": {"value": 1}\n'
+                '    }\n    {"name": "beta", "arguments": {"value": 2}}'
+            ),
+            ["alpha", "beta"],
+        ),
+        (
+            (
+                '{\n\n    "name": "alpha",\n    "arguments": {"value": 1}\n'
+                '    }\n    <tool_call>{"name": "beta", "arguments": {}}'
+                "</tool_call>"
+            ),
+            ["alpha", "beta"],
+        ),
+    ],
+    ids=[
+        "tool_call_tags_after_heading_in_think_block",
+        "bare_json_after_heading_in_think_block",
+        "tool_call_tags_after_blank_line_in_call_block",
+        "tool_call_tags_after_call_block_opening_in_heading",
+        "bare_json_after_think_block_opening_indented",
+        "bare_json_after_blank_line_in_bare_json",
+        "tool_call_tags_after_blank_line_in_bare_json",
+    ],
+)
+def test_parse_tool_calls_from_text_blocks_do_not_start_indented_code(
+    text, expected_names
+):
+  """A heading or blank line inside a block cannot start indented code."""
+  tool_calls, _ = _parse_tool_calls_from_text(text)
+
+  assert [call.function.name for call in tool_calls] == expected_names
+
+
+_DELETE_FILE_JSON = (
+    '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}'
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            "Example:\n\n    <think>\n    thinking\n    </think>\n"
+            f"    <tool_call>{_DELETE_FILE_JSON}</tool_call>"
+        ),
+        (
+            "Example:\n\n    $ echo hello\n    <think>\n    thinking\n"
+            f"    </think>\n    <tool_call>{_DELETE_FILE_JSON}</tool_call>"
+        ),
+        f"    <think>\n    thinking\n    </think>\n    {_DELETE_FILE_JSON}",
+    ],
+    ids=["tagged_call", "tagged_call_after_code_line", "bare_json"],
+)
+def test_parse_tool_calls_from_text_indented_think_block_keeps_code(text):
+  """A `<think>` block on indented lines does not end indented code."""
+  tool_calls, _ = _parse_tool_calls_from_text(text)
+
+  assert not tool_calls
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected_content"),
+    [
+        ("Wait - run `bar: ", "Wait - run `bar:"),
+        (
+            "Here is an unclosed fence:\n```\n",
+            "Here is an unclosed fence:\n```",
+        ),
+    ],
+    ids=["after_lone_backtick", "after_unclosed_fence"],
+)
+def test_split_message_content_parses_tool_call_with_code_marks_in_args(
+    prefix, expected_content
+):
+  """Backticks or tag text inside a call's JSON neither open code nor end it."""
+  args = {"cmd": "echo `hi` ```hello```", "tag": "<tool_call>"}
+  call = json.dumps({"name": "alpha", "arguments": args})
+  message = {
+      "role": "assistant",
+      "content": f"{prefix}<tool_call>{call}</tool_call>",
+  }
+
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+
+  assert content == expected_content
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "alpha"
+  assert json.loads(tool_calls[0].function.arguments) == args
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected_content"),
+    [
+        ("Wait - run `bar: ", "Wait - run `bar:"),
+        (
+            "Here is an unclosed fence:\n```\n",
+            "Here is an unclosed fence:\n```",
+        ),
+    ],
+    ids=["after_lone_backtick", "after_unclosed_fence"],
+)
+def test_split_message_content_parses_deepseek_call_with_code_marks_in_args(
+    prefix, expected_content
+):
+  """Backticks or a fence line in a DeepSeek call's args do not close code."""
+  call = (
+      f"{_DS_BEGIN_CALL}function{_DS_SEP}alpha\n"
+      '```json\n{"cmd": "echo `hi`"}\n```\n'
+      f"{_DS_END_CALL}"
+  )
+  message = {"role": "assistant", "content": prefix + call}
+
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+
+  assert content == expected_content
+  assert [tool_call.function.name for tool_call in tool_calls] == ["alpha"]
+  assert json.loads(tool_calls[0].function.arguments) == {"cmd": "echo `hi`"}
+
+
+def test_split_message_content_keeps_deepseek_call_quoted_after_real_one():
+  """A real DeepSeek call's argument fence does not unquote a later fence."""
+  quoted = (
+      "For example:\n```\n"
+      + _ds_tool_call("delete_file", '{"path": "/data/prod.db"}')
+      + "\n```"
+  )
+  message = {
+      "role": "assistant",
+      "content": _ds_wrapped(_ds_tool_call("alpha", '{"value": 1}')) + quoted,
+  }
+
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+
+  assert [tool_call.function.name for tool_call in tool_calls] == ["alpha"]
+  assert content == quoted
+
+
+def test_split_message_content_keeps_tool_call_quoted_next_to_deepseek_call():
+  """Code spans come from the whole text, not text with call blocks removed."""
+  quoted = (
+      '`<tool_call>{"name": "delete_file", "arguments": {"path":'
+      ' "/data/prod.db"}}</tool_call>` is the syntax.'
+  )
+  message = {
+      "role": "assistant",
+      "content": (
+          "Escape it as \\"
+          + _ds_wrapped(_ds_tool_call("alpha", '{"value": 1}'))
+          + quoted
+      ),
+  }
+
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+
+  assert [tool_call.function.name for tool_call in tool_calls] == ["alpha"]
+  assert content == "Escape it as \\" + quoted
+
+
+@pytest.mark.parametrize(
+    "token", [_DS_BEGIN_CALL, _DS_BEGIN_CALLS], ids=["call", "calls"]
+)
+def test_split_message_content_keeps_lone_deepseek_token_quoted_in_fence(
+    token,
+):
+  """A lone DeepSeek token in a fence does not run to a later call's end."""
+  quoted = f"```\nThe token {token} starts a call.\n```"
+  message = {
+      "role": "assistant",
+      "content": (
+          quoted + "\n" + _ds_wrapped(_ds_tool_call("alpha", '{"value": 1}'))
+      ),
+  }
+
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+
+  assert [tool_call.function.name for tool_call in tool_calls] == ["alpha"]
+  assert content == quoted
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            '{"name": "alpha", "arguments": {}}\n'
+            '<tool_call>{"name": "beta", "arguments": {}}</tool_call>'
+        ),
+        (
+            '<tool_call>{"name": "alpha", "arguments": {}}</tool_call>\n'
+            '{"name": "beta", "arguments": {}}'
+        ),
+    ],
+    ids=["bare_json_then_tagged", "tagged_then_bare_json"],
+)
+def test_split_message_content_parses_run_of_calls_the_text_opens_with(text):
+  """Bare JSON in the run of calls the text opens with is a call."""
+  content, tool_calls = _split_message_content_and_tool_calls(
+      {"role": "assistant", "content": text}
+  )
+
+  assert [tool_call.function.name for tool_call in tool_calls] == [
+      "alpha",
+      "beta",
+  ]
+  assert content is None
+
+
+def test_split_message_content_run_of_calls_stops_at_indented_code():
+  """Bare JSON in an indented code block after the opening calls is text."""
+  quoted = '{"name": "delete_file", "arguments": {"path": "/data/prod.db"}}'
+  content, tool_calls = _split_message_content_and_tool_calls({
+      "role": "assistant",
+      "content": '{"name": "alpha", "arguments": {}}\n\n    ' + quoted,
+  })
+
+  assert [tool_call.function.name for tool_call in tool_calls] == ["alpha"]
+  assert content == quoted
 
 
 def test_split_message_content_prefers_existing_structured_calls():
@@ -5601,7 +6485,7 @@ def test_to_litellm_role():
                     "message": {
                         "role": "assistant",
                         "content": (
-                            'Intro {"id":"call_2","name":"alpha",'
+                            '{"id":"call_2","name":"alpha",'
                             '"arguments":{"foo":"bar"}} wrap'
                         ),
                     },
@@ -5613,7 +6497,7 @@ def test_to_litellm_role():
                 },
             ),
             [
-                TextChunk(text="Intro  wrap"),
+                TextChunk(text="wrap"),
                 FunctionChunk(
                     id="call_2",
                     name="alpha",
@@ -6036,6 +6920,126 @@ async def test_generate_content_async_stream_sets_finish_reason(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field, thought",
+    [
+        pytest.param("content", None, id="text"),
+        pytest.param("reasoning_content", True, id="reasoning"),
+    ],
+)
+async def test_generate_content_async_stream_without_finish_reports_truncation(
+    mock_completion, lite_llm_instance, field, thought
+):
+  """A text or reasoning stream ending without a finish chunk is not a stop.
+
+  Reachable through custom ``llm_client`` implementations streaming raw
+  chunks (litellm itself substitutes a synthetic stop); the buffered text
+  is kept but finalized with an error so callers and telemetry can tell the
+  answer was cut off.
+  """
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", **{field: "Oslo is "}),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None, delta=Delta(**{field: "4C and"})
+              )
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+      if not response.partial
+  ]
+
+  assert len(responses) == 1
+  assert [(part.text, part.thought) for part in responses[0].content.parts] == [
+      ("Oslo is 4C and", thought)
+  ]
+  assert responses[0].finish_reason == types.FinishReason.OTHER
+  assert responses[0].error_code == types.FinishReason.OTHER
+  assert responses[0].error_message == (
+      "The stream ended without a finish reason; the response may be truncated."
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_trailing_usage_chunk_keeps_stop(
+    mock_completion, lite_llm_instance
+):
+  """A finish chunk followed by a usage-only chunk keeps its clean stop.
+
+  The finish reason belongs to the segment it ended; a later chunk without
+  one must not demote the finalized reason to a truncation report.
+  """
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello world"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason=None, delta=Delta())],
+          usage={
+              "prompt_tokens": 5,
+              "completion_tokens": 2,
+              "total_tokens": 7,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].finish_reason == types.FinishReason.STOP
+  assert responses[-1].error_code is None
+  assert responses[-1].content.parts[0].text == "Hello world"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_reports_content_filter(
     mock_completion, lite_llm_instance
 ):
@@ -6384,6 +7388,74 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
   assert responses[5].usage_metadata.total_token_count == 15
   assert responses[5].usage_metadata.cached_content_token_count == 8
   assert responses[5].usage_metadata.cache_creation_input_tokens == 4
+  assert responses[5].cache_creation_token_count == 4
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_text_with_bedrock_cache_tokens(
+    mock_completion, lite_llm_instance
+):
+  """A text-only stream reports cache writes on its final response."""
+  streaming_text_response = [
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello, "),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(role="assistant", content="world!"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+              "cache_read_input_tokens": 8,
+              "cache_creation_input_tokens": 4,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+              )
+          ],
+      ),
+  ]
+
+  mock_completion.return_value = iter(streaming_text_response)
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+  assert len(responses) == 3
+  assert responses[0].content.parts[0].text == "Hello, "
+  assert responses[1].content.parts[0].text == "world!"
+  assert responses[2].usage_metadata.prompt_token_count == 10
+  assert responses[2].usage_metadata.candidates_token_count == 5
+  assert responses[2].usage_metadata.total_token_count == 15
+  assert responses[2].usage_metadata.cached_content_token_count == 8
+  assert responses[2].usage_metadata.cache_creation_input_tokens == 4
+  assert responses[2].cache_creation_token_count == 4
 
 
 @pytest.mark.asyncio
@@ -7318,6 +8390,545 @@ async def test_streaming_inline_tool_call_malformed_arguments(
   assert "test_function" in final_response.error_message
 
 
+def _text_stream(*deltas: str) -> list[ModelResponseStream]:
+  """Streams each text as one delta, then a stop-only chunk."""
+  chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content=text),
+              )
+          ]
+      )
+      for text in deltas
+  ]
+  chunks.append(
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(role="assistant", content=""),
+              )
+          ]
+      )
+  )
+  return chunks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "deltas",
+    [
+        (
+            "The README shows this example: ",
+            '{"name": "test_function", "arguments": {"test_arg": "x"}}',
+            " Done.",
+        ),
+        (
+            "```xml\n",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n```",
+        ),
+        (
+            "Here is the tag syntax: `",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "`.",
+        ),
+        (
+            (
+                '```xml\n<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n```",
+        ),
+        (
+            "Example:\n\n    ",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n\nDone.",
+        ),
+        (
+            '    {"name": "test_function", "arguments": {"test_arg": "x"}}',
+            "\n\nDone.",
+        ),
+        (
+            "<think>Maybe ",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "</think>No call needed.",
+        ),
+        (
+            "<th",
+            (
+                'ink>Maybe <tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call></think>No.'
+            ),
+        ),
+        (
+            "# Usage\n",
+            "    ",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n",
+        ),
+        (
+            "<think>\n```\nthinking\n</think>\n```\n",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n```",
+        ),
+        (
+            "#",
+            (
+                ' Usage\n    <tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+        ),
+        (
+            "I checked `foo`. <think>\n\n",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n</think>No.",
+        ),
+        (
+            "Found ~5 files. <think>\n\n",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n</think>No.",
+        ),
+        (
+            "Use `foo <think>\n\n",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n</think>No.",
+        ),
+        (
+            "Let me check.\n\n    <think>\nMaybe ",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "\n</think>\nNo.",
+        ),
+        (
+            "<think>Maybe ",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "</think>"}}</tool_call>'
+            ),
+            " or ",
+            (
+                '<tool_call>{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}</tool_call>'
+            ),
+            "</think>\nDone.",
+        ),
+    ],
+    ids=[
+        "after_prose",
+        "tool_call_tags_in_code_fence",
+        "tool_call_tags_in_inline_code",
+        "tool_call_tags_in_fence_opened_in_same_delta",
+        "tool_call_tags_in_indented_code",
+        "bare_json_in_indented_code",
+        "tool_call_tags_in_think_block",
+        "tool_call_tags_in_think_block_with_split_tag",
+        "tool_call_tags_in_indented_code_after_heading",
+        "tool_call_tags_in_fence_after_think_block_holding_a_fence",
+        "tool_call_tags_in_indented_code_after_heading_split_mid_line",
+        "tool_call_tags_in_think_block_after_inline_code",
+        "tool_call_tags_in_think_block_after_tilde",
+        "tool_call_tags_in_think_block_after_unclosed_backtick",
+        "tool_call_tags_in_think_block_opened_on_indented_line",
+        "tool_call_tags_in_think_block_after_close_tag_in_arguments",
+    ],
+)
+async def test_streaming_text_quoting_a_tool_call_is_not_a_call(
+    mock_completion, lite_llm_instance, deltas
+):
+  """Prose that quotes a tool call in its own delta streams back as text."""
+  mock_completion.return_value = iter(_text_stream(*deltas))
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert not [
+      part
+      for response in responses
+      for part in response.content.parts
+      if part.function_call
+  ]
+  final_text = "".join(part.text for part in responses[-1].content.parts)
+  assert final_text == "".join(deltas)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("deltas", "expected_texts"),
+    [
+        (
+            ('{"name": "test_function", "arguments": {"test_arg": "x"}}',),
+            [],
+        ),
+        (
+            (
+                "Let me check that.",
+                (
+                    '<tool_call>{"name": "test_function", "arguments":'
+                    ' {"test_arg": "x"}}</tool_call>'
+                ),
+            ),
+            ["Let me check that.", "Let me check that."],
+        ),
+        (
+            (
+                '{"name": "test_function", ',
+                '"arguments": {"test_arg": "x"}}',
+            ),
+            [
+                '{"name": "test_function", ',
+                '"arguments": {"test_arg": "x"}}',
+            ],
+        ),
+        (
+            (
+                (
+                    '<tool_call>\n```json\n{"name": "test_function",'
+                    ' "arguments": {"test_arg": "x"}}\n```\n</tool_call>'
+                ),
+            ),
+            [
+                '<tool_call>\n```json\n{"name": "test_function", "arguments":'
+                ' {"test_arg": "x"}}\n```\n</tool_call>'
+            ],
+        ),
+    ],
+    ids=[
+        "single_delta",
+        "tagged_delta_after_preamble",
+        "split_across_deltas",
+        "only_call_held_back",
+    ],
+)
+async def test_streaming_text_that_is_a_tool_call_becomes_a_call(
+    mock_completion, lite_llm_instance, deltas, expected_texts
+):
+  """A streamed message whose text is a tool call ends as that call."""
+  mock_completion.return_value = iter(_text_stream(*deltas))
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  streamed_texts = [
+      part.text
+      for response in responses
+      for part in response.content.parts
+      if part.text
+  ]
+  assert streamed_texts == expected_texts
+  function_calls = [
+      part.function_call
+      for part in responses[-1].content.parts
+      if part.function_call
+  ]
+  assert len(function_calls) == 1
+  assert function_calls[0].name == "test_function"
+  assert function_calls[0].args == {"test_arg": "x"}
+
+
+def _tagged_call(name: str) -> str:
+  return f'<tool_call>{{"name": "{name}", "arguments": {{}}}}</tool_call>'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "deltas",
+    [
+        (_tagged_call("alpha"), "Checking `foo", "`\n" + _tagged_call("beta")),
+        (_tagged_call("alpha"), "About ~~~ that", "\n" + _tagged_call("beta")),
+        (
+            _tagged_call("alpha"),
+            '<tool_call>{"name": "beta", ',
+            '"arguments": {}}</tool_call>',
+        ),
+        (
+            "Checking `foo`: " + _tagged_call("alpha") + "\n\n",
+            _tagged_call("beta"),
+        ),
+        (
+            '<tool_call>{"name": "alpha", ',
+            '"arguments": {}}</tool_call>',
+            _tagged_call("beta"),
+        ),
+        (
+            '{"name": "alpha", "arguments": {}}',
+            '{"name": "beta", "arguments": {"cmd": "`ls`"}}',
+        ),
+    ],
+    ids=[
+        "after_inline_code",
+        "after_mid_line_tildes",
+        "split_across_deltas",
+        "held_back_before_inline_call",
+        "split_before_inline_call",
+        "bare_json_held_back_after_inline_call",
+    ],
+)
+async def test_streaming_text_keeps_tool_calls_after_an_inline_call(
+    mock_completion, lite_llm_instance, deltas
+):
+  """Calls held back from their delta keep their place among inline calls."""
+  mock_completion.return_value = iter(_text_stream(*deltas))
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  function_calls = [
+      part.function_call.name
+      for part in responses[-1].content.parts
+      if part.function_call
+  ]
+  assert function_calls == ["alpha", "beta"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_inline_calls_keep_their_slots_and_ids_across_deltas(
+    mock_completion, lite_llm_instance
+):
+  """Each delta's inline calls take fresh slots and keep their streamed ids."""
+  mock_completion.return_value = iter(
+      _text_stream(
+          '<tool_call>{"name": "alpha", "arguments": {"a": 1}}</tool_call>',
+          '<tool_call>{"name": "beta", "arguments": {"b": 2}}</tool_call>'
+          '<tool_call>{"name": "gamma", "arguments": {"c": 3}}</tool_call>',
+      )
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  partial_calls = [
+      part.function_call
+      for response in responses
+      if response.partial
+      for part in response.content.parts
+      if part.function_call
+  ]
+  final_calls = [
+      part.function_call
+      for part in responses[-1].content.parts
+      if part.function_call
+  ]
+  assert [call.name for call in partial_calls] == ["alpha", "beta", "gamma"]
+  assert [(call.name, call.args) for call in final_calls] == [
+      ("alpha", {"a": 1}),
+      ("beta", {"b": 2}),
+      ("gamma", {"c": 3}),
+  ]
+  assert [call.id for call in final_calls] == [
+      call.id for call in partial_calls
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "deltas",
+    [
+        ("Use `<think>` tags.\n\n", _tagged_call("alpha")),
+        ("# Heading <think>line1\nline2</think>\n    ", _tagged_call("alpha")),
+    ],
+    ids=["think_tag_in_inline_code", "think_block_across_lines_in_heading"],
+)
+async def test_streaming_quoted_think_tag_keeps_later_calls_streaming(
+    mock_completion, lite_llm_instance, deltas
+):
+  """A quoted `<think>` tag or closed block does not hold back later calls."""
+  mock_completion.return_value = iter(_text_stream(*deltas))
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  partial_calls = [
+      part.function_call.name
+      for response in responses
+      if response.partial
+      for part in response.content.parts
+      if part.function_call
+  ]
+  final_calls = [
+      part.function_call.name
+      for part in responses[-1].content.parts
+      if part.function_call
+  ]
+  assert partial_calls == ["alpha"]
+  assert final_calls == ["alpha"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_indented_think_block_keeps_code(
+    mock_completion, lite_llm_instance
+):
+  """A `<think>` block on indented lines does not end streamed indented code."""
+  mock_completion.return_value = iter(
+      _text_stream(
+          "Example:\n\n    <think>\n    thinking\n    </think>\n    ",
+          _tagged_call("delete_file"),
+      )
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert not [
+      part.function_call
+      for response in responses
+      for part in response.content.parts
+      if part.function_call
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "deltas",
+    [
+        (
+            '{"name": "alpha", "arguments": {"cmd": "`ls`"}}',
+            "\n\n",
+            _tagged_call("beta"),
+        ),
+        (_tagged_call("alpha"), '{"name": "beta", "arguments": {}}'),
+    ],
+    ids=["after_held_back_json_call", "bare_json_after_tagged_call"],
+)
+async def test_streaming_text_held_back_json_call_matches_unstreamed_parse(
+    mock_completion, lite_llm_instance, deltas
+):
+  """Streamed text ends with the calls and text it has unstreamed."""
+  mock_completion.return_value = iter(_text_stream(*deltas))
+  unstreamed_content, unstreamed_calls = _split_message_content_and_tool_calls(
+      {"role": "assistant", "content": "".join(deltas)}
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  function_calls = [
+      part.function_call.name
+      for part in responses[-1].content.parts
+      if part.function_call
+  ]
+  final_text = "".join(
+      part.text for part in responses[-1].content.parts if part.text
+  )
+  assert function_calls == [call.function.name for call in unstreamed_calls]
+  assert final_text == (unstreamed_content or "")
+
+
+@pytest.mark.asyncio
+async def test_streaming_held_back_call_survives_a_later_text_segment(
+    mock_completion, lite_llm_instance
+):
+  """A segment whose only call was held back still ends as that call."""
+  held_back = (
+      '<tool_call>{"name": "test_function", "arguments": {"test_arg":'
+      ' "`x`"}}</tool_call>'
+  )
+  mock_completion.return_value = iter(
+      _text_stream(held_back) + _text_stream("Done.")
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  function_calls = [
+      (part.function_call.name, part.function_call.args)
+      for response in responses
+      if not response.partial
+      for part in response.content.parts
+      if part.function_call
+  ]
+  assert function_calls == [("test_function", {"test_arg": "`x`"})]
+
+
+@pytest.mark.asyncio
+async def test_streaming_model_response_chunk_keeps_its_tool_calls(
+    mock_completion, lite_llm_instance, mock_response
+):
+  """A ModelResponse chunk in a stream keeps the tool calls in its message."""
+  mock_completion.return_value = iter([mock_response])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_parts = responses[-1].content.parts
+  function_calls = [
+      part.function_call for part in final_parts if part.function_call
+  ]
+  assert [(call.name, call.args) for call in function_calls] == [
+      ("test_function", {"test_arg": "test_value"})
+  ]
+  assert "".join(part.text for part in final_parts if part.text) == (
+      "Test response"
+  )
+
+
 @pytest.mark.asyncio
 async def test_streaming_tool_call_complete_with_length_finish_reason(
     mock_completion, lite_llm_instance
@@ -7582,6 +9193,54 @@ async def test_streaming_tool_call_non_object_json_arguments_reports_malformed(
       "Looking that up."
   ]
   assert not any(part.function_call for part in final_response.content.parts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", _UNUSABLE_TOOL_CALL_ARGUMENTS)
+async def test_streaming_tool_call_unusable_arguments_reports_malformed(
+    arguments, mock_completion, lite_llm_instance
+):
+  """Streamed arguments no repair can turn into a function call are refused."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content="Looking that up.",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments=arguments,
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  # The stream path refuses the call like any other unparseable arguments.
+  assert final_response.content is None
 
 
 @pytest.mark.asyncio
@@ -12666,10 +14325,25 @@ class TestParseToolCallArguments:
           'I will call the tool with {"path": "/x"}',
           'Here is the result: ```json\n{"a": 1}\n```',
           "```json" + "\n" * 10000,
+          *_UNUSABLE_TOOL_CALL_ARGUMENTS,
+          pytest.param("{a: " + _DEEPLY_NESTED + "}", id="unquoted_deep"),
+          # ast.literal_eval raises MemoryError and RecursionError for these.
+          pytest.param("-" * 100_000 + "1", id="literal_eval_memory_error"),
+          pytest.param("1" + "+1" * 100_000, id="literal_eval_recursion_error"),
+          pytest.param(
+              "```json\n" + _DEEPLY_NESTED + "\n```", id="fenced_deep"
+          ),
       ],
   )
   def test_ambiguous_and_malformed_arguments_raise(self, arguments):
     """Ambiguous or unrecoverable inputs raise JSONDecodeError."""
+    with pytest.raises(json.JSONDecodeError):
+      _parse_tool_call_arguments(arguments)
+
+  def test_self_referencing_arguments_raise(self):
+    """A dict that contains itself is reported, not walked forever."""
+    arguments = {}
+    arguments["a"] = arguments
     with pytest.raises(json.JSONDecodeError):
       _parse_tool_call_arguments(arguments)
 

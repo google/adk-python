@@ -43,6 +43,7 @@ from google.adk.workflow._node_state import NodeStatus
 from google.adk.workflow._workflow import _LoopState
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow.utils._rehydration_utils import _reconstruct_node_states
 from google.adk.workflow.utils._workflow_graph_utils import build_node
 from google.genai import types
 from pydantic import BaseModel
@@ -160,6 +161,37 @@ async def test_rehydrate_finds_completed_node():
   run = ls.runs['wf/parent/child@r-1']
   assert run.recovered_state is not None
   assert run.recovered_state.output == 'result'
+
+
+def test_rehydrate_reads_only_the_current_invocation():
+  """Each node's lazy scan skips earlier invocations' events entirely."""
+  earlier = [
+      _make_event(
+          path=f'wf/parent/child@{i}', output=i, invocation_id=f'turn-{t}'
+      )
+      for t in range(20)
+      for i in range(1, 4)
+  ]
+  current = _make_event(path='wf/parent/child@1', output='now')
+  ctx, _ = _make_parent_ctx(events=earlier + [current])
+  ls = _LoopState()
+  scheduler = DynamicNodeScheduler(state=ls)
+  scanned = []
+
+  def _record(*, events, **kwargs):
+    scanned.extend(events)
+    return _reconstruct_node_states(events=events, **kwargs)
+
+  with patch(
+      'google.adk.workflow._dynamic_node_scheduler._reconstruct_node_states',
+      side_effect=_record,
+  ):
+    for i in range(1, 4):
+      scheduler._rehydrate_from_events(ctx, f'wf/parent/child@{i}')
+
+  assert all(e.invocation_id == 'inv-1' for e in scanned)
+  assert ls.runs['wf/parent/child@1'].recovered_state.output == 'now'
+  assert 'wf/parent/child@2' not in ls.runs
 
 
 @pytest.mark.asyncio
@@ -1717,3 +1749,37 @@ async def test_same_turn_replayed_run_preserves_route_and_branch(
       child_ctx.branch,
       child_ctx.actions.transfer_to_agent,
   )
+
+
+@pytest.mark.asyncio
+async def test_rerun_on_resume_error_names_orchestrator_node():
+  """A node calling ctx.run_node without rerun_on_resume raises naming it."""
+  from google.adk.workflow import node
+
+  @node
+  def child(node_input):
+    return 'done'
+
+  @node
+  async def orchestrator(ctx: Context, node_input):
+    yield await ctx.run_node(child, node_input=node_input)
+
+  wf = Workflow(name='root', edges=[(START, orchestrator)])
+  session_service = InMemorySessionService()
+  runner = Runner(app_name='t', node=wf, session_service=session_service)
+  session = await session_service.create_session(app_name='t', user_id='u')
+
+  expected_pattern = (
+      r"Node 'orchestrator' calls ctx\.run_node but has rerun_on_resume=False;"
+      r' set rerun_on_resume=True on it \(e\.g\. @node\(rerun_on_resume=True\)'
+      r' or node\(my_node, rerun_on_resume=True\)\)\.'
+  )
+  with pytest.raises(ValueError, match=expected_pattern):
+    async for _ in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        new_message=types.Content(
+            parts=[types.Part(text='start')], role='user'
+        ),
+    ):
+      pass

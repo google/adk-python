@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Annotated
 from typing import Any
-from typing import Union
 
 from pydantic import Discriminator
 from pydantic import RootModel
@@ -54,13 +53,11 @@ def agent_config_discriminator(v: Any) -> str:
 
 # A discriminated union of all possible agent configurations.
 ConfigsUnion = Annotated[
-    Union[
-        Annotated[LlmAgentConfig, Tag("LlmAgent")],
-        Annotated[LoopAgentConfig, Tag("LoopAgent")],
-        Annotated[ParallelAgentConfig, Tag("ParallelAgent")],
-        Annotated[SequentialAgentConfig, Tag("SequentialAgent")],
-        Annotated[BaseAgentConfig, Tag("BaseAgent")],
-    ],
+    Annotated[LlmAgentConfig, Tag("LlmAgent")]
+    | Annotated[LoopAgentConfig, Tag("LoopAgent")]
+    | Annotated[ParallelAgentConfig, Tag("ParallelAgent")]
+    | Annotated[SequentialAgentConfig, Tag("SequentialAgent")]
+    | Annotated[BaseAgentConfig, Tag("BaseAgent")],
     Discriminator(agent_config_discriminator),
 ]
 

@@ -37,6 +37,7 @@ from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.auth_credential import _redact_credential_secrets
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
@@ -72,6 +73,10 @@ from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
 from google.genai import types
+from opentelemetry import baggage
+from opentelemetry import trace
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import BaseModel
 import pytest
 from starlette.applications import Starlette
@@ -625,6 +630,54 @@ def test_no_auth_warning_on_non_loopback_bind(
   assert warned is expect_warning
 
 
+def test_get_fast_api_app_creates_file_eval_storage_dir(tmp_path, monkeypatch):
+  """file:// eval_storage_uri creates that directory for local eval managers."""
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "adk_evals"
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(
+        agents_dir=str(agents_dir),
+        web=False,
+        eval_storage_uri=storage_dir.as_uri(),
+    )
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
+def test_get_fast_api_app_honors_eval_storage_uri_env(tmp_path, monkeypatch):
+  """ADK_EVAL_STORAGE_URI is used when eval_storage_uri is omitted."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "from_env"
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", storage_dir.as_uri())
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(agents_dir=str(agents_dir), web=False)
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
@@ -804,6 +857,218 @@ def test_api_server_get_runner_async_rejects_internal_special_agent_name(
   )
 
 
+_NO_EVAL_SETS_MANAGER = "Eval sets manager is not configured"
+_NO_EVAL_SET_RESULTS_MANAGER = "Eval set results manager is not configured"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "detail"),
+    [
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets",
+            {"eval_set": {"eval_set_id": "s", "eval_cases": []}},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        ("GET", "/dev/apps/test_app/eval-sets", None, _NO_EVAL_SETS_MANAGER),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/add-session",
+            {"eval_id": "e", "session_id": "session", "user_id": "user"},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_sets/s/evals",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "PUT",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            {"eval_id": "e", "conversation": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "DELETE",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/run",
+            {"eval_ids": [], "eval_metrics": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+    ],
+)
+async def test_eval_endpoints_without_eval_managers_return_500(
+    method,
+    path,
+    body,
+    detail,
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+
+  await mock_session_service.create_session(
+      app_name="test_app", user_id="user", session_id="session"
+  )
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.request(method, path, json=body)
+
+  assert response.status_code == 500
+  assert response.json() == {"detail": detail}
+
+
+def test_run_eval_without_eval_set_results_manager_succeeds(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set("test_app", "s")
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=eval_sets_manager,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.post(
+      "/dev/apps/test_app/eval-sets/s/run",
+      json={"eval_ids": [], "eval_metrics": []},
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {"runEvalResults": []}
+
+
+@pytest.fixture
+def workflow_root_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  workflow = Workflow(name="wf", edges=[(START, BaseNode(name="leaf"))])
+
+  class WorkflowLoader(BaseAgentLoader):
+
+    def load_agent(self, agent_name: str) -> Workflow:
+      return workflow
+
+    def list_agents(self) -> list[str]:
+      return ["wf_app"]
+
+  dev_server = DevServer(
+      agent_loader=WorkflowLoader(),
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  return TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+
+def test_app_graph_for_workflow_root_is_empty(workflow_root_client):
+  """A Workflow root gets an empty app graph instead of a 500."""
+  response = workflow_root_client.get("/dev/apps/wf_app/graph")
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
+async def test_event_graph_for_workflow_root_is_empty(
+    workflow_root_client, mock_session_service
+):
+  """A Workflow root gets an empty event graph instead of a 500."""
+  session = await mock_session_service.create_session(
+      app_name="wf_app", user_id="user"
+  )
+  event = Event(author="leaf", invocation_id="invocation_id")
+  await mock_session_service.append_event(session=session, event=event)
+
+  response = workflow_root_client.get(
+      f"/dev/apps/wf_app/users/user/sessions/{session.id}/events/"
+      f"{event.id}/graph"
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
 @pytest.mark.parametrize(
     ("web", "bind_host", "expected"),
     [
@@ -946,6 +1211,7 @@ def test_app(
 
 @pytest.fixture
 def builder_test_app(
+    request,
     tmp_path,
     mock_session_service,
     mock_artifact_service,
@@ -1008,7 +1274,7 @@ def builder_test_app(
         session_service_uri="",
         artifact_service_uri="",
         memory_service_uri="",
-        allow_origins=None,
+        allow_origins=getattr(request, "param", None),
         a2a=False,
         host="127.0.0.1",
         bind_host="127.0.0.1",
@@ -2683,7 +2949,6 @@ async def test_rewind_aborts_active_run_sse(
       new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -2694,9 +2959,13 @@ async def test_rewind_aborts_active_run_sse(
     if message.get("type") == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -2913,7 +3182,6 @@ async def test_invalid_rewind_does_not_abort_active_run_sse(
       new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -2921,9 +3189,13 @@ async def test_invalid_rewind_does_not_abort_active_run_sse(
   async def send(message):
     del message
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -3021,7 +3293,6 @@ async def test_rewind_abort_timeout_returns_409(
       new_message={"role": "user", "parts": [{"text": "Run stuck tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -3029,9 +3300,13 @@ async def test_rewind_abort_timeout_returns_409(
   async def send(message):
     del message
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -4679,8 +4954,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator and close it early
@@ -4752,8 +5035,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator
@@ -4869,9 +5160,6 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
       streaming=True,
   )
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4882,8 +5170,14 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )
@@ -4906,6 +5200,105 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
   frs = abort_events[0].get_function_responses()
   assert len(frs) == 1
   assert frs[0].id == "call_sse_1"
+  assert frs[0].name == "slow_tool"
+
+
+async def test_agent_run_sse_disconnect_aborts_under_asgi_2_4(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test /run_sse disconnect aborts under ASGI 2.4 when send() no-ops."""
+  info = create_test_session
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+  after_run_flag = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  loaded_app = _slow_tool_app(
+      info,
+      captured_contexts,
+      tool_in_flight,
+      after_run_flag,
+      call_id="call_sse_asgi_24",
+  )
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+
+  sent_chunks: list[str] = []
+
+  async def receive():
+    await tool_in_flight.wait()
+    return {"type": "http.disconnect"}
+
+  async def send(message):
+    if tool_in_flight.is_set():
+      return
+    if message["type"] == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  scope = {
+      "type": "http",
+      "asgi": {"spec_version": "2.4"},
+      "method": "POST",
+      "path": "/run_sse",
+      "headers": [],
+  }
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
+  await asyncio.wait_for(
+      response(scope, receive, send),
+      timeout=2.0,
+  )
+
+  assert any("slow_tool" in chunk for chunk in sent_chunks)
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted
+  assert after_run_flag.is_set()
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  abort_events = [
+      e for e in session.events if e.error_code == "INVOCATION_ABORTED"
+  ]
+  assert len(abort_events) == 1
+  frs = abort_events[0].get_function_responses()
+  assert len(frs) == 1
+  assert frs[0].id == "call_sse_asgi_24"
   assert frs[0].name == "slow_tool"
 
 
@@ -4950,9 +5343,6 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
   monkeypatch.setattr(Event, "model_dump", _failing_model_dump_json)
   monkeypatch.setattr(Event, "model_dump_json", _failing_model_dump_json)
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4963,8 +5353,14 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )
@@ -5186,7 +5582,7 @@ def test_save_artifact_returns_400_on_validation_error(
 def test_save_artifact_returns_500_on_unexpected_error(
     test_app, create_test_session, mock_artifact_service
 ):
-  """Test save artifact endpoint surfaces unexpected errors as HTTP 500."""
+  """Test save artifact endpoint reports unexpected errors as HTTP 500."""
   info = create_test_session
   url = (
       f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
@@ -5199,12 +5595,12 @@ def test_save_artifact_returns_500_on_unexpected_error(
   }
 
   mock_artifact_service.save_artifact_side_effect = RuntimeError(
-      "unexpected failure"
+      "bucket my-bucket object a/b.txt agent@example.iam.gserviceaccount.com"
   )
 
   response = test_app.post(url, json=payload)
   assert response.status_code == 500
-  assert response.json()["detail"] == "unexpected failure"
+  assert response.json()["detail"] == "Failed to save artifact"
 
 
 def test_get_artifact_version_metadata(
@@ -5850,6 +6246,156 @@ def test_builder_get_allows_request_without_origin(builder_test_client):
 
   assert response.status_code == 200
   assert not response.text
+
+
+@pytest.mark.parametrize(
+    "builder_test_app", [["*"], ["regex:https://.*"]], indirect=True
+)
+def test_builder_save_rejects_origin_allowed_only_by_wildcard(
+    builder_test_client, tmp_path
+):
+  """A wildcard opens CORS to every site, but not agent file writes."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": "https://evil.example"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+  assert not (tmp_path / "app" / "root_agent.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "builder_test_app", [["*", "https://ide.example"]], indirect=True
+)
+@pytest.mark.parametrize("origin", [_LOOPBACK_BASE_URL, "https://ide.example"])
+def test_builder_save_allows_own_or_literally_listed_origin(
+    builder_test_client, tmp_path, origin
+):
+  """The dev UI and an origin the developer named still reach the builder."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": origin},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert (tmp_path / "app" / "root_agent.yaml").is_file()
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("GET", "/apps/__internal_assistant/app-info", None),
+        (
+            "POST",
+            "/run",
+            {
+                "app_name": "__internal_assistant",
+                "user_id": "u",
+                "session_id": "s",
+                "new_message": {"role": "user", "parts": [{"text": "hi"}]},
+            },
+        ),
+    ],
+)
+def test_special_agent_rejects_origin_allowed_only_by_wildcard(
+    method,
+    path,
+    body,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Internal agents write code, so a wildcard does not open them to sites."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+  headers = {"host": "127.0.0.1:8000", "origin": "https://evil.example"}
+
+  response = client.request(method, path, json=body, headers=headers)
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+
+
+def test_special_agent_allows_own_origin_with_wildcard(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """The dev UI keeps the builder assistant when allow_origins has '*'."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+
+
+def test_special_agent_allows_proxied_origin_without_allow_origins(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Without a wildcard, the forwarded-host same-origin check still applies."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={
+          "host": "127.0.0.1:8000",
+          "x-forwarded-host": "localhost:9000",
+          "origin": "http://localhost:9000",
+      },
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
 
 
 def test_builder_save_rejects_remote_client(
@@ -7510,11 +8056,18 @@ def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
 #################################################
 
 
-def test_finalize_agent_identity_credentials_success(test_app):
+@pytest.mark.parametrize(
+    "connector_name",
+    [
+        "projects/p/locations/l/connectors/c",
+        "projects/p/locations/l/authProviders/c",
+    ],
+)
+def test_finalize_agent_identity_credentials_success(test_app, connector_name):
   """Test successful credential finalization and Base64 padding decoding."""
   import base64
 
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   raw_bytes = b"test-validation-state-bytes"
   # Unpadded url-safe base64 string
@@ -7522,12 +8075,12 @@ def test_finalize_agent_identity_credentials_success(test_app):
 
   with (
       patch.object(
-          iamconnectorcredentials_v1alpha,
-          "IAMConnectorCredentialsServiceClient",
+          agentidentitycredentials_v1,
+          "AuthProviderCredentialsServiceClient",
           autospec=True,
       ) as mock_client_cls,
       patch.object(
-          iamconnectorcredentials_v1alpha,
+          agentidentitycredentials_v1,
           "FinalizeCredentialsRequest",
           autospec=True,
       ) as mock_req_cls,
@@ -7538,7 +8091,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     response = test_app.post(
         "/agent-identity/finalize",
         json={
-            "connector_name": "projects/p/locations/l/connectors/c",
+            "connector_name": connector_name,
             "user_id": "user-123",
             "user_id_validation_state": b64_str,
             "consent_nonce": "nonce-456",
@@ -7548,7 +8101,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     assert response.json() == {"status": "ok"}
 
     mock_req_cls.assert_called_once_with(
-        connector="projects/p/locations/l/connectors/c",
+        auth_provider="projects/p/locations/l/authProviders/c",
         user_id="user-123",
         user_id_validation_state=raw_bytes,
         consent_nonce="nonce-456",
@@ -7559,11 +8112,11 @@ def test_finalize_agent_identity_credentials_success(test_app):
 @pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
 def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ):
     response = test_app.post(
@@ -7582,9 +8135,9 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
 
 
 def test_finalize_agent_identity_credentials_missing_dependency(test_app):
-  """Test error handling when google-cloud-iamconnectorcredentials is not installed."""
+  """Test error handling when google-cloud-agentidentitycredentials is not installed."""
   with patch.dict(
-      "sys.modules", {"google.cloud.iamconnectorcredentials_v1alpha": None}
+      "sys.modules", {"google.cloud.agentidentitycredentials_v1": None}
   ):
     response = test_app.post(
         "/agent-identity/finalize",
@@ -7601,11 +8154,11 @@ def test_finalize_agent_identity_credentials_missing_dependency(test_app):
 
 def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
   """Test backend InvalidArgument API error handling (400 response)."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -7628,14 +8181,14 @@ def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
 
 def test_finalize_agent_identity_credentials_api_call_error(test_app):
   """Test backend GoogleAPICallError error handling with status code propagation."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   err = GoogleAPICallError("Permission denied")
   err.code = 403
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -8598,6 +9151,91 @@ def test_url_prefix_propagated_to_docs_openapi_url(
   response = client.get("/docs")
   assert response.status_code == 200
   assert "/adk/openapi.json" in response.text
+
+
+def test_context_propagation_middleware_extracts_w3c_traceparent_and_baggage(
+    test_app,
+):
+  """Requests to get_fast_api_app propagate W3C traceparent and baggage."""
+  exporter = InMemorySpanExporter()
+  trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+  captured: dict[str, str | None] = {}
+
+  @test_app.app.get("/_test_trace_context")
+  async def _probe():
+    with trace.get_tracer(__name__).start_as_current_span("probe"):
+      captured["tenant_id"] = baggage.get_baggage("tenant_id")
+    return {"ok": True}
+
+  try:
+    response = test_app.get(
+        "/_test_trace_context",
+        headers={
+            "traceparent": (
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+            ),
+            "baggage": "tenant_id=acme",
+        },
+    )
+    spans = exporter.get_finished_spans()
+  finally:
+    exporter.shutdown()
+
+  # Exactly one local root, whichever span opens the request (FastAPI's own
+  # server span on FastAPI >= 0.142, else the probe), parented to the caller.
+  roots = [s for s in spans if s.parent is None or s.parent.is_remote]
+  assert response.status_code == 200
+  assert captured == {"tenant_id": "acme"}
+  assert [
+      (f"{s.context.trace_id:032x}", s.parent and f"{s.parent.span_id:016x}")
+      for s in roots
+  ] == [("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")]
+
+
+def test_agent_engine_keeps_spans_of_unsampled_platform_traceparent(
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """On Agent Engine an unsampled platform traceparent does not drop spans."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "123")
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  exporter = InMemorySpanExporter()
+  trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+
+  @client.app.get("/_test_trace_context")
+  async def _probe():
+    with trace.get_tracer(__name__).start_as_current_span("probe"):
+      pass
+    return {"ok": True}
+
+  try:
+    response = client.get(
+        "/_test_trace_context",
+        headers={
+            "traceparent": (
+                "00-0000000000000000385c840e58676fdd-00f067aa0ba902b7-00"
+            ),
+        },
+    )
+    spans = exporter.get_finished_spans()
+  finally:
+    exporter.shutdown()
+
+  assert response.status_code == 200
+  assert [(s.name, s.parent) for s in spans] == [("probe", None)]
+  assert spans[0].context.trace_id != 0x385C840E58676FDD
 
 
 if __name__ == "__main__":
