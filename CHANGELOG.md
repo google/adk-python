@@ -3,6 +3,13 @@
 ## [2.14.1](https://github.com/google/adk-python/compare/v2.14.0...v2.14.1) (2026-11-12)
 
 
+### Highlights
+
+<one sentence describing the theme of this release>
+
+* **<Feature>**: <what it unlocks for the user, in one line>. (<commit>)
+* **<Feature>**: <user benefit>. (<commit>)
+
 ### Bug Fixes
 
 * **tracing:** turn off FastAPI's native tracing on Agent Engine ([87e5399](https://github.com/google/adk-python/commit/87e53990addc68f59c45538fe17b21e4783e1c96))
