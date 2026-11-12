@@ -87,7 +87,6 @@ from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..converters.utils import _is_failed_status
 from ..converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from ..converters.utils import A2A_TASK_FAILED_ERROR_MESSAGE
-from ..experimental import a2a_experimental
 from ..logs.log_utils import build_a2a_request_log
 from ..logs.log_utils import build_a2a_response_log
 from .config import A2aCardRequestConfig
@@ -447,14 +446,12 @@ def _card_target_origin(url: str) -> tuple[str, str, Optional[int]]:
   return scheme, host, port
 
 
-@a2a_experimental
 class AgentCardResolutionError(Exception):
   """Raised when agent card resolution fails."""
 
   pass
 
 
-@a2a_experimental
 class A2AClientError(Exception):
   """Raised when A2A client operations fail."""
 
@@ -563,17 +560,42 @@ def _find_finish_task_args_from_history(
   """Search session events for the latest finish_task FC and return args."""
   matching_fc_id = None
   if completed_fr_event:
-    for fr in completed_fr_event.get_function_responses():
+    for fr in reversed(completed_fr_event.get_function_responses()):
       if fr.name == FINISH_TASK_TOOL_NAME:
         matching_fc_id = fr.id
         break
 
   def _args_from(event: Event) -> Optional[dict[str, Any]]:
-    for fc in event.get_function_calls():
+    for fc in reversed(event.get_function_calls()):
       if fc.name != FINISH_TASK_TOOL_NAME:
         continue
       if matching_fc_id is None or fc.id == matching_fc_id:
         return dict(fc.args or {})
+    # In unary (non-streaming) A2A responses, convert_a2a_task_to_event
+    # populates event.content from task.artifacts (the terminal finish_task FR)
+    # while the finish_task FC remains in task.history inside custom_metadata.
+    custom_metadata = getattr(event, "custom_metadata", None)
+    a2a_response = (
+        custom_metadata.get(A2A_METADATA_PREFIX + "response")
+        if isinstance(custom_metadata, dict)
+        else None
+    )
+    history = (
+        a2a_response.get("history") if isinstance(a2a_response, dict) else None
+    )
+    for message in reversed(history or ()):
+      if not isinstance(message, dict):
+        continue
+      for part in reversed(message.get("parts") or ()):
+        data = part.get("data") if isinstance(part, dict) else None
+        if (
+            isinstance(data, dict)
+            and data.get("name") == FINISH_TASK_TOOL_NAME
+            and "args" in data
+            and (matching_fc_id is None or data.get("id") == matching_fc_id)
+        ):
+          args = data.get("args")
+          return dict(args) if isinstance(args, dict) else {}
     return None
 
   # A remote peer can send the call and its response in one event, which the
@@ -695,7 +717,6 @@ def _build_auth_interceptors(
   )
 
 
-@a2a_experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
 
@@ -988,7 +1009,9 @@ class RemoteA2aAgent(BaseAgent):
       # Another caller may have created the client during the await.
       if not self._httpx_client:
         self._httpx_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout=self._timeout), **client_cert_kwargs
+            timeout=httpx.Timeout(timeout=self._timeout),
+            headers=_compat.a2a_version_headers(),
+            **client_cert_kwargs,
         )
         self._httpx_client_needs_cleanup = True
         if self._a2a_client_factory:

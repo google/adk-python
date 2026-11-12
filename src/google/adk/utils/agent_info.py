@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Sequence
-from typing import Union
 
 from google.genai import types
 import pydantic
@@ -49,7 +48,7 @@ class AgentInfo(pydantic.BaseModel):
 
 
 async def get_tools_info(
-    tools: Sequence[Union[ToolUnion, BaseNode]],
+    tools: Sequence[ToolUnion | BaseNode],
 ) -> list[Any]:
   """Returns the info for a given list of tools."""
   final_tools = []

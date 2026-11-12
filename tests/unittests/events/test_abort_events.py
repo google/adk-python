@@ -13,12 +13,13 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Optional
 
 from google.adk.events._abort_events import _build_abort_events
 from google.adk.events._abort_events import _is_abort_event
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.genai import types
+import pytest
 
 _INVOCATION_ID = "inv_1"
 _ABORT_MESSAGE = "Invocation was aborted by client."
@@ -26,7 +27,7 @@ _ABORT_MESSAGE = "Invocation was aborted by client."
 
 def _fc_event(
     author: str,
-    *call_ids: Optional[str],
+    *call_ids: str | None,
     invocation_id: str = _INVOCATION_ID,
     **kwargs: Any,
 ) -> Event:
@@ -65,7 +66,7 @@ def _fr_event(call_id: str, invocation_id: str = _INVOCATION_ID) -> Event:
   )
 
 
-def _build(events: list[Event], branch: Optional[str] = None) -> list[Event]:
+def _build(events: list[Event], branch: str | None = None) -> list[Event]:
   return _build_abort_events(
       events,
       invocation_id=_INVOCATION_ID,
@@ -187,3 +188,39 @@ def test_paused_task_reply_at_end_is_not_sealed():
   ]
 
   assert _build(events) == []
+
+
+@pytest.mark.parametrize("trailing_event", [False, True])
+def test_finished_task_reply_at_end_is_sealed(trailing_event: bool):
+  """A task that called finish_task is not paused; the parent call is sealed."""
+  events = [
+      _fc_event("coordinator", "call_1"),
+      Event(
+          invocation_id=_INVOCATION_ID,
+          author="task_worker",
+          isolation_scope="call_1",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="finish_1",
+                          name="finish_task",
+                          response={"result": "Task completed."},
+                      )
+                  )
+              ],
+          ),
+          actions=EventActions(skip_summarization=True),
+      ),
+  ]
+  if trailing_event:
+    events.append(
+        Event(
+            invocation_id=_INVOCATION_ID,
+            author="task_worker",
+            isolation_scope="call_1",
+        )
+    )
+
+  assert _response_ids(_build(events)) == [["call_1"]]

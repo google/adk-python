@@ -13,8 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Optional
-
 from google.genai.types import Content
 from google.genai.types import Part
 
@@ -24,6 +22,7 @@ from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
+from ..utils.context_utils import Aclosing
 
 
 class LlmEventSummarizer(BaseEventsSummarizer):
@@ -68,7 +67,7 @@ class LlmEventSummarizer(BaseEventsSummarizer):
   def __init__(
       self,
       llm: BaseLlm,
-      prompt_template: Optional[str] = None,
+      prompt_template: str | None = None,
   ):
     """Initializes the LlmEventSummarizer.
 
@@ -128,7 +127,7 @@ class LlmEventSummarizer(BaseEventsSummarizer):
 
   async def maybe_summarize_events(
       self, *, events: list[Event]
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Compacts given events and returns the compacted content.
 
     Args:
@@ -151,13 +150,14 @@ class LlmEventSummarizer(BaseEventsSummarizer):
     )
     summary_content = None
     summary_usage_metadata = None
-    async for llm_response in self._llm.generate_content_async(
-        llm_request, stream=False
-    ):
-      if llm_response.content:
-        summary_content = llm_response.content
-        summary_usage_metadata = llm_response.usage_metadata
-        break
+    async with Aclosing(
+        self._llm.generate_content_async(llm_request, stream=False)
+    ) as agen:
+      async for llm_response in agen:
+        if llm_response.content:
+          summary_content = llm_response.content
+          summary_usage_metadata = llm_response.usage_metadata
+          break
 
     if summary_content is None:
       return None

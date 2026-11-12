@@ -20,7 +20,7 @@ instruction: |
       the employees. If the amount is less than $100, you will automatically
       approve the reimbursement.
 
-      If the amount is greater than $100, you will
+      If the amount is at least $100, you will
       ask for approval from the manager. If the manager approves, you will
       call reimburse() to reimburse the amount to the employee. If the manager
       rejects, you will inform the employee of the rejection.

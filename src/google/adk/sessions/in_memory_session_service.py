@@ -16,7 +16,6 @@ from __future__ import annotations
 import copy
 import logging
 from typing import Any
-from typing import Optional
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
@@ -71,6 +70,17 @@ def _copy_state(state: dict[str, Any]) -> dict[str, Any]:
   return copy.deepcopy(state)
 
 
+def _copy_event(event: Event) -> Event:
+  """Copies an event as deeply as _copy_session copies a session's events.
+
+  Under IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, stored events stay aliased to
+  the appended Event, by design.
+  """
+  if is_feature_enabled(FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY):
+    return event
+  return copy.deepcopy(event)
+
+
 class InMemorySessionService(BaseSessionService):
   """An in-memory implementation of the session service.
 
@@ -80,7 +90,8 @@ class InMemorySessionService(BaseSessionService):
 
   def __init__(self) -> None:
     # A map from app name to a map from user ID to a map from session ID to
-    # session.
+    # session. Deleting the last session drops the empty user and app maps, so
+    # read it with `.get(app_name, {}).get(user_id, {})`.
     self.sessions: dict[str, dict[str, dict[str, Session]]] = {}
     # A map from app name to a map from user ID to a map from key to the value.
     self.user_state: dict[str, dict[str, dict[str, Any]]] = {}
@@ -93,8 +104,8 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     return self._create_session_impl(
         app_name=app_name,
@@ -108,8 +119,8 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._create_session_impl(
@@ -124,8 +135,8 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     session_id = session_id.strip() if session_id else None
     if session_id and session_id in self.sessions.get(app_name, {}).get(
@@ -168,8 +179,8 @@ class InMemorySessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     return self._get_session_impl(
         app_name=app_name,
         user_id=user_id,
@@ -183,8 +194,8 @@ class InMemorySessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._get_session_impl(
         app_name=app_name,
@@ -199,8 +210,8 @@ class InMemorySessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     session_id = session_id.strip() if session_id else session_id
     if app_name not in self.sessions:
       return None
@@ -255,18 +266,18 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def list_sessions_sync(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._list_sessions_impl(app_name=app_name, user_id=user_id)
 
   def _list_sessions_impl(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     empty_response = ListSessionsResponse()
     if app_name not in self.sessions:
@@ -321,6 +332,10 @@ class InMemorySessionService(BaseSessionService):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
+    if not self.sessions[app_name][user_id]:
+      self.sessions[app_name].pop(user_id)
+    if not self.sessions[app_name]:
+      self.sessions.pop(app_name)
 
   @override
   async def get_user_state(
@@ -331,6 +346,15 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
+    """Appends an event to the session and updates stored state.
+
+    Stored events and state deltas are deep-copied by default so later
+    mutations on ``session`` or ``event`` do not alter saved history or
+    state. Under ``IN_MEMORY_SESSION_SERVICE_LIGHT_COPY``, stored events stay
+    aliased and state buckets are shallow-copied; subclasses that mutate
+    ``session.events`` in place must either enable light copy or update
+    ``self.sessions[app_name][user_id][session_id]`` as well.
+    """
     if event.partial:
       return event
 
@@ -355,21 +379,25 @@ class InMemorySessionService(BaseSessionService):
       return event
 
     # Update the in-memory session.
-    await super().append_event(session=session, event=event)
+    event = await super().append_event(session=session, event=event)
     session.last_update_time = event.timestamp
 
-    # Update the storage session if the caller holds a stale copy.
-    if storage_session is not session:
-      storage_session.events.append(event)
+    # Store a copy so mutating the caller's event or session afterwards cannot
+    # alter saved history or state.
+    stored_event = _copy_event(event)
+    if storage_session is session:
+      storage_session.events[-1] = stored_event
+    else:
+      storage_session.events.append(stored_event)
       storage_session.last_update_time = event.timestamp
 
     if event.actions and event.actions.state_delta:
       state_deltas = _session_util.extract_state_delta(
           event.actions.state_delta
       )
-      app_state_delta = state_deltas['app']
-      user_state_delta = state_deltas['user']
-      session_state_delta = state_deltas['session']
+      app_state_delta = _copy_state(state_deltas['app'])
+      user_state_delta = _copy_state(state_deltas['user'])
+      session_state_delta = _copy_state(state_deltas['session'])
       if app_state_delta:
         self.app_state.setdefault(app_name, {}).update(app_state_delta)
       if user_state_delta:

@@ -79,9 +79,9 @@ async def run_node_live(
   """Run a non-agent BaseNode in live mode."""
   from ..agents.context import Context
   from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
+  from ..workflow._dynamic_node_scheduler import DynamicNodeState
   from ..workflow._errors import DynamicNodeFailError
   from ..workflow._errors import NodeInterruptedError
-  from ..workflow._workflow import _LoopState
   from ..workflow._workflow import Workflow
 
   ic = new_invocation_context_for_live(
@@ -101,7 +101,7 @@ async def run_node_live(
   async def _drive_root_node() -> None:
     try:
       if is_workflow:
-        scheduler = DynamicNodeScheduler(state=_LoopState())
+        scheduler = DynamicNodeScheduler(state=DynamicNodeState())
         root_ctx._workflow_scheduler = scheduler  # pylint: disable=protected-access
 
       try:

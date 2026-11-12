@@ -16,10 +16,13 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from dataclasses import field
 import json
 import logging
+from types import UnionType
+import typing
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -34,6 +37,7 @@ from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...flows.llm_flows.tools._functions import _collect_function_call_ids
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils._schema_utils import _strip_json_code_fence
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
@@ -79,7 +83,7 @@ class _ChildScanState:
   """The agent the child asked to transfer to, or None if it asked for none."""
 
   interrupt_ids: set[str] = field(default_factory=set)
-  """Every interrupt the child raised."""
+  """Every unsealed interrupt the child raised."""
 
   resolved_ids: set[str] = field(default_factory=set)
   """The subset of ``interrupt_ids`` a user response has come back for."""
@@ -102,18 +106,19 @@ def _wrap_response(value: Any) -> dict[str, Any]:
   return {_RESULT_KEY: value}
 
 
-def _unwrap_response(data: Any) -> Any:
+def _unwrap_response(data: Any, *, parse_json: bool = True) -> Any:
   """Unwraps a FunctionResponse dict to the original value.
 
   If ``data`` is a dict with exactly one key ``"result"``, extracts the
   value.  String values are JSON-parsed when possible (the web frontend
-  wraps user text as ``{"result": text}`` without parsing).
+  wraps user text as ``{"result": text}`` without parsing), unless
+  ``parse_json`` is False.
 
   Otherwise returns ``data`` unchanged.
   """
   if isinstance(data, dict) and len(data) == 1 and _RESULT_KEY in data:
     value = data[_RESULT_KEY]
-    if isinstance(value, str):
+    if isinstance(value, str) and parse_json:
       try:
         value = json.loads(value)
       except (json.JSONDecodeError, ValueError):
@@ -121,6 +126,27 @@ def _unwrap_response(data: Any) -> Any:
       return value
     return value
   return data
+
+
+def _schema_expects_text(schema: Any) -> bool:
+  """Whether a resume response schema accepts only strings (or null).
+
+  Text answers for such a schema are kept as typed: JSON-parsing them would
+  turn "94103" into an int and "true" into a bool, which the schema rejects.
+  """
+  if not isinstance(schema, dict):
+    return False
+  type_value = schema.get('type')
+  if type_value == 'string':
+    return True
+  options = schema.get('anyOf') or schema.get('oneOf')
+  if isinstance(options, list) and options:
+    option_types = {
+        option.get('type') if isinstance(option, dict) else None
+        for option in options
+    }
+    return 'string' in option_types and option_types <= {'string', 'null'}
+  return False
 
 
 def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
@@ -141,6 +167,29 @@ def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
   return None
 
 
+def _is_bytes_hint(hint: object) -> bool:
+  """Returns whether the hint is ``bytes`` or ``Optional[bytes]``."""
+  if typing.get_origin(hint) in (typing.Union, UnionType):
+    non_none = [a for a in typing.get_args(hint) if a is not type(None)]
+    hint = non_none[0] if len(non_none) == 1 else None
+  return hint is bytes
+
+
+def _declares_bytes_output(node: BaseNode) -> bool:
+  """Returns whether the node declares its output as ``bytes``."""
+  from .._function_node import _GENERATOR_ORIGINS
+  from .._function_node import FunctionNode
+
+  if _is_bytes_hint(node.output_schema):
+    return True
+  if not isinstance(node, FunctionNode):
+    return False
+  return_hint = node._type_hints.get('return')
+  if typing.get_origin(return_hint) in _GENERATOR_ORIGINS:
+    return_hint = next(iter(typing.get_args(return_hint)), None)
+  return _is_bytes_hint(return_hint)
+
+
 def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   """Process rehydrated output from event.content using the node's output schema.
 
@@ -150,6 +199,12 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   configured.
   """
   if not isinstance(output, types.Content):
+    # Persisted sessions store bytes in Event.output as URL-safe base64 text.
+    if isinstance(output, str) and _declares_bytes_output(node):
+      try:
+        return base64.b64decode(output, altchars=b'-_', validate=True)
+      except ValueError:
+        return output
     return output
 
   from google.adk.utils.content_utils import extract_text_from_content
@@ -162,6 +217,8 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   if node.output_schema:
     if node.output_schema is str:
       return text
+    # The live path strips the fence in validate_schema; replay must match.
+    text = _strip_json_code_fence(text)
     try:
       validated: Any = TypeAdapter[Any](node.output_schema).validate_json(text)
       return node._to_serializable(validated)
@@ -305,8 +362,10 @@ def _reconstruct_node_states(
       for part in event.content.parts:
         fr = part.function_response
         if fr and fr.id:
-          response_data = _unwrap_response(fr.response)
           schema = schemas_by_id.get(fr.id)
+          response_data = _unwrap_response(
+              fr.response, parse_json=not _schema_expects_text(schema)
+          )
           if schema:
             try:
               response_data = _validate_resume_response(response_data, schema)
@@ -348,9 +407,40 @@ def _reconstruct_node_states(
                   o_state.finished_after_resume = False
       continue
 
-    # 2. Match events under base_path
-    event_node_path = event.node_info.path or ''
+    event_node_path = (event.node_info.path if event.node_info else None) or ''
     event_path_builder = _NodePathBuilder.from_string(event_node_path)
+
+    if event.error_code is not None and event.content and event.content.parts:
+      # A synthetic error FunctionResponse seals an unanswered interrupt
+      # without supplying an answer the node should resume with, so `fr.id` is
+      # dropped from `interrupt_ids` rather than written to
+      # `resolved_responses`. Path-scoped seals reach step 5 below (`elif
+      # event.error_code is not None`) for direct children without tainting a
+      # surviving parent when only a nested sub-branch was sealed; pathless
+      # abort seals skip step 2 and set `error_code` here instead.
+      has_event_path = bool(event_node_path)
+      is_direct_seal = has_event_path and (
+          event_path_builder.is_direct_child_of(base_path_builder)
+          if group_by_direct_child
+          else event_path_builder == base_path_builder
+      )
+      for part in event.content.parts:
+        fr = part.function_response
+        if fr and fr.id:
+          schemas_by_id.pop(fr.id, None)
+          owner = interrupt_owner.pop(fr.id, None)
+          if owner and owner in scan_states:
+            o_state = scan_states[owner]
+            o_state.interrupt_ids.discard(fr.id)
+            if not has_event_path or is_direct_seal:
+              o_state.output = None
+              o_state.route = None
+              o_state.transfer_to_agent = None
+              o_state.finished_after_resume = False
+            if not has_event_path:
+              o_state.error_code = event.error_code
+
+    # 2. Match events under base_path
     owner_key = get_owner_key(event_path_builder)
 
     if not owner_key:
@@ -382,8 +472,15 @@ def _reconstruct_node_states(
             event.branch, owner_path_builder.node_name, tool_call_ids
         )
     )
+    # Like NodeRunner._is_native_event: only the node's own events move its
+    # branch. A stored native event carries the node's name or one it inherits
+    # from an ancestor; a relayed one keeps its sub-agent's name.
+    is_native = not event.author or event.author in (
+        event_path_builder.static_path.split('/')
+    )
     if (
         is_direct
+        and is_native
         and event.branch
         and not has_claimed_branch
         and not is_tool_branch
@@ -413,7 +510,12 @@ def _reconstruct_node_states(
     if is_direct or is_delegated:
       if event.output is not None:
         child.output = event.output
-        if is_direct and not has_claimed_branch and not is_tool_branch:
+        if (
+            is_direct
+            and is_native
+            and not has_claimed_branch
+            and not is_tool_branch
+        ):
           child.branch = event.branch
       elif use_message_as_output:
         child.output = event.content

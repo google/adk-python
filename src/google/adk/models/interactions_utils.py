@@ -38,6 +38,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
+from typing import get_args
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -60,6 +61,7 @@ from google.genai.interactions import FunctionParam
 from google.genai.interactions import FunctionResultDelta
 from google.genai.interactions import FunctionResultStep
 from google.genai.interactions import FunctionResultStepParam
+from google.genai.interactions import FunctionResultSubcontentParam
 from google.genai.interactions import GenerationConfigParam
 from google.genai.interactions import GoogleSearchCallDelta
 from google.genai.interactions import GoogleSearchResultDelta
@@ -109,6 +111,7 @@ if TYPE_CHECKING:
   from google.genai.interactions import FunctionResultStepResultUnionParam
   from google.genai.interactions import ImageContentMimeType
   from google.genai.interactions import InteractionSseEventInteraction
+  from google.genai.interactions import ThinkingLevel
   from google.genai.interactions import VideoContentMimeType
 
   from ..tools._remote_mcp_server import RemoteMcpServer
@@ -186,6 +189,23 @@ _UNSUPPORTED_SAMPLING_PARAMS = (
 # once per process instead of once per model turn.
 _WARNED_SAMPLING_PARAMS: set[str] = set()
 
+# Media content types a function result can carry. google-genai 2.33 added
+# audio, document and video to image; earlier releases reject them on send.
+_FUNCTION_RESULT_MEDIA_TYPES = frozenset(
+    content_type
+    for content_type, content_param in (
+        ('image', ImageContentParam),
+        ('audio', AudioContentParam),
+        ('video', VideoContentParam),
+        ('document', DocumentContentParam),
+    )
+    if content_param in get_args(FunctionResultSubcontentParam.__value__)
+)
+
+# Tool result mime types already reported as dropped, so the warning below is
+# emitted once per process instead of on every turn that reconverts history.
+_WARNED_FUNCTION_RESULT_MIME_TYPES: set[str] = set()
+
 
 def _extract_stream_interaction_id(
     event: InteractionSSEEvent,
@@ -258,6 +278,46 @@ def _code_execution_call_arguments(
   if executable_code.language == types.Language.PYTHON:
     arguments['language'] = 'python'
   return arguments
+
+
+def _function_response_media_contents(
+    function_response: types.FunctionResponse,
+) -> list[FunctionResultSubcontentParam]:
+  """Converts media a tool attached to its response into result contents."""
+  contents: list[FunctionResultSubcontentParam] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    file_data = response_part.file_data
+    payload: dict[str, str]
+    if blob is not None and blob.data is not None and blob.mime_type:
+      mime_type = blob.mime_type
+      payload = {'data': _encode_base64_string(blob.data)}
+    elif file_data is not None and file_data.file_uri and file_data.mime_type:
+      mime_type = file_data.mime_type
+      payload = {'uri': file_data.file_uri}
+    else:
+      continue
+    content_type = mime_type.split('/', 1)[0]
+    if content_type not in ('image', 'audio', 'video'):
+      content_type = 'document'
+    if content_type not in _FUNCTION_RESULT_MEDIA_TYPES:
+      if mime_type not in _WARNED_FUNCTION_RESULT_MIME_TYPES:
+        _WARNED_FUNCTION_RESULT_MIME_TYPES.add(mime_type)
+        logger.warning(
+            'Dropping tool result media of type %s, which the installed'
+            ' google-genai cannot send in a function result; google-genai'
+            ' 2.33 and later can.',
+            mime_type,
+        )
+      continue
+    contents.append(
+        # The content type is picked at runtime, so no one TypedDict fits.
+        cast(
+            'FunctionResultSubcontentParam',
+            {'type': content_type, **payload, 'mime_type': mime_type},
+        )
+    )
+  return contents
 
 
 @deprecated(
@@ -434,6 +494,15 @@ def _convert_part_to_interaction_content(
     # cause double-escaping.
     if not isinstance(func_resp, (dict, str, list)):
       func_resp = str(func_resp)
+    media = _function_response_media_contents(part.function_response)
+    if media:
+      # Media needs the list form of result, which takes the JSON as text.
+      text = (
+          func_resp
+          if isinstance(func_resp, str)
+          else json.dumps(func_resp, ensure_ascii=False, default=str)
+      )
+      func_resp = [TextContentParam(type='text', text=text), *media]
     logger.debug(
         'Converting function_response: name=%s, call_id=%s',
         part.function_response.name,
@@ -829,18 +898,15 @@ def convert_interaction_to_llm_response(
   """
   from .llm_response import LlmResponse
 
-  # Check for errors. Lifecycle SSE events carry a partial interaction
-  # (InteractionSseEventInteraction) that has no 'error' attribute.
   if interaction.status == 'failed':
-    error_msg = 'Unknown error'
-    error_code = 'UNKNOWN_ERROR'
-    error = getattr(interaction, 'error', None)
-    if error:
-      error_msg = error.message or error_msg
-      error_code = error.code or error_code
+    # InteractionSseEventInteraction has no errors field.
+    errors = (
+        interaction.errors if isinstance(interaction, Interaction) else None
+    ) or []
     return LlmResponse(
-        error_code=error_code,
-        error_message=error_msg,
+        error_code=next((e.code for e in errors if e.code), 'UNKNOWN_ERROR'),
+        error_message='; '.join(e.message for e in errors if e.message)
+        or 'Unknown error',
         interaction_id=interaction.id,
     )
 
@@ -1403,6 +1469,10 @@ def build_generation_config(
       # Not a literal key: which of these the TypedDict declares depends on
       # the installed google-genai.
       generation_config[name] = value  # type: ignore[literal-required]
+  thinking = config.thinking_config
+  level = thinking.thinking_level if thinking else None
+  if level and level != types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED:
+    generation_config['thinking_level'] = cast('ThinkingLevel', level.lower())
 
   undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
   if undeclared:
@@ -1597,13 +1667,12 @@ def build_interactions_response_log(interaction: Interaction) -> str:
     output_tokens = getattr(usage, 'total_output_tokens', 0) or 0
     usage_str = f'input_tokens: {input_tokens}, output_tokens: {output_tokens}'
 
-  # Extract error if present
   error_str = '(none)'
-  if hasattr(interaction, 'error') and interaction.error:
-    error = interaction.error
-    error_code = getattr(error, 'code', 'unknown')
-    error_message = getattr(error, 'message', 'unknown')
-    error_str = f'{error_code}: {error_message}'
+  if interaction.errors:
+    error_str = _NEW_LINE.join(
+        f'{error.code or "unknown"}: {error.message or "unknown"}'
+        for error in interaction.errors
+    )
 
   return f"""
 Interactions API Response:

@@ -41,6 +41,8 @@ _DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE = (
     "integrations.mtls.googleapis.com"
 )
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+# Upper bound on waiting for a schema long-running operation to finish.
+_DEFAULT_OPERATION_TIMEOUT_SECONDS = 300
 
 
 class _ServiceAccountCredentialsFactory(Protocol):
@@ -130,6 +132,7 @@ class ConnectionsClient:
     Raises:
         PermissionError: If there are credential issues.
         ValueError: If there's a request or processing error.
+        TimeoutError: If the schema operation is not done within 300 seconds.
         Exception: For any other unexpected errors.
     """
     url = f"{self.connector_url}/v1/projects/{self.project}/locations/{self.location}/connections/{self.connection}/connectionSchemaMetadata:getEntityType?entityId={entity}"
@@ -160,6 +163,7 @@ class ConnectionsClient:
     Raises:
         PermissionError: If there are credential issues.
         ValueError: If there's a request or processing error.
+        TimeoutError: If the schema operation is not done within 300 seconds.
         Exception: For any other unexpected errors.
     """
     url = f"{self.connector_url}/v1/projects/{self.project}/locations/{self.location}/connections/{self.connection}/connectionSchemaMetadata:getAction?actionId={action}"
@@ -962,16 +966,32 @@ class ConnectionsClient:
 
     Raises:
         PermissionError: If there are credential issues.
-        ValueError: If there's a request error.
+        ValueError: If there's a request error, or the operation finished with
+          an error.
+        TimeoutError: If the operation is not done within
+          `_DEFAULT_OPERATION_TIMEOUT_SECONDS`.
         Exception: For any other unexpected errors.
     """
     operation_done: bool = False
     operation_response: Dict[str, Any] = {}
+    deadline = time.monotonic() + _DEFAULT_OPERATION_TIMEOUT_SECONDS
     while not operation_done:
       get_operation_url = f"{self.connector_url}/v1/{operation_id}"
       response = self._execute_api_call(get_operation_url)
       operation_response = self._response_json(response)
       operation_done = bool(operation_response.get("done", False))
       if not operation_done:
+        if time.monotonic() >= deadline:
+          raise TimeoutError(
+              f"Operation {operation_id} did not complete within"
+              f" {_DEFAULT_OPERATION_TIMEOUT_SECONDS} second timeout."
+          )
         time.sleep(1)
+
+    # A finished operation carries either `response` or `error`; without this
+    # check a failed lookup reads as an empty schema and yields no tools.
+    error = operation_response.get("error")
+    if error is not None:
+      message = error.get("message") if isinstance(error, dict) else None
+      raise ValueError(f"Operation {operation_id} failed: {message or error}")
     return operation_response

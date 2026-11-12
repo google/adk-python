@@ -825,6 +825,10 @@ class AntigravityAgent(BaseAgent):
             branch=ctx.branch,
             usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=usage.prompt_token_count,
+                # Absent on older google-antigravity versions.
+                cached_content_token_count=getattr(
+                    usage, 'cached_content_token_count', None
+                ),
                 candidates_token_count=usage.candidates_token_count,
                 total_token_count=usage.total_token_count,
                 thoughts_token_count=usage.thoughts_token_count,

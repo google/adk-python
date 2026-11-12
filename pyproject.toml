@@ -41,8 +41,8 @@ dependencies = [
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "opentelemetry-api>=1.39,<=1.44",
-  "opentelemetry-sdk>=1.39,<=1.44",
+  "opentelemetry-api>=1.39,<=1.45.2",
+  "opentelemetry-sdk>=1.39,<=1.45.2",
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
@@ -53,7 +53,7 @@ dependencies = [
   "tenacity>=9,<10",
   "typing-extensions>=4.5,<5",
   "uvicorn>=0.34,<1",
-  "watchdog>=6,<7",
+  "watchdog>=7,<8",
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
@@ -248,12 +248,11 @@ optional-dependencies.extensions = [
   "toolbox-adk>=1,<2",
 ]
 optional-dependencies.fsspec = [
-  # FsspecArtifactService; the backend (gcsfs, s3fs, adlfs, ...) is installed
-  # separately by the user. >=2026.4 matches the fsspec version already locked
-  # by ADK's other dependencies. GCS Rapid bucket support is provided by
-  # gcsfs>=2026.3.0, which declares its own fsspec floor.
-  # TODO: raise the floor to >=2026.9 to pick up fsspec's adaptive readahead
-  # prefetcher (fsspec#2093, used by gcsfs>=2026.9) once the write path lands.
+  # FsspecArtifactService; the storage backend (gcsfs, s3fs, adlfs, ...) is
+  # installed separately by the user. GCS Rapid bucket support is provided by
+  # gcsfs>=2026.3.0, which declares its own fsspec floor. Kept at >=2026.4 in
+  # the initial rollout to avoid transitive dependency churn; raise to >=2026.9
+  # in a follow-up change to pick up fsspec's adaptive readahead prefetcher.
   "fsspec>=2026.4",
 ]
 optional-dependencies.gcp = [
@@ -440,6 +439,10 @@ module.include = [ "py.typed" ]
 sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
 sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
 
+[tool.uv]
+# Extras that depend on ADK must use this checkout's dependency requirements.
+sources.google-adk = { path = ".", editable = true }
+
 [tool.ruff]
 extend-exclude = [
   "src/google/adk/cli/browser/",
@@ -486,6 +489,9 @@ namespace_packages = true
 explicit_package_bases = true
 follow_imports = "normal"
 python_version = "3.11"
+# The a2a-sdk 0.3 branches in a2a/_compat.py are typed against the installed
+# 1.x SDK and would always fail; drop this when 0.3 support is removed.
+always_true = [ "IS_A2A_V1" ]
 # These third-party packages define functions without type annotations.
 untyped_calls_exclude = [
   "daytona",

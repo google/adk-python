@@ -13,6 +13,9 @@
 # limitations under the License.
 
 import asyncio
+import inspect
+from typing import Any
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -23,23 +26,57 @@ from a2a.server.events.event_queue import EventQueue
 from a2a.types import Message
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a import _compat
 from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.parallel_agent import ParallelAgent
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.events.event import Event
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils._error_reporting import ENV_DEBUG_ERRORS
+from google.adk.workflow import BaseNode
+from google.adk.workflow import RetryConfig
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
 
 from tests.unittests import testing_utils
+
+
+class _StubLlm(BaseLlm):
+  """Minimal deterministic LLM stub for real Runner tests."""
+
+  model: str = "stub-llm"
+  responses: list[Part] = []
+
+  async def generate_content_async(self, llm_request, stream=False):
+    del llm_request, stream
+    part = self.responses.pop(0) if self.responses else Part(text="done")
+    yield LlmResponse(content=Content(role="model", parts=[part]))
+
+
+_SECRET_ERROR = "Test error: [Errno 2] No such file: '/home/victim/.adk/key'"
+"""An exception message shaped like the ones that leak host detail."""
+
+
+def _part_text(part):
+  """Return a text part's text, version-correctly."""
+  return part.text if _compat.IS_A2A_V1 else part.root.text
 
 
 def _get_meta_val(metadata, key):
@@ -827,7 +864,7 @@ class TestA2aAgentExecutor:
         None  # Make sure it goes through submitted event creation
     )
 
-    self.mock_request_converter.side_effect = Exception("Test error")
+    self.mock_request_converter.side_effect = Exception(_SECRET_ERROR)
 
     # Execute (should not raise since we catch the exception)
     await self.executor.execute(self.mock_context, self.mock_event_queue)
@@ -847,6 +884,28 @@ class TestA2aAgentExecutor:
     failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert failure_event.status.state == _compat.TS_FAILED
     _assert_final(failure_event)
+    # The A2A peer is untrusted, so it gets a correlation id for the logged
+    # exception rather than the exception text itself.
+    text = _part_text(failure_event.status.message.parts[0])
+    assert _SECRET_ERROR not in text
+    assert "/home/victim" not in text
+    assert "error_id" in text
+
+  @pytest.mark.asyncio
+  async def test_execute_exception_detail_gated_by_debug_flag(
+      self, monkeypatch
+  ):
+    """ADK_DEBUG_ERRORS puts the exception text back for local debugging."""
+    monkeypatch.setenv(ENV_DEBUG_ERRORS, "1")
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.current_task = None
+
+    self.mock_request_converter.side_effect = Exception(_SECRET_ERROR)
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
+    assert _SECRET_ERROR in _part_text(failure_event.status.message.parts[0])
 
   @pytest.mark.asyncio
   async def test_handle_request_with_aggregator_message(self):
@@ -1470,7 +1529,7 @@ class TestA2aAgentExecutor:
     session_service = InMemorySessionService()
     agent = LlmAgent(
         name="task_agent",
-        model=testing_utils.MockModel.create(
+        model=_StubLlm(
             responses=[
                 Part.from_function_call(
                     name="finish_task",
@@ -1524,3 +1583,515 @@ class TestA2aAgentExecutor:
     else:
       assert part_dict.name == "finish_task"
       assert part_dict.response == {"result": "Task completed."}
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("force_new_version", [False, True])
+  @pytest.mark.parametrize(
+      "cancel_mode", ["same", "tapped", "separate", "transport"]
+  )
+  async def test_cancel_and_transport_abort_stop_tool_and_seal_session(
+      self, force_new_version: bool, cancel_mode: str
+  ) -> None:
+    """Test active cancel() and transport cancel stop tools and seal session."""
+    tool_started, tool_cancelled = asyncio.Event(), asyncio.Event()
+
+    async def slow_tool() -> str:
+      tool_started.set()
+      try:
+        await asyncio.sleep(60)
+      except asyncio.CancelledError:
+        tool_cancelled.set()
+        raise
+      return "done"
+
+    session_service = InMemorySessionService()
+    runner = Runner(
+        app_name="test-app",
+        agent=LlmAgent(
+            name="cancel_agent",
+            model=_StubLlm(
+                responses=[Part.from_function_call(name="slow_tool", args={})]
+            ),
+            tools=[slow_tool],
+        ),
+        session_service=session_service,
+    )
+    executor = A2aAgentExecutor(
+        runner=runner, force_new_version=force_new_version
+    )
+    self.mock_context.call_context = None
+    self.mock_context.metadata = None
+    self.mock_context.message.role = _compat.ROLE_USER
+    self.mock_event_queue.enqueue_event = AsyncMock()
+    is_tapped = cancel_mode == "tapped"
+    exec_queue = EventQueue() if is_tapped else self.mock_event_queue
+
+    exec_task = asyncio.create_task(
+        executor.execute(self.mock_context, exec_queue)
+    )
+    await asyncio.wait_for(tool_started.wait(), timeout=5.0)
+
+    if cancel_mode == "transport":
+      exec_task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await exec_task
+    elif cancel_mode == "tapped":
+      tap_res = exec_queue.tap()
+      cancel_queue = await tap_res if inspect.isawaitable(tap_res) else tap_res
+      await executor.cancel(self.mock_context, cancel_queue)
+      await exec_task
+      tapped_calls = []
+      while not cancel_queue.queue.empty():
+        item = cancel_queue.queue.get_nowait()
+        tapped_calls.append(((item,),))
+      cancel_finals = _final_events(tapped_calls)
+      assert len(cancel_finals) == 1
+      assert cancel_finals[0].status.state == _compat.TS_CANCELED
+    else:
+      cancel_queue = (
+          self.mock_event_queue
+          if cancel_mode == "same"
+          else Mock(spec=EventQueue, enqueue_event=AsyncMock())
+      )
+      await executor.cancel(self.mock_context, cancel_queue)
+      await exec_task
+      exec_finals = _final_events(
+          self.mock_event_queue.enqueue_event.call_args_list
+      )
+      assert len(exec_finals) == 1
+      assert exec_finals[0].status.state == _compat.TS_CANCELED
+      if cancel_mode == "separate":
+        cancel_finals = _final_events(cancel_queue.enqueue_event.call_args_list)
+        assert len(cancel_finals) == 1
+        assert cancel_finals[0].status.state == _compat.TS_CANCELED
+
+    assert tool_cancelled.is_set()
+    session = await session_service.get_session(
+        app_name="test-app",
+        user_id="A2A_USER_test-context-id",
+        session_id="test-context-id",
+    )
+    assert session is not None
+    assert session.events[-1].error_code == "INVOCATION_ABORTED"
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("force_new_version", [False, True])
+  @pytest.mark.parametrize(
+      ("error_code", "expected_state"),
+      [
+          ("INVOCATION_ABORTED", _compat.TS_CANCELED),
+          ("INTERNAL_ERROR", _compat.TS_FAILED),
+      ],
+  )
+  async def test_invocation_aborted_event_maps_to_canceled(
+      self, force_new_version: bool, error_code: str, expected_state: object
+  ) -> None:
+    """Test Event(error_code='INVOCATION_ABORTED') resolves to TS_CANCELED."""
+    runner = Runner(
+        app_name="test-app",
+        agent=LlmAgent(name="abort_agent", model=_StubLlm()),
+        session_service=InMemorySessionService(),
+    )
+
+    async def fixed_sig_run_async(
+        user_id,
+        session_id,
+        new_message,
+        invocation_id=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      del user_id, session_id, new_message
+      del invocation_id, state_delta, run_config
+      yield Event(
+          invocation_id="inv-abort", author="abort_agent", error_code=error_code
+      )
+
+    object.__setattr__(runner, "run_async", fixed_sig_run_async)
+    executor = A2aAgentExecutor(
+        runner=runner, force_new_version=force_new_version
+    )
+    self.mock_context.call_context = self.mock_context.metadata = None
+    self.mock_context.message.role = _compat.ROLE_USER
+    self.mock_event_queue.enqueue_event = AsyncMock()
+    await executor.execute(self.mock_context, self.mock_event_queue)
+    finals = _final_events(self.mock_event_queue.enqueue_event.call_args_list)
+    assert [e.status.state for e in finals] == [expected_state]
+    idle_queue = Mock(spec=EventQueue, enqueue_event=AsyncMock())
+    await executor.cancel(self.mock_context, idle_queue)
+    assert [
+        e.status.state
+        for e in _final_events(idle_queue.enqueue_event.call_args_list)
+    ] == [_compat.TS_CANCELED]
+
+
+# Tests for runs that emit an error event and then keep going: the task fails
+# only when the run did not recover from the error.
+
+_EXECUTOR_VERSIONS = pytest.mark.parametrize(
+    "force_new_version", [False, True], ids=["v1", "v2"]
+)
+
+
+def _empty_stop_response() -> LlmResponse:
+  """A model turn with no content, stamped MODEL_RETURNED_NO_CONTENT by ADK."""
+  return LlmResponse(
+      content=types.Content(role="model", parts=[]),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+
+def _text_response(text: str) -> LlmResponse:
+  return LlmResponse(
+      content=types.Content(role="model", parts=[Part(text=text)]),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+
+def _call_response(name: str, args: dict[str, Any]) -> LlmResponse:
+  return LlmResponse(
+      content=types.Content(
+          role="model", parts=[Part.from_function_call(name=name, args=args)]
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+
+def _agent(name: str, *responses: LlmResponse, **kwargs: Any) -> LlmAgent:
+  return LlmAgent(
+      name=name,
+      model=testing_utils.MockModel.create(responses=list(responses)),
+      **kwargs,
+  )
+
+
+async def _execute(
+    *,
+    force_new_version: bool,
+    agent: BaseAgent | None = None,
+    node: Workflow | None = None,
+    config: A2aAgentExecutorConfig | None = None,
+) -> list[A2AEvent]:
+  """Runs the agent or node through A2aAgentExecutor and returns events."""
+  context = Mock(spec=RequestContext)
+  context.task_id = "task-1"
+  context.context_id = "ctx-1"
+  context.current_task = None
+  context.call_context = None
+  context.metadata = None
+  context.requested_extensions = []
+  context.message = Message(
+      message_id="msg-1",
+      role=_compat.ROLE_USER,
+      parts=[_compat.make_text_part("Find me a flight")],
+  )
+  runner = Runner(
+      app_name="test-app",
+      agent=agent,
+      node=node,
+      session_service=InMemorySessionService(),
+  )
+  executor = A2aAgentExecutor(
+      runner=runner, config=config, force_new_version=force_new_version
+  )
+  enqueued: list[A2AEvent] = []
+  event_queue = Mock(spec=EventQueue)
+  event_queue.enqueue_event = AsyncMock(side_effect=enqueued.append)
+
+  await executor.execute(context, event_queue)
+
+  return enqueued
+
+
+def _status_text(event: TaskStatusUpdateEvent) -> str | None:
+  message = _compat.normalize_message(event.status.message)
+  if not message or not message.parts:
+    return None
+  part = message.parts[0]
+  return _compat.part_text(part) if _compat.is_text_part(part) else None
+
+
+def _artifact_texts(events: list[A2AEvent]) -> list[str]:
+  return [
+      _compat.part_text(part)
+      for e in events
+      if isinstance(e, TaskArtifactUpdateEvent)
+      for part in e.artifact.parts
+      if _compat.is_text_part(part)
+  ]
+
+
+class _OptionalHelperNode(BaseNode):
+  """Runs a non-critical sub-agent and falls back when it returns nothing."""
+
+  rerun_on_resume: bool = True
+  agent: LlmAgent
+
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    result = await ctx.run_node(self.agent, node_input="fetch context")
+    ctx.output = result or "fallback context"
+    if False:  # pylint: disable=using-constant-test
+      yield
+
+
+class _FlakyNode(BaseNode):
+  """Fails on its first attempt and succeeds on the retry."""
+
+  attempts: int = 0
+
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.attempts += 1
+    if self.attempts == 1:
+      raise RuntimeError("transient failure")
+    ctx.output = "flaky node succeeded"
+    if False:  # pylint: disable=using-constant-test
+      yield
+
+
+@_EXECUTOR_VERSIONS
+async def test_task_completes_when_parent_recovers_from_sub_agent_failure(
+    force_new_version: bool,
+) -> None:
+  """A sub-agent that returns no content does not fail a run that recovers.
+
+  Setup: root calls a single_turn sub-agent whose model returns an empty STOP
+    turn (MODEL_RETURNED_NO_CONTENT); root then answers.
+  Assert: the task completes and the root's answer is the output.
+  """
+  root = _agent(
+      "root",
+      _call_response("flight_agent", {"request": "Tokyo"}),
+      _text_response("Here are typical flights to Tokyo."),
+      sub_agents=[
+          _agent("flight_agent", _empty_stop_response(), mode="single_turn")
+      ],
+  )
+
+  events = await _execute(force_new_version=force_new_version, agent=root)
+
+  assert events[-1].status.state == _compat.TS_COMPLETED
+  assert "Here are typical flights to Tokyo." in _artifact_texts(events)
+
+
+@_EXECUTOR_VERSIONS
+async def test_task_completes_when_workflow_falls_back_after_node_failure(
+    force_new_version: bool,
+) -> None:
+  """A workflow that falls back after a failed run_node sub-agent completes.
+
+  Setup: helper node runs a sub-agent via ctx.run_node; the sub-agent returns
+    an empty STOP turn, the node falls back, and a final agent answers.
+  Assert: the task completes and the final agent's answer is the output.
+  """
+  helper_node = _OptionalHelperNode(
+      name="helper_node", agent=_agent("helper_agent", _empty_stop_response())
+  )
+  final_agent = _agent("final_agent", _text_response("Final answer."))
+  workflow = Workflow(
+      name="root_workflow",
+      edges=[(START, helper_node), (helper_node, final_agent)],
+  )
+
+  events = await _execute(force_new_version=force_new_version, node=workflow)
+
+  assert events[-1].status.state == _compat.TS_COMPLETED
+  assert "Final answer." in _artifact_texts(events)
+
+
+@_EXECUTOR_VERSIONS
+async def test_task_completes_when_workflow_node_retry_succeeds(
+    force_new_version: bool,
+) -> None:
+  """A node failure that a retry recovers from does not fail the task."""
+  flaky_node = _FlakyNode(
+      name="flaky_node",
+      retry_config=RetryConfig(initial_delay=0.0, exceptions=["RuntimeError"]),
+  )
+  final_agent = _agent("final_agent", _text_response("Final answer."))
+  workflow = Workflow(
+      name="root_workflow",
+      edges=[(START, flaky_node), (flaky_node, final_agent)],
+  )
+
+  events = await _execute(force_new_version=force_new_version, node=workflow)
+
+  assert events[-1].status.state == _compat.TS_COMPLETED
+
+
+@_EXECUTOR_VERSIONS
+async def test_task_fails_when_root_agent_returns_no_content(
+    force_new_version: bool,
+) -> None:
+  """A root agent that returns no content fails the task with its error."""
+  root = _agent("root", _empty_stop_response())
+
+  events = await _execute(force_new_version=force_new_version, agent=root)
+
+  assert events[-1].status.state == _compat.TS_FAILED
+  assert "returned no content" in _status_text(events[-1])
+
+
+@_EXECUTOR_VERSIONS
+async def test_task_fails_when_root_fails_after_sub_agent_failure(
+    force_new_version: bool,
+) -> None:
+  """When both a sub-agent and then the root fail, the task fails."""
+  root = _agent(
+      "root",
+      _call_response("flight_agent", {"request": "Tokyo"}),
+      _empty_stop_response(),
+      sub_agents=[
+          _agent("flight_agent", _empty_stop_response(), mode="single_turn")
+      ],
+  )
+
+  events = await _execute(force_new_version=force_new_version, agent=root)
+
+  assert events[-1].status.state == _compat.TS_FAILED
+
+
+@_EXECUTOR_VERSIONS
+async def test_root_failure_is_not_hidden_by_after_agent_callback_content(
+    force_new_version: bool,
+) -> None:
+  """Content from after_agent_callback does not hide a root failure."""
+
+  def _apologize(callback_context: Any) -> types.Content:
+    return types.Content(role="model", parts=[Part(text="Sorry.")])
+
+  root = _agent("root", _empty_stop_response(), after_agent_callback=_apologize)
+
+  events = await _execute(force_new_version=force_new_version, agent=root)
+
+  assert events[-1].status.state == _compat.TS_FAILED
+
+
+@_EXECUTOR_VERSIONS
+async def test_legacy_root_failure_is_not_hidden_by_later_content(
+    force_new_version: bool,
+) -> None:
+  """A legacy BaseAgent root failure (no node_info.path) is not cleared."""
+  sequential = SequentialAgent(
+      name="sequential",
+      sub_agents=[
+          _agent("failing_step", _empty_stop_response()),
+          _agent("ok_step", _text_response("Sorry.")),
+      ],
+  )
+
+  events = await _execute(force_new_version=force_new_version, agent=sequential)
+
+  assert events[-1].status.state == _compat.TS_FAILED
+
+
+@_EXECUTOR_VERSIONS
+async def test_sibling_success_does_not_hide_parallel_branch_failure(
+    force_new_version: bool,
+) -> None:
+  """A parallel branch succeeding does not recover a failed sibling branch."""
+  parallel = ParallelAgent(
+      name="parallel",
+      sub_agents=[
+          _agent("failing_branch", _empty_stop_response()),
+          _agent("ok_branch", _text_response("ok")),
+      ],
+  )
+  workflow = Workflow(name="root_workflow", edges=[(START, parallel)])
+
+  events = await _execute(force_new_version=force_new_version, node=workflow)
+
+  assert events[-1].status.state == _compat.TS_FAILED
+
+
+@_EXECUTOR_VERSIONS
+async def test_failed_task_reports_unresolved_error_not_recovered_one(
+    force_new_version: bool,
+) -> None:
+  """The failure message comes from the unresolved error, not a later one.
+
+  Setup: one parallel branch fails; in the other, a step fails and the next
+    step recovers.
+  Assert: the task fails with the unrecovered branch's error message.
+  """
+
+  def _failure(message: str) -> LlmResponse:
+    response = _empty_stop_response()
+    response.error_message = message
+    return response
+
+  parallel = ParallelAgent(
+      name="parallel",
+      sub_agents=[
+          _agent("failing_branch", _failure("unrecovered failure")),
+          SequentialAgent(
+              name="recovering_branch",
+              sub_agents=[
+                  _agent("failing_step", _failure("recovered failure")),
+                  _agent("ok_step", _text_response("ok")),
+              ],
+          ),
+      ],
+  )
+  workflow = Workflow(name="root_workflow", edges=[(START, parallel)])
+
+  events = await _execute(force_new_version=force_new_version, node=workflow)
+
+  assert events[-1].status.state == _compat.TS_FAILED
+  assert _status_text(events[-1]) == "unrecovered failure"
+
+
+@_EXECUTOR_VERSIONS
+async def test_recovered_failure_keeps_input_required_state(
+    force_new_version: bool,
+) -> None:
+  """A run that recovers and then waits for input reports input-required.
+
+  Setup: a sub-agent fails, root recovers and calls a long-running tool, then
+    tells the user it is waiting.
+  Assert: the task waits for input instead of completing or failing.
+  """
+
+  def request_approval() -> dict[str, str]:
+    """Requests human approval."""
+    return {"status": "pending"}
+
+  root = _agent(
+      "root",
+      _call_response("flight_agent", {"request": "Tokyo"}),
+      _call_response("request_approval", {}),
+      _text_response("Waiting for your approval."),
+      tools=[LongRunningFunctionTool(func=request_approval)],
+      sub_agents=[
+          _agent("flight_agent", _empty_stop_response(), mode="single_turn")
+      ],
+  )
+
+  events = await _execute(force_new_version=force_new_version, agent=root)
+
+  assert events[-1].status.state == _compat.TS_INPUT_REQUIRED
+
+
+async def test_task_fails_on_interceptor_failure_for_non_error_event() -> None:
+  """A failure an interceptor reports for a non-error event is never cleared."""
+
+  async def _fail_status_updates(
+      executor_context: Any, a2a_event: A2AEvent, adk_event: Event
+  ) -> A2AEvent:
+    if isinstance(a2a_event, TaskStatusUpdateEvent):
+      a2a_event.status.state = _compat.TS_FAILED
+    return a2a_event
+
+  config = A2aAgentExecutorConfig(
+      execute_interceptors=[
+          ExecuteInterceptor(after_event=_fail_status_updates)
+      ]
+  )
+  root = _agent("root", _text_response("All good."))
+
+  events = await _execute(force_new_version=False, agent=root, config=config)
+
+  assert events[-1].status.state == _compat.TS_FAILED

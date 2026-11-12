@@ -29,8 +29,6 @@ import logging
 import sys
 import time
 from typing import Any
-from typing import Dict
-from typing import List
 
 try:
   # Try relative imports first (when run as module)
@@ -102,7 +100,7 @@ async def run_cache_comparison_experiment(
     experiment_title: str,
     reverse_order: bool = False,
     request_delay: float = 2.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """
   Run a cache performance comparison experiment for a specific model.
 
@@ -317,7 +315,7 @@ async def analyze_cache_performance_from_sessions(
     runner_uncached,
     session_uncached,
     model_name: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Analyze cache performance using CachePerformanceAnalyzer."""
   print("📊 ANALYZING CACHE PERFORMANCE WITH CachePerformanceAnalyzer...")
 
@@ -413,7 +411,7 @@ async def analyze_cache_performance_from_sessions(
   }
 
 
-def get_experiment_labels(model_name: str) -> Dict[str, str]:
+def get_experiment_labels(model_name: str) -> dict[str, str]:
   """Get experiment labels and titles for a given model."""
   # Determine experiment type based on model name
   if "2.5" in model_name:
@@ -435,8 +433,8 @@ def get_experiment_labels(model_name: str) -> Dict[str, str]:
 
 
 def calculate_averaged_results(
-    all_results: List[Dict[str, Any]], model_name: str
-) -> Dict[str, Any]:
+    all_results: list[dict[str, Any]], model_name: str
+) -> dict[str, Any]:
   """Calculate averaged results from multiple experiment runs."""
   if not all_results:
     raise ValueError("No results to average")
@@ -531,7 +529,7 @@ def _calculate_std(values):
   return variance**0.5
 
 
-def save_results(results: Dict[str, Any], filename: str):
+def save_results(results: dict[str, Any], filename: str):
   """Save experiment results to JSON file."""
   with open(filename, "w") as f:
     json.dump(results, f, indent=2)

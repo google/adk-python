@@ -20,7 +20,6 @@ import json
 import logging
 import sys
 import time
-from typing import Union
 
 from adk_answering_agent import agent
 from adk_answering_agent.settings import OWNER
@@ -40,7 +39,7 @@ logs.setup_adk_logger(level=logging.DEBUG)
 
 async def list_most_recent_discussions(
     count: int = 1,
-) -> Union[list[int], None]:
+) -> list[int] | None:
   """Fetches a specified number of the most recently updated discussions.
 
   Args:

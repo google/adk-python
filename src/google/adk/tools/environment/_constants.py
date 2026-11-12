@@ -30,9 +30,12 @@ MAX_OUTPUT_CHARS = 30_000
 # System instruction templates
 # ---------------------------------------------------------------------------
 
-ENVIRONMENT_INSTRUCTION = """\
+ENVIRONMENT_WORKING_DIR_INSTRUCTION = """\
 Your environment is at {working_dir}/
+"""
+"""Prepended to the rules once the environment is initialized."""
 
+ENVIRONMENT_INSTRUCTION = """\
 # Environment Rules
 
 DO:
