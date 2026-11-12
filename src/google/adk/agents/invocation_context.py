@@ -325,9 +325,8 @@ class InvocationContext(BaseModel):
   ) = PrivateAttr(default=None)
   """The tool calls running in the background of this live run.
 
-  Holds both streaming tools and non-blocking tools, keyed by function call
-  id. Created on first registration, so contexts copied before then don't
-  share it. Readers treat ``None`` as empty.
+  Keyed by function call id. Created on first registration, so contexts copied
+  before then don't share it. Readers treat ``None`` as empty.
   """
 
   def _add_background_tool(
