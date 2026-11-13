@@ -134,6 +134,33 @@ def _add_rubrics_to_invocation(
     existing_ids.add(rubric.rubric_id)
 
 
+def _drop_rubrics_left_by_earlier_evaluate(
+    eval_case: EvalCase,
+    expected_invocations: Optional[list[Invocation]],
+    actual_invocations: list[Invocation],
+) -> None:
+  """Drops rubrics an earlier evaluate left on the actual invocations.
+
+  Older versions added rubrics to the caller's invocations, and every
+  EvalCaseResult carries them on its actual invocations, so saved inferences can
+  already hold the rubrics that are about to be added. Only identical rubrics
+  are dropped: a different rubric with the same rubric_id still raises in
+  _add_rubrics_to_invocation.
+  """
+  case_rubrics = getattr(eval_case, "rubrics", None) or []
+  for idx, actual_invocation in enumerate(actual_invocations):
+    if not actual_invocation.rubrics:
+      continue
+    rubrics_to_add = list(case_rubrics)
+    if expected_invocations:
+      rubrics_to_add += expected_invocations[idx].rubrics or []
+    actual_invocation.rubrics = [
+        rubric
+        for rubric in actual_invocation.rubrics
+        if rubric not in rubrics_to_add
+    ]
+
+
 def _copy_eval_case_rubrics_to_actual_invocations(
     eval_case: EvalCase, actual_invocations: list[Invocation]
 ) -> None:
@@ -404,6 +431,15 @@ class LocalEvalService(BaseEvalService):
             f" {len(expected_invocations)} conversations in eval case."
         )
 
+    # Rubrics are added to copies, so the caller's inferences can be scored
+    # again.
+    actual_invocations = [
+        invocation.model_copy(deep=True) for invocation in actual_invocations
+    ]
+    inference_result = inference_result.model_copy(
+        update={"inferences": actual_invocations}
+    )
+
     # Pre-creating the EvalMetricResults entries for each invocation.
     for idx, actual in enumerate(actual_invocations):
       eval_metric_result_per_invocation.append(
@@ -416,6 +452,10 @@ class LocalEvalService(BaseEvalService):
               eval_metric_results=[],
           )
       )
+
+    _drop_rubrics_left_by_earlier_evaluate(
+        eval_case, expected_invocations, actual_invocations
+    )
 
     # 1. Copy EvalCase level rubrics to all actual invocations.
     _copy_eval_case_rubrics_to_actual_invocations(eval_case, actual_invocations)
