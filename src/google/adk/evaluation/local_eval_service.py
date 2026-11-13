@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -24,7 +25,6 @@ import uuid
 
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -34,6 +34,8 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
+from ..utils._sync_runner import _is_async_callable
+from ..workflow._base_node import BaseNode
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -51,6 +53,7 @@ from .eval_result import EvalCaseResult
 from .eval_set import EvalCase
 from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
+from .evaluation_generator import _get_eval_session_app_name_and_user_id
 from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -160,7 +163,7 @@ class LocalEvalService(BaseEvalService):
 
   def __init__(
       self,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       eval_sets_manager: EvalSetsManager,
       metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
       session_service: Optional[BaseSessionService] = None,
@@ -354,10 +357,10 @@ class LocalEvalService(BaseEvalService):
     # would be the score for the eval case.
     overall_eval_metric_results: list[EvalMetricResult] = []
 
-    user_id = (
-        eval_case.session_input.user_id
-        if eval_case.session_input and eval_case.session_input.user_id
-        else "test_user_id"
+    # Inference created the session under the eval case's own app name and
+    # user id, which can differ from the app name of the request.
+    session_app_name, user_id = _get_eval_session_app_name_and_user_id(
+        eval_case.session_input
     )
 
     actual_invocations = inference_result.inferences
@@ -368,7 +371,7 @@ class LocalEvalService(BaseEvalService):
       session_details = None
       if inference_result.session_id is not None:
         session_details = await self._session_service.get_session(
-            app_name=inference_result.app_name,
+            app_name=session_app_name,
             user_id=user_id,
             session_id=inference_result.session_id,
         )
@@ -441,7 +444,7 @@ class LocalEvalService(BaseEvalService):
     session_details = None
     if session_id is not None:
       session_details = await self._session_service.get_session(
-          app_name=inference_result.app_name,
+          app_name=session_app_name,
           user_id=user_id,
           session_id=session_id,
       )
@@ -593,11 +596,23 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
-    result = metric_evaluator.evaluate_invocations(
-        actual_invocations=actual_invocations,
-        expected_invocations=expected_invocations,
-        conversation_scenario=conversation_scenario,
-    )
+    result: EvaluationResult | Awaitable[EvaluationResult]
+    if _is_async_callable(metric_evaluator.evaluate_invocations):
+      result = metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
+    else:
+      # Offload synchronous evaluators (such as the Vertex Gen AI Evaluation SDK
+      # facade) to a worker thread so blocking I/O does not stall the event
+      # loop.
+      result = await asyncio.to_thread(
+          metric_evaluator.evaluate_invocations,
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
     if inspect.isawaitable(result):
       return await result
     return result
@@ -633,7 +648,7 @@ class LocalEvalService(BaseEvalService):
       app_name: str,
       eval_set_id: str,
       eval_case: EvalCase,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       use_live: bool,
       live_timeout_seconds: int,
       *,

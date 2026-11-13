@@ -1,12 +1,12 @@
 # Runner Live Streaming (run_live)
 
-`Runner.run_live` is the real-time execution mode ADK uses to establish persistent bidirectional streaming sessions with Gemini Multimodal Live API models. It coordinates real-time audio/text streaming, `LiveRequestQueue` message ingestion, and non-blocking background tool execution.
+`Runner.run_live` is the real-time execution mode ADK uses to establish persistent bidirectional streaming sessions with Gemini Multimodal Live API models. It coordinates real-time audio/text streaming, `LiveRequestQueue` message ingestion, and background tool execution.
 
 ## Introduction
 
 Standard chat models operate via turn-based request-response cycles. For real-time voice, conversational audio, and streaming multimodal applications, waiting for complete turns introduces prohibitive latency. Gemini Live models require persistent, low-latency WebSocket or gRPC connections capable of receiving continuous PCM audio frames while simultaneously streaming back audio responses and executing tools.
 
-The `run_live` subsystem resolves this by connecting `Runner` to Gemini Multimodal Live endpoints. Callers pass a [`LiveRequestQueue`](../../live/live_request_queue/index.md) to supply real-time user audio or text chunks. The runner maintains an active streaming session, routes non-blocking tool calls to background execution tasks without interrupting the audio stream, and yields real-time model content events (`Event`).
+The `run_live` subsystem resolves this by connecting `Runner` to Gemini Multimodal Live endpoints. Callers pass a [`LiveRequestQueue`](../../live/live_request_queue/index.md) to supply real-time user audio or text chunks. The runner maintains an active streaming session, runs each tool call in a background task without interrupting the audio stream, and yields real-time model content events (`Event`).
 
 ## Get started
 
@@ -72,7 +72,7 @@ sequenceDiagram
     participant Queue as LiveRequestQueue
     participant Runner as Runner.run_live()
     participant Session as Gemini Live Session
-    participant Tools as Non-blocking Tool Handler
+    participant Tools as Background Tool Tasks
 
     Client->>Queue: send_content() / send_realtime()
     Runner->>Session: Connect WebSocket (types.LiveConnectConfig)
@@ -81,7 +81,7 @@ sequenceDiagram
     and Output Stream
         Session-->>Runner: Stream realtime audio / text events
         Runner-->>Client: Yield Event
-    and Non-blocking Tool Execution
+    and Background Tool Execution
         Session->>Tools: Dispatch tool call
         Tools->>Tools: Execute tool in background task
         Tools->>Queue: Send tool output back to active Live session
@@ -94,7 +94,7 @@ sequenceDiagram
    * **Inline Audio Events (`inline_data`):** Streamed directly to callers for low-latency audio playback, but **not** saved to session history to prevent session bloat.
    * **Artifact Media Events (`save_live_blob`):** With `save_live_blob=True` on `RunConfig`, each turn's audio is saved to artifact storage as one audio file, and the image frames the user sends, such as camera or screen-share frames, as one uncompressed `.zip` with a `metadata.json` index. Session history gets an event that references each saved file.
    * **Transcriptions & Tool Calls:** Non-partial transcriptions, usage metadata, and function calls are always saved to session history.
-4. **Non-Blocking Background Tools:** Streaming tools, which are async generator functions, and tools declared non-blocking run as background tasks, so audio output is not blocked while they work. The [Live background tools](../../live/tools/index.md) guide explains how to declare a tool non-blocking. Once complete, tool execution results are pushed back into `LiveRequestQueue` to update the model.
+4. **Background Tools:** When the model calls a function during a live stream, the runner runs each call in its own background task, so model events keep streaming while the tool runs. When a call finishes, the runner yields its function response event, which is saved to session history, and sends the response to the model. A tool's `behavior` controls whether the model keeps talking or waits for the result. When the run ends normally, the runner waits up to 10 seconds for running non-streaming calls to finish before cancelling them. When the session restarts because a callback blocked the model's output or the user's input, the runner cancels running calls. See [Live tools](../../live/tools/index.md).
 
 ## Configuration options
 
@@ -124,7 +124,7 @@ If you leave `response_modalities` unset, the model responds with audio. Some na
 
 ## Advanced applications
 
-### Non-blocking streaming tool callback
+### Streaming tool callback
 
 A tool written as an async generator function is a streaming tool. ADK starts it as a background task, and each value the tool yields is sent to the model as a function response while the tool keeps running. The following tool reports that a lookup has started before it returns the price:
 

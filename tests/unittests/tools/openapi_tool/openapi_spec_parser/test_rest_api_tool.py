@@ -3800,6 +3800,39 @@ class TestRestApiToolFromParsedOperation:
     assert param.style == "deepObject"
     assert param.explode is True
 
+  def test_from_parsed_operation_str_preserves_required(self):
+    parsed = _build_parsed_operation(
+        Operation(operationId="GetItem", description="Get an item."),
+        parameters=[
+            ApiParameter(
+                original_name="id",
+                py_name="id",
+                param_location="path",
+                param_schema=OpenAPISchema(type="string"),
+                required=True,
+            ),
+            ApiParameter(
+                original_name="tenant",
+                py_name="tenant",
+                param_location="query",
+                param_schema=OpenAPISchema(type="string"),
+                required=True,
+            ),
+            ApiParameter(
+                original_name="limit",
+                py_name="limit",
+                param_location="query",
+                param_schema=OpenAPISchema(type="integer"),
+                required=False,
+            ),
+        ],
+    )
+
+    tool = RestApiTool.from_parsed_operation_str(parsed.model_dump_json())
+
+    schema = tool._operation_parser.get_json_schema()
+    assert schema["required"] == ["id", "tenant"]
+
   def test_from_parsed_operation_truncates_long_name_to_60_chars(self):
     # Gemini rejects function names of 64 characters or more.
     operation_id = "get" + "Extremely" * 10 + "LongOperationName"

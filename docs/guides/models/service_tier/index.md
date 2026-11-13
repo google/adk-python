@@ -2,9 +2,6 @@
 
 `ServiceTier` specifies the serving tier for model requests executed through the Google GenAI Interactions API. It allows invocations to select standard handling or queued background execution on off-peak capacity through `ServiceTier.DEFERRED`.
 
-> [!NOTE]
-> The deferred serving tier is an experimental feature that requires project allowlisting. Please fill out the access request form to get your Google Cloud project allowlisted before enabling `ServiceTier.DEFERRED`.
-
 ## Introduction
 
 Model workloads have different latency expectations and cost tolerances. Interactive conversational assistants require immediate responses, while background batch processing, document summarization, and bulk evaluation can run when computing resources are available at lower cost.
@@ -227,7 +224,6 @@ Cancelling the task stops the client-side polling loop at the next sleep interva
 
 Serving tiers have specific API and transport requirements.
 
-- **Experimental feature and allowlist.** The deferred serving tier is an experimental capability that requires Google Cloud project allowlisting. Submit the access request form before running deferred requests in production projects.
 - **Requires the Interactions API.** Serving tiers function only with models configured for the Google GenAI Interactions API, such as `Gemini(use_interactions_api=True)`. Standard content generation models ignore `service_tier` and log a warning once per run. `ManagedAgent` also ignores `service_tier` because it manages its own interaction lifecycle.
 - **Incompatible with streaming.** `ServiceTier.DEFERRED` cannot be used with streaming. A deferred request returns an interaction identifier rather than a stream of partial chunks. Configuring `service_tier=ServiceTier.DEFERRED` with `streaming_mode=StreamingMode.SSE` raises `pydantic.ValidationError` when the `RunConfig` is constructed.
 - **HTTP connection limits.** When driven through `adk api_server`, `/run` holds the HTTP connection open throughout the queue wait. If platform timeouts terminate the connection, such as Cloud Run's sixty-minute limit or ingress proxy timeouts, the server disconnect monitor cancels polling while the interaction continues running and billing on the backend with its result uncollected.

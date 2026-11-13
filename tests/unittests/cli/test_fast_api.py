@@ -1002,6 +1002,73 @@ def test_run_eval_without_eval_set_results_manager_succeeds(
   assert response.json() == {"runEvalResults": []}
 
 
+@pytest.fixture
+def workflow_root_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  workflow = Workflow(name="wf", edges=[(START, BaseNode(name="leaf"))])
+
+  class WorkflowLoader(BaseAgentLoader):
+
+    def load_agent(self, agent_name: str) -> Workflow:
+      return workflow
+
+    def list_agents(self) -> list[str]:
+      return ["wf_app"]
+
+  dev_server = DevServer(
+      agent_loader=WorkflowLoader(),
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  return TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+
+def test_app_graph_for_workflow_root_is_empty(workflow_root_client):
+  """A Workflow root gets an empty app graph instead of a 500."""
+  response = workflow_root_client.get("/dev/apps/wf_app/graph")
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
+async def test_event_graph_for_workflow_root_is_empty(
+    workflow_root_client, mock_session_service
+):
+  """A Workflow root gets an empty event graph instead of a 500."""
+  session = await mock_session_service.create_session(
+      app_name="wf_app", user_id="user"
+  )
+  event = Event(author="leaf", invocation_id="invocation_id")
+  await mock_session_service.append_event(session=session, event=event)
+
+  response = workflow_root_client.get(
+      f"/dev/apps/wf_app/users/user/sessions/{session.id}/events/"
+      f"{event.id}/graph"
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
 @pytest.mark.parametrize(
     ("web", "bind_host", "expected"),
     [
@@ -7989,11 +8056,18 @@ def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
 #################################################
 
 
-def test_finalize_agent_identity_credentials_success(test_app):
+@pytest.mark.parametrize(
+    "connector_name",
+    [
+        "projects/p/locations/l/connectors/c",
+        "projects/p/locations/l/authProviders/c",
+    ],
+)
+def test_finalize_agent_identity_credentials_success(test_app, connector_name):
   """Test successful credential finalization and Base64 padding decoding."""
   import base64
 
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   raw_bytes = b"test-validation-state-bytes"
   # Unpadded url-safe base64 string
@@ -8001,12 +8075,12 @@ def test_finalize_agent_identity_credentials_success(test_app):
 
   with (
       patch.object(
-          iamconnectorcredentials_v1alpha,
-          "IAMConnectorCredentialsServiceClient",
+          agentidentitycredentials_v1,
+          "AuthProviderCredentialsServiceClient",
           autospec=True,
       ) as mock_client_cls,
       patch.object(
-          iamconnectorcredentials_v1alpha,
+          agentidentitycredentials_v1,
           "FinalizeCredentialsRequest",
           autospec=True,
       ) as mock_req_cls,
@@ -8017,7 +8091,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     response = test_app.post(
         "/agent-identity/finalize",
         json={
-            "connector_name": "projects/p/locations/l/connectors/c",
+            "connector_name": connector_name,
             "user_id": "user-123",
             "user_id_validation_state": b64_str,
             "consent_nonce": "nonce-456",
@@ -8027,7 +8101,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     assert response.json() == {"status": "ok"}
 
     mock_req_cls.assert_called_once_with(
-        connector="projects/p/locations/l/connectors/c",
+        auth_provider="projects/p/locations/l/authProviders/c",
         user_id="user-123",
         user_id_validation_state=raw_bytes,
         consent_nonce="nonce-456",
@@ -8038,11 +8112,11 @@ def test_finalize_agent_identity_credentials_success(test_app):
 @pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
 def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ):
     response = test_app.post(
@@ -8061,9 +8135,9 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
 
 
 def test_finalize_agent_identity_credentials_missing_dependency(test_app):
-  """Test error handling when google-cloud-iamconnectorcredentials is not installed."""
+  """Test error handling when google-cloud-agentidentitycredentials is not installed."""
   with patch.dict(
-      "sys.modules", {"google.cloud.iamconnectorcredentials_v1alpha": None}
+      "sys.modules", {"google.cloud.agentidentitycredentials_v1": None}
   ):
     response = test_app.post(
         "/agent-identity/finalize",
@@ -8080,11 +8154,11 @@ def test_finalize_agent_identity_credentials_missing_dependency(test_app):
 
 def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
   """Test backend InvalidArgument API error handling (400 response)."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -8107,14 +8181,14 @@ def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
 
 def test_finalize_agent_identity_credentials_api_call_error(test_app):
   """Test backend GoogleAPICallError error handling with status code propagation."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   err = GoogleAPICallError("Permission denied")
   err.code = 403
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -9116,6 +9190,52 @@ def test_context_propagation_middleware_extracts_w3c_traceparent_and_baggage(
       (f"{s.context.trace_id:032x}", s.parent and f"{s.parent.span_id:016x}")
       for s in roots
   ] == [("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")]
+
+
+def test_agent_engine_keeps_spans_of_unsampled_platform_traceparent(
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """On Agent Engine an unsampled platform traceparent does not drop spans."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "123")
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  exporter = InMemorySpanExporter()
+  trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+
+  @client.app.get("/_test_trace_context")
+  async def _probe():
+    with trace.get_tracer(__name__).start_as_current_span("probe"):
+      pass
+    return {"ok": True}
+
+  try:
+    response = client.get(
+        "/_test_trace_context",
+        headers={
+            "traceparent": (
+                "00-0000000000000000385c840e58676fdd-00f067aa0ba902b7-00"
+            ),
+        },
+    )
+    spans = exporter.get_finished_spans()
+  finally:
+    exporter.shutdown()
+
+  assert response.status_code == 200
+  assert [(s.name, s.parent) for s in spans] == [("probe", None)]
+  assert spans[0].context.trace_id != 0x385C840E58676FDD
 
 
 if __name__ == "__main__":

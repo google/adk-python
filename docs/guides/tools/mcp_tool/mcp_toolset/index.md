@@ -165,12 +165,13 @@ the same name. Every tool from this toolset then reaches the model as
 
 Set `use_mcp_resources=True` when the server publishes documents, which MCP
 calls resources, as well as tools. The toolset adds a `load_mcp_resource` tool,
-and before every model call ADK asks the server for its resource names and adds
-them to the request so that the model knows what it can load. Listing the
-resources adds one extra round trip to the server per model call. When the model
-loads a resource, ADK adds its contents to the next request only and does not
-store them in the session, so the model loads the resource again when it needs
-it in a later turn.
+which `tool_filter` does not remove, because the filter selects among the
+server's tools only. Before every model call, ADK asks the server for its
+resource names and adds them to the request so that the model knows what it can
+load. Listing the resources adds one extra round trip to the server per model
+call. When the model loads a resource, ADK adds its contents to the next request
+only and does not store them in the session, so the model loads the resource
+again when it needs it in a later turn.
 
 ### Cache the tool list
 

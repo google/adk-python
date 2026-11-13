@@ -2829,52 +2829,6 @@ async def test_thought_before_tool_call_in_non_progressive_sse_does_not_error():
 
 
 @pytest.mark.asyncio
-async def test_postprocess_live_skips_none_function_response_event():
-  """When every live function call defers, no None event must be yielded.
-
-  handle_function_calls_live returns None if all calls are long-running, and
-  yielding that None downstream crashes the live receive loop.
-  """
-  from google.adk.flows.llm_flows import base_llm_flow as blf
-
-  agent = Agent(name='test_agent', model='gemini-2.0-flash')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  flow = BaseLlmFlowForTesting()
-
-  fc_part = types.Part(
-      function_call=types.FunctionCall(name='lro', id='1', args={})
-  )
-  content = types.Content(role='model', parts=[fc_part])
-  model_response_event = Event(
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-      content=content,
-  )
-  llm_request = LlmRequest(model='gemini-2.0-flash')
-  llm_response = LlmResponse(content=content)
-
-  with mock.patch.object(
-      blf.functions,
-      'handle_function_calls_live',
-      new=AsyncMock(return_value=None),
-  ):
-    events = [
-        event
-        async for event in _live_llm_flow.postprocess_live_flow(
-            flow,
-            invocation_context,
-            llm_request,
-            llm_response,
-            model_response_event,
-        )
-    ]
-
-  assert all(event is not None for event in events)
-
-
-@pytest.mark.asyncio
 async def test_send_to_model_rejects_function_call():
   """Test that send_to_model raises ValueError if user message contains function calls."""
   agent = Agent(name='test_agent')

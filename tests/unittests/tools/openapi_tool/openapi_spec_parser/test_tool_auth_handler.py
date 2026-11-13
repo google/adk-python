@@ -14,9 +14,11 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+import threading
 import time
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -38,6 +40,7 @@ from google.adk.sessions.state import StateSchemaError
 from google.adk.tools.openapi_tool.auth.auth_helpers import openid_dict_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.credential_exchangers.auto_auth_credential_exchanger import OAuth2CredentialExchanger
+from google.adk.tools.openapi_tool.auth.credential_exchangers.base_credential_exchanger import BaseAuthCredentialExchanger
 from google.adk.tools.openapi_tool.openapi_spec_parser import tool_auth_handler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolContextCredentialStore
@@ -209,6 +212,40 @@ async def test_openid_connect_no_auth_response(
   result = await handler.prepare_auth_credentials()
   assert result.state == 'pending'
   assert result.auth_credential == openid_connect_credential
+
+
+@pytest.mark.asyncio
+async def test_credential_exchange_keeps_loop_running(openid_connect_scheme):
+  """The blocking credential exchange runs off the event loop."""
+  _, credential = token_to_scheme_credential(
+      'oauth2Token', 'header', 'bearer', 'token'
+  )
+  loop_ran = threading.Event()
+  loop_ran_during_exchange = []
+  exchanged_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(scheme='bearer', credentials=HttpCredentials(token='new')),
+  )
+
+  def exchange_credential(*_):
+    loop_ran_during_exchange.append(loop_ran.wait(timeout=5))
+    return exchanged_credential
+
+  exchanger = create_autospec(BaseAuthCredentialExchanger, instance=True)
+  exchanger.exchange_credential.side_effect = exchange_credential
+  handler = ToolAuthHandler(
+      create_mock_tool_context(),
+      openid_connect_scheme,
+      credential,
+      credential_exchanger=exchanger,
+  )
+
+  asyncio.get_running_loop().call_soon(loop_ran.set)
+  result = await handler.prepare_auth_credentials()
+
+  assert loop_ran_during_exchange == [True]
+  assert result.state == 'done'
+  assert result.auth_credential == exchanged_credential
 
 
 @pytest.mark.asyncio

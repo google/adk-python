@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+import warnings
 
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
@@ -288,6 +289,13 @@ async def handle_function_calls_live(
     tools_dict: dict[str, BaseTool],
 ) -> Event | None:
   """Calls the functions and returns the function response event."""
+  warnings.warn(
+      'handle_function_calls_live is deprecated: run_live no longer uses it,'
+      ' there is no replacement outside run_live, and it will be removed in a'
+      ' future version.',
+      DeprecationWarning,
+      stacklevel=2,
+  )
   return await _handle_function_calls_live(
       invocation_context=invocation_context,
       function_call_event=function_call_event,

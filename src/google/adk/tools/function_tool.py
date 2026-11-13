@@ -411,8 +411,7 @@ class FunctionTool(BaseTool):
 
     # In live mode (bidirectional streaming), tools may accept an 'input_stream'
     # parameter (e.g., LiveRequestQueue) to receive real-time streaming data.
-    # _process_function_live_helper registers each call with its own stream,
-    # keyed by function call id; inject the stream of this call.
+    # Each function call gets its own stream, keyed by function call id.
     if "input_stream" in valid_params and tool_context.function_call_id:
       active_tools = (
           tool_context._invocation_context._active_background_tools or {}

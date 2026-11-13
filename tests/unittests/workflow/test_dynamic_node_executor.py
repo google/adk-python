@@ -159,7 +159,7 @@ async def test_run_node_internal_resume_inputs_propagates_end_to_end():
 
 
 async def test_run_node_internal_raises_when_rerun_on_resume_is_false():
-  """Calling run_node_internal from a non-resumable parent raises ValueError."""
+  """A non-resumable parent calling run_node_internal raises naming itself."""
   # Arrange
   parent_ctx = _make_context(rerun_on_resume=False)
   child_node = FunctionNode(
@@ -169,7 +169,13 @@ async def test_run_node_internal_raises_when_rerun_on_resume_is_false():
   )
 
   # Act & Assert
-  with pytest.raises(ValueError, match='A node must have rerun_on_resume=True'):
+  expected_msg = (
+      r"Node 'test_parent_node' calls ctx\.run_node but has"
+      r' rerun_on_resume=False; set rerun_on_resume=True on it \(e\.g\.'
+      r' @node\(rerun_on_resume=True\) or'
+      r' node\(my_node, rerun_on_resume=True\)\)\.'
+  )
+  with pytest.raises(ValueError, match=expected_msg):
     await run_node_internal(parent_ctx, child_node)
 
 
