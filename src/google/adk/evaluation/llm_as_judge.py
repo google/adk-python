@@ -24,7 +24,6 @@ from typing import Generic
 from typing import Optional
 from typing import TypeVar
 
-from google.auth import exceptions as auth_exceptions
 from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
@@ -33,8 +32,8 @@ from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
-from ..utils.context_utils import Aclosing
 from ._retry_options_utils import add_default_retry_options_if_not_present
+from ._retry_options_utils import read_judge_response_with_retry
 from .common import EvalBaseModel
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
@@ -52,26 +51,6 @@ from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
 
 logger = logging.getLogger("google_adk." + __name__)
-
-# Client timeouts are not in google-genai's aiohttp transient set, and a
-# non-Gemini judge never reads http_options.retry_options. Retry them here.
-_JUDGE_TIMEOUT_ERRORS = (TimeoutError, auth_exceptions.TimeoutError)
-
-
-def _judge_timeout_retry(
-    llm_request: LlmRequest,
-) -> tuple[int, float, float, float]:
-  """Returns attempts, delay, exp_base, and max_delay for a judge timeout."""
-  options = None
-  config = llm_request.config
-  if config is not None and config.http_options is not None:
-    options = config.http_options.retry_options
-  if options is None or not options.attempts or options.attempts < 1:
-    return 1, 0.0, 1.0, 0.0
-  initial = options.initial_delay or 0.0
-  exp_base = 1.0 if options.exp_base is None else options.exp_base
-  max_delay = float("inf") if options.max_delay is None else options.max_delay
-  return options.attempts, initial, exp_base, max_delay
 
 
 class AutoRaterScore(EvalBaseModel):
@@ -200,46 +179,24 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     Returns:
       A PerInvocationResult containing the evaluation score and status.
     """
-    attempts, delay, exp_base, max_delay = _judge_timeout_retry(llm_request)
-    for attempt in range(attempts):
-      try:
-        return await self._read_judge_sample(llm_request, actual, expected)
-      except _JUDGE_TIMEOUT_ERRORS:
-        if attempt + 1 >= attempts:
-          raise
-        await asyncio.sleep(delay)
-        delay = min(delay * exp_base, max_delay)
-    raise RuntimeError(
-        "LLM evaluation failed: no response received from judge model"
+    llm_response = await read_judge_response_with_retry(
+        self._judge_model, llm_request
     )
-
-  async def _read_judge_sample(
-      self,
-      llm_request: LlmRequest,
-      actual: Invocation,
-      expected: Optional[Invocation],
-  ) -> PerInvocationResult:
-    async with Aclosing(
-        self._judge_model.generate_content_async(llm_request)
-    ) as agen:
-      async for llm_response in agen:
-        # Non-streaming call, so there is only one response content.
-        auto_rater_score = (
-            self._convert_auto_rater_response_to_score_for_invocation(
-                llm_response, actual=actual, expected=expected
-            )
+    if llm_response is None:
+      raise RuntimeError(
+          "LLM evaluation failed: no response received from judge model"
+      )
+    auto_rater_score = (
+        self._convert_auto_rater_response_to_score_for_invocation(
+            llm_response, actual=actual, expected=expected
         )
-        return PerInvocationResult(
-            actual_invocation=actual,
-            expected_invocation=expected,
-            score=auto_rater_score.score,
-            eval_status=get_eval_status(
-                auto_rater_score.score, self._threshold
-            ),
-            rubric_scores=auto_rater_score.rubric_scores,
-        )
-    raise RuntimeError(
-        "LLM evaluation failed: no response received from judge model"
+    )
+    return PerInvocationResult(
+        actual_invocation=actual,
+        expected_invocation=expected,
+        score=auto_rater_score.score,
+        eval_status=get_eval_status(auto_rater_score.score, self._threshold),
+        rubric_scores=auto_rater_score.rubric_scores,
     )
 
   @override

@@ -31,8 +31,8 @@ from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.registry import LLMRegistry
 from ..utils.content_utils import extract_text_from_content
-from ..utils.context_utils import Aclosing
 from ._retry_options_utils import add_default_retry_options_if_not_present
+from ._retry_options_utils import read_judge_response_with_retry
 from .app_details import AppDetails
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
@@ -540,14 +540,15 @@ class HallucinationsV1Evaluator(Evaluator):
     )
     add_default_retry_options_if_not_present(segmenter_llm_request)
     try:
-      async with Aclosing(
-          self._judge_model.generate_content_async(segmenter_llm_request)
-      ) as agen:
-        segmenter_response = await agen.__anext__()
-        segmenter_text = get_text_from_content(segmenter_response.content)
-        if segmenter_text is None:
-          return None, "Segmenter returned no text."
-        sentences = _parse_sentences(segmenter_text)
+      segmenter_response = await read_judge_response_with_retry(
+          self._judge_model, segmenter_llm_request
+      )
+      if segmenter_response is None:
+        return None, "Segmenter returned no text."
+      segmenter_text = get_text_from_content(segmenter_response.content)
+      if segmenter_text is None:
+        return None, "Segmenter returned no text."
+      sentences = _parse_sentences(segmenter_text)
     except Exception as e:
       return None, f"Error during sentence segmentation: {e}"
 
@@ -575,14 +576,15 @@ class HallucinationsV1Evaluator(Evaluator):
     )
     add_default_retry_options_if_not_present(validator_llm_request)
     try:
-      async with Aclosing(
-          self._judge_model.generate_content_async(validator_llm_request)
-      ) as agen:
-        validator_response = await agen.__anext__()
-        validator_text = get_text_from_content(validator_response.content)
-        if validator_text is None:
-          return None, "Sentence validator returned no text."
-        validation_results = _parse_validation_results(validator_text)
+      validator_response = await read_judge_response_with_retry(
+          self._judge_model, validator_llm_request
+      )
+      if validator_response is None:
+        return None, "Sentence validator returned no text."
+      validator_text = get_text_from_content(validator_response.content)
+      if validator_text is None:
+        return None, "Sentence validator returned no text."
+      validation_results = _parse_validation_results(validator_text)
     except Exception as e:
       return None, f"Error during sentence validation: {e}"
 
