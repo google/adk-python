@@ -133,22 +133,55 @@ class InMemoryMemoryService(BaseMemoryService):
     _ = custom_metadata
     user_key = _user_key(app_name, user_id)
     scoped_session_id = session_id or None
-    events_to_add = [
-        event for event in events if event.content and event.content.parts
-    ]
 
     with self._lock:
       deleted_ids = self._deleted_memory_ids.get(user_key, set())
       self._session_events[user_key] = self._session_events.get(user_key, {})
-      existing_events = self._session_events[user_key].get(
-          scoped_session_id, []
+      staged_events = list(
+          self._session_events[user_key].get(scoped_session_id, [])
       )
-      existing_ids = {event.id for event in existing_events}
-      for event in events_to_add:
-        if event.id not in existing_ids and event.id not in deleted_ids:
-          existing_events.append(event.model_copy(deep=True))
-          existing_ids.add(event.id)
-      self._session_events[user_key][scoped_session_id] = existing_events
+      payload_ids = {
+          event.id
+          for event in staged_events
+          if event.id is not None and event.content and event.content.parts
+      }
+      anchor_ids = {
+          event.id
+          for event in staged_events
+          if event.id is not None
+          and not (event.content and event.content.parts)
+      }
+      for event in events:
+        keeps_payload = bool(event.content and event.content.parts) and (
+            event.id not in deleted_ids
+        )
+        if event.id is not None:
+          if event.id in payload_ids:
+            # Already stored with its payload.
+            continue
+          if event.id in anchor_ids and not keeps_payload:
+            # The same boundary anchor is already stored.
+            continue
+        if keeps_payload:
+          staged_events.append(event.model_copy(deep=True))
+          if event.id is not None:
+            payload_ids.add(event.id)
+        else:
+          # Rewind resolution walks the stored history, so contentless
+          # events (including rewind markers) and deleted payloads are kept
+          # as invocation-boundary anchors with their content stripped: they
+          # stay unsearchable, but a later rewind delta can still use their
+          # position and invocation_id to locate the cut. Anchors do not
+          # reserve their event id, so a payload delivered later under the
+          # same id is still stored.
+          staged_events.append(
+              event.model_copy(deep=True, update={'content': None})
+          )
+          if event.id is not None:
+            anchor_ids.add(event.id)
+      self._session_events[user_key][scoped_session_id] = _apply_rewinds(
+          staged_events
+      )
 
   @override
   async def search_memory(
