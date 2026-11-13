@@ -19,12 +19,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-logger = logging.getLogger("google_adk." + __name__)
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.models.base_llm import BaseLlm
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.base_toolset import BaseToolset
+from google.adk.workflow._base_node import _walk_static_nodes
+from google.adk.workflow._base_node import BaseNode
 
-from ...agents.base_agent import BaseAgent
-from ...models.base_llm import BaseLlm
-from ...tools.base_toolset import BaseToolset
-from ...workflow._base_node import BaseNode
+logger = logging.getLogger("google_adk." + __name__)
 
 # Node type mapping for cleaner lookup
 NODE_TYPE_MAP = {
@@ -52,7 +54,9 @@ def _get_node_field(node: Any, field_name: str) -> Any:
   return object.__getattribute__(node, field_name)
 
 
-def serialize_node_like(item: Any) -> Any:
+def serialize_node_like(
+    item: Any, toolset_tools: dict[int, list[BaseTool]] | None = None
+) -> Any:
   """Serialize a NodeLike object (str, BaseAgent, BaseTool, Callable, BaseNode)."""
   if item == "START":
     return "START"
@@ -62,18 +66,20 @@ def serialize_node_like(item: Any) -> Any:
   # Handle BaseAgent
   class_name = type(item).__name__
   if "Agent" in class_name and hasattr(item, "model_fields"):
-    return serialize_agent(item)
+    return serialize_agent(item, toolset_tools)
   # Handle BaseNode. Only real BaseNode instances go through serialize_node,
   # which reads rerun_on_resume; a name-only lookalike would raise there.
   if isinstance(item, BaseNode):
-    return serialize_node(item)
+    return serialize_node(item, toolset_tools)
   # Handle callable
   if callable(item):
     return {"name": getattr(item, "__name__", str(item)), "type": "function"}
   return str(item)
 
 
-def serialize_node(node: Any) -> dict[str, Any]:
+def serialize_node(
+    node: Any, toolset_tools: dict[int, list[BaseTool]] | None = None
+) -> dict[str, Any]:
   """Serialize a node (BaseNode subclasses like FunctionNode, AgentNode, etc.)."""
   class_name = type(node).__name__
   node_name = _get_node_field(node, "name")
@@ -87,7 +93,7 @@ def serialize_node(node: Any) -> dict[str, Any]:
     }
 
   if hasattr(node, "model_fields"):
-    result = serialize_agent(node)
+    result = serialize_agent(node, toolset_tools)
     if "type" not in result:
       if getattr(node, "graph", None) is not None:
         result["type"] = "workflow"
@@ -107,8 +113,10 @@ def serialize_node(node: Any) -> dict[str, Any]:
   }
 
 
-def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
-  """Recursively serialize an agent, excluding non-serializable fields."""
+def serialize_agent(
+    agent: BaseAgent, toolset_tools: dict[int, list[BaseTool]] | None = None
+) -> dict[str, Any]:
+  """Serialize an agent, optionally including tools from resolve_toolsets()."""
   agent_dict: dict[str, object] = {}
 
   for field_name, field_info in agent.__class__.model_fields.items():
@@ -123,7 +131,7 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
     # Handle sub_agents recursively
     if field_name == "sub_agents":
       agent_dict[field_name] = [
-          serialize_agent(sub_agent) for sub_agent in value
+          serialize_agent(sub_agent, toolset_tools) for sub_agent in value
       ]
     # Handle nodes field (for _Mesh/LlmAgent)
     elif field_name == "nodes":
@@ -131,9 +139,9 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
         serialized_nodes = []
         for node in value:
           if hasattr(node, "model_fields"):
-            serialized_nodes.append(serialize_agent(node))
+            serialized_nodes.append(serialize_agent(node, toolset_tools))
           else:
-            serialized_nodes.append(serialize_node(node))
+            serialized_nodes.append(serialize_node(node, toolset_tools))
         agent_dict[field_name] = serialized_nodes
       except Exception as e:
         logger.warning("Error serializing nodes field: %s", e)
@@ -143,16 +151,20 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
         graph_dict: dict[str, object] = {}
         # Serialize nodes
         if hasattr(value, "nodes") and value.nodes:
-          graph_dict["nodes"] = [serialize_node(node) for node in value.nodes]
+          graph_dict["nodes"] = [
+              serialize_node(node, toolset_tools) for node in value.nodes
+          ]
         # Serialize edges
         if hasattr(value, "edges") and value.edges:
           serialized_edges: list[object] = []
           for edge in value.edges:
             edge_dict: dict[str, object] = {}
             if hasattr(edge, "from_node"):
-              edge_dict["from_node"] = serialize_node(edge.from_node)
+              edge_dict["from_node"] = serialize_node(
+                  edge.from_node, toolset_tools
+              )
             if hasattr(edge, "to_node"):
-              edge_dict["to_node"] = serialize_node(edge.to_node)
+              edge_dict["to_node"] = serialize_node(edge.to_node, toolset_tools)
             if hasattr(edge, "route") and edge.route is not None:
               edge_dict["route"] = edge.route
             serialized_edges.append(edge_dict)
@@ -169,18 +181,19 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
             serialized: list[object] = []
             for elem in edge_item:
               if isinstance(elem, dict):
-                serialized.append(
-                    {str(k): serialize_node_like(v) for k, v in elem.items()}
-                )
+                serialized.append({
+                    str(k): serialize_node_like(v, toolset_tools)
+                    for k, v in elem.items()
+                })
               else:
-                serialized.append(serialize_node_like(elem))
+                serialized.append(serialize_node_like(elem, toolset_tools))
             serialized_edges.append(serialized)
           elif hasattr(edge_item, "from_node") and hasattr(
               edge_item, "to_node"
           ):
             edge_dict = {
-                "from_node": serialize_node(edge_item.from_node),
-                "to_node": serialize_node(edge_item.to_node),
+                "from_node": serialize_node(edge_item.from_node, toolset_tools),
+                "to_node": serialize_node(edge_item.to_node, toolset_tools),
             }
             if hasattr(edge_item, "route") and edge_item.route is not None:
               edge_dict["route"] = edge_item.route
@@ -201,7 +214,18 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
         }
 
         serialized_tools: list[object] = []
-        for tool in value:
+        for index, tool in enumerate(value):
+          if toolset_tools is not None and id(tool) in toolset_tools:
+            serialized_tools.append({
+                "name": type(tool).__name__,
+                "id": f"{agent.name}/toolset_{index}",
+                "type": "toolset",
+                "children": [
+                    {"name": child.name, "type": "tool"}
+                    for child in toolset_tools.get(id(tool), [])
+                ],
+            })
+            continue
           tool_name = None
           if callable(tool):
             tool_name = getattr(tool, "__name__", str(tool))
@@ -229,7 +253,7 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
           continue
         # Handle nested agents
         if isinstance(value, BaseAgent):
-          agent_dict[field_name] = serialize_agent(value)
+          agent_dict[field_name] = serialize_agent(value, toolset_tools)
         elif isinstance(value, BaseLlm):
           agent_dict[field_name] = value.model
         # Handle simple types and collections
@@ -252,11 +276,46 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
   return agent_dict
 
 
-def serialize_app_info(app: Any, readme: str | None = None) -> dict[str, Any]:
+async def resolve_toolsets(root: BaseNode | None) -> dict[int, list[BaseTool]]:
+  """List the tools of each McpToolset for the graph.
+
+  Only MCP toolsets are expanded. Other toolsets can start real resources in
+  get_tools() (a sandbox, a browser), so they stay a single node and are never
+  touched just to draw the graph.
+  """
+  toolset_tools: dict[int, list[BaseTool]] = {}
+  if root is None:
+    return toolset_tools
+  try:
+    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+  except ImportError:
+    # MCP is an optional extra; without it there is nothing to expand.
+    return toolset_tools
+  for node in _walk_static_nodes(root):
+    for tool in getattr(node, "tools", []):
+      if not isinstance(tool, McpToolset) or id(tool) in toolset_tools:
+        continue
+      toolset_tools[id(tool)] = []
+      try:
+        toolset_tools[id(tool)] = await tool.get_tools_with_prefix()
+      except Exception:
+        logger.warning(
+            "Could not resolve %s tools for the graph; showing the toolset"
+            " only.",
+            type(tool).__name__,
+        )
+  return toolset_tools
+
+
+def serialize_app_info(
+    app: Any,
+    readme: str | None = None,
+    toolset_tools: dict[int, list[BaseTool]] | None = None,
+) -> dict[str, Any]:
   """Serialize app information for the build_graph endpoint."""
   root = app.root_agent
   try:
-    root_agent_data = serialize_agent(root)
+    root_agent_data = serialize_agent(root, toolset_tools)
   except Exception as e:
     logger.error("Error serializing root agent/node: %s", e, exc_info=True)
     raise
