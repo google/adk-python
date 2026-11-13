@@ -50,6 +50,7 @@ if not TYPE_CHECKING and importlib.util.find_spec("litellm") is None:
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import PrivateAttr
+from pydantic_core import to_jsonable_python
 from typing_extensions import NotRequired
 from typing_extensions import override
 from typing_extensions import Required
@@ -1292,6 +1293,14 @@ class LiteLLMClient:
 def _safe_json_serialize(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
+  A tool result can hold values the json module cannot encode, such as
+  datetimes, Decimals, UUIDs, enums, sets, bytes or Pydantic models (an
+  ``output_schema`` agent run through ``AgentTool`` returns dates and Decimals
+  this way). Those are converted with ``pydantic_core.to_jsonable_python``, as
+  the Gemini and Gemma paths do, so the model still gets JSON rather than the
+  Python repr of the whole payload. Only a payload Pydantic cannot serialize
+  either falls back to ``str()``.
+
   Args:
     obj: The object to serialize.
 
@@ -1302,6 +1311,13 @@ def _safe_json_serialize(obj: object) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
+  except (TypeError, ValueError, OverflowError, RecursionError):
+    pass
+  try:
+    jsonable = to_jsonable_python(
+        obj, by_alias=False, exclude_none=True, bytes_mode="base64"
+    )
+    return json.dumps(jsonable, ensure_ascii=False)
   except (TypeError, ValueError, OverflowError, RecursionError):
     return str(obj)
 
