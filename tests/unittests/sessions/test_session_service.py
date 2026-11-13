@@ -5082,3 +5082,27 @@ async def test_in_memory_append_event_copies_given_stored_session():
       'app:config': {'flags': ['v1']},
   }
   assert other_user_session.state == {'app:config': {'flags': ['v1']}}
+
+
+@pytest.mark.asyncio
+async def test_v0_database_is_not_altered_with_event_index(tmp_path):
+  """A legacy V0 events table must not get the V1 only event_index column."""
+  db_path = tmp_path / 'legacy_v0.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+  engine = create_async_engine(db_url)
+  async with engine.begin() as conn:
+    await conn.run_sync(v0.Base.metadata.create_all)
+  await engine.dispose()
+
+  service = DatabaseSessionService(db_url)
+  try:
+    session = await service.create_session(app_name='app', user_id='user')
+    await service.append_event(
+        session, Event(author='user', id='e1', timestamp=1.0)
+    )
+  finally:
+    await service.close()
+
+  with sqlite3.connect(db_path) as conn:
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(events)')}
+  assert 'event_index' not in columns

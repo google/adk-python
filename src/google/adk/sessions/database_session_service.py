@@ -320,7 +320,8 @@ def _ensure_schema_columns_exist(connection: Connection) -> None:
 def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
   """Ensures tables and indexes declared in metadata exist."""
   metadata.create_all(bind=connection)
-  _ensure_schema_columns_exist(connection)
+  if "event_index" in metadata.tables["events"].c:
+    _ensure_schema_columns_exist(connection)
   _ensure_schema_indexes_exist(connection, metadata)
 
 
