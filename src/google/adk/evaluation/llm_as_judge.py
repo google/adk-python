@@ -24,6 +24,7 @@ from typing import Generic
 from typing import Optional
 from typing import TypeVar
 
+from google.auth import exceptions as auth_exceptions
 from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
@@ -51,6 +52,26 @@ from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Client timeouts are not in google-genai's aiohttp transient set, and a
+# non-Gemini judge never reads http_options.retry_options. Retry them here.
+_JUDGE_TIMEOUT_ERRORS = (TimeoutError, auth_exceptions.TimeoutError)
+
+
+def _judge_timeout_retry(
+    llm_request: LlmRequest,
+) -> tuple[int, float, float, float]:
+  """Returns attempts, delay, exp_base, and max_delay for a judge timeout."""
+  options = None
+  config = llm_request.config
+  if config is not None and config.http_options is not None:
+    options = config.http_options.retry_options
+  if options is None or not options.attempts or options.attempts < 1:
+    return 1, 0.0, 1.0, 0.0
+  initial = options.initial_delay or 0.0
+  exp_base = 1.0 if options.exp_base is None else options.exp_base
+  max_delay = float("inf") if options.max_delay is None else options.max_delay
+  return options.attempts, initial, exp_base, max_delay
 
 
 class AutoRaterScore(EvalBaseModel):
@@ -179,6 +200,25 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     Returns:
       A PerInvocationResult containing the evaluation score and status.
     """
+    attempts, delay, exp_base, max_delay = _judge_timeout_retry(llm_request)
+    for attempt in range(attempts):
+      try:
+        return await self._read_judge_sample(llm_request, actual, expected)
+      except _JUDGE_TIMEOUT_ERRORS:
+        if attempt + 1 >= attempts:
+          raise
+        await asyncio.sleep(delay)
+        delay = min(delay * exp_base, max_delay)
+    raise RuntimeError(
+        "LLM evaluation failed: no response received from judge model"
+    )
+
+  async def _read_judge_sample(
+      self,
+      llm_request: LlmRequest,
+      actual: Invocation,
+      expected: Optional[Invocation],
+  ) -> PerInvocationResult:
     async with Aclosing(
         self._judge_model.generate_content_async(llm_request)
     ) as agen:
@@ -198,7 +238,6 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
             ),
             rubric_scores=auto_rater_score.rubric_scores,
         )
-    # If we reach here, the LLM didn't return any response
     raise RuntimeError(
         "LLM evaluation failed: no response received from judge model"
     )

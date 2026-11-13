@@ -31,6 +31,7 @@ from google.adk.evaluation.llm_as_judge_utils import build_judge_request_config
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.models.llm_response import LlmResponse
+from google.auth import exceptions as auth_exceptions
 from google.genai import types as genai_types
 import pydantic
 import pytest
@@ -507,6 +508,110 @@ async def test_evaluate_invocations_sample_failure(mock_llm_as_judge, mocker):
   assert result.per_invocation_results[1].eval_status == EvalStatus.PASSED
   assert result.per_invocation_results[1].score == 1.0
   assert mock_aggregate_per_invocation_samples.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timeout_type",
+    [TimeoutError, auth_exceptions.TimeoutError],
+    ids=["timeout", "auth-timeout"],
+)
+async def test_evaluate_invocations_retries_a_judge_timeout(
+    mock_llm_as_judge, mocker, timeout_type
+):
+  """A judge timeout is retried. The sample counts once it succeeds."""
+  call_count = 0
+
+  async def mock_generate_content_async(llm_request):
+    nonlocal call_count
+    call_count += 1
+    if call_count == 1:
+      raise timeout_type("Request timed out after 120.0 seconds.")
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text="auto rater response")],
+        )
+    )
+
+  mock_judge_model = mocker.MagicMock()
+  mock_judge_model.generate_content_async = mock_generate_content_async
+  mock_llm_as_judge._judge_model = mock_judge_model
+  mock_llm_as_judge._judge_model_options.num_samples = 1
+  mock_llm_as_judge._judge_model_config = genai_types.GenerateContentConfig(
+      http_options=genai_types.HttpOptions(
+          retry_options=genai_types.HttpRetryOptions(
+              attempts=2,
+              initial_delay=0.0,
+              max_delay=0.0,
+              exp_base=1.0,
+              jitter=0.0,
+          )
+      )
+  )
+  mock_llm_as_judge.aggregate_invocation_results = (
+      lambda per_invocation_results: EvaluationResult(
+          per_invocation_results=per_invocation_results
+      )
+  )
+  invocation = Invocation(
+      invocation_id="id1",
+      user_content=genai_types.Content(parts=[genai_types.Part(text="u1")]),
+      final_response=genai_types.Content(parts=[genai_types.Part(text="r1")]),
+  )
+
+  result = await mock_llm_as_judge.evaluate_invocations(
+      [invocation], [invocation]
+  )
+
+  assert call_count == 2
+  assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
+  assert result.per_invocation_results[0].score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_stops_after_the_timeout_attempts(
+    mock_llm_as_judge, mocker
+):
+  """A judge timeout past the attempt count stays not evaluated."""
+  call_count = 0
+
+  async def mock_generate_content_async(llm_request):
+    nonlocal call_count
+    call_count += 1
+    raise TimeoutError("Request timed out after 120.0 seconds.")
+    yield  # pragma: no cover
+
+  mock_judge_model = mocker.MagicMock()
+  mock_judge_model.generate_content_async = mock_generate_content_async
+  mock_llm_as_judge._judge_model = mock_judge_model
+  mock_llm_as_judge._judge_model_options.num_samples = 1
+  mock_llm_as_judge._judge_model_config = genai_types.GenerateContentConfig(
+      http_options=genai_types.HttpOptions(
+          retry_options=genai_types.HttpRetryOptions(
+              attempts=2, initial_delay=0.0, max_delay=0.0
+          )
+      )
+  )
+  mock_llm_as_judge.aggregate_invocation_results = (
+      lambda per_invocation_results: EvaluationResult(
+          per_invocation_results=per_invocation_results
+      )
+  )
+  invocation = Invocation(
+      invocation_id="id1",
+      user_content=genai_types.Content(parts=[genai_types.Part(text="u1")]),
+      final_response=genai_types.Content(parts=[genai_types.Part(text="r1")]),
+  )
+
+  result = await mock_llm_as_judge.evaluate_invocations(
+      [invocation], [invocation]
+  )
+
+  assert call_count == 2
+  assert (
+      result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+  )
+  assert result.per_invocation_results[0].score is None
 
 
 @pytest.mark.asyncio
