@@ -14,6 +14,7 @@
 
 import warnings
 
+from google.adk.utils.env_utils import _is_experimental_warning_suppressed
 from google.adk.utils.env_utils import is_enterprise_mode_enabled
 from google.adk.utils.env_utils import is_env_enabled
 import pytest
@@ -129,3 +130,9 @@ def test_is_enterprise_mode_enabled_defaults_to_false(monkeypatch):
   monkeypatch.delenv('GOOGLE_GENAI_USE_VERTEXAI', raising=False)
 
   assert is_enterprise_mode_enabled() is False
+
+
+def test_is_experimental_warning_suppressed_checks_general_env(monkeypatch):
+  """General suppression env var disables experimental warnings."""
+  monkeypatch.setenv('ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS', 'yes')
+  assert _is_experimental_warning_suppressed()

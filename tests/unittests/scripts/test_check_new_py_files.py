@@ -307,6 +307,8 @@ def test_an_unparseable_init_holds_every_module_to_the_guide_rule(
       commit_msg='clean commit',
   )
   assert len(guide_errs) == 1
+  assert 'No page under' not in guide_errs[0]
+  assert 'covers this file only once' not in guide_errs[0]
   assert 'cannot all be read' in capsys.readouterr().err
 
 
@@ -348,6 +350,320 @@ def test_an_absolute_import_of_a_root_module_counts(
       commit_msg='clean commit',
   )
   assert len(guide_errs) == 1
+
+
+@pytest.mark.parametrize(
+    'page',
+    [
+        # The guide of another unit in the same directory.
+        'integrations/db/db_toolset/index.md',
+        # Any page there, not only an index.md.
+        'integrations/db/db_toolset/advanced.md',
+        # The module directory's own overview.
+        'integrations/db/index.md',
+        # The overview of a directory above it.
+        'integrations/index.md',
+    ],
+)
+def test_a_guide_page_near_the_module_that_documents_its_exports_counts(
+    tmp_path: pathlib.Path, page: str
+) -> None:
+  """A page documenting several units covers each one it documents."""
+  _export_names_from_package(
+      tmp_path, 'integrations/db/_settings.py', ['DbSettings']
+  )
+  _write_guide(tmp_path, page, '## `DbSettings`\n')
+
+  assert not _guide_errors(tmp_path, 'integrations/db/_settings.py')
+
+
+@pytest.mark.parametrize(
+    'page',
+    [
+        # The table of contents names nearly every unit.
+        'README.md',
+        'index.md',
+        # Another topic's guide, and a sibling directory's.
+        'live/cascade_live/index.md',
+        'integrations/other_db/index.md',
+    ],
+)
+def test_a_page_outside_the_module_guide_directory_does_not_count(
+    tmp_path: pathlib.Path, page: str
+) -> None:
+  """Only pages under the module's directory, or an index.md above, count."""
+  _export_names_from_package(
+      tmp_path, 'integrations/db/_settings.py', ['DbSettings']
+  )
+  _write_guide(tmp_path, page, '## `DbSettings`\n')
+
+  assert len(_guide_errors(tmp_path, 'integrations/db/_settings.py')) == 1
+
+
+def test_a_page_must_document_every_export_and_the_error_lists_the_rest(
+    tmp_path: pathlib.Path,
+) -> None:
+  """The error lists the exports no page documents, and where it looked."""
+  _export_names_from_package(
+      tmp_path, 'live/_events.py', ['AudioChunk', 'IngressEvent']
+  )
+  _write_guide(tmp_path, 'live/cascade/index.md', '## `AudioChunk`\n')
+
+  guide_errs = _guide_errors(tmp_path, 'live/_events.py')
+
+  assert len(guide_errs) == 1
+  assert "No page under 'docs/guides/live/'" in guide_errs[0]
+  assert 'documents: IngressEvent.' in guide_errs[0]
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '## `DbSettings`\n',
+        # The first cell holds what a table row describes.
+        '| Class | Use |\n| :-- | :-- |\n| `DbSettings` | The options. |\n',
+        '```python\nsettings = DbSettings(timeout=5)\n```\n',
+    ],
+)
+def test_a_heading_table_row_or_code_example_documents_an_export(
+    tmp_path: pathlib.Path, text: str
+) -> None:
+  """A guide documents a unit in those places, so a name there counts."""
+  _export_names_from_package(
+      tmp_path, 'integrations/db/_settings.py', ['DbSettings']
+  )
+  _write_guide(tmp_path, 'integrations/db/db_toolset/index.md', text)
+
+  assert not _guide_errors(tmp_path, 'integrations/db/_settings.py')
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        # In passing, as the invocation_context guide names SequentialAgent.
+        'Pass the toolset a `DbSettings` to change its options.\n',
+        # A paragraph or list item opening in prose does not count either.
+        '`DbSettings` configures the toolset.\n',
+        '- `DbSettings` holds the options.\n',
+        # Any cell but the first describes something else, such as a type.
+        '| Option | Type |\n| :-- | :-- |\n| `settings` | `DbSettings` |\n',
+        # An inline span opens no code block, so the next line is prose.
+        (
+            '`' * 4
+            + ' ```text '
+            + '`' * 4
+            + ' is shown inline.\nThe toolset reads `DbSettings`.\n'
+        ),
+    ],
+)
+def test_a_mention_in_prose_or_a_later_table_cell_does_not_document_an_export(
+    tmp_path: pathlib.Path, text: str
+) -> None:
+  """A mention in prose or a non-first table cell only refers to the unit."""
+  _export_names_from_package(
+      tmp_path, 'integrations/db/_settings.py', ['DbSettings']
+  )
+  _write_guide(tmp_path, 'integrations/db/db_toolset/index.md', text)
+
+  guide_errs = _guide_errors(tmp_path, 'integrations/db/_settings.py')
+
+  assert len(guide_errs) == 1
+  assert 'documents: DbSettings.' in guide_errs[0]
+
+
+@pytest.mark.parametrize(
+    'text', ['## `RunResultV2`\n', '| `RunResultV2` | One run. |\n']
+)
+def test_an_export_must_appear_as_a_whole_word(
+    tmp_path: pathlib.Path, text: str
+) -> None:
+  """A longer name that merely contains the export does not mention it."""
+  _export_names_from_package(tmp_path, 'evaluation/_runs.py', ['RunResult'])
+  _write_guide(tmp_path, 'evaluation/eval_config/index.md', text)
+
+  assert len(_guide_errors(tmp_path, 'evaluation/_runs.py')) == 1
+
+
+def test_an_aliased_export_is_looked_up_by_its_public_name(
+    tmp_path: pathlib.Path,
+) -> None:
+  """`from ._mod import X as Y` exports Y, which is what a guide names."""
+  _write_package_init(tmp_path, 'models', 'from ._llm import _LlmImpl as Llm\n')
+  _write_guide(tmp_path, 'models/llm_agent/index.md', '## `Llm`\n')
+
+  assert not _guide_errors(tmp_path, 'models/_llm.py')
+
+
+@pytest.mark.parametrize(
+    'init_source',
+    [
+        'from ..models._registry import LLMRegistry as _LLMRegistry\n',
+        'from ..models._registry import _LLMRegistry\n',
+    ],
+)
+def test_a_private_import_in_init_does_not_add_an_export(
+    tmp_path: pathlib.Path, init_source: str
+) -> None:
+  """A `_`-prefixed binding in `__init__.py` does not add an export."""
+  _write_package_init(
+      tmp_path, 'models', 'from ._registry import LLMRegistry\n'
+  )
+  _write_package_init(tmp_path, 'evaluation', init_source)
+  _write_guide(tmp_path, 'models/llm_registry/index.md', '## `LLMRegistry`\n')
+
+  assert not _guide_errors(tmp_path, 'models/_registry.py')
+
+
+@pytest.mark.parametrize(
+    'init_source',
+    [
+        'from ._setup import build as _build\n',
+        'from ._setup import _build\n',
+    ],
+)
+def test_a_module_only_imported_under_a_private_name_needs_no_guide(
+    tmp_path: pathlib.Path, init_source: str
+) -> None:
+  """Importing only `_`-prefixed names leaves a module internal."""
+  _write_package_init(tmp_path, 'models', init_source)
+
+  assert not _guide_errors(tmp_path, 'models/_setup.py')
+
+
+@pytest.mark.parametrize(
+    'init_source',
+    [
+        "_lazy_imports = {'DbSettings': '._settings'}\n",
+        "_LAZY_MEMBERS = {'DbSettings': '_settings'}\n",
+        "_LAZY_MAPPING = {'DbSettings': ('._settings', 'Settings')}\n",
+        # The models table puts the module second, after its patterns.
+        "_LAZY_PROVIDERS = {'DbSettings': ([r'db-.*'], '_settings')}\n",
+    ],
+)
+def test_a_lazy_import_table_export_is_looked_up_by_its_key(
+    tmp_path: pathlib.Path, init_source: str
+) -> None:
+  """The key a lazy-import table maps is the name the package exports."""
+  _write_package_init(tmp_path, 'integrations/db', init_source)
+  _write_guide(
+      tmp_path,
+      'integrations/db/db_toolset/index.md',
+      '## `DbSettings`\n',
+  )
+
+  assert not _guide_errors(tmp_path, 'integrations/db/_settings.py')
+
+
+@pytest.mark.parametrize(
+    'init_source',
+    [
+        'from ._settings import *\n',
+        'from . import _settings\n',
+        'from . import _settings as _settings\n',
+        'import google.adk.integrations.db._settings\n',
+        'import google.adk.integrations.db._settings as _settings\n',
+    ],
+)
+def test_an_export_that_names_nothing_needs_a_guide_of_its_own(
+    tmp_path: pathlib.Path, init_source: str
+) -> None:
+  """With no exported names to look for, no shared page can cover it."""
+  _write_package_init(tmp_path, 'integrations/db', init_source)
+  _write_guide(
+      tmp_path,
+      'integrations/db/db_toolset/index.md',
+      '## `DbSettings`\n',
+  )
+
+  guide_errs = _guide_errors(tmp_path, 'integrations/db/_settings.py')
+
+  assert len(guide_errs) == 1
+  assert 'No page under' not in guide_errs[0]
+  assert (
+      "A page under 'docs/guides/integrations/db/', or index.md above it,"
+      ' covers this file only once every __init__.py imports its exports by'
+      ' name instead of taking the module whole.'
+      in guide_errs[0]
+  )
+
+
+def test_a_module_named_only_in_a_string_needs_a_guide_of_its_own(
+    tmp_path: pathlib.Path,
+) -> None:
+  """A string outside a lazy-import table names no exports to check."""
+  _write_package_init(
+      tmp_path,
+      'integrations/db',
+      "import importlib\nimportlib.import_module('._settings', __name__)\n",
+  )
+  _write_guide(
+      tmp_path,
+      'integrations/db/db_toolset/index.md',
+      '## `DbSettings`\n',
+  )
+
+  guide_errs = _guide_errors(tmp_path, 'integrations/db/_settings.py')
+
+  assert len(guide_errs) == 1
+  assert 'No page under' not in guide_errs[0]
+  assert 'taking the module whole' not in guide_errs[0]
+  assert (
+      'The package names this module only in a string, without saying what'
+      " it exports, so no page under 'docs/guides/integrations/db/', or"
+      ' index.md above it, can cover it.'
+      in guide_errs[0]
+  )
+
+
+@pytest.mark.parametrize(
+    ('db_init', 'integrations_init'),
+    [
+        # Another package's __init__.py names one export.
+        (
+            'from ._settings import *\n',
+            'from .db._settings import DbSettings\n',
+        ),
+        ('from . import _settings\n', 'from .db._settings import DbSettings\n'),
+        # So does the same one.
+        ('from ._settings import *\nfrom ._settings import DbSettings\n', ''),
+    ],
+)
+def test_naming_one_export_does_not_list_a_module_taken_whole(
+    tmp_path: pathlib.Path, db_init: str, integrations_init: str
+) -> None:
+  """Naming one export elsewhere does not list what a star import takes."""
+  _write_package_init(tmp_path, 'integrations/db', db_init)
+  _write_package_init(tmp_path, 'integrations', integrations_init)
+  _write_guide(
+      tmp_path,
+      'integrations/db/db_toolset/index.md',
+      '## `DbSettings`\n',
+  )
+
+  guide_errs = _guide_errors(tmp_path, 'integrations/db/_settings.py')
+
+  assert len(guide_errs) == 1
+  assert 'No page under' not in guide_errs[0]
+  assert (
+      "A page under 'docs/guides/integrations/db/', or index.md above it,"
+      ' covers this file only once every __init__.py imports its exports by'
+      ' name instead of taking the module whole.'
+      in guide_errs[0]
+  )
+
+
+def test_a_module_at_the_package_root_needs_a_guide_of_its_own(
+    tmp_path: pathlib.Path,
+) -> None:
+  """A root module has no guide directory, so no shared page covers it."""
+  _write_package_init(tmp_path, '', 'from ._version import Version\n')
+  _write_guide(tmp_path, 'agents/index.md', '## `Version`\n')
+
+  guide_errs = _guide_errors(tmp_path, '_version.py')
+
+  assert len(guide_errs) == 1
+  assert 'No page under' not in guide_errs[0]
+  assert 'covers this file only once' not in guide_errs[0]
 
 
 def test_guide_name_strips_only_one_underscore(tmp_path: pathlib.Path) -> None:
@@ -612,6 +928,58 @@ def _export_from_package(root: pathlib.Path, rel: str) -> None:
   init.parent.mkdir(parents=True, exist_ok=True)
   with init.open('a', encoding='utf-8') as f:
     f.write(f'from .{module.stem} import *\n')
+
+
+def _export_names_from_package(
+    root: pathlib.Path, rel: str, names: list[str]
+) -> None:
+  """Has the package __init__.py import `names` from the module at `rel`.
+
+  Unlike `_export_from_package`, the import says which names the package
+  exports, so a guide page that names them can cover the module.
+
+  Args:
+    root: The checkout holding `src/google/adk`.
+    rel: The module's path relative to the package root, e.g.
+      `integrations/db/_settings.py`.
+    names: The names to import from the module.
+  """
+  module = pathlib.PurePosixPath(rel)
+  init = root / 'src' / 'google' / 'adk' / module.parent / '__init__.py'
+  init.parent.mkdir(parents=True, exist_ok=True)
+  with init.open('a', encoding='utf-8') as f:
+    f.write(f'from .{module.stem} import {", ".join(names)}\n')
+
+
+def _write_package_init(root: pathlib.Path, package: str, source: str) -> None:
+  """Writes the __init__.py of `package`, a path under the package root."""
+  init = root / 'src' / 'google' / 'adk' / package / '__init__.py'
+  init.parent.mkdir(parents=True, exist_ok=True)
+  init.write_text(source, encoding='utf-8')
+
+
+def _write_guide(root: pathlib.Path, rel: str, text: str) -> None:
+  """Writes a guide page at `rel` under the checkout's docs/guides/."""
+  page = root / 'docs' / 'guides' / rel
+  page.parent.mkdir(parents=True, exist_ok=True)
+  page.write_text(text, encoding='utf-8')
+
+
+def _guide_errors(root: pathlib.Path, rel: str) -> list[str]:
+  """Runs the unit guide rule on one added module.
+
+  Args:
+    root: The checkout holding `src/google/adk`.
+    rel: The module's path relative to the package root.
+
+  Returns:
+    The unit guide violations reported for it.
+  """
+  files = [(f'src/google/adk/{rel}', rel, pathlib.PurePosixPath(rel).name)]
+  _, guide_errs = check_new_py_files.check_files(
+      files, repo_root=str(root), commit_msg='clean commit'
+  )
+  return guide_errs
 
 
 def test_main_reads_the_added_file_list_from_a_file(

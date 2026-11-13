@@ -18,6 +18,7 @@ from abc import ABC
 from collections.abc import Callable as CallableABC
 import inspect
 import logging
+from types import UnionType
 from typing import Any
 from typing import Callable
 from typing import get_args
@@ -61,6 +62,9 @@ class BaseTool(ABC):
   """The name of the tool."""
   description: str
   """The description of the tool."""
+  title: Optional[str] = None
+  """Optional human-readable display title; consumers fall back to ``name``
+  when unset."""
 
   is_long_running: bool = False
   """Whether the tool is a long running operation, which typically returns a
@@ -97,13 +101,17 @@ class BaseTool(ABC):
   """
 
   behavior: Optional[types.Behavior] = None
-  """Controls whether the tool is blocking or non-blocking (Live API only).
+  """Controls whether the model waits for the tool's response (Live API only).
+
+  Sent on the tool's function declaration. In live mode, ADK runs every
+  function call in a background task regardless of this setting.
 
   - ``NON_BLOCKING``: the model continues the conversation while the tool
-    executes in the background.
-  - ``BLOCKING``: the model waits for the tool response before continuing.
-
-  This field is currently only supported for live. ``None`` preserves the default behavior.
+    runs.
+  - ``BLOCKING``: the model waits for the tool response before continuing,
+    unless the user interrupts.
+  - ``None``: declared ``NON_BLOCKING`` if ``response_scheduling`` is set;
+    otherwise left unset, so the model backend's default applies.
   """
 
   response_scheduling: Optional[types.FunctionResponseScheduling] = None
@@ -128,6 +136,7 @@ class BaseTool(ABC):
       *,
       name: str,
       description: str,
+      title: Optional[str] = None,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
       behavior: Optional[types.Behavior] = None,
@@ -135,6 +144,8 @@ class BaseTool(ABC):
   ):
     self.name = name
     self.description = description
+    if title is not None:
+      self.title = title
     self.is_long_running = is_long_running
     self._defers_response = False
     self.custom_metadata = custom_metadata
@@ -236,8 +247,9 @@ class BaseTool(ABC):
       if param_name in config_dict:
         value = config_dict[param_name]
 
-        # Get the actual type T of the parameter if it's Optional[T]
-        if get_origin(param_type) is Union:
+        # Get the actual type T of the parameter if it's Optional[T]. Before
+        # Python 3.14, `T | None` has origin UnionType rather than Union.
+        if get_origin(param_type) in (Union, UnionType):
           # This is Optional[T] which is Union[T, None]
           args = get_args(param_type)
           if len(args) == 2 and type(None) in args:

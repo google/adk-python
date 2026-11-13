@@ -34,7 +34,7 @@ async def _wait_for_queue_empty(queue: LiveRequestQueue):
   """Wait until the queue is empty and the background consumer has finished."""
   while not queue._queue.empty():
     await asyncio.sleep(0)
-  # Give opportunity for _send_to_model to finish processing (e.g. append_event)
+  # Give opportunity for send_to_model to finish processing (e.g. append_event)
   for _ in range(10):
     await asyncio.sleep(0)
 
@@ -1098,7 +1098,8 @@ def test_stop_streaming_stops_the_tool():
       blob=types.Blob(data=b"Monitor GOOG then stop", mime_type="audio/pcm")
   )
 
-  res_events = runner.run_live(live_request_queue, max_responses=4)
+  # Two calls, two responses, and the final turn_complete.
+  res_events = runner.run_live(live_request_queue, max_responses=5)
 
   # Verify both function calls were processed.
   call_names = _collect_function_call_names(res_events)

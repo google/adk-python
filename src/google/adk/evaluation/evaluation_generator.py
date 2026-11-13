@@ -44,7 +44,7 @@ from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
-from ..flows.llm_flows.tools._functions import handle_function_calls_live
+from ..flows.llm_flows.tools._live_caller import handle_function_calls_live
 from ..live import _runner_utils as _live_runner_utils
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
@@ -131,16 +131,29 @@ def _send_audio_to_live(
   live_request_queue.send_activity_end()
 
 
+def _get_eval_session_app_name_and_user_id(
+    initial_session: SessionInput | None,
+) -> tuple[str, str]:
+  """Returns the app name and user id of the session an eval case runs in.
+
+  Both creating the session and looking it up for the eval result use this,
+  so the lookup finds the session the eval case ran in.
+
+  Args:
+    initial_session: The `session_input` of the eval case, if it has one.
+  """
+  if initial_session is None:
+    return "EvaluationGenerator", "test_user_id"
+  return initial_session.app_name, initial_session.user_id
+
+
 async def _get_or_create_eval_session(
     session_service: BaseSessionService,
     initial_session: Optional[SessionInput],
     fallback_session_id: Optional[str],
 ) -> Session:
   """Returns the session an eval case runs in."""
-  app_name = (
-      initial_session.app_name if initial_session else "EvaluationGenerator"
-  )
-  user_id = initial_session.user_id if initial_session else "test_user_id"
+  app_name, user_id = _get_eval_session_app_name_and_user_id(initial_session)
   pinned_session_id = initial_session.session_id if initial_session else None
 
   if pinned_session_id:
@@ -697,6 +710,15 @@ class EvaluationGenerator:
 
         yield event
 
+    if invocation_id is None:
+      # A silent turn never exposes the Runner's invocation ID, so this
+      # synthetic one will not match the user event stored in the session.
+      yield Event(
+          content=user_content,
+          author=_USER_AUTHOR,
+          invocation_id=Event.new_id(),
+      )
+
   @staticmethod
   async def _generate_inferences_for_single_user_invocation_live(
       live_request_queue: LiveRequestQueue,
@@ -1055,7 +1077,10 @@ class EvaluationGenerator:
               final_response = event.content
               final_event = event
 
-          should_add_event = event.grounding_metadata is not None
+          should_add_event = (
+              event.grounding_metadata is not None
+              or event.usage_metadata is not None
+          )
           for p in event.content.parts:
             if (
                 p.function_call
@@ -1067,12 +1092,61 @@ class EvaluationGenerator:
               break
           if should_add_event:
             events_to_add.append(event)
-        elif event.grounding_metadata is not None:
+        elif (
+            event.grounding_metadata is not None
+            or event.usage_metadata is not None
+        ):
           events_to_add.append(event)
 
-      invocation_events = []
-      for e in events_to_add:
-        invocation_events.append(
+      # Pair each standalone usage report with a model event before building
+      # any `InvocationEvent`, so every record is constructed once with its
+      # final usage. Merging keeps the tokens without the report counting as
+      # a second model call. Nothing in the payload identifies the originating
+      # call, so the nearest unclaimed compatible event wins, earlier events
+      # first. Totals and call counts are exact; which event carries a report
+      # is best effort (e.g. `GeminiLlmConnection.receive` yields a message's
+      # usage before its content, so it can land on an earlier call).
+      # TODO: Index by author, model and Live session if long invocations
+      # make this quadratic search expensive.
+      merged_usage: dict[int, types.GenerateContentResponseUsageMetadata] = {}
+      merged_report_indices: set[int] = set()
+      for index, event in enumerate(events_to_add):
+        if (
+            (event.content and event.content.parts)
+            or event.grounding_metadata is not None
+            or event.usage_metadata is None
+        ):
+          continue
+        target_index = next(
+            (
+                candidate_index
+                for candidate_index in (
+                    *range(index - 1, -1, -1),
+                    *range(index + 1, len(events_to_add)),
+                )
+                if candidate_index not in merged_usage
+                and events_to_add[candidate_index].usage_metadata is None
+                and events_to_add[candidate_index].model_version is not None
+                and events_to_add[candidate_index].author == event.author
+                and events_to_add[candidate_index].live_session_id
+                == event.live_session_id
+                and (
+                    event.model_version is None
+                    or events_to_add[candidate_index].model_version
+                    == event.model_version
+                )
+            ),
+            None,
+        )
+        if target_index is not None:
+          merged_usage[target_index] = event.usage_metadata
+          merged_report_indices.add(index)
+
+      merged_events = []
+      for index, e in enumerate(events_to_add):
+        if index in merged_report_indices:
+          continue
+        merged_events.append(
             InvocationEvent(
                 author=e.author,
                 # The final response's text is already on
@@ -1085,7 +1159,7 @@ class EvaluationGenerator:
                     else None
                 ),
                 grounding_metadata=e.grounding_metadata,
-                usage_metadata=e.usage_metadata,
+                usage_metadata=merged_usage.get(index, e.usage_metadata),
                 model_version=e.model_version,
             )
         )
@@ -1095,7 +1169,7 @@ class EvaluationGenerator:
               user_content=user_content,
               final_response=final_response,
               intermediate_data=InvocationEvents(
-                  invocation_events=invocation_events
+                  invocation_events=merged_events
               ),
               creation_timestamp=invocation_timestamp,
               duration=(durations_per_invocation or {}).get(invocation_id),

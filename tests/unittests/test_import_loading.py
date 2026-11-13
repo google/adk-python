@@ -43,6 +43,7 @@ _LAZY_PACKAGES = (
     'google.adk.cli.utils',
     'google.adk.flows.llm_flows',
     'google.adk.flows.llm_flows.prompt',
+    'google.adk.integrations.fsspec',
     'google.adk.telemetry',
     'google.adk.workflow',
 )
@@ -199,6 +200,28 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             'google.adk.evaluation.vertex_ai_eval_facade',
             ('vertexai.preview.rag',),
         ),
+        # These integrations ship only in the `gcp` extra, so their packages
+        # have to import without the google-cloud client libraries installed
+        # and name the extra to install on first use instead.
+        (
+            'google.adk.integrations.gcs',
+            ('google.api_core', 'google.cloud.storage'),
+        ),
+        (
+            'google.adk.integrations.secret_manager',
+            ('google.api_core', 'google.cloud.secretmanager'),
+        ),
+        (
+            'google.adk.integrations.parameter_manager',
+            ('google.api_core', 'google.cloud.parametermanager_v1'),
+        ),
+        (
+            'google.adk.integrations.fsspec',
+            (
+                'fsspec',
+                'google.adk.integrations.fsspec._fsspec_artifact_service',
+            ),
+        ),
     ],
     ids=(
         'root',
@@ -213,6 +236,10 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
         'cli_commands',
         'bigquery_toolset',
         'vertex_ai_eval_facade',
+        'gcs',
+        'secret_manager',
+        'parameter_manager',
+        'fsspec',
     ),
 )
 def test_package_import_defers_unrelated_runtime(

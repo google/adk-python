@@ -3,6 +3,6 @@
 This agent utilizes the Langchain YoutubeSearchTool to search Youtube Videos.
 You need to install the following dependencies:
 
-```python
+```bash
 uv pip install youtube_search
 ```

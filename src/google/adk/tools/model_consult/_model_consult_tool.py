@@ -733,6 +733,9 @@ class ModelConsultTool(BaseTool):
           executor_instruction=executor_instruction,
           tool_inventory=tool_inventory,
       )
+      telemetry_config = None
+      if tool_context.run_config is not None:
+        telemetry_config = tool_context.run_config.telemetry
 
       try:
         result = await call_advisor(
@@ -743,6 +746,7 @@ class ModelConsultTool(BaseTool):
             generate_content_config=self._generate_content_config,
             timeout_seconds=self._timeout_seconds,
             agent_name=self.name,
+            telemetry_config=telemetry_config,
         )
       except AdvisorError as exc:
         logger.warning('ModelConsultTool advisor call failed: %s', exc)

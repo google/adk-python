@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import base64
+import collections
 import collections.abc
 import concurrent.futures
 from concurrent.futures import Future as ConcurrentFuture
@@ -60,6 +61,7 @@ from typing import AsyncIterator
 from typing import Callable
 from typing import cast
 from typing import Coroutine
+from typing import Literal
 from typing import Optional
 from typing import ParamSpec
 from typing import Protocol
@@ -109,11 +111,50 @@ from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
+from ._bigquery_agent_analytics_eval_sql import _build_eval_session_view_sql
+from ._bigquery_agent_analytics_eval_sql import _build_eval_turn_view_sql
+from ._bigquery_agent_analytics_eval_sql import _EVAL_TABLE_ID_UNQUOTABLE_RE
+from ._bigquery_agent_analytics_eval_sql import _validate_payload_column_denylist
+from ._callback_helpers import _classify_tool_result_error
+from ._callback_helpers import _imported_types
+from ._callback_helpers import _is_durable_node_error
+from ._callback_helpers import _is_instance
+from ._callback_helpers import _mark_tool_error_recorded
+from ._callback_helpers import _pop_tool_error_recorded
+from ._callback_helpers import _validate_tool_result_classifier
+from ._callback_helpers import ToolResultClassifier
 from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
   from ..events.event import Event
+
+# Defined elsewhere and still importable from this module.  The names of
+# _bigquery_agent_analytics_eval_sql were defined here: that module builds the
+# eval SQL with the standard library alone, so a caller can build the eval
+# queries without this module's pyarrow and BigQuery Storage imports.
+# _callback_helpers is shared with the observability plugins:
+# _LLM_RESPONSE_ERROR_CODES was defined here, and ToolResultClassification is
+# what a tool_result_classifier returns.
+# pylint: disable=unused-import
+from ._bigquery_agent_analytics_eval_sql import _blank_eval_sql_comments  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _build_eval_view_ctes  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_DIRNAME  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_LEADING_WHERE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _EVAL_SQL_OPENING_QUOTE_RE  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _eval_view_dataset_ref  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_outer_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _format_eval_raw_where_clause  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _load_eval_sql_template  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _normalize_eval_where_condition  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _PROJECTABLE_PAYLOAD_COLUMNS  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import _read_eval_sql_file  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_session_query_sql  # noqa: F401
+from ._bigquery_agent_analytics_eval_sql import build_eval_turn_query_sql  # noqa: F401
+from ._callback_helpers import _LLM_RESPONSE_ERROR_CODES  # noqa: F401
+from ._callback_helpers import ToolResultClassification  # noqa: F401
+
+# pylint: enable=unused-import
 
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
 
@@ -581,15 +622,10 @@ def _safe_callback(
 _GRPC_DEADLINE_EXCEEDED = 4
 _GRPC_NOT_FOUND = 5
 _GRPC_ALREADY_EXISTS = 6
+_GRPC_PERMISSION_DENIED = 7
 _GRPC_OUT_OF_RANGE = 11
 _GRPC_INTERNAL = 13
 _GRPC_UNAVAILABLE = 14
-
-_LLM_RESPONSE_ERROR_CODES = frozenset(
-    reason.value
-    for reason_type in (types.FinishReason, types.BlockedReason)
-    for reason in reason_type
-)
 
 
 # --- Helper Formatters ---
@@ -614,6 +650,11 @@ def _format_content(
   Returns:
       A tuple of (formatted_string, is_truncated).
   """
+  # NOTE: Keep these part prefixes ("text: '...'", "call: ...", "resp: ...",
+  # "Executable code (...): ...", "Code execution result (...): ...", "other")
+  # and the " | " delimiter in sync with the ``ResponseEvents`` CTE in
+  # ``bigquery_agent_analytics_sql/eval_view_ctes_v1.sql`` and
+  # ``TestEvalViews.test_eval_response_text_patterns_unwrap_format_content``.
   if content is None or not content.parts:
     return "None", False
   parts = []
@@ -675,6 +716,19 @@ def _find_transfer_target(agent: Any, agent_name: str) -> Any:
   return None
 
 
+_SKILL_TOOLSET_MODULE = "google.adk.tools.skill_toolset"
+# The tools SkillToolset itself provides to list, load and run skills. Tools
+# an application adds to a SkillToolset keep their own origin.
+_SKILL_TOOL_TYPE_NAMES = (
+    "ListSkillsTool",
+    "LoadSkillResourceTool",
+    "LoadSkillTool",
+    "RunSkillScriptTool",
+    "SearchSkillsTool",
+    "UnloadSkillTool",
+)
+
+
 def _get_tool_origin(
     tool: "BaseTool",
     tool_args: Optional[dict[str, Any]] = None,
@@ -699,7 +753,7 @@ def _get_tool_origin(
 
   Returns:
       One of LOCAL, MCP, A2A, SUB_AGENT, TRANSFER_AGENT,
-      TRANSFER_A2A, or UNKNOWN.
+      TRANSFER_A2A, TOOLBOX, SKILL, or UNKNOWN.
   """
   # Import lazily to avoid circular dependencies.
   # pylint: disable=g-import-not-at-top
@@ -745,6 +799,12 @@ def _get_tool_origin(
     return "SUB_AGENT"
   if isinstance(tool, FunctionTool):
     return "LOCAL"
+  if isinstance(tool, _imported_types("toolbox_adk", "ToolboxTool")):
+    return "TOOLBOX"
+  if isinstance(
+      tool, _imported_types(_SKILL_TOOLSET_MODULE, *_SKILL_TOOL_TYPE_NAMES)
+  ):
+    return "SKILL"
   return "UNKNOWN"
 
 
@@ -862,8 +922,8 @@ _SENSITIVE_TEXT_KEY_RE = re.compile(
         )
     )
     + r")(?:[\"'])?\s*[:=]\s*)(?P<value>"
-    r'"(?:\\.|[^"\\])*"'
-    r"|'(?:\\.|[^'\\])*'"
+    r'"(?:\\.|[^"\\])*(?P<dq_close>")?'
+    r"|'(?:\\.|[^'\\])*(?P<sq_close>')?"
     r"|[^\s,;&}]+)"
 )
 _AUTH_HEADER_RE = re.compile(
@@ -871,12 +931,14 @@ _AUTH_HEADER_RE = re.compile(
     r"[ \t]*:[ \t]*)[^\r\n]*"
 )
 _BEARER_TOKEN_RE = re.compile(
-    r"(?i)(?P<prefix>\bbearer\s+)(?!of(?:\s|$))[^\s,;]+"
+    r"(?i)(?P<prefix>\bbearer\s+)(?!of(?:\s|$))"
+    r"(?P<value>\[REDACTED\]|[^\s,;\"'}\]]+)"
 )
 _BASIC_TOKEN_RE = re.compile(
     r"(?i)(?P<prefix>\bbasic\s+)(?P<value>[A-Za-z0-9+/]+={0,2})"
     r"(?![A-Za-z0-9+/=])"
 )
+_BASIC_REDACTED_RE = re.compile(r"(?i)\bbasic\s+\[REDACTED\]")
 _MAX_BASIC_AUTH_TOKEN_CHARS = 16 * 1024
 _ASCII_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
@@ -888,7 +950,7 @@ def _is_sensitive_text_key(text: str) -> bool:
 
 
 def _canonicalize_common_ascii_escapes(text: str) -> str:
-  """Decodes nested ASCII ``\\u``, ``\\x``, and percent escapes in O(n).
+  """Decodes nested ASCII ``\\u``, ``\\x``, quote, and percent escapes in O(n).
 
   This is a detection-only representation: callers retain the original text
   unless the canonical form exposes a credential construct. The output stack
@@ -899,6 +961,10 @@ def _canonicalize_common_ascii_escapes(text: str) -> str:
   for char in text:
     output.append(char)
     while True:
+      if len(output) >= 2 and output[-2] == "\\" and output[-1] in ('"', "'"):
+        escaped_quote = output.pop()
+        output[-1] = escaped_quote
+        continue
       escape_start = -1
       digits = ""
       if (
@@ -934,19 +1000,80 @@ def _canonicalize_common_ascii_escapes(text: str) -> str:
   return "".join(output)
 
 
-def _redact_sensitive_patterns(text: str) -> tuple[str, bool]:
-  """Redacts plain-text credential constructs without decoding the input."""
+@dataclass(frozen=True)
+class _SensitivePatternScan:
+  """Outcome of scanning a string for plain-text credential patterns."""
+
+  sanitized: str
+  changed: bool
+  markers: collections.Counter[str]
+  saw_already_redacted: bool
+  saw_unclosed_or_container: bool
+
+
+def _scan_sensitive_patterns(text: str) -> _SensitivePatternScan:
+  """Scans and redacts plain-text credential constructs without decoding.
+
+  Returns a ``_SensitivePatternScan`` whose ``markers`` counts each credential
+  construct or already-redacted credential marker matched, even when the string
+  itself did not change.
+  """
+  markers: collections.Counter[str] = collections.Counter()
+  saw_already_redacted = False
+  saw_unclosed_or_container = False
+
+  def _redact_auth_header(match: re.Match[str]) -> str:
+    nonlocal saw_already_redacted
+    markers["header"] += 1
+    header_value = match.group(0)[len(match.group("prefix")) :]
+    if "[REDACTED]" in header_value:
+      saw_already_redacted = True
+    return f"{match.group('prefix')}[REDACTED]"
+
+  def _redact_bearer_token(match: re.Match[str]) -> str:
+    nonlocal saw_already_redacted
+    markers["bearer"] += 1
+    if match.group("value").upper() == "[REDACTED]":
+      saw_already_redacted = True
+    return f"{match.group('prefix')}[REDACTED]"
 
   def _redact_key_value(match: re.Match[str]) -> str:
+    nonlocal saw_already_redacted, saw_unclosed_or_container
+    prefix = match.group("prefix")
+    raw_key = prefix.rstrip(" \t\r\n:=").strip("\"'")
+    norm_key = raw_key.lower().replace("-", "_")
+    kind_prefix = (
+        "json_key"
+        if prefix.lstrip().startswith(('"', "'"))
+        and prefix.rstrip().endswith(":")
+        else "kv"
+    )
+    markers[f"{kind_prefix}:{norm_key}"] += 1
     value = match.group("value")
-    if value == "[REDACTED]":
-      return match.group(0)
     quote_char = value[:1] if value[:1] in ('"', "'") else ""
-    return f"{match.group('prefix')}{quote_char}[REDACTED]{quote_char}"
+    unclosed_quote = False
+    if quote_char == '"' and match.group("dq_close") is None:
+      saw_unclosed_or_container = True
+      unclosed_quote = True
+    elif quote_char == "'" and match.group("sq_close") is None:
+      saw_unclosed_or_container = True
+      unclosed_quote = True
+    elif not quote_char and (
+        value.startswith("{")
+        or (value.startswith("[") and not value.startswith("[REDACTED]"))
+    ):
+      saw_unclosed_or_container = True
+    if value in ("[REDACTED]", '"[REDACTED]"', "'[REDACTED]'"):
+      saw_already_redacted = True
+      if value == "[REDACTED]":
+        return match.group(0)
+    closing_quote = "" if unclosed_quote else quote_char
+    return f"{prefix}{quote_char}[REDACTED]{closing_quote}"
 
   def _redact_basic_credential(match: re.Match[str]) -> str:
     encoded = match.group("value")
     if len(encoded) > _MAX_BASIC_AUTH_TOKEN_CHARS:
+      markers["basic"] += 1
       return f"{match.group('prefix')}[REDACTED]"
     try:
       decoded = base64.b64decode(encoded, validate=True)
@@ -954,29 +1081,105 @@ def _redact_sensitive_patterns(text: str) -> tuple[str, bool]:
       return match.group(0)
     if "=" not in encoded and b":" not in decoded:
       return match.group(0)
+    markers["basic"] += 1
     return f"{match.group('prefix')}[REDACTED]"
 
-  sanitized = _AUTH_HEADER_RE.sub(
-      lambda match: f"{match.group('prefix')}[REDACTED]", text
-  )
-  sanitized = _BEARER_TOKEN_RE.sub(
-      lambda match: f"{match.group('prefix')}[REDACTED]", sanitized
-  )
-  sanitized = _BASIC_TOKEN_RE.sub(_redact_basic_credential, sanitized)
+  sanitized = _AUTH_HEADER_RE.sub(_redact_auth_header, text)
   sanitized = _SENSITIVE_TEXT_KEY_RE.sub(_redact_key_value, sanitized)
-  return sanitized, sanitized != text
+  sanitized = _BEARER_TOKEN_RE.sub(_redact_bearer_token, sanitized)
+  for _ in _BASIC_REDACTED_RE.finditer(sanitized):
+    markers["basic"] += 1
+    saw_already_redacted = True
+  sanitized = _BASIC_TOKEN_RE.sub(_redact_basic_credential, sanitized)
+  return _SensitivePatternScan(
+      sanitized=sanitized,
+      changed=sanitized != text,
+      markers=markers,
+      saw_already_redacted=saw_already_redacted,
+      saw_unclosed_or_container=saw_unclosed_or_container,
+  )
+
+
+def _redaction_covers(*, redacted: str, reference: str) -> bool:
+  """Returns whether ``redacted`` hides everything that ``reference`` hides.
+
+  Both are redactions of one canonical text. ``redacted`` covers
+  ``reference`` when its text between ``[REDACTED]`` markers appears in
+  ``reference`` in the same order: each of its markers may stand for a longer
+  span, but none of its literal text comes from a span that ``reference``
+  hid. Matching is greedy and left to right, so it stays linear.
+  """
+  segments = redacted.split("[REDACTED]")
+  if len(segments) == 1:
+    return redacted == reference
+  first, *middle, last = segments
+  end = len(reference) - len(last)
+  if (
+      end < len(first)
+      or not reference.startswith(first)
+      or not reference.endswith(last)
+  ):
+    return False
+  pos = len(first)
+  for segment in middle:
+    pos = reference.find(segment, pos, end)
+    if pos < 0:
+      return False
+    pos += len(segment)
+  return True
+
+
+_EMBEDDED_JSON_CONTAINER_RE = re.compile(r"[\{\[][\s\ufeff]*[\{\[\"\\]")
+
+
+def _is_malformed_json_container_shape(text: str) -> bool:
+  """Returns whether unparsed text has a JSON object or array prefix."""
+  stripped = _strip_bom_ws(text)
+  if stripped.startswith("{"):
+    return True
+  if stripped.startswith("["):
+    return _strip_bom_ws(stripped[1:]).startswith(("{", "[", '"', "\\"))
+  return False
+
+
+def _has_malformed_json_marker(
+    text: str, markers: collections.Counter[str]
+) -> bool:
+  """Returns whether credential markers sit in a JSON-shaped payload.
+
+  Callers pass text that did not parse as JSON. A JSON object/array container
+  prefix or embedded JSON container, or one with a quoted ``"key":`` marker, is
+  a malformed JSON document in which an already-redacted value can sit next to
+  a live one, so any marker counts. Bracket-led log prose such as ``[INFO]
+  token=[REDACTED] retrying`` does not.
+  """
+  if not markers:
+    return False
+  if (
+      _is_malformed_json_container_shape(text)
+      or _EMBEDDED_JSON_CONTAINER_RE.search(text) is not None
+  ):
+    return True
+  return any(kind.startswith("json_key:") for kind in markers)
 
 
 def _contains_sensitive_text_marker(text: str) -> bool:
-  """Returns whether raw or encoded text contains a credential construct."""
-  _, changed = _redact_sensitive_patterns(text)
-  if changed:
+  """Returns whether text carries a credential construct to fail closed on.
+
+  True for a live credential in the raw or canonical (decoded) text, and for
+  any credential marker, even an already-redacted one, in a JSON-shaped
+  payload (see ``_has_malformed_json_marker``).
+  """
+  raw_scan = _scan_sensitive_patterns(text)
+  if raw_scan.changed or _has_malformed_json_marker(text, raw_scan.markers):
     return True
   canonical = _canonicalize_common_ascii_escapes(text)
   if canonical == text:
     return False
-  _, changed = _redact_sensitive_patterns(canonical)
-  return changed
+  canonical_scan = _scan_sensitive_patterns(canonical)
+  return canonical_scan.changed or _has_malformed_json_marker(
+      canonical, canonical_scan.markers
+  )
 
 
 def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
@@ -1003,15 +1206,18 @@ def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
     length_truncated = False
 
   sanitized = text
+  parsed_json = False
+  malformed_container = False
   stripped = _strip_bom_ws(text)
   if stripped.startswith(("{", "[", '"')):
     try:
-      json.loads(stripped)
+      loaded = json.loads(stripped)
     except (TypeError, ValueError, RecursionError, MemoryError):
       # Malformed diagnostic prose is handled by the explicit marker pass
       # below; safe "[INFO] ..." messages must remain byte-identical.
-      pass
+      malformed_container = stripped.startswith(("{", "["))
     else:
+      parsed_json = isinstance(loaded, (dict, list))
       structured, _ = _recursive_smart_truncate(text, -1)
       if isinstance(structured, str):
         sanitized = structured
@@ -1020,16 +1226,63 @@ def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
 
   changed = sanitized != text
 
-  sanitized, patterns_changed = _redact_sensitive_patterns(sanitized)
-  changed = changed or patterns_changed
+  before_patterns = sanitized
+  raw_scan = _scan_sensitive_patterns(sanitized)
+  sanitized = raw_scan.sanitized
+  raw_markers = raw_scan.markers
+  changed = changed or raw_scan.changed
+
+  if not parsed_json:
+    if raw_scan.saw_unclosed_or_container:
+      return "[REDACTED_SENSITIVE_TEXT]", True
+    if _has_malformed_json_marker(before_patterns, raw_markers) and (
+        raw_scan.saw_already_redacted
+        or any(k.startswith("json_key:") for k in raw_markers)
+    ):
+      return "[REDACTED_SENSITIVE_TEXT]", True
 
   # Escaped/percent-encoded credential constructs cannot be safely rewritten
-  # in place without risking a partial source-to-canonical mapping. Fail the
-  # bounded diagnostic closed only when decoding actually exposes one; safe
-  # Windows paths and decoder errors remain byte-identical.
-  canonical = _canonicalize_common_ascii_escapes(sanitized)
-  if canonical != sanitized and _contains_sensitive_text_marker(canonical):
-    return "[REDACTED_SENSITIVE_TEXT]", True
+  # in place without risking a partial source-to-canonical mapping. When the
+  # input has any such escape, keep the in-place result only if its canonical
+  # form exposes no unredacted credential and hides everything that redacting
+  # the canonical input hides (an escaped quote must not leave the tail of a
+  # quoted value behind), and, for a malformed container, only if decoding
+  # reveals no credential marker that the raw scan missed.
+  canonical_input = _canonicalize_common_ascii_escapes(before_patterns)
+  if canonical_input != before_patterns:
+    canonical = _canonicalize_common_ascii_escapes(sanitized)
+    canonical_scan = _scan_sensitive_patterns(canonical)
+    reference_scan = _scan_sensitive_patterns(canonical_input)
+    has_unparsed_container = (
+        malformed_container
+        or _EMBEDDED_JSON_CONTAINER_RE.search(canonical_input) is not None
+    )
+    if (
+        canonical_scan.changed
+        or canonical_scan.saw_unclosed_or_container
+        or reference_scan.saw_unclosed_or_container
+        or not _redaction_covers(
+            redacted=canonical, reference=reference_scan.sanitized
+        )
+        or (
+            not parsed_json
+            and has_unparsed_container
+            and not (canonical_scan.markers <= raw_markers)
+        )
+        or (
+            not parsed_json
+            and _has_malformed_json_marker(
+                canonical_input, reference_scan.markers
+            )
+            and (
+                reference_scan.saw_already_redacted
+                or any(
+                    k.startswith("json_key:") for k in reference_scan.markers
+                )
+            )
+        )
+    ):
+      return "[REDACTED_SENSITIVE_TEXT]", True
 
   if max_len != -1 and len(sanitized) > max_len:
     sanitized = sanitized[:max_len] + "...[TRUNCATED]"
@@ -1041,6 +1294,16 @@ def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
 # raises: the formatter is a privacy/redaction boundary, so failure must
 # never fall back to the unformatted payload.
 _FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
+_FORMATTING_FAILED_SENTINEL = "[FORMATTING FAILED]"
+_RESPONSE_TEXT_SENTINELS = frozenset({
+    _FORMATTER_FAILED_SENTINEL,
+    _FORMATTING_FAILED_SENTINEL,
+    "[REDACTED]",
+    "[CONTENT_PARSE_FAILED]",
+    "[UNPARSEABLE_JSON_BLOB]",
+    "[UNSUPPORTED_OBJECT]",
+    "[REDACTED_SENSITIVE_TEXT]",
+})
 
 # CPython's Py_TPFLAGS_HEAPTYPE: set on every class created at runtime and
 # clear on static types compiled into C, whose names cannot be reassigned.
@@ -1131,6 +1394,9 @@ def _formatter_failure_message(cls: type, *, raised: bool) -> str:
 _MAX_FORMATTER_TRACEBACK_PART_CHARS = 1024
 _MAX_FORMATTER_TRACEBACK_CHARS = 4096
 _FORMATTER_TRACEBACK_CUT = "\n... [traceback truncated]"
+# Upper bound on the sanitized exception detail appended to the BigQuery row's
+# error_message when log_content_formatter_error_details is enabled.
+_MAX_FORMATTER_ERROR_DETAIL_CHARS = 256
 
 
 def _render_formatter_traceback(error: BaseException) -> str:
@@ -1206,13 +1472,15 @@ def _settle_formatter_outcome(
     *,
     event_type: str,
     debug: bool,
-) -> tuple[Any, Optional[str]]:
+    log_error_details: bool = False,
+) -> tuple[Any, Optional[str], bool]:
   """Decides what the row logs after the content_formatter call, fail closed.
 
   These steps happen behind this one boundary:
   - judging a returned result by its real type;
   - closing a rejected coroutine or generator;
   - naming the failed class;
+  - extracting and sanitizing the exception detail;
   - rendering the debug traceback;
   - emitting the warning through whatever filters and handlers are
     configured.
@@ -1224,9 +1492,11 @@ def _settle_formatter_outcome(
   parser's own boundary, which catches Exception only, applies to it.
 
   Code that the failed class or the rejected result controls runs only while
-  the traceback is rendered and while a rejected coroutine or generator is
-  closed. Those two steps contain anything they raise, ``BaseException``
-  included, so that the content under redaction cannot end the agent run.
+  the traceback is rendered, while sanitized exception details are extracted
+  (when ``log_error_details`` is True), and while a rejected coroutine or
+  generator is closed. Those steps contain anything they raise,
+  ``BaseException`` included, so that the content under redaction cannot end
+  the agent run.
   Everywhere else only this module's code and the application's own log
   filters and handlers run, so a ``KeyboardInterrupt``, ``SystemExit``, or
   ``asyncio.CancelledError`` raised there propagates, and no row is written.
@@ -1236,15 +1506,19 @@ def _settle_formatter_outcome(
     failure: The exception the formatter raised, or None if it returned.
     event_type: The type of the event being logged.
     debug: Whether to append the rendered traceback to the warning.
+    log_error_details: Whether to append sanitized exception details to the
+      ``error_message`` note when ``failure`` is set.
 
   Returns:
-    ``(formatted, None)`` when the parser can log the result as it is; a str
-    subclass is normalized to the exact built-in. Otherwise
-    ``(_FORMATTER_FAILED_SENTINEL, note)``, where ``note`` is the text for
-    the error_message column.
+    ``(formatted, None, False)`` when the parser can log the result as it is; a
+    str subclass is normalized to the exact built-in. Otherwise
+    ``(_FORMATTER_FAILED_SENTINEL, note, detail_content_lost)``, where ``note``
+    is the text for the error_message column and ``detail_content_lost`` is
+    True when sanitizing the exception detail truncated or redacted text.
   """
   outcome = "raised" if failure is not None else "returned unsupported type"
   note = f"content_formatter {outcome} <unknown class>"
+  detail_content_lost = False
   try:
     if failure is not None:
       failed_type: type = type(failure)
@@ -1253,7 +1527,7 @@ def _settle_formatter_outcome(
       if _natively_parsed(formatted, failed_type):
         if failed_type is not str and issubclass(failed_type, str):
           formatted = str.__str__(formatted)
-        return formatted, None
+        return formatted, None, False
       # A non-native result would reach the parser's str() fallback, where
       # a payload-controlled __str__ can republish the content, so it is
       # rejected. Close a coroutine first: released unstarted, it warns
@@ -1271,6 +1545,23 @@ def _settle_formatter_outcome(
         # contained rather than allowed to end the agent run.
         pass
     note = _formatter_failure_message(failed_type, raised=failure is not None)
+    if failure is not None and log_error_details:
+      detail: Optional[str] = None
+      try:
+        raw_detail = str(failure)
+      except BaseException:
+        raw_detail = "[error message could not be rendered]"
+      try:
+        sanitized_detail, detail_content_lost = _sanitize_sensitive_text(
+            raw_detail, _MAX_FORMATTER_ERROR_DETAIL_CHARS
+        )
+        if sanitized_detail:
+          detail = sanitized_detail
+      except Exception:
+        detail = "[REDACTED_SENSITIVE_TEXT]"
+        detail_content_lost = True
+      if detail:
+        note = f"{note}: {detail}"
     if failure is None:
       logger.warning(
           "Content formatter returned an unsupported result type for"
@@ -1294,7 +1585,7 @@ def _settle_formatter_outcome(
     # Nothing is reported: the logger may be what failed, and the exception
     # can carry the content.
     pass
-  return _FORMATTER_FAILED_SENTINEL, note
+  return _FORMATTER_FAILED_SENTINEL, note, detail_content_lost
 
 
 # Recursion bound for _recursive_smart_truncate: id()-based cycle detection
@@ -1727,8 +2018,9 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
   every batch is dropped without a single attempt.
 
   Raises:
-      ValueError: If any batch, queue, duration, retry, or callback setting is
-        invalid.
+      ValueError: If any batch, queue, duration, retry, callback, or workflow
+        observation setting is invalid, or ``tool_result_classifier`` cannot
+        be called as the plugin calls it.
   """
   _require_count("batch_size", config.batch_size, 1)
   _require_finite("batch_flush_interval", config.batch_flush_interval, 0)
@@ -1788,6 +2080,25 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
         "on_schema_ready must be a synchronous callable or None, got"
         f" {config.on_schema_ready!r}."
     )
+  _require_count(
+      "max_observation_summaries_per_segment",
+      config.max_observation_summaries_per_segment,
+      1,
+  )
+  if not isinstance(config.log_content_formatter_error_details, bool):
+    raise ValueError(
+        "log_content_formatter_error_details must be a bool, got"
+        f" {config.log_content_formatter_error_details!r}."
+    )
+  if config.response_text_key is not None and (
+      not isinstance(config.response_text_key, str)
+      or not config.response_text_key.strip()
+  ):
+    raise ValueError(
+        "response_text_key must be a non-empty str or None, got"
+        f" {config.response_text_key!r}."
+    )
+  _validate_tool_result_classifier(config.tool_result_classifier)
 
 
 # Cloud Platform OAuth scope. Assembled from parts so this module does not
@@ -2113,8 +2424,20 @@ def _recursive_smart_truncate(
       # at the fallback. Progress includes SCALARS: a RootModel[str] dumps
       # to a plain string that may itself be a credential blob, and
       # falling through to the generic fallback bypassed blob redaction.
+      #
+      # model_dump is called with warnings=False: Pydantic still dumps a field
+      # whose value no longer matches its type, but otherwise first warns with
+      # a UserWarning that quotes the value, before any content_formatter
+      # runs. A Pydantic model whose model_dump is an override is not called,
+      # since the override may not pass the flag on to Pydantic's. It is
+      # recorded as a sentinel, as is a model_dump that fails or does not take
+      # the flag: reading the fields instead would record what it leaves out.
       try:
-        dumped = model_dump_fn()
+        if _is_instance(obj, BaseModel) and (
+            getattr(model_dump_fn, "__func__", None) is not BaseModel.model_dump
+        ):
+          return "[UNSUPPORTED_OBJECT]", True
+        dumped = model_dump_fn(warnings=False)
         if isinstance(
             dumped,
             (collections.abc.Mapping, list, tuple, str, bytes, bytearray),
@@ -2125,7 +2448,7 @@ def _recursive_smart_truncate(
         if dumped is None or isinstance(dumped, (int, float, bool)):
           return dumped, False
       except Exception:
-        pass
+        return "[UNSUPPORTED_OBJECT]", True
     elif dict_fn is not None and callable(dict_fn):
       # Pydantic v1 (same progress requirement as above, scalars included).
       try:
@@ -2389,12 +2712,22 @@ class BigQueryLoggerConfig:
       max_content_length: Max length for text content before truncation.
       table_id: BigQuery table ID.
       clustering_fields: Fields to cluster the table by.
-      log_multi_modal_content: Whether to log detailed content parts.
+      log_multi_modal_content: Whether to log detailed content parts in
+        the ``content_parts`` column. When ``False``, ``content_parts`` is
+        written as ``[]`` and GCS offloading (``gcs_bucket_name``) is disabled
+        so large text remains inline (truncated at ``max_content_length``) in
+        ``content`` and binary parts are not stored.
       retry_config: Retry configuration for writes.
       batch_size: Number of rows per batch.
       batch_flush_interval: Max time to wait before flushing a batch.
       shutdown_timeout: Max time to wait for shutdown.
-      queue_max_size: Max size of the in-memory queue.
+      queue_max_size: Max size of the in-memory queue. For ``queue_max_size >
+        1``, ``min(max(2, queue_max_size // 100), queue_max_size - 1)`` slots
+        (``0`` for ``queue_max_size <= 1``, ``1`` for ``queue_max_size == 2``,
+        ``100`` at the default ``queue_max_size=10000``), and never all of
+        them, are kept for ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR``
+        rows, so that rows written just before them cannot fill the queue and
+        drop the row that closes the invocation.
       exactly_once_delivery: Use one committed stream per event loop and
         explicit offsets to prevent ambiguous retries from producing duplicate
         rows. Stream rotation can consume additional ``CreateWriteStream``
@@ -2413,9 +2746,11 @@ class BigQueryLoggerConfig:
         ``[FORMATTER_FAILED]``, the ``formatter_failed`` counter of
         ``get_drop_stats()`` is incremented, and ``error_message`` names the
         failure by class only, for example ``content_formatter raised
-        ImportError``. Only built-in types and a few trusted classes are
-        named; any other class is described by its nearest named ancestor,
-        for example ``content_formatter raised <subclass of ValueError>``.
+        ImportError`` (unless ``log_content_formatter_error_details``
+        separately opts into sanitized, bounded exception details). Only
+        built-in types and a few trusted classes are named; any other class is
+        described by its nearest named ancestor, for example
+        ``content_formatter raised <subclass of ValueError>``.
         An event that already carries an ``error_message``, such as a
         ``TOOL_ERROR``, keeps it first, followed by ``; `` and the formatter
         failure. The row's ``status`` is unchanged, so an otherwise
@@ -2423,7 +2758,13 @@ class BigQueryLoggerConfig:
         SDK queries such as ``ERROR_SQL_PREDICATE`` treat any non-null
         ``error_message`` as an error, so such a row still marks its session
         ``has_error``.
-      gcs_bucket_name: GCS bucket for offloading large content.
+      gcs_bucket_name: GCS bucket for offloading large text and binary content.
+        Offloading only runs when ``content_parts`` is persisted
+        (``log_multi_modal_content=True`` and ``"content_parts"`` not in
+        ``payload_column_denylist``); otherwise ``GCSOffloader`` is not
+        created, a warning is logged once per plugin instance, large text is
+        kept inline (truncated) in ``content``, and binary parts are not
+        stored.
       connection_id: BigQuery connection ID for ObjectRef columns.
       log_session_metadata: Whether to log session metadata.
       custom_tags: Static custom tags to attach to every event.
@@ -2483,10 +2824,12 @@ class BigQueryLoggerConfig:
         logger emits, to debug the formatter locally.
         The traceback can embed the unformatted content the formatter was
         protecting, and it reaches every log handler the process has
-        configured, so enable it only where that content may be seen. It is
-        never written to BigQuery: the row's ``error_message`` still names
-        only the exception class. ``False`` (the default) logs a constant
-        message with no traceback.
+        configured, so enable it only where that content may be seen. The
+        traceback is never written to BigQuery: the row's ``error_message``
+        names only the exception class unless
+        ``log_content_formatter_error_details`` separately opts into
+        sanitized, bounded exception details. ``False`` (the default) logs a
+        constant message with no traceback.
       on_schema_error: Optional synchronous callback invoked with the triggering
         exception each time the table readiness pass fails to read, create, or
         upgrade the BigQuery table. It runs on a worker thread, not the event
@@ -2524,6 +2867,128 @@ class BigQueryLoggerConfig:
         serialized with the standard ``pickle`` module, the callback must be
         picklable (e.g. a module-level function; lambdas and closures fail with
         standard ``pickle``, and bound methods pickle their instance).
+      create_eval_views: When ``True``, also create the
+        ``{view_prefix}_eval_session`` (one row per session) and
+        ``{view_prefix}_eval_turn`` (one row per invocation) views, whose
+        ``trace`` column holds a ``google.cloud.aiplatform.v1beta1.AgentData``
+        JSON trace for agent evaluation. Both views also have
+        guardrail columns (error and truncation flags, tool-call and token
+        totals) and ``eval_ready``, which requires a finished turn (both
+        ``INVOCATION_COMPLETED`` and an ``AGENT_RESPONSE`` with non-empty
+        text) with non-empty user text; in the session view, every turn must
+        be ready, except that a paused turn (one that logged ``TOOL_PAUSED`` or
+        a ``HITL_*_REQUEST`` event and ``INVOCATION_COMPLETED`` without
+        ``AGENT_RESPONSE`` text) followed by the ``function_response`` turn that
+        resumes it needs no reply, and that resumption turn needs no user text.
+        No turn with ``has_truncated_content`` is ready, as a row flagged
+        ``is_truncated`` that puts an event in its trace left the trace
+        without part of a payload. No other row counts: an ``LLM_REQUEST``
+        row repeats the conversation so far, so one oversized message would
+        hold back every later turn of its session.
+        ``has_truncated_content`` tells a caller that truncation keeps a turn
+        from being ready, but not whether it is the only reason: no column
+        of the views holds the other conditions of ``eval_ready``, so a
+        truncated turn may also be unfinished or lack user text.
+        Each agent's ``instruction`` in the trace is the one logged by
+        ``AGENT_STARTING``; when none was logged (for example a callable
+        ``InstructionProvider``), it falls back to the earliest non-empty
+        ``system_prompt`` logged for that agent in the session's
+        ``LLM_REQUEST`` events. For ``AGENT_RESPONSE``, a non-blank string
+        ``$.text_summary`` (such as from a custom ``content_formatter``) takes
+        precedence over ``$.response``.
+        Independent of ``create_views``. The traces are rebuilt from the
+        ``content`` column and, with the default ``eval_view_mode`` of
+        ``"full"``, require ``USER_MESSAGE_RECEIVED``,
+        ``AGENT_STARTING``, ``LLM_REQUEST``, ``TOOL_STARTING``,
+        ``TOOL_COMPLETED``, ``TOOL_ERROR``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
+        ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
+        ``HITL_*_REQUEST_COMPLETED`` events, so denying ``content`` via
+        ``payload_column_denylist`` or filtering out any of those events via
+        ``event_denylist`` / ``event_allowlist`` is rejected at construction
+        (``eval_view_mode`` relaxes the event requirement).
+        Any custom ``content_formatter`` must preserve the JSON keys consumed
+        by the evaluation views (``$.text_summary``, ``$.response``,
+        ``$.system_prompt``, ``$.tool``, ``$.args``, and ``$.result``). The
+        views aggregate per
+        session or turn, so filtering them on ``session_start_timestamp`` or
+        ``turn_start_timestamp`` does not prune the events table's ``timestamp``
+        partitions: every query scans the whole table. For large tables,
+        materialize a date-filtered slice of a view into a table once and
+        evaluate that table. ``False`` (the default) creates no eval views; call
+        ``create_eval_views()`` to create or refresh them on demand.
+      tool_result_classifier: Optional ``ToolResultClassifier``: a synchronous
+        callable that receives the keyword arguments ``tool``, ``tool_args``,
+        ``tool_context`` and ``result`` of each call that reaches
+        ``after_tool_callback``, and decides whether the result reports a
+        failure. Return a ``ToolResultClassification`` to record the call as
+        ``TOOL_ERROR`` (``status="ERROR"``) or as ``TOOL_COMPLETED``
+        (``status="OK"``), or ``None`` to leave it to the built-in rule, which
+        records as ``TOOL_ERROR`` a result whose top-level ``isError`` or
+        ``is_error`` is ``True``, such as an MCP ``CallToolResult``. It is not
+        called for a ``ReflectAndRetryToolPlugin`` answer, which stands for a
+        raised error and is always recorded as ``TOOL_ERROR``. The arguments
+        must not be modified; the model and the agent use them next. A
+        classifier is rejected when the plugin is created if it is a coroutine
+        or async generator function, if ``inspect`` cannot read its signature,
+        or if it cannot take those keyword arguments. One that raises an
+        ``Exception`` or returns anything else is skipped at run time: the
+        built-in rule applies, and the logged warning names only the tool.
+      eval_view_mode: Which events the eval views require. ``"full"`` (the
+        default) requires every event listed under ``create_eval_views``, so
+        each trace shows the agents, model calls and tool calls.
+        ``"conversation_only"`` is for deployments that deliberately leave the
+        tool and model events out of the table (for example, to keep tool
+        arguments and results or system prompts out of it): it requires only
+        ``USER_MESSAGE_RECEIVED``, ``AGENT_RESPONSE`` and
+        ``INVOCATION_COMPLETED`` (and the ``content`` column) and creates the
+        same views, whose traces then hold the user and model text. A paused
+        turn is recognized only when its ``TOOL_PAUSED`` or ``HITL_*_REQUEST``
+        event is logged, and otherwise is not ``eval_ready``. Any other
+        value raises ``ValueError`` when the eval views are validated.
+      max_observation_summaries_per_segment: Most
+        ``WORKFLOW_NODE_OBSERVATION_SUMMARY`` rows written when a runner call
+        ends. Each ``before_run_callback`` (including resumed runs reusing an
+        ``invocation_id``) opens a new ``workflow_segment_id`` and emits
+        ``WORKFLOW_NODE_FIRST_OBSERVED`` once per ``(workflow_segment_id,
+        node_path)`` up to ``max(max_observation_summaries_per_segment,
+        _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)``. One summary is written per
+        workflow node path observed during the call, in the order the paths
+        were first observed. When more paths were observed, the last summary
+        written carries the number of distinct paths left out as
+        ``attributes.adk.truncated_node_count``, and ``get_drop_stats()``
+        counts them under ``workflow_observation_capacity``. Distinct overflow
+        path deduplication is bounded at ``max(
+        max_observation_summaries_per_segment,
+        _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)``, making ``truncated_node_count``
+        and ``workflow_observation_capacity`` exact up to that bound and a lower
+        bound once path-dedup memory saturates (with un-deduplicated events
+        beyond it exposed in ``attributes.adk.untracked_overflow_event_count``).
+        Must be an int >= 1.
+      log_content_formatter_error_details: When ``True``, append sanitized and
+        truncated (to 256 characters plus a truncation marker) exception
+        details from a raised ``content_formatter`` exception to the BigQuery
+        row's ``error_message`` column (for example, ``content_formatter raised
+        ValueError: invalid format``) while still writing
+        ``[FORMATTER_FAILED]`` to ``content``. Because exception messages can
+        embed fragments of the unformatted payload that are not recognized as
+        structured credentials, leave this ``False`` (the default) when
+        ``content_formatter`` is used for privacy/PII redaction and enable it
+        only when debugging formatter bugs in environments where those details
+        are safe to store in BigQuery. When sanitizing truncates or redacts
+        the detail, the row's ``is_truncated`` is also set to ``True``.
+      response_text_key: Optional JSON object key used to populate
+        ``content.text_summary`` on structured ``AGENT_RESPONSE`` events.
+        Defaults to ``None``, which preserves existing ``content.text_summary``
+        behavior; non-``None`` values must be a non-empty, non-whitespace
+        ``str`` (validated when creating ``BigQueryAgentAnalyticsPlugin``).
+        When set and a structured ``AGENT_RESPONSE`` payload (from
+        ``LlmAgent.output_schema`` JSON text or ``final_response_tool_names``
+        tool arguments) parses to a JSON object containing that key with a
+        non-blank string value, that string is sanitized, truncated to
+        ``max_content_length``, and copied into ``content.text_summary`` while
+        keeping the serialized JSON object in ``content.response``. If
+        ``content_formatter`` is also set, it receives the resulting
+        ``AGENT_RESPONSE`` dictionary.
   """
 
   enabled: bool = True
@@ -2545,7 +3010,8 @@ class BigQueryLoggerConfig:
   shutdown_timeout: float = 10.0
   queue_max_size: int = 10000
   content_formatter: Optional[Callable[[Any, str], Any]] = None
-  # If provided, large content (images, audio, video, large text) will be offloaded to this GCS bucket.
+  # If provided and content_parts is persisted, large content (images, audio,
+  # video, large text) is offloaded to this GCS bucket.
   gcs_bucket_name: Optional[str] = None
   # If provided, this connection ID will be used as the authorizer for ObjectRef columns.
   # Format: "location.connection_id" (e.g. "us.my-connection")
@@ -2615,6 +3081,30 @@ class BigQueryLoggerConfig:
   debug_content_formatter_errors: bool = False
   on_schema_error: Optional[Callable[[Exception], None]] = None
   on_schema_ready: Optional[Callable[[], None]] = None
+  # Opt-in: also create the {view_prefix}_eval_session and
+  # {view_prefix}_eval_turn agent evaluation views.
+  create_eval_views: bool = False
+  # Application rules for tool results that report a failure without raising.
+  tool_result_classifier: Optional[ToolResultClassifier] = None
+  # Which events the eval views require: "full" (every event the trace is
+  # rebuilt from) or "conversation_only" (just the user and model text events,
+  # for deployments that leave the tool and model events out of the table).
+  eval_view_mode: Literal["full", "conversation_only"] = "full"
+  # Cap on workflow observation summaries written per runner call.
+  max_observation_summaries_per_segment: int = 200
+  # Opt-in: append sanitized, truncated exception details to the BigQuery
+  # row's error_message column when content_formatter raises an Exception.
+  log_content_formatter_error_details: bool = False
+  # Opt-in JSON object key whose non-blank string value is copied to
+  # content.text_summary on structured AGENT_RESPONSE events (e.g. "response"
+  # when LlmAgent.output_schema or final_response_tool_names wraps the
+  # user-facing reply alongside metadata fields).
+  response_text_key: Optional[str] = None
+
+
+_DEFAULT_MAX_OBSERVATION_SUMMARIES_PER_SEGMENT = (
+    BigQueryLoggerConfig.max_observation_summaries_per_segment
+)
 
 
 # ==============================================================================
@@ -2640,6 +3130,50 @@ _root_agent_name_ctx: contextvars.ContextVar[Optional[str]] = (
 _active_invocation_id_ctx: contextvars.ContextVar[Optional[str]] = (
     contextvars.ContextVar("_bq_analytics_active_invocation_id", default=None)
 )
+
+
+@dataclass
+class _WorkflowNodeObservation:
+  """Source-event facts observed for one workflow node in a segment."""
+
+  node_path: str
+  node_run_id: str | None
+  node_parent_run_id: str | None
+  first_source_event_id: str
+  last_source_event_id: str
+  first_source_event_timestamp: float | None = None
+  last_source_event_timestamp: float | None = None
+  observed_event_count: int = 1
+  node_interrupt_observed: bool = False
+  descendant_interrupt_observed: bool = False
+  node_error_observed_count: int = 0
+
+
+@dataclass
+class _WorkflowObservationSegment:
+  """Workflow observations scoped to one runner call."""
+
+  segment_id: str
+  nodes: dict[str, _WorkflowNodeObservation] = field(default_factory=dict)
+  overflow_node_paths: set[str] = field(default_factory=set)
+  untracked_path_events: int = 0
+  interrupted_ancestor_paths: set[str] = field(default_factory=set)
+
+
+# Most workflow observation segments a plugin keeps. A runner call whose task
+# is cancelled from outside skips both after_run_callback and
+# on_run_error_callback, so nothing removes its segment; past this many,
+# before_run_callback drops the oldest.
+_MAX_IN_FLIGHT_WORKFLOW_SEGMENTS = 4096
+# Bounds distinct overflow path deduplication per segment so truncated_node_count
+# and workflow_observation_capacity stay exact up to this cap and bounded above it.
+_MAX_OBSERVED_NODE_PATHS_PER_SEGMENT = 4096
+
+
+def _strict_ancestor_node_paths(node_path: str) -> tuple[str, ...]:
+  """Returns a node path's strict ancestors from root to parent."""
+  segments = node_path.split("/")
+  return tuple("/".join(segments[:end]) for end in range(1, len(segments)))
 
 
 @dataclass
@@ -2681,11 +3215,111 @@ class _SpanRecord:
   # on_agent_error_callback must not pop the invocation span instead.
   kind: str = ""
   first_token_time: Optional[float] = None
+  parent_span_id: Optional[str] = None
+  invocation_id: Optional[str] = None
+  session_id: Optional[str] = None
 
 
 _span_records_ctx: contextvars.ContextVar[Optional[list[_SpanRecord]]] = (
     contextvars.ContextVar("_bq_analytics_span_records", default=None)
 )
+
+
+@dataclass(frozen=True)
+class _InvocationFrame:
+  """Suspended parent invocation state across a nested AgentTool run."""
+
+  child_invocation_id: str
+  invocation_id: Optional[str]
+  session_id: Optional[str]
+  root_agent_name: Optional[str]
+  span_records: tuple[_SpanRecord, ...]
+
+
+_parent_invocation_frames_ctx: contextvars.ContextVar[
+    tuple[_InvocationFrame, ...]
+] = contextvars.ContextVar(
+    "_bq_analytics_parent_invocation_frames",
+    default=(),
+)
+
+
+def _safe_session_id(callback_context: CallbackContext) -> Optional[str]:
+  """Best-effort read of session.id from a CallbackContext."""
+  try:
+    session_id = callback_context._invocation_context.session.id
+  except Exception:  # pylint: disable=broad-except
+    return None
+  return session_id if isinstance(session_id, str) and session_id else None
+
+
+def _get_nested_parent_invocation_id(
+    callback_context: Optional[CallbackContext],
+) -> Optional[str]:
+  """Returns the caller's invocation_id when this run is a nested AgentTool.
+
+  ``AgentTool`` records it on the nested run's ``InvocationContext`` only when
+  the nested run shares the caller's plugins. It is the one signal this plugin
+  uses to treat an invocation as nested, and it is ``None`` for top-level
+  runs, for nested runs with isolated plugins, and for mocked contexts.
+  """
+  if callback_context is None:
+    return None
+  try:
+    parent_inv_id = getattr(
+        callback_context._invocation_context, "_parent_invocation_id", None
+    )
+  except Exception:  # pylint: disable=broad-except
+    return None
+  if (
+      isinstance(parent_inv_id, str)
+      and parent_inv_id
+      and parent_inv_id != callback_context.invocation_id
+  ):
+    return parent_inv_id
+  return None
+
+
+def _is_foreign_invocation_stack(invocation_id: Optional[str]) -> bool:
+  """Returns whether active contextvars belong to a different invocation."""
+  active_inv = _active_invocation_id_ctx.get()
+  if active_inv is not None and active_inv != invocation_id:
+    return True
+  records = _span_records_ctx.get()
+  if records:
+    top_inv = records[-1].invocation_id
+    if top_inv is not None and top_inv != invocation_id:
+      return True
+  return False
+
+
+def _is_nested_plugin_run(
+    callback_context: CallbackContext,
+    top_record: _SpanRecord,
+) -> bool:
+  """Returns whether ``top_record`` belongs to the enclosing parent run."""
+  parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+  return parent_inv_id is not None and top_record.invocation_id == parent_inv_id
+
+
+def _has_active_enclosing_parent(
+    invocation_id: Optional[str],
+    callback_context: Optional[CallbackContext] = None,
+) -> bool:
+  """Returns whether a live enclosing parent owns the active span stack."""
+  records = _span_records_ctx.get()
+  if not records:
+    return False
+  if callback_context is not None:
+    # The parent signal holds even when no invocation is active, as when the
+    # parent's ensure_invocation_span never ran.
+    return _is_nested_plugin_run(callback_context, records[-1])
+  active_inv = _active_invocation_id_ctx.get()
+  if active_inv is None or active_inv == invocation_id:
+    return False
+  # Without a context the parent signal cannot be read, so keep a live tool
+  # span of the active invocation rather than clearing it.
+  return records[-1].kind == "tool" and records[-1].invocation_id == active_inv
 
 
 class TraceManager:
@@ -2725,7 +3359,14 @@ class TraceManager:
     """Gets the trace ID from the current span stack or invocation_id."""
     records = _span_records_ctx.get()
     if records:
-      return records[-1].trace_id
+      if not _is_foreign_invocation_stack(
+          callback_context.invocation_id
+      ) or _is_nested_plugin_run(callback_context, records[-1]):
+        return records[-1].trace_id
+
+    parent_frame = TraceManager._get_parent_invocation_frame(callback_context)
+    if parent_frame and parent_frame.span_records:
+      return parent_frame.span_records[-1].trace_id
 
     # Fallback to ambient OTel context (e.g. callbacks fired before
     # any plugin span was pushed).
@@ -2739,6 +3380,9 @@ class TraceManager:
   def push_span(
       callback_context: CallbackContext,
       span_name: Optional[str] = "adk-span",
+      *,
+      parent_span_id: Optional[str] = None,
+      trace_id_override: Optional[str] = None,
   ) -> str:
     """Pushes a BQAA-internal span record onto the stack.
 
@@ -2748,22 +3392,41 @@ class TraceManager:
 
     * ``span_id`` — newly generated 16-hex string.
     * ``trace_id`` — inherited by precedence:
-        1. Top of the existing internal stack (keeps every push
+        1. Explicit ``trace_id_override`` (when seeding a nested invocation).
+        2. Top of the existing internal stack (keeps every push
            within an invocation under one trace_id).
-        2. Ambient OTel span when valid (e.g. the framework's Runner
+        3. Ambient OTel span when valid (e.g. the framework's Runner
            span, or an Agent Engine root span) — keeps BigQuery rows
            joinable to Cloud Trace via the shared ``trace_id``.
-        3. A fresh 32-hex value (no ambient context, e.g. unit tests
+        4. A fresh 32-hex value (no ambient context, e.g. unit tests
            or non-OTel runtimes).
     * ``start_time_ns`` — for the eventual ``latency_ms`` on pop.
 
     ``span_name`` is recorded as the span ``kind`` so error callbacks
     can verify ownership before popping (no OTel span name is set).
+
+    Args:
+      callback_context: The context of the callback pushing the span; its
+        invocation and session IDs are recorded on the span.
+      span_name: The span kind, such as ``"agent"`` or ``"tool"``.
+      parent_span_id: The span to report as this span's parent when it is the
+        bottom of the stack, such as the enclosing parent's tool span for a
+        nested invocation's root. A span pushed above another reports that
+        one as its parent and ignores this value.
+      trace_id_override: The trace ID to record instead of the inherited one,
+        such as the enclosing parent's trace ID for a nested invocation's
+        root. Later pushes inherit it, so the nested run's rows share the
+        caller's trace ID.
+
+    Returns:
+      The new span's ``span_id``.
     """
     TraceManager.init_trace(callback_context)
 
     records = TraceManager._get_records()
-    if records:
+    if trace_id_override is not None:
+      trace_id = trace_id_override
+    elif records:
       trace_id = records[-1].trace_id
     else:
       ambient_ctx = trace.get_current_span().get_span_context()
@@ -2780,6 +3443,9 @@ class TraceManager:
         owns_span=True,
         start_time_ns=time.time_ns(),
         kind=span_name or "",
+        parent_span_id=parent_span_id,
+        invocation_id=callback_context.invocation_id,
+        session_id=_safe_session_id(callback_context),
     )
     _span_records_ctx.set(list(records) + [record])
 
@@ -2788,6 +3454,9 @@ class TraceManager:
   @staticmethod
   def attach_current_span(
       callback_context: CallbackContext,
+      *,
+      parent_span_id: Optional[str] = None,
+      trace_id_override: Optional[str] = None,
   ) -> str:
     """Records the ambient OTel span's IDs on the stack without owning it.
 
@@ -2795,16 +3464,31 @@ class TraceManager:
     ambient span's ``trace_id`` / ``span_id`` so plugin-emitted
     BigQuery rows correlate with whatever Cloud Trace / external
     exporter the host is already running.
+
+    Args:
+      callback_context: The context of the callback seeding the span; its
+        invocation and session IDs are recorded on the span.
+      parent_span_id: The span to report as the recorded span's parent when
+        it is the bottom of the stack, such as the enclosing parent's tool
+        span when seeding a nested invocation's root.
+      trace_id_override: The trace ID to record instead of the ambient
+        span's, such as the enclosing parent's trace ID when seeding a nested
+        invocation's root, so the nested run's rows share the caller's trace
+        ID.
+
+    Returns:
+      The recorded ``span_id``: the ambient span's ID, or a fresh one when
+      there is no valid ambient span.
     """
     TraceManager.init_trace(callback_context)
 
     ambient_ctx = trace.get_current_span().get_span_context()
     if ambient_ctx.is_valid:
       span_id_str = format(ambient_ctx.span_id, "016x")
-      trace_id = format(ambient_ctx.trace_id, "032x")
+      trace_id = trace_id_override or format(ambient_ctx.trace_id, "032x")
     else:
       span_id_str = uuid.uuid4().hex[:16]
-      trace_id = uuid.uuid4().hex
+      trace_id = trace_id_override or uuid.uuid4().hex
 
     record = _SpanRecord(
         span_id=span_id_str,
@@ -2814,11 +3498,23 @@ class TraceManager:
         # attach_current_span is only used to seed the invocation root
         # (see ensure_invocation_span), so it carries the same kind.
         kind="invocation",
+        parent_span_id=parent_span_id,
+        invocation_id=callback_context.invocation_id,
+        session_id=_safe_session_id(callback_context),
     )
     records = TraceManager._get_records()
     _span_records_ctx.set(list(records) + [record])
 
     return span_id_str
+
+  @staticmethod
+  def _has_ancestor_span(span_id: str) -> bool:
+    """Returns whether any suspended parent frame owns ``span_id``."""
+    for frame in _parent_invocation_frames_ctx.get():
+      for record in frame.span_records:
+        if record.span_id == span_id:
+          return True
+    return False
 
   @staticmethod
   def ensure_invocation_span(
@@ -2831,8 +3527,15 @@ class TraceManager:
 
     * If the stack has entries for the *current* invocation → no-op
       (idempotent within the same invocation).
-    * If the stack has entries from a *different* invocation → clear
-      stale records and re-initialise (safety net for abnormal exit).
+    * If the top of the stack is the tool span of the invocation that
+      ``AgentTool`` recorded as this run's parent → suspend the parent
+      invocation frame and seed a child invocation span linked to that tool
+      span.
+    * If the stack has stale entries from a *different* invocation →
+      clear stale records and re-initialise (safety net for abnormal exit).
+      A nested run whose parent frame is still suspended (e.g. a retry after
+      a child that never reached ``after_run_callback``) rebinds to that
+      frame; any other run drops the suspended frames.
     * If the ambient OTel span is valid → ``attach_current_span``
       (reuse the runner's span without owning it).
     * Otherwise → ``push_span("invocation")`` (create a new root
@@ -2842,26 +3545,86 @@ class TraceManager:
     active_inv = _active_invocation_id_ctx.get()
 
     records = _span_records_ctx.get()
-    if records:
-      if active_inv == current_inv:
-        return  # Already initialised for this invocation.
-      # Stale records from a previous invocation that wasn't cleaned
-      # up (e.g. exception skipped after_run_callback). Clear and
-      # re-init.
-      logger.debug(
-          "Clearing %d stale span records from previous invocation.",
-          len(records),
+    if records and active_inv == current_inv:
+      return  # Already initialised for this invocation.
+
+    parent_span_id: Optional[str] = None
+    inherited_trace_id: Optional[str] = None
+    if records and _is_nested_plugin_run(callback_context, records[-1]):
+      top = records[-1]
+      frame = _InvocationFrame(
+          child_invocation_id=current_inv,
+          invocation_id=top.invocation_id,
+          session_id=top.session_id,
+          root_agent_name=_root_agent_name_ctx.get(),
+          span_records=tuple(records),
       )
-      TraceManager.clear_stack()
+      _parent_invocation_frames_ctx.set(
+          _parent_invocation_frames_ctx.get() + (frame,)
+      )
+      _span_records_ctx.set([])
+      parent_span_id = top.span_id
+      inherited_trace_id = top.trace_id
+    else:
+      if records:
+        # Stale records from a previous invocation that wasn't cleaned
+        # up (e.g. exception skipped after_run_callback). Clear and
+        # re-init.
+        logger.debug(
+            "Clearing %d stale span records from previous invocation.",
+            len(records),
+        )
+        TraceManager.clear_stack()
+      # Rebind a nested run to its still-suspended parent frame; drop every
+      # suspended frame for any other run.
+      parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+      frames = _parent_invocation_frames_ctx.get()
+      matched_idx: Optional[int] = None
+      if parent_inv_id is not None:
+        for idx in range(len(frames) - 1, -1, -1):
+          if frames[idx].invocation_id == parent_inv_id:
+            matched_idx = idx
+            break
+      if matched_idx is None:
+        _parent_invocation_frames_ctx.set(())
+      else:
+        top_frame = frames[matched_idx]
+        rebound = dataclasses.replace(
+            top_frame, child_invocation_id=current_inv
+        )
+        _parent_invocation_frames_ctx.set(frames[:matched_idx] + (rebound,))
+        if top_frame.span_records:
+          parent_span_id = top_frame.span_records[-1].span_id
+          inherited_trace_id = top_frame.span_records[-1].trace_id
 
     _active_invocation_id_ctx.set(current_inv)
 
     # Check for a valid ambient span (e.g. the Runner's invocation span).
+    # When a nested runner shares the same ambient span as a suspended
+    # ancestor frame, fall back to push_span so the child root receives a
+    # distinct span_id and never introduces a cycle in BigQuery.
     ambient = trace.get_current_span()
-    if ambient.get_span_context().is_valid:
-      TraceManager.attach_current_span(callback_context)
+    ambient_ctx = ambient.get_span_context()
+    ambient_span_id = (
+        format(ambient_ctx.span_id, "016x") if ambient_ctx.is_valid else None
+    )
+    ambient_reused_from_ancestor = (
+        ambient_span_id is not None
+        and TraceManager._has_ancestor_span(ambient_span_id)
+    )
+    if ambient_ctx.is_valid and not ambient_reused_from_ancestor:
+      TraceManager.attach_current_span(
+          callback_context,
+          parent_span_id=parent_span_id,
+          trace_id_override=inherited_trace_id,
+      )
     else:
-      TraceManager.push_span(callback_context, "invocation")
+      TraceManager.push_span(
+          callback_context,
+          "invocation",
+          parent_span_id=parent_span_id,
+          trace_id_override=inherited_trace_id,
+      )
 
   @staticmethod
   def pop_span(
@@ -2894,6 +3657,38 @@ class TraceManager:
     return record.span_id, duration_ms
 
   @staticmethod
+  def _pop_invocation_span(
+      expected_invocation_id: Optional[str] = None,
+  ) -> tuple[Optional[str], Optional[int]]:
+    """Pops the invocation-root span and unwinds any unclosed child spans.
+
+    Searches the span stack from top to bottom for a record with
+    ``kind == "invocation"`` matching ``expected_invocation_id`` (when
+    provided). When found, removes that record and any unclosed child
+    ``"agent"``/``"tool"`` records above it (for example when
+    ``end_invocation=True`` skips ``after_agent_callback``) so the completed
+    invocation reports the root span ID and total invocation duration.
+    Returns ``(None, None)`` when ``expected_invocation_id`` is not found, or
+    falls back to ``pop_span()`` when ``expected_invocation_id`` is ``None``.
+    """
+    records = _span_records_ctx.get()
+    if not records:
+      return None, None
+    for i in range(len(records) - 1, -1, -1):
+      if records[i].kind == "invocation" and (
+          expected_invocation_id is None
+          or records[i].invocation_id in (None, expected_invocation_id)
+      ):
+        record = records[i]
+        new_records = list(records[:i])
+        _span_records_ctx.set(new_records)
+        duration_ms = int((time.time_ns() - record.start_time_ns) / 1_000_000)
+        return record.span_id, duration_ms
+    if expected_invocation_id is not None:
+      return None, None
+    return TraceManager.pop_span()
+
+  @staticmethod
   def clear_stack() -> None:
     """Clears all span records. Safety net for cross-invocation cleanup."""
     _span_records_ctx.set([])
@@ -2911,6 +3706,8 @@ class TraceManager:
       if records[i].span_id != span_id:
         parent_id = records[i].span_id
         break
+    if parent_id is None:
+      parent_id = records[0].parent_span_id
     return span_id, parent_id
 
   @staticmethod
@@ -2920,6 +3717,124 @@ class TraceManager:
     if records:
       return records[-1].span_id
     return None
+
+  @staticmethod
+  def _get_enclosing_parent_span_id(
+      callback_context: Optional[CallbackContext] = None,
+  ) -> Optional[str]:
+    """Gets the enclosing parent tool span_id for a nested invocation."""
+    frame = TraceManager._get_parent_invocation_frame(callback_context)
+    if frame and frame.span_records:
+      return frame.span_records[-1].span_id
+    return None
+
+  @staticmethod
+  def _get_parent_invocation_frame(
+      callback_context: Optional[CallbackContext] = None,
+  ) -> Optional[_InvocationFrame]:
+    """Gets the immediate parent invocation frame if nested."""
+    frames = _parent_invocation_frames_ctx.get()
+    if not frames:
+      return None
+    if callback_context is None:
+      return frames[-1]
+    parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+    if parent_inv_id is not None:
+      for frame in reversed(frames):
+        if frame.invocation_id == parent_inv_id:
+          return frame
+      return None
+    if (
+        not _is_foreign_invocation_stack(callback_context.invocation_id)
+        and frames[-1].child_invocation_id == callback_context.invocation_id
+    ):
+      return frames[-1]
+    return None
+
+  @staticmethod
+  def _restore_parent_frame(
+      frame: _InvocationFrame,
+      remaining_frames: tuple[_InvocationFrame, ...],
+  ) -> None:
+    """Restores a suspended parent invocation frame onto contextvars."""
+    _span_records_ctx.set(list(frame.span_records))
+    _active_invocation_id_ctx.set(frame.invocation_id)
+    _root_agent_name_ctx.set(frame.root_agent_name)
+    _parent_invocation_frames_ctx.set(remaining_frames)
+
+  @staticmethod
+  def _unwind_to_invocation(invocation_id: Optional[str]) -> None:
+    """Restores suspended parent state if a nested run exited abruptly."""
+    if (
+        not isinstance(invocation_id, str)
+        or not invocation_id
+        or _active_invocation_id_ctx.get() == invocation_id
+    ):
+      return
+    frames = _parent_invocation_frames_ctx.get()
+    for idx in range(len(frames) - 1, -1, -1):
+      frame = frames[idx]
+      if frame.invocation_id == invocation_id:
+        TraceManager._restore_parent_frame(frame, frames[:idx])
+        return
+
+  @staticmethod
+  def _pop_run_end_span(
+      callback_context: CallbackContext,
+      *,
+      unwind_children: bool,
+  ) -> tuple[Optional[str], Optional[int], Optional[str]]:
+    """Pops the run-end root span and resolves its enclosing parent span."""
+    invocation_id = callback_context.invocation_id
+    if not _has_active_enclosing_parent(invocation_id, callback_context):
+      was_foreign = _is_foreign_invocation_stack(invocation_id)
+      if was_foreign:
+        span_id, duration = None, None
+      elif unwind_children:
+        span_id, duration = TraceManager._pop_invocation_span(invocation_id)
+      else:
+        span_id, duration = TraceManager.pop_span(expected_kind="invocation")
+      if span_id is None:
+        TraceManager.clear_stack()
+        if was_foreign:
+          TraceManager.init_trace(callback_context)
+      parent_span_id = (
+          TraceManager.get_current_span_id()
+          or TraceManager._get_enclosing_parent_span_id(callback_context)
+      )
+      return span_id, duration, parent_span_id
+    records = _span_records_ctx.get()
+    parent_span_id = records[-1].span_id if records else None
+    return None, None, parent_span_id
+
+  @staticmethod
+  def _finish_invocation(
+      invocation_id: Optional[str],
+      callback_context: Optional[CallbackContext] = None,
+  ) -> None:
+    """Completes an invocation, restoring any suspended parent frame."""
+    if invocation_id is not None:
+      frames = _parent_invocation_frames_ctx.get()
+      for idx in range(len(frames) - 1, -1, -1):
+        frame = frames[idx]
+        if frame.child_invocation_id == invocation_id:
+          TraceManager._restore_parent_frame(frame, frames[:idx])
+          return
+      if _has_active_enclosing_parent(invocation_id, callback_context):
+        return
+      # A nested run that never suspended its parent itself (an abandoned
+      # sibling's state was still active) still hands control back to it.
+      parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+      if parent_inv_id is not None and frames:
+        for idx in range(len(frames) - 1, -1, -1):
+          frame = frames[idx]
+          if frame.invocation_id == parent_inv_id:
+            TraceManager._restore_parent_frame(frame, frames[:idx])
+            return
+    TraceManager.clear_stack()
+    _active_invocation_id_ctx.set(None)
+    _root_agent_name_ctx.set(None)
+    _parent_invocation_frames_ctx.set(())
 
   @staticmethod
   def get_root_agent_name() -> Optional[str]:
@@ -2964,6 +3879,19 @@ class TraceManager:
 # ==============================================================================
 _SHUTDOWN_SENTINEL: None = None
 
+# Minimum queue slots that only the rows closing an invocation may take.
+# For queue_max_size > 1, BatchProcessor reserves
+# min(max(2, queue_max_size // 100), queue_max_size - 1) slots (0 for
+# queue_max_size <= 1, 1 for queue_max_size == 2, 100 at the default
+# queue_max_size=10000) and never every slot in the queue, so rows emitted just
+# before the terminal row, such as workflow observation summaries across
+# concurrent drains, cannot fill the queue and drop INVOCATION_COMPLETED or
+# INVOCATION_ERROR.
+_RESERVED_TERMINAL_QUEUE_SLOTS = 2
+_TERMINAL_QUEUE_EVENT_TYPES = frozenset(
+    {"INVOCATION_COMPLETED", "INVOCATION_ERROR"}
+)
+
 
 class _RetryableWriteResponseError(Exception):
   """A retryable error reported inside an AppendRows response."""
@@ -2995,7 +3923,13 @@ class BatchProcessor:
         batch_size: Number of rows per batch (defaults to 1).
         flush_interval: Max time to wait before flushing a batch.
         retry_config: Retry configuration.
-        queue_max_size: Max size of the in-memory queue.
+        queue_max_size: Max size of the in-memory queue. For
+          ``queue_max_size > 1``, ``min(max(2, queue_max_size // 100),
+          queue_max_size - 1)`` slots (``0`` for ``queue_max_size <= 1``, ``1``
+          for ``queue_max_size == 2``, ``100`` at the default
+          ``queue_max_size=10000``), and never all of them, are kept for
+          ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR`` rows; other rows see
+          a full queue once only those slots remain.
         shutdown_timeout: Max time to wait for shutdown.
         exactly_once_delivery: Whether to use committed-stream offsets to
           prevent retry duplicates. Replacement streams consume stream-creation
@@ -3029,6 +3963,16 @@ class BatchProcessor:
         maxsize=queue_max_size
     )
     self._queue_max_size = queue_max_size
+    # Never reserve every slot: a queue of size 1 keeps its only slot for
+    # any row, and an unbounded queue (maxsize <= 0) needs no reservation.
+    self._reserved_terminal_slots = (
+        0
+        if queue_max_size <= 1
+        else min(
+            max(_RESERVED_TERMINAL_QUEUE_SLOTS, queue_max_size // 100),
+            queue_max_size - 1,
+        )
+    )
     # Outstanding shutdown sentinels currently in the queue: lets
     # cancellation account for remaining rows in O(1) via qsize() instead
     # of a synchronous full drain.
@@ -3058,6 +4002,8 @@ class BatchProcessor:
         "shutdown_timeout": 0,
         "shutdown_cancelled": 0,
         "offset_conflict": 0,
+        "permission_denied": 0,
+        "not_found": 0,
     }
 
   def _record_drop(self, reason: str, count: int = 1) -> int:
@@ -3098,7 +4044,11 @@ class BatchProcessor:
   def _append_nowait(self, row: dict[str, Any]) -> None:
     """Appends a row to the queue for batching synchronously.
 
-    Must run on the processor's event loop.
+    Must run on the processor's event loop. Rows other than
+    ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR`` are dropped as
+    ``queue_full`` once only the slots reserved for those rows remain. Shutdown
+    sentinels (``None``) are enqueued directly by ``shutdown()`` after setting
+    ``self._shutdown = True`` rather than going through ``_append_nowait``.
     """
     if self._shutdown:
       self._record_drop("shutdown_cancelled", 1)
@@ -3107,15 +4057,27 @@ class BatchProcessor:
       )
       return
 
+    if (
+        self._reserved_terminal_slots
+        and row.get("event_type") not in _TERMINAL_QUEUE_EVENT_TYPES
+        and self._queue.qsize()
+        >= self._queue_max_size - self._reserved_terminal_slots
+    ):
+      self._record_queue_full_drop()
+      return
     try:
       self._queue.put_nowait(row)
     except asyncio.QueueFull:
-      total = self._record_drop("queue_full", 1)
-      logger.warning(
-          "BigQuery log queue full, dropping event. Total events dropped"
-          " (queue full): %s",
-          total,
-      )
+      self._record_queue_full_drop()
+
+  def _record_queue_full_drop(self) -> None:
+    """Counts and logs one row dropped for lack of queue room."""
+    total = self._record_drop("queue_full", 1)
+    logger.warning(
+        "BigQuery log queue full, dropping event. Total events dropped"
+        " (queue full): %s",
+        total,
+    )
 
   async def append(self, row: dict[str, Any]) -> None:
     """Appends a row to the queue for batching.
@@ -3142,17 +4104,27 @@ class BatchProcessor:
     Dropped rows are logged best-effort and never written, so these counters
     are the canonical signal that data was lost. Reasons:
 
-      ``queue_full``: the in-memory queue was full when the event arrived.
+      ``queue_full``: the in-memory queue was full when the event arrived,
+        or, for rows other than ``INVOCATION_COMPLETED`` and
+        ``INVOCATION_ERROR``, only the slots reserved for those rows were
+        free.
       ``arrow_prep_failed``: the batch could not be serialized to Arrow.
       ``retry_exhausted``: the write failed after exhausting all retries.
-      ``non_retryable``: BigQuery returned a non-retryable error (e.g. a
-        schema mismatch).
+      ``non_retryable``: BigQuery rejected the write with a non-retryable
+        error (e.g. a schema mismatch).
       ``unexpected_error``: an unexpected exception aborted the write.
       ``shutdown_timeout``: rows still queued when shutdown timed out.
       ``shutdown_cancelled``: rows still queued when shutdown was
         cancelled from outside (e.g. a host close timeout).
       ``offset_conflict``: a committed stream rejected its offset, or a
         replacement stream could not be created before the next batch.
+      ``permission_denied``: BigQuery Write API rejected the append due to
+        missing write permission (HTTP 403 / gRPC PERMISSION_DENIED).
+      ``not_found``: BigQuery Write API reported that the destination table,
+        dataset, or stream was not found (HTTP 404 / gRPC NOT_FOUND). Only
+        recorded in default stream mode; in ``exactly_once_delivery`` mode,
+        a NOT_FOUND is treated as an offset conflict and counted under
+        ``offset_conflict``.
 
     Returns:
         A copy of the per-reason drop counters.
@@ -3503,6 +4475,30 @@ class BatchProcessor:
                   self._desync_stream()
                   self._record_drop("offset_conflict", len(rows))
                   return
+              if error_code == _GRPC_PERMISSION_DENIED:
+                logger.error(
+                    "BigQuery Write API permission denied: %s. %d row(s)"
+                    " dropped.",
+                    error_message,
+                    len(rows),
+                )
+                if self.exactly_once_delivery and had_ambiguous_send:
+                  self._desync_stream()
+                self._record_drop("permission_denied", len(rows))
+                return
+              # In exactly_once_delivery mode, _GRPC_NOT_FOUND is already
+              # handled above as an offset_conflict, so this not_found
+              # branch only executes in default stream mode, where
+              # committed-stream rotation (_desync_stream) does not apply.
+              if error_code == _GRPC_NOT_FOUND:
+                logger.error(
+                    "BigQuery Write API stream or table not found: %s. %d"
+                    " row(s) dropped.",
+                    error_message,
+                    len(rows),
+                )
+                self._record_drop("not_found", len(rows))
+                return
               if error_code in [
                   _GRPC_DEADLINE_EXCEEDED,
                   _GRPC_INTERNAL,
@@ -3526,6 +4522,9 @@ class BatchProcessor:
                     "%d row(s) dropped due to a non-retryable BigQuery error.",
                     len(rows),
                 )
+              # In-band row rejections leave the stream usable; only RPC-level
+              # InvalidArgument/FailedPrecondition below can mean a finalized,
+              # expired, or in-use stream.
               if self.exactly_once_delivery and had_ambiguous_send:
                 self._desync_stream()
               self._record_drop("non_retryable", len(rows))
@@ -3552,6 +4551,14 @@ class BatchProcessor:
         self._record_drop("unexpected_error", len(rows))
         logger.error("Unexpected BigQuery Write API error: %s", e)
         return
+      except api_exceptions.Forbidden as e:
+        if self.exactly_once_delivery and had_ambiguous_send:
+          self._desync_stream()
+        self._record_drop("permission_denied", len(rows))
+        logger.error(
+            "BigQuery Write API permission denied (Dropping batch): %s", e
+        )
+        return
       except (api_exceptions.NotFound, api_exceptions.OutOfRange) as e:
         if self.exactly_once_delivery:
           self._desync_stream()
@@ -3559,6 +4566,14 @@ class BatchProcessor:
           logger.warning(
               "BigQuery committed stream rejected offset %s: %s",
               offset_for_batch,
+              e,
+          )
+          return
+        if isinstance(e, api_exceptions.NotFound):
+          self._record_drop("not_found", len(rows))
+          logger.error(
+              "BigQuery Write API stream or table not found (Dropping"
+              " batch): %s",
               e,
           )
           return
@@ -3600,6 +4615,49 @@ class BatchProcessor:
         )
         await asyncio.sleep(sleep_time)
         delay *= self.retry_config.multiplier
+      except (
+          api_exceptions.Unauthenticated,
+          api_exceptions.InvalidArgument,
+          api_exceptions.FailedPrecondition,
+      ) as e:
+        # BigQuery rejected the append outright, so no rows were written and a
+        # retry cannot succeed. Forbidden/PermissionDenied is handled above
+        # under permission_denied.
+        error_message = str(e)
+        is_schema_mismatch = "schema mismatch" in error_message.lower()
+        if is_schema_mismatch:
+          logger.error(
+              "BigQuery Schema Mismatch: %s. This usually means the"
+              " table schema does not match the expected schema.",
+              e,
+          )
+        else:
+          logger.error("Non-retryable BigQuery error: %s", e)
+          logger.error(
+              "%d row(s) dropped due to a non-retryable BigQuery error.",
+              len(rows),
+          )
+        # Unauthenticated and "schema mismatch" rejections leave the committed
+        # stream usable, so only an earlier ambiguous attempt desyncs it. Other
+        # RPC-level InvalidArgument and FailedPrecondition errors can mean a
+        # finalized, expired, or in-use stream, so they always desync a
+        # committed stream to rotate onto a fresh one for the next batch.
+        if self.exactly_once_delivery and (
+            had_ambiguous_send
+            or (
+                isinstance(
+                    e,
+                    (
+                        api_exceptions.InvalidArgument,
+                        api_exceptions.FailedPrecondition,
+                    ),
+                )
+                and not is_schema_mismatch
+            )
+        ):
+          self._desync_stream()
+        self._record_drop("non_retryable", len(rows))
+        return
       except Exception as e:
         total_dropped = self._record_drop("unexpected_error", len(rows))
         if request_sent and not definitive_rejection:
@@ -3851,7 +4909,13 @@ class GCSOffloader:
 
 
 class HybridContentParser:
-  """Parses content and offloads large/binary parts to GCS."""
+  """Parses content and offloads large/binary parts to GCS.
+
+  GCS offloading runs when an offloader is configured and ``offload=True``
+  (the default). When ``offload=False``, binary parts stay inline with
+  ``"[BINARY DATA]"`` and oversized text parts stay inline (truncated at
+  ``max_length``) regardless of whether an offloader is present.
+  """
 
   def __init__(
       self,
@@ -3883,19 +4947,25 @@ class HybridContentParser:
     Known formatter/redaction sentinels are already safe and must not be
     reinterpreted as malformed JSON merely because they are bracketed. All
     other raw text goes through the same fail-closed credential sanitizer used
-    for structured attributes. Length truncation remains a separate pass so
-    the sanitized value is also the value sent to GCS.
+    for structured attributes, followed by the plain-text credential boundary.
+    Length truncation remains a separate pass so the sanitized value is also
+    the value sent to GCS.
     """
     if text in (_FORMATTER_FAILED_SENTINEL, "[REDACTED]"):
       return text, False
+    if text in _RESPONSE_TEXT_SENTINELS:
+      return text, True
     sanitized, content_lost = _recursive_smart_truncate(text, -1)
     if sanitized == "[UNPARSEABLE_JSON_BLOB]":
       # Raw content is user-facing prose, not an opaque attributes blob.
       # Reusing the attributes sanitizer made every invalid bracket-led
       # message ("[INFO]", Markdown links, "{not json}") disappear. Restore
-      # only bounded prose with no raw or encoded credential construct;
-      # malformed credential documents remain fail-closed while ordinary
-      # Windows paths and decoder diagnostics stay byte-identical.
+      # only bounded text with no raw or encoded live credential, and, when
+      # the text is JSON-shaped (brace/array-led or with a quoted "key":), no
+      # credential marker at all, since a malformed JSON document can carry a
+      # live value next to an already-redacted one: "{token=[REDACTED]} ..."
+      # stays fail-closed while "[INFO] token=[REDACTED] ..." is restored.
+      # Ordinary Windows paths and decoder diagnostics stay byte-identical.
       stripped = _strip_bom_ws(text)
       if (
           len(stripped) <= _MAX_JSON_INSPECT_CHARS
@@ -3906,9 +4976,11 @@ class HybridContentParser:
           json.loads(stripped)
         except (ValueError, RecursionError, MemoryError):
           return text, False
+      return "[UNPARSEABLE_JSON_BLOB]", True
     if not isinstance(sanitized, str):
       return "[UNSUPPORTED_OBJECT]", True
-    return sanitized, content_lost
+    sanitized, sens_lost = _sanitize_sensitive_text(sanitized, -1)
+    return sanitized, content_lost or sens_lost
 
   def _sanitize_and_truncate(self, text: str) -> tuple[str, bool]:
     sanitized, content_lost = self._sanitize_raw_text(text)
@@ -3982,7 +5054,11 @@ class HybridContentParser:
 
   def _serialize_part_model(self, value: Any) -> tuple[dict[str, Any], bool]:
     """Returns bounded JSON-native fields for a supported structured part."""
-    dumped = value.model_dump(exclude_none=True, mode="json")
+    # warnings=False: a field that no longer fits its type, even in a model
+    # nested in a function response, is otherwise quoted in a UserWarning.
+    # Pydantic serializes nested models itself, without calling their own
+    # model_dump.
+    dumped = value.model_dump(exclude_none=True, mode="json", warnings=False)
     sanitized, content_lost = _recursive_smart_truncate(dumped, self.max_length)
     if not isinstance(sanitized, dict):
       return {"value": "[UNSUPPORTED_OBJECT]"}, True
@@ -4064,6 +5140,7 @@ class HybridContentParser:
       span_id: Optional[str] = None,
       parse_uid: str = "",
       content_ordinal: int = 0,
+      offload: bool = True,
   ) -> tuple[str, list[dict[str, Any]], bool]:
     """Parses a Content or Part object into summary text and content parts.
 
@@ -4076,6 +5153,11 @@ class HybridContentParser:
     message index within a multi-content request) disambiguate GCS object
     names: the part index alone restarts per Content, so two messages in
     one request would otherwise collide at the same part ordinal.
+
+    ``offload`` controls GCS offloading. When ``False``, ``self.offloader``
+    is ignored: binary parts stay inline with ``"[BINARY DATA]"`` and
+    oversized text parts stay inline (truncated at ``max_length``) in
+    ``part_data["text"]`` and ``summary_text``.
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
@@ -4122,7 +5204,8 @@ class HybridContentParser:
       elif part.inline_data:
         inline_data = part.inline_data
         mime_type = inline_data.mime_type or "application/octet-stream"
-        if self.offloader:
+        part_data["mime_type"] = mime_type
+        if self.offloader and offload:
           ext = mimetypes.guess_extension(mime_type) or ".bin"
           path = (
               f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
@@ -4143,7 +5226,6 @@ class HybridContentParser:
                 ),
             }
             part_data["object_ref"] = object_ref
-            part_data["mime_type"] = mime_type
             part_data["text"] = "[MEDIA OFFLOADED]"
           except Exception as e:
             logger.warning("Failed to offload content to GCS: %s", e)
@@ -4167,7 +5249,11 @@ class HybridContentParser:
             self.max_length != -1 and char_len > self.max_length
         )
 
-        if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
+        if (
+            self.offloader
+            and offload
+            and (exceeds_inline_byte_limit or exceeds_char_limit)
+        ):
           # Text is too big, treat as file
           path = (
               f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
@@ -4198,7 +5284,7 @@ class HybridContentParser:
             part_data["text"] = clean_text
             summary_text.append(clean_text)
         else:
-          # Text is small or no offloader, keep inline
+          # Text is small or offloading is disabled, keep inline
           clean_text, truncated = self._truncate(safe_text)
           if truncated:
             is_truncated = True
@@ -4284,6 +5370,7 @@ class HybridContentParser:
       *,
       trace_id: Optional[str] = None,
       span_id: Optional[str] = None,
+      offload: bool = True,
   ) -> tuple[Any, list[dict[str, Any]], bool]:
     """Parses content into JSON payload and content parts, potentially offloading to GCS.
 
@@ -4292,6 +5379,10 @@ class HybridContentParser:
     events, so relying on the mutable instance fields lets one event's await
     resume with another event's identity and overwrite its objects. The instance
     fields remain only as a backward-compatible default.
+
+    ``offload`` controls whether eligible binary and oversized text parts are
+    uploaded via ``self.offloader``. When ``False``, parts stay inline
+    (``"[BINARY DATA]"`` for binary parts and truncated text for text parts).
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
@@ -4321,6 +5412,7 @@ class HybridContentParser:
             span_id=span_id,
             parse_uid=parse_uid,
             content_ordinal=content_idx,
+            offload=offload,
         )
         if trunc:
           is_truncated = True
@@ -4345,6 +5437,7 @@ class HybridContentParser:
               span_id=span_id,
               parse_uid=parse_uid,
               content_ordinal=len(contents),
+              offload=offload,
           )
           if trunc:
             is_truncated = True
@@ -4357,13 +5450,41 @@ class HybridContentParser:
           trace_id=trace_id,
           span_id=span_id,
           parse_uid=parse_uid,
+          offload=offload,
       )
       return {"text_summary": summary}, parts, trunc
 
     elif isinstance(content, (dict, list)):
-      json_payload, is_truncated = _recursive_smart_truncate(
-          content, self.max_length
+      raw_text_summary = (
+          content.get("text_summary")
+          if type(content) is dict  # pylint: disable=unidiomatic-typecheck
+          and type(content.get("text_summary")) is str  # pylint: disable=unidiomatic-typecheck
+          else None
       )
+      if raw_text_summary is not None:
+        if raw_text_summary in _RESPONSE_TEXT_SENTINELS:
+          summary_val = raw_text_summary
+          summary_trunc = raw_text_summary in (
+              _FORMATTING_FAILED_SENTINEL,
+              "[CONTENT_PARSE_FAILED]",
+              "[UNPARSEABLE_JSON_BLOB]",
+              "[UNSUPPORTED_OBJECT]",
+              "[REDACTED_SENSITIVE_TEXT]",
+          )
+        else:
+          summary_val, summary_trunc = process_text(raw_text_summary)
+        staged_content = dict(content)
+        staged_content["text_summary"] = ""
+        json_payload, dict_trunc = _recursive_smart_truncate(
+            staged_content, self.max_length
+        )
+        if isinstance(json_payload, dict) and "text_summary" in json_payload:
+          json_payload["text_summary"] = summary_val
+        is_truncated = summary_trunc or dict_trunc
+      else:
+        json_payload, is_truncated = _recursive_smart_truncate(
+            content, self.max_length
+        )
     elif isinstance(content, str):
       json_payload, is_truncated = process_text(content)
     elif content is None:
@@ -4631,39 +5752,6 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
   ]
 
 
-# Payload columns eligible for physical projection.  Every other
-# schema column is an identity / correlation / view-critical column and is
-# *protected* — it cannot be projected out, because the BQAA execution tree
-# and the per-event views depend on it.
-_PROJECTABLE_PAYLOAD_COLUMNS = frozenset(
-    {"content", "content_parts", "attributes", "latency_ms"}
-)
-
-
-def _validate_payload_column_denylist(
-    denylist: Optional[list[str]],
-) -> frozenset[str]:
-  """Validates ``payload_column_denylist`` and returns the denied set.
-
-  Only the projectable payload columns may be denied.  Anything else —
-  an identity/correlation column or an unknown name — is a hard error,
-  so a typo or an attempt to drop a join key fails loudly at construction
-  rather than producing malformed rows or broken views.
-  """
-  denied = frozenset(denylist or ())
-  invalid = denied - _PROJECTABLE_PAYLOAD_COLUMNS
-  if invalid:
-    raise ValueError(
-        "payload_column_denylist may only contain projectable payload"
-        f" columns {sorted(_PROJECTABLE_PAYLOAD_COLUMNS)}; got"
-        f" {sorted(invalid)}. Identity/correlation columns (timestamp,"
-        " event_type, session_id, invocation_id, trace_id, span_id,"
-        " parent_span_id, is_truncated, ...) are protected and cannot be"
-        " projected out."
-    )
-  return denied
-
-
 def _project_schema(
     schema: list[bigquery.SchemaField], denied: frozenset[str]
 ) -> list[bigquery.SchemaField]:
@@ -4711,6 +5799,12 @@ _VIEW_COMMON_COLUMNS = (
     "status",
     "error_message",
     "is_truncated",
+)
+
+_NODE_IDENTITY_VIEW_COLUMNS = (
+    "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
+    "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
+    "JSON_VALUE(attributes, '$.adk.node.parent_run_id') AS node_parent_run_id",
 )
 
 # Per-event-type column extractions.  Each value is a list of
@@ -4920,22 +6014,82 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_VALUE(attributes, '$.adk.function_call_id') AS function_call_id",
     ],
     "NODE_OUTPUT": [
-        "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
-        "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
-        (
-            "JSON_VALUE(attributes, '$.adk.node.parent_run_id')"
-            " AS node_parent_run_id"
-        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
         "content AS output",
     ],
     "NODE_ERROR": [
-        "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
-        "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
-        (
-            "JSON_VALUE(attributes, '$.adk.node.parent_run_id')"
-            " AS node_parent_run_id"
-        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
         "JSON_VALUE(content, '$.error_code') AS error_code",
+    ],
+    "WORKFLOW_NODE_FIRST_OBSERVED": [
+        "JSON_VALUE(attributes, '$.adk.app_name') AS app_name",
+        (
+            "JSON_VALUE(attributes, '$.adk.workflow_segment_id')"
+            " AS workflow_segment_id"
+        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
+        "JSON_VALUE(attributes, '$.adk.source_event_id') AS source_event_id",
+        (
+            "SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.source_event_timestamp') AS FLOAT64) * 1000000"
+            " AS INT64)) AS source_event_timestamp"
+        ),
+        "JSON_VALUE(attributes, '$.adk.boundary_basis') AS boundary_basis",
+    ],
+    "WORKFLOW_NODE_OBSERVATION_SUMMARY": [
+        "JSON_VALUE(attributes, '$.adk.app_name') AS app_name",
+        (
+            "JSON_VALUE(attributes, '$.adk.workflow_segment_id')"
+            " AS workflow_segment_id"
+        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
+        (
+            "JSON_VALUE(attributes, '$.adk.first_source_event_id')"
+            " AS first_source_event_id"
+        ),
+        (
+            "JSON_VALUE(attributes, '$.adk.last_source_event_id')"
+            " AS last_source_event_id"
+        ),
+        (
+            "SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.first_source_event_timestamp') AS FLOAT64) * 1000000"
+            " AS INT64)) AS first_source_event_timestamp"
+        ),
+        (
+            "SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.last_source_event_timestamp') AS FLOAT64) * 1000000"
+            " AS INT64)) AS last_source_event_timestamp"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes, '$.adk.source_event_span_ms')"
+            " AS FLOAT64) AS source_event_span_ms"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes, '$.adk.observed_event_count')"
+            " AS INT64) AS observed_event_count"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.node_interrupt_observed') AS BOOL)"
+            " AS node_interrupt_observed"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.descendant_interrupt_observed') AS BOOL)"
+            " AS descendant_interrupt_observed"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.node_error_observed_count') AS INT64)"
+            " AS node_error_observed_count"
+        ),
+        "JSON_VALUE(attributes, '$.adk.drain_callback') AS drain_callback",
+        "JSON_VALUE(attributes, '$.adk.boundary_basis') AS boundary_basis",
+        (
+            "SAFE_CAST(JSON_VALUE(attributes, '$.adk.truncated_node_count')"
+            " AS INT64) AS truncated_node_count"
+        ),
     ],
 }
 
@@ -4948,6 +6102,128 @@ FROM
 WHERE
   event_type = '{event_type}'
 """
+
+# The eval views rebuild event rows into the
+# ``google.cloud.aiplatform.v1beta1.AgentData`` JSON in a ``trace`` column
+# for agent evaluation:
+# - USER_MESSAGE_RECEIVED becomes user text; TOOL_STARTING and HITL_*_REQUEST
+#   a function_call; AGENT_TRANSFER a ``transfer_to_agent`` function_call; and
+#   TOOL_COMPLETED and HITL_*_REQUEST_COMPLETED a function_response whose
+#   non-object result is wrapped as ``{"result": ...}``.  TOOL_ERROR, which is
+#   logged instead of TOOL_COMPLETED when a tool raises, becomes a
+#   function_response of ``{"error": ...}`` holding the error message (or
+#   ``Tool execution failed`` when it has none), so every tool call that
+#   completes or raises has a response.  ``after_tool_callback`` also logs
+#   TOOL_ERROR, for a result that reports a failure: that row records the
+#   error message it synthesized and leaves out the result the model saw, so
+#   the response holds that message, not the result.  A TOOL_STARTING,
+#   TOOL_COMPLETED or TOOL_ERROR row that names no tool, as when a custom
+#   ``content_formatter`` fails, adds no event, and a HITL row that names none
+#   gets the name ``""``.
+#   The transfer and ``adk_request_*`` HITL tools' own
+#   TOOL_STARTING, TOOL_COMPLETED and TOOL_ERROR rows are skipped:
+#   AGENT_TRANSFER, logged after them, carries the handoff, and
+#   HITL_*_REQUEST and HITL_*_REQUEST_COMPLETED carry the HITL request and
+#   the completion that resumes it.
+# - Model text comes from AGENT_RESPONSE (which strips thought parts).
+#   Terminal LLM_RESPONSE rows carry a ``finish_reason`` or ``cache_type``
+#   attribute and streamed partial chunks carry neither, so token totals
+#   prefer terminal rows, which keeps streamed usage from being counted
+#   twice.
+# - ``_format_content`` renders text parts as ``text: '...'`` joined by
+#   `` | ``; ``ResponseEvents`` strips that ``_format_content`` wrapper back
+#   to plain text (kept in sync with ``_format_content`` by
+#   ``TestEvalViews.test_eval_response_text_patterns_unwrap_format_content``).
+#   Any other ``_format_content`` output (``None``, or one with a non-text
+#   part such as ``call: ...`` or ``other``) gives a NULL ``response_text``;
+#   a response in another shape, such as the JSON args of a
+#   ``final_response_tool_names`` tool, is kept as is.
+# - For AGENT_RESPONSE, ``formatted_response`` prefers a non-blank string
+#   ``$.text_summary`` (such as one emitted by a custom ``content_formatter``)
+#   over ``$.response`` (a non-empty string, or an object or array serialized
+#   with ``TO_JSON_STRING``).
+# - An agent's ``instruction`` comes from its latest AGENT_STARTING event.
+#   Where none logged one (a callable ``InstructionProvider`` is not logged as
+#   text), it falls back to ``logged_system_prompt`` from
+#   ``SessionAgentPrompts``, the earliest non-empty ``system_prompt`` logged
+#   for that agent in the session's LLM_REQUEST events.
+# - ``trace`` holds only ``agents`` and ``turns``, and every nested object uses
+#   proto field names only, because unknown fields are rejected.
+# - No output column is named ``status``, avoiding collisions with
+#   downstream evaluation output schemas.
+# - Tool metrics (``tool_call_count``, ``tool_error_count``,
+#   ``distinct_tools_used`` and the consecutive-call columns) skip the
+#   ``transfer_to_agent`` tool, whose handoff the trace carries as the
+#   AGENT_TRANSFER function_call, and the ``adk_request_credential``,
+#   ``adk_request_confirmation`` and ``adk_request_input`` tools, which the
+#   framework calls to pause for a credential, a confirmation or the user's
+#   input.  A TOOL_STARTING row that names no tool is not a tool call, though
+#   a TOOL_ERROR row that names none still counts as a tool error.  Two calls
+#   are identical when their tool name and args match; ``tool_call_island``
+#   numbers each run of consecutive identical calls, and ``has_tool_loop``
+#   means a run of 3 or more.  A HITL request ends a run, even though the turn
+#   that resumes after it keeps its invocation_id.
+# - ``eval_ready`` needs user text, a finished turn and at least one trace
+#   event: user input with no text (image-only or offloaded to GCS) leaves
+#   the judge without a prompt. In ``eval_session``, a paused turn (one that
+#   logged ``TOOL_PAUSED`` or a ``HITL_*_REQUEST`` event and
+#   ``INVOCATION_COMPLETED`` without ``AGENT_RESPONSE`` text) and the
+#   ``function_response`` turn that resumes it in the next invocation also
+#   satisfy ``session_turn_eval_ready``; a turn that merely ended without a
+#   reply is not paused.
+# - Neither ``eval_ready`` nor ``session_turn_eval_ready`` holds for a turn
+#   with ``has_truncated_content``: a row that puts an event in the trace and
+#   is flagged ``is_truncated`` leaves the trace without part of its payload.
+#   No other row counts: an ``LLM_REQUEST`` row repeats the conversation so
+#   far, so one oversized message would hold back every later turn of its
+#   session.  ``has_truncated_content`` tells a caller that truncation keeps a
+#   turn from being ready, but not whether it is the only reason: no column of
+#   the views holds the other conditions of ``eval_ready``, such as
+#   ``has_user_message`` and ``is_complete``, so a truncated turn may also be
+#   unfinished or lack user text.
+#   ``is_truncated`` is a protected column, so the builders reject it in
+#   ``denied_columns``: read as FALSE, it would mark truncated turns eval
+#   ready.
+# - Every column is aggregated per session or turn, so a filter on the views'
+#   output timestamps cannot prune the events table's ``timestamp``
+#   partitions.  The query builders, ``build_eval_session_query_sql`` and
+#   ``build_eval_turn_query_sql``, take a ``raw_where_clause`` for that, a
+#   lookback on ``timestamp`` that keeps every event of the sessions to read,
+#   and a ``where_clause`` that then picks output rows, such as those of a
+#   time window, without dropping the earlier events that they need.
+# - ``eval_view_mode`` picks the events that must be logged for the views to be
+#   created (``_EVAL_VIEW_EVENTS_BY_MODE``): all of
+#   ``_EVAL_VIEW_REQUIRED_EVENTS`` for ``"full"``, but only
+#   ``_EVAL_VIEW_CORE_EVENTS`` for ``"conversation_only"``, where the same SQL
+#   yields traces of the user and model text.
+_EVAL_VIEW_REQUIRED_EVENTS = frozenset({
+    "USER_MESSAGE_RECEIVED",
+    "AGENT_STARTING",
+    "LLM_REQUEST",
+    "TOOL_STARTING",
+    "TOOL_COMPLETED",
+    "TOOL_ERROR",
+    "TOOL_PAUSED",
+    "AGENT_TRANSFER",
+    "HITL_CREDENTIAL_REQUEST",
+    "HITL_CONFIRMATION_REQUEST",
+    "HITL_INPUT_REQUEST",
+    "HITL_CREDENTIAL_REQUEST_COMPLETED",
+    "HITL_CONFIRMATION_REQUEST_COMPLETED",
+    "HITL_INPUT_REQUEST_COMPLETED",
+    "AGENT_RESPONSE",
+    "INVOCATION_COMPLETED",
+})
+# The events a conversation's user and model text come from.
+_EVAL_VIEW_CORE_EVENTS = frozenset({
+    "USER_MESSAGE_RECEIVED",
+    "AGENT_RESPONSE",
+    "INVOCATION_COMPLETED",
+})
+_EVAL_VIEW_EVENTS_BY_MODE = {
+    "full": _EVAL_VIEW_REQUIRED_EVENTS,
+    "conversation_only": _EVAL_VIEW_CORE_EVENTS,
+}
 
 
 # ==============================================================================
@@ -5077,6 +6353,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     - Or invoke the explicit classmethod:
         ``await
         BigQueryAgentAnalyticsPlugin.close_shared_background_transports()``
+
+  ### Plugin order
+  Register this plugin before plugins that answer or re-raise tool callbacks,
+  such as ``ReflectAndRetryToolPlugin``. ``PluginManager`` stops at the first
+  plugin that returns a value from a callback or raises, so a plugin ahead of
+  this one can keep a call's outcome from reaching it. With
+  ``ReflectAndRetryToolPlugin`` ahead, a call gets no outcome row when:
+
+  - the retry plugin re-raises once its retries run out
+    (``throw_exception_if_retry_exceeded`` defaults to True);
+  - the model calls a tool name that does not exist: the retry plugin answers
+    the lookup error, and ADK skips the after-tool callbacks for such a call;
+  - a subclass that overrides ``extract_error_from_result`` answers
+    ``after_tool_callback``.
+
+  Registered first, this plugin records each raised error once, as
+  ``TOOL_ERROR``, whatever later plugins do with it. A failure that only a
+  later plugin detects in a result, such as one an
+  ``extract_error_from_result`` override flags, is recorded as
+  ``TOOL_COMPLETED`` unless ``BigQueryLoggerConfig.tool_result_classifier``
+  flags the same result.
   """
 
   def __init__(
@@ -5124,9 +6421,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       else:
         logger.warning(f"Unknown configuration parameter: {key}")
 
-    if not self.config.view_prefix:
-      raise ValueError("view_prefix must be a non-empty string.")
-
     # Pre-parse the custom_metadata allowlist into exact keys + prefixes.
     self._custom_metadata_exact, self._custom_metadata_prefixes = (
         _parse_custom_metadata_allowlist(self.config.custom_metadata_allowlist)
@@ -5148,8 +6442,23 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           " metadata would be dropped. Remove 'attributes' from"
           " payload_column_denylist or clear custom_metadata_allowlist."
       )
+    # The eval views rebuild AgentData traces from the content column and
+    # require the core turn lifecycle events.
+    if self.config.create_eval_views:
+      self._validate_eval_view_config(from_init=True)
 
     self.table_id = table_id or self.config.table_id
+    for name, value in (
+        ("project_id", self.project_id),
+        ("dataset_id", self.dataset_id),
+        ("table_id", self.table_id),
+        ("view_prefix", self.config.view_prefix),
+    ):
+      if not value or _EVAL_TABLE_ID_UNQUOTABLE_RE.search(value):
+        raise ValueError(
+            f"{name} must be a non-empty string without a backtick, backslash,"
+            f" control or line-break character; got {value!r}."
+        )
     self.location = location
 
     self._surface = _get_telemetry_surface()
@@ -5203,8 +6512,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # client and the executor it is not invalidated by shutdown, fork, or
     # pickling, and the check is not repeated once it has passed.
     self._schema_ready = False
+    self._offload_disabled_warned = False
+    # Workflow observation segments of the runner calls in flight, keyed by
+    # invocation ID: before_run_callback opens a call's segment, and
+    # after_run_callback or on_run_error_callback closes it. A nested runner
+    # that shares this plugin, such as an AgentTool's, has its own invocation
+    # ID, so it cannot replace or close its caller's segment. Calls cancelled
+    # from outside never close theirs, so the map holds at most
+    # _MAX_IN_FLIGHT_WORKFLOW_SEGMENTS segments, and shutdown() clears it.
+    self._workflow_segments: dict[str, _WorkflowObservationSegment] = {}
+    self._workflow_segments_guard = threading.Lock()
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
+
+  def _content_parts_persisted(self) -> bool:
+    """Returns True when ``content_parts`` is persisted on the row."""
+    return bool(
+        self.config.log_multi_modal_content
+        and "content_parts" not in self._denied_columns
+    )
 
   def _get_bg_loop_key(self) -> tuple[str, Any]:
     """Returns the cache key for shared background-loop states."""
@@ -5387,7 +6713,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       return _format_content(content, max_len=self.config.max_content_length)
     except Exception as e:
       logger.warning("Content formatter failed: %s", e)
-      return "[FORMATTING FAILED]", True
+      return _FORMATTING_FAILED_SENTINEL, True
 
   async def _close_write_transport(self, write_client: Any) -> None:
     """Best-effort bounded close for a BigQuery write-client transport."""
@@ -5862,8 +7188,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     ``formatter_failed`` and ``content_parse_failed`` mean the row WAS
     written with its content replaced by a sentinel; ``setup_unavailable``,
     ``shutdown_race``, ``shutdown_timeout``, ``shutdown_cancelled``, and
-    ``stale_loop`` mean the row was never written. Counters persist
-    across shutdown and loop cleanup.
+    ``stale_loop`` mean the row was never written.
+    ``workflow_observation_capacity`` counts workflow observation summaries
+    never written because a runner call observed more distinct node paths than
+    ``BigQueryLoggerConfig.max_observation_summaries_per_segment`` (exact up to
+    ``max(max_observation_summaries_per_segment,
+    _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)`` paths per segment and a lower bound
+    once overflow path deduplication saturates). Counters persist across
+    shutdown and loop cleanup.
 
     Returns:
         Per-reason counts: plugin-level incidents plus every live loop
@@ -5966,19 +7298,35 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
-        if "content_parts" in self._denied_columns:
+        if not self._content_parts_persisted():
           # GCS offload stores its object reference in the
-          # ``content_parts`` column. With ``content_parts`` projected out,
-          # an upload would be orphaned -- payload leaks to GCS and incurs
-          # cost with no retained reference. Disable offload and keep
-          # content inline (truncated) instead.
-          logger.warning(
-              "GCS offload disabled: payload_column_denylist drops"
-              " 'content_parts', which holds the offloaded object reference;"
-              " large/binary content is kept inline (truncated) instead of"
-              " being uploaded to %s.",
-              self.config.gcs_bucket_name,
-          )
+          # ``content_parts`` column. When ``content_parts`` is projected
+          # out by ``payload_column_denylist`` or cleared to ``[]`` because
+          # ``log_multi_modal_content`` is False, an upload would be
+          # orphaned -- payload leaks to GCS, incurs cost, and large text is
+          # omitted from ``content`` with no retained reference. Disable
+          # offload so large text is kept inline (truncated) in ``content``
+          # and binary parts are not stored.
+          if not self._offload_disabled_warned:
+            if "content_parts" in self._denied_columns:
+              reason = (
+                  "payload_column_denylist drops 'content_parts', which"
+                  " holds the offloaded object reference"
+              )
+            else:
+              reason = (
+                  "log_multi_modal_content is False, so 'content_parts'"
+                  " (which holds the offloaded object reference) is not"
+                  " persisted"
+              )
+            logger.warning(
+                "GCS offload disabled: %s; large text is kept inline"
+                " (truncated) in 'content' and binary parts are not"
+                " stored instead of being uploaded to %s.",
+                reason,
+                self.config.gcs_bucket_name,
+            )
+            self._offload_disabled_warned = True
         else:
           self.offloader = GCSOffloader(
               self.project_id,
@@ -6073,9 +7421,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       existing_table = client.get_table(self.full_table_id)
       if self.config.auto_schema_upgrade:
         self._maybe_upgrade_schema(existing_table)
+      views_ok = True
       if self.config.create_views:
-        return self._create_analytics_views()
-      return True
+        views_ok = self._create_analytics_views() and views_ok
+      if self.config.create_eval_views:
+        views_ok = self._create_eval_views() and views_ok
+      return views_ok
     except cloud_exceptions.NotFound:
       logger.info("Table %s not found, creating table.", self.full_table_id)
       tbl = bigquery.Table(self.full_table_id, schema=self._schema)
@@ -6107,9 +7458,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             exc_info=True,
         )
         raise
+      views_ok = True
       if self.config.create_views:
-        return self._create_analytics_views()
-      return True
+        views_ok = self._create_analytics_views() and views_ok
+      if self.config.create_eval_views:
+        views_ok = self._create_eval_views() and views_ok
+      return views_ok
     except Exception as e:
       # Fail setup: swallowing control-plane errors here let
       # the plugin mark itself started against a missing/unready table.
@@ -6354,9 +7708,142 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           "Plugin initialization failed; cannot create analytics views."
       ) from self._startup_error
     loop = asyncio.get_running_loop()
-    self._schema_ready = await loop.run_in_executor(
+    created = await loop.run_in_executor(
         self._executor, self._create_analytics_views
     )
+    if not created:
+      self._schema_ready = False
+
+  def _validate_eval_view_config(self, *, from_init: bool = False) -> None:
+    """Validates the logger config for evaluation view creation."""
+    prefix = (
+        "BigQueryLoggerConfig.create_eval_views=True cannot be used"
+        if from_init
+        else "Cannot create eval views"
+    )
+    if "content" in self._denied_columns:
+      raise ValueError(
+          f"{prefix} when 'content' is in payload_column_denylist, because"
+          " AgentData trace reconstruction requires the 'content' column."
+      )
+    required_events = (
+        _EVAL_VIEW_EVENTS_BY_MODE.get(self.config.eval_view_mode)
+        if isinstance(self.config.eval_view_mode, str)
+        else None
+    )
+    if required_events is None:
+      raise ValueError(
+          f"{prefix} with unknown"
+          f" eval_view_mode={self.config.eval_view_mode!r}; expected one of"
+          f" {sorted(_EVAL_VIEW_EVENTS_BY_MODE)}."
+      )
+    denied_events = set(self.config.event_denylist or ()) & required_events
+    if denied_events:
+      raise ValueError(
+          f"{prefix} when required events are in event_denylist:"
+          f" {sorted(denied_events)}."
+      )
+    if self.config.event_allowlist:
+      missing_events = required_events - set(self.config.event_allowlist)
+      if missing_events:
+        hint = (
+            " Set eval_view_mode='conversation_only' if tool, model-request,"
+            " agent-handoff, or HITL events are intentionally omitted."
+            if self.config.eval_view_mode == "full"
+            else ""
+        )
+        raise ValueError(
+            f"{prefix} unless event_allowlist includes all required events;"
+            f" missing: {sorted(missing_events)}.{hint}"
+        )
+
+  def _create_eval_views(self) -> bool:
+    """Creates the agent evaluation session and turn views (idempotent).
+
+    Creates ``{view_prefix}_eval_session`` and ``{view_prefix}_eval_turn``
+    with ``CREATE OR REPLACE VIEW``, so it is safe to call repeatedly.
+    Errors are logged but never raised.
+
+    Returns:
+      True if both views were created, False if either of them failed.
+    """
+    client = self._require_client()
+    full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
+    created_all = True
+    for view_suffix, build_view_sql in (
+        ("eval_session", _build_eval_session_view_sql),
+        ("eval_turn", _build_eval_turn_view_sql),
+    ):
+      view_name = self.config.view_prefix + "_" + view_suffix
+      try:
+        sql = build_view_sql(
+            full_table_id,
+            view_prefix=self.config.view_prefix,
+            denied_columns=self._denied_columns,
+        )
+        client.query(sql).result()
+      except cloud_exceptions.Conflict:
+        logger.debug(
+            "View %s was updated concurrently by another process.",
+            view_name,
+        )
+      except Exception as e:
+        created_all = False
+        logger.error(
+            "Failed to create view %s: %s",
+            view_name,
+            e,
+            exc_info=True,
+        )
+    return created_all
+
+  async def create_eval_views(self) -> None:
+    """Public async helper to (re-)create the agent evaluation views.
+
+    Creates ``{view_prefix}_eval_session`` and ``{view_prefix}_eval_turn``
+    even when ``config.create_eval_views`` is False, for example to refresh
+    them on demand.  Ensures the plugin is initialized before attempting
+    view creation.
+
+    The views rebuild ``AgentData`` traces from ``content``.  When
+    ``config.eval_view_mode`` is ``"full"`` (default), they require
+    ``USER_MESSAGE_RECEIVED``, ``AGENT_STARTING``, ``LLM_REQUEST``,
+    ``TOOL_STARTING``, ``TOOL_COMPLETED``, ``TOOL_ERROR``, ``TOOL_PAUSED``,
+    ``AGENT_TRANSFER``, ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``,
+    ``HITL_*_REQUEST``, and ``HITL_*_REQUEST_COMPLETED`` events; when
+    ``config.eval_view_mode`` is ``"conversation_only"``, they require only
+    the three core conversation events (``USER_MESSAGE_RECEIVED``,
+    ``AGENT_RESPONSE``, and ``INVOCATION_COMPLETED``).  Any custom
+    ``content_formatter`` must preserve ``$.text_summary``, ``$.response``,
+    ``$.system_prompt``, ``$.tool``, ``$.args``, and ``$.result``.
+
+    The views aggregate per session or turn, so a filter on their
+    ``session_start_timestamp`` or ``turn_start_timestamp`` column does not
+    prune the events table's ``timestamp`` partitions: every query over
+    them scans the whole table.  For large tables, materialize a
+    date-filtered slice of a view into a table once and evaluate that table.
+
+    Raises:
+      ValueError: ``'content'`` is in ``payload_column_denylist``,
+        ``eval_view_mode`` is unknown, or ``event_denylist`` /
+        ``event_allowlist`` filters out a required event.
+      RuntimeError: The plugin failed to initialize.
+    """
+    self._validate_eval_view_config()
+    await self._ensure_started()
+    if not self._started:
+      raise RuntimeError(
+          "Plugin initialization failed; cannot create eval views."
+      ) from self._startup_error
+    loop = asyncio.get_running_loop()
+    created = await loop.run_in_executor(
+        self._executor, self._create_eval_views
+    )
+    # Success leaves _schema_ready alone, because the memo also covers the
+    # analytics views that this call does not refresh. Failure clears it so
+    # the next setup pass retries the views.
+    if not created:
+      self._schema_ready = False
 
   @staticmethod
   def _schedule_remote_drain(
@@ -6736,6 +8223,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # _is_shutting_down=True with no future and fall into overlapping
       # teardown.
       with self._setup_guard:
+        # Shutdown ends every observation window, including those of runner
+        # calls that were cancelled and never closed their segment.
+        with self._workflow_segments_guard:
+          self._workflow_segments.clear()
         self._is_shutting_down = False
         self._started = False
         completion, self._shutdown_future = self._shutdown_future, None
@@ -6765,10 +8256,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_generation"] = 0
     state["_loop_states_guard"] = None
     state["_drop_counts_guard"] = None
+    state["_workflow_segments_guard"] = None
     state["client"] = None
     state["_loop_state_by_loop"] = {}
     state["_loop_state_futures"] = {}
     state["_builder_waiters"] = {}
+    state["_workflow_segments"] = {}
     state["_write_stream_name"] = None
     state["_executor"] = None
     state["offloader"] = None
@@ -6790,6 +8283,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
     state.setdefault("_schema_ready", False)
+    state.setdefault("_offload_disabled_warned", False)
     state.setdefault("_loop_state_futures", {})
     state.setdefault("_builder_waiters", {})
     # Migrate the legacy _visual_builder flag onto _surface. Handle an
@@ -6810,8 +8304,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._generation = 0
     self._loop_states_guard = threading.RLock()
     self._drop_counts_guard = threading.Lock()
+    self._workflow_segments_guard = threading.Lock()
     self._loop_state_futures = {}
     self._builder_waiters = {}
+    # Runner calls in flight are not pickled, and pickles from older code have
+    # no segment map.
+    self._workflow_segments = {}
+    if getattr(self, "config", None) is not None and isinstance(
+        getattr(self.config, "__dict__", None), dict
+    ):
+      self.config.__dict__.setdefault(
+          "max_observation_summaries_per_segment",
+          _DEFAULT_MAX_OBSERVATION_SUMMARIES_PER_SEGMENT,
+      )
     # Pickles from older code bypass __init__, so re-validate the restored
     # configuration: e.g. a legacy retry_config with max_retries=NaN would
     # otherwise skip the write loop silently.
@@ -6864,10 +8369,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._generation = 0
     self._loop_states_guard = threading.RLock()
     self._drop_counts_guard = threading.Lock()
+    self._workflow_segments_guard = threading.Lock()
     self.client = None
     self._loop_state_by_loop = {}
     self._loop_state_futures = {}
     self._builder_waiters = {}
+    self._workflow_segments = {}
     self._write_stream_name = None
     self._executor = None
     self.offloader = None
@@ -6879,11 +8386,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._is_shutting_down = False
     self._init_pid = os.getpid()
 
-  def _count_local_drop(self, reason: str) -> None:
-    """Counts a row lost before/outside any BatchProcessor."""
+  def _count_local_drop(self, reason: str, count: int = 1) -> None:
+    """Counts rows lost before/outside any BatchProcessor."""
     with self._drop_counts_guard:
       self._local_drop_counts[reason] = (
-          self._local_drop_counts.get(reason, 0) + 1
+          self._local_drop_counts.get(reason, 0) + count
       )
 
   async def close(
@@ -7206,9 +8713,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     Resolution rules:
 
-      * **trace_id** — ambient OTel trace wins (the plugin stack already
-        shares the ambient trace when initialised from an ambient span,
-        so in practice they agree).
+      * **trace_id** — ambient OTel trace wins on top-level invocations;
+        nested invocations retain their inherited parent trace_id.
       * **span_id / parent_span_id** — the plugin's internal span stack
         (``TraceManager``) is the preferred source.  Ambient OTel spans
         are only used as a fallback when the plugin stack has no span.
@@ -7223,9 +8729,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       1. Explicit ``EventData`` overrides.
       2. Plugin's internal span stack (``TraceManager``) for
          ``span_id`` / ``parent_span_id``.
-      3. Ambient OTel span — always used for ``trace_id``; used for
-         ``span_id`` / ``parent_span_id`` only when the plugin stack
-         has no span.
+      3. Ambient OTel span — used for ``trace_id`` on top-level
+         invocations (nested invocations retain their inherited parent
+         ``trace_id``); used for ``span_id`` / ``parent_span_id`` only
+         when the plugin stack has no span.
       4. ``invocation_id`` fallback for trace_id.
 
     Returns:
@@ -7233,23 +8740,48 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     # --- Plugin stack: span_id / parent_span_id baseline ---
     trace_id = TraceManager.get_trace_id(callback_context)
-    plugin_span_id, plugin_parent_span_id = (
-        TraceManager.get_current_span_and_parent()
+    records = _span_records_ctx.get()
+    parent_record = records[-1] if records else None
+    # The parent's stack is foreign even when no invocation is active, as when
+    # the parent's ensure_invocation_span never ran.
+    is_nested_foreign = parent_record is not None and _is_nested_plugin_run(
+        callback_context, parent_record
     )
-    span_id = plugin_span_id
-    parent_span_id = plugin_parent_span_id
+    foreign_active_stack = is_nested_foreign or _is_foreign_invocation_stack(
+        callback_context.invocation_id
+    )
+    span_id: str | None
+    parent_span_id: str | None
+    if foreign_active_stack:
+      span_id = None
+      if is_nested_foreign and parent_record is not None:
+        parent_span_id = parent_record.span_id
+      else:
+        parent_span_id = TraceManager._get_enclosing_parent_span_id(
+            callback_context
+        )
+    else:
+      plugin_span_id, plugin_parent_span_id = (
+          TraceManager.get_current_span_and_parent()
+      )
+      span_id = plugin_span_id
+      parent_span_id = plugin_parent_span_id
 
-    # --- Ambient OTel: trace_id always; span fallback only ---
+    # --- Ambient OTel: trace_id unless nested inherited parent trace;
+    # span fallback only ---
+    parent_frame = TraceManager._get_parent_invocation_frame(callback_context)
+    is_nested_invocation = is_nested_foreign or parent_frame is not None
     ambient = trace.get_current_span()
     ambient_ctx = ambient.get_span_context()
     if ambient_ctx.is_valid:
-      trace_id = format(ambient_ctx.trace_id, "032x")
+      if not (is_nested_invocation and trace_id is not None):
+        trace_id = format(ambient_ctx.trace_id, "032x")
       # Only use ambient span IDs when the plugin stack has no span.
       # Framework-internal spans (execute_tool, call_llm, etc.) are
       # never written to BQ, so deriving parent_span_id from them
       # creates phantom references.  The plugin stack guarantees
       # that both span_id and parent_span_id reference BQ rows.
-      if span_id is None:
+      if span_id is None and not foreign_active_stack:
         span_id = format(ambient_ctx.span_id, "016x")
         parent_span_id = None
         parent_ctx = getattr(ambient, "parent", None)
@@ -7310,6 +8842,70 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       return getattr(source_event, "author", None)
     return None
 
+  def _extract_structured_response_summary(
+      self,
+      payload: Any,
+  ) -> Optional[tuple[str, bool]]:
+    """Extracts a sanitized text summary from a structured response payload."""
+    key = self.config.response_text_key
+    if key is None:
+      return None
+    if type(key) is not str:  # pylint: disable=unidiomatic-typecheck
+      key = str.__str__(key)
+    canonical_key = _canonicalize_common_ascii_escapes(key)
+    if _is_sensitive_text_key(canonical_key):
+      return None
+    candidate: Any = None
+    if isinstance(payload, str):
+      if type(payload) is not str:  # pylint: disable=unidiomatic-typecheck
+        payload = str.__str__(payload)
+      stripped = _strip_bom_ws(payload)
+      if (
+          not stripped.startswith("{")
+          or len(stripped) > _MAX_JSON_INSPECT_CHARS
+          or _json_nesting_exceeds_limit(stripped)
+      ):
+        return None
+      try:
+        parsed = json.loads(stripped)
+      except (ValueError, TypeError, RecursionError, MemoryError):
+        return None
+      if isinstance(parsed, dict):
+        candidate = parsed.get(key)
+    else:
+      if isinstance(payload, collections.abc.Mapping):
+        try:
+          candidate = payload.get(key)
+        except Exception:  # pylint: disable=broad-except
+          return None
+    if not isinstance(candidate, str):
+      return None
+    if type(candidate) is not str:  # pylint: disable=unidiomatic-typecheck
+      candidate = str.__str__(candidate)
+    if not candidate.strip():
+      return None
+    if candidate.strip() in _RESPONSE_TEXT_SENTINELS:
+      return None
+    raw_sanitized, raw_truncated = HybridContentParser._sanitize_raw_text(
+        candidate
+    )
+    if (
+        not raw_sanitized
+        or not raw_sanitized.strip()
+        or raw_sanitized.strip() in _RESPONSE_TEXT_SENTINELS
+    ):
+      return None
+    sanitized_text, sens_truncated = _sanitize_sensitive_text(
+        raw_sanitized, self.config.max_content_length
+    )
+    if (
+        not sanitized_text
+        or not sanitized_text.strip()
+        or sanitized_text.strip() in _RESPONSE_TEXT_SENTINELS
+    ):
+      return None
+    return sanitized_text, (raw_truncated or sens_truncated)
+
   def _build_adk_envelope(
       self,
       callback_context: CallbackContext,
@@ -7318,7 +8914,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """Builds the ``attributes.adk`` envelope.
 
     A1 / A2 (``schema_version``, ``app_name``) stamp on every ADK-enriched
-    row regardless of origin. A3 / C1 / C2 / C3 (``source_event_id``,
+    row regardless of origin, and ``parent_session_id`` /
+    ``parent_invocation_id`` stamp on every row emitted inside a nested
+    ``AgentTool`` invocation. A3 / C1 / C2 / C3 (``source_event_id``,
     ``node``, ``branch``, ``scope``) and C8 (``route``,
     ``render_ui_widgets``, ``rewind_before_invocation_id``) only stamp
     when a source Event is provided — callback-only rows **omit** those
@@ -7336,6 +8934,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       adk["app_name"] = callback_context._invocation_context.session.app_name
     except Exception:
       adk["app_name"] = None
+
+    records = _span_records_ctx.get()
+    if records and _is_nested_plugin_run(callback_context, records[-1]):
+      # Like the suspended frame, read the parent from its enclosing span: no
+      # invocation is active if the parent's ensure_invocation_span never ran.
+      if records[-1].session_id:
+        adk["parent_session_id"] = records[-1].session_id
+      adk["parent_invocation_id"] = records[-1].invocation_id
+    else:
+      parent_frame = TraceManager._get_parent_invocation_frame(callback_context)
+      if parent_frame is not None:
+        if parent_frame.session_id:
+          adk["parent_session_id"] = parent_frame.session_id
+        if parent_frame.invocation_id:
+          adk["parent_invocation_id"] = parent_frame.invocation_id
+      else:
+        parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+        if parent_inv_id is not None:
+          adk["parent_invocation_id"] = parent_inv_id
 
     if source_event is None:
       return adk
@@ -7443,7 +9060,29 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       adk_envelope.setdefault(k, v)
     attrs["adk"] = adk_envelope
 
-    attrs["root_agent_name"] = TraceManager.get_root_agent_name()
+    records = _span_records_ctx.get()
+    root_agent_name = TraceManager.get_root_agent_name()
+    # Until a nested run seeds its own root span, when a foreign invocation's
+    # stack is still active, or when the cached root agent is unset (e.g. after
+    # an unlinked inner Runner clears the contextvar), derive it from the
+    # callback's agent tree without mutating context.
+    if (
+        root_agent_name is None
+        or _is_foreign_invocation_stack(callback_context.invocation_id)
+        or (records and _is_nested_plugin_run(callback_context, records[-1]))
+    ):
+      fallback_root_agent: Optional[str] = None
+      try:
+        cb_agent = callback_context._invocation_context.agent
+        if isinstance(cb_agent, BaseAgent):
+          candidate_name = cb_agent.root_agent.name
+          if isinstance(candidate_name, str):
+            fallback_root_agent = candidate_name
+      except (AttributeError, ValueError):
+        pass
+      attrs["root_agent_name"] = fallback_root_agent
+    else:
+      attrs["root_agent_name"] = root_agent_name
     if event_data.model:
       attrs["model"] = event_data.model
     if event_data.model_version:
@@ -7562,6 +9201,120 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       attributes["custom_metadata"] = safe
     return bool(truncated)
 
+  def _workflow_observations_enabled(self) -> bool:
+    """Returns whether callbacks may create or mutate observation state."""
+    return self.config.enabled and not self._is_shutting_down
+
+  def _record_workflow_node_observation(
+      self,
+      event: "Event",
+      invocation_context: InvocationContext,
+  ) -> tuple[_WorkflowObservationSegment, bool, float | None] | None:
+    """Records a path-bearing event and reports whether it was the first.
+
+    The event is recorded in the segment of the runner call that raised it,
+    looked up by the invocation ID.
+    """
+    node_info = getattr(event, "node_info", None)
+    node_path = getattr(node_info, "path", "")
+    if not isinstance(node_path, str) or not node_path:
+      return None
+
+    raw_id = getattr(event, "id", None)
+    event_id = raw_id if isinstance(raw_id, str) else ""
+    raw_ts = getattr(event, "timestamp", None)
+    event_ts: float | None = None
+    if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool):
+      try:
+        candidate_ts = float(raw_ts)
+      except (OverflowError, TypeError, ValueError):
+        candidate_ts = math.nan
+      if math.isfinite(candidate_ts):
+        event_ts = candidate_ts
+
+    summary_cap = self.config.max_observation_summaries_per_segment
+    max_tracked_paths = max(summary_cap, _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)
+
+    with self._workflow_segments_guard:
+      segment = self._workflow_segments.get(invocation_context.invocation_id)
+      if segment is None:
+        return None
+
+      observation = segment.nodes.get(node_path)
+      is_first = False
+      if observation is None:
+        if len(segment.nodes) >= summary_cap:
+          if getattr(event, "long_running_tool_ids", None):
+            for ancestor_path in _strict_ancestor_node_paths(node_path):
+              if ancestor := segment.nodes.get(ancestor_path):
+                ancestor.descendant_interrupt_observed = True
+          if node_path in segment.overflow_node_paths:
+            return segment, False, event_ts
+          if (
+              len(segment.nodes) + len(segment.overflow_node_paths)
+              < max_tracked_paths
+          ):
+            segment.overflow_node_paths.add(node_path)
+            return segment, True, event_ts
+          segment.untracked_path_events += 1
+          return segment, False, event_ts
+        is_first = True
+        observation = _WorkflowNodeObservation(
+            node_path=node_path,
+            node_run_id=getattr(node_info, "run_id", None),
+            node_parent_run_id=getattr(node_info, "parent_run_id", None),
+            first_source_event_id=event_id,
+            last_source_event_id=event_id,
+            first_source_event_timestamp=event_ts,
+            last_source_event_timestamp=event_ts,
+        )
+        segment.nodes[node_path] = observation
+      else:
+        observation.last_source_event_id = event_id
+        if event_ts is not None:
+          if observation.first_source_event_timestamp is None:
+            observation.first_source_event_timestamp = event_ts
+          observation.last_source_event_timestamp = event_ts
+        observation.observed_event_count += 1
+
+      if getattr(event, "long_running_tool_ids", None):
+        observation.node_interrupt_observed = True
+        ancestor_paths = _strict_ancestor_node_paths(node_path)
+        segment.interrupted_ancestor_paths.update(ancestor_paths)
+        for ancestor_path in ancestor_paths:
+          if ancestor := segment.nodes.get(ancestor_path):
+            ancestor.descendant_interrupt_observed = True
+
+      if node_path in segment.interrupted_ancestor_paths:
+        observation.descendant_interrupt_observed = True
+
+      if getattr(event, "error_code", None) and _is_durable_node_error(event):
+        observation.node_error_observed_count += 1
+
+      return segment, is_first, event_ts
+
+  def _open_workflow_segment(self, invocation_id: str) -> None:
+    """Opens a runner call's segment, dropping the oldest at capacity."""
+    with self._workflow_segments_guard:
+      segments = self._workflow_segments
+      # A resumed invocation reuses its ID: reopen its segment as the newest
+      # entry rather than drop another call's segment to make room for it.
+      segments.pop(invocation_id, None)
+      while len(segments) >= _MAX_IN_FLIGHT_WORKFLOW_SEGMENTS:
+        segments.pop(next(iter(segments)), None)
+      segments[invocation_id] = _WorkflowObservationSegment(
+          segment_id=str(uuid.uuid4())
+      )
+
+  def _event_type_filtered(self, event_type: str) -> bool:
+    """Returns whether the event allowlist or denylist excludes a type."""
+    if self.config.event_denylist and event_type in self.config.event_denylist:
+      return True
+    return bool(
+        self.config.event_allowlist
+        and event_type not in self.config.event_allowlist
+    )
+
   async def _log_event(
       self,
       event_type: str,
@@ -7582,12 +9335,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     if not self.config.enabled or self._is_shutting_down:
       return
-    if self.config.event_denylist and event_type in self.config.event_denylist:
-      return
-    if (
-        self.config.event_allowlist
-        and event_type not in self.config.event_allowlist
-    ):
+    if self._event_type_filtered(event_type):
       return
 
     if not self._started:
@@ -7614,16 +9362,22 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # one bounded, fail-closed boundary here so every current and future error
     # producer receives the same privacy contract before formatter/parser row
     # assembly. Ordinary safe messages remain byte-for-byte unchanged.
+    error_failed_closed = False
     if event_data.error_message is not None:
+      raw_error_msg = event_data.error_message
       try:
         safe_error, error_content_lost = _sanitize_sensitive_text(
-            event_data.error_message, self.config.max_content_length
+            raw_error_msg, self.config.max_content_length
         )
       except Exception:
         safe_error, error_content_lost = (
             "[REDACTED_SENSITIVE_TEXT]",
             True,
         )
+      error_failed_closed = (
+          safe_error == "[REDACTED_SENSITIVE_TEXT]"
+          and raw_error_msg != "[REDACTED_SENSITIVE_TEXT]"
+      )
       event_data.error_message = safe_error
       is_truncated = is_truncated or error_content_lost
     if event_type in ("AGENT_ERROR", "INVOCATION_ERROR") and isinstance(
@@ -7632,9 +9386,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       try:
         error_traceback = raw_content.get("error_traceback")
         if isinstance(error_traceback, str):
-          safe_traceback, traceback_content_lost = _sanitize_sensitive_text(
-              error_traceback, self.config.max_content_length
-          )
+          if error_failed_closed:
+            safe_traceback, traceback_content_lost = (
+                "[REDACTED_SENSITIVE_TEXT]",
+                True,
+            )
+          else:
+            safe_traceback, traceback_content_lost = _sanitize_sensitive_text(
+                error_traceback, self.config.max_content_length
+            )
           raw_content = dict(raw_content)
           raw_content["error_traceback"] = safe_traceback
           is_truncated = is_truncated or traceback_content_lost
@@ -7654,20 +9414,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # boundary, so its failure must never fall back to the unformatted
         # payload. The exception message and traceback can embed the
         # protected content, and even the class NAME can be payload-derived
-        # via type(name, ...), so the failure is only ever named by a
-        # trusted class label, and its traceback is logged only when
-        # debug_content_formatter_errors opts in.
+        # via type(name, ...), so by default the failure is named only by a
+        # trusted class label (with sanitized, bounded exception details
+        # appended only when log_content_formatter_error_details opts in,
+        # and its traceback logged locally only when
+        # debug_content_formatter_errors opts in).
         failure = e
       # Everything after the call runs behind _settle_formatter_outcome's
       # one boundary: judging the result, closing a rejected coroutine,
-      # naming the class, and logging. It runs after the except block, so
-      # the formatter's exception is no longer the one being handled.
-      raw_content, formatter_error = _settle_formatter_outcome(
-          formatted,
-          failure,
-          event_type=event_type,
-          debug=self.config.debug_content_formatter_errors,
+      # naming the class, sanitizing the exception detail, and logging. It
+      # runs after the except block, so the formatter's exception is no
+      # longer the one being handled.
+      raw_content, formatter_error, formatter_detail_content_lost = (
+          _settle_formatter_outcome(
+              formatted,
+              failure,
+              event_type=event_type,
+              debug=self.config.debug_content_formatter_errors,
+              log_error_details=self.config.log_content_formatter_error_details,
+          )
       )
+      is_truncated = is_truncated or formatter_detail_content_lost
       if formatter_error is not None:
         self._count_local_drop("formatter_failed")
       # The except clause would have dropped this reference itself: the
@@ -7676,8 +9443,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # The event's own diagnostic (e.g. a TOOL_ERROR's exception text) stays
     # first and intact so an error row keeps its primary cause; a formatter
-    # failure is appended after it. The note skips the bounded sanitizer
-    # above: it is fixed text and a trusted class label, never free text.
+    # failure is appended after it. The note is already sanitized and
+    # bounded inside _settle_formatter_outcome (fixed text + trusted class
+    # label by default, plus at most 256 sanitized chars and a truncation
+    # marker when log_content_formatter_error_details=True).
     error_message = event_data.error_message
     if formatter_error is not None:
       error_message = (
@@ -7694,13 +9463,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Parser not initialized; skipping event %s.", event_type)
       return
 
-    # When both payload columns are projected out, skip content parsing
-    # entirely -- no inline summary, no parts, and (critically) no GCS offload
-    # work for a row that retains neither payload column.
+    # When neither payload column will store parsed output (``content`` is
+    # projected out and ``content_parts`` is either projected out or disabled
+    # via ``log_multi_modal_content=False``), skip content parsing entirely
+    # -- no inline summary, no parts, and no GCS offload work.
+    content_parts_persisted = self._content_parts_persisted()
     content_json: Any
     content_parts: list[dict[str, Any]]
     parser_truncated: bool
-    if {"content", "content_parts"} <= self._denied_columns:
+    if "content" in self._denied_columns and not content_parts_persisted:
       content_json, content_parts, parser_truncated = None, [], False
     else:
       # Pass trace/span per call: the parser instance is shared, so storing
@@ -7711,6 +9482,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             raw_content,
             trace_id=trace_id or "no_trace",
             span_id=span_id or "no_span",
+            offload=content_parts_persisted,
         )
         # Normalize the parser OUTPUT to strictly JSON-native values
         # inside the same boundary: a nested
@@ -7796,9 +9568,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "span_id": span_id,
         "parent_span_id": parent_span_id,
         "content": content_json,
-        "content_parts": (
-            content_parts if self.config.log_multi_modal_content else []
-        ),
+        "content_parts": content_parts if content_parts_persisted else [],
         "attributes": attributes_json,
         "latency_ms": latency_json,
         "status": event_data.status,
@@ -7918,6 +9688,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Logs state changes, HITL events, A2A interactions, and agent responses.
 
+    - Records path-bearing source events for workflow observation windows.
     - Checks each event for a non-empty state_delta and logs it as a
       STATE_DELTA event.
     - Detects synthetic ``adk_request_*`` function calls (HITL pause
@@ -7942,6 +9713,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         invocation_context: The context for the current invocation.
         event: The event raised by the runner.
     """
+    TraceManager._unwind_to_invocation(invocation_context.invocation_id)
     callback_ctx = CallbackContext(invocation_context)
 
     # A later before_model callback may short-circuit the model call. ADK
@@ -7950,8 +9722,37 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # it. The synthesized response is a non-partial event; close only that
     # expected top span at this boundary. Streaming chunks stay attached to
     # their live llm_request span until the final response callback.
-    if getattr(event, "partial", None) is not True:
+    if getattr(
+        event, "partial", None
+    ) is not True and not _is_foreign_invocation_stack(
+        invocation_context.invocation_id
+    ):
       TraceManager.pop_span(expected_kind="llm_request")
+
+    if self._workflow_observations_enabled():
+      try:
+        workflow_observation = self._record_workflow_node_observation(
+            event, invocation_context
+        )
+        if workflow_observation is not None:
+          segment, is_first, event_ts = workflow_observation
+          if is_first:
+            await self._log_event(
+                "WORKFLOW_NODE_FIRST_OBSERVED",
+                callback_ctx,
+                event_data=EventData(
+                    source_event=event,
+                    adk_extras={
+                        "workflow_segment_id": segment.segment_id,
+                        "boundary_basis": "event_observation",
+                        "source_event_timestamp": event_ts,
+                    },
+                ),
+            )
+      except Exception:
+        logger.warning(
+            "Could not record workflow-node observation; continuing."
+        )
 
     # --- State delta logging ---
     if event.actions.state_delta:
@@ -7966,8 +9767,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     node_info = getattr(event, "node_info", None)
     node_path = getattr(node_info, "path", "")
-    if node_path and event.partial is not True:
-      if event.error_code and event.error_code not in _LLM_RESPONSE_ERROR_CODES:
+    if node_path and getattr(event, "partial", None) is not True:
+      if getattr(event, "error_code", None) and _is_durable_node_error(event):
         await self._log_event(
             "NODE_ERROR",
             callback_ctx,
@@ -7975,11 +9776,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             event_data=EventData(
                 source_event=event,
                 status="ERROR",
-                error_message=event.error_message,
+                error_message=getattr(event, "error_message", None),
             ),
         )
       if (
-          event.output is not None
+          getattr(event, "output", None) is not None
           and getattr(node_info, "message_as_output", None) is not True
       ):
         node_output, output_truncated = _recursive_smart_truncate(
@@ -8241,16 +10042,37 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # empty parts, and non-text execution parts (executable_code,
       # code_execution_result) that are internal tool execution turns
       # rather than user-facing conversational text.
-      visible_parts = [
-          p
-          for p in event_content.parts
-          if p.text and not getattr(p, "thought", None)
-      ]
+      visible_parts: list[types.Part] = []
+      visible_texts: list[str] = []
+      for p in event_content.parts:
+        if p.text and not getattr(p, "thought", None):
+          visible_parts.append(p)
+          visible_texts.append(p.text)
       if visible_parts:
         visible_content = types.Content(
             role=event_content.role, parts=visible_parts
         )
         formatted, truncated = self._format_content_safely(visible_content)
+        raw_content: dict[str, Any] = {"response": formatted}
+        if self.config.response_text_key is not None:
+          first_non_ws = next(
+              (s for t in visible_texts if (s := _strip_bom_ws(t))),
+              "",
+          )
+          summary = (
+              self._extract_structured_response_summary(
+                  "\n".join(visible_texts)
+              )
+              if first_non_ws.startswith("{")
+              else None
+          )
+          if summary is not None:
+            summary_text, summary_truncated = summary
+            raw_content = {
+                "text_summary": summary_text,
+                "response": formatted,
+            }
+            truncated = truncated or summary_truncated
         # source_event=event carries the ADK envelope (A3 / node /
         # branch / scope). The flat ``source_event_*`` extras are
         # retained for backward compat with existing AGENT_RESPONSE
@@ -8258,7 +10080,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         await self._log_event(
             "AGENT_RESPONSE",
             callback_ctx,
-            raw_content={"response": formatted},
+            raw_content=raw_content,
             is_truncated=truncated,
             event_data=EventData(
                 source_event=event,
@@ -8282,12 +10104,110 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         invocation_context: The context of the current invocation.
     """
     await self._ensure_started()
+    if self._workflow_observations_enabled():
+      self._open_workflow_segment(invocation_context.invocation_id)
     callback_ctx = CallbackContext(invocation_context)
     TraceManager.ensure_invocation_span(callback_ctx)
     await self._log_event(
         "INVOCATION_STARTING",
         callback_ctx,
     )
+
+  async def _drain_workflow_node_observations(
+      self,
+      callback_context: CallbackContext,
+      *,
+      drain_callback: str,
+  ) -> None:
+    """Emits factual summaries for the current runner-call segment.
+
+    At most ``config.max_observation_summaries_per_segment`` summaries are
+    written, in the order the node paths were first observed. When more
+    paths were observed, the last summary written carries
+    ``truncated_node_count`` and the paths left out are counted under the
+    ``workflow_observation_capacity`` drop reason.
+    """
+    if not self._workflow_observations_enabled():
+      return
+    with self._workflow_segments_guard:
+      segment = self._workflow_segments.get(callback_context.invocation_id)
+      if segment is None:
+        return
+      observations = list(segment.nodes.values())
+      overflow_path_count = len(segment.overflow_node_paths)
+      untracked_event_count = segment.untracked_path_events
+    if self._event_type_filtered("WORKFLOW_NODE_OBSERVATION_SUMMARY"):
+      return
+
+    # A runner call delivers its events sequentially before after_run_callback
+    # or on_run_error_callback, so reading _WorkflowNodeObservation fields after
+    # releasing _workflow_segments_guard is safe.
+    cap = self.config.max_observation_summaries_per_segment
+    kept = observations[:cap]
+    truncated_node_count = (len(observations) - len(kept)) + overflow_path_count
+    total_observed_paths = len(kept) + truncated_node_count
+    for index, observation in enumerate(kept, start=1):
+      try:
+        span_ms = (
+            (
+                observation.last_source_event_timestamp
+                - observation.first_source_event_timestamp
+            )
+            * 1000.0
+            if observation.first_source_event_timestamp is not None
+            and observation.last_source_event_timestamp is not None
+            else None
+        )
+        adk_extras: dict[str, Any] = {
+            "workflow_segment_id": segment.segment_id,
+            "node": {
+                "path": observation.node_path,
+                "run_id": observation.node_run_id,
+                "parent_run_id": observation.node_parent_run_id,
+            },
+            "first_source_event_id": observation.first_source_event_id,
+            "last_source_event_id": observation.last_source_event_id,
+            "first_source_event_timestamp": (
+                observation.first_source_event_timestamp
+            ),
+            "last_source_event_timestamp": (
+                observation.last_source_event_timestamp
+            ),
+            "source_event_span_ms": span_ms,
+            "observed_event_count": observation.observed_event_count,
+            "node_interrupt_observed": observation.node_interrupt_observed,
+            "descendant_interrupt_observed": (
+                observation.descendant_interrupt_observed
+            ),
+            "node_error_observed_count": observation.node_error_observed_count,
+            "drain_callback": drain_callback,
+            "boundary_basis": "event_observation",
+        }
+        if truncated_node_count and index == len(kept):
+          adk_extras["truncated_node_count"] = truncated_node_count
+        if untracked_event_count and index == len(kept):
+          adk_extras["untracked_overflow_event_count"] = untracked_event_count
+        await self._log_event(
+            "WORKFLOW_NODE_OBSERVATION_SUMMARY",
+            callback_context,
+            event_data=EventData(adk_extras=adk_extras),
+        )
+      except Exception:
+        logger.warning(
+            "Could not emit workflow-node observation summary; continuing."
+        )
+
+    if truncated_node_count:
+      self._count_local_drop(
+          "workflow_observation_capacity", count=truncated_node_count
+      )
+      logger.warning(
+          "Workflow observation summaries were not written for %d of %d"
+          " node paths: max_observation_summaries_per_segment is %d.",
+          truncated_node_count,
+          total_observed_paths,
+          cap,
+      )
 
   @_safe_callback
   async def after_run_callback(
@@ -8298,16 +10218,23 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Args:
         invocation_context: The context of the current invocation.
     """
+    callback_ctx: Optional[CallbackContext] = None
     try:
+      TraceManager._unwind_to_invocation(invocation_context.invocation_id)
       # Capture trace_id BEFORE popping the invocation-root span so
       # that INVOCATION_COMPLETED shares the same trace_id as all
       # earlier events in this invocation.
       callback_ctx = CallbackContext(invocation_context)
+      await self._drain_workflow_node_observations(
+          callback_ctx, drain_callback="after_run"
+      )
       trace_id = TraceManager.get_trace_id(callback_ctx)
 
-      # Pop the invocation-root span pushed by ensure_invocation_span.
-      span_id, duration = TraceManager.pop_span()
-      parent_span_id = TraceManager.get_current_span_id()
+      # Pop the invocation-root span pushed by ensure_invocation_span,
+      # unwinding any unclosed child spans left by early termination.
+      span_id, duration, parent_span_id = TraceManager._pop_run_end_span(
+          callback_ctx, unwind_children=True
+      )
 
       await self._log_event(
           "INVOCATION_COMPLETED",
@@ -8322,9 +10249,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     finally:
       # Cleanup must run even if _log_event raises, otherwise
       # stale invocation metadata leaks into the next invocation.
-      TraceManager.clear_stack()
-      _active_invocation_id_ctx.set(None)
-      _root_agent_name_ctx.set(None)
+      with self._workflow_segments_guard:
+        self._workflow_segments.pop(invocation_context.invocation_id, None)
+      TraceManager._finish_invocation(
+          invocation_context.invocation_id, callback_ctx
+      )
       # Flush before returning if configured; otherwise the background batch
       # writer drains the queue.
       if self.config.flush_on_run_end:
@@ -8340,6 +10269,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         agent: The agent instance.
         callback_context: The callback context.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     TraceManager.init_trace(callback_context)
     TraceManager.push_span(callback_context, "agent")
     # A callable InstructionProvider is resolved per invocation; log None
@@ -8435,6 +10365,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         agent: The agent instance.
         callback_context: The callback context.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
@@ -8469,6 +10400,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # event was not observed (for example, an abnormal generator exit).
     # expected_kind prevents this from disturbing the parent agent or
     # invocation span.
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     TraceManager.pop_span(expected_kind="llm_request")
 
     # 5. Attributes (Config & Tools)
@@ -8545,6 +10477,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
         llm_response: The LLM response object.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     is_partial = getattr(llm_response, "partial", None) is True
     content_dict: dict[str, object] = {}
     is_truncated = False
@@ -8695,8 +10628,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         llm_request: The request that was sent to the model.
         error: The exception that occurred.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     span_id, duration = TraceManager.pop_span(expected_kind="llm_request")
-    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+    parent_span_id = (
+        TraceManager.get_current_span_id() if span_id is not None else None
+    )
 
     await self._log_event(
         "LLM_ERROR",
@@ -8725,6 +10661,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         tool_args: The arguments passed to the tool.
         tool_context: The tool context.
     """
+    TraceManager._unwind_to_invocation(tool_context.invocation_id)
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
@@ -8753,21 +10690,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Callback after tool execution.
 
+    A result that reports a failure is recorded as ``TOOL_ERROR``, the row
+    ``on_tool_error_callback`` writes for a raised error; see
+    ``_tool_result_error_message``. The result itself is left unchanged, and
+    the row leaves it out. The model still receives it, and a later
+    ``LLM_REQUEST`` row records it only in ``content_parts`` (as
+    ``part_attributes.function_response``), so only while
+    ``log_multi_modal_content`` is on and ``content_parts`` is not denied.
+
     Args:
         tool: The tool that was executed.
         tool_args: The arguments passed to the tool.
         tool_context: The tool context.
         result: The response from the tool.
     """
-    resp_truncated, is_truncated = _recursive_smart_truncate(
-        result, self.config.max_content_length
-    )
+    TraceManager._unwind_to_invocation(tool_context.invocation_id)
+    if _pop_tool_error_recorded(self, tool_context):
+      # on_tool_error_callback already recorded this call's failure and closed
+      # its span; the result is the answer a later plugin gave to the error.
+      return
+
     tool_origin = _get_tool_origin(tool, tool_args, tool_context)
-    content_dict = {
-        "tool": tool.name,
-        "result": resp_truncated,
-        "tool_origin": tool_origin,
-    }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
@@ -8776,6 +10719,89 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         span_id_override=span_id,
         parent_span_id_override=parent_span_id,
     )
+    # The span is closed, so the call must get a row whatever its result holds.
+    # Classification runs none of the result's code and contains the failures
+    # of a classifier and of each built-in rule; this boundary backs all of
+    # them up by falling back to the TOOL_COMPLETED row of an unclassified
+    # result. The warning is constant because the exception can carry the
+    # result, and it is logged after the except block, because inside it a
+    # failing log handler would print that exception.
+    classification_failed = False
+    try:
+      error_message = self._tool_result_error_message(
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          result=result,
+      )
+    except Exception:  # pylint: disable=broad-except
+      error_message = None
+      classification_failed = True
+    if classification_failed:
+      logger.warning(
+          "Could not classify the result of tool %s; recording it as"
+          " TOOL_COMPLETED.",
+          tool.name,
+      )
+    if error_message is not None:
+      # The content is what on_tool_error_callback records. The result stays
+      # out: its error text is tool output, and a content_formatter written
+      # for TOOL_COMPLETED rows would not scrub it from a TOOL_ERROR row.
+      # Serializing the arguments gets the boundary the result gets below:
+      # arguments that raise are recorded with the serializer's sentinel, and
+      # the constant warning is logged after the except block.
+      args_serialization_failed = False
+      try:
+        args_truncated, args_is_truncated = _recursive_smart_truncate(
+            tool_args, self.config.max_content_length
+        )
+      except Exception:  # pylint: disable=broad-except
+        args_truncated, args_is_truncated = "[UNSUPPORTED_OBJECT]", True
+        args_serialization_failed = True
+      if args_serialization_failed:
+        logger.warning(
+            "Could not serialize the arguments of tool %s; recording a"
+            " sentinel in their place.",
+            tool.name,
+        )
+      event_data.status = "ERROR"
+      event_data.error_message = error_message
+      await self._log_event(
+          "TOOL_ERROR",
+          tool_context,
+          raw_content={
+              "tool": tool.name,
+              "args": args_truncated,
+              "tool_origin": tool_origin,
+          },
+          is_truncated=args_is_truncated,
+          event_data=event_data,
+      )
+      return
+
+    # Serializing the result runs its code, which the classification never
+    # does, so it gets the same boundary: a result that raises is recorded
+    # with the sentinel the serializer writes for a result it rejects itself,
+    # and the constant warning is logged after the except block.
+    serialization_failed = False
+    try:
+      resp_truncated, is_truncated = _recursive_smart_truncate(
+          result, self.config.max_content_length
+      )
+    except Exception:  # pylint: disable=broad-except
+      resp_truncated, is_truncated = "[UNSUPPORTED_OBJECT]", True
+      serialization_failed = True
+    if serialization_failed:
+      logger.warning(
+          "Could not serialize the result of tool %s; recording a sentinel in"
+          " its place.",
+          tool.name,
+      )
+    content_dict = {
+        "tool": tool.name,
+        "result": resp_truncated,
+        "tool_origin": tool_origin,
+    }
     await self._log_event(
         "TOOL_COMPLETED",
         tool_context,
@@ -8795,13 +10821,87 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       args_truncated, args_is_truncated = _recursive_smart_truncate(
           tool_args, self.config.max_content_length
       )
+      response_raw_content: dict[str, Any] = {"response": args_truncated}
+      summary = self._extract_structured_response_summary(tool_args)
+      if summary is not None:
+        summary_text, summary_truncated = summary
+        response_raw_content = {
+            "text_summary": summary_text,
+            "response": args_truncated,
+        }
+        args_is_truncated = args_is_truncated or summary_truncated
       await self._log_event(
           "AGENT_RESPONSE",
           tool_context,
-          raw_content={"response": args_truncated},
+          raw_content=response_raw_content,
           is_truncated=args_is_truncated,
           event_data=EventData(extra_attributes={"source_tool": tool.name}),
       )
+
+  def _tool_result_error_message(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      result: Any,
+  ) -> Optional[str]:
+    """Returns the error message to record for a tool result that failed.
+
+    Three checks run in turn, each on the entries ``_result_fields`` reads
+    without running any of the result's own code:
+
+    1. A ``ReflectAndRetryToolPlugin`` answer is a raised error, recorded as
+       ``TOOL_ERROR`` before the classifier runs: with this plugin registered
+       first, ``on_tool_error_callback`` records the same error without
+       consulting the classifier, so neither plugin order lets a classifier
+       hide it.
+    2. ``config.tool_result_classifier``. Its verdict is read inside the
+       ``Exception`` boundary that surrounds the call, so a classifier that
+       raises or returns anything but a readable ``ToolResultClassification``
+       or None is skipped, and the warning names only the tool: the exception,
+       its traceback and the returned value can all carry the result. A
+       returned awaitable is ignored too, once ``_release_awaitable`` has
+       closed it if it is a coroutine, or cancelled it and retrieved its
+       exception if it is an asyncio future or task, so that Python does not
+       warn about the coroutine and asyncio does not later log an exception
+       the future or task holds. A ``BaseException`` that is
+       not an ``Exception``, such as a cancellation, ``KeyboardInterrupt`` or
+       ``SystemExit``, propagates as it does from every callback of this
+       plugin, because absorbing it would keep a task or the process from
+       stopping.
+    3. A result whose top-level ``isError`` or ``is_error`` is exactly
+       ``True``: any dict, which covers an MCP ``CallToolResult`` dump, or an
+       MCP ``CallToolResult`` model.
+
+    Any other result succeeded, including one that merely has an
+    ``error_details`` key. The tools' own ``_detect_error_in_response`` hooks,
+    which set the OpenTelemetry ``error.type``, are not consulted. Several flag
+    any dict with a truthy ``error`` key, which a function tool may also return
+    as data, and a result they flagged would move from a ``TOOL_COMPLETED`` row
+    that carries it to a ``TOOL_ERROR`` row that leaves it out. Some of them
+    also match ADK's own error envelopes, such as ``GoogleTool``'s
+    ``{"status": "ERROR", "error_details": ...}``; the classifier can record
+    those as failures where that is wanted.
+
+    Args:
+        tool: The tool that produced the result.
+        tool_args: The arguments passed to the tool.
+        tool_context: The tool context.
+        result: The result the model receives.
+
+    Returns:
+        The message of a ``TOOL_ERROR`` row, or None to record the result as
+        ``TOOL_COMPLETED``.
+    """
+    return _classify_tool_result_error(
+        tool=tool,
+        tool_args=tool_args,
+        tool_context=tool_context,
+        result=result,
+        tool_result_classifier=self.config.tool_result_classifier,
+        log=logger,
+    )
 
   @_safe_callback
   async def on_tool_error_callback(
@@ -8820,6 +10920,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         tool_context: The tool context.
         error: The exception that occurred.
     """
+    TraceManager._unwind_to_invocation(tool_context.invocation_id)
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
@@ -8831,6 +10932,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
+    # Read before the call is marked: after_tool_callback skips a marked call,
+    # so nothing that can fail may run between the mark and the row. An
+    # exception raised without a message, or whose message cannot be read,
+    # records its type name, which is what a ReflectAndRetryToolPlugin answer
+    # records for a message-less one.
+    try:
+      error_message = str(error) or type(error).__name__
+    except Exception:  # pylint: disable=broad-except
+      error_message = type(error).__name__
+    _mark_tool_error_recorded(self, tool_context)
 
     await self._log_event(
         "TOOL_ERROR",
@@ -8839,7 +10950,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated=is_truncated,
         event_data=EventData(
             status="ERROR",
-            error_message=str(error),
+            error_message=error_message,
             latency_ms=duration,
             span_id_override=span_id,
             parent_span_id_override=parent_span_id,
@@ -8870,8 +10981,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
         error: The exception that escaped agent execution.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     span_id, duration = TraceManager.pop_span(expected_kind="agent")
-    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+    parent_span_id = (
+        TraceManager.get_current_span_id() if span_id is not None else None
+    )
 
     error_tb = "".join(
         traceback_module.format_exception(
@@ -8907,16 +11021,22 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         invocation_context: The context of the current invocation.
         error: The exception that escaped runner execution.
     """
+    callback_ctx: Optional[CallbackContext] = None
     try:
+      TraceManager._unwind_to_invocation(invocation_context.invocation_id)
       callback_ctx = CallbackContext(invocation_context)
+      await self._drain_workflow_node_observations(
+          callback_ctx, drain_callback="on_run_error"
+      )
       trace_id = TraceManager.get_trace_id(callback_ctx)
 
-      # Guarded pop: only consume the invocation-root span. If the failure
-      # left intermediate spans on the stack (or the root was never pushed),
-      # emit the row without span/latency rather than mis-attributing them;
-      # the finally-block clear_stack below resets the stack either way.
-      span_id, duration = TraceManager.pop_span(expected_kind="invocation")
-      parent_span_id = TraceManager.get_current_span_id()
+      # Guarded pop: only consume the invocation-root span when no active
+      # enclosing parent owns the stack. If the failure left intermediate
+      # spans on the stack (or the root was never pushed), emit the row
+      # without span/latency rather than mis-attributing them.
+      span_id, duration, parent_span_id = TraceManager._pop_run_end_span(
+          callback_ctx, unwind_children=False
+      )
 
       error_tb = "".join(
           traceback_module.format_exception(
@@ -8938,9 +11058,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
     finally:
       # Cleanup must run even if _log_event raises.
-      TraceManager.clear_stack()
-      _active_invocation_id_ctx.set(None)
-      _root_agent_name_ctx.set(None)
+      with self._workflow_segments_guard:
+        self._workflow_segments.pop(invocation_context.invocation_id, None)
+      TraceManager._finish_invocation(
+          invocation_context.invocation_id, callback_ctx
+      )
       if self.config.flush_on_run_end:
         await self.flush()
 

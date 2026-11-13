@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import ssl
 from unittest.mock import call
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -20,6 +21,7 @@ from unittest.mock import patch
 from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
 from google.adk.auth.oauth2_discovery import OAuth2DiscoveryManager
 from google.adk.auth.oauth2_discovery import ProtectedResourceMetadata
+from google.adk.utils import _mtls_utils
 import httpx
 import pytest
 
@@ -306,3 +308,158 @@ class TestOAuth2Discovery:
         "https://resource.example.com/.well-known/oauth-protected-resource",
         timeout=5,
     )
+
+  @pytest.mark.parametrize(
+      "client_cert_ctx, expected_url",
+      [
+          (
+              ssl.create_default_context(),
+              "https://mcp.mtls.googleapis.com/.well-known/oauth-protected-resource/v1",
+          ),
+          (
+              None,
+              "https://mcp.googleapis.com/.well-known/oauth-protected-resource/v1",
+          ),
+      ],
+  )
+  @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"})
+  @pytest.mark.asyncio
+  async def test_discover_resource_metadata_mtls_routing(
+      self, client_cert_ctx, expected_url
+  ):
+    """A Google resource is discovered on its mTLS host only with a client cert."""
+    resource_url = "https://mcp.googleapis.com/v1"
+    sent_requests = []
+
+    # Like the real server, report the host the request arrived on.
+    async def handle_async_request(_, request):
+      sent_requests.append(request)
+      return httpx.Response(
+          200,
+          json={
+              "resource": f"https://{request.url.host}/v1",
+              "authorization_servers": [f"https://{request.url.host}"],
+          },
+          request=request,
+      )
+
+    with (
+        patch.object(
+            _mtls_utils,
+            "_client_cert_ssl_context",
+            autospec=True,
+            return_value=client_cert_ctx,
+        ),
+        patch.object(
+            httpx.AsyncHTTPTransport,
+            "handle_async_request",
+            handle_async_request,
+        ),
+    ):
+      result = await OAuth2DiscoveryManager().discover_resource_metadata(
+          resource_url
+      )
+
+    assert [str(r.url) for r in sent_requests] == [expected_url]
+    assert result == ProtectedResourceMetadata(
+        resource="https://mcp.googleapis.com/v1",
+        authorization_servers=["https://mcp.googleapis.com"],
+    )
+
+  @pytest.mark.parametrize(
+      "client_cert_ctx, expected_url",
+      [
+          (
+              ssl.create_default_context(),
+              "https://auth.mtls.googleapis.com/.well-known/oauth-authorization-server",
+          ),
+          (
+              None,
+              "https://auth.googleapis.com/.well-known/oauth-authorization-server",
+          ),
+      ],
+  )
+  @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"})
+  @pytest.mark.asyncio
+  async def test_discover_auth_server_metadata_mtls_routing(
+      self, client_cert_ctx, expected_url
+  ):
+    """A Google auth server is discovered on its mTLS host only with a cert."""
+    issuer_url = "https://auth.googleapis.com"
+    sent_requests = []
+
+    # Like the real server, report the host the request arrived on.
+    async def handle_async_request(_, request):
+      sent_requests.append(request)
+      issuer = f"https://{request.url.host}"
+      metadata = {
+          "issuer": issuer,
+          "authorization_endpoint": f"{issuer}/authorize",
+          "token_endpoint": f"{issuer}/token",
+      }
+      return httpx.Response(200, json=metadata, request=request)
+
+    with (
+        patch.object(
+            _mtls_utils,
+            "_client_cert_ssl_context",
+            autospec=True,
+            return_value=client_cert_ctx,
+        ),
+        patch.object(
+            httpx.AsyncHTTPTransport,
+            "handle_async_request",
+            handle_async_request,
+        ),
+    ):
+      result = await OAuth2DiscoveryManager().discover_auth_server_metadata(
+          issuer_url
+      )
+
+    assert [str(r.url) for r in sent_requests] == [expected_url]
+    assert result == AuthorizationServerMetadata(
+        issuer="https://auth.googleapis.com",
+        authorization_endpoint="https://auth.googleapis.com/authorize",
+        token_endpoint="https://auth.googleapis.com/token",
+    )
+
+  @pytest.mark.asyncio
+  async def test_discovery_skips_client_cert_for_other_hosts(self):
+    """Non-Google auth servers and resources never get the client cert."""
+    with (
+        patch.object(
+            _mtls_utils,
+            "_client_cert_ssl_context",
+            autospec=True,
+            return_value=ssl.create_default_context(),
+        ) as mock_ctx,
+        patch.object(
+            httpx.AsyncHTTPTransport,
+            "handle_async_request",
+            side_effect=httpx.ConnectError("offline"),
+        ),
+    ):
+      manager = OAuth2DiscoveryManager()
+      await manager.discover_auth_server_metadata("https://auth.example.com")
+      await manager.discover_resource_metadata("https://mcp.example.com/v1")
+
+    mock_ctx.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_discover_resource_metadata_rejects_other_mtls_host(self):
+    """Only the requested Google API's own mTLS host is accepted."""
+    with patch.object(
+        httpx.AsyncHTTPTransport,
+        "handle_async_request",
+        autospec=True,
+        side_effect=lambda _, request: httpx.Response(
+            200,
+            json={"resource": "https://other.mtls.googleapis.com/v1"},
+            request=request,
+        ),
+    ):
+      result = await OAuth2DiscoveryManager().discover_resource_metadata(
+          "https://mcp.googleapis.com/v1"
+      )
+
+    assert result is None

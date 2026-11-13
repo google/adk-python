@@ -57,6 +57,8 @@ from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
 
+# Queue item shapes: (Event, processed_signal), (None, processed_signal) flush
+# barrier from NodeRunner._wait_for_enqueued_events, or (done_sentinel, None).
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
 
@@ -238,10 +240,18 @@ class InvocationContext(BaseModel):
   """The handle for live session resumption."""
 
   input_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches input audio chunks before flushing to session and artifact services."""
+  """Caches the user's audio chunks before flushing to session and artifact services.
+
+  Holds audio only; the user's image frames are cached separately.
+  """
 
   output_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches output audio chunks before flushing to session and artifact services."""
+  """Caches the model's audio chunks before flushing to session and artifact services."""
+
+  _input_visual_cache: list[RealtimeCacheEntry] = PrivateAttr(
+      default_factory=list
+  )
+  """The user's image frames, such as camera or screen-share frames, cached until the next flush (Live only)."""
 
   run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""
@@ -250,7 +260,12 @@ class InvocationContext(BaseModel):
   """The resumability config that applies to all agents under this invocation."""
 
   events_compaction_config: EventsCompactionConfig | None = None
-  """The compaction config for this invocation."""
+  """The compaction config for this invocation.
+
+  Starts as the App's config, the same object in every invocation. A plugin's
+  before_run_callback can assign another config, or None to skip compaction,
+  for this invocation; editing the shared object in place affects every session.
+  """
 
   token_compaction_checked: bool = False
   """Whether the compaction request processor compacted before a model call.
@@ -279,7 +294,11 @@ class InvocationContext(BaseModel):
 
   All nodes enqueue events here via ``_enqueue_event()``. The Runner
   main loop is the sole consumer — it appends events to session and
-  yields them to SSE.
+  yields them to SSE. Items are ``(Event, processed_signal)`` pairs,
+  ``(None, processed_signal)`` flush barriers from
+  ``NodeRunner._wait_for_enqueued_events`` (acknowledged by setting
+  ``processed_signal`` without running plugins, appending to session, or
+  yielding), or ``(done_sentinel, None)`` to end the stream.
   """
 
   credential_by_key: dict[str, AuthCredential] = Field(default_factory=dict)
@@ -290,6 +309,18 @@ class InvocationContext(BaseModel):
 
   _private_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
   """Private metadata for internal caching, not exposed to user code."""
+
+  _parent_invocation_id: str | None = PrivateAttr(default=None)
+  """The caller's invocation_id when this invocation runs nested inside it.
+
+  Only the nested runner built by ``AgentTool.run_async`` sets it, and only
+  when ``include_plugins`` is True, so the shared plugins can attribute the
+  nested run to the call that started it. When a tool builds its own
+  ``Runner``, such as an ``AgentTool`` subclass that overrides ``run_async``,
+  it stays ``None``, and plugins treat the nested run as an independent
+  top-level invocation without parent attribution. There is no public API for
+  such a tool to pass the caller's invocation_id.
+  """
 
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
@@ -306,9 +337,8 @@ class InvocationContext(BaseModel):
   ) = PrivateAttr(default=None)
   """The tool calls running in the background of this live run.
 
-  Holds both streaming tools and non-blocking tools, keyed by function call
-  id. Created on first registration, so contexts copied before then don't
-  share it. Readers treat ``None`` as empty.
+  Keyed by function call id. Created on first registration, so contexts copied
+  before then don't share it. Readers treat ``None`` as empty.
   """
 
   def _add_background_tool(

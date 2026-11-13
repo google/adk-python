@@ -40,15 +40,20 @@ from enum import Enum
 import functools
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import overload
 from typing import Protocol
 from typing import TypeVar
 import warnings
 
+from .env_utils import _is_experimental_warning_suppressed
 from .env_utils import is_env_enabled
 
 T = TypeVar("T")
+
+# Gating suppression on the label string avoids adding a new parameter to
+# _make_feature_decorator, which would change the public constructor signatures
+# of experimental/a2a_experimental and trip the Breaking Change Detector.
+_EXPERIMENTAL_LABEL = "EXPERIMENTAL"
 
 
 class _FeatureDecorator(Protocol):
@@ -65,7 +70,7 @@ class _FeatureDecorator(Protocol):
 
   # @decorator() or @decorator("message")
   @overload
-  def __call__(self, message_or_obj: Optional[str] = ...) -> Callable[[T], T]:
+  def __call__(self, message_or_obj: str | None = ...) -> Callable[[T], T]:
     ...
 
   def __call__(self, message_or_obj: Any = None) -> Any:
@@ -90,7 +95,7 @@ def _make_feature_decorator(
     label: str,
     default_message: str,
     block_usage: bool = False,
-    bypass_env_var: Optional[str] = None,
+    bypass_env_var: str | None = None,
 ) -> _FeatureDecorator:
   def decorator_factory(message_or_obj: Any = None) -> Any:
     # Case 1: Used as @decorator without parentheses
@@ -123,8 +128,10 @@ def _make_feature_decorator(
 
 
 def _create_decorator(
-    message: str, label: str, block_usage: bool, bypass_env_var: Optional[str]
+    message: str, label: str, block_usage: bool, bypass_env_var: str | None
 ) -> Callable[[T], T]:
+  is_experimental = label.upper() == _EXPERIMENTAL_LABEL
+
   def decorator(obj: T) -> T:
     obj_name = getattr(obj, "__name__", type(obj).__name__)
     msg = f"[{label.upper()}] {obj_name}: {message}"
@@ -140,7 +147,11 @@ def _create_decorator(
             bypass_env_var
         )
 
-        if should_bypass:
+        if should_bypass or (
+            is_experimental
+            and not block_usage
+            and _is_experimental_warning_suppressed()
+        ):
           # Bypass completely - no warning, no error
           pass
         elif block_usage:
@@ -162,7 +173,11 @@ def _create_decorator(
             bypass_env_var
         )
 
-        if should_bypass:
+        if should_bypass or (
+            is_experimental
+            and not block_usage
+            and _is_experimental_warning_suppressed()
+        ):
           # Bypass completely - no warning, no error
           pass
         elif block_usage:
@@ -215,6 +230,10 @@ experimental = _make_feature_decorator(
     bypass_env_var="ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS",
 )
 """Mark a class or a function as an experimental feature.
+
+Set ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=true to silence these warnings.
+This also covers @a2a_experimental and the feature-registry
+"[EXPERIMENTAL] feature X is enabled." warnings.
 
 Sample usage:
 

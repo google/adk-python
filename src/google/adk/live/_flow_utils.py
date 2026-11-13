@@ -41,6 +41,10 @@ DEFAULT_TASK_COMPLETION_DELAY = 1.0
 # streaming tool it cancels.
 _TOOL_SHUTDOWN_TIMEOUT_SECONDS = 1.0
 
+# How long a live run that ends normally waits for its running non-streaming
+# tool calls to finish before it stops them.
+_TOOL_FINISH_TIMEOUT_SECONDS = 10.0
+
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 # Statistics configuration
@@ -89,13 +93,46 @@ def run_config_for_new_live_session(run_config: RunConfig) -> RunConfig:
   return copied
 
 
+async def wait_for_tool_calls(
+    invocation_context: InvocationContext,
+) -> None:
+  """Waits for the running non-streaming tool calls to finish.
+
+  Streaming calls run until they are stopped, so they are not waited for. A
+  call still running after ``_TOOL_FINISH_TIMEOUT_SECONDS`` is logged and left
+  for ``stop_background_tool_tasks`` to stop.
+  """
+  running = [
+      active
+      for active in (invocation_context._active_background_tools or {}).values()
+      if not active.is_generator
+      and active.task is not None
+      and not active.task.done()
+  ]
+  if running:
+    await asyncio.wait(
+        [active.task for active in running if active.task is not None],
+        timeout=_TOOL_FINISH_TIMEOUT_SECONDS,
+    )
+    if still_running := [
+        a for a in running if a.task is not None and not a.task.done()
+    ]:
+      logger.warning(
+          'Tool calls still running after %s seconds will be cancelled: %s',
+          _TOOL_FINISH_TIMEOUT_SECONDS,
+          ', '.join(
+              f'{a.tool_name} ({a.function_call_id})' for a in still_running
+          ),
+      )
+
+
 async def stop_background_tool_tasks(
     invocation_context: InvocationContext,
 ) -> None:
   """Cancels the background tool tasks this live run started.
 
-  A live run starts two kinds of tools as bare asyncio tasks, streaming
-  tools and non-blocking tools, and registers both on the invocation context.
+  A live run starts each function call as a bare asyncio task and registers
+  it on the invocation context.
 
   The tools stop when the run that started them ends, whether that is a
   handoff to another agent, ``task_completed``, the connection closing, or
@@ -137,7 +174,7 @@ async def stop_background_tool_tasks(
   # current any more, whether or not the task honored the cancellation. A tool
   # drops its own entry when it finishes, so what is left here belongs to a
   # task that ignored the cancellation or was cancelled before it first ran.
-  # Letting go of the streams is what matters most: ``_send_to_model`` copies
+  # Letting go of the streams is what matters most: ``send_to_model`` copies
   # every live request into each registered stream, so one left behind by a
   # tool that no longer reads it grows for as long as the session lasts, an
   # entry per audio chunk the user speaks.
@@ -150,11 +187,11 @@ async def handle_control_event_flush(
     invocation_context: InvocationContext,
     llm_response: LlmResponse,
 ) -> list[Event]:
-  """Handle audio cache flushing based on control events.
+  """Flush the audio and image frame caches based on control events.
 
   Args:
     flow: The LLM flow instance.
-    invocation_context: The invocation context containing audio caches.
+    invocation_context: The invocation context containing the caches.
     llm_response: The LLM response containing control event information.
 
   Returns:
@@ -168,18 +205,22 @@ async def handle_control_event_flush(
     logger.debug('Audio cache stats: %s', stats)
 
   if llm_response.interrupted:
-    # user interrupts so the model will stop. we can flush model audio here
+    # The user interrupts, so the model stops: flush the model's audio. The
+    # user's audio and frames wait for the turn to end.
     return await realtime_cache_manager.flush_caches(
         invocation_context,
         flush_user_audio=False,
         flush_model_audio=True,
+        flush_user_visual=False,
     )
   elif llm_response.turn_complete:
-    # turn completes so we can flush both user and model
+    # The turn completes, so flush the user's audio and frames and the model's
+    # audio.
     return await realtime_cache_manager.flush_caches(
         invocation_context,
         flush_user_audio=True,
         flush_model_audio=True,
+        flush_user_visual=True,
     )
   # LlmResponse does not surface generation_complete, so model audio is not
   # flushed when generation completes. turn_complete, which follows it, already

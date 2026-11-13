@@ -17,7 +17,6 @@
 import asyncio
 import logging
 import ssl
-from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -39,6 +38,8 @@ from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.core._finalizer import handle_after_model_callback
 from google.adk.flows.llm_flows.core._utils import copy_http_options
+from google.adk.flows.llm_flows.single_flow import SingleFlow
+from google.adk.live import _live_llm_flow
 from google.adk.live import LiveRequestQueue
 from google.adk.live._flow_utils import _ReconnectSentinel
 from google.adk.live._flow_utils import run_config_for_new_live_session
@@ -48,11 +49,14 @@ from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
+from google.adk.planners.base_planner import BasePlanner
+from google.adk.platform import time as platform_time
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.enterprise_search_tool import EnterpriseWebSearchTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.adk.utils.context_utils import Aclosing
@@ -60,6 +64,7 @@ from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.errors import APIError
 import httpx
+from pydantic import BaseModel
 import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -207,6 +212,47 @@ async def test_preprocess_with_google_search_only():
 
   assert len(llm_request.config.tools) == 1
   assert llm_request.config.tools[0].google_search is not None
+
+
+class _WeatherReport(BaseModel):
+  city: str
+
+
+def _get_weather(city: str) -> str:
+  """Returns the weather in a city.
+
+  Args:
+    city: The city name.
+  """
+  return f'Sunny in {city}.'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('live', 'expect_set_model_response'), [(False, True), (True, False)]
+)
+async def test_preprocess_adds_set_model_response_only_when_not_live(
+    live, expect_set_model_response
+):
+  """The output schema processor runs for non-live requests only."""
+  agent = Agent(
+      name='test_agent',
+      model=testing_utils.MockModel.create([]),
+      tools=[_get_weather],
+      output_schema=_WeatherReport,
+  )
+  invocation_context = await testing_utils.create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  flow = SingleFlow()
+  async for _ in flow._preprocess_async(  # pylint: disable=protected-access
+      invocation_context, llm_request, live=live
+  ):
+    pass
+
+  assert (
+      SetModelResponseTool.NAME in llm_request.tools_dict
+  ) == expect_set_model_response
 
 
 @pytest.mark.asyncio
@@ -666,7 +712,7 @@ async def test_run_live_reconnects_on_connection_closed():
   flow = BaseLlmFlowForTesting()
 
   with mock.patch.object(
-      flow, '_send_to_model', new_callable=AsyncMock
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ) as mock_send:
     mock_connection_2 = mock.AsyncMock()
 
@@ -734,7 +780,7 @@ async def test_run_live_reconnects_on_api_error(error_code):
   flow = BaseLlmFlowForTesting()
 
   with mock.patch.object(
-      flow, '_send_to_model', new_callable=AsyncMock
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ) as mock_send:
     mock_connection_2 = mock.AsyncMock()
 
@@ -814,7 +860,7 @@ async def test_reconnect_does_not_write_the_handle_into_the_run_config():
   # builder has to run for the RunConfig to reach the live connect config at
   # all. Without it the flow just creates a fresh SessionResumptionConfig and
   # the aliasing under test never happens.
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     from google.adk.flows.llm_flows.basic import _build_basic_request
 
     _build_basic_request(ctx, req)
@@ -823,7 +869,9 @@ async def test_reconnect_does_not_write_the_handle_into_the_run_config():
 
   with (
       mock.patch.object(flow, '_preprocess_async', side_effect=mock_preprocess),
-      mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock),
+      mock.patch.object(
+          _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+      ),
   ):
     mock_connection_2 = mock.AsyncMock()
 
@@ -881,7 +929,7 @@ async def test_run_live_skips_send_history_on_resumption():
 
   flow = BaseLlmFlowForTesting()
 
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
     if False:
       yield
@@ -890,7 +938,7 @@ async def test_run_live_skips_send_history_on_resumption():
       flow, '_preprocess_async', side_effect=mock_preprocess
   ):
     with mock.patch.object(
-        flow, '_send_to_model', new_callable=AsyncMock
+        _live_llm_flow, 'send_to_model', new_callable=AsyncMock
     ) as mock_send:
 
       # We need a way to break the infinite loop in run_live for testing.
@@ -921,7 +969,7 @@ async def test_run_live_skips_send_history_on_resumption():
         mock_connection.send_history.assert_not_called()
 
 
-async def _mock_preprocess_basic(ctx, req):
+async def _mock_preprocess_basic(ctx, req, **_):
   """Preprocess stub that runs only the real live connect config assembly.
 
   `BaseLlmFlow` carries no request processors of its own, so without this the
@@ -935,7 +983,7 @@ async def _mock_preprocess_basic(ctx, req):
     yield
 
 
-async def _mock_preprocess_with_history(ctx, req):
+async def _mock_preprocess_with_history(ctx, req, **_):
   """Preprocess stub that seeds history and builds the live connect config."""
   from google.adk.flows.llm_flows.basic import _build_basic_request
 
@@ -968,7 +1016,9 @@ async def test_run_live_resumes_from_run_config_handle():
   with mock.patch.object(
       flow, '_preprocess_async', side_effect=_mock_preprocess_with_history
   ):
-    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch.object(
+        _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+    ):
 
       class StopError(Exception):
         pass
@@ -1028,7 +1078,9 @@ async def test_run_live_without_run_config_handle_still_sends_history():
   with mock.patch.object(
       flow, '_preprocess_async', side_effect=_mock_preprocess_with_history
   ):
-    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch.object(
+        _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+    ):
 
       class StopError(Exception):
         pass
@@ -1112,7 +1164,9 @@ async def test_run_live_reconnects_with_run_config_handle_before_first_update(
       mock.patch.object(
           flow, '_preprocess_async', side_effect=_mock_preprocess_basic
       ),
-      mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock),
+      mock.patch.object(
+          _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+      ),
   ):
     mock_connection_2 = mock.AsyncMock()
 
@@ -1170,7 +1224,9 @@ async def test_run_live_run_config_handle_sets_transparent_on_vertex():
   with mock.patch.object(
       flow, '_preprocess_async', side_effect=_mock_preprocess_with_history
   ):
-    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch.object(
+        _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+    ):
 
       class StopError(Exception):
         pass
@@ -1234,7 +1290,9 @@ async def test_run_live_server_handle_supersedes_run_config_handle():
 
   flow = BaseLlmFlowForTesting()
 
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  with mock.patch.object(
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+  ):
     mock_connection_2 = mock.AsyncMock()
 
     class NonRetryableError(Exception):
@@ -1381,7 +1439,9 @@ async def test_run_live_does_not_log_http_options_headers(caplog):
   mock_connection.receive = mock.Mock(side_effect=mock_receive)
 
   with caplog.at_level(logging.DEBUG, logger='google_adk'):
-    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch.object(
+        _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+    ):
       with mock.patch(
           'google.adk.models.google_llm.Gemini.connect'
       ) as mock_connect:
@@ -1420,7 +1480,7 @@ async def test_live_session_resumption_go_away():
   flow = BaseLlmFlowForTesting()
 
   with mock.patch.object(
-      flow, '_send_to_model', new_callable=AsyncMock
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ) as mock_send:
     mock_connection_2 = mock.AsyncMock()
 
@@ -1495,7 +1555,7 @@ async def test_run_live_no_reconnect_without_handle():
   flow = BaseLlmFlowForTesting()
 
   with mock.patch.object(
-      flow, '_send_to_model', new_callable=AsyncMock
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ) as mock_send:
     with mock.patch(
         'google.adk.models.google_llm.Gemini.connect'
@@ -1535,7 +1595,9 @@ async def test_run_live_ends_cleanly_on_connection_closed_ok():
 
   flow = BaseLlmFlowForTesting()
 
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  with mock.patch.object(
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+  ):
     with mock.patch(
         'google.adk.models.google_llm.Gemini.connect'
     ) as mock_connect:
@@ -1575,7 +1637,9 @@ async def test_run_live_ends_cleanly_on_api_error_1000_without_handle():
 
   flow = BaseLlmFlowForTesting()
 
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  with mock.patch.object(
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+  ):
     with mock.patch(
         'google.adk.models.google_llm.Gemini.connect'
     ) as mock_connect:
@@ -1627,7 +1691,7 @@ async def test_run_live_reconnect_limit():
   flow = BaseLlmFlowForTesting()
 
   with mock.patch.object(
-      flow, '_send_to_model', new_callable=AsyncMock
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ) as mock_send:
     with mock.patch(
         'google.adk.models.google_llm.Gemini.connect'
@@ -1689,7 +1753,7 @@ async def test_run_live_reconnect_reset_attempt():
   flow = BaseLlmFlowForTesting()
 
   with mock.patch.object(
-      flow, '_send_to_model', new_callable=AsyncMock
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
   ) as mock_send:
     with mock.patch(
         'google.adk.models.google_llm.Gemini.connect'
@@ -1711,7 +1775,7 @@ async def test_run_live_reconnect_reset_attempt():
 
 @pytest.mark.asyncio
 async def test_receive_from_model_author_attribution():
-  """Test that _receive_from_model sets the correct author for events based on LlmResponse."""
+  """Test that receive_from_model sets the correct author for events based on LlmResponse."""
   agent = Agent(name='test_agent')
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
@@ -1752,8 +1816,8 @@ async def test_receive_from_model_author_attribution():
 
   events = []
   try:
-    async for event in flow._receive_from_model(
-        mock_connection, invocation_context, LlmRequest()
+    async for event in _live_llm_flow.receive_from_model(
+        flow, mock_connection, invocation_context, LlmRequest()
     ):
       events.append(event)
   except StopTest:
@@ -1785,7 +1849,7 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 
   flow = BaseLlmFlowForTesting()
 
-  # Mock _receive_from_model to yield an event that triggers transfer
+  # Mock receive_from_model to yield an event that triggers transfer
   part = types.Part(
       function_response=types.FunctionResponse(name='transfer_to_agent')
   )
@@ -1812,8 +1876,6 @@ async def test_run_live_clears_resumption_handle_on_transfer():
     else:
       raise StopTest()
 
-  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
-
   # Mock _get_agent_to_run to return a mock agent
   mock_sub_agent = mock.Mock()
   mock_sub_agent.run_live = mock.Mock()
@@ -1829,12 +1891,18 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 
   flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
 
-  # Mock _send_to_model to prevent it from running indefinitely
-  flow._send_to_model = mock.AsyncMock()
-
-  with mock.patch(
-      'google.adk.models.google_llm.Gemini.connect'
-  ) as mock_connect:
+  with (
+      mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
+      mock.patch.object(
+          _live_llm_flow,
+          'receive_from_model',
+          side_effect=mock_receive_from_model,
+      ),
+      # Prevent send_to_model from running indefinitely.
+      mock.patch.object(
+          _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+      ),
+  ):
     mock_connection = mock.AsyncMock()
     mock_connect.return_value.__aenter__.return_value = mock_connection
 
@@ -1877,7 +1945,7 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 @pytest.mark.asyncio
 async def test_run_live_transfer_is_independent_of_response_order(
     function_response_names: tuple[str, ...],
-    transfer_action: Optional[str],
+    transfer_action: str | None,
     expect_transfer: bool,
 ):
   """Live transfer keys off the action, not the transfer response's position."""
@@ -1923,8 +1991,6 @@ async def test_run_live_transfer_is_independent_of_response_order(
     yield function_response_event
     yield follow_up_event
 
-  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
-
   mock_sub_agent = mock.Mock()
 
   async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
@@ -1934,14 +2000,20 @@ async def test_run_live_transfer_is_independent_of_response_order(
   mock_sub_agent.run_live = mock.Mock(side_effect=mock_run_live_sub_agent)
   flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
 
-  # Mock _send_to_model to prevent it from running indefinitely
-  flow._send_to_model = mock.AsyncMock()
-
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
           'google.adk.live._live_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
           0,
+      ),
+      mock.patch.object(
+          _live_llm_flow,
+          'receive_from_model',
+          side_effect=mock_receive_from_model,
+      ),
+      # Prevent send_to_model from running indefinitely.
+      mock.patch.object(
+          _live_llm_flow, 'send_to_model', new_callable=AsyncMock
       ),
   ):
     mock_connection = mock.AsyncMock()
@@ -2026,16 +2098,20 @@ async def test_run_live_task_completion_is_independent_of_response_order(
     yield function_response_event
     yield follow_up_event
 
-  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
-
-  # Mock _send_to_model to prevent it from running indefinitely
-  flow._send_to_model = mock.AsyncMock()
-
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
           'google.adk.live._live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
           0,
+      ),
+      mock.patch.object(
+          _live_llm_flow,
+          'receive_from_model',
+          side_effect=mock_receive_from_model,
+      ),
+      # Prevent send_to_model from running indefinitely.
+      mock.patch.object(
+          _live_llm_flow, 'send_to_model', new_callable=AsyncMock
       ),
   ):
     mock_connect.return_value.__aenter__.return_value = mock.AsyncMock()
@@ -2050,7 +2126,7 @@ async def test_run_live_task_completion_is_independent_of_response_order(
 
 @pytest.mark.asyncio
 async def test_postprocess_live_yields_grounding_metadata_only():
-  """Test that _postprocess_live yields LlmResponse with only grounding_metadata."""
+  """Test that postprocess_live_flow yields LlmResponse with only grounding_metadata."""
   agent = Agent(name='test_agent')
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
@@ -2069,8 +2145,8 @@ async def test_postprocess_live_yields_grounding_metadata_only():
   )
 
   events = []
-  async for event in flow._postprocess_live(
-      invocation_context, llm_request, llm_response, model_response_event
+  async for event in _live_llm_flow.postprocess_live_flow(
+      flow, invocation_context, llm_request, llm_response, model_response_event
   ):
     events.append(event)
 
@@ -2134,9 +2210,11 @@ async def test_run_live_reconnect_does_not_set_transparent():
 
   flow = BaseLlmFlowForTesting()
 
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  with mock.patch.object(
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+  ):
 
-    async def mock_preprocess(ctx, req):
+    async def mock_preprocess(ctx, req, **_):
       req.live_connect_config.session_resumption = (
           ctx.run_config.session_resumption
       )
@@ -2206,9 +2284,11 @@ async def test_run_live_reconnect_sets_transparent_for_vertex():
 
   flow = BaseLlmFlowForTesting()
 
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  with mock.patch.object(
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+  ):
 
-    async def mock_preprocess(ctx, req):
+    async def mock_preprocess(ctx, req, **_):
       req.live_connect_config.session_resumption = (
           ctx.run_config.session_resumption
       )
@@ -2273,7 +2353,7 @@ async def test_run_live_history_config_set_for_all_backends(api_backend):
 
   flow = BaseLlmFlowForTesting()
 
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
     from google.adk.flows.llm_flows.basic import _build_basic_request
 
@@ -2283,7 +2363,9 @@ async def test_run_live_history_config_set_for_all_backends(api_backend):
   with mock.patch.object(
       flow, '_preprocess_async', side_effect=mock_preprocess
   ):
-    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch.object(
+        _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+    ):
 
       class StopTestError(Exception):
         pass
@@ -2345,7 +2427,7 @@ async def test_run_live_respects_explicit_initial_history_in_client_content_fals
 
   flow = BaseLlmFlowForTesting()
 
-  async def mock_preprocess(ctx, req):
+  async def mock_preprocess(ctx, req, **_):
     req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
     from google.adk.flows.llm_flows.basic import _build_basic_request
 
@@ -2355,7 +2437,9 @@ async def test_run_live_respects_explicit_initial_history_in_client_content_fals
   with mock.patch.object(
       flow, '_preprocess_async', side_effect=mock_preprocess
   ):
-    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch.object(
+        _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+    ):
 
       class StopTestError(Exception):
         pass
@@ -2745,50 +2829,8 @@ async def test_thought_before_tool_call_in_non_progressive_sse_does_not_error():
 
 
 @pytest.mark.asyncio
-async def test_postprocess_live_skips_none_function_response_event():
-  """When every live function call defers, no None event must be yielded.
-
-  handle_function_calls_live returns None if all calls are long-running, and
-  yielding that None downstream crashes the live receive loop.
-  """
-  from google.adk.flows.llm_flows import base_llm_flow as blf
-
-  agent = Agent(name='test_agent', model='gemini-2.0-flash')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  flow = BaseLlmFlowForTesting()
-
-  fc_part = types.Part(
-      function_call=types.FunctionCall(name='lro', id='1', args={})
-  )
-  content = types.Content(role='model', parts=[fc_part])
-  model_response_event = Event(
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-      content=content,
-  )
-  llm_request = LlmRequest(model='gemini-2.0-flash')
-  llm_response = LlmResponse(content=content)
-
-  with mock.patch.object(
-      blf.functions,
-      'handle_function_calls_live',
-      new=AsyncMock(return_value=None),
-  ):
-    events = [
-        event
-        async for event in flow._postprocess_live(
-            invocation_context, llm_request, llm_response, model_response_event
-        )
-    ]
-
-  assert all(event is not None for event in events)
-
-
-@pytest.mark.asyncio
 async def test_send_to_model_rejects_function_call():
-  """Test that _send_to_model raises ValueError if user message contains function calls."""
+  """Test that send_to_model raises ValueError if user message contains function calls."""
   agent = Agent(name='test_agent')
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
@@ -2819,7 +2861,9 @@ async def test_send_to_model_rejects_function_call():
   with pytest.raises(
       ValueError, match='User message cannot contain function calls'
   ):
-    await flow._send_to_model(mock_connection, invocation_context, LlmRequest())
+    await _live_llm_flow.send_to_model(
+        flow, mock_connection, invocation_context, LlmRequest()
+    )
 
 
 @pytest.mark.asyncio
@@ -3090,7 +3134,7 @@ async def test_preprocess_final_response_skips_llm_call():
   )
   function_response_event.actions.skip_summarization = True
 
-  async def mock_preprocess(_ctx, _request):
+  async def mock_preprocess(_ctx, _request, **_):
     yield function_response_event
 
   async def fail_if_llm_called(*_args, **_kwargs):
@@ -3147,7 +3191,7 @@ async def test_preprocess_non_function_response_does_not_skip_llm_call():
   )
   assert processing_file_event.is_final_response()
 
-  async def mock_preprocess(_ctx, _request):
+  async def mock_preprocess(_ctx, _request, **_):
     yield processing_file_event
 
   with mock.patch.object(
@@ -3534,7 +3578,9 @@ async def _run_live_until_closed(closure: BaseException, *, queue_closed: bool):
     invocation_context.live_request_queue.close()
 
   flow = BaseLlmFlowForTesting()
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  with mock.patch.object(
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+  ):
     aenter = mock.AsyncMock()
     aenter.side_effect = [connection]
     with mock.patch('google.adk.models.google_llm.Gemini.connect') as connect:
@@ -3597,7 +3643,9 @@ async def test_eof_connection_ends_the_run_instead_of_spinning():
   invocation_context.live_request_queue = LiveRequestQueue()
 
   flow = BaseLlmFlowForTesting()
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  with mock.patch.object(
+      _live_llm_flow, 'send_to_model', new_callable=AsyncMock
+  ):
     aenter = mock.AsyncMock()
     aenter.side_effect = [connection]
     with mock.patch('google.adk.models.google_llm.Gemini.connect') as connect:
@@ -3775,3 +3823,56 @@ async def test_run_async_aborted_between_steps_breaks_outer_loop():
 
   assert step_invocations == 1
   assert yielded_events == [fc_event]
+
+
+@pytest.mark.asyncio
+async def test_model_response_event_timestamp_matches_yield_order():
+  """Model-response event is stamped when built, after earlier step events."""
+  now = 1_000.0
+  platform_time.set_time_provider(lambda: now)
+
+  class _ClockAdvancingLlm(BaseLlm):
+    model: str = 'clock-advancing'
+
+    async def generate_content_async(self, llm_request, stream=False):
+      nonlocal now
+      now = 2_000.0
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='hi')]
+          )
+      )
+
+  class _StateUpdatingPlanner(BasePlanner):
+
+    def build_planning_instruction(self, readonly_context, llm_request):
+      return None
+
+    def process_planning_response(self, callback_context, response_parts):
+      nonlocal now
+      now = 3_000.0
+      callback_context.state['plan'] = 'step 1'
+      return None
+
+  try:
+    agent = Agent(
+        name='test_agent',
+        model=_ClockAdvancingLlm(),
+        planner=_StateUpdatingPlanner(),
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='test message'
+    )
+    flow = SingleFlow()
+
+    events = []
+    async for event in flow.run_async(invocation_context):
+      events.append(event)
+      now += 1_000.0
+  finally:
+    platform_time.reset_time_provider()
+
+  assert len(events) == 2
+  assert events[0].actions.state_delta == {'plan': 'step 1'}
+  assert events[1].content.parts[0].text == 'hi'
+  assert [e.timestamp for e in events] == [3_000.0, 4_000.0]

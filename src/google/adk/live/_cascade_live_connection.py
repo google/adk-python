@@ -36,6 +36,8 @@ from ..models.base_llm_connection import BaseLlmConnection
 from ..models.base_llm_connection import RealtimeInput
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
+from ..utils._client_labels_utils import CASCADE_LIVE_CLIENT_LABEL
+from ..utils.content_utils import _filter_media_history
 from ..utils.context_utils import Aclosing
 from ._cascade_live_events import AgentSpokenOutput
 from ._cascade_live_events import AudioChunk
@@ -62,6 +64,42 @@ _DEFAULT_PCM_RATE = 24000
 
 # Clock for playback timing. Tests patch this instead of `time.perf_counter`.
 _now = time.perf_counter
+
+# Headers that Google APIs log as the client identity.
+_TRACKING_HEADER_KEYS = ('x-goog-api-client', 'user-agent')
+
+
+def _sends_google_tracking_headers(llm: BaseLlm) -> bool:
+  """Whether `llm` calls Google APIs, which accept ADK tracking headers.
+
+  Other models must not get them: `LiteLlm` forwards
+  `config.http_options.headers` to whichever provider it routes to.
+  """
+  from ..models.google_llm import Gemini  # pylint: disable=g-import-not-at-top
+
+  return isinstance(llm, Gemini)
+
+
+def _with_client_label(
+    config: Optional[types.GenerateContentConfig], label: str
+) -> types.GenerateContentConfig:
+  """Returns a copy of `config` whose tracking headers also carry `label`.
+
+  `Gemini` merges these headers with its own tracking headers, keeping any
+  outer label (such as the eval label) alongside `label`.
+  """
+  config = config.model_copy() if config else types.GenerateContentConfig()
+  http_options = (
+      config.http_options.model_copy()
+      if config.http_options
+      else types.HttpOptions()
+  )
+  headers = dict(http_options.headers or {})
+  for key in _TRACKING_HEADER_KEYS:
+    headers[key] = f'{headers[key]} {label}' if headers.get(key) else label
+  http_options.headers = headers
+  config.http_options = http_options
+  return config
 
 
 def _pcm_duration_ms(blob: types.Blob) -> float:
@@ -133,8 +171,11 @@ class CascadeLiveConnection(BaseLlmConnection):
     # Replayed to the LLM on every turn. One rule governs what lands
     # here: only *completed* content, and assistant text only as the egress
     # reported it (`AgentSpokenOutput`), never as the LLM generated it. See
-    # `_run_turn`.
-    self._contents: list[types.Content] = list(llm_request.contents or [])
+    # `_run_turn`. Seeded history drops audio and saved live blobs, as in
+    # `send_history`.
+    self._contents: list[types.Content] = _filter_media_history(
+        llm_request.contents or []
+    )
 
     # Client audio frames consumed by the STT transform; `None` ends the
     # current audio segment.
@@ -177,12 +218,27 @@ class CascadeLiveConnection(BaseLlmConnection):
     self._ingress_task = asyncio.create_task(self._pump_ingress())
 
   # ------------------------------------------------------------------
-  # Inbound: the flow's `_send_to_model` calls these.
+  # Inbound: `send_to_model` calls these.
   # ------------------------------------------------------------------
 
   async def send_history(self, history: list[types.Content]) -> None:
-    """Seeds the conversation. Does not itself trigger reasoning."""
-    self._contents = list(history)
+    """Seeds the conversation, and replies if it ends with a user turn.
+
+    As `BaseLlmConnection.send_history` requires: a history ending in a user
+    turn, such as a workflow node's input or an agent transfer, gets a reply
+    without waiting for new input.
+
+    Audio and saved live blobs are dropped, as `GeminiLlmConnection` drops
+    them: the audio was already transcribed into the history's text turns, and
+    the `artifact://` references that `save_live_blob` leaves cannot be
+    resolved by the model, so a Gemini request carrying one fails.
+
+    Args:
+      history: The conversation so far, replacing any seeded contents.
+    """
+    self._contents = _filter_media_history(history)
+    if self._contents and self._contents[-1].role == 'user':
+      self._start_reasoning()
 
   async def send_content(self, content: types.Content) -> None:
     """Appends a turn-completing content and starts reasoning.
@@ -227,7 +283,7 @@ class CascadeLiveConnection(BaseLlmConnection):
       )
 
   # ------------------------------------------------------------------
-  # Outbound: the flow's `_receive_from_model` drives this.
+  # Outbound: `receive_from_model` drives this.
   # ------------------------------------------------------------------
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
@@ -627,6 +683,13 @@ class CascadeLiveConnection(BaseLlmConnection):
     request = self._llm_request.model_copy(deep=False)
     request.model = self._llm.model
     request.contents = list(self._contents)
+    # Tag the reasoning request so it can be told apart from non-live turns.
+    # A per-request header, rather than `client_label_context`, keeps the label
+    # off STT and TTS requests and works across the tasks that read this turn.
+    if _sends_google_tracking_headers(self._llm):
+      request.config = _with_client_label(
+          request.config, CASCADE_LIVE_CLIENT_LABEL
+      )
     return request
 
   # ------------------------------------------------------------------

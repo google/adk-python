@@ -91,6 +91,24 @@ _RESERVED_TOOL_NAMES = frozenset({
 _UNSET = object()
 
 
+def _merge_auth_and_provider_headers(
+    *,
+    auth_headers: dict[str, str] | None,
+    provider_headers: dict[str, str] | None,
+) -> dict[str, str]:
+  """Merges MCP session headers, with explicit auth taking precedence."""
+  headers = dict(provider_headers or {})
+  if auth_headers:
+    auth_header_names = {name.lower() for name in auth_headers}
+    headers = {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in auth_header_names
+    }
+    headers.update(auth_headers)
+  return headers
+
+
 # Values the server owns: free-form JSON, not model fields. A `_meta` inside
 # one is the server's own -- a JSON Schema may even declare a property by that
 # name -- so the walk below must not descend into them.
@@ -184,6 +202,32 @@ def _read_field(model: Any, *names: str) -> Any:
   )
 
 
+def _extract_mcp_tool_title(mcp_tool: McpBaseTool) -> str | None:
+  """Extracts the human-readable display title from an MCP Tool.
+
+  Per the MCP specification, top-level ``tool.title`` takes precedence over
+  ``tool.annotations.title``. Leading and trailing whitespace is stripped, and
+  empty or whitespace-only values return ``None``. Attributes are read with
+  ``getattr`` so older ``mcp`` 1.x releases without ``BaseMetadata.title`` and
+  lightweight test stubs that omit ``title`` or ``annotations`` still work.
+
+  Args:
+    mcp_tool: The raw MCP Tool model.
+
+  Returns:
+    The stripped display title, or ``None`` if unset.
+  """
+  raw_title = getattr(mcp_tool, "title", None)
+  if isinstance(raw_title, str) and raw_title.strip():
+    return raw_title.strip()
+  annotations = getattr(mcp_tool, "annotations", None)
+  if annotations is not None:
+    annotation_title = getattr(annotations, "title", None)
+    if isinstance(annotation_title, str) and annotation_title.strip():
+      return annotation_title.strip()
+  return None
+
+
 class ProgressFnT(Protocol):
   """The call signature a progress callback must have.
 
@@ -203,6 +247,9 @@ class ProgressFnT(Protocol):
       message: str | None,
   ) -> None:
     ...
+
+
+_ConfirmationPredicate = Callable[..., bool | Awaitable[bool]]
 
 
 @runtime_checkable
@@ -294,7 +341,7 @@ class McpTool(BaseAuthenticatedTool):
       ) = None,
       progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
       propagate_grounding_metadata: bool = False,
-  ):
+  ) -> None:
     """Initializes an McpTool.
 
     This tool wraps an MCP Tool interface and uses a session manager to
@@ -344,6 +391,7 @@ class McpTool(BaseAuthenticatedTool):
         if auth_scheme
         else None,
     )
+    self.title = _extract_mcp_tool_title(mcp_tool)
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
     self._require_confirmation = require_confirmation
@@ -464,7 +512,8 @@ class McpTool(BaseAuthenticatedTool):
     # Format: meta.ui.visibility
     ui = meta.get("ui", {})
     if isinstance(ui, dict):
-      return ui.get("visibility", [])
+      # The MCP Apps extension defines visibility as a list of strings.
+      return cast(list[str], ui.get("visibility", []))
     return []
 
   @property
@@ -497,11 +546,16 @@ class McpTool(BaseAuthenticatedTool):
     return None
 
   async def _invoke_callable(
-      self, target: Callable[..., Any], args_to_call: dict[str, Any]
-  ) -> Any:
+      self,
+      target: _ConfirmationPredicate,
+      args_to_call: dict[str, Any],
+  ) -> bool:
     """Invokes a callable, handling both sync and async cases."""
-    return await _invoke_callable(
-        target, args_to_call, unwrapped=unwrap_callable(target)
+    return cast(
+        bool,
+        await _invoke_callable(
+            target, args_to_call, unwrapped=unwrap_callable(target)
+        ),
     )
 
   def _prepare_callable_args(
@@ -546,9 +600,8 @@ class McpTool(BaseAuthenticatedTool):
       args_to_call = self._prepare_callable_args(
           self._require_confirmation, args, tool_context
       )
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      return await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
     return bool(self._require_confirmation)
 
@@ -630,7 +683,11 @@ class McpTool(BaseAuthenticatedTool):
 
   @override
   async def _run_async_impl(
-      self, *, args, tool_context: ToolContext, credential: AuthCredential
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      credential: AuthCredential,
   ) -> dict[str, Any]:
     """Runs the tool asynchronously.
 
@@ -643,19 +700,20 @@ class McpTool(BaseAuthenticatedTool):
     """
     # Extract headers from credential for session pooling
     auth_headers = await self._get_headers(tool_context, credential)
-    dynamic_headers = None
+    dynamic_headers: dict[str, str] | None = None
     if self._header_provider:
-      dynamic_headers = self._header_provider(
+      provided_headers = self._header_provider(
           ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
-      if inspect.isawaitable(dynamic_headers):
-        dynamic_headers = await dynamic_headers
+      if inspect.isawaitable(provided_headers):
+        dynamic_headers = await provided_headers
+      else:
+        dynamic_headers = provided_headers
 
-    headers: dict[str, str] = {}
-    if auth_headers:
-      headers.update(auth_headers)
-    if dynamic_headers:
-      headers.update(dynamic_headers)
+    headers = _merge_auth_and_provider_headers(
+        auth_headers=auth_headers,
+        provider_headers=dynamic_headers,
+    )
     final_headers = headers if headers else None
 
     # Propagate trace context in the _meta field as sprcified by MCP protocol.
@@ -670,6 +728,90 @@ class McpTool(BaseAuthenticatedTool):
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
+    try:
+      response = await self._call_tool_on_session(
+          session, final_headers, args, resolved_callback, meta_trace_context
+      )
+    except Exception as e:
+      if not _is_session_terminated_error(e):
+        raise
+      # The server rejected the pooled session id (restart or idle eviction)
+      # before running the tool, so no side effect happened and one retry on
+      # a fresh session is safe. `_call_tool_on_session` already discarded
+      # the dead session from the pool, so `_create_session` builds a new one.
+      logger.info(
+          "MCP session was terminated server-side; retrying %s on a fresh"
+          " session.",
+          self._mcp_tool.name,
+      )
+      session = await self._create_session(headers=final_headers)
+      response = await self._call_tool_on_session(
+          session, final_headers, args, resolved_callback, meta_trace_context
+      )
+
+    # Keep the caller's key names off the installed SDK's field naming.
+    result = _dump_mcp_model(response)
+    self._store_grounding_metadata_from_result(result, tool_context)
+
+    # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
+    # feature, not compatibility. Not dropped on 1.x, where a key of that name
+    # could only be a server extra.
+    if IS_MCP_SDK_V2:
+      result.pop("resultType", None)
+
+    # Push UI widget to the event actions if the tool supports it. Dump the
+    # tool: `payload` is a plain dict, so a model left in it gets serialized by
+    # whichever sink writes the event, and the sinks disagree -- `inputSchema`
+    # from those passing `by_alias`, `input_schema` from the session stores.
+    if self.mcp_app_resource_uri:
+      # Tests and external subclasses pass duck-typed tools that cannot be
+      # dumped. Pass those through rather than fail a call that succeeded.
+      tool_payload: Any = self._mcp_tool
+      if hasattr(tool_payload, "model_dump"):
+        tool_payload = _dump_mcp_model(tool_payload)
+      tool_context.render_ui_widget(
+          UiWidget(
+              id=tool_context.function_call_id,
+              provider="mcp",
+              payload={
+                  "resource_uri": self.mcp_app_resource_uri,
+                  "tool": tool_payload,
+                  "tool_args": args,
+              },
+          )
+      )
+    return result
+
+  async def _call_tool_on_session(
+      self,
+      session: ClientSession,
+      final_headers: dict[str, str] | None,
+      args: dict[str, Any],
+      resolved_callback: ProgressFnT | None,
+      meta_trace_context: dict[str, str] | None,
+  ) -> Any:
+    """Runs one tool call on `session`.
+
+    If the server reports the session as terminated (it restarted or evicted
+    the session id), the pooled session is discarded before the error
+    propagates: its local streams and background task still look healthy, so
+    without this every later call would keep reusing the dead session.
+
+    Args:
+        session: The pooled session to run the call on.
+        final_headers: The headers the session was created with, as passed to
+          ``create_session``.
+        args: The arguments to pass to the tool.
+        resolved_callback: The progress callback for this invocation, if any.
+        meta_trace_context: Trace context to send in the request ``_meta``.
+
+    Returns:
+        The raw result of the tool call.
+
+    Raises:
+        Exception: Whatever the call raised; a session-terminated error has
+          already had its session discarded from the pool.
+    """
     call_coro = session.call_tool(
         self._mcp_tool.name,
         arguments=args,
@@ -717,41 +859,9 @@ class McpTool(BaseAuthenticatedTool):
               final_headers, session=session
           )
         raise
+      return response
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
-
-    # Keep the caller's key names off the installed SDK's field naming.
-    result = _dump_mcp_model(response)
-    self._store_grounding_metadata_from_result(result, tool_context)
-
-    # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
-    # feature, not compatibility. Not dropped on 1.x, where a key of that name
-    # could only be a server extra.
-    if IS_MCP_SDK_V2:
-      result.pop("resultType", None)
-
-    # Push UI widget to the event actions if the tool supports it. Dump the
-    # tool: `payload` is a plain dict, so a model left in it gets serialized by
-    # whichever sink writes the event, and the sinks disagree -- `inputSchema`
-    # from those passing `by_alias`, `input_schema` from the session stores.
-    if self.mcp_app_resource_uri:
-      # Tests and external subclasses pass duck-typed tools that cannot be
-      # dumped. Pass those through rather than fail a call that succeeded.
-      tool_payload: Any = self._mcp_tool
-      if hasattr(tool_payload, "model_dump"):
-        tool_payload = _dump_mcp_model(tool_payload)
-      tool_context.render_ui_widget(
-          UiWidget(
-              id=tool_context.function_call_id,
-              provider="mcp",
-              payload={
-                  "resource_uri": self.mcp_app_resource_uri,
-                  "tool": tool_payload,
-                  "tool_args": args,
-              },
-          )
-      )
-    return result
 
   def _store_grounding_metadata_from_result(
       self, result: dict[str, Any], tool_context: ToolContext
@@ -825,7 +935,7 @@ class McpTool(BaseAuthenticatedTool):
     return cast(ProgressFnT, self._progress_callback)
 
   async def _get_headers(
-      self, tool_context: ToolContext, credential: AuthCredential
+      self, tool_context: ToolContext, credential: AuthCredential | None
   ) -> dict[str, str] | None:
     """Extracts authentication headers from credentials.
 
@@ -843,7 +953,13 @@ class McpTool(BaseAuthenticatedTool):
     headers: dict[str, str] | None = None
     if credential:
       if credential.oauth2:
-        headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+        # Mirror build_auth_headers: an OAuth2 credential stays on this branch
+        # even without a token, so an empty token yields no header rather than
+        # falling through to an unrelated HTTP credential on the same object.
+        if credential.oauth2.access_token:
+          headers = {
+              "Authorization": f"Bearer {credential.oauth2.access_token}"
+          }
       elif credential.http:
         # Handle HTTP authentication schemes
         if (
@@ -877,10 +993,11 @@ class McpTool(BaseAuthenticatedTool):
           headers = headers or {}
           headers.update(credential.http.additional_headers)
       elif credential.api_key:
-        if (
-            not self._credentials_manager
-            or not self._credentials_manager._auth_config
-        ):
+        credentials_manager = self._credentials_manager
+        auth_config = (
+            credentials_manager._auth_config if credentials_manager else None
+        )
+        if auth_config is None:
           error_msg = (
               "Cannot find corresponding auth scheme for API key credential."
           )
@@ -891,7 +1008,7 @@ class McpTool(BaseAuthenticatedTool):
           # carry them too, so read them off the scheme rather than requiring
           # an APIKey instance. A scheme with neither used to raise
           # AttributeError here.
-          scheme = self._credentials_manager._auth_config.auth_scheme
+          scheme = auth_config.auth_scheme
           key_location = getattr(scheme, "in_", None)
           key_name = getattr(scheme, "name", None)
           if key_location != APIKeyIn.header:
@@ -923,7 +1040,7 @@ class McpTool(BaseAuthenticatedTool):
 class MCPTool(McpTool):
   """Deprecated name, use `McpTool` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPTool class is deprecated, use `McpTool` instead.",
         DeprecationWarning,

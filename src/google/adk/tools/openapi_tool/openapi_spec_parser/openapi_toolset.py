@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 import logging
 import ssl
@@ -34,6 +35,7 @@ from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
 from ....auth.auth_tool import AuthConfig
+from ...base_tool import BaseTool
 from ...base_toolset import BaseToolset
 from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
@@ -42,6 +44,21 @@ from .rest_api_tool import HttpxClientFactory
 from .rest_api_tool import RestApiTool
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _disambiguate_tool_names(tools: Sequence[BaseTool]) -> None:
+  """Disambiguates colliding tool names in-place within the length limit."""
+  reserved_names = {tool.name for tool in tools}
+  assigned_names: set[str] = set()
+  for tool in tools:
+    if tool.name in assigned_names:
+      base_name = tool.name
+      n = 2
+      while tool.name in assigned_names or tool.name in reserved_names:
+        suffix = f"_{n}"
+        tool.name = base_name[: _MAX_TOOL_NAME_LENGTH - len(suffix)] + suffix
+        n += 1
+    assigned_names.add(tool.name)
 
 
 class OpenAPIToolset(BaseToolset):
@@ -82,6 +99,7 @@ class OpenAPIToolset(BaseToolset):
       ] = None,
       httpx_client_factory: Optional[HttpxClientFactory] = None,
       preserve_property_names: bool = False,
+      allow_private_network_access: bool = False,
   ) -> None:
     """Initializes the OpenAPIToolset.
 
@@ -149,6 +167,11 @@ class OpenAPIToolset(BaseToolset):
         useful when calling APIs that expect camelCase or other non-snake_case
         parameter names in the request. Defaults to False for backward
         compatibility.
+      allow_private_network_access: By default, generated tools refuse loopback,
+        private, link-local (including cloud metadata), and ``*.internal`` /
+        ``*.local`` targets and return an error response. Set this to ``True``
+        to allow requests to private networks, localhost, and custom non-DNS
+        transports.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self._header_provider = header_provider
@@ -171,6 +194,7 @@ class OpenAPIToolset(BaseToolset):
       spec_dict = self._load_spec(cast(str, spec_str), spec_str_type)
     self._ssl_verify = ssl_verify
     self._httpx_client_factory = httpx_client_factory
+    self._allow_private_network_access = allow_private_network_access
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
@@ -265,20 +289,12 @@ class OpenAPIToolset(BaseToolset):
             ssl_verify=self._ssl_verify,
             header_provider=self._header_provider,
             httpx_client_factory=self._httpx_client_factory,
+            allow_private_network_access=self._allow_private_network_access,
         )
         for o in operations
     ]
-    reserved_names = {t.name for t in tools}
-    assigned_names: set[str] = set()
+    _disambiguate_tool_names(tools)
     for tool in tools:
-      if tool.name in assigned_names:
-        base_name = tool.name
-        n = 2
-        while tool.name in assigned_names or tool.name in reserved_names:
-          suffix = f"_{n}"
-          tool.name = base_name[: _MAX_TOOL_NAME_LENGTH - len(suffix)] + suffix
-          n += 1
-      assigned_names.add(tool.name)
       logger.info("Parsed tool: %s", tool.name)
     return tools
 

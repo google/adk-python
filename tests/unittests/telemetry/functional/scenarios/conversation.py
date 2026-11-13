@@ -22,6 +22,9 @@ themselves live in the ``*_scenario`` modules that share these.
 from __future__ import annotations
 
 from google.genai.types import GenerateContentResponseUsageMetadata
+from google.genai.types import GroundingChunk
+from google.genai.types import GroundingChunkWeb
+from google.genai.types import GroundingMetadata
 from google.genai.types import Part
 
 USER_PROMPT = "hello"
@@ -129,6 +132,20 @@ NESTED_TURN_USAGE = GenerateContentResponseUsageMetadata(
     candidates_token_count=NESTED_TURN_CANDIDATES_TOKEN_COUNT,
     thoughts_token_count=NESTED_TURN_THOUGHTS_TOKEN_COUNT,
     total_token_count=NESTED_TURN_TOTAL_TOKEN_COUNT,
+)
+
+# What Gemini returns when the final answer is grounded by a built-in search
+# tool such as ``google_search``.
+GROUNDING_METADATA = GroundingMetadata(
+    web_search_queries=["adk release", "google-adk pypi"],
+    grounding_chunks=[
+        GroundingChunk(
+            web=GroundingChunkWeb(uri="https://a.test/1", title="A")
+        ),
+        GroundingChunk(
+            web=GroundingChunkWeb(uri="https://b.test/2", title="B")
+        ),
+    ],
 )
 
 # One canned model response: what it answers, and what it bills for it.

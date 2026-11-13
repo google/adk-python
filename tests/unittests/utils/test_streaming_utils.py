@@ -1961,6 +1961,44 @@ class TestJsonPathHelpers:
 
 class TestJsonPathTracker:
 
+  def test_tracker_huge_integer_returns_no_diffs(self):
+    """An integer over the int max str digits limit gives no partial args."""
+    tracker = streaming_utils._JsonPathTracker()
+
+    assert tracker.handle_chunk('{"a": ' + "1" * 5000 + "}") == []
+
+  def test_tracker_integer_too_large_for_a_float_has_no_value(self):
+    """An integer past the float range gives a valueless partial arg."""
+    tracker = streaming_utils._JsonPathTracker()
+
+    diffs = tracker.handle_chunk('{"a": 1' + "0" * 400 + "}")
+
+    assert len(diffs) == 1
+    assert diffs[0].json_path == "$.a"
+    assert diffs[0].number_value is None
+
+  def test_tracker_deep_nesting_returns_no_diffs(self):
+    """Nesting too deep to diff recursively gives no partial args."""
+    tracker = streaming_utils._JsonPathTracker()
+    depth = 1200
+
+    assert tracker.handle_chunk('{"a":' * depth + "1" + "}" * depth) == []
+
+  def test_tracker_diff_recursion_error_returns_no_diffs(self, monkeypatch):
+    """A diff too deep to walk gives no partial args.
+
+    Whether the decoder or the diff hits the recursion limit first depends on
+    the Python version, so the diff is made to fail instead.
+    """
+    tracker = streaming_utils._JsonPathTracker()
+
+    def raise_recursion_error(*args, **kwargs):
+      raise RecursionError
+
+    monkeypatch.setattr(tracker, "_get_diff", raise_recursion_error)
+
+    assert tracker.handle_chunk('{"a": 1}') == []
+
   def test_tracker_flat_object(self):
     tracker = streaming_utils._JsonPathTracker()
 
@@ -2206,6 +2244,58 @@ class TestJsonPathTracker:
     assert diffs_1 == []
     diffs_2 = tracker.handle_chunk("")
     assert diffs_2 == []
+
+  @pytest.mark.parametrize(
+      "chunks",
+      [
+          ['{"text": "hello ', r"\ud83d", r"\ude00", ' world"}'],
+          [r'{"text": "hello \ud83d', r'\ude00 world"}'],
+          ['{"text": "hello ', r"\uD83D", r"\uDE00", ' world"}'],
+          ['{"text": "hello ', r"\ud83d\u", "de00", ' world"}'],
+      ],
+  )
+  def test_tracker_preserves_surrogate_pairs_across_chunks(
+      self, chunks: list[str]
+  ) -> None:
+    """Streamed emoji arguments remain intact and serializable."""
+    tracker = streaming_utils._JsonPathTracker()
+
+    partial_args = [
+        arg for chunk in chunks for arg in tracker.handle_chunk(chunk)
+    ]
+
+    assert "".join(arg.string_value or "" for arg in partial_args) == (
+        "hello 😀 world"
+    )
+    for arg in partial_args:
+      arg.model_dump_json()
+
+  def test_tracker_streams_literal_surrogate_escape_without_waiting(
+      self,
+  ) -> None:
+    """An escaped backslash is ordinary text, not a surrogate pair."""
+    tracker = streaming_utils._JsonPathTracker()
+
+    partial_args = tracker.handle_chunk(r'{"text": "hello \\ud83d')
+
+    assert len(partial_args) == 1
+    assert partial_args[0].string_value == r"hello \ud83d"
+    assert partial_args[0].will_continue is True
+
+  def test_tracker_resumes_after_unpaired_high_surrogate(self) -> None:
+    """A high surrogate without a low surrogate does not stall streaming."""
+    tracker = streaming_utils._JsonPathTracker()
+
+    first = tracker.handle_chunk('{"text": "a')
+    held = tracker.handle_chunk(r"\ud83d")
+    resumed = tracker.handle_chunk('b"}')
+
+    assert [arg.string_value for arg in first] == ["a"]
+    assert held == []
+    assert len(resumed) == 1
+    assert resumed[0].json_path == "$.text"
+    assert resumed[0].string_value == "\ud83db"
+    assert resumed[0].will_continue is False
 
   def test_tracker_escape_at_chunk_boundary_does_not_corrupt_fast_path(self):
     tracker = streaming_utils._JsonPathTracker()

@@ -380,6 +380,8 @@ class _CallLlmSpanRecorder:
   """Records every `trace_call_llm` call and the spans they write to."""
 
   def __init__(self, monkeypatch: pytest.MonkeyPatch):
+    # Schema v2 drops the `call_llm` span these tests inspect.
+    monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '1')
     self.traced_responses: list[LlmResponse] = []
     self._exporter = InMemorySpanExporter()
     provider = TracerProvider()

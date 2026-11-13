@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
@@ -211,7 +212,10 @@ class _RefreshOutcome(NamedTuple):
 
 
 class ToolAuthHandler:
-  """Handles the preparation and exchange of authentication credentials for tools."""
+  """Handles the preparation and exchange of authentication credentials for tools.
+
+  The credential exchanger's exchange_credential() runs in a worker thread.
+  """
 
   def __init__(
       self,
@@ -359,11 +363,11 @@ class ToolAuthHandler:
       return _RefreshOutcome(credential, False, False)
 
     if force_expiry:
-      # The value must be truthy, not merely non-None: authlib < 1.7 bails out
-      # of is_expired() with "if not expires_at: return None", so 0 would read
-      # as "no expiry known" and skip the refresh. A timestamp of 1 (Jan 1,
-      # 1970 00:00:01 UTC) is expired under every version the
-      # authlib>=1.6.6,<2 pin allows.
+      # OAuth2CredentialRefresher.refresh() checks OAuth2Token.is_expired()
+      # before calling the token endpoint. A timestamp of 1 (Jan 1, 1970
+      # 00:00:01 UTC) is expired under every version the authlib>=1.9.1,<2
+      # pin allows (and remains truthy for any older authlib < 1.7 environment
+      # where "if not expires_at: return None" treated 0 as unknown).
       credential.oauth2.expires_at = 1
       credential.oauth2.expires_in = 0
     elif not await refresher.is_refresh_needed(credential):
@@ -769,7 +773,9 @@ class ToolAuthHandler:
     #    the token store
     # 2. blow line should only do credential conversion
 
-    exchanged_credential = self._exchange_credential(credential)
+    exchanged_credential = await asyncio.to_thread(
+        self._exchange_credential, credential
+    )
     return AuthPreparationResult(
         state="done",
         auth_scheme=self.auth_scheme,

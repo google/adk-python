@@ -1,233 +1,137 @@
-# Cascade Live Agent (ElevenLabs STT + TTS)
+# Cascade Live Agent
 
-## What cascade live mode is
+## Overview
 
-In cascade live mode, the agent's `model` is a `CascadeLive`, which wraps three
-things: a plain text reasoner, an STT transform on the audio-in edge, and a TTS
-transform on the audio-out edge. Speech becomes text, the reasoner answers in
-text, and the answer becomes speech again. Tools and instruction are the same
-as in text mode, while callbacks, tool confirmation, and long-running tools
-follow live-mode semantics, as with any other live model. The same agent
-definition still runs under `run_async` with no live session at all.
+A voice agent built with `CascadeLive`: an STT transform turns the user's
+speech into text, a Gemini text model answers and calls tools, and a TTS
+transform speaks the answer. The agent spells random words out and converts
+temperatures, and stops speaking when the user interrupts it. Tools and
+instruction are the same as in text mode, while
+callbacks, tool confirmation, and long-running tools follow live-mode
+semantics, as with any other live model. The same agent definition still runs
+under `run_async` with no live session at all.
 
-```python
-from google.adk.agents.llm_agent import Agent
-from google.adk.integrations.eleven_labs import ElevenLabsSTT
-from google.adk.integrations.eleven_labs import ElevenLabsTTS
-from google.adk.live import CascadeLive
+The `CASCADE_SPEECH_PROVIDER` environment variable picks where the speech
+transforms come from:
 
-root_agent = Agent(
-    model=CascadeLive(
-        model='gemini-3.5-flash',
-        stt=ElevenLabsSTT(),
-        tts=ElevenLabsTTS(),
-    ),
-    instruction='...',
-    tools=[convert_temperature],
-)
+| `CASCADE_SPEECH_PROVIDER` | Speech to text                        | Text to speech                         | Setup                                        |
+| ------------------------- | ------------------------------------- | -------------------------------------- | -------------------------------------------- |
+| `gemini` (default)        | `GeminiSTT`, Gemini 3.5 Transcribe    | `GeminiTTS`, Gemini 3.8 Flash-Lite TTS | [README_gemini.md](README_gemini.md)         |
+| `elevenlabs`              | `ElevenLabsSTT`, ElevenLabs Scribe v2 | `ElevenLabsTTS`, ElevenLabs Flash v2.5 | [README_elevenlabs.md](README_elevenlabs.md) |
+
+## Setup
+
+1. Set up the credentials of the provider you pick, as its README describes.
+   The reasoner is a Gemini text model, so it needs Google credentials with
+   either provider.
+
+1. Pick the provider in a `.env` file in this directory, which `adk web` loads,
+   or in your shell. Leave it unset for Gemini:
+
+   ```sh
+   CASCADE_SPEECH_PROVIDER=elevenlabs
+   ```
+
+## Run With Dev UI
+
+From the directory that *contains* the `cascade` folder (`samples/live/`),
+start the ADK web server:
+
+```bash
+adk web
 ```
 
-This sample implements both transforms against ElevenLabs. An ElevenLabs
-free-tier account includes enough credits and concurrency to run and test this
-sample locally.
-
-## Get an ElevenLabs API key
-
-1. **Create the key.** Sign up or sign in at [elevenlabs.io](https://elevenlabs.io) (the free plan is sufficient) and
-   create an API key at
-   **[elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys)**
-   (Dashboard → Settings → API Keys).
-
-1. **Set the environment variable.** The sample reads `ELEVENLABS_API_KEY` from
-   the environment:
-
-   Export it in your shell:
-
-   ```bash
-   export ELEVENLABS_API_KEY=sk_...
-   ```
-
-   Alternatively, add it to a local `.env` file in this directory (which is
-   git-ignored) — `adk web` loads it automatically:
-
-   ```bash
-   ELEVENLABS_API_KEY=sk_...
-   ```
-
-1. **Install the SDK.**
-
-   ```bash
-   pip install "google-adk[elevenlabs]"
-   ```
-
-   This installs a supported `elevenlabs` release, which also brings in
-   `websockets` for the realtime recognizer.
-
-## Credentials for the reasoner
-
-The reasoner is an ordinary Gemini text model and authenticates the same way
-every other ADK sample does. Put a `.env` in this directory with either:
-
-```sh
-# Gemini API
-GOOGLE_GENAI_USE_ENTERPRISE=FALSE
-GOOGLE_API_KEY=...
-```
-
-or:
-
-```sh
-# Vertex AI
-GOOGLE_GENAI_USE_ENTERPRISE=TRUE
-GOOGLE_CLOUD_PROJECT=your-project
-GOOGLE_CLOUD_LOCATION=us-central1
-```
-
-Unlike the native-audio samples, the project does **not** need Live API access:
-cascade only ever calls `generate_content` on a text model.
-
-## Run it
-
-1. **Start the ADK web server.** From the directory that *contains* the
-   `cascade` folder (`samples/live/`):
-
-   ```bash
-   adk web
-   ```
-
-1. **Open the ADK web UI** at the URL printed in the terminal, usually
-   `http://localhost:8000`.
-
-1. **Select the agent.** Pick `cascade` from the dropdown in the top-left.
-
-1. **Start streaming.** Click the **Audio** icon next to the chat input.
-
-1. **Talk to it.** Try "Spell five random words." or "What is twenty-three
-   degrees Celsius in Fahrenheit?". You will see the live transcript appear as
-   captions while you speak, and hear the answer back.
-
-1. **Interrupt it.** While it is spelling the words, start talking, for
-   example "Stop. Which words did you spell?". The agent stops speaking and
-   answers with only the words you heard before you interrupted.
-
+Open the URL printed in the terminal, usually `http://localhost:8000`, pick
+`cascade` from the dropdown in the top-left, then click the **Audio** icon next
+to the chat input and speak. Captions of what you say appear while you speak.
 Click **Audio** again to stop streaming. You can stop and restart the stream
 any number of times within the same session.
 
-## Which ElevenLabs models and voices are used
+## Sample Inputs
 
-| Role           | Value                             | Where to change it                     |
-| -------------- | --------------------------------- | -------------------------------------- |
-| Speech to text | `scribe_v2_realtime`              | `ElevenLabsSTT(model_id=...)`          |
-| Text to speech | `eleven_flash_v2_5`               | `ElevenLabsTTS(model_id=...)`          |
-| Voice          | `JBFqnCBsd6RMkjVDRZzb` ("George") | `ElevenLabsTTS(voice_id=...)`          |
-| Output audio   | `24000` (format: `pcm_24000`)     | `ElevenLabsTTS(sample_rate=...)` (int) |
+Say these out loud:
 
-All four can be customized via keyword arguments to `ElevenLabsSTT` and
-`ElevenLabsTTS` in `agent.py` (which currently uses their default values). Browse
-voices at [elevenlabs.io/app/voice-library](https://elevenlabs.io/app/voice-library)
-and paste the Voice ID. `eleven_flash_v2_5` is the low-latency synthesis model
-(~75 ms excluding network); swap in `eleven_multilingual_v2` for better quality
-at higher latency, or `eleven_v3_conversational` for a more expressive delivery.
-See the [models overview](https://elevenlabs.io/docs/overview/models).
+- `Spell five random words.`
 
-## How it works
+  *The model picks five words and spells each one, letter by letter, in a
+  single reply.*
 
-### Speech to text — `ElevenLabsSTT` (`google.adk.integrations.eleven_labs`)
+- `Stop. Which words did you spell?`, said while the agent is still spelling.
 
-This uses **Scribe v2 Realtime**, ElevenLabs' streaming WebSocket recognizer.
-The connection is opened with `commit_strategy=CommitStrategy.VAD`, so the
-server performs voice activity detection and determines utterance boundaries.
+  *The agent stops speaking at once and answers with only the words you heard
+  before you interrupted.*
 
-The mapping onto ADK's ingress events is then direct:
+- `What is twenty-three degrees Celsius in Fahrenheit?`
 
-| Scribe message         | ADK event                                                               |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `partial_transcript`   | `PartialTranscript` (and `UserSpeechStarted` on the first of a segment) |
-| `committed_transcript` | `UserTurnFinished`                                                      |
-| any error message      | Raises `RuntimeError` (which closes the live connection)                |
+  *The model calls `convert_temperature` and reads the result back.*
 
-`UserTurnFinished` is emitted when a commit occurs, which triggers the reasoning
-pass. Empty commits containing only silence are ignored.
+## Graph
 
-Implementation notes:
+```mermaid
+graph TD
+    Agent[cascade_agent] -->|model| Cascade[CascadeLive]
+    Cascade -->|stt| STT(GeminiSTT or ElevenLabsSTT)
+    Cascade -->|reasoner| LLM(gemini-3.8-flash)
+    Cascade -->|tts| TTS(GeminiTTS or ElevenLabsTTS)
+    Agent -->|calls| Convert(convert_temperature)
+```
 
-- The `ElevenLabsSTT` adapter batches incoming audio frames into ~100 ms chunks
-  to match ElevenLabs' streaming recommendations.
-- When the audio stream ends (the microphone is closed), the adapter flushes its
-  buffer, sends an explicit `commit()`, and waits up to `flush_timeout_secs`
-  for the final transcript.
+## How To
 
-**ElevenLabs STT Reference:**
+Set a `CascadeLive` as the agent's `model`, with an STT and a TTS transform,
+and keep the reasoner's thinking low:
 
-- [Server-side streaming](https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/realtime/server-side-streaming)
-- [Transcripts and commit strategies](https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/realtime/transcripts-and-commit-strategies)
-- [Event reference](https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/realtime/event-reference)
+```python
+root_agent = Agent(
+    model=CascadeLive(
+        model='gemini-3.8-flash',
+        stt=GeminiSTT(),  # Or ElevenLabsSTT().
+        tts=GeminiTTS(speech_config='Kore'),  # Or ElevenLabsTTS().
+    ),
+    instruction='...',
+    tools=[convert_temperature],
+    generate_content_config=types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW
+        ),
+    ),
+)
+```
 
-### Text to speech — `ElevenLabsTTS` (`google.adk.integrations.eleven_labs`)
+- **Thinking level**: thinking delays the first word of every reply, so the
+  reasoner thinks at `LOW`, the lowest level Gemini 3.8 Flash supports.
+- **Instruction**: both TTS transforms cut the reply at sentence ends, so the
+  instruction asks for short sentences that end with punctuation; a sentence
+  that never ends waits before it is spoken. It also asks for numbers, symbols,
+  and abbreviations written as words, because the synthesizer reads the text
+  as it is, and an abbreviation such as `Dr.` would end a sentence.
 
-Text deltas from the reasoner are buffered and segmented into sentences using a
-regex heuristic (terminal punctuation `[.!?…]` followed by optional
-quotes/brackets and whitespace or newlines, falling back to a word boundary
-after 240 characters). It streams each complete sentence through
-`text_to_speech.stream()` with `output_format='pcm_24000'` — raw 16-bit
-little-endian PCM, so the bytes are forwarded to the client with no transcode.
-Every `AudioChunk` carries `mime_type='audio/pcm;rate=24000'` so the client plays
-it at the right rate.
+### Limitations
 
-`AgentSpokenOutput` is emitted after a sentence has been synthesized in full to
-record it in conversation history. Synthesis stops when the `cancel` event is
-set, which `CascadeLive` does when the user interrupts the agent (barge-in).
-
-Docs: [stream speech](https://elevenlabs.io/docs/api-reference/text-to-speech/stream).
-
-## Limitations
-
-- **Turn detection relies only on silence.** The recognizer ends the user's
-  turn after a fixed period of silence (`vad_silence_threshold_secs`, 0.8 s by
-  default). Each time it does, it emits a `UserTurnFinished` and the model
-  answers. This causes two problems:
-
-  - If the user pauses mid-sentence (for example, "Convert twenty-three
-    degrees… um… Celsius"), the sentence is split into two turns, and the model
-    answers each one separately.
-  - In a noisy room, the recognizer may never detect silence, so the turn never
-    ends.
-
-  There is no semantic turn detection. To adjust the behavior, tune
-  `vad_silence_threshold_secs`, `vad_threshold`, `min_speech_duration_ms`, and
-  `min_silence_duration_ms`.
-
+- **Turn detection relies on silence.** Both recognizers end the user's turn
+  after a fixed period of silence, so a pause mid-sentence splits it into two
+  turns, and the model answers each one. Each provider's README says how to
+  tune the silence.
 - **Don't speak while a tool is running.** If you finish speaking after the
   model calls a tool but before the tool returns, your words are added to the
   conversation before the tool's result. The model then gets the tool call and
   its result out of order, and this turn and all later turns in the session
   fail. Wait for the agent to answer before you speak again.
-
-- **Sentence splitting uses a simple regex.** `ElevenLabsTTS` splits text after
-  `.`, `!`, `?`, or `…` (followed by optional quotes or brackets and then
-  whitespace), and at line breaks. If no sentence end appears within 240
-  characters, it splits at the last space before that limit.
-
-  - *Abbreviations:* Text such as `Dr. Smith` or `Google Inc.` is split at the
-    period. To avoid this, `agent.py` tells the model to write abbreviations as
-    words (for example, "Doctor"). It also tells the model to end every
-    sentence with punctuation, so each sentence is spoken as soon as it is
-    complete instead of waiting for the 240-character limit.
-  - *Other languages:* The regex works for languages that separate words with
-    spaces and use Latin punctuation. It does not recognize punctuation such as
-    the CJK `。` or the Hindi `।`. Hindi text is still split at the last space
-    before the 240-character limit. Chinese and Japanese text has no spaces, so
-    the whole reply is buffered and spoken only after the model finishes.
-  - *Production use:* Replace the regex with a sentence-boundary library such
-    as `pysbd`, `blingfire`, or `PyICU` (Unicode UAX #29).
-
+- **The agent can hear itself.** The recognizer hears whatever the microphone
+  picks up, so without echo cancellation the agent's own voice from a speaker
+  can count as the user speaking and interrupt the reply. Use headphones if
+  that happens.
 - **Responses are slower than with native audio models.** Each turn runs three
   steps in sequence (recognize, reason, synthesize), whereas a native
   speech-to-speech model runs one. The model also sees only the transcribed
   words, so it cannot perceive the user's tone, and the synthesized speech does
   not carry the model's intent beyond the words.
 
-- **Each audio segment opens a new recognizer session.** `ActivityEnd` and
-  `audio_stream_end` close the current STT session, and the next audio frame
-  opens a new one. Stopping and restarting the microphone works, but each
-  restart adds the time it takes to open a new STT connection.
+## Related Guides
+
+- [CascadeLive](../../../../docs/guides/live/cascade_live/index.md) - How
+  `CascadeLive` composes a text model with STT and TTS transforms.
+- [GeminiSTT](../../../../docs/guides/live/gemini_stt/index.md) - Speech
+  recognition with Gemini streaming transcription.
+- [GeminiTTS](../../../../docs/guides/live/gemini_tts/index.md) - Speech
+  synthesis with Gemini text-to-speech models.

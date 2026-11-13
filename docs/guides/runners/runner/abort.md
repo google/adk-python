@@ -108,7 +108,7 @@ The execution context exposes a member for inspecting the signal:
 | :--------------- | :----- | :--------------------------- | :------------------------------------------------------------ |
 | `ctx.is_aborted` | `bool` | `ReadonlyContext`, `Context` | Returns `True` when an abort signal is present and triggered. |
 
-The `ctx.is_aborted` property allows tools and custom nodes to check whether an external abort has been requested. For voluntary termination from within tools or callbacks (as opposed to external cancellation), tools should set `ctx.end_invocation = True`.
+The `ctx.is_aborted` property allows tools and custom nodes to check whether an external abort has been requested. For voluntary early termination from within an agent turn rather than external cancellation, tools can set `ctx.actions.skip_summarization = True` to finish the turn after the tool response without another model call or `ctx.actions.escalate = True` to escalate out of a loop, `before_agent_callback` and `before_model_callback` can return a response to short-circuit the step, and custom `BaseAgent` subclasses that receive `InvocationContext` directly can set `end_invocation = True` as described in [InvocationContext](../../agents/invocation_context/index.md#short-circuiting-an-agent-call).
 
 ## Advanced applications
 
@@ -171,6 +171,17 @@ Aborting an active invocation mid-turn leaves the session in a consistent state 
 When an agent execution is cancelled while awaiting tool execution, the preceding model event has already recorded the function call into session history. Request building drops function calls that have no matching response, so the next model request stays valid even without a response. Without one, however, the model never learns that the call was aborted, and components that read session history directly see the call as still open: a resumable app would re-run the cancelled tool on resume, and event compaction cannot summarize past the unanswered call.
 
 The runner automatically detects unclosed function calls upon cancellation and appends synthetic function responses containing an error message explaining that the invocation was aborted by the client. For invocations cancelled without pending tool calls, the runner records an abort event authored by the root agent. In both cases, the runner appends these synthetic events to session history and yields them to the caller's event stream, so the model sees that the call was aborted on the next turn, no call is left open in history, and client consumers observe the terminal abort event.
+
+Cancelling the consuming task directly, without an `abort_signal`, seals open
+tool calls the same way, except the calls the invocation is still waiting on:
+long-running calls with no final response, confirmation, credential and input
+requests, the call each such request was raised for, and the call to a
+sub-agent that is waiting on one of them. Those stay open so the invocation can
+resume. Closing the generator early (`aclose()` or `break`)
+deliberately does not seal anything, so paused long-running calls stay
+resumable. If a newer turn updates the session in storage before abort
+cleanup finishes (`StaleSessionError`), the runner skips appending the late
+abort seal event so the newer turn's history is preserved.
 
 ## Limitations
 

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.tools._gemini_schema_util import _dereference_schema
+from google.adk.tools._gemini_schema_util import _resolve_json_pointer
 from google.adk.tools._gemini_schema_util import _sanitize_schema_formats_for_gemini
 from google.adk.tools._gemini_schema_util import _to_gemini_schema
 from google.adk.tools._gemini_schema_util import _to_snake_case
@@ -997,6 +999,182 @@ class TestToGeminiSchema:
     assert (
         gemini_schema.properties["b"].properties["prop_b"].type == Type.STRING
     )
+
+  def test_json_pointer_ref(self):
+    """Test JSON Pointer reference (#/properties/...) resolution."""
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/properties/b"},
+            "b": {"type": "string"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.properties["a"].type == Type.STRING
+
+  def test_json_pointer_ref_with_sibling_fields(self):
+    """Test JSON Pointer reference with sibling fields (overrides)."""
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "a": {
+                "$ref": "#/properties/b",
+                "description": "override description",
+            },
+            "b": {"type": "string", "description": "original description"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.properties["a"].type == Type.STRING
+    assert gemini_schema.properties["a"].description == "override description"
+
+  def test_circular_json_pointer_ref(self):
+    """Test circular JSON Pointer reference."""
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/properties/b"},
+            "b": {"$ref": "#/properties/a"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert "Circular ref" in gemini_schema.properties["a"].description
+
+  def test_json_pointer_to_array_element(self):
+    """Test JSON Pointer to an array element via anyOf."""
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/properties/b/anyOf/0"},
+            "b": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "integer"},
+                ]
+            },
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.properties["a"].type == Type.STRING
+
+  def test_json_pointer_ref_precedence_over_defs_collision(self):
+    """Test JSON Pointer takes precedence when defs has a matching key."""
+    openapi_schema = {
+        "type": "object",
+        "$defs": {
+            "b": {"type": "integer"},
+        },
+        "properties": {
+            "a": {"$ref": "#/properties/b"},
+            "b": {"type": "string"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.properties["a"].type == Type.STRING
+
+  def test_json_pointer_root_ref(self):
+    """Test JSON Pointer "#" root reference."""
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "child": {"$ref": "#"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert (
+        "Circular ref to #"
+        in gemini_schema.properties["child"].properties["child"].description
+    )
+
+  def test_json_pointer_non_dict_target_remains_unresolved(self):
+    """Test JSON Pointer targeting a non-dict node remains unresolved."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/properties/b/type"},
+            "b": {"type": "string"},
+        },
+    }
+    result = _dereference_schema(schema)
+    assert result["properties"]["a"] == {"$ref": "#/properties/b/type"}
+
+  def test_defs_fallback_resolution(self):
+    """Test defs fallback resolves when JSON pointer does not match."""
+    schema = {
+        "type": "object",
+        "$defs": {
+            "Bar": {"type": "string"},
+        },
+        "properties": {
+            "foo": {"$ref": "#/definitions/Bar"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(schema)
+    assert gemini_schema.properties["foo"].type == Type.STRING
+
+  def test_defs_fallback_resolution_openapi_components(self):
+    """Test defs fallback resolves OpenAPI 3.0 #/components/schemas/ $ref."""
+    schema = {
+        "type": "object",
+        "$defs": {
+            "Bar": {"type": "string"},
+        },
+        "properties": {
+            "foo": {"$ref": "#/components/schemas/Bar"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(schema)
+    assert gemini_schema.properties["foo"].type == Type.STRING
+
+
+class TestResolveJsonPointer:
+
+  def test_resolve_json_pointer_root(self):
+    root = {"type": "object", "properties": {"a": {"type": "string"}}}
+    assert _resolve_json_pointer("#", root) == root
+
+  def test_resolve_json_pointer_escaping(self):
+    root = {"a/b": {"c~d": {"type": "string"}}}
+    assert _resolve_json_pointer("#/a~1b/c~0d", root) == {"type": "string"}
+
+  def test_resolve_json_pointer_array_index_valid(self):
+    root = {"items": [{"name": "first"}, {"name": "second"}]}
+    assert _resolve_json_pointer("#/items/0", root) == {"name": "first"}
+    assert _resolve_json_pointer("#/items/1", root) == {"name": "second"}
+
+  def test_resolve_json_pointer_array_index_leading_zeros(self):
+    root = {"items": [{"name": "first"}]}
+    assert _resolve_json_pointer("#/items/01", root) is None
+
+  def test_resolve_json_pointer_array_index_negative(self):
+    root = {"items": [{"name": "first"}]}
+    assert _resolve_json_pointer("#/items/-1", root) is None
+
+  def test_resolve_json_pointer_array_index_non_numeric(self):
+    root = {"items": [{"name": "first"}]}
+    assert _resolve_json_pointer("#/items/abc", root) is None
+
+  def test_resolve_json_pointer_array_index_out_of_bounds(self):
+    root = {"items": [{"name": "first"}]}
+    assert _resolve_json_pointer("#/items/2", root) is None
+
+  def test_resolve_json_pointer_invalid_path(self):
+    root = {"type": "object"}
+    assert _resolve_json_pointer("invalid", root) is None
+    assert _resolve_json_pointer("", root) is None
+    assert _resolve_json_pointer("#/nonexistent", root) is None
+
+  def test_resolve_json_pointer_array_index_non_ascii_digit(self):
+    root = {"items": [{"name": "first"}, {"name": "second"}]}
+    assert _resolve_json_pointer("#/items/²", root) is None
+    assert _resolve_json_pointer("#/items/١", root) is None
+
+  def test_resolve_json_pointer_uri_percent_encoding(self):
+    root = {"a b": {"c%d": {"e/f": {"type": "string"}}}}
+    assert _resolve_json_pointer("#/a%20b/c%25d/e%2Ff", root) == {
+        "type": "string"
+    }
 
 
 class TestToSnakeCase:
