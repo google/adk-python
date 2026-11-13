@@ -1134,7 +1134,19 @@ class TestMCPTool:
     assert headers == {"Authorization": "Bearer bearer_token"}
 
   @pytest.mark.asyncio
-  async def test_get_headers_http_basic(self):
+  @pytest.mark.parametrize(
+      "username, password, encoded",
+      [
+          ("user", "pass", "dXNlcjpwYXNz"),
+          ("user", "", "dXNlcjo="),
+          ("", "pass", "OnBhc3M="),
+          ("", "", "Og=="),
+          (None, "pass", None),
+          ("user", None, None),
+          (None, None, None),
+      ],
+  )
+  async def test_get_headers_http_basic(self, username, password, encoded):
     """Test header generation for HTTP Basic credentials."""
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
@@ -1143,7 +1155,7 @@ class TestMCPTool:
 
     http_auth = HttpAuth(
         scheme="basic",
-        credentials=HttpCredentials(username="user", password="pass"),
+        credentials=HttpCredentials(username=username, password=password),
     )
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.HTTP, http=http_auth
@@ -1152,11 +1164,8 @@ class TestMCPTool:
     tool_context = Mock(spec=ToolContext)
     headers = await tool._get_headers(tool_context, credential)
 
-    # Should create Basic auth header with base64 encoded credentials
-    import base64
-
-    expected_encoded = base64.b64encode(b"user:pass").decode()
-    assert headers == {"Authorization": f"Basic {expected_encoded}"}
+    expected = {"Authorization": f"Basic {encoded}"} if encoded else None
+    assert headers == expected
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize(

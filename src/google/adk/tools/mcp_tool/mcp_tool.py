@@ -972,8 +972,8 @@ class McpTool(BaseAuthenticatedTool):
         elif credential.http.scheme.lower() == "basic":
           # Handle basic auth
           if (
-              credential.http.credentials.username
-              and credential.http.credentials.password
+              credential.http.credentials.username is not None
+              and credential.http.credentials.password is not None
           ):
 
             credentials = f"{credential.http.credentials.username}:{credential.http.credentials.password}"
