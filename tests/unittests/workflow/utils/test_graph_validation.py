@@ -14,8 +14,6 @@
 
 """Tests for Graph validation utility."""
 
-import logging
-
 from google.adk.workflow import Edge
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
@@ -29,6 +27,28 @@ from pydantic import ValidationError
 import pytest
 
 from ..workflow_testing_utils import TestingNode
+
+
+def test_workflow_graph_argument_rejects_an_unreachable_node() -> None:
+  """Workflow(graph=...) runs the same reachability check as edges=."""
+
+  def produce():
+    return 'ok'
+
+  def orphan():
+    return 'never'
+
+  with pytest.raises(
+      ValidationError,
+      match=(
+          r'Graph validation failed\. The following nodes are unreachable'
+          r" from START: \['orphan'\]"
+      ),
+  ):
+    Workflow(
+        name='broken',
+        graph=Graph.from_edge_items([(START, produce), (orphan, produce)]),
+    )
 
 
 def test_missing_start_node() -> None:
