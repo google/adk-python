@@ -45,7 +45,7 @@ MOCK_SESSION_1 = Session(
                 parts=[types.Part(text='The ADK is a great toolkit.')]
             ),
         ),
-        # Event with no content, should be ignored by the service
+        # An invocation boundary without searchable content.
         Event(
             id='event-1b',
             invocation_id='inv-2',
@@ -120,10 +120,11 @@ async def test_add_session_to_memory():
   assert user_key in memory_service._session_events
   session_memory = memory_service._session_events[user_key]
   assert MOCK_SESSION_1.id in session_memory
-  # Check that the event with no content was filtered out
-  assert len(session_memory[MOCK_SESSION_1.id]) == 2
+  # Contentless invocation boundaries remain available for later rewinds.
+  assert len(session_memory[MOCK_SESSION_1.id]) == 3
   assert session_memory[MOCK_SESSION_1.id][0].id == 'event-1a'
-  assert session_memory[MOCK_SESSION_1.id][1].id == 'event-1c'
+  assert session_memory[MOCK_SESSION_1.id][1].id == 'event-1b'
+  assert session_memory[MOCK_SESSION_1.id][2].id == 'event-1c'
 
 
 @pytest.mark.asyncio
@@ -231,6 +232,7 @@ async def test_add_events_to_memory_appends_without_replacing():
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a',
+      'event-1b',
       'event-1c',
       'event-1d',
   ]
@@ -260,6 +262,7 @@ async def test_add_events_to_memory_deduplicates_event_ids():
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a',
+      'event-1b',
       'event-1c',
   ]
 
@@ -1111,6 +1114,42 @@ def _rewind_event(rewind_before_invocation_id: str) -> Event:
   )
 
 
+@pytest.mark.parametrize('separate_delta', [False, True])
+async def test_add_events_to_memory_skips_rewound_events(separate_delta):
+  """Incremental ingestion removes recalled turns when a rewind arrives."""
+  service = InMemoryMemoryService()
+  scope = dict(app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID)
+  events = [
+      _text_event('kept', 'trip to paris'),
+      _text_event('rewound', 'address is baker street'),
+  ]
+  await service.add_events_to_memory(
+      **scope,
+      session_id='other',
+      events=[_text_event('other', 'baker elsewhere')],
+  )
+  if separate_delta:
+    await service.add_events_to_memory(
+        **scope, session_id='target', events=events
+    )
+    events = []
+  events += [
+      _rewind_event('inv-rewound'),
+      _text_event('replacement', 'address is maple avenue'),
+  ]
+
+  await service.add_events_to_memory(
+      **scope, session_id='target', events=events
+  )
+
+  old = await service.search_memory(**scope, query='baker')
+  kept = await service.search_memory(**scope, query='paris')
+  replacement = await service.search_memory(**scope, query='maple')
+  assert [m.id for m in old.memories] == ['event-other']
+  assert [m.id for m in kept.memories] == ['event-kept']
+  assert [m.id for m in replacement.memories] == ['event-replacement']
+
+
 @pytest.mark.asyncio
 async def test_add_session_to_memory_skips_rewound_events():
   """Turns a rewind took back are not stored, also when added before it."""
@@ -1137,3 +1176,34 @@ async def test_add_session_to_memory_skips_rewound_events():
   )
   assert not rewound.memories
   assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']
+
+
+@pytest.mark.parametrize('ingest_session', [False, True])
+@pytest.mark.parametrize('delete_anchor', [False, True])
+async def test_incremental_rewind_can_target_an_unsearchable_invocation(
+    ingest_session: bool, delete_anchor: bool
+):
+  """A contentless or deleted invocation still anchors a later rewind."""
+  service = InMemoryMemoryService()
+  scope = dict(app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID)
+  anchor = _text_event('anchor', 'private fact')
+  if not delete_anchor:
+    anchor.content = None
+  events = [anchor, _text_event('later', 'obsolete information')]
+  if ingest_session:
+    await service.add_session_to_memory(
+        Session(**scope, id='target', events=events)
+    )
+  else:
+    await service.add_events_to_memory(
+        **scope, session_id='target', events=events
+    )
+  if delete_anchor:
+    await service.delete_memory(**scope, memory_id=anchor.id)
+
+  await service.add_events_to_memory(
+      **scope, session_id='target', events=[_rewind_event('inv-anchor')]
+  )
+
+  assert not (await service.search_memory(**scope, query='obsolete')).memories
+  assert not (await service.search_memory(**scope, query='private')).memories
