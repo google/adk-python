@@ -155,8 +155,6 @@ class TestCorsMiddlewareConfiguration:
     server = create_adk_web_server()
     app = server.get_fast_api_app(
         allow_origins=allow_origins,
-        setup_observer=lambda _o, _s: None,
-        tear_down_observer=lambda _o, _s: None,
     )
 
     cors_middleware = _get_cors_middleware(app)
@@ -174,8 +172,6 @@ class TestCorsMiddlewareConfiguration:
     server = create_adk_web_server()
     app = server.get_fast_api_app(
         allow_origins=allow_origins,
-        setup_observer=lambda _o, _s: None,
-        tear_down_observer=lambda _o, _s: None,
     )
 
     cors_middleware = _get_cors_middleware(app)
