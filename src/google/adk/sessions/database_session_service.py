@@ -37,6 +37,7 @@ _sqlalchemy_import_error: ImportError | None = None
 try:
   from sqlalchemy import delete
   from sqlalchemy import event
+  from sqlalchemy import func
   from sqlalchemy import inspect
   from sqlalchemy import MetaData
   from sqlalchemy import select
@@ -286,9 +287,40 @@ def _ensure_schema_indexes_exist(
           raise
 
 
+def _ensure_schema_columns_exist(connection: Connection) -> None:
+  """Ensures columns declared in metadata exist for existing tables."""
+  inspector = inspect(connection)
+  if not inspector.has_table("events"):
+    return
+  existing_columns = {col["name"] for col in inspector.get_columns("events")}
+  if "event_index" not in existing_columns:
+    logger.debug("Adding 'event_index' column to existing 'events' table.")
+    dialect = connection.dialect.name
+    if dialect == "spanner":
+      stmt = "ALTER TABLE events ADD COLUMN event_index INT64"
+    elif dialect in ("mssql", "sqlserver"):
+      stmt = "ALTER TABLE events ADD event_index INT DEFAULT 0 NOT NULL"
+    elif dialect == "mysql":
+      stmt = "ALTER TABLE events ADD COLUMN event_index INT DEFAULT 0 NOT NULL"
+    else:
+      stmt = (
+          "ALTER TABLE events ADD COLUMN event_index INTEGER DEFAULT 0 NOT NULL"
+      )
+    try:
+      with connection.begin_nested():
+        connection.exec_driver_sql(stmt)
+    except (OperationalError, ProgrammingError):
+      refreshed = {
+          col["name"] for col in inspect(connection).get_columns("events")
+      }
+      if "event_index" not in refreshed:
+        raise
+
+
 def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
   """Ensures tables and indexes declared in metadata exist."""
   metadata.create_all(bind=connection)
+  _ensure_schema_columns_exist(connection)
   _ensure_schema_indexes_exist(connection, metadata)
 
 
@@ -677,14 +709,17 @@ class DatabaseSessionService(BaseSessionService):
       result = await sql_session.execute(stmt)
       return result.scalar_one_or_none() is None
 
+    order_by_clauses = [schema.StorageEvent.timestamp.desc()]
+    if hasattr(schema.StorageEvent, "event_index"):
+      order_by_clauses.append(schema.StorageEvent.event_index.desc())
+    order_by_clauses.append(schema.StorageEvent.id.desc())
+
     stmt = (
         select(schema.StorageEvent.id)
         .filter(schema.StorageEvent.app_name == session.app_name)
         .filter(schema.StorageEvent.session_id == session.id)
         .filter(schema.StorageEvent.user_id == session.user_id)
-        .order_by(
-            schema.StorageEvent.timestamp.desc(), schema.StorageEvent.id.desc()
-        )
+        .order_by(*order_by_clauses)
         .limit(1)
     )
     result = await sql_session.execute(stmt)
@@ -839,13 +874,16 @@ class DatabaseSessionService(BaseSessionService):
             after_dt = after_dt.replace(tzinfo=None)
           stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-        # Break timestamp ties on id, matching the ordering the stale-session
-        # check uses. Without it the database is free to return tied events in
-        # a different order on every read, so a replayed conversation shuffles
-        # and `num_recent_events` truncates at an arbitrary point in the tie.
-        stmt = stmt.order_by(
-            schema.StorageEvent.timestamp.desc(), schema.StorageEvent.id.desc()
-        )
+        # Break timestamp ties on event_index, matching the ordering the
+        # stale-session check uses. Without it the database is free to return
+        # tied events in a different order on every read, so a replayed
+        # conversation shuffles and `num_recent_events` truncates at an
+        # arbitrary point in the tie.
+        order_by_clauses = [schema.StorageEvent.timestamp.desc()]
+        if hasattr(schema.StorageEvent, "event_index"):
+          order_by_clauses.append(schema.StorageEvent.event_index.desc())
+        order_by_clauses.append(schema.StorageEvent.id.desc())
+        stmt = stmt.order_by(*order_by_clauses)
 
         if config and config.num_recent_events is not None:
           stmt = stmt.limit(config.num_recent_events)
@@ -1083,11 +1121,33 @@ class DatabaseSessionService(BaseSessionService):
         if state_deltas["session"]:
           storage_session.state.update(state_deltas["session"])
 
+        event_index = 0
+        if hasattr(schema.StorageEvent, "event_index"):
+          next_index_stmt = (
+              select(
+                  func.coalesce(func.max(schema.StorageEvent.event_index), -1)
+                  + 1
+              )
+              .filter(schema.StorageEvent.app_name == session.app_name)
+              .filter(schema.StorageEvent.user_id == session.user_id)
+              .filter(schema.StorageEvent.session_id == session.id)
+          )
+          event_index = (
+              await sql_session.execute(next_index_stmt)
+          ).scalar_one()
+
         update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
         if self._uses_naive_datetime():
           update_time = update_time.replace(tzinfo=None)
         storage_session.update_time = update_time
-        sql_session.add(schema.StorageEvent.from_event(session, event))
+        if hasattr(schema.StorageEvent, "event_index"):
+          sql_session.add(
+              schema.StorageEvent.from_event(
+                  session, event, event_index=event_index
+              )
+          )
+        else:
+          sql_session.add(schema.StorageEvent.from_event(session, event))
 
         # Read revision fields before commit. Post-commit ORM attribute access
         # can lazy-load expired columns and trigger MissingGreenlet with asyncpg

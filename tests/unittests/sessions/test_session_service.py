@@ -4488,7 +4488,7 @@ async def test_get_session_keeps_exact_epoch_across_a_repeated_local_hour(
 async def test_get_session_orders_tied_timestamps_by_id(
     append_ids_in_reverse, tmp_path
 ):
-  """DatabaseSessionService breaks tied timestamps by id, not append order."""
+  """DatabaseSessionService returns tied-timestamp events in append order."""
   app_name = 'my_app'
   user_id = 'user'
   event_ids = ['event_a', 'event_m', 'event_z']
@@ -4512,7 +4512,98 @@ async def test_get_session_orders_tied_timestamps_by_id(
   finally:
     await service.close()
 
-  assert [event.id for event in retrieved_session.events] == event_ids
+  assert [event.id for event in retrieved_session.events] == append_order
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_multiple_events_tied_timestamp_order(
+    tmp_path,
+):
+  """DatabaseSessionService reloads multiple events with equal timestamps in FIFO order."""
+  app_name = 'my_app'
+  user_id = 'user'
+  service = get_session_service(SessionServiceType.DATABASE, tmp_path)
+  try:
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+    shared_timestamp = 1234567.89
+    # Append 8 events with random IDs and identical timestamps
+    event_ids = [
+        'id_7_zeta',
+        'id_3_gamma',
+        'id_5_epsilon',
+        'id_8_theta',
+        'id_2_beta',
+        'id_1_alpha',
+        'id_4_delta',
+        'id_6_eta',
+    ]
+    for event_id in event_ids:
+      await service.append_event(
+          session,
+          Event(author='agent', id=event_id, timestamp=shared_timestamp),
+      )
+
+    retrieved_session = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+    assert [e.id for e in retrieved_session.events] == event_ids
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_migration_adds_event_index_column(
+    tmp_path,
+):
+  """DatabaseSessionService automatically migrates existing tables missing event_index."""
+  db_path = str(tmp_path / 'legacy.db')
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+
+  # 1. Create a legacy database table without event_index
+  import aiosqlite
+
+  async with aiosqlite.connect(db_path) as db:
+    await db.execute("""
+      CREATE TABLE sessions (
+        app_name VARCHAR(128) NOT NULL,
+        user_id VARCHAR(128) NOT NULL,
+        id VARCHAR(128) NOT NULL,
+        state TEXT,
+        create_time TIMESTAMP,
+        update_time TIMESTAMP,
+        PRIMARY KEY (app_name, user_id, id)
+      )
+    """)
+    await db.execute("""
+      CREATE TABLE events (
+        id VARCHAR(128) NOT NULL,
+        app_name VARCHAR(128) NOT NULL,
+        user_id VARCHAR(128) NOT NULL,
+        session_id VARCHAR(128) NOT NULL,
+        invocation_id VARCHAR(256),
+        timestamp TIMESTAMP,
+        event_data TEXT,
+        PRIMARY KEY (id, app_name, user_id, session_id)
+      )
+    """)
+    await db.commit()
+
+  # 2. Open with DatabaseSessionService; prepare_tables should migrate and add event_index
+  service = DatabaseSessionService(db_url)
+  try:
+    session = await service.create_session(app_name='app', user_id='user')
+    stamp = 999.0
+    for eid in ['e3', 'e1', 'e2']:
+      await service.append_event(
+          session, Event(author='user', id=eid, timestamp=stamp)
+      )
+
+    reloaded = await service.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+    assert [e.id for e in reloaded.events] == ['e3', 'e1', 'e2']
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio
