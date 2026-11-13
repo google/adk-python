@@ -259,16 +259,19 @@ class SessionContext:
         ConnectionError: If session creation fails.
     """
     async with self._task_lock:
+      # Check `close` before handing back `_session`: the runner tears the
+      # transport down but leaves `_session` set, so the old order returned a
+      # dead session to a caller that arrived after `close()` (M10).
+      if self._close_event.is_set():
+        raise ConnectionError(
+            'Failed to create MCP session: session already closed'
+        )
+
       if self._session:
         logger.debug(
             'Session has already been created, returning existing session'
         )
         return self._session
-
-      if self._close_event.is_set():
-        raise ConnectionError(
-            'Failed to create MCP session: session already closed'
-        )
 
       if not self._task:
         self._task = asyncio.create_task(self._run())
@@ -455,7 +458,14 @@ class SessionContext:
                   read_stream,
                   write_stream,
                   # MCP SDK 1.x declares a timedelta here and 2.x a float.
-                  read_timeout_seconds=_read_timeout(self._timeout),  # type: ignore[arg-type]
+                  read_timeout_seconds=_read_timeout(
+                      # Stdio has no SSE read timeout; the manager passes the
+                      # operation budget here so a long tool call is not cut
+                      # off by the short connect timeout (M4).
+                      self._sse_read_timeout
+                      if self._sse_read_timeout is not None
+                      else self._timeout
+                  ),  # type: ignore[arg-type]
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
@@ -501,5 +511,8 @@ class SessionContext:
       logger.warning('Error on session runner task: %s', e)
       raise
     finally:
+      # The transport is gone, so the reference would only mislead a later
+      # `start()`; `start` also guards on `_close_event`.
+      self._session = None
       self._ready_event.set()
       self._close_event.set()

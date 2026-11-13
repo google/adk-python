@@ -55,6 +55,7 @@ from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils._sync_runner import _invoke_callable
 from ...utils._sync_runner import _is_async_callable
 from ...utils.context_utils import find_context_parameter
+from ...utils.env_utils import is_env_enabled
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
 # When the flag is off (default) or via ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING=1
@@ -63,6 +64,7 @@ from ...utils.context_utils import find_context_parameter
 # part of the ADK public API; consumers flip the env var, not the symbol.
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
+from ..load_mcp_resource_tool import LOAD_MCP_RESOURCE_TOOL_NAME
 from ..set_model_response_tool import SetModelResponseTool
 from ..tool_context import ToolContext
 from ..transfer_to_agent_tool import transfer_to_agent
@@ -84,9 +86,15 @@ _RESERVED_TOOL_NAMES = frozenset({
     REQUEST_EUC_FUNCTION_CALL_NAME,
     REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
     REQUEST_INPUT_FUNCTION_CALL_NAME,
+    LOAD_MCP_RESOURCE_TOOL_NAME,
     transfer_to_agent.__name__,
     SetModelResponseTool.NAME,
 })
+
+# M8: the "session terminated" retry re-runs a tool the server may already have
+# executed, so a non-idempotent tool can double-execute. It is on by default for
+# compatibility; set this to opt out.
+DISABLE_MCP_SESSION_RETRY_ENV_VAR = "ADK_DISABLE_MCP_SESSION_RETRY"
 
 _UNSET = object()
 
@@ -453,17 +461,23 @@ class McpTool(BaseAuthenticatedTool):
     await super().process_llm_request(
         tool_context=tool_context, llm_request=llm_request
     )
-    if (
-        llm_request.config
-        and llm_request.config.system_instruction is not None
-        and not isinstance(llm_request.config.system_instruction, str)
-    ):
-      logger.error(
-          "Cannot fence tool descriptions: system_instruction must be a str or"
-          " None, got %s; skipping fencing for this request.",
-          type(llm_request.config.system_instruction).__name__,
+    system_instruction = (
+        llm_request.config.system_instruction if llm_request.config else None
+    )
+    # A `types.Content` system instruction cannot take a plain-text append, but
+    # that is a reason to deliver the preamble another way, not a reason to
+    # leave remote tool descriptions unfenced. Fail closed: fence the
+    # declaration and carry the preamble as a dynamic instruction.
+    system_instruction_is_content = (
+        system_instruction is not None
+        and not isinstance(system_instruction, str)
+    )
+    if system_instruction_is_content:
+      logger.warning(
+          "System instruction is a %s, not a str; fenced MCP tool descriptions"
+          " will be accompanied by a dynamic instruction instead.",
+          type(system_instruction).__name__,
       )
-      return
 
     # The tool declaration is fenced when it goes to the model, while
     # _get_declaration keeps the server's own text for other consumers
@@ -489,13 +503,17 @@ class McpTool(BaseAuthenticatedTool):
       )
 
     current_instruction = (
-        llm_request.config.system_instruction
-        if llm_request.config
-        and isinstance(llm_request.config.system_instruction, str)
-        else ""
+        system_instruction if isinstance(system_instruction, str) else ""
     )
     if TOOL_DESCRIPTION_PREAMBLE not in current_instruction:
-      llm_request.append_instructions([TOOL_DESCRIPTION_PREAMBLE])
+      if system_instruction_is_content:
+        dynamic = getattr(llm_request, "_dynamic_instructions", [])
+        if TOOL_DESCRIPTION_PREAMBLE not in dynamic:
+          llm_request._append_dynamic_instructions(  # pylint: disable=protected-access
+              [TOOL_DESCRIPTION_PREAMBLE]
+          )
+      else:
+        llm_request.append_instructions([TOOL_DESCRIPTION_PREAMBLE])
 
   @property
   def raw_mcp_tool(self) -> McpBaseTool:
@@ -716,7 +734,7 @@ class McpTool(BaseAuthenticatedTool):
     )
     final_headers = headers if headers else None
 
-    # Propagate trace context in the _meta field as sprcified by MCP protocol.
+    # Propagate trace context in the _meta field as specified by MCP protocol.
     # See https://agentclientprotocol.com/protocol/extensibility#the-meta-field
     trace_carrier: dict[str, str] = {}
     propagate.get_global_textmap().inject(carrier=trace_carrier)
@@ -733,7 +751,9 @@ class McpTool(BaseAuthenticatedTool):
           session, final_headers, args, resolved_callback, meta_trace_context
       )
     except Exception as e:
-      if not _is_session_terminated_error(e):
+      if not _is_session_terminated_error(e) or is_env_enabled(
+          DISABLE_MCP_SESSION_RETRY_ENV_VAR
+      ):
         raise
       # The server rejected the pooled session id (restart or idle eviction)
       # before running the tool, so no side effect happened and one retry on
