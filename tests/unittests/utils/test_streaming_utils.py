@@ -1070,6 +1070,38 @@ def _streaming_fc_response(
 class TestStreamingFunctionCallArgs:
   """Tests for how streamed function call arguments are accumulated."""
 
+  @pytest.mark.parametrize("path", [r"$['\ud83d\ude00']", r'$["\uD83D\uDE00"]'])
+  async def test_escaped_non_bmp_key_keeps_streamed_value(
+      self, path: str
+  ) -> None:
+    """Escaped supplementary Unicode keys retain their streamed arguments."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      responses = [
+          _streaming_fc_response(
+              [types.PartialArg(json_path=path, string_value="hello")],
+              name="store",
+          ),
+          _streaming_fc_response(
+              [types.PartialArg(json_path=path, string_value=" world")],
+              will_continue=False,
+          ),
+      ]
+      for response in responses:
+        async for _ in aggregator.process_response(response):
+          pass
+
+      result = aggregator.close()
+
+    assert result is not None
+    assert result.content is not None
+    call = result.content.parts[0].function_call
+    assert call is not None
+    assert call.args == {"😀": "hello world"}
+    assert result.model_dump_json()
+
   @pytest.mark.asyncio
   async def test_many_chunks_into_one_arg_accumulate_linearly(self):
     """Chunks of one argument are joined once, not re-concatenated per chunk."""
@@ -1851,6 +1883,24 @@ class TestStreamingFunctionCallArgs:
 
 
 class TestJsonPathHelpers:
+
+  @pytest.mark.parametrize(
+      "path, expected",
+      [
+          (r"$['\ud83d\ude00']", "😀"),
+          (r'$["\uD83D\uDE00"]', "😀"),
+          (r"$['\u0041\ud83d\ude00\u4e2d']", "A😀中"),
+      ],
+  )
+  def test_parse_escaped_unicode_key(self, path: str, expected: str) -> None:
+    """JSONPath Unicode escapes decode to the original member name."""
+    assert streaming_utils._parse_json_path(path) == [expected]
+
+  def test_parse_literal_unicode_escape(self) -> None:
+    """An escaped backslash remains literal text in a member name."""
+    assert streaming_utils._parse_json_path(r"$['\\ud83d\\ude00']") == [
+        r"\ud83d\ude00"
+    ]
 
   def test_parse_json_path(self):
     assert streaming_utils._parse_json_path("$.foo") == ["foo"]
