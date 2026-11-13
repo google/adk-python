@@ -15,30 +15,35 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
 
+### BEGIN_GENERATED_CODE: ToolConfirmation
+### Do not edit, code generation overwrites it.
 class ToolConfirmation(BaseModel):
   """Represents a tool confirmation configuration."""
 
   model_config = ConfigDict(
-      extra="forbid",
       alias_generator=alias_generators.to_camel,
+      extra='forbid',
       populate_by_name=True,
   )
   """The pydantic model config."""
 
-  hint: str = ""
+  hint: str = ''
   """The hint text for why the input is needed."""
+
   confirmed: bool = False
   """Whether the tool execution is confirmed."""
-  payload: Optional[Any] = None
+
+  payload: Any | None = None
   """The custom data payload needed from the user to continue the flow.
-  It should be JSON serializable."""
+  It should be JSON serializable.
+  """
+  ### END_GENERATED_CODE: ToolConfirmation
 
   @classmethod
   def from_response_dict(cls, response: dict[str, Any]) -> ToolConfirmation:
@@ -48,8 +53,8 @@ class ToolConfirmation(BaseModel):
     wrapper format, accepting a JSON string, bytes, or a parsed dict.
     None fields inside the wrapper fall back to the model defaults.
     """
-    if response and len(response) == 1 and "response" in response:
-      raw = response["response"]
+    if response and len(response) == 1 and 'response' in response:
+      raw = response['response']
       if isinstance(raw, (str, bytes, bytearray)):
         data = json.loads(raw)
       else:
