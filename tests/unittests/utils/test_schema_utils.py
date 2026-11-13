@@ -181,6 +181,30 @@ class TestValidateSchema:
     result = validate_schema(ModelWithOptional, json_text)
     assert result == {"name": "test"}
 
+  def test_basemodel_schema_keeps_required_none(self):
+    """A required field set to None keeps its key; dropping it breaks the next node."""
+
+    class ModelWithRequiredOptional(BaseModel):
+      name: str
+      note: str | None
+
+    json_text = '{"name": "test", "note": null}'
+    result = validate_schema(ModelWithRequiredOptional, json_text)
+
+    assert result == {"name": "test", "note": None}
+    # the consumer validates the producer's payload against the same model
+    assert ModelWithRequiredOptional.model_validate(result).note is None
+
+  def test_basemodel_schema_drops_optional_none(self):
+    """A field with a default keeps the old behaviour and is still dropped."""
+
+    class ModelWithDefault(BaseModel):
+      name: str
+      note: str | None = None
+
+    json_text = '{"name": "test", "note": null}'
+    assert validate_schema(ModelWithDefault, json_text) == {"name": "test"}
+
   def test_list_of_basemodel_schema(self):
     """Test validation with a list[BaseModel] schema."""
     json_text = '[{"name": "item1", "value": 1}, {"name": "item2", "value": 2}]'
@@ -440,6 +464,42 @@ class TestValidateNodeData:
     result = validate_node_data(SampleModel, data, preserve_content=False)
     assert isinstance(result, dict)
     assert result == {"name": "test", "value": 42}
+
+  def test_required_optional_field_survives_the_node_boundary(self):
+    """A None in a required field must reach the next node as None."""
+
+    class Item(BaseModel):
+      name: str
+      note: str | None
+
+    produced = validate_node_data(Item, Item(name="x", note=None))
+    assert produced == {"name": "x", "note": None}
+
+    # downstream node validates the same dict; this raised "Field required"
+    assert validate_node_data(Item, produced) == {"name": "x", "note": None}
+
+  def test_nested_required_optional_field_survives(self):
+    """Nesting does not hide the None: submodels are dumped the same way."""
+
+    class Inner(BaseModel):
+      note: str | None
+
+    class Outer(BaseModel):
+      name: str
+      inner: Inner
+      items: list[Inner]
+
+    produced = validate_node_data(
+        Outer,
+        Outer(name="x", inner=Inner(note=None), items=[Inner(note=None)]),
+    )
+
+    assert produced == {
+        "name": "x",
+        "inner": {"note": None},
+        "items": [{"note": None}],
+    }
+    assert validate_node_data(Outer, produced) == produced
 
   def test_raw_json_string_validated_against_basemodel_schema(self):
     """Raw JSON string fails validation against BaseModel schema (not auto-parsed)."""
