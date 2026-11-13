@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import base64
+import collections
 import collections.abc
 import concurrent.futures
 from concurrent.futures import Future as ConcurrentFuture
@@ -921,8 +922,8 @@ _SENSITIVE_TEXT_KEY_RE = re.compile(
         )
     )
     + r")(?:[\"'])?\s*[:=]\s*)(?P<value>"
-    r'"(?:\\.|[^"\\])*"'
-    r"|'(?:\\.|[^'\\])*'"
+    r'"(?:\\.|[^"\\])*(?P<dq_close>")?'
+    r"|'(?:\\.|[^'\\])*(?P<sq_close>')?"
     r"|[^\s,;&}]+)"
 )
 _AUTH_HEADER_RE = re.compile(
@@ -930,12 +931,14 @@ _AUTH_HEADER_RE = re.compile(
     r"[ \t]*:[ \t]*)[^\r\n]*"
 )
 _BEARER_TOKEN_RE = re.compile(
-    r"(?i)(?P<prefix>\bbearer\s+)(?!of(?:\s|$))[^\s,;]+"
+    r"(?i)(?P<prefix>\bbearer\s+)(?!of(?:\s|$))"
+    r"(?P<value>\[REDACTED\]|[^\s,;\"'}\]]+)"
 )
 _BASIC_TOKEN_RE = re.compile(
     r"(?i)(?P<prefix>\bbasic\s+)(?P<value>[A-Za-z0-9+/]+={0,2})"
     r"(?![A-Za-z0-9+/=])"
 )
+_BASIC_REDACTED_RE = re.compile(r"(?i)\bbasic\s+\[REDACTED\]")
 _MAX_BASIC_AUTH_TOKEN_CHARS = 16 * 1024
 _ASCII_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
@@ -947,7 +950,7 @@ def _is_sensitive_text_key(text: str) -> bool:
 
 
 def _canonicalize_common_ascii_escapes(text: str) -> str:
-  """Decodes nested ASCII ``\\u``, ``\\x``, and percent escapes in O(n).
+  """Decodes nested ASCII ``\\u``, ``\\x``, quote, and percent escapes in O(n).
 
   This is a detection-only representation: callers retain the original text
   unless the canonical form exposes a credential construct. The output stack
@@ -958,6 +961,10 @@ def _canonicalize_common_ascii_escapes(text: str) -> str:
   for char in text:
     output.append(char)
     while True:
+      if len(output) >= 2 and output[-2] == "\\" and output[-1] in ('"', "'"):
+        escaped_quote = output.pop()
+        output[-1] = escaped_quote
+        continue
       escape_start = -1
       digits = ""
       if (
@@ -993,19 +1000,80 @@ def _canonicalize_common_ascii_escapes(text: str) -> str:
   return "".join(output)
 
 
-def _redact_sensitive_patterns(text: str) -> tuple[str, bool]:
-  """Redacts plain-text credential constructs without decoding the input."""
+@dataclass(frozen=True)
+class _SensitivePatternScan:
+  """Outcome of scanning a string for plain-text credential patterns."""
+
+  sanitized: str
+  changed: bool
+  markers: collections.Counter[str]
+  saw_already_redacted: bool
+  saw_unclosed_or_container: bool
+
+
+def _scan_sensitive_patterns(text: str) -> _SensitivePatternScan:
+  """Scans and redacts plain-text credential constructs without decoding.
+
+  Returns a ``_SensitivePatternScan`` whose ``markers`` counts each credential
+  construct or already-redacted credential marker matched, even when the string
+  itself did not change.
+  """
+  markers: collections.Counter[str] = collections.Counter()
+  saw_already_redacted = False
+  saw_unclosed_or_container = False
+
+  def _redact_auth_header(match: re.Match[str]) -> str:
+    nonlocal saw_already_redacted
+    markers["header"] += 1
+    header_value = match.group(0)[len(match.group("prefix")) :]
+    if "[REDACTED]" in header_value:
+      saw_already_redacted = True
+    return f"{match.group('prefix')}[REDACTED]"
+
+  def _redact_bearer_token(match: re.Match[str]) -> str:
+    nonlocal saw_already_redacted
+    markers["bearer"] += 1
+    if match.group("value").upper() == "[REDACTED]":
+      saw_already_redacted = True
+    return f"{match.group('prefix')}[REDACTED]"
 
   def _redact_key_value(match: re.Match[str]) -> str:
+    nonlocal saw_already_redacted, saw_unclosed_or_container
+    prefix = match.group("prefix")
+    raw_key = prefix.rstrip(" \t\r\n:=").strip("\"'")
+    norm_key = raw_key.lower().replace("-", "_")
+    kind_prefix = (
+        "json_key"
+        if prefix.lstrip().startswith(('"', "'"))
+        and prefix.rstrip().endswith(":")
+        else "kv"
+    )
+    markers[f"{kind_prefix}:{norm_key}"] += 1
     value = match.group("value")
-    if value == "[REDACTED]":
-      return match.group(0)
     quote_char = value[:1] if value[:1] in ('"', "'") else ""
-    return f"{match.group('prefix')}{quote_char}[REDACTED]{quote_char}"
+    unclosed_quote = False
+    if quote_char == '"' and match.group("dq_close") is None:
+      saw_unclosed_or_container = True
+      unclosed_quote = True
+    elif quote_char == "'" and match.group("sq_close") is None:
+      saw_unclosed_or_container = True
+      unclosed_quote = True
+    elif not quote_char and (
+        value.startswith("{")
+        or (value.startswith("[") and not value.startswith("[REDACTED]"))
+    ):
+      saw_unclosed_or_container = True
+    if value in ("[REDACTED]", '"[REDACTED]"', "'[REDACTED]'"):
+      saw_already_redacted = True
+      if value == "[REDACTED]":
+        return match.group(0)
+    closing_quote = "" if unclosed_quote else quote_char
+    return f"{prefix}{quote_char}[REDACTED]{closing_quote}"
 
   def _redact_basic_credential(match: re.Match[str]) -> str:
     encoded = match.group("value")
     if len(encoded) > _MAX_BASIC_AUTH_TOKEN_CHARS:
+      markers["basic"] += 1
       return f"{match.group('prefix')}[REDACTED]"
     try:
       decoded = base64.b64decode(encoded, validate=True)
@@ -1013,29 +1081,105 @@ def _redact_sensitive_patterns(text: str) -> tuple[str, bool]:
       return match.group(0)
     if "=" not in encoded and b":" not in decoded:
       return match.group(0)
+    markers["basic"] += 1
     return f"{match.group('prefix')}[REDACTED]"
 
-  sanitized = _AUTH_HEADER_RE.sub(
-      lambda match: f"{match.group('prefix')}[REDACTED]", text
-  )
-  sanitized = _BEARER_TOKEN_RE.sub(
-      lambda match: f"{match.group('prefix')}[REDACTED]", sanitized
-  )
-  sanitized = _BASIC_TOKEN_RE.sub(_redact_basic_credential, sanitized)
+  sanitized = _AUTH_HEADER_RE.sub(_redact_auth_header, text)
   sanitized = _SENSITIVE_TEXT_KEY_RE.sub(_redact_key_value, sanitized)
-  return sanitized, sanitized != text
+  sanitized = _BEARER_TOKEN_RE.sub(_redact_bearer_token, sanitized)
+  for _ in _BASIC_REDACTED_RE.finditer(sanitized):
+    markers["basic"] += 1
+    saw_already_redacted = True
+  sanitized = _BASIC_TOKEN_RE.sub(_redact_basic_credential, sanitized)
+  return _SensitivePatternScan(
+      sanitized=sanitized,
+      changed=sanitized != text,
+      markers=markers,
+      saw_already_redacted=saw_already_redacted,
+      saw_unclosed_or_container=saw_unclosed_or_container,
+  )
+
+
+def _redaction_covers(*, redacted: str, reference: str) -> bool:
+  """Returns whether ``redacted`` hides everything that ``reference`` hides.
+
+  Both are redactions of one canonical text. ``redacted`` covers
+  ``reference`` when its text between ``[REDACTED]`` markers appears in
+  ``reference`` in the same order: each of its markers may stand for a longer
+  span, but none of its literal text comes from a span that ``reference``
+  hid. Matching is greedy and left to right, so it stays linear.
+  """
+  segments = redacted.split("[REDACTED]")
+  if len(segments) == 1:
+    return redacted == reference
+  first, *middle, last = segments
+  end = len(reference) - len(last)
+  if (
+      end < len(first)
+      or not reference.startswith(first)
+      or not reference.endswith(last)
+  ):
+    return False
+  pos = len(first)
+  for segment in middle:
+    pos = reference.find(segment, pos, end)
+    if pos < 0:
+      return False
+    pos += len(segment)
+  return True
+
+
+_EMBEDDED_JSON_CONTAINER_RE = re.compile(r"[\{\[][\s\ufeff]*[\{\[\"\\]")
+
+
+def _is_malformed_json_container_shape(text: str) -> bool:
+  """Returns whether unparsed text has a JSON object or array prefix."""
+  stripped = _strip_bom_ws(text)
+  if stripped.startswith("{"):
+    return True
+  if stripped.startswith("["):
+    return _strip_bom_ws(stripped[1:]).startswith(("{", "[", '"', "\\"))
+  return False
+
+
+def _has_malformed_json_marker(
+    text: str, markers: collections.Counter[str]
+) -> bool:
+  """Returns whether credential markers sit in a JSON-shaped payload.
+
+  Callers pass text that did not parse as JSON. A JSON object/array container
+  prefix or embedded JSON container, or one with a quoted ``"key":`` marker, is
+  a malformed JSON document in which an already-redacted value can sit next to
+  a live one, so any marker counts. Bracket-led log prose such as ``[INFO]
+  token=[REDACTED] retrying`` does not.
+  """
+  if not markers:
+    return False
+  if (
+      _is_malformed_json_container_shape(text)
+      or _EMBEDDED_JSON_CONTAINER_RE.search(text) is not None
+  ):
+    return True
+  return any(kind.startswith("json_key:") for kind in markers)
 
 
 def _contains_sensitive_text_marker(text: str) -> bool:
-  """Returns whether raw or encoded text contains a credential construct."""
-  _, changed = _redact_sensitive_patterns(text)
-  if changed:
+  """Returns whether text carries a credential construct to fail closed on.
+
+  True for a live credential in the raw or canonical (decoded) text, and for
+  any credential marker, even an already-redacted one, in a JSON-shaped
+  payload (see ``_has_malformed_json_marker``).
+  """
+  raw_scan = _scan_sensitive_patterns(text)
+  if raw_scan.changed or _has_malformed_json_marker(text, raw_scan.markers):
     return True
   canonical = _canonicalize_common_ascii_escapes(text)
   if canonical == text:
     return False
-  _, changed = _redact_sensitive_patterns(canonical)
-  return changed
+  canonical_scan = _scan_sensitive_patterns(canonical)
+  return canonical_scan.changed or _has_malformed_json_marker(
+      canonical, canonical_scan.markers
+  )
 
 
 def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
@@ -1062,15 +1206,18 @@ def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
     length_truncated = False
 
   sanitized = text
+  parsed_json = False
+  malformed_container = False
   stripped = _strip_bom_ws(text)
   if stripped.startswith(("{", "[", '"')):
     try:
-      json.loads(stripped)
+      loaded = json.loads(stripped)
     except (TypeError, ValueError, RecursionError, MemoryError):
       # Malformed diagnostic prose is handled by the explicit marker pass
       # below; safe "[INFO] ..." messages must remain byte-identical.
-      pass
+      malformed_container = stripped.startswith(("{", "["))
     else:
+      parsed_json = isinstance(loaded, (dict, list))
       structured, _ = _recursive_smart_truncate(text, -1)
       if isinstance(structured, str):
         sanitized = structured
@@ -1079,16 +1226,63 @@ def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
 
   changed = sanitized != text
 
-  sanitized, patterns_changed = _redact_sensitive_patterns(sanitized)
-  changed = changed or patterns_changed
+  before_patterns = sanitized
+  raw_scan = _scan_sensitive_patterns(sanitized)
+  sanitized = raw_scan.sanitized
+  raw_markers = raw_scan.markers
+  changed = changed or raw_scan.changed
+
+  if not parsed_json:
+    if raw_scan.saw_unclosed_or_container:
+      return "[REDACTED_SENSITIVE_TEXT]", True
+    if _has_malformed_json_marker(before_patterns, raw_markers) and (
+        raw_scan.saw_already_redacted
+        or any(k.startswith("json_key:") for k in raw_markers)
+    ):
+      return "[REDACTED_SENSITIVE_TEXT]", True
 
   # Escaped/percent-encoded credential constructs cannot be safely rewritten
-  # in place without risking a partial source-to-canonical mapping. Fail the
-  # bounded diagnostic closed only when decoding actually exposes one; safe
-  # Windows paths and decoder errors remain byte-identical.
-  canonical = _canonicalize_common_ascii_escapes(sanitized)
-  if canonical != sanitized and _contains_sensitive_text_marker(canonical):
-    return "[REDACTED_SENSITIVE_TEXT]", True
+  # in place without risking a partial source-to-canonical mapping. When the
+  # input has any such escape, keep the in-place result only if its canonical
+  # form exposes no unredacted credential and hides everything that redacting
+  # the canonical input hides (an escaped quote must not leave the tail of a
+  # quoted value behind), and, for a malformed container, only if decoding
+  # reveals no credential marker that the raw scan missed.
+  canonical_input = _canonicalize_common_ascii_escapes(before_patterns)
+  if canonical_input != before_patterns:
+    canonical = _canonicalize_common_ascii_escapes(sanitized)
+    canonical_scan = _scan_sensitive_patterns(canonical)
+    reference_scan = _scan_sensitive_patterns(canonical_input)
+    has_unparsed_container = (
+        malformed_container
+        or _EMBEDDED_JSON_CONTAINER_RE.search(canonical_input) is not None
+    )
+    if (
+        canonical_scan.changed
+        or canonical_scan.saw_unclosed_or_container
+        or reference_scan.saw_unclosed_or_container
+        or not _redaction_covers(
+            redacted=canonical, reference=reference_scan.sanitized
+        )
+        or (
+            not parsed_json
+            and has_unparsed_container
+            and not (canonical_scan.markers <= raw_markers)
+        )
+        or (
+            not parsed_json
+            and _has_malformed_json_marker(
+                canonical_input, reference_scan.markers
+            )
+            and (
+                reference_scan.saw_already_redacted
+                or any(
+                    k.startswith("json_key:") for k in reference_scan.markers
+                )
+            )
+        )
+    ):
+      return "[REDACTED_SENSITIVE_TEXT]", True
 
   if max_len != -1 and len(sanitized) > max_len:
     sanitized = sanitized[:max_len] + "...[TRUNCATED]"
@@ -1100,6 +1294,16 @@ def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
 # raises: the formatter is a privacy/redaction boundary, so failure must
 # never fall back to the unformatted payload.
 _FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
+_FORMATTING_FAILED_SENTINEL = "[FORMATTING FAILED]"
+_RESPONSE_TEXT_SENTINELS = frozenset({
+    _FORMATTER_FAILED_SENTINEL,
+    _FORMATTING_FAILED_SENTINEL,
+    "[REDACTED]",
+    "[CONTENT_PARSE_FAILED]",
+    "[UNPARSEABLE_JSON_BLOB]",
+    "[UNSUPPORTED_OBJECT]",
+    "[REDACTED_SENSITIVE_TEXT]",
+})
 
 # CPython's Py_TPFLAGS_HEAPTYPE: set on every class created at runtime and
 # clear on static types compiled into C, whose names cannot be reassigned.
@@ -1885,6 +2089,14 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
     raise ValueError(
         "log_content_formatter_error_details must be a bool, got"
         f" {config.log_content_formatter_error_details!r}."
+    )
+  if config.response_text_key is not None and (
+      not isinstance(config.response_text_key, str)
+      or not config.response_text_key.strip()
+  ):
+    raise ValueError(
+        "response_text_key must be a non-empty str or None, got"
+        f" {config.response_text_key!r}."
     )
   _validate_tool_result_classifier(config.tool_result_classifier)
 
@@ -2764,6 +2976,19 @@ class BigQueryLoggerConfig:
         only when debugging formatter bugs in environments where those details
         are safe to store in BigQuery. When sanitizing truncates or redacts
         the detail, the row's ``is_truncated`` is also set to ``True``.
+      response_text_key: Optional JSON object key used to populate
+        ``content.text_summary`` on structured ``AGENT_RESPONSE`` events.
+        Defaults to ``None``, which preserves existing ``content.text_summary``
+        behavior; non-``None`` values must be a non-empty, non-whitespace
+        ``str`` (validated when creating ``BigQueryAgentAnalyticsPlugin``).
+        When set and a structured ``AGENT_RESPONSE`` payload (from
+        ``LlmAgent.output_schema`` JSON text or ``final_response_tool_names``
+        tool arguments) parses to a JSON object containing that key with a
+        non-blank string value, that string is sanitized, truncated to
+        ``max_content_length``, and copied into ``content.text_summary`` while
+        keeping the serialized JSON object in ``content.response``. If
+        ``content_formatter`` is also set, it receives the resulting
+        ``AGENT_RESPONSE`` dictionary.
   """
 
   enabled: bool = True
@@ -2870,6 +3095,11 @@ class BigQueryLoggerConfig:
   # Opt-in: append sanitized, truncated exception details to the BigQuery
   # row's error_message column when content_formatter raises an Exception.
   log_content_formatter_error_details: bool = False
+  # Opt-in JSON object key whose non-blank string value is copied to
+  # content.text_summary on structured AGENT_RESPONSE events (e.g. "response"
+  # when LlmAgent.output_schema or final_response_tool_names wraps the
+  # user-facing reply alongside metadata fields).
+  response_text_key: Optional[str] = None
 
 
 _DEFAULT_MAX_OBSERVATION_SUMMARIES_PER_SEGMENT = (
@@ -2985,11 +3215,111 @@ class _SpanRecord:
   # on_agent_error_callback must not pop the invocation span instead.
   kind: str = ""
   first_token_time: Optional[float] = None
+  parent_span_id: Optional[str] = None
+  invocation_id: Optional[str] = None
+  session_id: Optional[str] = None
 
 
 _span_records_ctx: contextvars.ContextVar[Optional[list[_SpanRecord]]] = (
     contextvars.ContextVar("_bq_analytics_span_records", default=None)
 )
+
+
+@dataclass(frozen=True)
+class _InvocationFrame:
+  """Suspended parent invocation state across a nested AgentTool run."""
+
+  child_invocation_id: str
+  invocation_id: Optional[str]
+  session_id: Optional[str]
+  root_agent_name: Optional[str]
+  span_records: tuple[_SpanRecord, ...]
+
+
+_parent_invocation_frames_ctx: contextvars.ContextVar[
+    tuple[_InvocationFrame, ...]
+] = contextvars.ContextVar(
+    "_bq_analytics_parent_invocation_frames",
+    default=(),
+)
+
+
+def _safe_session_id(callback_context: CallbackContext) -> Optional[str]:
+  """Best-effort read of session.id from a CallbackContext."""
+  try:
+    session_id = callback_context._invocation_context.session.id
+  except Exception:  # pylint: disable=broad-except
+    return None
+  return session_id if isinstance(session_id, str) and session_id else None
+
+
+def _get_nested_parent_invocation_id(
+    callback_context: Optional[CallbackContext],
+) -> Optional[str]:
+  """Returns the caller's invocation_id when this run is a nested AgentTool.
+
+  ``AgentTool`` records it on the nested run's ``InvocationContext`` only when
+  the nested run shares the caller's plugins. It is the one signal this plugin
+  uses to treat an invocation as nested, and it is ``None`` for top-level
+  runs, for nested runs with isolated plugins, and for mocked contexts.
+  """
+  if callback_context is None:
+    return None
+  try:
+    parent_inv_id = getattr(
+        callback_context._invocation_context, "_parent_invocation_id", None
+    )
+  except Exception:  # pylint: disable=broad-except
+    return None
+  if (
+      isinstance(parent_inv_id, str)
+      and parent_inv_id
+      and parent_inv_id != callback_context.invocation_id
+  ):
+    return parent_inv_id
+  return None
+
+
+def _is_foreign_invocation_stack(invocation_id: Optional[str]) -> bool:
+  """Returns whether active contextvars belong to a different invocation."""
+  active_inv = _active_invocation_id_ctx.get()
+  if active_inv is not None and active_inv != invocation_id:
+    return True
+  records = _span_records_ctx.get()
+  if records:
+    top_inv = records[-1].invocation_id
+    if top_inv is not None and top_inv != invocation_id:
+      return True
+  return False
+
+
+def _is_nested_plugin_run(
+    callback_context: CallbackContext,
+    top_record: _SpanRecord,
+) -> bool:
+  """Returns whether ``top_record`` belongs to the enclosing parent run."""
+  parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+  return parent_inv_id is not None and top_record.invocation_id == parent_inv_id
+
+
+def _has_active_enclosing_parent(
+    invocation_id: Optional[str],
+    callback_context: Optional[CallbackContext] = None,
+) -> bool:
+  """Returns whether a live enclosing parent owns the active span stack."""
+  records = _span_records_ctx.get()
+  if not records:
+    return False
+  if callback_context is not None:
+    # The parent signal holds even when no invocation is active, as when the
+    # parent's ensure_invocation_span never ran.
+    return _is_nested_plugin_run(callback_context, records[-1])
+  active_inv = _active_invocation_id_ctx.get()
+  if active_inv is None or active_inv == invocation_id:
+    return False
+  # Without a context the parent signal cannot be read, so keep a live tool
+  # span of the active invocation rather than clearing it.
+  return records[-1].kind == "tool" and records[-1].invocation_id == active_inv
 
 
 class TraceManager:
@@ -3029,7 +3359,14 @@ class TraceManager:
     """Gets the trace ID from the current span stack or invocation_id."""
     records = _span_records_ctx.get()
     if records:
-      return records[-1].trace_id
+      if not _is_foreign_invocation_stack(
+          callback_context.invocation_id
+      ) or _is_nested_plugin_run(callback_context, records[-1]):
+        return records[-1].trace_id
+
+    parent_frame = TraceManager._get_parent_invocation_frame(callback_context)
+    if parent_frame and parent_frame.span_records:
+      return parent_frame.span_records[-1].trace_id
 
     # Fallback to ambient OTel context (e.g. callbacks fired before
     # any plugin span was pushed).
@@ -3043,6 +3380,9 @@ class TraceManager:
   def push_span(
       callback_context: CallbackContext,
       span_name: Optional[str] = "adk-span",
+      *,
+      parent_span_id: Optional[str] = None,
+      trace_id_override: Optional[str] = None,
   ) -> str:
     """Pushes a BQAA-internal span record onto the stack.
 
@@ -3052,22 +3392,41 @@ class TraceManager:
 
     * ``span_id`` — newly generated 16-hex string.
     * ``trace_id`` — inherited by precedence:
-        1. Top of the existing internal stack (keeps every push
+        1. Explicit ``trace_id_override`` (when seeding a nested invocation).
+        2. Top of the existing internal stack (keeps every push
            within an invocation under one trace_id).
-        2. Ambient OTel span when valid (e.g. the framework's Runner
+        3. Ambient OTel span when valid (e.g. the framework's Runner
            span, or an Agent Engine root span) — keeps BigQuery rows
            joinable to Cloud Trace via the shared ``trace_id``.
-        3. A fresh 32-hex value (no ambient context, e.g. unit tests
+        4. A fresh 32-hex value (no ambient context, e.g. unit tests
            or non-OTel runtimes).
     * ``start_time_ns`` — for the eventual ``latency_ms`` on pop.
 
     ``span_name`` is recorded as the span ``kind`` so error callbacks
     can verify ownership before popping (no OTel span name is set).
+
+    Args:
+      callback_context: The context of the callback pushing the span; its
+        invocation and session IDs are recorded on the span.
+      span_name: The span kind, such as ``"agent"`` or ``"tool"``.
+      parent_span_id: The span to report as this span's parent when it is the
+        bottom of the stack, such as the enclosing parent's tool span for a
+        nested invocation's root. A span pushed above another reports that
+        one as its parent and ignores this value.
+      trace_id_override: The trace ID to record instead of the inherited one,
+        such as the enclosing parent's trace ID for a nested invocation's
+        root. Later pushes inherit it, so the nested run's rows share the
+        caller's trace ID.
+
+    Returns:
+      The new span's ``span_id``.
     """
     TraceManager.init_trace(callback_context)
 
     records = TraceManager._get_records()
-    if records:
+    if trace_id_override is not None:
+      trace_id = trace_id_override
+    elif records:
       trace_id = records[-1].trace_id
     else:
       ambient_ctx = trace.get_current_span().get_span_context()
@@ -3084,6 +3443,9 @@ class TraceManager:
         owns_span=True,
         start_time_ns=time.time_ns(),
         kind=span_name or "",
+        parent_span_id=parent_span_id,
+        invocation_id=callback_context.invocation_id,
+        session_id=_safe_session_id(callback_context),
     )
     _span_records_ctx.set(list(records) + [record])
 
@@ -3092,6 +3454,9 @@ class TraceManager:
   @staticmethod
   def attach_current_span(
       callback_context: CallbackContext,
+      *,
+      parent_span_id: Optional[str] = None,
+      trace_id_override: Optional[str] = None,
   ) -> str:
     """Records the ambient OTel span's IDs on the stack without owning it.
 
@@ -3099,16 +3464,31 @@ class TraceManager:
     ambient span's ``trace_id`` / ``span_id`` so plugin-emitted
     BigQuery rows correlate with whatever Cloud Trace / external
     exporter the host is already running.
+
+    Args:
+      callback_context: The context of the callback seeding the span; its
+        invocation and session IDs are recorded on the span.
+      parent_span_id: The span to report as the recorded span's parent when
+        it is the bottom of the stack, such as the enclosing parent's tool
+        span when seeding a nested invocation's root.
+      trace_id_override: The trace ID to record instead of the ambient
+        span's, such as the enclosing parent's trace ID when seeding a nested
+        invocation's root, so the nested run's rows share the caller's trace
+        ID.
+
+    Returns:
+      The recorded ``span_id``: the ambient span's ID, or a fresh one when
+      there is no valid ambient span.
     """
     TraceManager.init_trace(callback_context)
 
     ambient_ctx = trace.get_current_span().get_span_context()
     if ambient_ctx.is_valid:
       span_id_str = format(ambient_ctx.span_id, "016x")
-      trace_id = format(ambient_ctx.trace_id, "032x")
+      trace_id = trace_id_override or format(ambient_ctx.trace_id, "032x")
     else:
       span_id_str = uuid.uuid4().hex[:16]
-      trace_id = uuid.uuid4().hex
+      trace_id = trace_id_override or uuid.uuid4().hex
 
     record = _SpanRecord(
         span_id=span_id_str,
@@ -3118,11 +3498,23 @@ class TraceManager:
         # attach_current_span is only used to seed the invocation root
         # (see ensure_invocation_span), so it carries the same kind.
         kind="invocation",
+        parent_span_id=parent_span_id,
+        invocation_id=callback_context.invocation_id,
+        session_id=_safe_session_id(callback_context),
     )
     records = TraceManager._get_records()
     _span_records_ctx.set(list(records) + [record])
 
     return span_id_str
+
+  @staticmethod
+  def _has_ancestor_span(span_id: str) -> bool:
+    """Returns whether any suspended parent frame owns ``span_id``."""
+    for frame in _parent_invocation_frames_ctx.get():
+      for record in frame.span_records:
+        if record.span_id == span_id:
+          return True
+    return False
 
   @staticmethod
   def ensure_invocation_span(
@@ -3135,8 +3527,15 @@ class TraceManager:
 
     * If the stack has entries for the *current* invocation → no-op
       (idempotent within the same invocation).
-    * If the stack has entries from a *different* invocation → clear
-      stale records and re-initialise (safety net for abnormal exit).
+    * If the top of the stack is the tool span of the invocation that
+      ``AgentTool`` recorded as this run's parent → suspend the parent
+      invocation frame and seed a child invocation span linked to that tool
+      span.
+    * If the stack has stale entries from a *different* invocation →
+      clear stale records and re-initialise (safety net for abnormal exit).
+      A nested run whose parent frame is still suspended (e.g. a retry after
+      a child that never reached ``after_run_callback``) rebinds to that
+      frame; any other run drops the suspended frames.
     * If the ambient OTel span is valid → ``attach_current_span``
       (reuse the runner's span without owning it).
     * Otherwise → ``push_span("invocation")`` (create a new root
@@ -3146,26 +3545,86 @@ class TraceManager:
     active_inv = _active_invocation_id_ctx.get()
 
     records = _span_records_ctx.get()
-    if records:
-      if active_inv == current_inv:
-        return  # Already initialised for this invocation.
-      # Stale records from a previous invocation that wasn't cleaned
-      # up (e.g. exception skipped after_run_callback). Clear and
-      # re-init.
-      logger.debug(
-          "Clearing %d stale span records from previous invocation.",
-          len(records),
+    if records and active_inv == current_inv:
+      return  # Already initialised for this invocation.
+
+    parent_span_id: Optional[str] = None
+    inherited_trace_id: Optional[str] = None
+    if records and _is_nested_plugin_run(callback_context, records[-1]):
+      top = records[-1]
+      frame = _InvocationFrame(
+          child_invocation_id=current_inv,
+          invocation_id=top.invocation_id,
+          session_id=top.session_id,
+          root_agent_name=_root_agent_name_ctx.get(),
+          span_records=tuple(records),
       )
-      TraceManager.clear_stack()
+      _parent_invocation_frames_ctx.set(
+          _parent_invocation_frames_ctx.get() + (frame,)
+      )
+      _span_records_ctx.set([])
+      parent_span_id = top.span_id
+      inherited_trace_id = top.trace_id
+    else:
+      if records:
+        # Stale records from a previous invocation that wasn't cleaned
+        # up (e.g. exception skipped after_run_callback). Clear and
+        # re-init.
+        logger.debug(
+            "Clearing %d stale span records from previous invocation.",
+            len(records),
+        )
+        TraceManager.clear_stack()
+      # Rebind a nested run to its still-suspended parent frame; drop every
+      # suspended frame for any other run.
+      parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+      frames = _parent_invocation_frames_ctx.get()
+      matched_idx: Optional[int] = None
+      if parent_inv_id is not None:
+        for idx in range(len(frames) - 1, -1, -1):
+          if frames[idx].invocation_id == parent_inv_id:
+            matched_idx = idx
+            break
+      if matched_idx is None:
+        _parent_invocation_frames_ctx.set(())
+      else:
+        top_frame = frames[matched_idx]
+        rebound = dataclasses.replace(
+            top_frame, child_invocation_id=current_inv
+        )
+        _parent_invocation_frames_ctx.set(frames[:matched_idx] + (rebound,))
+        if top_frame.span_records:
+          parent_span_id = top_frame.span_records[-1].span_id
+          inherited_trace_id = top_frame.span_records[-1].trace_id
 
     _active_invocation_id_ctx.set(current_inv)
 
     # Check for a valid ambient span (e.g. the Runner's invocation span).
+    # When a nested runner shares the same ambient span as a suspended
+    # ancestor frame, fall back to push_span so the child root receives a
+    # distinct span_id and never introduces a cycle in BigQuery.
     ambient = trace.get_current_span()
-    if ambient.get_span_context().is_valid:
-      TraceManager.attach_current_span(callback_context)
+    ambient_ctx = ambient.get_span_context()
+    ambient_span_id = (
+        format(ambient_ctx.span_id, "016x") if ambient_ctx.is_valid else None
+    )
+    ambient_reused_from_ancestor = (
+        ambient_span_id is not None
+        and TraceManager._has_ancestor_span(ambient_span_id)
+    )
+    if ambient_ctx.is_valid and not ambient_reused_from_ancestor:
+      TraceManager.attach_current_span(
+          callback_context,
+          parent_span_id=parent_span_id,
+          trace_id_override=inherited_trace_id,
+      )
     else:
-      TraceManager.push_span(callback_context, "invocation")
+      TraceManager.push_span(
+          callback_context,
+          "invocation",
+          parent_span_id=parent_span_id,
+          trace_id_override=inherited_trace_id,
+      )
 
   @staticmethod
   def pop_span(
@@ -3198,6 +3657,38 @@ class TraceManager:
     return record.span_id, duration_ms
 
   @staticmethod
+  def _pop_invocation_span(
+      expected_invocation_id: Optional[str] = None,
+  ) -> tuple[Optional[str], Optional[int]]:
+    """Pops the invocation-root span and unwinds any unclosed child spans.
+
+    Searches the span stack from top to bottom for a record with
+    ``kind == "invocation"`` matching ``expected_invocation_id`` (when
+    provided). When found, removes that record and any unclosed child
+    ``"agent"``/``"tool"`` records above it (for example when
+    ``end_invocation=True`` skips ``after_agent_callback``) so the completed
+    invocation reports the root span ID and total invocation duration.
+    Returns ``(None, None)`` when ``expected_invocation_id`` is not found, or
+    falls back to ``pop_span()`` when ``expected_invocation_id`` is ``None``.
+    """
+    records = _span_records_ctx.get()
+    if not records:
+      return None, None
+    for i in range(len(records) - 1, -1, -1):
+      if records[i].kind == "invocation" and (
+          expected_invocation_id is None
+          or records[i].invocation_id in (None, expected_invocation_id)
+      ):
+        record = records[i]
+        new_records = list(records[:i])
+        _span_records_ctx.set(new_records)
+        duration_ms = int((time.time_ns() - record.start_time_ns) / 1_000_000)
+        return record.span_id, duration_ms
+    if expected_invocation_id is not None:
+      return None, None
+    return TraceManager.pop_span()
+
+  @staticmethod
   def clear_stack() -> None:
     """Clears all span records. Safety net for cross-invocation cleanup."""
     _span_records_ctx.set([])
@@ -3215,6 +3706,8 @@ class TraceManager:
       if records[i].span_id != span_id:
         parent_id = records[i].span_id
         break
+    if parent_id is None:
+      parent_id = records[0].parent_span_id
     return span_id, parent_id
 
   @staticmethod
@@ -3224,6 +3717,124 @@ class TraceManager:
     if records:
       return records[-1].span_id
     return None
+
+  @staticmethod
+  def _get_enclosing_parent_span_id(
+      callback_context: Optional[CallbackContext] = None,
+  ) -> Optional[str]:
+    """Gets the enclosing parent tool span_id for a nested invocation."""
+    frame = TraceManager._get_parent_invocation_frame(callback_context)
+    if frame and frame.span_records:
+      return frame.span_records[-1].span_id
+    return None
+
+  @staticmethod
+  def _get_parent_invocation_frame(
+      callback_context: Optional[CallbackContext] = None,
+  ) -> Optional[_InvocationFrame]:
+    """Gets the immediate parent invocation frame if nested."""
+    frames = _parent_invocation_frames_ctx.get()
+    if not frames:
+      return None
+    if callback_context is None:
+      return frames[-1]
+    parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+    if parent_inv_id is not None:
+      for frame in reversed(frames):
+        if frame.invocation_id == parent_inv_id:
+          return frame
+      return None
+    if (
+        not _is_foreign_invocation_stack(callback_context.invocation_id)
+        and frames[-1].child_invocation_id == callback_context.invocation_id
+    ):
+      return frames[-1]
+    return None
+
+  @staticmethod
+  def _restore_parent_frame(
+      frame: _InvocationFrame,
+      remaining_frames: tuple[_InvocationFrame, ...],
+  ) -> None:
+    """Restores a suspended parent invocation frame onto contextvars."""
+    _span_records_ctx.set(list(frame.span_records))
+    _active_invocation_id_ctx.set(frame.invocation_id)
+    _root_agent_name_ctx.set(frame.root_agent_name)
+    _parent_invocation_frames_ctx.set(remaining_frames)
+
+  @staticmethod
+  def _unwind_to_invocation(invocation_id: Optional[str]) -> None:
+    """Restores suspended parent state if a nested run exited abruptly."""
+    if (
+        not isinstance(invocation_id, str)
+        or not invocation_id
+        or _active_invocation_id_ctx.get() == invocation_id
+    ):
+      return
+    frames = _parent_invocation_frames_ctx.get()
+    for idx in range(len(frames) - 1, -1, -1):
+      frame = frames[idx]
+      if frame.invocation_id == invocation_id:
+        TraceManager._restore_parent_frame(frame, frames[:idx])
+        return
+
+  @staticmethod
+  def _pop_run_end_span(
+      callback_context: CallbackContext,
+      *,
+      unwind_children: bool,
+  ) -> tuple[Optional[str], Optional[int], Optional[str]]:
+    """Pops the run-end root span and resolves its enclosing parent span."""
+    invocation_id = callback_context.invocation_id
+    if not _has_active_enclosing_parent(invocation_id, callback_context):
+      was_foreign = _is_foreign_invocation_stack(invocation_id)
+      if was_foreign:
+        span_id, duration = None, None
+      elif unwind_children:
+        span_id, duration = TraceManager._pop_invocation_span(invocation_id)
+      else:
+        span_id, duration = TraceManager.pop_span(expected_kind="invocation")
+      if span_id is None:
+        TraceManager.clear_stack()
+        if was_foreign:
+          TraceManager.init_trace(callback_context)
+      parent_span_id = (
+          TraceManager.get_current_span_id()
+          or TraceManager._get_enclosing_parent_span_id(callback_context)
+      )
+      return span_id, duration, parent_span_id
+    records = _span_records_ctx.get()
+    parent_span_id = records[-1].span_id if records else None
+    return None, None, parent_span_id
+
+  @staticmethod
+  def _finish_invocation(
+      invocation_id: Optional[str],
+      callback_context: Optional[CallbackContext] = None,
+  ) -> None:
+    """Completes an invocation, restoring any suspended parent frame."""
+    if invocation_id is not None:
+      frames = _parent_invocation_frames_ctx.get()
+      for idx in range(len(frames) - 1, -1, -1):
+        frame = frames[idx]
+        if frame.child_invocation_id == invocation_id:
+          TraceManager._restore_parent_frame(frame, frames[:idx])
+          return
+      if _has_active_enclosing_parent(invocation_id, callback_context):
+        return
+      # A nested run that never suspended its parent itself (an abandoned
+      # sibling's state was still active) still hands control back to it.
+      parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+      if parent_inv_id is not None and frames:
+        for idx in range(len(frames) - 1, -1, -1):
+          frame = frames[idx]
+          if frame.invocation_id == parent_inv_id:
+            TraceManager._restore_parent_frame(frame, frames[:idx])
+            return
+    TraceManager.clear_stack()
+    _active_invocation_id_ctx.set(None)
+    _root_agent_name_ctx.set(None)
+    _parent_invocation_frames_ctx.set(())
 
   @staticmethod
   def get_root_agent_name() -> Optional[str]:
@@ -4336,19 +4947,25 @@ class HybridContentParser:
     Known formatter/redaction sentinels are already safe and must not be
     reinterpreted as malformed JSON merely because they are bracketed. All
     other raw text goes through the same fail-closed credential sanitizer used
-    for structured attributes. Length truncation remains a separate pass so
-    the sanitized value is also the value sent to GCS.
+    for structured attributes, followed by the plain-text credential boundary.
+    Length truncation remains a separate pass so the sanitized value is also
+    the value sent to GCS.
     """
     if text in (_FORMATTER_FAILED_SENTINEL, "[REDACTED]"):
       return text, False
+    if text in _RESPONSE_TEXT_SENTINELS:
+      return text, True
     sanitized, content_lost = _recursive_smart_truncate(text, -1)
     if sanitized == "[UNPARSEABLE_JSON_BLOB]":
       # Raw content is user-facing prose, not an opaque attributes blob.
       # Reusing the attributes sanitizer made every invalid bracket-led
       # message ("[INFO]", Markdown links, "{not json}") disappear. Restore
-      # only bounded prose with no raw or encoded credential construct;
-      # malformed credential documents remain fail-closed while ordinary
-      # Windows paths and decoder diagnostics stay byte-identical.
+      # only bounded text with no raw or encoded live credential, and, when
+      # the text is JSON-shaped (brace/array-led or with a quoted "key":), no
+      # credential marker at all, since a malformed JSON document can carry a
+      # live value next to an already-redacted one: "{token=[REDACTED]} ..."
+      # stays fail-closed while "[INFO] token=[REDACTED] ..." is restored.
+      # Ordinary Windows paths and decoder diagnostics stay byte-identical.
       stripped = _strip_bom_ws(text)
       if (
           len(stripped) <= _MAX_JSON_INSPECT_CHARS
@@ -4359,9 +4976,11 @@ class HybridContentParser:
           json.loads(stripped)
         except (ValueError, RecursionError, MemoryError):
           return text, False
+      return "[UNPARSEABLE_JSON_BLOB]", True
     if not isinstance(sanitized, str):
       return "[UNSUPPORTED_OBJECT]", True
-    return sanitized, content_lost
+    sanitized, sens_lost = _sanitize_sensitive_text(sanitized, -1)
+    return sanitized, content_lost or sens_lost
 
   def _sanitize_and_truncate(self, text: str) -> tuple[str, bool]:
     sanitized, content_lost = self._sanitize_raw_text(text)
@@ -4836,9 +5455,36 @@ class HybridContentParser:
       return {"text_summary": summary}, parts, trunc
 
     elif isinstance(content, (dict, list)):
-      json_payload, is_truncated = _recursive_smart_truncate(
-          content, self.max_length
+      raw_text_summary = (
+          content.get("text_summary")
+          if type(content) is dict  # pylint: disable=unidiomatic-typecheck
+          and type(content.get("text_summary")) is str  # pylint: disable=unidiomatic-typecheck
+          else None
       )
+      if raw_text_summary is not None:
+        if raw_text_summary in _RESPONSE_TEXT_SENTINELS:
+          summary_val = raw_text_summary
+          summary_trunc = raw_text_summary in (
+              _FORMATTING_FAILED_SENTINEL,
+              "[CONTENT_PARSE_FAILED]",
+              "[UNPARSEABLE_JSON_BLOB]",
+              "[UNSUPPORTED_OBJECT]",
+              "[REDACTED_SENSITIVE_TEXT]",
+          )
+        else:
+          summary_val, summary_trunc = process_text(raw_text_summary)
+        staged_content = dict(content)
+        staged_content["text_summary"] = ""
+        json_payload, dict_trunc = _recursive_smart_truncate(
+            staged_content, self.max_length
+        )
+        if isinstance(json_payload, dict) and "text_summary" in json_payload:
+          json_payload["text_summary"] = summary_val
+        is_truncated = summary_trunc or dict_trunc
+      else:
+        json_payload, is_truncated = _recursive_smart_truncate(
+            content, self.max_length
+        )
     elif isinstance(content, str):
       json_payload, is_truncated = process_text(content)
     elif content is None:
@@ -6067,7 +6713,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       return _format_content(content, max_len=self.config.max_content_length)
     except Exception as e:
       logger.warning("Content formatter failed: %s", e)
-      return "[FORMATTING FAILED]", True
+      return _FORMATTING_FAILED_SENTINEL, True
 
   async def _close_write_transport(self, write_client: Any) -> None:
     """Best-effort bounded close for a BigQuery write-client transport."""
@@ -8067,9 +8713,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     Resolution rules:
 
-      * **trace_id** — ambient OTel trace wins (the plugin stack already
-        shares the ambient trace when initialised from an ambient span,
-        so in practice they agree).
+      * **trace_id** — ambient OTel trace wins on top-level invocations;
+        nested invocations retain their inherited parent trace_id.
       * **span_id / parent_span_id** — the plugin's internal span stack
         (``TraceManager``) is the preferred source.  Ambient OTel spans
         are only used as a fallback when the plugin stack has no span.
@@ -8084,9 +8729,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       1. Explicit ``EventData`` overrides.
       2. Plugin's internal span stack (``TraceManager``) for
          ``span_id`` / ``parent_span_id``.
-      3. Ambient OTel span — always used for ``trace_id``; used for
-         ``span_id`` / ``parent_span_id`` only when the plugin stack
-         has no span.
+      3. Ambient OTel span — used for ``trace_id`` on top-level
+         invocations (nested invocations retain their inherited parent
+         ``trace_id``); used for ``span_id`` / ``parent_span_id`` only
+         when the plugin stack has no span.
       4. ``invocation_id`` fallback for trace_id.
 
     Returns:
@@ -8094,23 +8740,48 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     # --- Plugin stack: span_id / parent_span_id baseline ---
     trace_id = TraceManager.get_trace_id(callback_context)
-    plugin_span_id, plugin_parent_span_id = (
-        TraceManager.get_current_span_and_parent()
+    records = _span_records_ctx.get()
+    parent_record = records[-1] if records else None
+    # The parent's stack is foreign even when no invocation is active, as when
+    # the parent's ensure_invocation_span never ran.
+    is_nested_foreign = parent_record is not None and _is_nested_plugin_run(
+        callback_context, parent_record
     )
-    span_id = plugin_span_id
-    parent_span_id = plugin_parent_span_id
+    foreign_active_stack = is_nested_foreign or _is_foreign_invocation_stack(
+        callback_context.invocation_id
+    )
+    span_id: str | None
+    parent_span_id: str | None
+    if foreign_active_stack:
+      span_id = None
+      if is_nested_foreign and parent_record is not None:
+        parent_span_id = parent_record.span_id
+      else:
+        parent_span_id = TraceManager._get_enclosing_parent_span_id(
+            callback_context
+        )
+    else:
+      plugin_span_id, plugin_parent_span_id = (
+          TraceManager.get_current_span_and_parent()
+      )
+      span_id = plugin_span_id
+      parent_span_id = plugin_parent_span_id
 
-    # --- Ambient OTel: trace_id always; span fallback only ---
+    # --- Ambient OTel: trace_id unless nested inherited parent trace;
+    # span fallback only ---
+    parent_frame = TraceManager._get_parent_invocation_frame(callback_context)
+    is_nested_invocation = is_nested_foreign or parent_frame is not None
     ambient = trace.get_current_span()
     ambient_ctx = ambient.get_span_context()
     if ambient_ctx.is_valid:
-      trace_id = format(ambient_ctx.trace_id, "032x")
+      if not (is_nested_invocation and trace_id is not None):
+        trace_id = format(ambient_ctx.trace_id, "032x")
       # Only use ambient span IDs when the plugin stack has no span.
       # Framework-internal spans (execute_tool, call_llm, etc.) are
       # never written to BQ, so deriving parent_span_id from them
       # creates phantom references.  The plugin stack guarantees
       # that both span_id and parent_span_id reference BQ rows.
-      if span_id is None:
+      if span_id is None and not foreign_active_stack:
         span_id = format(ambient_ctx.span_id, "016x")
         parent_span_id = None
         parent_ctx = getattr(ambient, "parent", None)
@@ -8171,6 +8842,70 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       return getattr(source_event, "author", None)
     return None
 
+  def _extract_structured_response_summary(
+      self,
+      payload: Any,
+  ) -> Optional[tuple[str, bool]]:
+    """Extracts a sanitized text summary from a structured response payload."""
+    key = self.config.response_text_key
+    if key is None:
+      return None
+    if type(key) is not str:  # pylint: disable=unidiomatic-typecheck
+      key = str.__str__(key)
+    canonical_key = _canonicalize_common_ascii_escapes(key)
+    if _is_sensitive_text_key(canonical_key):
+      return None
+    candidate: Any = None
+    if isinstance(payload, str):
+      if type(payload) is not str:  # pylint: disable=unidiomatic-typecheck
+        payload = str.__str__(payload)
+      stripped = _strip_bom_ws(payload)
+      if (
+          not stripped.startswith("{")
+          or len(stripped) > _MAX_JSON_INSPECT_CHARS
+          or _json_nesting_exceeds_limit(stripped)
+      ):
+        return None
+      try:
+        parsed = json.loads(stripped)
+      except (ValueError, TypeError, RecursionError, MemoryError):
+        return None
+      if isinstance(parsed, dict):
+        candidate = parsed.get(key)
+    else:
+      if isinstance(payload, collections.abc.Mapping):
+        try:
+          candidate = payload.get(key)
+        except Exception:  # pylint: disable=broad-except
+          return None
+    if not isinstance(candidate, str):
+      return None
+    if type(candidate) is not str:  # pylint: disable=unidiomatic-typecheck
+      candidate = str.__str__(candidate)
+    if not candidate.strip():
+      return None
+    if candidate.strip() in _RESPONSE_TEXT_SENTINELS:
+      return None
+    raw_sanitized, raw_truncated = HybridContentParser._sanitize_raw_text(
+        candidate
+    )
+    if (
+        not raw_sanitized
+        or not raw_sanitized.strip()
+        or raw_sanitized.strip() in _RESPONSE_TEXT_SENTINELS
+    ):
+      return None
+    sanitized_text, sens_truncated = _sanitize_sensitive_text(
+        raw_sanitized, self.config.max_content_length
+    )
+    if (
+        not sanitized_text
+        or not sanitized_text.strip()
+        or sanitized_text.strip() in _RESPONSE_TEXT_SENTINELS
+    ):
+      return None
+    return sanitized_text, (raw_truncated or sens_truncated)
+
   def _build_adk_envelope(
       self,
       callback_context: CallbackContext,
@@ -8179,7 +8914,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """Builds the ``attributes.adk`` envelope.
 
     A1 / A2 (``schema_version``, ``app_name``) stamp on every ADK-enriched
-    row regardless of origin. A3 / C1 / C2 / C3 (``source_event_id``,
+    row regardless of origin, and ``parent_session_id`` /
+    ``parent_invocation_id`` stamp on every row emitted inside a nested
+    ``AgentTool`` invocation. A3 / C1 / C2 / C3 (``source_event_id``,
     ``node``, ``branch``, ``scope``) and C8 (``route``,
     ``render_ui_widgets``, ``rewind_before_invocation_id``) only stamp
     when a source Event is provided — callback-only rows **omit** those
@@ -8197,6 +8934,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       adk["app_name"] = callback_context._invocation_context.session.app_name
     except Exception:
       adk["app_name"] = None
+
+    records = _span_records_ctx.get()
+    if records and _is_nested_plugin_run(callback_context, records[-1]):
+      # Like the suspended frame, read the parent from its enclosing span: no
+      # invocation is active if the parent's ensure_invocation_span never ran.
+      if records[-1].session_id:
+        adk["parent_session_id"] = records[-1].session_id
+      adk["parent_invocation_id"] = records[-1].invocation_id
+    else:
+      parent_frame = TraceManager._get_parent_invocation_frame(callback_context)
+      if parent_frame is not None:
+        if parent_frame.session_id:
+          adk["parent_session_id"] = parent_frame.session_id
+        if parent_frame.invocation_id:
+          adk["parent_invocation_id"] = parent_frame.invocation_id
+      else:
+        parent_inv_id = _get_nested_parent_invocation_id(callback_context)
+        if parent_inv_id is not None:
+          adk["parent_invocation_id"] = parent_inv_id
 
     if source_event is None:
       return adk
@@ -8304,7 +9060,29 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       adk_envelope.setdefault(k, v)
     attrs["adk"] = adk_envelope
 
-    attrs["root_agent_name"] = TraceManager.get_root_agent_name()
+    records = _span_records_ctx.get()
+    root_agent_name = TraceManager.get_root_agent_name()
+    # Until a nested run seeds its own root span, when a foreign invocation's
+    # stack is still active, or when the cached root agent is unset (e.g. after
+    # an unlinked inner Runner clears the contextvar), derive it from the
+    # callback's agent tree without mutating context.
+    if (
+        root_agent_name is None
+        or _is_foreign_invocation_stack(callback_context.invocation_id)
+        or (records and _is_nested_plugin_run(callback_context, records[-1]))
+    ):
+      fallback_root_agent: Optional[str] = None
+      try:
+        cb_agent = callback_context._invocation_context.agent
+        if isinstance(cb_agent, BaseAgent):
+          candidate_name = cb_agent.root_agent.name
+          if isinstance(candidate_name, str):
+            fallback_root_agent = candidate_name
+      except (AttributeError, ValueError):
+        pass
+      attrs["root_agent_name"] = fallback_root_agent
+    else:
+      attrs["root_agent_name"] = root_agent_name
     if event_data.model:
       attrs["model"] = event_data.model
     if event_data.model_version:
@@ -8584,16 +9362,22 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # one bounded, fail-closed boundary here so every current and future error
     # producer receives the same privacy contract before formatter/parser row
     # assembly. Ordinary safe messages remain byte-for-byte unchanged.
+    error_failed_closed = False
     if event_data.error_message is not None:
+      raw_error_msg = event_data.error_message
       try:
         safe_error, error_content_lost = _sanitize_sensitive_text(
-            event_data.error_message, self.config.max_content_length
+            raw_error_msg, self.config.max_content_length
         )
       except Exception:
         safe_error, error_content_lost = (
             "[REDACTED_SENSITIVE_TEXT]",
             True,
         )
+      error_failed_closed = (
+          safe_error == "[REDACTED_SENSITIVE_TEXT]"
+          and raw_error_msg != "[REDACTED_SENSITIVE_TEXT]"
+      )
       event_data.error_message = safe_error
       is_truncated = is_truncated or error_content_lost
     if event_type in ("AGENT_ERROR", "INVOCATION_ERROR") and isinstance(
@@ -8602,9 +9386,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       try:
         error_traceback = raw_content.get("error_traceback")
         if isinstance(error_traceback, str):
-          safe_traceback, traceback_content_lost = _sanitize_sensitive_text(
-              error_traceback, self.config.max_content_length
-          )
+          if error_failed_closed:
+            safe_traceback, traceback_content_lost = (
+                "[REDACTED_SENSITIVE_TEXT]",
+                True,
+            )
+          else:
+            safe_traceback, traceback_content_lost = _sanitize_sensitive_text(
+                error_traceback, self.config.max_content_length
+            )
           raw_content = dict(raw_content)
           raw_content["error_traceback"] = safe_traceback
           is_truncated = is_truncated or traceback_content_lost
@@ -8923,6 +9713,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         invocation_context: The context for the current invocation.
         event: The event raised by the runner.
     """
+    TraceManager._unwind_to_invocation(invocation_context.invocation_id)
     callback_ctx = CallbackContext(invocation_context)
 
     # A later before_model callback may short-circuit the model call. ADK
@@ -8931,7 +9722,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # it. The synthesized response is a non-partial event; close only that
     # expected top span at this boundary. Streaming chunks stay attached to
     # their live llm_request span until the final response callback.
-    if getattr(event, "partial", None) is not True:
+    if getattr(
+        event, "partial", None
+    ) is not True and not _is_foreign_invocation_stack(
+        invocation_context.invocation_id
+    ):
       TraceManager.pop_span(expected_kind="llm_request")
 
     if self._workflow_observations_enabled():
@@ -9247,16 +10042,37 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # empty parts, and non-text execution parts (executable_code,
       # code_execution_result) that are internal tool execution turns
       # rather than user-facing conversational text.
-      visible_parts = [
-          p
-          for p in event_content.parts
-          if p.text and not getattr(p, "thought", None)
-      ]
+      visible_parts: list[types.Part] = []
+      visible_texts: list[str] = []
+      for p in event_content.parts:
+        if p.text and not getattr(p, "thought", None):
+          visible_parts.append(p)
+          visible_texts.append(p.text)
       if visible_parts:
         visible_content = types.Content(
             role=event_content.role, parts=visible_parts
         )
         formatted, truncated = self._format_content_safely(visible_content)
+        raw_content: dict[str, Any] = {"response": formatted}
+        if self.config.response_text_key is not None:
+          first_non_ws = next(
+              (s for t in visible_texts if (s := _strip_bom_ws(t))),
+              "",
+          )
+          summary = (
+              self._extract_structured_response_summary(
+                  "\n".join(visible_texts)
+              )
+              if first_non_ws.startswith("{")
+              else None
+          )
+          if summary is not None:
+            summary_text, summary_truncated = summary
+            raw_content = {
+                "text_summary": summary_text,
+                "response": formatted,
+            }
+            truncated = truncated or summary_truncated
         # source_event=event carries the ADK envelope (A3 / node /
         # branch / scope). The flat ``source_event_*`` extras are
         # retained for backward compat with existing AGENT_RESPONSE
@@ -9264,7 +10080,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         await self._log_event(
             "AGENT_RESPONSE",
             callback_ctx,
-            raw_content={"response": formatted},
+            raw_content=raw_content,
             is_truncated=truncated,
             event_data=EventData(
                 source_event=event,
@@ -9402,7 +10218,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Args:
         invocation_context: The context of the current invocation.
     """
+    callback_ctx: Optional[CallbackContext] = None
     try:
+      TraceManager._unwind_to_invocation(invocation_context.invocation_id)
       # Capture trace_id BEFORE popping the invocation-root span so
       # that INVOCATION_COMPLETED shares the same trace_id as all
       # earlier events in this invocation.
@@ -9412,9 +10230,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       trace_id = TraceManager.get_trace_id(callback_ctx)
 
-      # Pop the invocation-root span pushed by ensure_invocation_span.
-      span_id, duration = TraceManager.pop_span()
-      parent_span_id = TraceManager.get_current_span_id()
+      # Pop the invocation-root span pushed by ensure_invocation_span,
+      # unwinding any unclosed child spans left by early termination.
+      span_id, duration, parent_span_id = TraceManager._pop_run_end_span(
+          callback_ctx, unwind_children=True
+      )
 
       await self._log_event(
           "INVOCATION_COMPLETED",
@@ -9431,9 +10251,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # stale invocation metadata leaks into the next invocation.
       with self._workflow_segments_guard:
         self._workflow_segments.pop(invocation_context.invocation_id, None)
-      TraceManager.clear_stack()
-      _active_invocation_id_ctx.set(None)
-      _root_agent_name_ctx.set(None)
+      TraceManager._finish_invocation(
+          invocation_context.invocation_id, callback_ctx
+      )
       # Flush before returning if configured; otherwise the background batch
       # writer drains the queue.
       if self.config.flush_on_run_end:
@@ -9449,6 +10269,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         agent: The agent instance.
         callback_context: The callback context.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     TraceManager.init_trace(callback_context)
     TraceManager.push_span(callback_context, "agent")
     # A callable InstructionProvider is resolved per invocation; log None
@@ -9544,6 +10365,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         agent: The agent instance.
         callback_context: The callback context.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
@@ -9578,6 +10400,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # event was not observed (for example, an abnormal generator exit).
     # expected_kind prevents this from disturbing the parent agent or
     # invocation span.
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     TraceManager.pop_span(expected_kind="llm_request")
 
     # 5. Attributes (Config & Tools)
@@ -9654,6 +10477,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
         llm_response: The LLM response object.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     is_partial = getattr(llm_response, "partial", None) is True
     content_dict: dict[str, object] = {}
     is_truncated = False
@@ -9804,8 +10628,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         llm_request: The request that was sent to the model.
         error: The exception that occurred.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     span_id, duration = TraceManager.pop_span(expected_kind="llm_request")
-    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+    parent_span_id = (
+        TraceManager.get_current_span_id() if span_id is not None else None
+    )
 
     await self._log_event(
         "LLM_ERROR",
@@ -9834,6 +10661,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         tool_args: The arguments passed to the tool.
         tool_context: The tool context.
     """
+    TraceManager._unwind_to_invocation(tool_context.invocation_id)
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
@@ -9876,6 +10704,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         tool_context: The tool context.
         result: The response from the tool.
     """
+    TraceManager._unwind_to_invocation(tool_context.invocation_id)
     if _pop_tool_error_recorded(self, tool_context):
       # on_tool_error_callback already recorded this call's failure and closed
       # its span; the result is the answer a later plugin gave to the error.
@@ -9992,10 +10821,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       args_truncated, args_is_truncated = _recursive_smart_truncate(
           tool_args, self.config.max_content_length
       )
+      response_raw_content: dict[str, Any] = {"response": args_truncated}
+      summary = self._extract_structured_response_summary(tool_args)
+      if summary is not None:
+        summary_text, summary_truncated = summary
+        response_raw_content = {
+            "text_summary": summary_text,
+            "response": args_truncated,
+        }
+        args_is_truncated = args_is_truncated or summary_truncated
       await self._log_event(
           "AGENT_RESPONSE",
           tool_context,
-          raw_content={"response": args_truncated},
+          raw_content=response_raw_content,
           is_truncated=args_is_truncated,
           event_data=EventData(extra_attributes={"source_tool": tool.name}),
       )
@@ -10082,6 +10920,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         tool_context: The tool context.
         error: The exception that occurred.
     """
+    TraceManager._unwind_to_invocation(tool_context.invocation_id)
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
@@ -10142,8 +10981,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
         error: The exception that escaped agent execution.
     """
+    TraceManager._unwind_to_invocation(callback_context.invocation_id)
     span_id, duration = TraceManager.pop_span(expected_kind="agent")
-    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+    parent_span_id = (
+        TraceManager.get_current_span_id() if span_id is not None else None
+    )
 
     error_tb = "".join(
         traceback_module.format_exception(
@@ -10179,19 +11021,22 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         invocation_context: The context of the current invocation.
         error: The exception that escaped runner execution.
     """
+    callback_ctx: Optional[CallbackContext] = None
     try:
+      TraceManager._unwind_to_invocation(invocation_context.invocation_id)
       callback_ctx = CallbackContext(invocation_context)
       await self._drain_workflow_node_observations(
           callback_ctx, drain_callback="on_run_error"
       )
       trace_id = TraceManager.get_trace_id(callback_ctx)
 
-      # Guarded pop: only consume the invocation-root span. If the failure
-      # left intermediate spans on the stack (or the root was never pushed),
-      # emit the row without span/latency rather than mis-attributing them;
-      # the finally-block clear_stack below resets the stack either way.
-      span_id, duration = TraceManager.pop_span(expected_kind="invocation")
-      parent_span_id = TraceManager.get_current_span_id()
+      # Guarded pop: only consume the invocation-root span when no active
+      # enclosing parent owns the stack. If the failure left intermediate
+      # spans on the stack (or the root was never pushed), emit the row
+      # without span/latency rather than mis-attributing them.
+      span_id, duration, parent_span_id = TraceManager._pop_run_end_span(
+          callback_ctx, unwind_children=False
+      )
 
       error_tb = "".join(
           traceback_module.format_exception(
@@ -10215,9 +11060,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Cleanup must run even if _log_event raises.
       with self._workflow_segments_guard:
         self._workflow_segments.pop(invocation_context.invocation_id, None)
-      TraceManager.clear_stack()
-      _active_invocation_id_ctx.set(None)
-      _root_agent_name_ctx.set(None)
+      TraceManager._finish_invocation(
+          invocation_context.invocation_id, callback_ctx
+      )
       if self.config.flush_on_run_end:
         await self.flush()
 

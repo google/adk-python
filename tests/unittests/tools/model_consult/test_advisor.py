@@ -38,6 +38,7 @@ from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
 from google.adk.utils._client_labels_utils import get_client_labels
 from google.adk.utils._client_labels_utils import MODEL_CONSULT_CLIENT_LABEL
 from google.genai import types
+from opentelemetry.instrumentation.google_genai import version as google_genai_version
 from pydantic import Field
 import pytest
 
@@ -565,6 +566,26 @@ async def test_call_advisor_response_error_code_raises_and_records_telemetry():
 
 
 @pytest.mark.asyncio
+async def test_call_advisor_records_inference_tokens_when_call_raises():
+  """Records the inference token metrics when the advisor call raises."""
+  error = RuntimeError('boom')
+  llm = _FakeAdvisorLlm(scripted_outcomes=[error])
+
+  with mock.patch.object(
+      _metrics, 'record_inference_token_usage', autospec=True
+  ) as mock_inference_tokens:
+    with pytest.raises(AdvisorError):
+      await call_advisor(
+          llm,
+          _sample_contents(),
+          system_instruction='Advisor system prompt.',
+      )
+  mock_inference_tokens.assert_called_once()
+  assert mock_inference_tokens.call_args.kwargs['error'] is error
+  assert mock_inference_tokens.call_args.kwargs['responses'] == []
+
+
+@pytest.mark.asyncio
 async def test_call_advisor_telemetry_failure_does_not_break_call():
   """Swallows telemetry recording errors so advisor calls still succeed."""
   llm = _FakeAdvisorLlm(
@@ -669,13 +690,24 @@ async def test_call_advisor_timeout_bounds_total_wall_clock_across_retry():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('instrumentor_version', 'emit_inference_tokens'),
+    [('0.7b1', True), ('1.0b0', False)],
+)
 async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
     monkeypatch: pytest.MonkeyPatch,
+    instrumentor_version: str,
+    emit_inference_tokens: bool,
 ):
-  """Skips native OTel metrics for Gemini when genai OTel lib is active."""
+  """Skips native OTel metrics for Gemini when genai OTel lib is active.
+
+  The inference token metrics are still recorded when the instrumentor's
+  version doesn't record them itself.
+  """
   monkeypatch.setenv(
       'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
   )
+  monkeypatch.setattr(google_genai_version, '__version__', instrumentor_version)
   gemini_llm = _FakeAdvisorLlm(
       model='gemini-2.5-pro',
       scripted_outcomes=[[
@@ -723,6 +755,9 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
       mock.patch.object(
           _metrics, 'record_client_token_usage', autospec=True
       ) as mock_tokens,
+      mock.patch.object(
+          _metrics, 'record_inference_token_usage', autospec=True
+      ) as mock_inference_tokens,
   ):
     await call_advisor(
         gemini_llm,
@@ -731,7 +766,9 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
     )
     mock_duration.assert_not_called()
     mock_tokens.assert_not_called()
+    assert mock_inference_tokens.called is emit_inference_tokens
 
+    mock_inference_tokens.reset_mock()
     await call_advisor(
         non_gemini_llm,
         _sample_contents(),
@@ -739,6 +776,7 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
     )
     mock_duration.assert_called_once()
     mock_tokens.assert_called_once()
+    mock_inference_tokens.assert_called_once()
 
 
 @pytest.mark.asyncio

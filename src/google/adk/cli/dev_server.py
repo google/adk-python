@@ -73,6 +73,7 @@ from typing_extensions import deprecated
 import yaml
 
 from . import agent_graph
+from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..auth.auth_credential import _redact_credential_secrets
 from ..errors.not_found_error import NotFoundError
@@ -1683,6 +1684,9 @@ class DevServer(ApiServer):
       """
       agent_or_app = self.agent_loader.load_agent(app_name)
       root_agent = self._get_root_agent(agent_or_app)
+      # A Workflow root is drawn by the build_graph_image endpoint instead.
+      if not isinstance(root_agent, BaseAgent):
+        return {}
 
       # Get graph with NO highlights (empty list) and specified theme
       dot_graph = await agent_graph.get_agent_graph(
@@ -1716,6 +1720,8 @@ class DevServer(ApiServer):
       function_responses = event.get_function_responses()
       agent_or_app = self.agent_loader.load_agent(app_name)
       root_agent = self._get_root_agent(agent_or_app)
+      if not isinstance(root_agent, BaseAgent):
+        return {}
       dot_graph = None
       if function_calls:
         function_call_highlights = []

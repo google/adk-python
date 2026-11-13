@@ -494,6 +494,10 @@ async def run_llm_agent_as_node(
         async for event in run_iter:
           process_llm_agent_output(effective_agent, ctx, event)
           yield event
+      # A single_turn agent runs its transfer target inline, so the target's
+      # reply is already this node's output. Clear the transfer so the
+      # scheduler does not run the target again as a separate hop.
+      ctx.actions.transfer_to_agent = None
     finally:
       if injected_input_event is not None:
         _remove_event(agent_ctx.session.events, injected_input_event)
@@ -541,6 +545,7 @@ async def run_llm_agent_as_node(
     had_task_fc = False
     transferred = False
     pending_fc_args: dict[str, Any] | None = None
+    finished = False
     run_method = (
         effective_agent.run_live(ic)
         if is_live
@@ -548,6 +553,13 @@ async def run_llm_agent_as_node(
     )
     async with aclosing(run_method) as run_iter:
       async for event in run_iter:
+        if finished:
+          # A sibling tool's pause request would strand the finished result.
+          if event.get_function_calls():
+            return
+          # Closing the run early would skip the agent's after callbacks.
+          yield event
+          continue
         task_fcs = _extract_task_delegation_fcs(event, tools_dict)
         if is_task_mode:
           finish_fc = _extract_finish_task_fc(event)
@@ -572,7 +584,12 @@ async def run_llm_agent_as_node(
             if output_key and event.output is not None:
               ctx.actions.state_delta[output_key] = event.output
             yield event
-            return
+            # A live session does not end on its own, and a transfer in the
+            # same turn runs at the parent; close the run here for both.
+            if is_live or event.actions.transfer_to_agent:
+              return
+            finished = True
+            continue
 
         yield event
         if task_fcs:
@@ -595,6 +612,8 @@ async def run_llm_agent_as_node(
                             ' result is available.'
                         )
                     }
+                    # The rejected finish_task does not end the turn.
+                    pending_event.actions.skip_summarization = None
                 yield pending_event
 
           for fc in task_fcs:

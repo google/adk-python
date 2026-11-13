@@ -62,7 +62,8 @@ deployment-agnostic, and compatible with other frameworks.
 - **Tool Confirmation**: A [tool confirmation flow (HITL)](https://adk.dev/tools-custom/confirmation/) that can guard tool execution with explicit confirmation and custom input.
 
 - **Deploy Anywhere**: Easily containerize and deploy agents on Cloud Run or
-  scale seamlessly with Vertex AI Agent Engine.
+  scale seamlessly with Agent Runtime on Gemini Enterprise Agent Platform
+  (formerly Vertex AI Agent Engine).
 
 ## 🚀 Installation
 

@@ -1690,6 +1690,18 @@ async def test_handle_function_calls_live_parallel_preserves_live_session_id():
   assert result_parallel.live_session_id == 'test-live-session-id-parallel'
 
 
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_warns_deprecated():
+  with (
+      mock.patch(
+          'google.adk.flows.llm_flows.tools._functions._handle_function_calls_live',
+          new_callable=mock.AsyncMock,
+      ),
+      pytest.warns(DeprecationWarning, match='handle_function_calls_live'),
+  ):
+    await handle_function_calls_live(mock.MagicMock(), mock.MagicMock(), {})
+
+
 class _MockControlSignalTool(BaseTool):
   """A tool that simulates requesting confirmation or OAuth authentication."""
 

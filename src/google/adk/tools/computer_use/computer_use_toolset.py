@@ -321,7 +321,8 @@ class ComputerUseToolset(BaseToolset):
       return lock
 
   def __getstate__(self) -> dict[str, Any]:
-    state = dict(super().__getstate__())
+    # keep super(): a BaseToolset.__getstate__ override must still run
+    state = dict(cast(Mapping[str, Any], super().__getstate__()))
     state.pop("_lock_map_lock", None)
     state["_init_lock_map"] = {}
     state["_initialized"] = False
