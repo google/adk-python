@@ -1391,7 +1391,8 @@ def test_trace_tool_call_with_dict_response(
                     ),
                 )
             },
-            'legit-client-id',
+            # A live credential is masked by type, as tool args are.
+            '<redacted>',
         ),
         (
             {
