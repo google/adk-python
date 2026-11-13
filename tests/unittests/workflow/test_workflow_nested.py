@@ -31,7 +31,7 @@ from google.adk.workflow import JoinNode
 from google.adk.workflow import node
 from google.adk.workflow import Workflow
 from google.adk.workflow._base_node import START
-from google.adk.workflow._node_status import NodeStatus
+from google.adk.workflow._graph import Graph
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.genai import types
 from pydantic import ConfigDict
@@ -95,6 +95,39 @@ async def test_nested_workflow_as_node(request: pytest.FixtureRequest):
           },
       ),
   ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_graph_argument_passes_terminal_output(
+    request: pytest.FixtureRequest,
+):
+  """A graph= workflow validates and hands its terminal output to the parent."""
+
+  async def produce():
+    return 'inner result'
+
+  inner = Workflow(
+      name='inner',
+      graph=Graph.from_edge_items([(START, produce)]),
+  )
+
+  async def consume(node_input: str):
+    return node_input
+
+  outer = Workflow(
+      name='outer',
+      edges=[(START, inner), (inner, consume)],
+  )
+  app = App(name=request.function.__name__, root_agent=outer)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('hello'))
+  simplified = simplify_events_with_node(events)
+  consume_outputs = [
+      fields['output']
+      for path, fields in simplified
+      if path.endswith('/consume@1')
+  ]
+  assert consume_outputs == ['inner result']
 
 
 @pytest.mark.asyncio
