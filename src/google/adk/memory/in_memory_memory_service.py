@@ -25,12 +25,12 @@ from typing_extensions import override
 
 from . import _utils
 from ..events._rewind_events import _apply_rewinds
+from ..events.event import Event
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
-  from ..events.event import Event
   from ..sessions.session import Session
 
 _MAX_SEARCH_RESULTS = 10
@@ -112,12 +112,25 @@ class InMemoryMemoryService(BaseMemoryService):
     with self._lock:
       deleted_ids = self._deleted_memory_ids.get(user_key, set())
       self._session_events[user_key] = self._session_events.get(user_key, {})
+      # Invocation boundaries are needed when a later delta rewinds the session,
+      # even if that invocation has no searchable content or was deleted.
       self._session_events[user_key][session.id] = [
-          event.model_copy(deep=True)
+          (
+              Event(
+                  id=event.id,
+                  invocation_id=event.invocation_id,
+                  author=event.author,
+              )
+              if event.id in deleted_ids
+              else event.model_copy(deep=True)
+          )
           for event in _apply_rewinds(session.events)
-          if event.content
-          and event.content.parts
-          and event.id not in deleted_ids
+          if event.invocation_id
+          or (
+              event.content
+              and event.content.parts
+              and event.id not in deleted_ids
+          )
       ]
 
   @override
@@ -134,7 +147,11 @@ class InMemoryMemoryService(BaseMemoryService):
     user_key = _user_key(app_name, user_id)
     scoped_session_id = session_id or None
     events_to_add = [
-        event for event in events if event.content and event.content.parts
+        event
+        for event in events
+        if event.invocation_id
+        or (event.content and event.content.parts)
+        or (event.actions and event.actions.rewind_before_invocation_id)
     ]
 
     with self._lock:
@@ -145,10 +162,20 @@ class InMemoryMemoryService(BaseMemoryService):
       )
       existing_ids = {event.id for event in existing_events}
       for event in events_to_add:
-        if event.id not in existing_ids and event.id not in deleted_ids:
+        if event.id in deleted_ids:
+          if not event.invocation_id:
+            continue
+          event = Event(
+              id=event.id,
+              invocation_id=event.invocation_id,
+              author=event.author,
+          )
+        if event.id not in existing_ids:
           existing_events.append(event.model_copy(deep=True))
           existing_ids.add(event.id)
-      self._session_events[user_key][scoped_session_id] = existing_events
+      self._session_events[user_key][scoped_session_id] = _apply_rewinds(
+          existing_events
+      )
 
   @override
   async def search_memory(
@@ -239,7 +266,17 @@ class InMemoryMemoryService(BaseMemoryService):
     user_key = _user_key(app_name, user_id)
     with self._lock:
       for session_id, events in self._session_events.get(user_key, {}).items():
-        kept = [event for event in events if event.id != memory_id]
-        if len(kept) != len(events):
-          self._session_events[user_key][session_id] = kept
+        if any(event.id == memory_id for event in events):
+          # Keep only the invocation boundary so a later rewind can find it.
+          self._session_events[user_key][session_id] = [
+              Event(
+                  id=event.id,
+                  invocation_id=event.invocation_id,
+                  author=event.author,
+              )
+              if event.id == memory_id
+              else event
+              for event in events
+              if event.id != memory_id or event.invocation_id
+          ]
           self._deleted_memory_ids.setdefault(user_key, set()).add(memory_id)
