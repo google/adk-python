@@ -27,8 +27,8 @@ from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...models.registry import LLMRegistry
-from ...utils.context_utils import Aclosing
 from .._retry_options_utils import add_default_retry_options_if_not_present
+from .._retry_options_utils import read_judge_response_with_retry
 from ..eval_case import ConversationScenario
 from ..eval_case import Invocation
 from ..eval_metrics import EvalMetric
@@ -398,8 +398,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     )
 
   async def _sample_llm(self, llm_request: LlmRequest) -> AutoRaterScore:
-    async with Aclosing(self._llm.generate_content_async(llm_request)) as agen:
-      async for llm_response in agen:
-        # Non-streaming call, so there is only one response content.
-        return self._convert_llm_response_to_score(llm_response)
-    return AutoRaterScore()
+    llm_response = await read_judge_response_with_retry(self._llm, llm_request)
+    if llm_response is None:
+      return AutoRaterScore()
+    return self._convert_llm_response_to_score(llm_response)
