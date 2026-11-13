@@ -241,14 +241,19 @@ class OperationParser:
   def _dedupe_param_names(self) -> None:
     """Deduplicates parameter names to avoid conflicts."""
     params_cnt: dict[str, int] = {}
+    reserved_names = {param.py_name for param in self._params}
     for param in self._params:
       # model_post_init guarantees py_name is set.
       name = cast(str, param.py_name)
       if name not in params_cnt:
         params_cnt[name] = 0
       else:
-        params_cnt[name] += 1
-        param.py_name = f'{name}_{params_cnt[name] -1}'
+        candidate = f'{name}_{params_cnt[name]}'
+        while candidate in reserved_names:
+          params_cnt[name] += 1
+          candidate = f'{name}_{params_cnt[name]}'
+        param.py_name = candidate
+        reserved_names.add(candidate)
 
   def _process_return_value(self) -> None:
     """Processes the first successful response into a return type."""
