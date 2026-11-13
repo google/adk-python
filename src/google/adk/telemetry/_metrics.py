@@ -307,13 +307,13 @@ _CALL_COUNT_BUCKET_BOUNDS = [
 
 _invoke_agent_inference_calls = meter.create_histogram(
     "gen_ai.invoke_agent.inference_calls",
-    unit="1",
+    unit="{inference_call}",
     description="Number of inference (model) calls per agent invocation.",
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
 _invoke_agent_tool_calls = meter.create_histogram(
     "gen_ai.invoke_agent.tool_calls",
-    unit="1",
+    unit="{tool_call}",
     description="Number of tool calls per agent invocation.",
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
