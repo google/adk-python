@@ -36,6 +36,7 @@ import weakref
 from google.adk import version as adk_version
 from google.genai import types
 import httpx
+from pydantic_core import to_jsonable_python
 import tenacity
 from typing_extensions import override
 
@@ -847,7 +848,15 @@ class CompletionsHTTPClient:
         function_responses.append({
             'role': 'tool',
             'tool_call_id': part.function_response.id,
-            'content': json.dumps(part.function_response.response),
+            'content': json.dumps(
+                part.function_response.response,
+                default=partial(
+                    to_jsonable_python,
+                    by_alias=False,
+                    exclude_none=True,
+                    bytes_mode='base64',
+                ),
+            ),
         })
         response_media_parts.extend(
             _function_response_media_content_parts(part.function_response)

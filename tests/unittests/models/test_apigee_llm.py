@@ -15,6 +15,10 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
+from decimal import Decimal
+import enum
+import json
 import os
 import time
 from typing import Any
@@ -22,6 +26,7 @@ from typing import AsyncGenerator
 from typing import cast
 from unittest import mock
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
@@ -32,6 +37,9 @@ from google.auth.credentials import Credentials
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
+import httpx
+from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 BASE_MODEL_ID = 'gemini-2.5-flash'
@@ -656,6 +664,90 @@ async def test_generate_content_async_dispatch_to_completions_client(
     ]
     mock_completions_generate_content.assert_called_once()
     mock_genai_client.assert_not_called()
+
+
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('typed_values', [False, True])
+async def test_chat_completions_serializes_tool_result_values(
+    stream: bool, typed_values: bool
+) -> None:
+  """Tool results reach the HTTP endpoint as JSON, including typed values."""
+
+  class Status(enum.Enum):
+    PAID = 'paid'
+
+  class Invoice(BaseModel):
+    total: Decimal = Field(serialization_alias='amount')
+    note: str | None = None
+
+  expected: dict[str, Any] = {
+      'due': '2026-12-01',
+      'created': '2026-12-01T12:30:00',
+      'total': '12.50',
+      'status': 'paid',
+      'id': '12345678-1234-5678-1234-567812345678',
+      'invoice': {'total': '12.50'},
+      'attachment': 'YWJj',
+      'tags': ['paid'],
+      'optional': None,
+      'confirmed': True,
+  }
+  payload = dict(expected)
+  if typed_values:
+    payload.update(
+        due=datetime.date(2026, 12, 1),
+        created=datetime.datetime(2026, 12, 1, 12, 30),
+        total=Decimal('12.50'),
+        status=Status.PAID,
+        id=UUID(expected['id']),
+        invoice=Invoice(total=Decimal('12.50')),
+        attachment=b'abc',
+        tags={'paid'},
+    )
+  requests: list[dict[str, Any]] = []
+
+  def respond(request: httpx.Request) -> httpx.Response:
+    requests.append(json.loads(request.content))
+    choice: dict[str, Any] = {'finish_reason': 'stop'}
+    if stream:
+      choice['delta'] = {'role': 'assistant', 'content': 'Done'}
+      return httpx.Response(
+          200,
+          text='data: '
+          + json.dumps({'choices': [choice]})
+          + '\n\ndata: [DONE]\n\n',
+          headers={'Content-Type': 'text/event-stream'},
+      )
+    choice['message'] = {'role': 'assistant', 'content': 'Done'}
+    return httpx.Response(200, json={'choices': [choice]})
+
+  request = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[
+          types.Content(
+              parts=[
+                  types.Part.from_function_response(
+                      name='invoice', response=payload
+                  )
+              ]
+          )
+      ],
+  )
+  model = ApigeeLlm(model=request.model, proxy_url=PROXY_URL)
+  async with httpx.AsyncClient(
+      transport=httpx.MockTransport(respond)
+  ) as client:
+    with mock.patch(
+        'google.adk.models.apigee_llm.httpx.AsyncClient', return_value=client
+    ):
+      responses = [
+          response
+          async for response in model.generate_content_async(request, stream)
+      ]
+
+  assert len(requests) == 1
+  assert json.loads(requests[0]['messages'][0]['content']) == expected
+  assert _response_parts(responses[-1])[0].text == 'Done'
 
 
 @pytest.mark.asyncio
