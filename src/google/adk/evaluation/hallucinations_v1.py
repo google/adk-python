@@ -23,12 +23,14 @@ import statistics
 from typing import ClassVar
 from typing import Optional
 
+from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
 
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
+from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.content_utils import extract_text_from_content
 from ..utils.context_utils import Aclosing
@@ -40,6 +42,7 @@ from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import HallucinationsCriterion
+from .eval_rubrics import RubricScore
 from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -215,6 +218,51 @@ contradicting_excerpt: null
 _POSITIVE_LABELS = frozenset(["supported", "not_applicable"])
 
 _NEGATIVE_LABELS = frozenset(["unsupported", "contradictory", "disputed"])
+
+# Rubric id of the RubricScore that carries why a response was not scored.
+# Matches the id used by _VertexAiEvalFacade for the same purpose.
+_ERROR_RUBRIC_ID = "error"
+
+# Upper bound on judge attempts per response, whatever `num_samples` is, so a
+# judge that keeps failing cannot multiply the cost of an eval run.
+_MAX_JUDGE_ATTEMPTS = 3
+
+# Bounds on failure text, which may quote judge or API error output.
+_MAX_LOGGED_REASON_CHARS = 500
+_MAX_RATIONALE_CHARS = 2000
+
+
+class _NonRetryableReason(str):
+  """Failure reason for a judge outcome that another attempt would not fix."""
+
+
+def _truncate(text: str, max_chars: int) -> str:
+  if len(text) <= max_chars:
+    return text
+  return text[:max_chars] + "... [truncated]"
+
+
+def _describe_judge_error(stage: str, error: Exception) -> str:
+  """Describes a judge call failure, marking API errors as non-retryable.
+
+  Judge requests carry HTTP retry options that already retry transient API
+  errors (408, 429, 5xx) with backoff, so an API error that reaches here has
+  exhausted those retries or is permanent; retrying it again would only
+  lengthen an outage. Other errors, e.g. from judge models that do not use
+  those retry options, may still be transient.
+  """
+  reason = f"Error during {stage}: {error}"
+  if isinstance(error, genai_errors.APIError):
+    return _NonRetryableReason(reason)
+  return reason
+
+
+def _describe_judge_output_problem(problem: str, response: LlmResponse) -> str:
+  """Describes unusable judge output, noting why the judge stopped."""
+  finish_reason = response.finish_reason
+  if isinstance(finish_reason, genai_types.FinishReason):
+    return f"{problem} (finish_reason={finish_reason.name})"
+  return problem
 
 
 @dataclasses.dataclass(frozen=True)
@@ -546,13 +594,17 @@ class HallucinationsV1Evaluator(Evaluator):
         segmenter_response = await agen.__anext__()
         segmenter_text = get_text_from_content(segmenter_response.content)
         if segmenter_text is None:
-          return None, "Segmenter returned no text."
+          return None, _describe_judge_output_problem(
+              "Segmenter returned no text.", segmenter_response
+          )
         sentences = _parse_sentences(segmenter_text)
     except Exception as e:
-      return None, f"Error during sentence segmentation: {e}"
+      return None, _describe_judge_error("sentence segmentation", e)
 
     if not sentences:
-      return None, "No sentences produced by segmenter."
+      return None, _describe_judge_output_problem(
+          "No sentences produced by segmenter.", segmenter_response
+      )
 
     sentences_str = "\n".join([f"<sentence>{s}</sentence>" for s in sentences])
 
@@ -581,10 +633,12 @@ class HallucinationsV1Evaluator(Evaluator):
         validator_response = await agen.__anext__()
         validator_text = get_text_from_content(validator_response.content)
         if validator_text is None:
-          return None, "Sentence validator returned no text."
+          return None, _describe_judge_output_problem(
+              "Sentence validator returned no text.", validator_response
+          )
         validation_results = _parse_validation_results(validator_text)
     except Exception as e:
-      return None, f"Error during sentence validation: {e}"
+      return None, _describe_judge_error("sentence validation", e)
 
     scores = []
     for result in validation_results:
@@ -624,7 +678,11 @@ class HallucinationsV1Evaluator(Evaluator):
           len(validation_results),
           num_sentences,
       )
-      return None, json.dumps(validation_results, indent=2)
+      return None, _describe_judge_output_problem(
+          f"Sentence validator returned {len(validation_results)} blocks for"
+          f" {num_sentences} sentences.",
+          validator_response,
+      )
     if mismatch_index is not None:
       logger.warning(
           "Sentence validator block %d does not echo sentence %d; this"
@@ -632,7 +690,11 @@ class HallucinationsV1Evaluator(Evaluator):
           mismatch_index,
           mismatch_index,
       )
-      return None, json.dumps(validation_results, indent=2)
+      return None, _describe_judge_output_problem(
+          f"Sentence validator block {mismatch_index} does not echo sentence"
+          f" {mismatch_index}.",
+          validator_response,
+      )
     if len(scores) != num_sentences:
       logger.warning(
           "Sentence validator returned %d usable labels for %d sentences; this"
@@ -640,7 +702,11 @@ class HallucinationsV1Evaluator(Evaluator):
           len(scores),
           num_sentences,
       )
-      return None, json.dumps(validation_results, indent=2)
+      return None, _describe_judge_output_problem(
+          f"Sentence validator returned {len(scores)} usable labels for"
+          f" {num_sentences} sentences.",
+          validator_response,
+      )
 
     accuracy_score = statistics.mean(scores)
     return accuracy_score, json.dumps(validation_results, indent=2)
@@ -803,13 +869,24 @@ class HallucinationsV1Evaluator(Evaluator):
           None,
       )
 
-    async def _evaluate_step(step: EvaluationStep) -> tuple[float | None, str]:
-      async with semaphore:
-        return await self._evaluate_nl_response(step.nl_response, step.context)
-
     step_results = await gather_cancelling_on_error(
-        _evaluate_step(step) for step in step_evaluations
+        self._evaluate_step_with_retries(step=step, semaphore=semaphore)
+        for step in step_evaluations
     )
+    # Keep the reason each unscored step failed so the result explains a
+    # NOT_EVALUATED (or best-case FAILED) outcome instead of hiding it.
+    error_rubric_scores = [
+        RubricScore(
+            rubric_id=_ERROR_RUBRIC_ID,
+            rationale=_truncate(
+                f"Response {index + 1} of {len(step_evaluations)} could not"
+                f" be scored: {reason}",
+                _MAX_RATIONALE_CHARS,
+            ),
+        )
+        for index, (fs_score, reason) in enumerate(step_results)
+        if fs_score is None
+    ]
     # An unscored step would drop out of the mean and inflate the score, so
     # the invocation is scored only when every step is, or when it fails
     # even with each unscored step counted as 1.0.
@@ -835,10 +912,63 @@ class HallucinationsV1Evaluator(Evaluator):
             eval_status=get_eval_status(
                 invocation_score, self._criterion.threshold
             ),
-            rubric_scores=[],
+            rubric_scores=error_rubric_scores,
         ),
         unscored_best_case_score,
     )
+
+  async def _evaluate_step_with_retries(
+      self,
+      *,
+      step: EvaluationStep,
+      semaphore: asyncio.Semaphore,
+  ) -> tuple[float | None, str]:
+    """Judges one NL response, retrying while the judge produces no score.
+
+    Up to `judge_model_options.num_samples` attempts are made, capped at
+    `_MAX_JUDGE_ATTEMPTS`. The first scored attempt is returned, so a healthy
+    judge costs a single attempt. Another attempt is made only after a no-score
+    outcome that may differ next time, such as empty, truncated or unparsable
+    judge output. Gemini API errors are not retried here because the judge
+    request's HTTP retry options already retry the transient ones. Each attempt
+    acquires the semaphore separately so a retrying step does not hold a
+    parallelism slot while others wait.
+
+    Returns:
+      The score (None if no attempt produced one) and, on failure, the reason
+      reported by the last attempt.
+    """
+    max_attempts = min(
+        self._judge_model_options.num_samples, _MAX_JUDGE_ATTEMPTS
+    )
+    reason = ""
+    attempt = 0
+    while attempt < max_attempts:
+      attempt += 1
+      async with semaphore:
+        fs_score, reason = await self._evaluate_nl_response(
+            step.nl_response, step.context
+        )
+      if fs_score is not None:
+        return fs_score, reason
+      if isinstance(reason, _NonRetryableReason):
+        break
+      if attempt < max_attempts:
+        logger.info(
+            "hallucinations_v1 judge attempt %d/%d produced no score, retrying:"
+            " %s",
+            attempt,
+            max_attempts,
+            _truncate(reason, _MAX_LOGGED_REASON_CHARS),
+        )
+
+    logger.warning(
+        "hallucinations_v1 could not score a response after %d attempt(s); it"
+        " will be reported as not evaluated. Last error: %s",
+        attempt,
+        _truncate(reason, _MAX_LOGGED_REASON_CHARS),
+    )
+    return None, f"No score after {attempt} attempt(s): {reason}"
 
   @override
   async def evaluate_invocations(
@@ -884,12 +1014,27 @@ class HallucinationsV1Evaluator(Evaluator):
           if case_best_score < self._criterion.threshold
           else None
       )
+      # Repeat the failure reasons at the case level, which is where eval
+      # reports summarize a metric.
+      overall_rubric_scores = [
+          rubric_score.model_copy(
+              update={
+                  "rationale": (
+                      f"Invocation {index + 1} of {len(evaluated)}:"
+                      f" {rubric_score.rationale}"
+                  )
+              }
+          )
+          for index, (result, _) in enumerate(evaluated)
+          for rubric_score in result.rubric_scores or []
+      ]
       return EvaluationResult(
           overall_score=overall_score,
           overall_eval_status=get_eval_status(
               overall_score, self._criterion.threshold
           ),
           per_invocation_results=per_invocation_results,
+          overall_rubric_scores=overall_rubric_scores,
       )
     if per_invocation_results:
       return self._aggregate_invocation_results(per_invocation_results)

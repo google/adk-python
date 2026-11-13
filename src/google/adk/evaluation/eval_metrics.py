@@ -136,7 +136,10 @@ class JudgeModelOptions(EvalBaseModel):
           " unreliability to them, we repeatedly sample them with the same"
           " data. These repeated invocation are them aggregated using some"
           " strategy. From experimentation, we have found 5 to be a good"
-          " default."
+          " default. For `hallucinations_v1`, this is instead the maximum"
+          " number of attempts per response, capped at 3: the judge is re-run"
+          " only when an attempt produces no score for a reason a retry could"
+          " fix, and the first score is used."
       ),
   )
 
