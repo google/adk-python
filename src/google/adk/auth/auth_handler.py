@@ -14,8 +14,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from typing import TYPE_CHECKING
+import weakref
 
 from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
@@ -45,6 +48,32 @@ except ImportError:
   AUTHLIB_AVAILABLE = False
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Event-loop-local locks that serialize the exchange of one stored credential.
+# Two tool calls in the same turn can reach `get_auth_response_async` at the
+# same time; without a lock both try to redeem the same single-use
+# authorization code, and the loser overwrites the winner's token.
+_credential_locks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock],
+] = weakref.WeakKeyDictionary()
+_credential_locks_guard = threading.Lock()
+
+
+def _get_credential_lock(credential_key: str, state_key: str) -> asyncio.Lock:
+  """Returns the event-loop-local lock that guards one stored credential."""
+  loop = asyncio.get_running_loop()
+  lock_key = (credential_key, state_key)
+  with _credential_locks_guard:
+    locks_for_loop = _credential_locks.get(loop)
+    if locks_for_loop is None:
+      locks_for_loop = weakref.WeakValueDictionary()
+      _credential_locks[loop] = locks_for_loop
+    lock = locks_for_loop.get(lock_key)
+    if lock is None:
+      lock = asyncio.Lock()
+      locks_for_loop[lock_key] = lock
+    return lock
 
 
 def _normalize_oauth_scopes(
@@ -258,6 +287,11 @@ class AuthHandler:
 
     The token request is awaited instead of blocking the calling thread, so
     callers on an event loop keep running while the exchange is in flight.
+
+    The read, the exchange and the write-back are guarded by a per-credential
+    lock: an authorization code can only be redeemed once, so two concurrent
+    callers must not both exchange it. The second caller waits for the first
+    one and then finds the already exchanged credential.
     """
     stored = self._read_stored_credential(state)
     if stored is None:
@@ -271,11 +305,26 @@ class AuthHandler:
     if not self._is_exchangeable(credential, allow_public=True):
       return credential
 
-    exchange_result = await OAuth2CredentialExchanger().exchange(
-        credential, self.auth_config.auth_scheme
-    )
-    state[key] = _credential_without_client_secret(exchange_result.credential)
-    return exchange_result.credential
+    async with _get_credential_lock(self.auth_config.credential_key or "", key):
+      # Re-read under the lock: another caller may have redeemed the code
+      # while this one was waiting for the lock.
+      stored = self._read_stored_credential(state)
+      if stored is None:
+        return None
+
+      key, credential = stored
+      credential = _with_configured_client(
+          credential=credential,
+          raw_credential=self.auth_config.raw_auth_credential,
+      )
+      if not self._is_exchangeable(credential, allow_public=True):
+        return credential
+
+      exchange_result = await OAuth2CredentialExchanger().exchange(
+          credential, self.auth_config.auth_scheme
+      )
+      state[key] = _credential_without_client_secret(exchange_result.credential)
+      return exchange_result.credential
 
   async def _get_auth_response_async(
       self, state: State

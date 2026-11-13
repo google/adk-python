@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import copy
 import time
 from unittest.mock import Mock
@@ -1059,6 +1060,49 @@ class TestGetAuthResponse:
     )
 
     assert result is None
+
+  @pytest.mark.asyncio
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  async def test_async_concurrent_callers_redeem_the_code_once(
+      self,
+      mock_oauth2_session,
+      auth_config,
+      oauth2_credentials_with_auth_code,
+  ):
+    """Two concurrent callers must not both redeem the same auth code.
+
+    An authorization code is single use, so the second caller has to wait for
+    the first one and then pick up the exchanged credential.
+    """
+    stored = oauth2_credentials_with_auth_code.model_copy(deep=True)
+    state = MockState()
+    credential_key = "temp:" + auth_config.credential_key
+    state[credential_key] = stored
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    token_calls = []
+
+    def fetch_token(*args, **kwargs):
+      token_calls.append(kwargs)
+      if len(token_calls) > 1:
+        raise ValueError("invalid_grant: code already used")
+      return OAuth2Token({"access_token": "concurrent_access_token"})
+
+    mock_client.fetch_token.side_effect = fetch_token
+
+    handler = AuthHandler(auth_config)
+    first, second = await asyncio.gather(
+        handler.get_auth_response_async(state),
+        handler.get_auth_response_async(state),
+    )
+
+    assert len(token_calls) == 1
+    assert first.oauth2.access_token == "concurrent_access_token"
+    assert second.oauth2.access_token == "concurrent_access_token"
+    assert (
+        state[credential_key].oauth2.access_token == "concurrent_access_token"
+    )
 
 
 class TestParseAndStoreAuthResponse:
