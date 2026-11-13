@@ -1546,7 +1546,10 @@ def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
   if not isinstance(agent, LlmAgent):
     return None
 
-  model = agent.model if agent.model != "" else agent._default_model
+  model = agent.model
+  if model == "":
+    # The request processor resolved this before the call, so it is cached.
+    return agent.canonical_model.model
   return model if isinstance(model, str) else model.model
 
 
