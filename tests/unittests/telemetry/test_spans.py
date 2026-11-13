@@ -19,6 +19,7 @@ from unittest import mock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -93,6 +94,8 @@ from opentelemetry.semconv.attributes.url_attributes import URL_FULL
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 import pytest
+
+from ..testing_utils import MockModel
 
 try:
   from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
@@ -1391,7 +1394,8 @@ def test_trace_tool_call_with_dict_response(
                     ),
                 )
             },
-            'legit-client-id',
+            # A live credential is masked by type, as tool args are.
+            '<redacted>',
         ),
         (
             {
@@ -2437,6 +2441,100 @@ async def test_generate_content_span_with_genai_instrumentation(
 
   # USER_ID should NOT be in common_attributes passed to the genai instrumentor
   assert USER_ID not in common_attributes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'through_workflow_agent',
+    [False, True],
+    ids=['direct_parent', 'through_sequential_agent'],
+)
+@mock.patch('google.adk.telemetry.tracing.tracer')
+async def test_generate_content_span_with_inherited_non_gemini_model(
+    mock_tracer,
+    monkeypatch,
+    through_workflow_agent,
+):
+  """A sub-agent inheriting a non-Gemini model gets ADK's own span."""
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
+  agent = LlmAgent(name='test_agent')
+  child = (
+      SequentialAgent(name='workflow_agent', sub_agents=[agent])
+      if through_workflow_agent
+      else agent
+  )
+  LlmAgent(
+      name='parent_agent',
+      model=MockModel(model='not-a-gemini-model', responses=[]),
+      sub_agents=[child],
+  )
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='not-a-gemini-model',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    pass
+
+  mock_tracer.start_as_current_span.assert_called_once_with(
+      'generate_content not-a-gemini-model'
+  )
+  assert gc_span.span is mock_span
+
+
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.tracer')
+async def test_generate_content_span_with_inherited_gemini_model(
+    mock_tracer,
+    monkeypatch,
+):
+  """A sub-agent inheriting Gemini under a non-Gemini default is not doubled."""
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
+  monkeypatch.setattr(LlmAgent, '_default_model', 'not-a-gemini-model')
+  agent = LlmAgent(name='test_agent')
+  LlmAgent(name='parent_agent', model='gemini-1.5-pro', sub_agents=[agent])
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='gemini-1.5-pro',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    pass
+
+  mock_tracer.start_as_current_span.assert_not_called()
+  assert gc_span is None
 
 
 def _mock_callable_tool():

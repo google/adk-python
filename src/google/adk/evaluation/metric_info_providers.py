@@ -40,6 +40,27 @@ class TrajectoryEvaluatorMetricInfoProvider(MetricInfoProvider):
     )
 
 
+class ToolParameterMatchEvaluatorMetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for tool parameter matching."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.TOOL_PARAMETER_MATCH.value,
+        description=(
+            "Scores expected tool-call arguments against actual arguments."
+            " Calls are paired as the criterion's `matchType` sets, in order"
+            " by default, and each expected argument contributes equally to"
+            " the score. Arguments must be equal unless the criterion sets"
+            " `argsMatcher`. Arguments are compared with `ToolArgsMatcher`,"
+            " so the metric needs the `TOOL_ARGS_MATCHER` feature, which is"
+            " on by default."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
+
+
 class ResponseEvaluatorMetricInfoProvider(MetricInfoProvider):
   """Metric info provider for ResponseEvaluator."""
 

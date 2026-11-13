@@ -3458,3 +3458,88 @@ async def test_agent_tool_closes_runner_when_nested_run_raises(
     await task
 
   assert toolset.close_calls == 1
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('include_plugins', 'expect_parent_id'),
+    [
+        (True, True),
+        (False, False),
+    ],
+)
+async def test_agent_tool_sets_parent_invocation_id_only_when_sharing_plugins(
+    include_plugins: bool,
+    expect_parent_id: bool,
+):
+  """Stamps caller invocation_id onto child ctx only when include_plugins=True."""
+  root_inv_ids: list[str] = []
+  root_parent_ids: list[str | None] = []
+  child_inv_ids: dict[str, str] = {}
+  child_parent_ids: dict[str, str | None] = {}
+
+  def record_root_ctx(callback_context: CallbackContext):
+    root_inv_ids.append(callback_context._invocation_context.invocation_id)
+    root_parent_ids.append(
+        callback_context._invocation_context._parent_invocation_id
+    )
+
+  def record_child_ctx(callback_context: CallbackContext):
+    agent_name = callback_context.agent_name
+    child_inv_ids[agent_name] = (
+        callback_context._invocation_context.invocation_id
+    )
+    child_parent_ids[agent_name] = (
+        callback_context._invocation_context._parent_invocation_id
+    )
+
+  leaf_agent = Agent(
+      name='leaf_child',
+      model=testing_utils.MockModel.create(responses=['leaf_done']),
+      before_agent_callback=record_child_ctx,
+  )
+  seq_child = SequentialAgent(
+      name='seq_child',
+      sub_agents=[leaf_agent],
+      before_agent_callback=record_child_ctx,
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='seq_child', args={'request': 'run'}),
+          'root_done',
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      tools=[AgentTool(agent=seq_child, include_plugins=include_plugins)],
+      before_agent_callback=record_root_ctx,
+  )
+
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      memory_service=InMemoryMemoryService(),
+  )
+  session = await runner.session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  async for _ in runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=testing_utils.get_user_content('hello'),
+  ):
+    pass
+
+  assert len(root_inv_ids) == 1
+  assert root_parent_ids == [None]
+  assert set(child_parent_ids) == {'seq_child', 'leaf_child'}
+  assert child_inv_ids['seq_child'] == child_inv_ids['leaf_child']
+  assert child_inv_ids['seq_child'] != root_inv_ids[0]
+  expected = root_inv_ids[0] if expect_parent_id else None
+  assert child_parent_ids == {
+      'seq_child': expected,
+      'leaf_child': expected,
+  }

@@ -1047,10 +1047,18 @@ class MCPSessionManager:
       }
 
     if additional_headers:
-      base_headers.update({
+      overrides = {
           key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
           for key, value in additional_headers.items()
-      })
+      }
+      # Header names are case-insensitive, so an override replaces any casing.
+      override_names = {key.lower() for key in overrides}
+      base_headers = {
+          key: value
+          for key, value in base_headers.items()
+          if key.lower() not in override_names
+      }
+      base_headers.update(overrides)
 
     return merge_tracking_headers(base_headers)
 

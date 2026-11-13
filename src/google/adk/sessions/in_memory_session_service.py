@@ -90,7 +90,8 @@ class InMemorySessionService(BaseSessionService):
 
   def __init__(self) -> None:
     # A map from app name to a map from user ID to a map from session ID to
-    # session.
+    # session. Deleting the last session drops the empty user and app maps, so
+    # read it with `.get(app_name, {}).get(user_id, {})`.
     self.sessions: dict[str, dict[str, dict[str, Session]]] = {}
     # A map from app name to a map from user ID to a map from key to the value.
     self.user_state: dict[str, dict[str, dict[str, Any]]] = {}
@@ -331,6 +332,10 @@ class InMemorySessionService(BaseSessionService):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
+    if not self.sessions[app_name][user_id]:
+      self.sessions[app_name].pop(user_id)
+    if not self.sessions[app_name]:
+      self.sessions.pop(app_name)
 
   @override
   async def get_user_state(

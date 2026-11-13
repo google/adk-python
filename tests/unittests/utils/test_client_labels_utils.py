@@ -76,6 +76,14 @@ def test_model_consult_client_label():
   )
 
 
+def test_cascade_live_client_label():
+  """Test CASCADE_LIVE_CLIENT_LABEL has correct format."""
+  assert (
+      f"google-adk-cascade-live/{version.__version__}"
+      == _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL
+  )
+
+
 def test_classifier_client_label():
   """classifier_client_label names the classifier kind as build metadata."""
   assert (

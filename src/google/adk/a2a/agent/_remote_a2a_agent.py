@@ -560,17 +560,42 @@ def _find_finish_task_args_from_history(
   """Search session events for the latest finish_task FC and return args."""
   matching_fc_id = None
   if completed_fr_event:
-    for fr in completed_fr_event.get_function_responses():
+    for fr in reversed(completed_fr_event.get_function_responses()):
       if fr.name == FINISH_TASK_TOOL_NAME:
         matching_fc_id = fr.id
         break
 
   def _args_from(event: Event) -> Optional[dict[str, Any]]:
-    for fc in event.get_function_calls():
+    for fc in reversed(event.get_function_calls()):
       if fc.name != FINISH_TASK_TOOL_NAME:
         continue
       if matching_fc_id is None or fc.id == matching_fc_id:
         return dict(fc.args or {})
+    # In unary (non-streaming) A2A responses, convert_a2a_task_to_event
+    # populates event.content from task.artifacts (the terminal finish_task FR)
+    # while the finish_task FC remains in task.history inside custom_metadata.
+    custom_metadata = getattr(event, "custom_metadata", None)
+    a2a_response = (
+        custom_metadata.get(A2A_METADATA_PREFIX + "response")
+        if isinstance(custom_metadata, dict)
+        else None
+    )
+    history = (
+        a2a_response.get("history") if isinstance(a2a_response, dict) else None
+    )
+    for message in reversed(history or ()):
+      if not isinstance(message, dict):
+        continue
+      for part in reversed(message.get("parts") or ()):
+        data = part.get("data") if isinstance(part, dict) else None
+        if (
+            isinstance(data, dict)
+            and data.get("name") == FINISH_TASK_TOOL_NAME
+            and "args" in data
+            and (matching_fc_id is None or data.get("id") == matching_fc_id)
+        ):
+          args = data.get("args")
+          return dict(args) if isinstance(args, dict) else {}
     return None
 
   # A remote peer can send the call and its response in one event, which the
@@ -2267,10 +2292,21 @@ class RemoteA2aAgent(BaseAgent):
   # Task states that represent in-progress or input-awaiting work.
   # Events stamped with one of these states carry intermediate or
   # waiting-for-input content, never the final answer, so they must
-  # not be promoted to the workflow node's output.
-  _NON_FINAL_TASK_STATES = frozenset(
-      {"submitted", "working", "input-required", "auth-required", "unknown"}
-  )
+  # not be promoted to the workflow node's output. A2A 0.3 serializes the
+  # state with hyphenated names, A2A 1.x with the proto enum names.
+  _NON_FINAL_TASK_STATES = frozenset({
+      "submitted",
+      "working",
+      "input-required",
+      "auth-required",
+      "unknown",
+      "TASK_STATE_SUBMITTED",
+      "TASK_STATE_WORKING",
+      "TASK_STATE_INPUT_REQUIRED",
+      "TASK_STATE_AUTH_REQUIRED",
+      "TASK_STATE_UNSPECIFIED",
+  })
+  _FAILED_TASK_STATES = frozenset({"failed", "TASK_STATE_FAILED"})
 
   async def _run_impl(
       self,
@@ -2322,6 +2358,8 @@ class RemoteA2aAgent(BaseAgent):
     Returns True iff this call assigned ``event.output``. Skips:
 
     * partial events and events whose ``event.output`` is already set;
+    * error events from a failed A2A task. An error code on a completed
+      task (e.g. a ``MAX_TOKENS`` finish reason) still yields the answer;
     * events that do not belong to this node. ``BaseAgent._run_impl``
       stamps ``event.node_info.path`` with this node's path only for the
       agent's own events, so matching on the path uniquely identifies the
@@ -2348,10 +2386,15 @@ class RemoteA2aAgent(BaseAgent):
     )
     if isinstance(response_meta, dict):
       status = response_meta.get("status")
-      if (
-          isinstance(status, dict)
-          and status.get("state") in self._NON_FINAL_TASK_STATES
-      ):
+      # A2A 1.x MessageToDict omits the default TASK_STATE_UNSPECIFIED.
+      state = (
+          status.get("state", "TASK_STATE_UNSPECIFIED")
+          if isinstance(status, dict)
+          else None
+      )
+      if state in self._NON_FINAL_TASK_STATES:
+        return False
+      if event.error_code is not None and state in self._FAILED_TASK_STATES:
         return False
 
     text_chunks = [

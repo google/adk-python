@@ -251,6 +251,28 @@ class AuthHandler:
     state[key] = _credential_without_client_secret(exchange_result.credential)
     return exchange_result.credential
 
+  async def _get_auth_response_async(
+      self, state: State
+  ) -> AuthCredential | None:
+    """Same as `get_auth_response`, awaiting the token request in place."""
+    stored = self._read_stored_credential(state)
+    if stored is None:
+      return None
+
+    key, credential = stored
+    credential = _with_configured_client(
+        credential=credential,
+        raw_credential=self.auth_config.raw_auth_credential,
+    )
+    if not self._is_exchangeable(credential, allow_public=True):
+      return credential
+
+    exchange_result = await OAuth2CredentialExchanger().exchange(
+        credential, self.auth_config.auth_scheme
+    )
+    state[key] = _credential_without_client_secret(exchange_result.credential)
+    return exchange_result.credential
+
   def generate_auth_request(self) -> AuthConfig:
     return _without_configured_secrets(self._generate_auth_request())
 

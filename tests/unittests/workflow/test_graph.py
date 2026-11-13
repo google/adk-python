@@ -100,6 +100,28 @@ def test_get_next_pending_nodes_with_default_route_fan_out() -> None:
   assert next_nodes == ['NodeB']
 
 
+def test_get_next_pending_nodes_returns_each_target_once() -> None:
+  """A target is returned once when routes match several edges to it."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  node_c = TestingNode(name='NodeC')
+
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(from_node=node_a, to_node=node_b, route='route1'),
+          Edge(from_node=node_a, to_node=node_c, route='route2'),
+          Edge(from_node=node_a, to_node=node_b, route='route3'),
+      ],
+  )
+  graph.validate_graph()
+
+  next_nodes = graph.get_next_pending_nodes(
+      'NodeA', routes_to_match=['route1', 'route2', 'route3']
+  )
+  assert next_nodes == ['NodeB', 'NodeC']
+
+
 def test_get_next_pending_nodes_unmatched_route_warning(caplog) -> None:
   """Tests that a warning is logged when a route is unmatched and there's no DEFAULT_ROUTE."""
   node_a = TestingNode(name='NodeA')
