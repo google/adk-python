@@ -180,6 +180,10 @@ class Workflow(BaseNode):
     super().model_post_init(context)
     if self.edges and self.graph is None:
       self.graph = self._build_graph()
+    elif self.graph is not None:
+      # A graph passed in directly never went through _build_graph, so the
+      # terminal set stays empty and the workflow drops its output.
+      self.graph.validate_graph()
     self._validate_state_schema()
 
   def _build_graph(self) -> Graph:
