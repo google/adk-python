@@ -25,8 +25,6 @@ from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _schema_version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._decorators import experimental_telemetry
-from google.adk.telemetry._schema_version import resolve_schema_version
-from google.adk.telemetry._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
@@ -171,7 +169,7 @@ _client_token_usage = meter.create_histogram(
     explicit_bucket_boundaries_advisory=_TOKEN_USAGE_BUCKET_BOUNDS,
 )
 
-# ---- Inference token metrics, schema v2 only ----
+# ---- Inference token metrics ----
 _inference_usage_input_tokens = meter.create_counter(
     "gen_ai.client.inference.usage.input_tokens",
     unit="{token}",
@@ -803,6 +801,10 @@ def record_client_token_usage(
   base_attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name} | (
       _inference_attributes(llm_request, responses[-1])
   )
+  # gen_ai.client.token.usage keeps its schema v1 provider name.
+  base_attrs[gen_ai_attributes.GEN_AI_PROVIDER_NAME] = _get_provider_name(
+      llm_request.model
+  )
 
   if input_token_count > 0:
     input_attrs = base_attrs.copy()
@@ -820,7 +822,7 @@ def record_inference_token_usage(
     responses: list[LlmResponse],
     error: Exception | None = None,
 ) -> None:
-  """Records the semconv-genai inference token metrics, from schema v2.
+  """Records the semconv-genai inference token metrics.
 
   Every model call records each of them once, failed calls included. A count
   the model did not report, or a call that got no usage back, records `0`.
@@ -830,8 +832,6 @@ def record_inference_token_usage(
     responses: The response chunks received, if any.
     error: The exception the call failed with, if any.
   """
-  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    return
   last_response = responses[-1] if responses else None
   token_usage = TokenUsage.from_llm_responses(responses)
   if token_usage is None:
@@ -930,8 +930,8 @@ def _inference_attributes(
   """The semconv attributes every inference token metric carries."""
   attrs: dict[str, AttributeValue] = {
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
-      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
-          llm_request.model
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: (
+          tracing._resolve_gen_ai_provider_name(llm_request.model)
       ),
   }
   if llm_request.model:
