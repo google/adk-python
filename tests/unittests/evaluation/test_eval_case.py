@@ -386,6 +386,88 @@ def test_get_all_tool_calls_with_responses_with_steps_no_tool_calls():
   assert get_all_tool_calls_with_responses(intermediate_data) == []
 
 
+@pytest.mark.parametrize('use_events', [False, True])
+def test_tool_responses_without_ids_match_name_and_occurrence(use_events):
+  """ID-less responses pair once with the matching tool in recorded order."""
+  calls = [
+      genai_types.FunctionCall(name='search', args={'query': 'first'}),
+      genai_types.FunctionCall(name='book', args={}),
+      genai_types.FunctionCall(name='search', args={'query': 'second'}),
+      genai_types.FunctionCall(name='search', args={'query': 'unanswered'}),
+  ]
+  responses = [
+      genai_types.FunctionResponse(name='book', response={'result': 'booked'}),
+      genai_types.FunctionResponse(name='search', response={'result': 'first'}),
+      genai_types.FunctionResponse(
+          name='search', response={'result': 'second'}
+      ),
+  ]
+  if use_events:
+    intermediate_data = InvocationEvents(
+        invocation_events=[
+            InvocationEvent(
+                author='agent',
+                content=genai_types.Content(
+                    parts=[
+                        genai_types.Part(function_call=call) for call in calls
+                    ]
+                ),
+            ),
+            InvocationEvent(
+                author='agent',
+                content=genai_types.Content(
+                    parts=[
+                        genai_types.Part(function_response=response)
+                        for response in responses
+                    ]
+                ),
+            ),
+        ]
+    )
+  else:
+    intermediate_data = IntermediateData(
+        tool_uses=calls, tool_responses=responses
+    )
+
+  pairs = get_all_tool_calls_with_responses(intermediate_data)
+
+  assert pairs == [
+      (calls[0], responses[1]),
+      (calls[1], responses[0]),
+      (calls[2], responses[2]),
+      (calls[3], None),
+  ]
+  assert get_all_tool_responses(intermediate_data) == responses
+
+
+def test_tool_responses_with_ids_do_not_match_idless_calls():
+  """Explicit IDs remain authoritative when mixed with ID-less records."""
+  calls = [
+      genai_types.FunctionCall(id='missing', name='search'),
+      genai_types.FunctionCall(name='search'),
+      genai_types.FunctionCall(id='known', name='search'),
+      genai_types.FunctionCall(name='search'),
+  ]
+  responses = [
+      genai_types.FunctionResponse(
+          id='known', name='search', response={'result': 'known'}
+      ),
+      genai_types.FunctionResponse(name='search', response={'result': 'no id'}),
+  ]
+  intermediate_data = IntermediateData(
+      tool_uses=calls, tool_responses=responses
+  )
+
+  pairs = get_all_tool_calls_with_responses(intermediate_data)
+
+  assert pairs == [
+      (calls[0], None),
+      (calls[1], responses[1]),
+      (calls[2], responses[0]),
+      (calls[3], None),
+  ]
+
+
 def test_get_all_tool_calls_with_responses_with_invocation_events():
   """Tests get_all_tool_calls_with_responses with InvocationEvents."""
   # No tools

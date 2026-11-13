@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+from collections import deque
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -324,18 +326,29 @@ ToolCallAndResponse: TypeAlias = tuple[
 def get_all_tool_calls_with_responses(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[ToolCallAndResponse]:
-  """Returns tool calls with the corresponding responses, if available."""
-  tool_responses_by_call_id: dict[
-      Optional[str], genai_types.FunctionResponse
-  ] = {
-      tool_response.id: tool_response
-      for tool_response in get_all_tool_responses(intermediate_data)
-  }
+  """Returns tool calls with the corresponding responses, if available.
+
+  Records without IDs are paired by tool name in their recorded order, using
+  each response once. Explicit IDs are matched independently of these records.
+  """
+  tool_responses_by_call_id: dict[str, genai_types.FunctionResponse] = {}
+  idless_responses_by_name: dict[
+      Optional[str], deque[genai_types.FunctionResponse]
+  ] = defaultdict(deque)
+  for response in get_all_tool_responses(intermediate_data):
+    if response.id is None:
+      idless_responses_by_name[response.name].append(response)
+    else:
+      tool_responses_by_call_id[response.id] = response
 
   tool_call_and_responses: list[ToolCallAndResponse] = []
 
   for tool_call in get_all_tool_calls(intermediate_data):
-    response = tool_responses_by_call_id.get(tool_call.id, None)
+    if tool_call.id is None:
+      responses = idless_responses_by_name[tool_call.name]
+      response = responses.popleft() if responses else None
+    else:
+      response = tool_responses_by_call_id.get(tool_call.id)
     tool_call_and_responses.append((tool_call, response))
 
   return tool_call_and_responses
