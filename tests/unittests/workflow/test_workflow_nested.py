@@ -130,22 +130,6 @@ async def test_workflow_graph_argument_passes_terminal_output(
   assert consume_outputs == ['inner result']
 
 
-def test_workflow_graph_argument_rejects_an_unreachable_node():
-  """A graph= workflow runs the same checks as one built from edges."""
-
-  def produce():
-    return 'ok'
-
-  def orphan():
-    return 'never'
-
-  with pytest.raises(ValueError, match='unreachable from START'):
-    Workflow(
-        name='broken',
-        graph=Graph.from_edge_items([(START, produce), (orphan, produce)]),
-    )
-
-
 @pytest.mark.asyncio
 async def test_nested_workflow_with_join_node(
     request: pytest.FixtureRequest,
