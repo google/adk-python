@@ -323,6 +323,7 @@ def migrate(
       logger.info("Migrating events...")
       num_rows = 0
       if inspector.has_table("events"):
+        session_event_counters: dict[tuple[str, str, str], int] = {}
         for row in source_session.execute(
             text("SELECT * FROM events")
         ).mappings():
@@ -331,6 +332,9 @@ def migrate(
                 dict(row),
                 allow_unsafe_unpickling=allow_unsafe_unpickling,
             )
+            session_key = (row["app_name"], row["user_id"], row["session_id"])
+            event_index = session_event_counters.get(session_key, 0)
+            session_event_counters[session_key] = event_index + 1
             new_event = v1.StorageEvent(
                 id=event_obj.id,
                 app_name=row["app_name"],
@@ -341,6 +345,7 @@ def migrate(
                     event_obj.timestamp, timezone.utc
                 ).replace(tzinfo=None),
                 event_data=event_obj.model_dump(mode="json", exclude_none=True),
+                event_index=event_index,
             )
             dest_session.merge(new_event)
             num_rows += 1
