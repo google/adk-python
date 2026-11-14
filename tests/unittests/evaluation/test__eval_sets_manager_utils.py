@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation._eval_sets_manager_utils import add_eval_case_to_eval_set
 from google.adk.evaluation._eval_sets_manager_utils import delete_eval_case_from_eval_set
@@ -22,6 +24,7 @@ from google.adk.evaluation._eval_sets_manager_utils import get_eval_set_from_app
 from google.adk.evaluation._eval_sets_manager_utils import update_eval_case_in_eval_set
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
+from google.adk.evaluation.eval_sets_manager import EvalSetsManager
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 import pytest
 
@@ -51,11 +54,13 @@ def _eval_ids(eval_set: EvalSet) -> list[str]:
 
 class TestGetEvalSetFromAppAndId:
 
-  def test_returns_the_eval_set_held_by_the_manager(self):
-    manager = InMemoryEvalSetsManager()
-    created = manager.create_eval_set("my_app", "set_1")
+  def test_returns_the_eval_set_returned_by_the_manager(self):
+    manager = Mock(spec=EvalSetsManager)
+    eval_set = _eval_set([])
+    manager.get_eval_set.return_value = eval_set
 
-    assert get_eval_set_from_app_and_id(manager, "my_app", "set_1") is created
+    assert get_eval_set_from_app_and_id(manager, "my_app", "set_1") is eval_set
+    manager.get_eval_set.assert_called_once_with("my_app", "set_1")
 
   def test_unknown_eval_set_id_raises_not_found_naming_the_id(self):
     manager = InMemoryEvalSetsManager()
