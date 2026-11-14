@@ -131,8 +131,16 @@ class EnvironmentToolset(BaseToolset):
     # a session-scoped environment can answer from `ctx.state`.
     working_dir = working_dir_or_none(self._environment)
     if working_dir is not None:
+      # Render with forward slashes rather than with `str()`, whose output
+      # follows the host's path flavour. The directory belongs to the
+      # environment, and a remote environment is a Linux sandbox whose shell
+      # runs the commands the instruction describes (`&&`, `cat`, ...), so on a
+      # Windows host `str(WindowsPath('/home/user'))` would tell the model the
+      # directory is `\home\user` while the sandbox runs at `/home/user`.
       instruction = (
-          ENVIRONMENT_WORKING_DIR_INSTRUCTION.format(working_dir=working_dir)
+          ENVIRONMENT_WORKING_DIR_INSTRUCTION.format(
+              working_dir=working_dir.as_posix()
+          )
           + '\n'
           + instruction
       )
