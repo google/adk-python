@@ -375,7 +375,45 @@ class InMemorySessionService(BaseSessionService):
     # equality gated on a matching id; distinct events that merely share an
     # id (e.g. tests that stamp a fixed uuid) are not equal and are kept.
     storage_session = self.sessions[app_name][user_id][session_id]
-    if any(e == event for e in storage_session.events if e.id == event.id):
+    # Stored events have temp-scoped state delta keys stripped by
+    # ``BaseSessionService.append_event``, so an equal re-delivery that still
+    # carries them (e.g. a copy buffered before the first append) must be
+    # compared in the same trimmed form, or the equality check fails and the
+    # retry duplicates history and re-applies the stale delta. Temp-scoped
+    # keys are therefore excluded from dedup identity: a re-delivery that
+    # differs only in temp values is treated as equal, matching how storage
+    # already discarded them. The trimmed
+    # view is built without deep-copying or mutating the incoming event:
+    # temp values may be uncopyable (e.g. locks) and
+    # ``_trim_temp_delta_state`` must still run exactly once, inside
+    # ``super().append_event``.
+    dedupe_comparison = event
+    if (
+        event.actions
+        and event.actions.state_delta
+        and any(
+            key.startswith(State.TEMP_PREFIX)
+            for key in event.actions.state_delta
+        )
+    ):
+      dedupe_comparison = event.model_copy(
+          update={
+              'actions': event.actions.model_copy(
+                  update={
+                      'state_delta': {
+                          key: value
+                          for key, value in event.actions.state_delta.items()
+                          if not key.startswith(State.TEMP_PREFIX)
+                      }
+                  }
+              )
+          }
+      )
+    if any(
+        e == dedupe_comparison
+        for e in storage_session.events
+        if e.id == dedupe_comparison.id
+    ):
       return event
 
     # Update the in-memory session.

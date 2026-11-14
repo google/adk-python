@@ -4730,6 +4730,125 @@ async def test_append_event_is_idempotent_for_same_event_id(session_service):
     [InMemorySessionService()],
     ids=['in_memory'],
 )
+async def test_append_event_redelivery_with_temp_delta_deduplicated(
+    session_service,
+):
+  """An equal re-delivery that still carries temp: keys must deduplicate.
+
+  ``BaseSessionService.append_event`` strips temp-scoped keys from the
+  stored event's state delta, so a buffered copy re-delivered after a newer
+  write compares unequal against the trimmed stored event unless the
+  comparison uses the same trimmed form. Without that, the retry duplicates
+  the history entry and rolls back the persisted state.
+  """
+  app_name = 'test_app'
+  user_id = 'user_temp_dup'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_temp_dup'
+  )
+
+  early = Event(
+      id='early',
+      invocation_id='inv_temp_dup',
+      author='agent',
+      actions=EventActions(
+          state_delta={'session:step': 'draft', 'temp:working': True}
+      ),
+  )
+  buffered_retry = early.model_copy(deep=True)
+
+  await session_service.append_event(session=session, event=early)
+  await session_service.append_event(
+      session=session,
+      event=Event(
+          id='late',
+          invocation_id='inv_temp_dup',
+          author='agent',
+          actions=EventActions(state_delta={'session:step': 'done'}),
+      ),
+  )
+  # The re-delivered copy still carries the temp: key, like an event buffered
+  # by a retrying consumer before the first append completed.
+  await session_service.append_event(session=session, event=buffered_retry)
+
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_temp_dup'
+  )
+  assert [e.id for e in retrieved.events] == ['early', 'late']
+  assert retrieved.state.get('session:step') == 'done'
+  assert 'temp:working' not in retrieved.state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_service',
+    [InMemorySessionService()],
+    ids=['in_memory'],
+)
+async def test_append_event_temp_delta_dedupe_boundaries(session_service):
+  """Dedup with temp keys: an all-temp delta still dedupes; a genuinely
+  different event sharing the id is still kept.
+
+  An all-temp state delta trims to an empty delta on the stored side, so the
+  re-delivered copy must dedupe against that empty-delta form. Conversely,
+  the trimmed comparison must not swallow a same-id event whose persisted
+  content actually differs.
+  """
+  app_name = 'test_app'
+  user_id = 'user_temp_bounds'
+
+  # All-temp delta: stored event has an empty state_delta after trimming.
+  session_all_temp = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_all_temp'
+  )
+  event = Event(
+      id='temp-only',
+      invocation_id='inv_temp_bounds',
+      author='agent',
+      actions=EventActions(state_delta={'temp:scratch': 'ephemeral'}),
+  )
+  await session_service.append_event(session=session_all_temp, event=event)
+  await session_service.append_event(
+      session=session_all_temp, event=event.model_copy(deep=True)
+  )
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_all_temp'
+  )
+  assert [e.id for e in retrieved.events] == ['temp-only']
+  assert retrieved.state == {}
+
+  # Same id but genuinely different persisted content: must be kept.
+  session_shared_id = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_shared_id'
+  )
+  shared_id = 'shared-temp-id'
+  e1 = Event(
+      id=shared_id,
+      invocation_id='inv_temp_bounds',
+      author='agent',
+      actions=EventActions(state_delta={'session:step': 'first', 'temp:t': 1}),
+  )
+  e2 = Event(
+      id=shared_id,
+      invocation_id='inv_temp_bounds',
+      author='agent',
+      actions=EventActions(state_delta={'session:step': 'second', 'temp:t': 2}),
+  )
+  await session_service.append_event(session=session_shared_id, event=e1)
+  await session_service.append_event(session=session_shared_id, event=e2)
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_shared_id'
+  )
+  assert [e.id for e in retrieved.events] == [shared_id, shared_id]
+  assert retrieved.state.get('session:step') == 'second'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_service',
+    [InMemorySessionService()],
+    ids=['in_memory'],
+)
 async def test_append_different_events_not_deduplicated(session_service):
   """Distinct events must both be stored, even when they share an event id.
 
