@@ -3081,3 +3081,112 @@ async def test_aborted_request_input_reruns_node_on_same_invocation_resume():
   assert b_runs == 1
   outputs3 = [e.output for e in events3 if e.output is not None]
   assert outputs3[-1] == 'approved:True|from_b'
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_re_persist_fast_forwarded_outputs(
+    request: pytest.FixtureRequest,
+):
+  """Each answered RequestInput output is stored once across resumes.
+
+  A loop parks on RequestInput every round and is resumed in the same
+  invocation. Every resume fast-forwards the runs that finished in earlier
+  turns. Their outputs are already in the session, so storing them again
+  would make the session grow quadratically with the number of resumes.
+  """
+  rounds = 4
+
+  class _CountNode(BaseNode):
+
+    @override
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(state={'round': ctx.state.get('round', 0) + 1})
+
+  class _AskNode(BaseNode):
+
+    @override
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield RequestInput(message='Continue?')
+
+  class _GateNode(BaseNode):
+
+    @override
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(route='again' if ctx.state['round'] < rounds else 'done')
+
+  count = _CountNode(name='count')
+  gate = _GateNode(name='gate')
+  workflow = Workflow(
+      name='loop',
+      edges=[
+          ('START', count, _AskNode(name='ask'), gate),
+          (gate, {'again': count, 'done': _CountNode(name='done')}),
+      ],
+  )
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app=App(
+          name=request.function.__name__,
+          root_agent=workflow,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      ),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name=request.function.__name__, user_id='u'
+  )
+
+  async def run_turn(
+      message: types.Content, invocation_id: str | None = None
+  ) -> tuple[str | None, list[str]]:
+    interrupt_ids = []
+    async for event in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        invocation_id=invocation_id,
+        new_message=message,
+    ):
+      invocation_id = event.invocation_id
+      interrupt_ids += extract_event_interrupt_ids(event)
+    return invocation_id, interrupt_ids
+
+  async def session_events() -> list[Event]:
+    stored = await session_service.get_session(
+        app_name=request.function.__name__, user_id='u', session_id=session.id
+    )
+    return stored.events
+
+  invocation_id, interrupt_ids = await run_turn(
+      types.Content(role='user', parts=[types.Part(text='start')])
+  )
+  answered = set()
+  events_added_per_resume = []
+  while pending := [i for i in interrupt_ids if i not in answered]:
+    answered.add(pending[-1])
+    before = len(await session_events())
+    invocation_id, interrupt_ids = await run_turn(
+        types.Content(
+            role='user',
+            parts=[create_request_input_response(pending[-1], {'ok': True})],
+        ),
+        invocation_id,
+    )
+    events_added_per_resume.append(len(await session_events()) - before)
+
+  assert len(answered) == rounds
+  stored_ask_outputs = [
+      e.node_info.path
+      for e in await session_events()
+      if e.output is not None and e.node_info and '/ask@' in e.node_info.path
+  ]
+  assert len(stored_ask_outputs) == rounds
+  assert len(set(stored_ask_outputs)) == rounds
+  # Every resume but the last one runs a full round, so each adds the same
+  # number of events instead of one more than the resume before it.
+  assert len(set(events_added_per_resume[:-1])) == 1
