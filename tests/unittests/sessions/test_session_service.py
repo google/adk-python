@@ -4885,6 +4885,38 @@ async def test_append_event_temp_delta_dedupe_boundaries(session_service):
   assert [e.id for e in retrieved.events] == [shared_id, shared_id]
   assert retrieved.state.get('session:step') == 'second'
 
+  # A deduplicated re-delivery still applies its temp values to the
+  # retrying consumer's handle, matching behaviour from before dedup: the
+  # dedupe path skips ``super().append_event``, so the temp application
+  # happens before the dedupe return instead. The retry's (latest) temp
+  # value wins; nothing stored changes.
+  session_handle = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_temp_handle'
+  )
+  handle_event = Event(
+      id='temp-handle',
+      invocation_id='inv_temp_bounds',
+      author='agent',
+      actions=EventActions(
+          state_delta={'session:step': 'draft', 'temp:working': True}
+      ),
+  )
+  await session_service.append_event(session=session_handle, event=handle_event)
+  fresh_handle = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_temp_handle'
+  )
+  retry = handle_event.model_copy(deep=True)
+  retry.actions.state_delta['temp:working'] = 'rewritten'
+  await session_service.append_event(session=fresh_handle, event=retry)
+  assert [e.id for e in fresh_handle.events] == ['temp-handle']
+  assert fresh_handle.state.get('session:step') == 'draft'
+  assert fresh_handle.state.get('temp:working') == 'rewritten'
+  stored = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_temp_handle'
+  )
+  assert [e.id for e in stored.events] == ['temp-handle']
+  assert 'temp:working' not in stored.state
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

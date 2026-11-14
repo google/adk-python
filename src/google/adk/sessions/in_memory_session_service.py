@@ -414,6 +414,14 @@ class InMemorySessionService(BaseSessionService):
         for e in storage_session.events
         if e.id == dedupe_comparison.id
     ):
+      # The duplicate path skips ``super().append_event``, which is also where
+      # a caller's temp-scoped values would have been applied to the passed
+      # session object. Apply them here so a consumer retrying with a fresh
+      # handle still observes the retry's temp values, exactly as it did
+      # before dedup existed. Nothing stored changes: temp keys are never
+      # persisted, and the application is last-value-wins (a retry carrying a
+      # newer temp value overwrites the earlier one on the handle).
+      self._apply_temp_state(session, event)
       return event
 
     # Update the in-memory session.
