@@ -166,7 +166,8 @@ class Workflow(BaseNode):
       description="The compiled workflow graph.",
       default=None,
   )
-  """Compiled from ``edges`` in ``model_post_init``.
+  """Compiled from ``edges`` in ``model_post_init``, or validated there when
+  passed in directly.
 
   Optional only because a Workflow may be constructed with neither edges nor
   a graph, in which case ``_run_impl`` returns immediately. Helpers reached
@@ -178,7 +179,11 @@ class Workflow(BaseNode):
 
   def model_post_init(self, context: Any) -> None:
     super().model_post_init(context)
-    if self.edges and self.graph is None:
+    if self.graph is not None:
+      # A graph passed in directly gets the same checks, and validating it is
+      # also what computes the terminal nodes the output is read from.
+      self.graph.validate_graph()
+    elif self.edges:
       self.graph = self._build_graph()
     self._validate_state_schema()
 
