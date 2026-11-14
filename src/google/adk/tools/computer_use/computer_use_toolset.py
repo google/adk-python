@@ -30,6 +30,8 @@ from typing import cast
 from typing import Literal
 from typing import Optional
 from typing import Union
+from urllib.parse import urlparse
+from urllib.parse import uses_netloc
 import weakref
 
 from google.genai import types
@@ -40,14 +42,26 @@ from typing_extensions import override
 from ...agents.readonly_context import ReadonlyContext
 from ...models.llm_request import LlmRequest
 from ...utils.model_name_utils import extract_model_name
+from .._url_validator import _is_blocked_address
 from .._url_validator import _is_blocked_hostname
 from .._url_validator import _parse_request_target
 from .._url_validator import _resolve_direct_addresses
+from .._url_validator import _resolve_host_addresses
 from ..base_toolset import BaseToolset
 from ..tool_context import ToolContext
 from .base_computer import BaseComputer
 from .base_computer import ComputerState
 from .computer_use_tool import ComputerUseTool
+
+# urllib's registered authority-based protocols plus common secure/network
+# variants. Unknown schemes may be browser-internal; withhold without latching.
+_NETWORK_URL_SCHEMES = (frozenset(uses_netloc) - {"", "file"}) | {
+    "ftps",
+    "smb",
+    "ldap",
+    "ldaps",
+    "ssh",
+}
 
 # Methods that should be excluded when creating tools from BaseComputer methods
 EXCLUDED_METHODS = {
@@ -291,13 +305,17 @@ class ComputerUseToolset(BaseToolset):
         (e.g. non-numeric aliases or custom endpoint resource paths) default to
         the Gemini 3.x action schema.
       allow_private_network_access: By default `navigate` refuses urls whose
-        host is not publicly routable. Set this to True when the agent is meant
-        to drive the browser against localhost or an internal host.
+        host is not publicly routable, and computer actions refuse states that
+        land on such urls. Set this to True when the agent is meant to drive
+        the browser against localhost or an internal host. State validation
+        cannot prevent browser requests; enforce network egress restrictions
+        in the computer backend to prevent private network access entirely.
     """
     super().__init__()
     self._computer = computer
     self._excluded_predefined_functions = excluded_predefined_functions
     self._allow_private_network_access = allow_private_network_access
+    self._unsafe_navigation_detected = False
     self._initialized = False
     self._closed = False
     self._tools: Optional[list[ComputerUseTool]] = None
@@ -468,6 +486,8 @@ class ComputerUseToolset(BaseToolset):
       # each action's `prepare()` and execution complete before another action
       # rebinds computer state or takes a screenshot.
       async with _get_computer_execution_lock(computer):
+        if self._unsafe_navigation_detected:
+          return {"error": _URL_REFUSED_ERROR, "url": "about:blank"}
         # Prepare computer before each tool call
         # Computers that need session state (e.g., AgentEngineSandboxComputer)
         # override prepare() to bind state for sandbox/token sharing
@@ -475,10 +495,14 @@ class ComputerUseToolset(BaseToolset):
           await computer.prepare(tool_context)
 
         if forward_tool_context:
-          return await method(*args, tool_context=tool_context, **kwargs)
-        # Call the original method (without tool_context - computer doesn't
-        # need it)
-        return await method(*args, **kwargs)
+          result = await method(*args, tool_context=tool_context, **kwargs)
+        else:
+          result = await method(*args, **kwargs)
+        # Redirects and document-driven navigation can finish during any
+        # action, including wait/current_state. Check before returning pixels.
+        if isinstance(result, ComputerState):
+          return await self._validate_computer_state(result)
+        return result
 
     wrapper.__name__ = resolved_name
     wrapper.__qualname__ = resolved_name
@@ -511,6 +535,67 @@ class ComputerUseToolset(BaseToolset):
 
     return wrapper
 
+  async def _validate_url(self, url: str) -> None:
+    """Applies the same URL policy to requested and observed destinations."""
+    if not isinstance(url, str):
+      raise ValueError("url is not a string")
+    target = _parse_request_target(url)
+    if not self._allow_private_network_access:
+      if _is_blocked_hostname(target.hostname):
+        raise ValueError("hostname is blocked")
+      # getaddrinfo blocks, so keep it off the event loop.
+      await asyncio.to_thread(_resolve_direct_addresses, target.hostname)
+
+  async def _validate_computer_state(
+      self, state: ComputerState
+  ) -> ComputerState | dict[str, str]:
+    """Withholds unsafe pages; only confirmed private/local content latches."""
+    if not state.url:
+      return state
+    unsafe = False
+    try:
+      parsed = urlparse(state.url)
+      if parsed.scheme in ("data", "chrome-error") or (
+          parsed.scheme == "about"
+          and parsed.path in ("blank", "srcdoc")
+          and not parsed.query
+      ):
+        return state
+      if parsed.scheme == "file":
+        unsafe = True
+      elif (
+          parsed.scheme in _NETWORK_URL_SCHEMES
+          and parsed.netloc
+          and parsed.hostname
+      ):
+        # Apply the address policy to network protocols, including ws/wss.
+        # Unknown and browser-internal schemes are withheld without DNS lookup.
+        if self._allow_private_network_access:
+          return state
+        if _is_blocked_hostname(parsed.hostname):
+          unsafe = True
+        else:
+          addresses = await asyncio.to_thread(
+              _resolve_host_addresses, parsed.hostname
+          )
+          unsafe = any(_is_blocked_address(address) for address in addresses)
+        if not unsafe:
+          return state
+    except (ValueError, OSError):
+      # An unsupported/malformed URL or transient DNS failure is not a positive
+      # private determination. Withhold this response, keeping recovery possible.
+      pass
+    logger.warning("Refusing computer state: url failed safety validation.")
+    if unsafe:
+      # Set this before closing: cleanup may fail or be a no-op. The latch
+      # survives close/reinitialization and pickle; recreate the toolset to
+      # recover. Locks are per event loop, so another loop may be mid-action;
+      # its returned state must still pass validation before pixels are exposed.
+      self._unsafe_navigation_detected = True
+      await self._computer.close()
+      self._closed = True
+    return {"error": _URL_REFUSED_ERROR, "url": "about:blank"}
+
   def _wrap_navigate_with_url_validation(
       self, navigate_method: Callable[..., Any]
   ) -> Callable[..., Any]:
@@ -519,20 +604,16 @@ class ComputerUseToolset(BaseToolset):
     @functools.wraps(navigate_method)
     async def wrapper(url: str, *args: Any, **kwargs: Any) -> Any:
       try:
-        if not isinstance(url, str):
-          raise ValueError("url is not a string")
-        target = _parse_request_target(url)
-        if not self._allow_private_network_access:
-          if _is_blocked_hostname(target.hostname):
-            raise ValueError("hostname is blocked")
-          # getaddrinfo blocks, so keep it off the event loop.
-          await asyncio.to_thread(_resolve_direct_addresses, target.hostname)
+        await self._validate_url(url)
       except ValueError:
         logger.warning("Refusing navigate(): url failed safety validation.")
         # The computer-use model rejects a function response with no url,
         # so report the page the browser is currently on.
         state: ComputerState = await self._computer.current_state()
-        return {"error": _URL_REFUSED_ERROR, "url": state.url}
+        checked_state = await self._validate_computer_state(state)
+        if isinstance(checked_state, dict):
+          return checked_state
+        return {"error": _URL_REFUSED_ERROR, "url": checked_state.url}
       return await navigate_method(url, *args, **kwargs)
 
     return wrapper
