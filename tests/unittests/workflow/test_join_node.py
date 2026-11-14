@@ -691,3 +691,304 @@ async def test_join_node_waits_for_retriggered_in_flight_predecessor(
   await runner.run_async('start')
 
   assert capture.received_inputs == [{'node_a': 'A2', 'node_b': 'B2'}]
+
+
+@pytest.mark.asyncio
+async def test_join_node_in_loop_drops_stale_arrival_when_branch_retriggered(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode drops a late arrival from an abandoned loop iteration.
+
+  When a loop head restarts and re-triggers a branch that is still running,
+  that branch's old completion must not combine with the new iteration's
+  sibling at the join. The join should fire once with both outputs from the
+  new iteration.
+  """
+  iteration = 0
+  join_inputs: list[dict[str, str]] = []
+
+  def loop_head(node_input: str) -> str:
+    nonlocal iteration
+    iteration += 1
+    return f'iter{iteration}'
+
+  async def slow_a(node_input: str) -> str:
+    await asyncio.sleep(0.05)
+    return f'a<{node_input}>'
+
+  def node_b(node_input: str) -> Event:
+    return Event(
+        output=f'b<{node_input}>',
+        route='retry' if node_input == 'iter1' else 'go',
+    )
+
+  def capture(node_input: dict[str, str]) -> None:
+    join_inputs.append(node_input)
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, loop_head),
+          (loop_head, slow_a, join),
+          (loop_head, node_b),
+          (node_b, {'retry': loop_head, 'go': join}),
+          (join, capture),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('go')
+
+  assert join_inputs == [{'node_b': 'b<iter2>', 'slow_a': 'a<iter2>'}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_join_node_in_loop_keeps_dropped_stale_arrival_across_resume(
+    request: pytest.FixtureRequest, is_resumable: bool
+) -> None:
+  """Tests a dropped stale arrival stays dropped after a pause and resume.
+
+  The run lineage used to spot stale arrivals is rebuilt from events on
+  resume. The join must not fire again with the abandoned iteration's output,
+  and the node after it must not run twice.
+  """
+  iteration = 0
+  join_inputs: list[dict[str, str]] = []
+  done_inputs: list[str] = []
+
+  def loop_head(node_input: str) -> str:
+    nonlocal iteration
+    iteration += 1
+    return f'iter{iteration}'
+
+  async def slow_a(node_input: str) -> str:
+    await asyncio.sleep(0.05)
+    return f'a<{node_input}>'
+
+  def node_b(node_input: str) -> Event:
+    return Event(
+        output=f'b<{node_input}>',
+        route='retry' if node_input == 'iter1' else 'go',
+    )
+
+  def capture(node_input: dict[str, str]) -> str:
+    join_inputs.append(node_input)
+    return 'captured'
+
+  def approve() -> RequestInput:
+    return RequestInput(message='Continue?')
+
+  def done(node_input: str) -> None:
+    done_inputs.append(node_input)
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, loop_head),
+          (loop_head, slow_a, join),
+          (loop_head, node_b),
+          (node_b, {'retry': loop_head, 'go': join}),
+          (join, capture, approve, done),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(
+          name=request.function.__name__,
+          root_agent=agent,
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+
+  events = await runner.run_async('go')
+
+  assert join_inputs == [{'node_b': 'b<iter2>', 'slow_a': 'a<iter2>'}]
+
+  request_events = workflow_testing_utils.get_request_input_events(events)
+  [interrupt_id] = extract_event_interrupt_ids(request_events[0])
+  await runner.run_async(
+      new_message=hitl_utils.create_request_input_response(
+          interrupt_id, {'result': 'ok'}
+      ),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert join_inputs == [{'node_b': 'b<iter2>', 'slow_a': 'a<iter2>'}]
+  assert len(done_inputs) == 1
+
+
+@pytest.mark.asyncio
+async def test_join_node_in_loop_drops_stale_arrival_from_multi_step_branch(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode drops a stale arrival that reaches it through two steps.
+
+  The abandoned run of the slow first step still triggers the second step
+  with old data, and by the time the second step reaches the join no newer
+  run of it is queued yet. The join must still wait for the new iteration.
+  """
+  iteration = 0
+  join_inputs: list[dict[str, str]] = []
+
+  def loop_head(node_input: str) -> str:
+    nonlocal iteration
+    iteration += 1
+    return f'iter{iteration}'
+
+  async def a_hop0(node_input: str) -> str:
+    await asyncio.sleep(0.05)
+    return f'h0<{node_input}>'
+
+  def a_hop1(node_input: str) -> str:
+    return f'a<{node_input}>'
+
+  def node_b(node_input: str) -> Event:
+    return Event(
+        output=f'b<{node_input}>',
+        route='retry' if node_input == 'iter1' else 'go',
+    )
+
+  def capture(node_input: dict[str, str]) -> None:
+    join_inputs.append(node_input)
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, loop_head),
+          (loop_head, a_hop0),
+          (a_hop0, a_hop1),
+          (a_hop1, join),
+          (loop_head, node_b),
+          (node_b, {'retry': loop_head, 'go': join}),
+          (join, capture),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('go')
+
+  assert join_inputs == [{'a_hop1': 'a<h0<iter2>>', 'node_b': 'b<iter2>'}]
+
+
+@pytest.mark.asyncio
+async def test_join_node_in_loop_drops_arrival_recorded_before_restart(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode drops an arrival recorded before the loop restarted.
+
+  The two-step branch arrives at the join in the first iteration, then its
+  sibling restarts the loop instead of going to the join. In the second
+  iteration the sibling arrives while the branch's first step is still
+  running, so the join must not fire with the branch's first-iteration
+  output.
+  """
+  iteration = 0
+  join_inputs: list[dict[str, str]] = []
+
+  def loop_head(node_input: str) -> str:
+    nonlocal iteration
+    iteration += 1
+    return f'iter{iteration}'
+
+  async def a_hop0(node_input: str) -> str:
+    if node_input == 'iter2':
+      await asyncio.sleep(0.05)
+    return f'h0<{node_input}>'
+
+  def a_hop1(node_input: str) -> str:
+    return f'a<{node_input}>'
+
+  async def node_b(node_input: str) -> Event:
+    if node_input == 'iter1':
+      await asyncio.sleep(0.05)
+    return Event(
+        output=f'b<{node_input}>',
+        route='retry' if node_input == 'iter1' else 'go',
+    )
+
+  def capture(node_input: dict[str, str]) -> None:
+    join_inputs.append(node_input)
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, loop_head),
+          (loop_head, a_hop0),
+          (a_hop0, a_hop1),
+          (a_hop1, join),
+          (loop_head, node_b),
+          (node_b, {'retry': loop_head, 'go': join}),
+          (join, capture),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('go')
+
+  assert join_inputs == [{'a_hop1': 'a<h0<iter2>>', 'node_b': 'b<iter2>'}]
+
+
+@pytest.mark.asyncio
+async def test_join_node_in_loop_keeps_branch_forked_in_current_iteration(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Tests JoinNode fires when the restarting branch has its own steps.
+
+  The deciding branch goes through two steps before choosing to retry or
+  join. In the second iteration both join inputs come from the same loop
+  head run, so the slow branch is current even though the deciding branch
+  ran newer copies of its own steps.
+  """
+  iteration = 0
+  join_inputs: list[dict[str, str]] = []
+
+  def loop_head(node_input: str) -> str:
+    nonlocal iteration
+    iteration += 1
+    return f'iter{iteration}'
+
+  async def slow_a(node_input: str) -> str:
+    await asyncio.sleep(0.05)
+    return f'a<{node_input}>'
+
+  def node_b(node_input: str) -> str:
+    return node_input
+
+  def decide(node_input: str) -> Event:
+    return Event(
+        output=f'b<{node_input}>',
+        route='retry' if node_input == 'iter1' else 'go',
+    )
+
+  def capture(node_input: dict[str, str]) -> None:
+    join_inputs.append(node_input)
+
+  join = join_node.JoinNode(name='join')
+  agent = Workflow(
+      name='wf',
+      edges=[
+          (START, loop_head),
+          (loop_head, slow_a, join),
+          (loop_head, node_b),
+          (node_b, decide),
+          (decide, {'retry': loop_head, 'go': join}),
+          (join, capture),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async('go')
+
+  assert join_inputs == [{'decide': 'b<iter2>', 'slow_a': 'a<iter2>'}]
