@@ -21,6 +21,7 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
 from google.adk.evaluation.eval_result import EvalCaseResult
+from google.adk.evaluation.eval_result import MultiRunCaseSummary
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
 from google.genai import types as genai_types
@@ -256,3 +257,41 @@ class TestGcsEvalSetResultsManager:
       gcs_eval_set_results_manager.get_eval_set_result(
           "test_app", eval_set_result_id
       )
+
+  def test_save_and_get_eval_set_result_with_multi_run_case_summaries(
+      self, gcs_eval_set_results_manager, mocker
+  ):
+    """Multi-run case summaries round-trip through GCS eval history JSON."""
+    mocker.patch("time.time", return_value=12345678)
+    app_name = "test_app"
+    eval_set_id = "test_eval_set"
+    eval_case_results = _get_test_eval_case_results()
+    summaries = [
+        MultiRunCaseSummary(
+            eval_set_id=eval_set_id,
+            eval_id="eval_case_1",
+            final_eval_status=EvalStatus.PASSED,
+            num_runs=2,
+            passed_runs=2,
+            failed_runs=0,
+            pass_rate=1.0,
+        )
+    ]
+
+    gcs_eval_set_results_manager.save_eval_set_result(
+        app_name,
+        eval_set_id,
+        eval_case_results,
+        multi_run_case_summaries=summaries,
+    )
+    expected = create_eval_set_result(
+        app_name,
+        eval_set_id,
+        eval_case_results,
+        multi_run_case_summaries=summaries,
+    )
+    retrieved = gcs_eval_set_results_manager.get_eval_set_result(
+        app_name, expected.eval_set_result_id
+    )
+
+    assert retrieved.multi_run_case_summaries == summaries

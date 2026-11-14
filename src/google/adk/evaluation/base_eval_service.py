@@ -27,6 +27,7 @@ from pydantic import Field
 
 from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_case import Invocation
+from .eval_config import MultiRunConfig
 from .eval_metrics import EvalMetric
 from .eval_result import EvalCaseResult
 
@@ -41,6 +42,12 @@ class EvaluateConfig(BaseModel):
 
   eval_metrics: list[EvalMetric] = Field(
       description="""The list of metrics to be used in Eval.""",
+  )
+
+  multi_run_config: Optional[MultiRunConfig] = Field(
+      default=None,
+      description="""Optional configuration for aggregating results across
+multiple runs of each eval case.""",
   )
 
   parallelism: int = Field(

@@ -40,6 +40,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.live import _cascade_live_connection
 from google.adk.live import AgentSpokenOutput
 from google.adk.live import AudioChunk
 from google.adk.live import CascadeLive
@@ -48,11 +49,14 @@ from google.adk.live import LiveIngress
 from google.adk.live import UserTurnFinished
 from google.adk.live._cascade_live_connection import CascadeLiveConnection
 from google.adk.models.base_llm import BaseLlm
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.utils import _client_labels_utils
+from google.adk.utils._google_client_headers import merge_tracking_headers
 from google.genai import types
 import pytest
 from typing_extensions import override
@@ -1355,3 +1359,100 @@ async def test_sub_agent_replies_right_after_an_agent_transfer():
   assert replayed[0] == f'user:{_UTTERANCE}'
   assert replayed[-1].startswith('user:')
   assert 'transfer_to_agent' in replayed[-1]
+
+
+@pytest.fixture
+def _google_reasoner(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Treats any reasoner as one that calls Google APIs, as `Gemini` does."""
+  monkeypatch.setattr(
+      _cascade_live_connection,
+      '_sends_google_tracking_headers',
+      lambda llm: True,
+  )
+
+
+def _api_client_header(request: LlmRequest) -> list[str]:
+  """The `x-goog-api-client` tokens `Gemini` would send for `request`.
+
+  Call it in the label context the request ran in: `Gemini` merges the
+  context's label at request time.
+  """
+  http_options = request.config.http_options
+  headers = http_options.headers if http_options else None
+  return merge_tracking_headers(headers)['x-goog-api-client'].split()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('_google_reasoner')
+async def test_reasoning_request_carries_cascade_live_label():
+  """The text reasoning request is labeled as coming from CascadeLive."""
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+
+  await _run_live(reasoner, FakeStt(), FakeTts())
+
+  header = _api_client_header(reasoner.requests[0])
+  assert _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL in header
+  assert any(token.startswith('google-adk/') for token in header)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('_google_reasoner')
+async def test_reasoning_request_keeps_outer_eval_label():
+  """Under eval, the request carries both the eval and CascadeLive labels."""
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+
+  with _client_labels_utils.client_label_context(
+      _client_labels_utils.EVAL_CLIENT_LABEL
+  ):
+    await _run_live(reasoner, FakeStt(), FakeTts())
+    header = _api_client_header(reasoner.requests[0])
+
+  assert _client_labels_utils.EVAL_CLIENT_LABEL in header
+  assert _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL in header
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('_google_reasoner')
+async def test_cascade_live_label_is_added_once_per_turn():
+  """Each turn labels a copy, so the label does not pile up across turns."""
+  reasoner = ScriptedReasoner(
+      turns=[[_model_text(_ANSWER)], [_model_text(_ANSWER)]]
+  )
+
+  await _run_live(
+      reasoner, FakeStt(), FakeTts(), utterances=(_UTTERANCE, _UTTERANCE)
+  )
+
+  assert len(reasoner.requests) == 2
+  for request in reasoner.requests:
+    assert (
+        _api_client_header(request).count(
+            _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_google_reasoner_gets_no_label_header():
+  """Other providers get no Google headers, which LiteLlm would forward."""
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+
+  await _run_live(reasoner, FakeStt(), FakeTts())
+
+  http_options = reasoner.requests[0].config.http_options
+  headers = (http_options.headers if http_options else None) or {}
+  assert not any(
+      _client_labels_utils.CASCADE_LIVE_CLIENT_LABEL in value
+      for value in headers.values()
+  )
+
+
+def test_only_gemini_sends_google_tracking_headers():
+  """`Gemini` models get the label header; other models do not."""
+  assert _cascade_live_connection._sends_google_tracking_headers(
+      Gemini(model='gemini-2.5-flash')
+  )
+  assert not _cascade_live_connection._sends_google_tracking_headers(
+      ScriptedReasoner()
+  )

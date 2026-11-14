@@ -39,39 +39,9 @@ from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import EvalMetricResultDetails
 from .eval_result import EvalCaseResult
+from .eval_result import MethodResult
+from .eval_result import MultiRunCaseSummary
 from .evaluator import EvalStatus
-
-
-@dataclasses.dataclass(frozen=True)
-class MethodResult:
-  """How one rule judged the runs of an eval case.
-
-  The rule's target is one metric, or the whole eval case.
-  """
-
-  name: str
-  """The name of the aggregation method, e.g. "mean_over_invocations"."""
-
-  value: float | None
-  """The method's value over the runs, or None if the runs gave it none."""
-
-  threshold: float | None
-  """The value needed to pass. None for a metric that never passes or fails."""
-
-  status: EvalStatus
-  """PASSED or FAILED by comparing the value with the threshold.
-
-  The value passes at or above the threshold, or at or below it for a metric
-  whose evaluator treats lower scores as better. NOT_EVALUATED when there is
-  no value, and INFORMATIONAL for a metric that never passes or fails, or for
-  a cross-run criterion without a threshold, which only reports its value.
-  """
-
-  note: str | None = None
-  """What the value rests on, such as how many runs passed, or why it is None.
-
-  For a metric judged lower-is-better, with nothing else to say, it says so.
-  """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -795,3 +765,46 @@ def aggregate_eval_case_results(
     )
 
   return sorted(aggregate_results, key=lambda x: (x.eval_set_id, x.eval_id))
+
+
+def summarize_multi_run_case_result(
+    case_result: MultiRunCaseResult,
+) -> MultiRunCaseSummary:
+  """Converts a `MultiRunCaseResult` into a serializable `MultiRunCaseSummary`."""
+  runs = case_result.runs
+  statuses = [get_run_status(run) for run in runs]
+  crashed_runs = count_runs_failed_without_metric_results(runs)
+  passed_runs = statuses.count(EvalStatus.PASSED)
+  failed_runs = statuses.count(EvalStatus.FAILED)
+  decided_runs = passed_runs + failed_runs
+  not_evaluated_runs = len(statuses) - decided_runs - crashed_runs
+  pass_rate = passed_runs / decided_runs if decided_runs else None
+  return MultiRunCaseSummary(
+      eval_set_id=case_result.eval_set_id,
+      eval_id=case_result.eval_id,
+      final_eval_status=case_result.final_eval_status,
+      num_runs=len(runs),
+      passed_runs=passed_runs,
+      failed_runs=failed_runs,
+      crashed_runs=crashed_runs,
+      not_evaluated_runs=not_evaluated_runs,
+      pass_rate=pass_rate,
+      overall_eval_metric_results=list(case_result.overall_eval_metric_results),
+      metric_methods=dict(case_result.metric_methods),
+      cross_run_results=list(case_result.cross_run_results),
+      max_crashed_runs=case_result.max_crashed_runs,
+  )
+
+
+def summarize_eval_case_results(
+    eval_case_results: list[EvalCaseResult],
+    *,
+    multi_run_config: MultiRunConfig | None = None,
+) -> list[MultiRunCaseSummary]:
+  """Aggregates per-run `EvalCaseResult`s into serializable `MultiRunCaseSummary`s."""
+  return [
+      summarize_multi_run_case_result(case_result)
+      for case_result in aggregate_eval_case_results(
+          eval_case_results, multi_run_config=multi_run_config
+      )
+  ]

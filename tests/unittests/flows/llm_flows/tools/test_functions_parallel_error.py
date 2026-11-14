@@ -20,7 +20,6 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.flows.llm_flows import functions
-from google.adk.live import LiveRequestQueue
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -120,26 +119,6 @@ async def _run_parallel_child_cancel(
   # Runner swallows CancelledError at root-task cleanup so the caller is
   # not itself cancelled; the invariant is that sibling tools are torn down
   # before that iterator returns.
-  if execution == 'live':
-    live_queue = LiveRequestQueue()
-    live_queue.send_content(user_message)
-    live_queue.close()
-
-    async def _consume_live() -> None:
-      async with aclosing(
-          runner.runner.run_live(
-              user_id=session.user_id,
-              session_id=session.id,
-              live_request_queue=live_queue,
-              run_config=RunConfig(response_modalities=['TEXT']),
-          )
-      ) as agen:
-        async for _ in agen:
-          pass
-
-    await asyncio.wait_for(_consume_live(), timeout=10)
-    return
-
   streaming_mode = (
       StreamingMode.SSE if execution == 'sse' else StreamingMode.NONE
   )
@@ -158,7 +137,6 @@ async def _run_parallel_child_cancel(
 _EXECUTIONS = [
     pytest.param('run_async', id='run-async'),
     pytest.param('sse', id='run-async-sse'),
-    pytest.param('live', id='run-live'),
 ]
 
 

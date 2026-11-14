@@ -34,6 +34,9 @@ EVAL_CLIENT_LABEL = f"google-adk-eval/{version.__version__}"
 MODEL_CONSULT_CLIENT_LABEL = f"google-adk-model-consult/{version.__version__}"
 """Label used to denote advisor LLM calls made by ModelConsultTool."""
 
+CASCADE_LIVE_CLIENT_LABEL = f"google-adk-cascade-live/{version.__version__}"
+"""Label used to denote reasoning LLM calls made by CascadeLive."""
+
 
 def classifier_client_label(kind: str) -> str:
   """Returns the label for calls made by a classifier, such as "llm"."""

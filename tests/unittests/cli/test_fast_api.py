@@ -8056,11 +8056,18 @@ def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
 #################################################
 
 
-def test_finalize_agent_identity_credentials_success(test_app):
+@pytest.mark.parametrize(
+    "connector_name",
+    [
+        "projects/p/locations/l/connectors/c",
+        "projects/p/locations/l/authProviders/c",
+    ],
+)
+def test_finalize_agent_identity_credentials_success(test_app, connector_name):
   """Test successful credential finalization and Base64 padding decoding."""
   import base64
 
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   raw_bytes = b"test-validation-state-bytes"
   # Unpadded url-safe base64 string
@@ -8068,12 +8075,12 @@ def test_finalize_agent_identity_credentials_success(test_app):
 
   with (
       patch.object(
-          iamconnectorcredentials_v1alpha,
-          "IAMConnectorCredentialsServiceClient",
+          agentidentitycredentials_v1,
+          "AuthProviderCredentialsServiceClient",
           autospec=True,
       ) as mock_client_cls,
       patch.object(
-          iamconnectorcredentials_v1alpha,
+          agentidentitycredentials_v1,
           "FinalizeCredentialsRequest",
           autospec=True,
       ) as mock_req_cls,
@@ -8084,7 +8091,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     response = test_app.post(
         "/agent-identity/finalize",
         json={
-            "connector_name": "projects/p/locations/l/connectors/c",
+            "connector_name": connector_name,
             "user_id": "user-123",
             "user_id_validation_state": b64_str,
             "consent_nonce": "nonce-456",
@@ -8094,7 +8101,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     assert response.json() == {"status": "ok"}
 
     mock_req_cls.assert_called_once_with(
-        connector="projects/p/locations/l/connectors/c",
+        auth_provider="projects/p/locations/l/authProviders/c",
         user_id="user-123",
         user_id_validation_state=raw_bytes,
         consent_nonce="nonce-456",
@@ -8105,11 +8112,11 @@ def test_finalize_agent_identity_credentials_success(test_app):
 @pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
 def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ):
     response = test_app.post(
@@ -8128,9 +8135,9 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
 
 
 def test_finalize_agent_identity_credentials_missing_dependency(test_app):
-  """Test error handling when google-cloud-iamconnectorcredentials is not installed."""
+  """Test error handling when google-cloud-agentidentitycredentials is not installed."""
   with patch.dict(
-      "sys.modules", {"google.cloud.iamconnectorcredentials_v1alpha": None}
+      "sys.modules", {"google.cloud.agentidentitycredentials_v1": None}
   ):
     response = test_app.post(
         "/agent-identity/finalize",
@@ -8147,11 +8154,11 @@ def test_finalize_agent_identity_credentials_missing_dependency(test_app):
 
 def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
   """Test backend InvalidArgument API error handling (400 response)."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -8174,14 +8181,14 @@ def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
 
 def test_finalize_agent_identity_credentials_api_call_error(test_app):
   """Test backend GoogleAPICallError error handling with status code propagation."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   err = GoogleAPICallError("Permission denied")
   err.code = 403
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -9082,6 +9089,129 @@ def test_runtime_config_rejects_half_specified_logo(tmp_path):
   """--logo-text without --logo-image-url is a config error, not a silent drop."""
   with pytest.raises(ValueError, match="Both --logo-text and --logo-image-url"):
     get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
+
+
+def test_no_file_observer_without_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """No watchdog observer, and so no inotify instance, without reload_agents."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+    )
+    with client:
+      pass
+
+  mock_observer.assert_not_called()
+
+
+def test_file_observer_started_and_stopped_with_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """reload_agents starts the observer and stops it when the app shuts down."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        reload_agents=True,
+    )
+    observer = mock_observer.return_value
+    observer.start.assert_called_once()
+    observer.stop.assert_not_called()
+    with client:
+      pass
+
+  observer.stop.assert_called_once()
+  observer.join.assert_called_once()
+
+
+def test_api_server_skips_tear_down_observer_without_setup_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """tear_down_observer is not called when setup_observer is None."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  tear_down_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(tear_down_observer=tear_down_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_not_called()
+  tear_down_observer.assert_not_called()
+
+
+def test_api_server_allows_setup_observer_without_tear_down_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Shutting down succeeds when setup_observer is given without tear_down_observer."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  setup_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(setup_observer=setup_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_called_once_with()
+  setup_observer.assert_called_once_with(mock_observer.return_value, api_server)
 
 
 @pytest.mark.parametrize(

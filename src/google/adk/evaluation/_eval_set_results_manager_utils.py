@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Optional
 
 from pydantic import ValidationError
 
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
+from .eval_result import MultiRunCaseSummary
 
 
 def _sanitize_eval_set_result_name(eval_set_result_name: str) -> str:
@@ -32,6 +34,7 @@ def create_eval_set_result(
     app_name: str,
     eval_set_id: str,
     eval_case_results: list[EvalCaseResult],
+    multi_run_case_summaries: Optional[list[MultiRunCaseSummary]] = None,
 ) -> EvalSetResult:
   """Creates a new EvalSetResult given eval_case_results."""
   timestamp = time.time()
@@ -42,6 +45,7 @@ def create_eval_set_result(
       eval_set_result_name=eval_set_result_name,
       eval_set_id=eval_set_id,
       eval_case_results=eval_case_results,
+      multi_run_case_summaries=multi_run_case_summaries,
       creation_timestamp=timestamp,
   )
   return eval_set_result

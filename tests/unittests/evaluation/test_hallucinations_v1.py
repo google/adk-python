@@ -247,6 +247,232 @@ contradicting_excerpt: null
     score, _ = await metric._evaluate_nl_response("nl", "ctx")
     assert score is None
 
+  async def _score_validator_reply(self, metric, mocker, validator_text):
+    """Scores a two-sentence response against a scripted validator reply."""
+    seg_response = self._create_genai_response(
+        "<sentence>S1.</sentence><sentence>S2.</sentence>", mocker
+    )
+    val_response = self._create_genai_response(validator_text, mocker)
+
+    async def seg_gen():
+      yield seg_response
+
+    async def val_gen():
+      yield val_response
+
+    metric._judge_model.generate_content_async = mocker.MagicMock(
+        side_effect=[seg_gen(), val_gen()]
+    )
+    score, _ = await metric._evaluate_nl_response("nl", "ctx")
+    return score
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_scores_every_labelled_sentence(
+      self, hallucinations_metric, mocker
+  ):
+    """A complete reply is averaged over all sentences."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: contradictory
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score == 0.5
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_accepts_backticked_labels(
+      self, hallucinations_metric, mocker
+  ):
+    """Labels echoed in backticks, as the prompt lists them, are counted."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: `supported`
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: `contradictory`
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score == 0.5
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_sentence_omitted(
+      self, hallucinations_metric, mocker
+  ):
+    """A sentence the validator leaves out does not drop out of the score."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_a_label_is_unusable(
+      self, hallucinations_metric, mocker
+  ):
+    """One unusable label makes the response unscored, not a 1.0."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: false
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_blocks_merge(
+      self, hallucinations_metric, mocker
+  ):
+    """A block missing its last line must not swallow the next block."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+
+sentence: S2.
+label: contradictory
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_with_extra_block(
+      self, hallucinations_metric, mocker
+  ):
+    """An extra block with an unusable label cannot stand in for a sentence."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S1 again.
+label: false
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: null
+
+sentence: S2.
+label: supported
+rationale: r3
+supporting_excerpt: e3
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_a_sentence_repeats(
+      self, hallucinations_metric, mocker, caplog
+  ):
+    """A block repeating one sentence cannot stand in for an omitted one."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+    assert "block 1 does not echo sentence 1" in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_matches_sentences_with_tags_and_quotes(
+      self, hallucinations_metric, mocker
+  ):
+    """An echo keeping the sentence tags or adding quotes still matches."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: <sentence>S1.</sentence>
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: "S2."
+label: supported
+rationale: r2
+supporting_excerpt: e2
+contradicting_excerpt: null
+""",
+    )
+    assert score == 1.0
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_matches_sentences_ignoring_whitespace(
+      self, hallucinations_metric, mocker
+  ):
+    """An echo differing only in case and spacing still matches."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence:   s1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: supported
+rationale: r2
+supporting_excerpt: e2
+contradicting_excerpt: null
+""",
+    )
+    assert score == 1.0
+
 
 @pytest.fixture
 def create_context_data():
@@ -1726,10 +1952,130 @@ async def test_evaluate_invocations_partial_failure(
       [actual_invocation], [expected_invocation]
   )
 
-  assert result.overall_score == 0.8
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert len(result.per_invocation_results) == 1
   per_invocation_result = result.per_invocation_results[0]
-  assert per_invocation_result.score == 0.8
+  assert per_invocation_result.score is None
+  assert per_invocation_result.eval_status == EvalStatus.NOT_EVALUATED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_unscored_step_still_fails_invocation(
+    hallucinations_metric, mocker
+):
+  metric = hallucinations_metric
+  app_details = AppDetails(
+      agent_details={
+          "root": AgentDetails(
+              name="root",
+              instructions="Root agent instructions.",
+              tool_declarations=[],
+          ),
+      },
+  )
+  actual_invocation = Invocation(
+      app_details=app_details,
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User query.")]
+      ),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text=text)]
+                  ),
+              )
+              for text in ("Unscored response.", "Hallucinated response.")
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Hallucinated final response.")]
+      ),
+  )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    if nl_response == "Unscored response.":
+      return None, "some error during evaluation"
+    return 0.0, "[]"
+
+  mocker.patch.object(
+      metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
+  )
+  result = await metric.evaluate_invocations([actual_invocation])
+
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.score == pytest.approx(1 / 3)
+  assert per_invocation_result.eval_status == EvalStatus.FAILED
+  assert result.overall_score == pytest.approx(1 / 3)
+  assert result.overall_eval_status == EvalStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_unscored_invocation_leaves_case_unscored(
+    hallucinations_metric, mocker
+):
+  metric = hallucinations_metric
+  app_details = AppDetails(
+      agent_details={
+          "root": AgentDetails(
+              name="root",
+              instructions="Root agent instructions.",
+              tool_declarations=[],
+          ),
+      },
+  )
+
+  def make_invocation(final_text):
+    return Invocation(
+        app_details=app_details,
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="User query.")]
+        ),
+        final_response=(
+            genai_types.Content(parts=[genai_types.Part(text=final_text)])
+            if final_text
+            else None
+        ),
+    )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    if nl_response == "Good response.":
+      return 1.0, "[]"
+    if nl_response == "Hallucinated response.":
+      return 0.0, "[]"
+    return None, "some error during evaluation"
+
+  mocker.patch.object(
+      metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
+  )
+
+  result = await metric.evaluate_invocations([
+      make_invocation("Good response."),
+      make_invocation("Bad response."),
+  ])
+  assert result.per_invocation_results[0].score == 1.0
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+
+  # The case still fails when it would with the unscored response at 1.0.
+  result = await metric.evaluate_invocations([
+      make_invocation("Hallucinated response."),
+      make_invocation("Hallucinated response."),
+      make_invocation("Bad response."),
+  ])
+  assert result.per_invocation_results[2].score is None
+  assert result.overall_score == pytest.approx(1 / 3)
+  assert result.overall_eval_status == EvalStatus.FAILED
+
+  # An invocation with no response to judge does not unscore the case.
+  result = await metric.evaluate_invocations([
+      make_invocation("Good response."),
+      make_invocation(None),
+  ])
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
 
 
 @pytest.mark.asyncio

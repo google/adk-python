@@ -169,10 +169,7 @@ def test_run_live_applies_server_and_query_run_config_options():
 
   adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
 
-  fast_api_app = adk_web_server.get_fast_api_app(
-      setup_observer=lambda _observer, _server: None,
-      tear_down_observer=lambda _observer, _server: None,
-  )
+  fast_api_app = adk_web_server.get_fast_api_app()
 
   client = TestClient(fast_api_app)
   url = (
@@ -249,10 +246,7 @@ def test_run_live_applies_avatar_config_only_for_video(
 
   adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
 
-  fast_api_app = adk_web_server.get_fast_api_app(
-      setup_observer=lambda _observer, _server: None,
-      tear_down_observer=lambda _observer, _server: None,
-  )
+  fast_api_app = adk_web_server.get_fast_api_app()
 
   client = TestClient(fast_api_app)
   url = (
@@ -315,10 +309,7 @@ def test_run_live_defaults_avatar_config_for_video(
 
   setattr(adk_web_server, "get_runner_async", _get_runner_async)
 
-  fast_api_app = adk_web_server.get_fast_api_app(
-      setup_observer=lambda _observer, _server: None,
-      tear_down_observer=lambda _observer, _server: None,
-  )
+  fast_api_app = adk_web_server.get_fast_api_app()
 
   client = TestClient(fast_api_app)
   url = (
@@ -396,10 +387,7 @@ def test_run_live_defaults_and_individual_options(
 
   adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
 
-  fast_api_app = adk_web_server.get_fast_api_app(
-      setup_observer=lambda _observer, _server: None,
-      tear_down_observer=lambda _observer, _server: None,
-  )
+  fast_api_app = adk_web_server.get_fast_api_app()
 
   client = TestClient(fast_api_app)
   url = (
@@ -478,8 +466,6 @@ def _build_ws_client(runner: Any = None, bind_host=None) -> TestClient:
   adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
 
   fast_api_app = adk_web_server.get_fast_api_app(
-      setup_observer=lambda _observer, _server: None,
-      tear_down_observer=lambda _observer, _server: None,
       bind_host=bind_host,
   )
   return TestClient(fast_api_app)

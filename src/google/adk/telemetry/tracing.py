@@ -100,6 +100,7 @@ from ._experimental_semconv import set_operation_details_common_attributes
 from ._finish_reason import is_reported_finish_reason
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
+from ._serialization import _mask_credential_values
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -405,10 +406,12 @@ def _serialize_tool_response(tool_response: object) -> str:
   """Serializes a tool response with credential secrets redacted."""
   try:
     return safe_json_serialize(
-        _redact_credential_secrets(
+        _mask_credential_values(
+            tool_response,
             to_jsonable_python(
                 tool_response, fallback=lambda _: "<not serializable>"
-            )
+            ),
+            by_alias=True,
         )
     )
   except Exception:  # pylint: disable=broad-exception-caught
@@ -616,7 +619,13 @@ def trace_merged_tool_calls(
     try:
       tool_response_json = safe_json_serialize([
           _redact_credential_secrets(
-              part.function_response.model_dump(exclude_none=True, mode="json")
+              _mask_credential_values(
+                  part.function_response,
+                  part.function_response.model_dump(
+                      exclude_none=True, mode="json"
+                  ),
+                  by_alias=None,
+              )
           )
           for part in parts
           if part.function_response is not None
@@ -1537,7 +1546,10 @@ def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
   if not isinstance(agent, LlmAgent):
     return None
 
-  model = agent.model if agent.model != "" else agent._default_model
+  model = agent.model
+  if model == "":
+    # The request processor resolved this before the call, so it is cached.
+    return agent.canonical_model.model
   return model if isinstance(model, str) else model.model
 
 

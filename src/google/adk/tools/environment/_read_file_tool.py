@@ -29,6 +29,7 @@ from typing_extensions import override
 from ...environment._base_environment import BaseEnvironment
 from ..base_tool import BaseTool
 from ._constants import MAX_OUTPUT_CHARS
+from ._utils import ensure_initialized
 from ._utils import truncate as _truncate
 
 if TYPE_CHECKING:
@@ -164,6 +165,8 @@ class ReadFileTool(BaseTool):
             'status': 'error',
             'error': f'`{name}` must be an integer if provided.',
         }
+
+    await ensure_initialized(self._environment, tool_context)
 
     try:
       start = max(1, start_line or 1)

@@ -101,13 +101,17 @@ class BaseTool(ABC):
   """
 
   behavior: Optional[types.Behavior] = None
-  """Controls whether the tool is blocking or non-blocking (Live API only).
+  """Controls whether the model waits for the tool's response (Live API only).
+
+  Sent on the tool's function declaration. In live mode, ADK runs every
+  function call in a background task regardless of this setting.
 
   - ``NON_BLOCKING``: the model continues the conversation while the tool
-    executes in the background.
-  - ``BLOCKING``: the model waits for the tool response before continuing.
-
-  This field is currently only supported for live. ``None`` preserves the default behavior.
+    runs.
+  - ``BLOCKING``: the model waits for the tool response before continuing,
+    unless the user interrupts.
+  - ``None``: declared ``NON_BLOCKING`` if ``response_scheduling`` is set;
+    otherwise left unset, so the model backend's default applies.
   """
 
   response_scheduling: Optional[types.FunctionResponseScheduling] = None

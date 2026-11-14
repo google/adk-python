@@ -310,6 +310,18 @@ class InvocationContext(BaseModel):
   _private_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
   """Private metadata for internal caching, not exposed to user code."""
 
+  _parent_invocation_id: str | None = PrivateAttr(default=None)
+  """The caller's invocation_id when this invocation runs nested inside it.
+
+  Only the nested runner built by ``AgentTool.run_async`` sets it, and only
+  when ``include_plugins`` is True, so the shared plugins can attribute the
+  nested run to the call that started it. When a tool builds its own
+  ``Runner``, such as an ``AgentTool`` subclass that overrides ``run_async``,
+  it stays ``None``, and plugins treat the nested run as an independent
+  top-level invocation without parent attribution. There is no public API for
+  such a tool to pass the caller's invocation_id.
+  """
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
@@ -325,9 +337,8 @@ class InvocationContext(BaseModel):
   ) = PrivateAttr(default=None)
   """The tool calls running in the background of this live run.
 
-  Holds both streaming tools and non-blocking tools, keyed by function call
-  id. Created on first registration, so contexts copied before then don't
-  share it. Readers treat ``None`` as empty.
+  Keyed by function call id. Created on first registration, so contexts copied
+  before then don't share it. Readers treat ``None`` as empty.
   """
 
   def _add_background_tool(

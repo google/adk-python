@@ -41,6 +41,7 @@ from google.adk.evaluation.base_eval_service import InferenceStatus
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import SessionInput
+from google.adk.evaluation.eval_config import MultiRunConfig
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
@@ -2397,3 +2398,85 @@ async def test_toolset_close_error_is_logged(
       and "unexpected cleanup failure" in record.getMessage()
       for record in caplog.records
   )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_persists_multi_run_case_summaries_when_case_has_multiple_runs(
+    eval_service, mock_eval_set_results_manager, mocker
+):
+  """`evaluate` saves aggregated `MultiRunCaseSummary` entries for repeated runs.
+
+  Setup: two inference results for the same eval case (`repetition_index` 0 and
+    1), one passing at 1.0 and one failing at 0.6 against a 0.8 threshold.
+  Assert: `save_eval_set_result` receives `multi_run_case_summaries` with a
+    single summary whose `num_runs=2`, `passed_runs=1`, `failed_runs=1`, and
+    `pass_rate=0.5`.
+  """
+  eval_metric = EvalMetric(metric_name="response_match_score", threshold=0.8)
+  inf_0 = InferenceResult(
+      app_name="test_app",
+      eval_set_id="set1",
+      eval_case_id="case1",
+      session_id="s0",
+      status=InferenceStatus.SUCCESS,
+      repetition_index=0,
+  )
+  inf_1 = InferenceResult(
+      app_name="test_app",
+      eval_set_id="set1",
+      eval_case_id="case1",
+      session_id="s1",
+      status=InferenceStatus.SUCCESS,
+      repetition_index=1,
+  )
+
+  def _make_case_result(inf: InferenceResult, score: float) -> EvalCaseResult:
+    status = EvalStatus.PASSED if score >= 0.8 else EvalStatus.FAILED
+    metric_res = EvalMetricResult(
+        metric_name="response_match_score",
+        threshold=0.8,
+        score=score,
+        eval_status=status,
+    )
+    return EvalCaseResult(
+        eval_set_id="set1",
+        eval_id="case1",
+        final_eval_status=status,
+        overall_eval_metric_results=[metric_res],
+        eval_metric_result_per_invocation=[],
+        session_id=inf.session_id or "",
+        repetition_index=inf.repetition_index,
+    )
+
+  mocker.patch.object(
+      eval_service,
+      "_evaluate_single_inference_result",
+      side_effect=[
+          (inf_0, _make_case_result(inf_0, 1.0)),
+          (inf_1, _make_case_result(inf_1, 0.6)),
+      ],
+  )
+
+  request = EvaluateRequest(
+      inference_results=[inf_0, inf_1],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[eval_metric],
+          multi_run_config=MultiRunConfig(num_runs=2),
+      ),
+  )
+  _ = [res async for res in eval_service.evaluate(request)]
+
+  mock_eval_set_results_manager.save_eval_set_result.assert_called_once()
+  call_kwargs = (
+      mock_eval_set_results_manager.save_eval_set_result.call_args.kwargs
+  )
+  summaries = call_kwargs["multi_run_case_summaries"]
+  assert len(summaries) == 1
+  assert (
+      summaries[0].eval_id,
+      summaries[0].num_runs,
+      summaries[0].passed_runs,
+      summaries[0].failed_runs,
+      summaries[0].pass_rate,
+      summaries[0].final_eval_status,
+  ) == ("case1", 2, 1, 1, 0.5, EvalStatus.PASSED)

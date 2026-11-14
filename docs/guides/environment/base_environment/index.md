@@ -97,11 +97,14 @@ so an environment that needs none of them can leave them alone. The four core
 members, `working_dir`, `execute`, `read_file` and `write_file`, are abstract,
 and a subclass that does not provide all of them cannot be instantiated at all.
 
-`is_initialized` is a plain boolean property that each implementation sets for
-itself. Nothing in the framework checks it, so read it as a status report rather
-than as a guard that will stop you. Calling `execute` before `initialize` on
-`LocalEnvironment` raises `RuntimeError: `working_dir` is not set. Call
-initialize() first.`
+`is_initialized` is a plain boolean property. The tools of both toolsets call
+`initialize` whether or not it is set, and set it once `initialize` returns if
+the environment has not. Each toolset's `close()` clears it after closing the
+environment, and both toolsets read it to decide whether to tell the model the
+working directory yet. No environment method checks it, so read it as a status
+report rather than as a guard that will stop you. Calling `execute` before
+`initialize` on `LocalEnvironment` raises `RuntimeError: `working_dir` is not
+set. Call initialize() first.`
 
 ### ExecutionResult
 
@@ -238,12 +241,16 @@ works for now: `BaseEnvironment` wraps it to drop `ctx` and raises a
 support is removed in a future release. `initialize`, `execute`, `read_file`,
 `read_file_stream` and `write_file` receive the calling run's `Context`, so an
 environment can key a sandbox off `ctx.session.id` or `ctx.user_id`, keep the
-sandbox's name in `ctx.state`, or request credentials. The toolsets currently
-call `initialize` once per environment, not once per session, so its `ctx` is
-the first run's; keep `initialize` idempotent. That `ctx` comes from building
-the model request, not from a tool call, so state written through it is not
-saved and `ctx.request_credential` raises there. `close` and `working_dir` take
-no context. Code that drives an environment directly, as in the example under
+sandbox's name in `ctx.state`, or request credentials. The toolsets call
+`initialize` before every tool call that uses the environment, not while they
+build the model request, and pass that call's context, so state that
+`initialize` writes is saved with the tool call, and an environment that keeps a
+sandbox per session can create it on the session's first tool call. That makes
+the idempotence the lifecycle above asks for a requirement: once the environment
+is set up, `initialize` should return quickly. The toolsets run the calls for
+one environment one at a time, even when two toolsets share it, so concurrent
+tool calls do not set it up twice. `close` and `working_dir` take no context.
+Code that drives an environment directly, as in the example under
 [Get started](#get-started), can leave `ctx` out.
 
 ### Share one environment across a conversation
@@ -256,16 +263,11 @@ one toolset is there when it looks through the other.
 Sharing comes with a catch that is worth understanding before you depend on it.
 Each toolset closes the environment in its own `close()`, and neither one checks
 whether the other is still using it. Close one toolset and the shared working
-directory is deleted out from under the other. Every tool on the surviving
-toolset then fails with the same message:
-
-```text
-`working_dir` is not set. Call initialize() first.
-```
-
-It will not recover on its own either, because it still believes it initialized
-the environment already. Either give each toolset an environment of its own, or
-close both at the same time.
+directory is deleted out from under the other. The surviving toolset's next tool
+call initializes the environment again, and a `LocalEnvironment` that created
+its own directory starts over in a new, empty one, so the files written earlier
+are gone. Either give each toolset an environment of its own, or close both at
+the same time.
 
 An environment's lifetime is therefore the lifetime of the object you built, and
 it has nothing to do with a session. An environment held in a module-level

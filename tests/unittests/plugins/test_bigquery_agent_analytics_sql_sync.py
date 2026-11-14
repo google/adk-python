@@ -522,3 +522,83 @@ def test_query_where_clause_filters_the_output_rows_last(
 ) -> None:
   """A query's where_clause follows the CTE of output rows that it reads."""
   assert bodies[filename].endswith(f"\nFROM\n  {source}{{where_clause}}\n")
+
+
+def _ctes_by_name(sql: str) -> dict[str, str]:
+  """Slices a CTE template body into each CTE's text, keyed by CTE name."""
+  matches = list(_CTE_NAME_RE.finditer(sql))
+  return {
+      match.group(1): sql[
+          match.start() : (
+              matches[i + 1].start() if i + 1 < len(matches) else len(sql)
+          )
+      ]
+      for i, match in enumerate(matches)
+  }
+
+
+def test_session_events_excludes_sub_agent_sessions(
+    bodies: dict[str, str],
+) -> None:
+  """SessionEvents filters parent_session_id as the sole RawEvents reader."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  squashed_body = _squash(bodies[_CTE_FILE])
+
+  assert (
+      "SessionEvents AS (SELECT * FROM RawEvents"
+      " WHERE JSON_VALUE(attributes, '$.adk.parent_session_id') IS NULL)"
+  ) in _squash(ctes["SessionEvents"])
+  assert re.findall(r"\bFROM RawEvents\b", squashed_body) == ["FROM RawEvents"]
+
+
+@pytest.mark.parametrize(
+    "cte_name",
+    ["TypedEvents", "AgentRows", "SessionAgentPrompts"],
+)
+def test_downstream_ctes_read_from_session_events(
+    bodies: dict[str, str],
+    cte_name: str,
+) -> None:
+  """Downstream CTEs read from SessionEvents instead of RawEvents."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  cte_sql = _squash(ctes[cte_name])
+  assert "FROM SessionEvents" in cte_sql
+  assert "FROM RawEvents" not in cte_sql
+
+
+def test_formatted_response_and_response_text_delimiters(
+    bodies: dict[str, str],
+) -> None:
+  """TypedEvents reads string content and ResponseEvents anchors delimiters."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  typed_sql = _squash(ctes["TypedEvents"])
+  response_sql = ctes["ResponseEvents"]
+
+  assert (
+      "IF(TRIM(JSON_VALUE(content, '$.response')) != '',"
+      " JSON_VALUE(content, '$.response'), NULL)"
+  ) in typed_sql
+  sentinel_sql = (
+      "'[FORMATTER_FAILED]', '[FORMATTING FAILED]', '[REDACTED]',"
+      " '[CONTENT_PARSE_FAILED]', '[UNPARSEABLE_JSON_BLOB]',"
+      " '[UNSUPPORTED_OBJECT]', '[REDACTED_SENSITIVE_TEXT]'"
+  )
+  assert (
+      "IF(JSON_TYPE(content) = 'string'"
+      " AND TRIM(JSON_VALUE(content, '$')) != ''"
+      f" AND JSON_VALUE(content, '$') NOT IN ({sentinel_sql}),"
+      " JSON_VALUE(content, '$'), NULL)"
+  ) in typed_sql
+
+  squashed_response_sql = _squash(response_sql)
+  assert "TRIM(REGEXP_REPLACE(" in squashed_response_sql
+  assert ")) != ''" in squashed_response_sql
+  assert f"CHR(10)) NOT IN ({sentinel_sql})" in squashed_response_sql
+  assert f"formatted_response NOT IN ({sentinel_sql})" in squashed_response_sql
+
+  assert (
+      'r"\' [|] (?:call: |resp: |Executable code |Code execution result )"'
+      in response_sql
+  )
+  assert 'r"\' [|] other(?: [|] |$)"' in response_sql
+  assert "r' [|] " not in response_sql

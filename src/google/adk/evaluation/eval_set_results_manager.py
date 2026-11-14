@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import Optional
 
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
+from .eval_result import MultiRunCaseSummary
 
 
 class EvalSetResultsManager(ABC):
@@ -30,6 +32,7 @@ class EvalSetResultsManager(ABC):
       app_name: str,
       eval_set_id: str,
       eval_case_results: list[EvalCaseResult],
+      multi_run_case_summaries: Optional[list[MultiRunCaseSummary]] = None,
   ) -> None:
     """Creates and saves a new EvalSetResult given eval_case_results."""
     raise NotImplementedError()
