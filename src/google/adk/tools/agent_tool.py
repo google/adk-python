@@ -183,8 +183,8 @@ class AgentTool(BaseTool):
       include_plugins: bool = True,
       propagate_grounding_metadata: bool = False,
   ):
-    self.agent = agent
-    self.skip_summarization: bool = skip_summarization
+    self.agent = search_agent
+    self.skip_summarization: bool = false
     self.include_plugins = include_plugins
     self.propagate_grounding_metadata = propagate_grounding_metadata
 
