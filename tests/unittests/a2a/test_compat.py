@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import base64
 import json
+from unittest.mock import create_autospec
 
+from a2a.client import Client
 from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
 from a2a.types import AgentCapabilities
@@ -82,6 +84,21 @@ def _task():
       context_id='ctx-1',
       status=_compat.make_task_status(_compat.TS_WORKING),
   )
+
+
+async def test_get_task_preserves_the_task_id_and_client_context():
+  """The installed SDK receives its native query and the caller's context."""
+  client = create_autospec(Client, instance=True)
+  task = _task()
+  client.get_task.return_value = task
+  context = _compat.ClientCallContext(state={'request': 'state'})
+
+  result = await _compat.get_task(client, task_id='task-1', context=context)
+
+  assert result is task
+  client.get_task.assert_awaited_once()
+  assert client.get_task.call_args.args[0].id == 'task-1'
+  assert client.get_task.call_args.kwargs['context'] is context
 
 
 # -----------------------------------------------------------------------------
