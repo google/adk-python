@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+from collections.abc import AsyncGenerator
 import dataclasses
 from enum import Enum
 import hashlib
@@ -46,6 +47,7 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
+from ..events.event import Event
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..skills import models
@@ -55,6 +57,7 @@ from ..skills._utils import _validate_relative_resource_path
 from ..telemetry import _hallucination
 from ..telemetry import _instrumentation
 from ..utils import instructions_utils
+from ..utils.content_utils import SKIP_THOUGHT_SIGNATURE_VALIDATOR
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
@@ -63,8 +66,11 @@ from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
   from ..agents.llm_agent import ToolUnion
   from ..environment import BaseEnvironment
+  from ..labs.classifiers._base_classifier import BaseClassifier
+  from ..labs.classifiers._types import ClassifierInput
   from ..models.llm_request import LlmRequest
   from ..workflow._base_node import BaseNode
 
@@ -228,6 +234,81 @@ def _is_expired(record: dict[str, Any], invocation_id: str | None) -> bool:
     return False
   activated_in = record.get("activated_in")
   return bool(activated_in) and activated_in != invocation_id
+
+
+_SKILL_QUESTION_NAME = "skill"
+
+# Skill names are lowercase kebab- or snake-case, so a leading underscore can
+# never collide with one.
+_NO_SKILL_LABEL = "_none"
+
+_DEFAULT_SKILL_CLASSIFICATION_INSTRUCTIONS = (
+    "Which skill should be loaded to handle the user's message? Pick a skill"
+    " only if its description clearly covers what the user is asking for."
+)
+
+# Event.custom_metadata key recording why a skill was loaded without the model.
+_SKILL_CLASSIFICATION_METADATA_KEY = "adk_skill_classification"
+
+
+@dataclasses.dataclass(frozen=True)
+class SkillClassificationConfig:
+  """Lets a classifier load the skill for a turn before the model runs.
+
+  Before the model's first step of each turn, the classifier is asked which
+  local skill, if any, applies to the user's message. When it picks one with a
+  probability of at least `threshold`, the toolset loads that skill itself, so
+  the model's first step already has the skill's instructions and tools
+  instead of spending a step on calling `load_skill`.
+
+  The load is made through the toolset's own `load_skill` tool and recorded in
+  the session as a call and its response, so lifecycle modes, tool callbacks,
+  plugins and telemetry treat it like a load the model made. Any other
+  outcome, including a classifier error, leaves the choice to the model.
+
+  Only the local skills are classified; registry skills are still found
+  through `search_skills`. Classifiers are stateless, so only the user's
+  latest message is classified, without earlier turns.
+
+  Attributes:
+    classifier: Decides which skill, if any, applies to the user's message.
+    threshold: Minimum probability of the chosen skill for it to be loaded.
+      An `LlmClassifier` reports the model's stated probabilities, so check
+      their calibration with evals before relying on a threshold.
+    instructions: Replaces the default question put to the classifier. The
+      labels are always the skill names, described by the skill descriptions,
+      plus one meaning that no skill applies.
+  """
+
+  classifier: BaseClassifier
+  threshold: float = 0.5
+  instructions: str | None = None
+
+  def __post_init__(self) -> None:
+    from ..labs.classifiers._base_classifier import BaseClassifier
+
+    if not isinstance(self.classifier, BaseClassifier):
+      raise TypeError(
+          "`classifier` must be a BaseClassifier, got"
+          f" {type(self.classifier).__name__}."
+      )
+    if not 0.0 <= self.threshold <= 1.0:
+      raise ValueError(
+          f"`threshold` must be between 0 and 1, got {self.threshold}."
+      )
+
+
+def _classifier_input(content: types.Content) -> ClassifierInput:
+  """Returns the user's message as a classifier input.
+
+  Plain text is passed as a string, which every classifier accepts. Only a
+  message with other parts, such as images, is passed as `Content`, which some
+  classifiers reject.
+  """
+  parts = content.parts or []
+  if parts and all(part.text is not None for part in parts):
+    return "\n".join(part.text for part in parts if part.text)
+  return content
 
 
 class SkillDiscoveryMode(Enum):
@@ -2166,6 +2247,7 @@ class SkillToolset(BaseToolset):
       tool_filter: ToolPredicate | list[str] | None = None,
       discovery_mode: SkillDiscoveryMode = SkillDiscoveryMode.LAZY,
       lifecycle_config: SkillLifecycleConfig | None = None,
+      classification_config: SkillClassificationConfig | None = None,
   ):
     """Initializes the SkillToolset.
 
@@ -2195,6 +2277,10 @@ class SkillToolset(BaseToolset):
         at once, and whether they are rechecked against their definition.
         Defaults to leaving every skill active for the rest of the session,
         which is how skills behaved before this existed.
+      classification_config: Optional classifier that picks the skill for the
+        user's message before the model's first step, saving the step the model
+        would spend calling `load_skill`. Defaults to None, where the model
+        always decides.
 
     Raises:
       ValueError: If both `code_executor` and `environment` are given, or on a
@@ -2284,6 +2370,7 @@ class SkillToolset(BaseToolset):
         self._provided_tools_by_name[ft.name] = ft
 
     self._discovery_mode = discovery_mode
+    self._classification_config = classification_config
     self._warned_on_filtered_list_skills = False
     self._lifecycle_enabled = is_feature_enabled(FeatureName.SKILL_LIFECYCLE)
 
@@ -2574,6 +2661,145 @@ class SkillToolset(BaseToolset):
     self._forget_lifecycle_records(ctx.state, ctx.agent_name, stored_skills)
     return was_active
 
+  async def _preload_classified_skill(
+      self,
+      invocation_context: InvocationContext,
+      user_content: types.Content,
+  ) -> AsyncGenerator[Event, None]:
+    """Loads the skill the classifier picks for `user_content`, if any.
+
+    Yields the `load_skill` call and its response, as if the model had made
+    the call. Yields nothing when no classifier is configured, `load_skill` is
+    filtered out, the classifier is not confident, or the skill it picks is
+    already active.
+
+    Args:
+      invocation_context: The invocation whose first model step is about to
+        run.
+      user_content: The user's message for this turn.
+
+    Yields:
+      The function call event, then the function response event.
+    """
+    if self._classification_config is None:
+      return
+    readonly_context = ReadonlyContext(invocation_context)
+    # Prefixed and filtered, so the call matches the tool the model sees, and
+    # the name that pruning and revalidation look for in the history.
+    load_tool = next(
+        (
+            tool
+            for tool in await self.get_tools_with_prefix(readonly_context)
+            if isinstance(tool, LoadSkillTool)
+        ),
+        None,
+    )
+    if load_tool is None:
+      return
+    classified = await self._classify_skill(user_content)
+    if classified is None:
+      return
+    skill_name, probability = classified
+    if skill_name in self.list_active_skills(readonly_context):
+      return
+
+    from ..flows.llm_flows import functions
+
+    call_event = Event(
+        id=Event.new_id(),
+        invocation_id=invocation_context.invocation_id,
+        author=readonly_context.agent_name,
+        branch=invocation_context.branch,
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id=functions.generate_client_function_call_id(),
+                        name=load_tool.name,
+                        args={"skill_name": skill_name},
+                    ),
+                    # The model never produced this call, so there is no
+                    # signature of its own for Gemini to validate.
+                    thought_signature=SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+                )
+            ],
+        ),
+        custom_metadata={
+            _SKILL_CLASSIFICATION_METADATA_KEY: {
+                "skill_name": skill_name,
+                "probability": probability,
+            }
+        },
+    )
+    yield call_event
+
+    response_event = await functions.handle_function_calls_async(
+        invocation_context, call_event, {load_tool.name: load_tool}
+    )
+    if response_event is not None:
+      yield response_event
+
+  async def _classify_skill(
+      self, user_content: types.Content
+  ) -> tuple[str, float] | None:
+    """Asks the classifier which local skill applies to `user_content`.
+
+    Returns:
+      The skill to load and its probability, or None to leave the choice to
+      the model: there are no local skills, the classifier is not confident,
+      or it failed.
+    """
+    from ..labs.classifiers._types import Choice
+    from ..labs.classifiers._types import ChoiceAnswer
+
+    config = self._classification_config
+    skills = self._list_skills()
+    if config is None or not skills:
+      return None
+    criteria: dict[str, str | None] = {
+        skill.name: skill.description for skill in skills
+    }
+    criteria[_NO_SKILL_LABEL] = "None of the other labels applies."
+    question = Choice(
+        instructions=(
+            config.instructions or _DEFAULT_SKILL_CLASSIFICATION_INSTRUCTIONS
+        ),
+        criteria=criteria,
+    )
+    try:
+      response = await config.classifier.classify(
+          input=_classifier_input(user_content),
+          questions={_SKILL_QUESTION_NAME: question},
+      )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      # Classifying only saves a model step, so a failure must not fail the
+      # turn.
+      logger.warning(
+          "Skill classification failed; leaving the choice to the model: %s",
+          e,
+          exc_info=e,
+      )
+      return None
+
+    answer = response.answers.get(_SKILL_QUESTION_NAME)
+    if (
+        not isinstance(answer, ChoiceAnswer)
+        or answer.choice not in self._skills
+    ):
+      return None
+    probability = answer.probabilities.get(answer.choice, 0.0)
+    if probability < config.threshold:
+      logger.debug(
+          "Skill classification chose '%s' at %.2f, below the %.2f threshold;"
+          " leaving the choice to the model.",
+          answer.choice,
+          probability,
+          config.threshold,
+      )
+      return None
+    return answer.choice, probability
+
   def _lifecycle_for(self, skill_name: str) -> SkillLifecycleMode:
     """Returns the lifecycle configured for a skill.
 
@@ -2771,6 +2997,7 @@ class SkillToolset(BaseToolset):
         tool_filter=self.tool_filter,
         discovery_mode=self._discovery_mode,
         lifecycle_config=self._lifecycle_config,
+        classification_config=self._classification_config,
     )
 
   def _inject_catalog(self, selected_core_tools: set[str]) -> bool:
