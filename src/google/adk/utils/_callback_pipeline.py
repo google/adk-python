@@ -141,9 +141,24 @@ async def _run_callbacks(
     **kwargs: object,
 ) -> _TResult | None:
   """Runs callbacks in order while preserving their stop semantics."""
+  from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+
+  from ..agents.context import Context
+  from ..telemetry import tracing
+
+  if not callbacks:
+    return None
   callback_context = kwargs.get('callback_context')
   if callback_context is None:
     callback_context = kwargs.get('tool_context')
+  invocation_context = (
+      callback_context.get_invocation_context()
+      if isinstance(callback_context, Context)
+      else None
+  )
+  telemetry_config = tracing._telemetry_config_from_invocation_context(
+      invocation_context
+  )
   callback_scope = (
       _callback_scope(
           callback_type,
@@ -156,11 +171,27 @@ async def _run_callbacks(
   with callback_scope:
     result: _TResult | None = None
     for callback in callbacks:
-      callback_result = _invoke_callback(callback, *args, **kwargs)
-      if inspect.isawaitable(callback_result):
-        result = await callback_result
-      else:
-        result = callback_result
+      callback_name = getattr(
+          callback, '__qualname__', type(callback).__qualname__
+      )
+      scope = (
+          tracing.tracer.start_as_current_span(
+              f'execute_callback {callback_name}'
+          )
+          if telemetry_config.should_emit_experimental_telemetry
+          else nullcontext()
+      )
+      with scope as span:
+        try:
+          callback_result = _invoke_callback(callback, *args, **kwargs)
+          if inspect.isawaitable(callback_result):
+            result = await callback_result
+          else:
+            result = callback_result
+        except Exception as error:
+          if span is not None:
+            span.set_attribute(ERROR_TYPE, tracing.resolve_error_type(error))
+          raise
       if _stop_condition(result):
         return result
     return result
