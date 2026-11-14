@@ -81,6 +81,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.utils._schema_utils import enforce_strict_openai_schema
 from google.genai import types
+from jsonschema import Draft202012Validator
 import litellm
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionMessageToolCall
@@ -328,6 +329,54 @@ def test_to_litellm_response_format_handles_model_dump_object():
 
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_obj.model_dump()
+
+
+def test_nullable_object_response_schema_keeps_strict_validation():
+  """Nullable objects retain strict object constraints in the non-null branch."""
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "details": types.Schema(
+              type=types.Type.OBJECT,
+              nullable=True,
+              properties={"name": types.Schema(type=types.Type.STRING)},
+          )
+      },
+  )
+
+  formatted = _to_litellm_response_format(schema, model="gpt-4o-mini")
+
+  validator = Draft202012Validator(formatted["json_schema"]["schema"])
+  assert validator.is_valid({"details": None})
+  assert validator.is_valid({"details": {"name": "Paris"}})
+  assert not validator.is_valid({"details": {}})
+  assert not validator.is_valid({"details": {"name": "Paris", "extra": 1}})
+  assert schema.properties["details"].nullable is True
+
+
+@pytest.mark.parametrize("use_json_schema", [False, True])
+def test_tool_parameters_preserve_nullable_values(use_json_schema):
+  """Both declaration formats advertise null as a valid tool argument."""
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={"city": types.Schema(type=types.Type.STRING, nullable=True)},
+      required=["city"],
+  )
+  declaration = types.FunctionDeclaration(name="weather")
+  if use_json_schema:
+    declaration.parameters_json_schema = schema.model_dump(
+        by_alias=True, exclude_none=True, mode="json"
+    )
+  else:
+    declaration.parameters = schema
+
+  tool = _function_declaration_to_tool_param(declaration)
+
+  validator = Draft202012Validator(tool["function"]["parameters"])
+  assert validator.is_valid({"city": None})
+  assert validator.is_valid({"city": "Paris"})
+  assert not validator.is_valid({"city": 7})
+  assert schema.properties["city"].nullable is True
 
 
 def test_to_litellm_response_format_handles_genai_schema_instance():
@@ -14419,3 +14468,133 @@ class TestParseToolCallArguments:
     with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
     assert "Repaired" not in caplog.text
+
+
+def test_strict_nullable_object_type_list_requires_all_properties():
+  """Nullable objects retain strict constraints without moving properties."""
+  schema = {
+      "type": ["object", "null"],
+      "properties": {"name": {"type": ["string", "null"]}},
+  }
+
+  enforce_strict_openai_schema(schema)
+
+  assert schema["required"] == ["name"]
+  assert schema["additionalProperties"] is False
+  validator = Draft202012Validator(schema)
+  assert validator.is_valid(None)
+  assert validator.is_valid({"name": None})
+  assert not validator.is_valid({})
+  assert not validator.is_valid({"name": "Paris", "extra": 1})
+
+
+@pytest.mark.parametrize(
+    "model, is_gemini",
+    [
+        ("gemini/gemini-2.5-flash", True),
+        ("vertex_ai/gemini-2.5-flash", True),
+        ("vertex_ai_beta/gemini-2.5-flash", True),
+        ("litellm_proxy/gemini/gemini-2.5-flash", True),
+        ("litellm_proxy/vertex_ai/gemini-2.5-flash", True),
+        ("litellm_proxy/vertex_ai_beta/gemini-2.5-flash", True),
+        ("openai/gpt-4o-mini", False),
+        ("anthropic/claude-3-5-sonnet-20241022", False),
+        ("vertex_ai/claude-3-5-sonnet-v2@20241022", False),
+        ("openai/gemini-2.5-flash", False),
+    ],
+)
+@pytest.mark.parametrize(
+    "provider_resolution", ["available", "raises", "missing"]
+)
+@pytest.mark.asyncio
+async def test_nullable_provider_payload(
+    model, is_gemini, provider_resolution, mock_client, monkeypatch
+):
+  """Routes preserve nullable or type lists through provider transformation."""
+  from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexGeminiConfig
+
+  if provider_resolution == "raises":
+    monkeypatch.setattr(
+        litellm,
+        "get_llm_provider",
+        Mock(side_effect=RuntimeError("unresolved")),
+    )
+  elif provider_resolution == "missing":
+    monkeypatch.delattr(litellm, "get_llm_provider")
+
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "city": types.Schema(type=types.Type.STRING, nullable=True),
+          "choice": types.Schema(
+              type=types.Type.STRING, nullable=True, enum=["x", "y"]
+          ),
+      },
+  )
+  request = LlmRequest(
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="lookup",
+                          parameters=schema,
+                      )
+                  ]
+              )
+          ],
+          response_schema=schema,
+      )
+  )
+  client = LiteLlm(model=model, llm_client=mock_client)
+
+  async for _ in client.generate_content_async(request):
+    pass
+
+  payload = mock_client.acompletion_mock.call_args.kwargs
+  parameters = payload["tools"][0]["function"]["parameters"]
+  if not is_gemini:
+    response = payload["response_format"]["json_schema"]["schema"]
+    for result in (parameters, response):
+      assert result["properties"]["city"]["type"] == ["string", "null"]
+      assert "nullable" not in result["properties"]["city"]
+      assert result["properties"]["choice"]["type"] == ["string", "null"]
+      assert result["properties"]["choice"]["enum"] == ["x", "y", None]
+  else:
+    assert parameters["properties"]["city"]["nullable"] is True
+    assert parameters["properties"]["choice"]["nullable"] is True
+    config = VertexGeminiConfig()
+    tools = config._map_function(payload["tools"], {})
+    response = config._map_response_schema(
+        payload["response_format"]["response_schema"]
+    )
+    for result in (
+        tools[0]["function_declarations"][0]["parameters"],
+        response,
+    ):
+      assert result["properties"]["city"]["nullable"] is True
+      assert result["properties"]["choice"]["nullable"] is True
+      assert result["properties"]["choice"]["enum"] == ["x", "y"]
+
+
+@pytest.mark.parametrize(
+    "resolved_model, provider, expected",
+    [
+        ("gemini-2.5-flash", "gemini", True),
+        ("gemini-2.5-flash", "vertex_ai", True),
+        ("gemini-2.5-flash", "vertex_ai_beta", True),
+        ("claude-4-sonnet", "vertex_ai", False),
+        ("gemini-2.5-flash", "openai", False),
+    ],
+)
+def test_gemini_detection_uses_resolved_provider(
+    resolved_model, provider, expected, monkeypatch
+):
+  """Provider resolution identifies aliases without matching other families."""
+  monkeypatch.setattr(
+      litellm,
+      "get_llm_provider",
+      Mock(return_value=(resolved_model, provider, None, None)),
+  )
+
+  assert _is_litellm_gemini_model("custom-alias") is expected
