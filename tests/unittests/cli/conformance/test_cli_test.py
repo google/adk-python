@@ -109,6 +109,65 @@ async def test_run_user_messages_sse_does_not_duplicate_function_call_ids():
   )
 
 
+async def test_run_user_messages_passes_selected_tools_to_replay_client():
+  """The spec selection reaches every turn through the conformance client."""
+  client = MagicMock()
+  received = []
+
+  async def fake_run_agent(request, **kwargs):
+    received.append(kwargs)
+    yield Event(author="agent_a")
+
+  client.run_agent = fake_run_agent
+  runner = ConformanceTestRunner([], client)
+  test_case = TestCase(
+      category="cat",
+      name="tc",
+      dir=None,
+      test_spec=TestSpec(
+          description="replay notifications",
+          agent="app",
+          replay_tool_responses={"agent_a": ["send_notice"]},
+          user_messages=[UserMessage(text="first"), UserMessage(text="second")],
+      ),
+  )
+
+  await runner._run_user_messages("session", test_case)
+
+  assert [call["replay_tool_responses"] for call in received] == [
+      {"agent_a": ["send_notice"]},
+      {"agent_a": ["send_notice"]},
+  ]
+
+
+async def test_run_all_tests_reports_selected_tools(capsys):
+  """The test output makes skipped tool execution visible to the operator."""
+  runner = ConformanceTestRunner([], MagicMock())
+  test_case = TestCase(
+      category="cat",
+      name="tc",
+      dir=None,
+      test_spec=TestSpec(
+          description="replay notifications",
+          agent="app",
+          replay_tool_responses={"agent_a": ["send_notice"]},
+      ),
+  )
+  runner._discover_test_cases = lambda: [test_case]
+
+  async def replay_case(_):
+    return _TestResult(category="cat", name="tc", success=True)
+
+  runner._run_test_case_replay = replay_case
+
+  await runner.run_all_tests()
+
+  assert (
+      "Running cat/tc (recorded tool responses: agent_a.send_notice)..."
+      in capsys.readouterr().out
+  )
+
+
 @pytest.mark.asyncio
 async def test_run_user_messages_sse_partial_event_without_id_does_not_mask_final_id():
   client = MagicMock()
