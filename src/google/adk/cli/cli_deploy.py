@@ -1715,8 +1715,6 @@ def to_agent_engine(
     os.chdir(temp_folder_path)
     click.echo('Copying agent source code complete.')
 
-    project = _resolve_project(project)
-
     click.echo('Resolving files and dependencies...')
     agent_config = {}
     if agent_engine_config_file and not os.path.exists(
@@ -1860,6 +1858,11 @@ def to_agent_engine(
       if 'GOOGLE_API_KEY' in env_vars:
         api_key = env_vars['GOOGLE_API_KEY']
         click.echo(f'api_key set by GOOGLE_API_KEY in {env_file}')
+    if not project and not api_key:
+      # Fall back to the gcloud default only after `--project` and the .env
+      # had their turn; resolving it first made it look like an explicit
+      # `--project` and discarded the project and API key set in the .env.
+      project = _resolve_project(project)
     if otel_to_cloud:
       if 'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY' in env_vars:
         click.secho(
