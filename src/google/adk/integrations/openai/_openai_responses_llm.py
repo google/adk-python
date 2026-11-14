@@ -305,25 +305,51 @@ def _text_part_to_response_content(part: types.Part) -> ResponseInputTextParam:
 _REASONING_SIGNATURE_KEY = 'adk_openai_reasoning'
 
 
+_DATE_SUFFIX_RE = re.compile(r'-\d{4}-\d{2}-\d{2}$')
+
+
+def _model_family(model: str | None) -> str | None:
+  """Normalizes a model id to its alias family by dropping a date snapshot.
+
+  The API reports the resolved snapshot (``gpt-5-2025-08-07``) while requests
+  usually name the alias (``gpt-5``); reasoning replay must treat both sides of
+  that pair as the same model, while ``gpt-5`` vs ``gpt-5-mini-...`` stays a
+  different family.
+  """
+  if not isinstance(model, str) or not model:
+    return None
+  return _DATE_SUFFIX_RE.sub('', model)
+
+
 def _reasoning_item_signature(
-    item_id: str | None, encrypted_content: str | None
+    item_id: str | None,
+    encrypted_content: str | None,
+    response_model: str | None = None,
 ) -> bytes | None:
   """Builds the replay envelope stored on the first captured thought part.
 
   The item id is the anchor: the Responses API requires reasoning input items
   to reference a real item, so parts without one stay unreplayable. The
-  encrypted payload rides along for stateless replay (``store: false``).
+  encrypted payload rides along for stateless replay (``store: false``). The
+  model that produced the item is recorded so replay can be limited to that
+  model; envelopes without it (captured by older revisions or by backends that
+  do not report a model) stay replayable. A backend that reports a different
+  model name than the request used (for example a custom deployment name)
+  disables replay for its items.
   """
   if not item_id:
     return None
   captured: dict[str, Any] = {'id': item_id}
   if encrypted_content:
     captured['encrypted_content'] = encrypted_content
+  if response_model:
+    captured['model'] = response_model
   return json.dumps({_REASONING_SIGNATURE_KEY: captured}).encode('utf-8')
 
 
 def _replayed_reasoning_input_item(
     part: types.Part,
+    request_model: str | None = None,
 ) -> ResponseReasoningItemParam | None:
   """Rebuilds a Responses reasoning input item from a captured thought part.
 
@@ -331,6 +357,11 @@ def _replayed_reasoning_input_item(
   thoughts, plain summaries, another provider's signature, and encrypted
   content captured before envelopes existed all stay skipped, because the API
   rejects reasoning items that reference nothing it can resolve.
+
+  The item is also skipped when it was captured from a different model family
+  than the model this request targets: the API rejects reasoning items it
+  cannot attribute to the model being called. Envelopes without a recorded
+  model (older revision or a backend that does not report one) stay replayable.
   """
   if not part.thought_signature:
     return None
@@ -343,6 +374,16 @@ def _replayed_reasoning_input_item(
   captured = decoded.get(_REASONING_SIGNATURE_KEY)
   if not isinstance(captured, dict) or not captured.get('id'):
     return None
+  captured_family = _model_family(captured.get('model'))
+  request_family = _model_family(request_model)
+  if captured_family and request_family and captured_family != request_family:
+    logger.debug(
+        'Skipping replayed OpenAI Responses reasoning item: captured for '
+        'model %s but this request targets %s.',
+        captured.get('model'),
+        request_model,
+    )
+    return None
   item = ResponseReasoningItemParam(
       type='reasoning',
       id=captured['id'],
@@ -353,6 +394,32 @@ def _replayed_reasoning_input_item(
   if captured.get('encrypted_content'):
     item['encrypted_content'] = captured['encrypted_content']
   return item
+
+
+def _is_replayed_reasoning_item(item: _ResponsesInputItem) -> bool:
+  """Whether an assembled input item is a replayed Responses reasoning item."""
+  return _get_value(item, 'type') == 'reasoning'
+
+
+def _reasoning_item_has_follow_up(
+    items: list[_ResponsesInputItem], index: int
+) -> bool:
+  """Whether the reasoning item at ``index`` is followed by content it anchors.
+
+  The API rejects a reasoning item whose next non-reasoning input is not the
+  function call or assistant message it precedes (for example after a history
+  edit removed the follow-up, or when a user turn comes next). Consecutive
+  reasoning items are treated as one block anchored by whatever follows them.
+  """
+  for item in items[index + 1 :]:
+    if not _is_replayed_reasoning_item(item):
+      item_type = _get_value(item, 'type')
+      if item_type == 'function_call':
+        return True
+      if item_type == 'message' and _get_value(item, 'role') == 'assistant':
+        return True
+      return False
+  return False
 
 
 def _skip_replayed_reasoning_part(part: types.Part) -> None:
@@ -458,6 +525,7 @@ def _code_part_to_text(part: types.Part) -> str | None:
 def _content_to_response_input_items(
     content: types.Content,
     sanitizer: _CallIdSanitizer | None = None,
+    request_model: str | None = None,
 ) -> list[_ResponsesInputItem]:
   """Converts ADK Content into Responses API input items."""
   role = _role_to_responses_role(content.role)
@@ -492,7 +560,7 @@ def _content_to_response_input_items(
           _function_call_to_response_item(part.function_call, sanitizer)
       )
     elif part.thought and (part.text or part.thought_signature):
-      replayed_item = _replayed_reasoning_input_item(part)
+      replayed_item = _replayed_reasoning_input_item(part, request_model)
       if replayed_item is not None:
         flush_message_parts()
         items.append(replayed_item)
@@ -656,6 +724,7 @@ def _message_content_parts(
 
 def _reasoning_parts(
     item: ResponseReasoningItem | Mapping[str, Any],
+    response_model: str | None = None,
 ) -> tuple[list[types.Part], dict[str, Any]]:
   parts = []
   metadata: dict[str, Any] = {}
@@ -663,7 +732,9 @@ def _reasoning_parts(
   item_id = _get_value(item, 'id')
   # The replay envelope goes on the first captured part only, so a rebuilt
   # input contains exactly one reasoning item per captured response item.
-  signature = _reasoning_item_signature(item_id, encrypted_content)
+  signature = _reasoning_item_signature(
+      item_id, encrypted_content, response_model
+  )
   envelope_attached = False
 
   def _capture_replay_state(part: types.Part) -> None:
@@ -736,7 +807,9 @@ def _response_to_llm_response(
       parts.append(_function_call_part(item))
       item_type = item.type
     elif isinstance(item, ResponseReasoningItem):
-      reasoning, metadata = _reasoning_parts(item)
+      reasoning, metadata = _reasoning_parts(
+          item, _get_value(response, 'model')
+      )
       parts.extend(reasoning)
       if metadata:
         reasoning_metadata.append(metadata)
@@ -748,7 +821,9 @@ def _response_to_llm_response(
       elif item_type == 'function_call':
         parts.append(_function_call_part(cast(Mapping[str, Any], item)))
       elif item_type == 'reasoning':
-        reasoning, metadata = _reasoning_parts(cast(Mapping[str, Any], item))
+        reasoning, metadata = _reasoning_parts(
+            cast(Mapping[str, Any], item), _get_value(response, 'model')
+        )
         parts.extend(reasoning)
         if metadata:
           reasoning_metadata.append(metadata)
@@ -1128,7 +1203,7 @@ class _StreamAccumulator:
           parts.extend(message_parts)
           continue
       if done_item and item_type == 'reasoning':
-        reasoning, _ = _reasoning_parts(done_item)
+        reasoning, _ = _reasoning_parts(done_item, self.model)
         if reasoning:
           parts.extend(reasoning)
           continue
@@ -1307,9 +1382,63 @@ class OpenAIResponsesLlm(BaseLlm):
   ) -> list[_ResponsesInputItem]:
     input_items: list[_ResponsesInputItem] = []
     sanitizer = _CallIdSanitizer()
+    request_model = llm_request.model or self.model
     for content in llm_request.contents or []:
-      input_items.extend(_content_to_response_input_items(content, sanitizer))
-    return input_items
+      input_items.extend(
+          _content_to_response_input_items(content, sanitizer, request_model)
+      )
+    return self._replay_guards(input_items)
+
+  def _reasoning_item_is_sendable(self, item: _ResponsesInputItem) -> bool:
+    """Whether a replayed reasoning item is resolvable by this configuration.
+
+    With ``store: false`` the server keeps no reasoning state, so an item
+    without ``encrypted_content`` cannot be resolved and would be rejected;
+    it is dropped instead, with a warning pointing at the ``include`` option
+    that captures encrypted content for stateless replay.
+    """
+    if self.store is False and not _get_value(item, 'encrypted_content'):
+      logger.warning(
+          'Dropping replayed OpenAI Responses reasoning item %s: store=false '
+          'keeps no server-side reasoning state, so an item without '
+          'encrypted_content cannot be resolved. Capture encrypted content '
+          "with include=['reasoning.encrypted_content'] to replay it.",
+          _get_value(item, 'id', ''),
+      )
+      return False
+    return True
+
+  def _replay_guards(
+      self, input_items: list[_ResponsesInputItem]
+  ) -> list[_ResponsesInputItem]:
+    """Applies replay guards to the assembled request input.
+
+    Two safety passes over the assembled items:
+
+    - Orphaned reasoning items are dropped. A reasoning item is only valid when
+      the first non-reasoning item after it is the function call or assistant
+      message it precedes; a history edit that removes the follow-up (or never
+      had one) leaves an item the API rejects, so such items are removed before
+      sending.
+    - With ``store: false`` the server keeps no reasoning state, so a replayed
+      reasoning item without ``encrypted_content`` cannot be resolved; those
+      are dropped (with a warning pointing at the ``include`` option) instead
+      of being sent into a guaranteed 400.
+    """
+    items: list[_ResponsesInputItem] = []
+    for index, item in enumerate(input_items):
+      if _is_replayed_reasoning_item(item):
+        if not self._reasoning_item_is_sendable(item):
+          continue
+        if not _reasoning_item_has_follow_up(input_items, index):
+          logger.debug(
+              'Dropping orphaned replayed OpenAI Responses reasoning item %s: '
+              'no function call or assistant message follows it.',
+              _get_value(item, 'id', ''),
+          )
+          continue
+      items.append(item)
+    return items
 
   def _apply_config(
       self, config: types.GenerateContentConfig, kwargs: dict[str, Any]
