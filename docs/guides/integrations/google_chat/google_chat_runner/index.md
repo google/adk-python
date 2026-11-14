@@ -64,10 +64,13 @@ Each run uses two identifiers from the Chat event:
 - The session id is derived from the conversation. In a space organized by
   thread, each thread is its own conversation, so a thread maps to its own
   session, and the replies go to that thread. In a direct message or a group
-  conversation, the whole conversation is one session, and the replies are
-  posted as plain messages. When a direct message has
+  conversation, the whole conversation is one session, and a top-level message
+  gets a top-level reply. When the user writes inside an in-line thread of that
+  conversation, the reply goes to that thread, and the session stays the same.
+  When a direct message has
   [conversation sessions](https://developers.google.com/workspace/chat/sessions)
-  turned on, each session thread maps to its own ADK session. The derived id is
+  turned on, Chat lists each session thread as a separate conversation, so each
+  session thread maps to its own ADK session. The derived id is
   a hash that contains only letters, digits, and hyphens, because Chat resource
   names contain `/`, which some session services reject.
 - The user id is the sender's Chat user name, such as `users/1234567890`,
@@ -180,9 +183,14 @@ Only text is exchanged. Attachments, cards, and slash commands sent by the user
 are not passed to the agent, and the agent's non-text output is not posted to
 Chat. A single reply is limited to the Chat message size of 32,000 bytes.
 
-The agent only sees the messages addressed to it. When the app is mentioned
-partway through a thread, the earlier messages in that thread are not part of
-the session.
+The agent only sees the messages addressed to it. In a space, Google Chat only
+sends the app the messages that `@mention` it, even in a thread where the app
+has already replied, so users must mention the app again to continue the
+conversation. When the app is mentioned partway through a thread, the earlier
+messages in that thread are not part of the session. Following a thread without
+mentions would need a
+[Google Workspace Events API](https://developers.google.com/workspace/events)
+subscription to the space's messages, which requires administrator approval.
 
 The background run lives in the server process. If the process stops while an
 agent is running, the reply is lost. Hosting platforms that scale to zero or

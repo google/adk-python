@@ -50,6 +50,7 @@ _APP_NAME = "google_chat_test_app"
 _USER = "users/1234567890"
 _DM_SPACE = "spaces/DM_SPACE"
 _ROOM_SPACE = "spaces/ROOM_SPACE"
+_GROUP_SPACE = "spaces/GROUP_SPACE"
 _ENDPOINT_URL = "https://example.com/chat"
 _PROJECT_NUMBER = "1234567890"
 
@@ -133,7 +134,17 @@ def _dm_space() -> dict[str, Any]:
       "type": "DM",
       "spaceType": "DIRECT_MESSAGE",
       "singleUserBotDm": True,
-      "spaceThreadingState": "UNTHREADED_MESSAGES",
+      # Chat reports DMs as threaded since in-line threads were introduced.
+      "spaceThreadingState": "THREADED_MESSAGES",
+  }
+
+
+def _group_chat_space() -> dict[str, Any]:
+  return {
+      "name": _GROUP_SPACE,
+      "type": "ROOM",
+      "spaceType": "GROUP_CHAT",
+      "spaceThreadingState": "THREADED_MESSAGES",
   }
 
 
@@ -153,6 +164,7 @@ def _message_event(
     thread: str = "threads/T1",
     argument_text: str | None = None,
     sender: dict[str, Any] | None = None,
+    thread_reply: bool = False,
 ) -> dict[str, Any]:
   """Builds a MESSAGE event as sent to a Chat app that isn't an add-on."""
   space = space or _dm_space()
@@ -163,6 +175,7 @@ def _message_event(
       "text": text,
       "argumentText": text if argument_text is None else argument_text,
       "thread": {"name": f"{space['name']}/{thread}"},
+      "threadReply": thread_reply,
       "space": space,
   }
   return {
@@ -312,11 +325,21 @@ async def test_request_is_acknowledged_before_agent_finishes():
   assert replies == ["done"]
 
 
-async def test_direct_messages_share_one_session():
-  """Messages in an unthreaded DM build up a single session.
+@pytest.mark.parametrize(
+    "space",
+    [
+        _dm_space(),
+        _dm_space() | {"spaceThreadingState": "UNTHREADED_MESSAGES"},
+        _group_chat_space(),
+    ],
+    ids=["dm", "unthreaded_dm", "group_chat"],
+)
+async def test_conversations_share_one_session(space):
+  """Messages in a DM or group chat build up a single session.
 
-  Each top-level DM message carries its own thread name, so keying on the
-  thread would start a new conversation for every message.
+  Each top-level message carries its own thread name, even though the
+  conversation reads as one, so keying on the thread would start a new
+  conversation for every message.
   """
   runner = _make_runner(testing_utils.MockModel.create(["one", "two"]))
 
@@ -324,14 +347,49 @@ async def test_direct_messages_share_one_session():
       _FakeChatApi() as chat_api,
       _chat_client(runner, chat_api) as client,
   ):
-    await _post(client, _message_event("first", thread="threads/T1"))
+    await _post(client, _message_event("first", space=space))
     await chat_api.wait_for_replies(1)
-    await _post(client, _message_event("second", thread="threads/T2"))
+    await _post(
+        client, _message_event("second", space=space, thread="threads/T2")
+    )
     await chat_api.wait_for_replies(2)
 
   sessions = await _sessions(runner)
   assert len(sessions) == 1
   assert _user_texts(sessions[0]) == ["first", "second"]
+  # Top-level messages get top-level replies.
+  assert all("thread" not in r["body"] for r in chat_api.requests)
+  assert all(r["params"] == {} for r in chat_api.requests)
+
+
+async def test_in_line_thread_reply_stays_in_conversation_session():
+  """A DM message written in an in-line thread gets its reply in that thread.
+
+  The thread is part of the DM conversation, so it keeps the DM's session.
+  """
+  runner = _make_runner(testing_utils.MockModel.create(["one", "two"]))
+
+  async with (
+      _FakeChatApi() as chat_api,
+      _chat_client(runner, chat_api) as client,
+  ):
+    await _post(client, _message_event("first"))
+    await chat_api.wait_for_replies(1)
+    await _post(
+        client,
+        _message_event("second", thread="threads/T1", thread_reply=True),
+    )
+    await chat_api.wait_for_replies(2)
+
+  sessions = await _sessions(runner)
+  assert len(sessions) == 1
+  assert _user_texts(sessions[0]) == ["first", "second"]
+  assert chat_api.requests[1]["body"]["thread"] == {
+      "name": f"{_DM_SPACE}/threads/T1"
+  }
+  assert chat_api.requests[1]["params"] == {
+      "messageReplyOption": "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+  }
 
 
 async def test_space_threads_get_their_own_sessions_and_replies():

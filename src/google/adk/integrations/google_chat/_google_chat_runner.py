@@ -60,7 +60,9 @@ class _IncomingMessage:
   text: str
   user_id: str
   space_name: str
-  # Set when the reply belongs in a thread, which is also the session scope.
+  # The Chat resource that scopes the session: a thread or the whole space.
+  session_key: str
+  # Set when the reply belongs in a thread.
   thread_name: str | None
 
 
@@ -72,16 +74,24 @@ def _session_id_for(key: str) -> str:
 
 
 def _is_threaded(space: dict[str, Any]) -> bool:
-  """Returns whether conversations in the space are organized by thread."""
+  """Returns whether each thread in the space is a separate conversation."""
   # Direct messages with conversation sessions turned on keep each session in
   # its own thread.
   if space.get("sessionState") == "THREAD":
     return True
-  threading_state = space.get("spaceThreadingState")
-  if threading_state:
-    return bool(threading_state == "THREADED_MESSAGES")
-  # Older events only carry the deprecated space type.
-  return bool(space.get("spaceType") == "SPACE" or space.get("type") == "ROOM")
+  # Direct messages and group chats can contain in-line threads, but they read
+  # as one conversation, so only named spaces are organized by thread.
+  space_type = space.get("spaceType")
+  if space_type:
+    is_named_space = space_type == "SPACE"
+  else:
+    # Older events only carry the deprecated type, which doesn't tell group
+    # chats apart from spaces.
+    is_named_space = space.get("type") == "ROOM"
+  return bool(
+      is_named_space
+      and space.get("spaceThreadingState") != "UNTHREADED_MESSAGES"
+  )
 
 
 def _parse_message_event(event: dict[str, Any]) -> _IncomingMessage | None:
@@ -112,13 +122,20 @@ def _parse_message_event(event: dict[str, Any]) -> _IncomingMessage | None:
   if not text or not user_id or not space_name:
     return None
 
-  thread_name = None
+  message_thread = (message.get("thread") or {}).get("name")
   if _is_threaded(space):
-    thread_name = (message.get("thread") or {}).get("name")
+    session_key = message_thread or space_name
+    thread_name = message_thread
+  else:
+    # The conversation is one session. A message the user wrote inside an
+    # in-line thread still gets its reply in that thread.
+    session_key = space_name
+    thread_name = message_thread if message.get("threadReply") else None
   return _IncomingMessage(
       text=text,
       user_id=user_id,
       space_name=space_name,
+      session_key=session_key,
       thread_name=thread_name,
   )
 
@@ -173,9 +190,8 @@ class GoogleChatRunner:
     ] = weakref.WeakValueDictionary()
 
   def _schedule_reply(self, message: _IncomingMessage) -> None:
-    session_key = message.thread_name or message.space_name
     task = asyncio.create_task(
-        self._reply_in_background(message, _session_id_for(session_key))
+        self._reply_in_background(message, _session_id_for(message.session_key))
     )
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
