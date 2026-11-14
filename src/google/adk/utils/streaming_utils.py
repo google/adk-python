@@ -593,6 +593,9 @@ class StreamingResponseAggregator:
       content = (
           types.ModelContent(parts=deduped_parts) if deduped_parts else None
       )
+      # Content with parts is not an error, as in `LlmResponse.create`.
+      if content and candidate:
+        error_code, error_message = None, None
 
       return LlmResponse(
           content=content,
@@ -614,6 +617,8 @@ class StreamingResponseAggregator:
       parts.append(types.Part.from_text(text=''.join(self._text)))
 
     content = types.ModelContent(parts=parts) if parts else None
+    if content and candidate:
+      error_code, error_message = None, None
 
     return LlmResponse(
         content=content,

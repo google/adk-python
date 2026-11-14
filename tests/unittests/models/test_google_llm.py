@@ -2120,12 +2120,14 @@ async def test_generate_content_async_stream_aggregated_content_regardless_of_fi
       assert responses[0].partial is True
       assert responses[1].partial is True
 
-      # Final response should have aggregated content with error info
+      # Final response keeps the aggregated content. As in the non-streaming
+      # path, content with parts is not an error: the finish_reason is kept
+      # and error_code / error_message are cleared.
       final_response = responses[2]
       assert final_response.content.parts[0].text == "Hello world"
-      # After the code changes, error_code and error_message are set for non-STOP finish reasons
-      assert final_response.error_code == finish_reason
-      assert final_response.error_message == f"Finished with {finish_reason}"
+      assert final_response.finish_reason == finish_reason
+      assert final_response.error_code is None
+      assert final_response.error_message is None
 
 
 @pytest.mark.asyncio
@@ -2190,9 +2192,10 @@ async def test_generate_content_async_stream_with_thought_and_text_error_handlin
     assert final_response.content.parts[0].text == "Think1"
     assert final_response.content.parts[0].thought is True
     assert final_response.content.parts[1].text == "Answer"
-    # After the code changes, error_code and error_message are set for non-STOP finish reasons
-    assert final_response.error_code == types.FinishReason.MAX_TOKENS
-    assert final_response.error_message == "Maximum tokens reached"
+    # Content with parts is not an error, as in the non-streaming path.
+    assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
+    assert final_response.error_code is None
+    assert final_response.error_message is None
 
 
 @pytest.mark.asyncio
@@ -2314,11 +2317,13 @@ async def test_generate_content_async_stream_error_info_set_for_non_stop_finish_
     assert responses[0].partial is True
     assert responses[1].partial is True
 
-    # Final response should have aggregated content with error info set for non-STOP finish reason
+    # Content with parts is not an error for a non-STOP finish reason, as in
+    # the non-streaming path; callers read finish_reason instead.
     final_response = responses[2]
     assert final_response.content.parts[0].text == "Hello world"
-    assert final_response.error_code == types.FinishReason.MAX_TOKENS
-    assert final_response.error_message == "Maximum tokens reached"
+    assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
+    assert final_response.error_code is None
+    assert final_response.error_message is None
 
 
 @pytest.mark.asyncio
