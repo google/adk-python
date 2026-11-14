@@ -29,6 +29,7 @@ from opentelemetry.sdk.trace import Event
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.sdk.trace.export import SpanExportResult
+from opentelemetry.trace import Link
 from opentelemetry.trace import SpanContext
 from opentelemetry.trace import SpanKind
 from opentelemetry.trace import Status
@@ -73,6 +74,7 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "ALTER TABLE spans ADD COLUMN status_description TEXT",
         "ALTER TABLE spans ADD COLUMN events_json TEXT",
     ),
+    ("ALTER TABLE spans ADD COLUMN links_json TEXT NOT NULL DEFAULT '[]'",),
 )
 
 _INSERT_SPAN = """
@@ -89,8 +91,9 @@ INSERT OR REPLACE INTO spans (
   kind,
   status_code,
   status_description,
-  events_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+  events_json,
+  links_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -112,8 +115,18 @@ def _apply_migrations(
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= len(migrations):
       return
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(spans)")}
+    if version == 3 and "links_json" in columns:
+      # Earlier builds stored links in version 3, before status and events.
+      version = 2
+    add_span_column = "ALTER TABLE spans ADD COLUMN "
     for statements in migrations[version:]:
       for statement in statements:
+        if statement.startswith(add_span_column):
+          column = statement.removeprefix(add_span_column).split(maxsplit=1)[0]
+          if column in columns:
+            continue
+          columns.add(column)
         conn.execute(statement)
     # PRAGMA takes no bind parameters; the value is an int length.
     conn.execute(f"PRAGMA user_version = {len(migrations)}")
@@ -125,8 +138,9 @@ class SqliteSpanExporter(SpanExporter):
   This is intended for local development (e.g. `adk web`) to allow reloading
   traces for older sessions after process restart.
 
-  Span kinds survive export and reload. Existing databases are upgraded in
-  place; spans saved before kind persistence retain the INTERNAL default.
+  Span kinds and links survive export and reload. Existing databases are
+  upgraded in place. Older spans retain the INTERNAL kind and empty links
+  when those fields were not saved.
   """
 
   def __init__(self, *, db_path: str):
@@ -234,6 +248,54 @@ class SqliteSpanExporter(SpanExporter):
       return Status(code, status_description)
     return Status(code)
 
+  def _serialize_links(self, links: Sequence[Link]) -> str:
+    return json.dumps(
+        [
+            {
+                "trace_id": format(link.context.trace_id, "032x"),
+                "span_id": format(link.context.span_id, "016x"),
+                "is_remote": link.context.is_remote,
+                "trace_flags": int(link.context.trace_flags),
+                "trace_state": link.context.trace_state.to_header(),
+                "attributes": (
+                    dict(link.attributes)
+                    if link.attributes is not None
+                    else None
+                ),
+            }
+            for link in links
+        ],
+        ensure_ascii=False,
+        default=lambda o: "<not serializable>",
+    )
+
+  def _deserialize_links(self, links_json: object) -> list[Link]:
+    if not isinstance(links_json, (str, bytes, bytearray)):
+      return []
+    try:
+      decoded: object = json.loads(links_json)
+    except (json.JSONDecodeError, TypeError) as e:
+      logger.debug("Failed to deserialize span links: %r", e)
+      return []
+    if not isinstance(decoded, list):
+      return []
+    links: list[Link] = []
+    for item in decoded:
+      if not isinstance(item, dict):
+        continue
+      try:
+        context = SpanContext(
+            trace_id=int(item["trace_id"], 16),
+            span_id=int(item["span_id"], 16),
+            is_remote=item["is_remote"],
+            trace_flags=TraceFlags(item["trace_flags"]),
+            trace_state=TraceState.from_header([item["trace_state"]]),
+        )
+        links.append(Link(context, attributes=item["attributes"]))
+      except (KeyError, TypeError, ValueError) as e:
+        logger.debug("Failed to deserialize span link: %r", e)
+    return links
+
   def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
     try:
       with self._lock:
@@ -272,6 +334,7 @@ class SqliteSpanExporter(SpanExporter):
               span.status.status_code.name,
               span.status.description,
               self._serialize_events(span.events),
+              self._serialize_links(span.links),
           ))
         conn.executemany(_INSERT_SPAN, rows)
         conn.commit()
@@ -331,6 +394,7 @@ class SqliteSpanExporter(SpanExporter):
             row["status_code"], row["status_description"]
         ),
         events=self._deserialize_events(row["events_json"]),
+        links=self._deserialize_links(row["links_json"]),
         attributes=attributes,
         start_time=row["start_time_unix_nano"],
         end_time=row["end_time_unix_nano"],

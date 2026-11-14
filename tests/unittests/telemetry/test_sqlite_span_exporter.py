@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+import threading
 
 from google.adk.telemetry.sqlite_span_exporter import _apply_migrations
 from google.adk.telemetry.sqlite_span_exporter import SqliteSpanExporter
@@ -25,6 +28,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export import SpanExportResult
+from opentelemetry.trace import Link
 from opentelemetry.trace import SpanContext
 from opentelemetry.trace import SpanKind
 from opentelemetry.trace import Status
@@ -42,6 +46,7 @@ def _create_span(
     name: str = "test_span",
     attributes: dict | None = None,
     kind: SpanKind = SpanKind.INTERNAL,
+    links: list[Link] | None = None,
     start_time: int = 1000,
     end_time: int = 2000,
 ) -> ReadableSpan:
@@ -69,6 +74,7 @@ def _create_span(
       context=context,
       parent=parent,
       kind=kind,
+      links=links or [],
       attributes=attributes or {},
       start_time=start_time,
       end_time=end_time,
@@ -787,12 +793,13 @@ def test_database_from_older_version_gains_the_new_columns(
     exporter.shutdown()
 
   with sqlite3.connect(db_path) as conn:
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
-    assert _column_names(conn, "spans")[-4:] == [
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert _column_names(conn, "spans")[-5:] == [
         "kind",
         "status_code",
         "status_description",
         "events_json",
+        "links_json",
     ]
 
 
@@ -865,3 +872,253 @@ def test_unserializable_event_attributes_do_not_fail_export(tmp_path):
   (restored,) = exporter.get_all_spans_for_session("s1")
   assert restored.name == "op"
   assert list(restored.events) == []
+
+
+@pytest.mark.parametrize("is_remote,trace_flags", [(False, 0), (True, 1)])
+def test_links_survive_exporter_restart(tmp_path, is_remote, trace_flags):
+  db_path = str(tmp_path / "spans.db")
+  linked_context = SpanContext(
+      trace_id=0x123456789ABCDEF0123456789ABCDEF0,
+      span_id=0x123456789ABCDEF0,
+      is_remote=is_remote,
+      trace_flags=TraceFlags(trace_flags),
+      trace_state=TraceState([("vendor", "value"), ("other", "state")]),
+  )
+  other_context = SpanContext(
+      trace_id=0xABC,
+      span_id=0xDEF,
+      is_remote=False,
+      trace_flags=TraceFlags(0),
+  )
+  links = [
+      Link(linked_context, {"source": "café", "attempts": 2, "ids": [1, 2]}),
+      Link(other_context),
+  ]
+  provider = TracerProvider()
+  provider.add_span_processor(
+      SimpleSpanProcessor(SqliteSpanExporter(db_path=db_path))
+  )
+  with provider.get_tracer(__name__).start_as_current_span(
+      "linked-operation",
+      attributes={"gcp.vertex.agent.session_id": "linked-session"},
+      links=links,
+  ):
+    pass
+  provider.shutdown()
+
+  reopened = SqliteSpanExporter(db_path=db_path)
+  try:
+    spans = reopened.get_all_spans_for_session("linked-session")
+  finally:
+    reopened.shutdown()
+
+  assert len(spans) == 1
+  assert len(spans[0].links) == 2
+  restored, other = spans[0].links
+  assert restored.context == linked_context
+  assert restored.attributes["source"] == "café"
+  assert restored.attributes["attempts"] == 2
+  assert list(restored.attributes["ids"]) == [1, 2]
+  assert other.context == other_context
+  assert not other.attributes
+
+
+@pytest.mark.parametrize("initializers", [1, 2])
+@pytest.mark.parametrize("schema_version", [0, 1, 2, 3])
+@pytest.mark.parametrize(
+    "extra_columns",
+    ["", ", status_code TEXT, status_description TEXT, events_json TEXT"],
+)
+def test_legacy_database_retains_spans_and_accepts_links(
+    tmp_path, initializers, schema_version, extra_columns
+):
+  """Opening an old database preserves its rows, including concurrent opens."""
+  db_path = str(tmp_path / "spans.db")
+  has_early_links = schema_version == 3 and not extra_columns
+  with sqlite3.connect(db_path) as conn:
+    conn.execute(
+        "CREATE TABLE spans (span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL,"
+        " parent_span_id TEXT, name TEXT NOT NULL, start_time_unix_nano"
+        " INTEGER, end_time_unix_nano INTEGER, session_id TEXT, invocation_id"
+        f" TEXT, attributes_json TEXT{extra_columns})"
+    )
+    conn.execute(
+        "INSERT INTO spans (span_id, trace_id, name, session_id)"
+        " VALUES ('111', '222', 'legacy', 'session')"
+    )
+    if schema_version >= 1:
+      conn.execute("CREATE INDEX spans_session_id_idx ON spans(session_id)")
+      conn.execute("CREATE INDEX spans_trace_id_idx ON spans(trace_id)")
+    if schema_version >= 2:
+      conn.execute(
+          "ALTER TABLE spans ADD COLUMN kind TEXT NOT NULL DEFAULT 'INTERNAL'"
+      )
+      conn.execute("UPDATE spans SET kind = 'SERVER'")
+    if extra_columns:
+      conn.execute(
+          "UPDATE spans SET status_code = 'ERROR',"
+          " status_description = 'old error', events_json = ?",
+          ('[{"name":"exception","timestamp":5}]',),
+      )
+    if has_early_links:
+      conn.execute(
+          "ALTER TABLE spans ADD COLUMN links_json TEXT NOT NULL DEFAULT '[]'"
+      )
+      conn.execute(
+          "UPDATE spans SET links_json = ?",
+          (
+              json.dumps([{
+                  "trace_id": "333",
+                  "span_id": "555",
+                  "is_remote": True,
+                  "trace_flags": 1,
+                  "trace_state": "",
+                  "attributes": None,
+              }]),
+          ),
+      )
+    conn.execute(f"PRAGMA user_version = {schema_version}")
+  barrier = threading.Barrier(initializers)
+
+  def open_database(_: int) -> None:
+    barrier.wait(timeout=10)
+    exporter = SqliteSpanExporter(db_path=db_path)
+    exporter.shutdown()
+
+  with ThreadPoolExecutor(max_workers=initializers) as pool:
+    list(pool.map(open_database, range(initializers)))
+
+  link = Link(
+      SpanContext(
+          trace_id=0x333,
+          span_id=0x444,
+          is_remote=True,
+          trace_flags=TraceFlags(1),
+      )
+  )
+  exporter = SqliteSpanExporter(db_path=db_path)
+  try:
+    result = exporter.export([
+        _create_span(
+            name="new",
+            kind=SpanKind.CLIENT,
+            attributes={"gcp.vertex.agent.session_id": "session"},
+            links=[link],
+        )
+    ])
+    with sqlite3.connect(db_path) as conn:
+      conn.execute(
+          "INSERT INTO spans (span_id, trace_id, name, session_id)"
+          " VALUES ('333', '222', 'old-writer', 'session')"
+      )
+    spans = exporter.get_all_spans_for_session("session")
+  finally:
+    exporter.shutdown()
+
+  assert result == SpanExportResult.SUCCESS
+  by_name = {span.name: span for span in spans}
+  assert set(by_name) == {"legacy", "new", "old-writer"}
+  assert not by_name["old-writer"].links
+  legacy = by_name["legacy"]
+  assert [link.context.span_id for link in legacy.links] == (
+      [0x555] if has_early_links else []
+  )
+  assert legacy.kind == (
+      SpanKind.SERVER if schema_version >= 2 else SpanKind.INTERNAL
+  )
+  if extra_columns:
+    assert legacy.status.status_code is StatusCode.ERROR
+    assert legacy.status.description == "old error"
+    assert [event.name for event in legacy.events] == ["exception"]
+  assert by_name["new"].kind == SpanKind.CLIENT
+  with closing(sqlite3.connect(db_path)) as conn:
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+  assert len(by_name["new"].links) == 1
+  assert by_name["new"].links[0].context == link.context
+
+
+@pytest.mark.parametrize("links", [None, []])
+def test_span_without_links_survives_restart(tmp_path, links):
+  db_path = str(tmp_path / "spans.db")
+  exporter = SqliteSpanExporter(db_path=db_path)
+  result = exporter.export([
+      _create_span(
+          attributes={"gcp.vertex.agent.session_id": "session"}, links=links
+      )
+  ])
+  exporter.shutdown()
+
+  reopened = SqliteSpanExporter(db_path=db_path)
+  try:
+    spans = reopened.get_all_spans_for_session("session")
+  finally:
+    reopened.shutdown()
+
+  assert result == SpanExportResult.SUCCESS
+  assert len(spans) == 1
+  assert not spans[0].links
+
+
+@pytest.mark.parametrize("links_json", ["not json", "{}", "null", "[null, {}]"])
+def test_invalid_links_do_not_prevent_loading_span(tmp_path, links_json):
+  db_path = str(tmp_path / "spans.db")
+  exporter = SqliteSpanExporter(db_path=db_path)
+  try:
+    with sqlite3.connect(db_path) as conn:
+      conn.execute(
+          "INSERT INTO spans (span_id, trace_id, name, session_id, links_json)"
+          " VALUES ('111', '222', 'readable', 'session', ?)",
+          (links_json,),
+      )
+    spans = exporter.get_all_spans_for_session("session")
+  finally:
+    exporter.shutdown()
+
+  assert len(spans) == 1
+  assert spans[0].name == "readable"
+  assert not spans[0].links
+
+
+def test_current_database_readable_during_wal_write(tmp_path: Path) -> None:
+  """A saved trace remains readable while another connection is writing."""
+  db_path = str(tmp_path / "spans.db")
+  link = Link(
+      SpanContext(
+          trace_id=0x123,
+          span_id=0x456,
+          is_remote=True,
+          trace_flags=TraceFlags(1),
+      )
+  )
+  exporter = SqliteSpanExporter(db_path=db_path)
+  try:
+    assert (
+        exporter.export([
+            _create_span(
+                name="saved-span",
+                attributes={"gcp.vertex.agent.session_id": "archived-session"},
+                links=[link],
+            )
+        ])
+        == SpanExportResult.SUCCESS
+    )
+  finally:
+    exporter.shutdown()
+
+  with closing(sqlite3.connect(db_path)) as writer:
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("UPDATE spans SET name = 'uncommitted'")
+    reader = None
+    try:
+      reader = SqliteSpanExporter(db_path=db_path)
+      spans = reader.get_all_spans_for_session("archived-session")
+    finally:
+      if reader is not None:
+        reader.shutdown()
+      writer.rollback()
+
+  assert len(spans) == 1
+  assert spans[0].name == "saved-span"
+  assert len(spans[0].links) == 1
+  assert spans[0].links[0].context == link.context
