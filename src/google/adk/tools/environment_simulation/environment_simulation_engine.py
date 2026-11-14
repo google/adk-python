@@ -110,7 +110,12 @@ class EnvironmentSimulationEngine:
         llm_name=config.simulation_model,
         llm_config=config.simulation_model_configuration,
     )
-    self._state_store: Dict[str, Any] = {}
+    # Simulated state is kept per session, keyed by (app_name, user_id,
+    # session_id), so that sessions served by one engine, such as eval cases
+    # and their repeated runs, do not see each other's simulated resources.
+    # Turns of one session share their store. Stores are kept for the
+    # engine's lifetime: there is no session-end signal to release them on.
+    self._state_stores: dict[tuple[str, str, str], dict[str, Any]] = {}
     self._random_generator = random.Random()
     self._seeded_generators: dict[tuple[str, int], random.Random] = {}
     for c in config.tool_simulation_configs:
@@ -226,6 +231,12 @@ class EnvironmentSimulationEngine:
         task.cancel()
       await asyncio.gather(*pending_matches.values(), return_exceptions=True)
 
+  def _state_store_for(self, tool_context: Any) -> dict[str, Any]:
+    """Returns the simulated state store of the tool call's session."""
+    session = tool_context.session
+    key = (session.app_name, session.user_id, session.id)
+    return self._state_stores.setdefault(key, {})
+
   async def simulate(
       self, tool: BaseTool, args: Dict[str, Any], tool_context: Any
   ) -> Optional[Dict[str, Any]]:
@@ -306,7 +317,7 @@ class EnvironmentSimulationEngine:
         args,
         tool_context,
         self._tool_connection_map,
-        self._state_store,
+        self._state_store_for(tool_context),
         self._environment_data,
         self._tracing,
     )
