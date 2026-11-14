@@ -114,6 +114,76 @@ class TestGeminiContextCacheManager:
     assert manager is not None
     assert manager.genai_client == mock_client
 
+  async def test_handle_context_caching_static_cache_on_initial_request(self):
+    """Test attaching a static application-scoped cache immediately on turn 1."""
+    static_config = ContextCacheConfig(
+        cache_intervals=10,
+        ttl_seconds=3600,
+        static_cache_name="projects/test/locations/us-central1/cachedContents/static789",
+    )
+    llm_request = self.create_llm_request(contents_count=3)
+    llm_request.cache_config = static_config
+
+    result = await self.manager.handle_context_caching(llm_request)
+
+    assert result is not None
+    assert (
+        result.cache_name
+        == "projects/test/locations/us-central1/cachedContents/static789"
+    )
+    assert result.invocations_used == 1
+    assert result.contents_count == 0
+    # Request config should be stripped and cached_content attached
+    assert (
+        llm_request.config.cached_content
+        == "projects/test/locations/us-central1/cachedContents/static789"
+    )
+    assert llm_request.config.system_instruction is None
+    assert llm_request.config.tools is None
+    assert llm_request.config.tool_config is None
+    # No new cache creation API call should be made
+    self.manager.genai_client.aio.caches.create.assert_not_called()
+
+  async def test_handle_context_caching_static_cache_on_subsequent_requests(self):
+    """Test that static cache is reused on subsequent turns and not deleted or recreated."""
+    static_config = ContextCacheConfig(
+        cache_intervals=2,  # Low interval to trigger expiration check quickly
+        ttl_seconds=3600,
+        static_cache_name="projects/test/locations/us-central1/cachedContents/static789",
+    )
+
+    # Turn 1: Initial request attaches static cache
+    llm_request_1 = self.create_llm_request(contents_count=3)
+    llm_request_1.cache_config = static_config
+    result_1 = await self.manager.handle_context_caching(llm_request_1)
+
+    # Turn 2: Subsequent request carries forward the metadata
+    llm_request_2 = self.create_llm_request(
+        cache_metadata=result_1, contents_count=4
+    )
+    llm_request_2.cache_config = static_config
+    result_2 = await self.manager.handle_context_caching(llm_request_2)
+
+    assert result_2 is not None
+    assert result_2.cache_name == static_config.static_cache_name
+
+    # Turn 3: Exceed cache_intervals (2) and simulate TTL expiry to verify it is neither invalidated nor deleted
+    result_expired = result_2.model_copy(
+        update={"invocations_used": 10, "expire_time": time.time() - 1000}
+    )
+    llm_request_3 = self.create_llm_request(
+        cache_metadata=result_expired, contents_count=5
+    )
+    llm_request_3.cache_config = static_config
+
+    self.manager.genai_client.aio.caches.delete = AsyncMock()
+    result_3 = await self.manager.handle_context_caching(llm_request_3)
+
+    # Verify the static cache was still validly reused and NOT deleted
+    assert result_3 is not None
+    assert result_3.cache_name == static_config.static_cache_name
+    self.manager.genai_client.aio.caches.delete.assert_not_called()
+
   async def test_handle_context_caching_no_existing_cache(self):
     """Test handling context caching with no existing cache returns fingerprint-only metadata."""
     llm_request = self.create_llm_request(contents_count=5)
