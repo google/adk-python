@@ -36,6 +36,7 @@ from typing import Sequence
 from typing import TYPE_CHECKING
 from typing import TypeAlias
 from typing import TypedDict
+from typing import TypeGuard
 from urllib.parse import urlparse
 import uuid
 import warnings
@@ -1022,6 +1023,248 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   return message.get("reasoning")
 
 
+# OpenRouter-style providers return the model's reasoning as an opaque
+# `reasoning_details` array (encrypted entries and signed texts included) that
+# clients must replay unchanged on the next turn. LiteLLM surfaces it on the
+# message under `provider_specific_fields["reasoning_details"]`. types.Part has
+# no dedicated field for it, so it is serialized into a thought part's
+# `thought_signature`, the same slot that keeps Anthropic thinking signatures.
+# The producing model is stored with the array, and it is replayed only while
+# the outgoing request still targets the same OpenRouter model; other providers
+# reject the field.
+_REASONING_DETAILS_ENVELOPE_KEY = "adk_reasoning_details"
+_REASONING_MODEL_ENVELOPE_KEY = "adk_reasoning_model"
+
+
+def _is_reasoning_details(value: Any) -> TypeGuard[list[dict[str, Any]]]:
+  """Returns True if value is a non-empty reasoning_details entry list."""
+  return (
+      isinstance(value, list)
+      and bool(value)
+      and all(isinstance(entry, dict) for entry in value)
+  )
+
+
+def _extract_reasoning_details(
+    message: Message | Delta | None,
+) -> list[dict[str, Any]] | None:
+  """Reads the opaque reasoning_details array from a LiteLLM message.
+
+  OpenRouter-style providers return encrypted and signed reasoning entries
+  that must be sent back unchanged. LiteLLM keeps them on the message under
+  `provider_specific_fields["reasoning_details"]`; streamed deltas may carry
+  the key directly.
+
+  Args:
+    message: The LiteLLM message or streamed delta to read from.
+
+  Returns:
+    The reasoning_details entry list, or None when the message has none.
+  """
+  if message is None:
+    return None
+  provider_fields = message.get("provider_specific_fields")
+  if isinstance(provider_fields, dict):
+    details = provider_fields.get("reasoning_details")
+    if _is_reasoning_details(details):
+      return details
+  details = message.get("reasoning_details")
+  if _is_reasoning_details(details):
+    return details
+  return None
+
+
+def _encode_reasoning_details_envelope(
+    details: list[dict[str, Any]],
+    model: str | None = None,
+) -> bytes:
+  """Serializes a reasoning_details array into a thought_signature payload.
+
+  Args:
+    details: The raw reasoning_details entry list from the provider.
+    model: The model that produced the details, stored so the replay can be
+      scoped to requests for the same model. Stored only when non-empty.
+
+  Returns:
+    The envelope bytes for a thought part's thought_signature.
+  """
+  envelope: dict[str, Any] = {_REASONING_DETAILS_ENVELOPE_KEY: details}
+  if model:
+    envelope[_REASONING_MODEL_ENVELOPE_KEY] = model
+  return json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+
+
+def _decode_reasoning_details_envelope(
+    value: Any,
+) -> list[dict[str, Any]] | None:
+  """Decodes a reasoning_details envelope stored on a thought part.
+
+  Args:
+    value: The thought_signature bytes (or str) to decode.
+
+  Returns:
+    The stored reasoning_details entry list, or None when the value is some
+    other kind of signature (Anthropic or Gemini), which must stay untouched.
+  """
+  if not isinstance(value, (bytes, str)) or not value:
+    return None
+  try:
+    parsed = json.loads(value)
+  except (ValueError, TypeError):
+    return None
+  if not isinstance(parsed, dict):
+    return None
+  details = parsed.get(_REASONING_DETAILS_ENVELOPE_KEY)
+  if _is_reasoning_details(details):
+    return details
+  return None
+
+
+def _decode_reasoning_envelope_model(value: Any) -> str | None:
+  """Decodes the producing model stored in a reasoning_details envelope.
+
+  Args:
+    value: The thought_signature bytes (or str) to decode.
+
+  Returns:
+    The stored model string, or None when the value carries no envelope or the
+    envelope records no model.
+  """
+  if not isinstance(value, (bytes, str)) or not value:
+    return None
+  try:
+    parsed = json.loads(value)
+  except (ValueError, TypeError):
+    return None
+  if not isinstance(parsed, dict):
+    return None
+  model = parsed.get(_REASONING_MODEL_ENVELOPE_KEY)
+  return model if isinstance(model, str) and model else None
+
+
+def _attach_reasoning_details_envelope(
+    thought_parts: list[types.Part],
+    details: list[dict[str, Any]],
+    model: str | None = None,
+) -> list[types.Part]:
+  """Attaches the raw reasoning_details array to the thought parts.
+
+  The array rides on one thought part's `thought_signature` so it survives the
+  session round trip, the way Anthropic thinking signatures are preserved.
+  When the reasoning had no displayable text (encrypted-only reasoning), a
+  textless carrier thought part is added.
+
+  Args:
+    thought_parts: The thought parts built from the reasoning text.
+    details: The raw reasoning_details entry list from the provider.
+    model: The model that produced the details, stored with the envelope so a
+      later turn only replays it to the same model.
+
+  Returns:
+    The thought parts carrying the envelope.
+  """
+  envelope = _encode_reasoning_details_envelope(details, model=model)
+  if thought_parts and not thought_parts[-1].thought_signature:
+    thought_parts[-1].thought_signature = envelope
+    return thought_parts
+  return [
+      *thought_parts,
+      types.Part(text="", thought=True, thought_signature=envelope),
+  ]
+
+
+def _extract_outbound_reasoning_envelope(
+    reasoning_parts: Iterable[types.Part],
+) -> tuple[list[dict[str, Any]], str | None] | None:
+  """Collects reasoning_details envelopes from thought parts, in order.
+
+  Args:
+    reasoning_parts: The thought parts of an assistant turn.
+
+  Returns:
+    The concatenated reasoning_details entries and the model that produced
+    them, or None when no part carries an envelope (plain-text reasoning keeps
+    its current replay behavior).
+  """
+  details: list[dict[str, Any]] = []
+  model: str | None = None
+  for part in reasoning_parts:
+    decoded = _decode_reasoning_details_envelope(part.thought_signature)
+    if decoded:
+      details.extend(decoded)
+      model = _decode_reasoning_envelope_model(part.thought_signature) or model
+  return (details, model) if details else None
+
+
+def _is_openrouter_route(
+    model: str, custom_llm_provider: str | None = None
+) -> bool:
+  """Returns True when the request is routed to OpenRouter through LiteLLM.
+
+  Args:
+    model: The LiteLLM model string of the outgoing request.
+    custom_llm_provider: The `custom_llm_provider` argument, when set, which
+      routes a bare model string through a named provider.
+
+  Returns:
+    True when either signal identifies an OpenRouter route.
+  """
+  if _strip_proxy_prefix(model).lower().startswith("openrouter/"):
+    return True
+  return (custom_llm_provider or "").strip().lower() == "openrouter"
+
+
+def _normalize_openrouter_model(model: str) -> str:
+  """Strips LiteLLM routing prefixes from a model string.
+
+  LiteLLM response messages report the model without the routing prefix while
+  requests carry it, and `litellm_proxy/` selects the transport rather than
+  the model, so replay comparisons must ignore both prefixes.
+
+  Args:
+    model: The model string, with or without routing prefixes.
+
+  Returns:
+    The model string without `litellm_proxy/` and `openrouter/` prefixes.
+  """
+  if not model:
+    return model
+  unprefixed = _strip_proxy_prefix(model)
+  prefix = "openrouter/"
+  if unprefixed.lower().startswith(prefix):
+    unprefixed = unprefixed[len(prefix) :]
+  return unprefixed
+
+
+def _should_replay_reasoning_details(
+    model: str,
+    envelope_model: str | None,
+    custom_llm_provider: str | None = None,
+) -> bool:
+  """Decides whether stored reasoning_details may be replayed to a request.
+
+  OpenRouter requires the blocks to match the model's own outputs, and other
+  providers reject the field outright, so the array is only replayed when the
+  outgoing request still targets an OpenRouter route and, when known, the same
+  model that produced the details.
+
+  Args:
+    model: The LiteLLM model string of the outgoing request.
+    envelope_model: The model that produced the stored details, when recorded.
+    custom_llm_provider: The `custom_llm_provider` argument, when set.
+
+  Returns:
+    True when the stored reasoning_details may be replayed.
+  """
+  if not _is_openrouter_route(model, custom_llm_provider):
+    return False
+  if not envelope_model:
+    return True
+  return _normalize_openrouter_model(model).strip().lower() == (
+      _normalize_openrouter_model(envelope_model).strip().lower()
+  )
+
+
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
 _STANDARD_TOOL_ROLE_PROVIDERS = frozenset(
     {"openai", "azure", "lm_studio", "vertex_ai"}
@@ -1152,6 +1395,7 @@ class _AssistantMessagePayload(TypedDict):
   tool_calls: NotRequired[list[_OutboundToolCall] | None]
   reasoning_content: NotRequired[str | None]
   thinking_blocks: NotRequired[list[_ThinkingBlock] | None]
+  reasoning_details: NotRequired[list[dict[str, Any]] | None]
 
 
 class _GemmaToolMessagePayload(TypedDict):
@@ -1166,6 +1410,7 @@ def _assistant_message(
     tool_calls: list[_OutboundToolCall] | None = None,
     reasoning_content: str | None = None,
     thinking_blocks: list[_ThinkingBlock] | None = None,
+    reasoning_details: list[dict[str, Any]] | None = None,
 ) -> Message:
   """Build an assistant payload including LiteLLM provider extensions."""
   payload = _AssistantMessagePayload(
@@ -1176,6 +1421,8 @@ def _assistant_message(
   )
   if thinking_blocks is not None:
     payload["thinking_blocks"] = thinking_blocks
+  if reasoning_details is not None:
+    payload["reasoning_details"] = reasoning_details
   # LiteLLM's Message union omits fields accepted by provider adapters.
   return cast(Message, payload)
 
@@ -1811,7 +2058,14 @@ async def _content_to_message_param(
       aggregated_parts = _aggregate_streaming_thought_parts(reasoning_parts)
       thinking_blocks: list[_ThinkingBlock] = []
       for part in aggregated_parts:
-        if part.text and part.thought_signature:
+        # A reasoning_details envelope riding on the thought_signature belongs
+        # to an OpenRouter turn; it must not leak into an Anthropic thinking
+        # signature when a session switches providers.
+        if (
+            part.text
+            and part.thought_signature
+            and not _decode_reasoning_details_envelope(part.thought_signature)
+        ):
           signature: str | bytes = part.thought_signature
           if isinstance(signature, bytes):
             signature = base64.b64encode(signature).decode("utf-8")
@@ -1841,7 +2095,12 @@ async def _content_to_message_param(
       for part in reasoning_parts:
         if part.text:
           block = _ThinkingBlock(type="thinking", thinking=part.text)
-          if part.thought_signature:
+          # A reasoning_details envelope riding on the thought_signature
+          # belongs to an OpenRouter turn; it must not leak into the Anthropic
+          # thinking-block signature when a session switches providers.
+          if part.thought_signature and not _decode_reasoning_details_envelope(
+              part.thought_signature
+          ):
             block_sig: str | bytes = part.thought_signature
             if isinstance(block_sig, bytes):
               block_sig = base64.b64encode(block_sig).decode("utf-8")
@@ -1854,6 +2113,24 @@ async def _content_to_message_param(
       return _assistant_message(
           content=content_list or None,
           tool_calls=tool_calls or None,
+      )
+
+    # OpenRouter-style providers require the opaque reasoning_details array to
+    # be replayed unchanged on the assistant message; the docs say the blocks
+    # must match the outputs the model produced during the original request, so
+    # the stored envelope replaces the plain reasoning_content string. LiteLLM's
+    # OpenRouter adapter forwards the field to the provider as-is. Other
+    # providers reject the field, so it is only sent while the request still
+    # targets the same OpenRouter model; otherwise the plain reasoning text is
+    # replayed instead.
+    reasoning_envelope = _extract_outbound_reasoning_envelope(reasoning_parts)
+    if reasoning_envelope is not None and _should_replay_reasoning_details(
+        model, reasoning_envelope[1], custom_llm_provider
+    ):
+      return _assistant_message(
+          content=final_content,
+          tool_calls=tool_calls or None,
+          reasoning_details=reasoning_envelope[0],
       )
 
     reasoning_content = _merge_reasoning_texts(reasoning_parts)
@@ -3679,6 +3956,11 @@ def _message_to_generate_content_response(
   if not thought_parts:
     thought_parts = _convert_reasoning_value_to_parts(
         _extract_reasoning_value(message)
+    )
+  reasoning_details = _extract_reasoning_details(message)
+  if reasoning_details:
+    thought_parts = _attach_reasoning_details_envelope(
+        thought_parts, reasoning_details, model=model_version
     )
   if thought_parts:
     parts.extend(thought_parts)
