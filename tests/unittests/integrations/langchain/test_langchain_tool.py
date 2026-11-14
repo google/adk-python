@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 from google.adk.events.event_actions import EventActions
 from google.adk.integrations.langchain import LangchainTool
+from langchain_core.tools import Tool
 from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
@@ -52,6 +53,24 @@ async def async_add(x, y) -> int:
 
 def sync_add(x, y) -> int:
   return x + y
+
+
+def shout(text: str) -> str:
+  return text.upper()
+
+
+async def ashout(text: str) -> str:
+  return text.upper()
+
+
+def _declared_params(langchain_tool):
+  """Returns the (names, required) parameters the model is shown."""
+  declaration = langchain_tool._get_declaration()
+  if declaration.parameters_json_schema is not None:
+    schema = declaration.parameters_json_schema
+    return list(schema.get("properties", {})), schema.get("required", [])
+  schema = declaration.parameters
+  return list(schema.properties or {}), schema.required or []
 
 
 class AddSchema(BaseModel):
@@ -135,6 +154,70 @@ async def test_structured_tool_subclass_without_func_uses_run():
 def test_plain_structured_tool_without_func_raises():
   """A plain StructuredTool has no runnable function, so it is rejected."""
   tool = StructuredTool(name="add", description="Adds", args_schema=AddSchema)
+
+  with pytest.raises(ValueError, match="must have a func"):
+    LangchainTool(tool=tool)
+
+
+def test_plain_tool_declares_func_params_not_config():
+  """A plain Tool declares its func's parameters, not Tool._run's config."""
+  langchain_tool = LangchainTool(
+      tool=Tool(name="shout", func=shout, description="Shouts")
+  )
+  names, required = _declared_params(langchain_tool)
+  assert names == ["text"]
+  assert required == ["text"]
+  assert "config" not in names
+
+
+@pytest.mark.asyncio
+async def test_plain_tool_run_async_calls_func():
+  """A plain Tool runs its func with the model's arguments."""
+  langchain_tool = LangchainTool(
+      tool=Tool(name="shout", func=shout, description="Shouts")
+  )
+  result = await langchain_tool.run_async(
+      args={"text": "hi"}, tool_context=MagicMock()
+  )
+  assert result == "HI"
+
+
+@pytest.mark.asyncio
+async def test_plain_tool_with_only_coroutine_works():
+  """A plain Tool with only a coroutine declares and runs the coroutine."""
+  langchain_tool = LangchainTool(
+      tool=Tool(name="shout", func=None, coroutine=ashout, description="Shouts")
+  )
+  names, required = _declared_params(langchain_tool)
+  assert names == ["text"]
+  assert required == ["text"]
+  result = await langchain_tool.run_async(
+      args={"text": "hi"}, tool_context=MagicMock()
+  )
+  assert result == "HI"
+
+
+@pytest.mark.asyncio
+async def test_tool_subclass_overriding_run_uses_run():
+  """A Tool subclass that overrides _run runs through _run."""
+
+  class ShoutTool(Tool):
+
+    def _run(self, text: str) -> str:
+      return text.upper()
+
+  langchain_tool = LangchainTool(
+      tool=ShoutTool(name="shout", func=None, description="Shouts")
+  )
+  result = await langchain_tool.run_async(
+      args={"text": "hi"}, tool_context=MagicMock()
+  )
+  assert result == "HI"
+
+
+def test_plain_tool_without_func_or_coroutine_raises():
+  """A plain Tool has no runnable function, so it is rejected."""
+  tool = Tool(name="shout", func=None, description="Shouts")
 
   with pytest.raises(ValueError, match="must have a func"):
     LangchainTool(tool=tool)

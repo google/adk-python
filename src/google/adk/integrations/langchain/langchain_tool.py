@@ -74,17 +74,18 @@ class LangchainTool(FunctionTool):
 
     # Determine which function to use
     func: Optional[Callable[..., Any]] = None
-    if isinstance(tool, StructuredTool):
+    if isinstance(tool, (StructuredTool, Tool)):
       func = tool.func
       # For async tools, func might be None but coroutine exists
       if func is None and hasattr(tool, 'coroutine') and tool.coroutine:
         func = tool.coroutine
-      # StructuredTool._run takes a config argument the model cannot supply.
-      if func is None and type(tool)._run is StructuredTool._run:
+      # StructuredTool._run and Tool._run take a config argument the model
+      # cannot supply.
+      if func is None and type(tool)._run in (StructuredTool._run, Tool._run):
         raise ValueError(
-            'This is not supported. A StructuredTool must have a func, a'
-            ' coroutine, or a subclass that overrides _run. The tool is:'
-            f' {type(tool)}'
+            'This is not supported. A StructuredTool or Tool must have a'
+            ' func, a coroutine, or a subclass that overrides _run. The tool'
+            f' is: {type(tool)}'
         )
     if func is None:
       if hasattr(tool, '_run') or hasattr(tool, 'run'):
