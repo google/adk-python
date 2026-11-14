@@ -4785,6 +4785,49 @@ async def test_append_event_redelivery_with_temp_delta_deduplicated(
     [InMemorySessionService()],
     ids=['in_memory'],
 )
+async def test_append_event_dedup_ignores_temp_value_differences(
+    session_service,
+):
+  """A re-delivery differing only in temp values is still equal.
+
+  Temp-scoped values are excluded from dedup identity (storage discards
+  them), so a retry whose temp payload has changed since the first append
+  must match its stored twin instead of duplicating history.
+  """
+  app_name = 'test_app'
+  user_id = 'user_temp_values'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_temp_values'
+  )
+
+  original = Event(
+      id='temp-values',
+      invocation_id='inv_temp_values',
+      author='agent',
+      actions=EventActions(
+          state_delta={'session:step': 'draft', 'temp:working': 'initial'}
+      ),
+  )
+  await session_service.append_event(session=session, event=original)
+
+  retried = original.model_copy(deep=True)
+  retried.actions.state_delta['temp:working'] = 'rewritten'
+  await session_service.append_event(session=session, event=retried)
+
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_temp_values'
+  )
+  assert [e.id for e in retrieved.events] == ['temp-values']
+  assert retrieved.state.get('session:step') == 'draft'
+  assert 'temp:working' not in retrieved.state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_service',
+    [InMemorySessionService()],
+    ids=['in_memory'],
+)
 async def test_append_event_temp_delta_dedupe_boundaries(session_service):
   """Dedup with temp keys: an all-temp delta still dedupes; a genuinely
   different event sharing the id is still kept.
