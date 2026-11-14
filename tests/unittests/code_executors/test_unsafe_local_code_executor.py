@@ -427,6 +427,9 @@ class TestUnsafeLocalCodeExecutor:
     assert result.stdout == "imported\n"
     assert result.stderr == ""
 
+  @pytest.mark.skipif(
+      not hasattr(os, "killpg"), reason="needs POSIX process groups"
+  )
   def test_kill_execution_signals_group_before_killing_it(self, monkeypatch):
     """The group gets SIGTERM and its grace period before SIGKILL."""
     signalled = []
