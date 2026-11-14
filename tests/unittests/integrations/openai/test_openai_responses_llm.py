@@ -97,6 +97,13 @@ class _CaptureClient:
     self.responses = _CaptureResponses(response)
 
 
+def _decoded_reasoning_signature(part) -> dict:
+  """Decodes the replay envelope a captured reasoning part carries."""
+  return json.loads(part.thought_signature.decode('utf-8'))[
+      'adk_openai_reasoning'
+  ]
+
+
 def test_openai_responses_package_exports_required_types():
   """The supported OpenAI SDK range exposes the Responses API types we use."""
   assert EasyInputMessageParam
@@ -342,6 +349,253 @@ def test_content_mapping_preserves_reasoning_signature():
   items = _content_to_response_input_items(content)
 
   assert items == []
+
+
+def test_content_mapping_replays_captured_reasoning_item():
+  """A captured reasoning part is rebuilt in front of its function call."""
+  thought_part = types.Part(text='Need weather first.', thought=True)
+  thought_part.thought_signature = json.dumps({
+      'adk_openai_reasoning': {
+          'encrypted_content': 'encrypted',
+          'id': 'rs_1',
+      }
+  }).encode('utf-8')
+  function_call_part = types.Part.from_function_call(
+      name='get_weather', args={'location': 'Paris'}
+  )
+  function_call_part.function_call.id = 'call_123'
+  content = types.Content(
+      role='model', parts=[thought_part, function_call_part]
+  )
+
+  items = _content_to_response_input_items(content)
+
+  assert items == [
+      {
+          'type': 'reasoning',
+          'encrypted_content': 'encrypted',
+          'id': 'rs_1',
+          'summary': [{'type': 'summary_text', 'text': 'Need weather first.'}],
+      },
+      {
+          'type': 'function_call',
+          'call_id': 'call_123',
+          'name': 'get_weather',
+          'arguments': '{"location": "Paris"}',
+      },
+  ]
+
+
+def test_content_mapping_replays_encrypted_only_reasoning_item():
+  """A textless carrier part replays as an encrypted-only reasoning item."""
+  carrier = types.Part(
+      thought=True,
+      thought_signature=json.dumps({
+          'adk_openai_reasoning': {
+              'encrypted_content': 'encrypted',
+              'id': 'rs_1',
+          }
+      }).encode('utf-8'),
+  )
+  content = types.Content(role='model', parts=[carrier])
+
+  items = _content_to_response_input_items(content)
+
+  assert items == [{
+      'type': 'reasoning',
+      'encrypted_content': 'encrypted',
+      'id': 'rs_1',
+      'summary': [],
+  }]
+
+
+def test_content_mapping_skips_envelope_without_item_id():
+  """An envelope without the required item id stays skipped."""
+  thought_part = types.Part(text='Need weather first.', thought=True)
+  thought_part.thought_signature = json.dumps(
+      {'adk_openai_reasoning': {'encrypted_content': 'encrypted'}}
+  ).encode('utf-8')
+  content = types.Content(role='model', parts=[thought_part])
+
+  items = _content_to_response_input_items(content)
+
+  assert items == []
+
+
+def test_content_mapping_replays_id_only_reasoning_item():
+  """An id-only envelope replays as a stored-item reference (store: true)."""
+  thought_part = types.Part(text='Need weather first.', thought=True)
+  thought_part.thought_signature = json.dumps(
+      {'adk_openai_reasoning': {'id': 'rs_1'}}
+  ).encode('utf-8')
+  content = types.Content(role='model', parts=[thought_part])
+
+  items = _content_to_response_input_items(content)
+
+  assert items == [{
+      'type': 'reasoning',
+      'id': 'rs_1',
+      'summary': [{'type': 'summary_text', 'text': 'Need weather first.'}],
+  }]
+
+
+def _captured_reasoning_part(
+    item_id: str = 'rs_1',
+    encrypted_content: str | None = 'encrypted',
+    model: str | None = 'gpt-5',
+    text: str = 'Need weather first.',
+) -> types.Part:
+  """Builds a thought part carrying a replay envelope like a captured one."""
+  envelope: dict = {'id': item_id}
+  if encrypted_content:
+    envelope['encrypted_content'] = encrypted_content
+  if model:
+    envelope['model'] = model
+  part = types.Part(text=text, thought=True)
+  part.thought_signature = json.dumps(
+      {'adk_openai_reasoning': envelope}
+  ).encode('utf-8')
+  return part
+
+
+def test_replay_skips_reasoning_captured_for_different_model_family():
+  """A reasoning item captured for another model family is not replayed."""
+  thought_part = _captured_reasoning_part(model='gpt-5')
+  function_call_part = types.Part.from_function_call(
+      name='get_weather', args={'location': 'Paris'}
+  )
+  function_call_part.function_call.id = 'call_123'
+  content = types.Content(
+      role='model', parts=[thought_part, function_call_part]
+  )
+
+  items = _content_to_response_input_items(content, request_model='gpt-5-mini')
+
+  assert [item['type'] for item in items] == ['function_call']
+
+
+def test_replay_keeps_reasoning_for_same_model_alias_and_snapshot():
+  """Alias and dated-snapshot of one model count as the same family."""
+  thought_part = _captured_reasoning_part(model='gpt-5-2025-08-07')
+
+  items = _content_to_response_input_items(
+      content=_single_thought_content(thought_part), request_model='gpt-5'
+  )
+
+  assert [item['type'] for item in items] == ['reasoning', 'function_call']
+  assert items[0]['id'] == 'rs_1'
+
+
+def _single_thought_content(thought_part: types.Part) -> types.Content:
+  function_call_part = types.Part.from_function_call(
+      name='get_weather', args={'location': 'Paris'}
+  )
+  function_call_part.function_call.id = 'call_123'
+  return types.Content(role='model', parts=[thought_part, function_call_part])
+
+
+def test_replay_keeps_reasoning_without_recorded_model():
+  """Envelopes without a model (older revision, silent backend) replay."""
+  thought_part = _captured_reasoning_part(model=None)
+
+  items = _content_to_response_input_items(
+      content=_single_thought_content(thought_part), request_model='gpt-5-mini'
+  )
+
+  assert len(items) == 2
+  assert items[0]['type'] == 'reasoning'
+
+
+def test_get_response_input_drops_orphaned_reasoning_after_history_edit():
+  """A reasoning item whose follow-up was edited away is not sent."""
+  thought_part = _captured_reasoning_part()
+  content = types.Content(role='model', parts=[thought_part])
+  llm = _responses_llm()
+  request = _request_with_contents([content])
+
+  items = llm._get_response_input(request)
+
+  assert items == []
+
+
+def test_get_response_input_drops_reasoning_item_before_user_turn():
+  """A reasoning item followed by a user turn is rejected by the API."""
+  thought_part = _captured_reasoning_part()
+  model_content = types.Content(role='model', parts=[thought_part])
+  user_content = types.Content(
+      role='user', parts=[types.Part.from_text(text='Hi')]
+  )
+  llm = _responses_llm()
+  request = _request_with_contents([model_content, user_content])
+
+  items = llm._get_response_input(request)
+
+  assert [item['type'] for item in items] == ['message']
+
+
+def test_get_response_input_keeps_consecutive_reasoning_before_call():
+  """Consecutive reasoning items anchor on the shared function call."""
+  first = _captured_reasoning_part(item_id='rs_1')
+  second = _captured_reasoning_part(item_id='rs_2', text='More thought.')
+  function_call_part = types.Part.from_function_call(
+      name='get_weather', args={'location': 'Paris'}
+  )
+  function_call_part.function_call.id = 'call_123'
+  content = types.Content(
+      role='model', parts=[first, second, function_call_part]
+  )
+  llm = _responses_llm()
+  request = _request_with_contents([content])
+
+  items = llm._get_response_input(request)
+
+  assert [item['type'] for item in items] == [
+      'reasoning',
+      'reasoning',
+      'function_call',
+  ]
+
+
+def test_store_false_drops_id_only_reasoning_item(caplog):
+  """store=False cannot resolve an id-only item; it is dropped with a hint."""
+  thought_part = _captured_reasoning_part(encrypted_content=None)
+  content = types.Content(role='model', parts=[thought_part])
+  llm = _responses_llm(store=False)
+  request = _request_with_contents([content])
+
+  with caplog.at_level(logging.WARNING):
+    items = llm._get_response_input(request)
+
+  assert items == []
+  assert 'reasoning.encrypted_content' in caplog.text
+
+
+def test_store_default_keeps_id_only_reasoning_item():
+  """With the default store setting the server keeps the item resolvable."""
+  thought_part = _captured_reasoning_part(encrypted_content=None)
+  function_call_part = types.Part.from_function_call(
+      name='get_weather', args={'location': 'Paris'}
+  )
+  function_call_part.function_call.id = 'call_123'
+  content = types.Content(
+      role='model', parts=[thought_part, function_call_part]
+  )
+  llm = _responses_llm()
+  request = _request_with_contents([content])
+
+  items = llm._get_response_input(request)
+
+  assert [item['type'] for item in items] == ['reasoning', 'function_call']
+
+
+def _responses_llm(store: bool | None = None) -> OpenAIResponsesLlm:
+  return OpenAIResponsesLlm(api_key='test-key', store=store)
+
+
+def _request_with_contents(
+    contents: list[types.Content],
+) -> LlmRequest:
+  return LlmRequest(contents=contents)
 
 
 def test_content_mapping_sanitizes_function_call_ids_per_request():
@@ -862,7 +1116,11 @@ def test_response_parsing_maps_text_reasoning_tool_calls_and_usage():
   assert llm_response.usage_metadata.thoughts_token_count == 4
   assert llm_response.content.parts[0].thought is True
   assert llm_response.content.parts[0].text == 'Think.'
-  assert llm_response.content.parts[0].thought_signature == b'encrypted'
+  assert _decoded_reasoning_signature(llm_response.content.parts[0]) == {
+      'encrypted_content': 'encrypted',
+      'id': 'rs_1',
+      'model': 'gpt-5',
+  }
   assert llm_response.content.parts[1].text == 'Calling a tool.'
   function_call = llm_response.content.parts[2].function_call
   assert function_call.id == 'call_123'
@@ -925,7 +1183,11 @@ def test_response_parsing_accepts_openai_sdk_response_types():
   assert llm_response.interaction_id == 'resp_typed'
   assert llm_response.content.parts[0].thought is True
   assert llm_response.content.parts[0].text == 'Typed thought.'
-  assert llm_response.content.parts[0].thought_signature == b'encrypted_typed'
+  assert _decoded_reasoning_signature(llm_response.content.parts[0]) == {
+      'encrypted_content': 'encrypted_typed',
+      'id': 'rs_typed',
+      'model': 'gpt-5',
+  }
   assert llm_response.content.parts[1].text == 'Typed hello.'
   assert llm_response.content.parts[2].function_call.id == 'call_typed'
   assert llm_response.content.parts[2].function_call.args == {'city': 'Tokyo'}
@@ -955,7 +1217,61 @@ def test_response_parsing_preserves_redacted_reasoning():
   part = llm_response.content.parts[0]
   assert part.thought is True
   assert part.text is None
-  assert part.thought_signature == b'encrypted_only'
+  assert _decoded_reasoning_signature(part) == {
+      'encrypted_content': 'encrypted_only',
+      'id': 'rs_1',
+      'model': 'gpt-5',
+  }
+
+
+def test_reasoning_capture_marks_only_first_part_for_replay():
+  """Only the first thought part of an item carries the replay envelope."""
+  response = {
+      'id': 'resp_123',
+      'model': 'gpt-5',
+      'status': 'completed',
+      'output': [
+          {
+              'type': 'reasoning',
+              'id': 'rs_1',
+              'encrypted_content': 'encrypted',
+              'summary': [
+                  {'type': 'summary_text', 'text': 'First.'},
+                  {'type': 'summary_text', 'text': 'Second.'},
+              ],
+          },
+      ],
+  }
+
+  parts = _response_to_llm_response(response).content.parts
+
+  assert len(parts) == 2
+  assert _decoded_reasoning_signature(parts[0]) == {
+      'encrypted_content': 'encrypted',
+      'id': 'rs_1',
+      'model': 'gpt-5',
+  }
+  assert parts[1].thought_signature is None
+
+
+def test_reasoning_capture_without_item_id_stays_unreplayable():
+  """A reasoning item without an id captures no replay envelope."""
+  response = {
+      'id': 'resp_123',
+      'model': 'gpt-5',
+      'status': 'completed',
+      'output': [
+          {
+              'type': 'reasoning',
+              'encrypted_content': 'encrypted',
+              'summary': [{'type': 'summary_text', 'text': 'Think.'}],
+          },
+      ],
+  }
+
+  parts = _response_to_llm_response(response).content.parts
+
+  assert parts[0].thought_signature is None
 
 
 @pytest.mark.asyncio
@@ -986,6 +1302,156 @@ async def test_generate_content_async_calls_responses_create():
   assert client.responses.kwargs['stream'] is False
   assert responses[0].content.parts[0].text == 'Hello'
   assert responses[0].interaction_id == 'resp_123'
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_replays_reasoning_items_on_next_request():
+  """The request after a tool call carries the captured reasoning item.
+
+  This is the reported bug: every request after a tool call dropped the
+  model's reasoning and never chained it, so the model restarted its
+  reasoning from scratch after each tool round trip.
+  """
+  first_response = {
+      'id': 'resp_1',
+      'model': 'gpt-5',
+      'status': 'completed',
+      'output': [
+          {
+              'type': 'reasoning',
+              'id': 'rs_1',
+              'summary': [{'type': 'summary_text', 'text': 'Need weather.'}],
+              'encrypted_content': 'encrypted',
+          },
+          {
+              'type': 'function_call',
+              'call_id': 'call_123',
+              'name': 'get_weather',
+              'arguments': '{"location": "Paris"}',
+          },
+      ],
+  }
+  client = _CaptureClient(first_response)
+  llm = OpenAIResponsesLlm(model='gpt-5')
+  llm.__dict__['_openai_client'] = client
+  user_content = types.Content(
+      role='user', parts=[types.Part.from_text(text='Weather in Paris?')]
+  )
+  llm_request = LlmRequest(contents=[user_content])
+
+  responses = [item async for item in llm.generate_content_async(llm_request)]
+  model_content = responses[0].content
+
+  follow_up = LlmRequest(
+      model='gpt-5',
+      contents=[
+          user_content,
+          model_content,
+          types.Content(
+              role='tool',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id='call_123',
+                          name='get_weather',
+                          response={'temperature': '70 F'},
+                      )
+                  )
+              ],
+          ),
+      ],
+  )
+
+  kwargs = llm._get_response_create_kwargs(follow_up, stream=False)
+
+  assert kwargs['input'] == [
+      {
+          'type': 'message',
+          'role': 'user',
+          'content': [{'type': 'input_text', 'text': 'Weather in Paris?'}],
+      },
+      {
+          'type': 'reasoning',
+          'encrypted_content': 'encrypted',
+          'id': 'rs_1',
+          'summary': [{'type': 'summary_text', 'text': 'Need weather.'}],
+      },
+      {
+          'type': 'function_call',
+          'call_id': 'call_123',
+          'name': 'get_weather',
+          'arguments': '{"location": "Paris"}',
+      },
+      {
+          'type': 'function_call_output',
+          'call_id': 'call_123',
+          'output': '{"temperature": "70 F"}',
+      },
+  ]
+
+
+@pytest.mark.asyncio
+async def test_stream_without_completed_event_keeps_replay_envelope():
+  """A stream that ends without response.completed still captures replay."""
+  stream = _FakeAsyncStream([
+      {
+          'type': 'response.created',
+          'response': {'id': 'resp_stream', 'model': 'gpt-5'},
+      },
+      {
+          'type': 'response.output_item.done',
+          'output_index': 0,
+          'item': {
+              'type': 'reasoning',
+              'id': 'rs_stream',
+              'summary': [{'type': 'summary_text', 'text': 'Think.'}],
+              'encrypted_content': 'encrypted_stream',
+          },
+      },
+      {
+          'type': 'response.output_item.done',
+          'output_index': 1,
+          'item': {
+              'type': 'message',
+              'role': 'assistant',
+              'content': [{'type': 'output_text', 'text': 'Hello'}],
+          },
+      },
+  ])
+  client = _CaptureClient(stream)
+  llm = OpenAIResponsesLlm(model='gpt-5')
+  llm.__dict__['_openai_client'] = client
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ]
+  )
+
+  responses = [
+      item
+      async for item in llm.generate_content_async(llm_request, stream=True)
+  ]
+
+  final = responses[-1]
+  parts = final.content.parts
+  assert parts[0].thought is True
+  assert parts[0].text == 'Think.'
+  assert _decoded_reasoning_signature(parts[0]) == {
+      'encrypted_content': 'encrypted_stream',
+      'id': 'rs_stream',
+      'model': 'gpt-5',
+  }
+  assert parts[1].text == 'Hello'
+  replayed = _content_to_response_input_items(final.content)
+  assert replayed == [
+      {
+          'type': 'reasoning',
+          'encrypted_content': 'encrypted_stream',
+          'id': 'rs_stream',
+          'summary': [{'type': 'summary_text', 'text': 'Think.'}],
+      },
+      {'type': 'message', 'role': 'assistant', 'content': 'Hello'},
+  ]
 
 
 @pytest.mark.asyncio
