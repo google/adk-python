@@ -26,6 +26,7 @@ from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
+from google.adk.evaluation.llm_as_judge_utils import get_final_response_author
 from google.adk.evaluation.llm_as_judge_utils import get_grounding_metadata_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.evaluation.llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
@@ -220,6 +221,111 @@ def test_get_text_from_content_skips_thought_parts_in_intermediate_responses():
   )
 
   assert text == "Let me check.\nDone."
+
+
+def _make_invocation_with_reply(
+    intermediate_data: IntermediateData | InvocationEvents | None,
+) -> Invocation:
+  """Returns an invocation that has a final response."""
+  return Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="How much do I owe?")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="You owe $42.")]
+      ),
+      intermediate_data=intermediate_data,
+  )
+
+
+def _make_tool_call_event(author: str) -> InvocationEvent:
+  """Returns an event in which `author` calls a tool."""
+  return InvocationEvent(
+      author=author,
+      content=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  function_call=genai_types.FunctionCall(name="a_tool", args={})
+              )
+          ]
+      ),
+  )
+
+
+def test_get_final_response_author_after_transfer():
+  """The reply belongs to the sub-agent, not the agent that handed off."""
+  invocation = _make_invocation_with_reply(
+      InvocationEvents(
+          invocation_events=[
+              _make_tool_call_event("router"),
+              # `convert_events_to_eval_invocations` keeps the final
+              # response's event, with its content moved to `final_response`.
+              InvocationEvent(author="billing_agent"),
+          ]
+      )
+  )
+
+  assert get_final_response_author(invocation) == "billing_agent"
+
+
+@pytest.mark.parametrize(
+    "later_event",
+    [
+        InvocationEvent(
+            author="billing_agent",
+            usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+                total_token_count=12
+            ),
+        ),
+        _make_tool_call_event("audit_agent"),
+    ],
+    ids=["usage_report", "tool_call_of_another_agent"],
+)
+def test_get_final_response_author_with_later_event(later_event):
+  """An event after the reply's own event does not take the reply over."""
+  invocation = _make_invocation_with_reply(
+      InvocationEvents(
+          invocation_events=[
+              _make_tool_call_event("router"),
+              InvocationEvent(author="billing_agent"),
+              later_event,
+          ]
+      )
+  )
+
+  assert get_final_response_author(invocation) == "billing_agent"
+
+
+def test_get_final_response_author_without_event_for_the_reply():
+  """A hand-built invocation falls back to its last agent event."""
+  invocation = _make_invocation_with_reply(
+      InvocationEvents(
+          invocation_events=[
+              _make_tool_call_event("router"),
+              _make_tool_call_event("billing_agent"),
+              InvocationEvent(
+                  author="user",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text="Thanks.")]
+                  ),
+              ),
+          ]
+      )
+  )
+
+  assert get_final_response_author(invocation) == "billing_agent"
+
+
+@pytest.mark.parametrize(
+    "intermediate_data",
+    [None, IntermediateData(), InvocationEvents(invocation_events=[])],
+    ids=["no_intermediate_data", "legacy_intermediate_data", "no_events"],
+)
+def test_get_final_response_author_without_agent_events(intermediate_data):
+  """There is no author to report when the invocation has no agent events."""
+  invocation = _make_invocation_with_reply(intermediate_data)
+
+  assert get_final_response_author(invocation) is None
 
 
 def test_get_eval_status_with_none_score():

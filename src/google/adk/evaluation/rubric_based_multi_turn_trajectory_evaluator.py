@@ -31,6 +31,7 @@ from .eval_metrics import RubricsBasedCriterion
 from .evaluator import _validate_invocation_lengths
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
+from .llm_as_judge_utils import get_final_response_author
 from .rubric_based_evaluator import RubricBasedEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -234,13 +235,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
 
       # FINAL AGENT TURN
       if invocation.final_response and invocation.final_response.parts:
-        intermediate_data = invocation.intermediate_data
-        agent_name = "agent"
-        if (
-            isinstance(intermediate_data, InvocationEvents)
-            and intermediate_data.invocation_events
-        ):
-          agent_name = intermediate_data.invocation_events[0].author
+        agent_name = get_final_response_author(invocation) or "agent"
         role = f"AGENT ({agent_name})"
         text = extract_text_from_content(
             invocation.final_response, splitter=" "

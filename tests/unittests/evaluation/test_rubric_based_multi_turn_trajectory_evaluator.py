@@ -378,6 +378,52 @@ class TestDialogueAssembly:
         "AGENT (agent) TURN 1: Agent response." in evaluator._formatted_dialogue
     )
 
+  def test_final_reply_is_attributed_to_the_agent_that_wrote_it(
+      self, evaluator
+  ):
+    """After a transfer, the reply is labelled with the sub-agent's name."""
+    transfer_call = genai_types.Part(
+        function_call=genai_types.FunctionCall(
+            name="transfer_to_agent", args={"agent_name": "billing_agent"}
+        )
+    )
+    transfer_response = genai_types.Part(
+        function_response=genai_types.FunctionResponse(
+            name="transfer_to_agent", response={"result": None}
+        )
+    )
+    invocation = _make_invocation(
+        user_text="How much do I owe?",
+        agent_text="You owe $42.",
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(
+                    author="router",
+                    content=genai_types.Content(parts=[transfer_call]),
+                ),
+                InvocationEvent(
+                    author="router",
+                    content=genai_types.Content(parts=[transfer_response]),
+                ),
+                # `convert_events_to_eval_invocations` keeps the final
+                # response's event, with its content moved to
+                # `final_response`.
+                InvocationEvent(author="billing_agent"),
+            ]
+        ),
+    )
+
+    evaluator._assemble_dialogue_history([invocation])
+
+    assert evaluator._formatted_dialogue == (
+        "USER TURN 1: How much do I owe?\n"
+        "AGENT (router) TURN 1 (tool call):"
+        ' transfer_to_agent({"agent_name": "billing_agent"})\n'
+        "AGENT (router) TURN 1 (tool output):"
+        ' transfer_to_agent -> {"result": null}\n'
+        "AGENT (billing_agent) TURN 1: You owe $42."
+    )
+
   def test_thought_parts_are_left_out_of_dialogue(self, evaluator):
     """Agent thought parts are left out of the judge's dialogue."""
     invocation = Invocation(
