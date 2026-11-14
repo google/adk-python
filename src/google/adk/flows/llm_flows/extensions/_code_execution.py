@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Container
 import copy
 import dataclasses
 import datetime
@@ -363,6 +364,12 @@ async def _run_post_processor(
           timestamp = now.strftime('%Y%m%d_%H%M%S')
           file_extension = (inline_data.mime_type or 'image').split('/')[-1]
           file_name = f'{timestamp}.{file_extension}'
+        # A generated name only resolves to the second and a display name can
+        # repeat, so two images in one response can get the same name. Saving
+        # the second under it would make it a new version of the first, which
+        # then drops out of this event's artifact_delta while both
+        # placeholders name the second one.
+        file_name = _unique_file_name(file_name, event_actions.artifact_delta)
 
         data = inline_data.data
         if not isinstance(data, bytes):
@@ -477,6 +484,24 @@ def _split_thoughts(
   if not thoughts:
     return content, []
   return content.model_copy(update={'parts': kept}), thoughts
+
+
+def _unique_file_name(file_name: str, taken: Container[str]) -> str:
+  """Returns ``file_name``, numbered before its extension if already taken.
+
+  For example ``chart.png`` becomes ``chart_1.png``, then ``chart_2.png``.
+
+  Args:
+    file_name: The name to give the artifact.
+    taken: The names already used by the same event.
+  """
+  if file_name not in taken:
+    return file_name
+  stem, extension = os.path.splitext(file_name)
+  number = 1
+  while f'{stem}_{number}{extension}' in taken:
+    number += 1
+  return f'{stem}_{number}{extension}'
 
 
 def _extract_and_replace_inline_files(
