@@ -20,12 +20,17 @@ import datetime
 import json
 from unittest import mock
 
+from google.adk.sessions.schemas import v1
 from google.adk.sessions.schemas.shared import DynamicJSON
+from google.adk.sessions.schemas.shared import KeyString
 from google.adk.sessions.schemas.shared import PreciseTimestamp
 import pytest
+from sqlalchemy import Dialect
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import sqlite
+from sqlalchemy.schema import CreateTable
 
 
 def _dialect(name: str) -> mock.Mock:
@@ -210,3 +215,71 @@ def test_precise_timestamp_uses_datetime2_on_mssql():
   impl = ts.load_dialect_impl(mssql_dialect.dialect())
   assert isinstance(impl, mssql_dialect.DATETIME2)
   assert impl.precision == 6
+
+
+def _mysql_dialect(
+    server_version: tuple[int, ...] | None = None, *, is_mariadb: bool = False
+) -> Dialect:
+  dialect = mysql.dialect()
+  dialect.server_version_info = server_version
+  dialect.is_mariadb = is_mariadb
+  return dialect
+
+
+@pytest.mark.parametrize(
+    "dialect, expected_collation",
+    [
+        (_mysql_dialect((8, 4, 3)), "utf8mb4_0900_bin"),
+        (_mysql_dialect((8, 0, 17)), "utf8mb4_0900_bin"),
+        (_mysql_dialect((8, 0, 16)), "utf8mb4_bin"),
+        (_mysql_dialect((5, 7, 44)), "utf8mb4_bin"),
+        (_mysql_dialect(), "utf8mb4_bin"),
+        (_mysql_dialect((11, 4, 2), is_mariadb=True), "utf8mb4_nopad_bin"),
+    ],
+)
+def test_key_string_uses_exact_collation_on_mysql_and_mariadb(
+    dialect, expected_collation
+):
+  """Keys differing only in case, accents or trailing spaces stay distinct."""
+  impl = KeyString(128).load_dialect_impl(dialect)
+
+  assert isinstance(impl, mysql.VARCHAR)
+  assert impl.length == 128
+  assert impl.charset == "utf8mb4"
+  assert impl.collation == expected_collation
+
+
+@pytest.mark.parametrize(
+    "dialect", [postgresql.dialect(), sqlite.dialect()], ids=lambda d: d.name
+)
+def test_key_string_is_plain_varchar_on_other_dialects(dialect):
+  """Backends that already compare keys exactly get no collation."""
+  ddl = str(CreateTable(v1.StorageSession.__table__).compile(dialect=dialect))
+
+  assert "user_id VARCHAR(128) NOT NULL" in ddl
+  assert "COLLATE" not in ddl
+
+
+@pytest.mark.parametrize(
+    "table, key_columns",
+    [
+        (v1.StorageSession.__table__, ["app_name", "user_id", "id"]),
+        (
+            v1.StorageEvent.__table__,
+            ["id", "app_name", "user_id", "session_id"],
+        ),
+        (v1.StorageAppState.__table__, ["app_name"]),
+        (v1.StorageUserState.__table__, ["app_name", "user_id"]),
+    ],
+    ids=lambda value: getattr(value, "name", None),
+)
+def test_v1_key_columns_use_exact_collation_on_mysql(table, key_columns):
+  """Every v1 key column, including both sides of the events foreign key."""
+  ddl = str(CreateTable(table).compile(dialect=_mysql_dialect((8, 4, 3))))
+
+  for column in key_columns:
+    assert (
+        f"{column} VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
+        " NOT NULL"
+        in ddl
+    )
