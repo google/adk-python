@@ -307,6 +307,61 @@ def test_response_attributes_split_between_details_and_common():
   }
 
 
+def test_response_attributes_report_thought_parts_as_reasoning():
+  """A thought part is exported as `reasoning`, not as part of the answer.
+
+  Downstream, `text` and `reasoning` are the only thing telling reasoning
+  apart from the answer, so a thought part losing its flag on the wire
+  leaves a consumer with no way to tell them apart again.
+  """
+  llm_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='weighing the options', thought=True),
+              types.Part(text='the answer'),
+              types.Part(text='and a trailing note', thought=True),
+          ],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  details, _ = _response_attributes(llm_response)
+
+  assert details[GEN_AI_OUTPUT_MESSAGES] == [{
+      'role': 'assistant',
+      'parts': [
+          {'content': 'weighing the options', 'type': 'reasoning'},
+          {'content': 'the answer', 'type': 'text'},
+          {'content': 'and a trailing note', 'type': 'reasoning'},
+      ],
+      'finish_reason': 'stop',
+  }]
+
+
+def test_input_attributes_report_thought_parts_as_reasoning():
+  """A replayed thought in the history keeps its own part type too."""
+  content = types.Content(
+      role='model',
+      parts=[
+          types.Part(text='earlier reasoning', thought=True),
+          types.Part(text='earlier answer'),
+      ],
+  )
+
+  attributes = _request_attributes(
+      LlmRequest(model='some-model', contents=[content])
+  )
+
+  assert attributes[GEN_AI_INPUT_MESSAGES] == [{
+      'role': 'assistant',
+      'parts': [
+          {'content': 'earlier reasoning', 'type': 'reasoning'},
+          {'content': 'earlier answer', 'type': 'text'},
+      ],
+  }]
+
+
 def test_unaggregated_chunks_are_reported_as_one_message():
   """Chunks no aggregator assembled extend one message, ending at the last."""
   details: dict = {}
