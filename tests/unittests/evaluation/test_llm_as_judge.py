@@ -31,6 +31,7 @@ from google.adk.evaluation.llm_as_judge_utils import build_judge_request_config
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.models.llm_response import LlmResponse
+from google.auth import exceptions as auth_exceptions
 from google.genai import types as genai_types
 import pydantic
 import pytest
@@ -549,3 +550,76 @@ async def test_evaluate_invocations_cancelled_sample(mock_llm_as_judge, mocker):
 def test_judge_model_options_invalid_parallelism_limit(invalid_limit):
   with pytest.raises(pydantic.ValidationError):
     JudgeModelOptions(parallelism_limit=invalid_limit)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timeout_exc",
+    [
+        asyncio.TimeoutError("Request timed out after 120.0 seconds."),
+        auth_exceptions.TimeoutError("Request timed out after 120.0 seconds."),
+    ],
+)
+async def test_evaluate_invocations_retries_sample_timeout_and_succeeds(
+    mocker, timeout_exc
+):
+  """A judge sample that times out is retried and graded on recovery."""
+  judge = PerInvocationReportingLlmAsJudge(
+      eval_metric=EvalMetric(
+          metric_name="test_metric",
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=genai_types.GenerateContentConfig(
+                      http_options=genai_types.HttpOptions(
+                          retry_options=genai_types.HttpRetryOptions(
+                              attempts=3,
+                              initial_delay=0.0,
+                              max_delay=0.0,
+                              jitter=0.0,
+                          )
+                      )
+                  ),
+                  num_samples=2,
+              ),
+          ),
+      ),
+      criterion_type=LlmAsAJudgeCriterion,
+  )
+
+  call_count = 0
+
+  async def mock_generate_content_async(llm_request):
+    nonlocal call_count
+    call_count += 1
+    if call_count == 1:
+      raise timeout_exc
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text="auto rater response")],
+        )
+    )
+
+  mock_judge_model = mocker.MagicMock()
+  mock_judge_model.generate_content_async = mock_generate_content_async
+  judge._judge_model = mock_judge_model
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="u1")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="r1")]
+          ),
+      ),
+  ]
+
+  result = await judge.evaluate_invocations(
+      actual_invocations, actual_invocations
+  )
+
+  assert call_count == 3  # 1 failed attempt + 1 retry + 1 second sample
+  assert len(result.per_invocation_results) == 1
+  assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
+  assert result.per_invocation_results[0].score == 1.0
