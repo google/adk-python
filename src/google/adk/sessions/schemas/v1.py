@@ -42,6 +42,7 @@ from ..session import Session
 from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
+from .shared import KeyString
 from .shared import PreciseTimestamp
 from .shared import timestamp_to_utc_datetime
 from .shared import utc_datetime_to_timestamp
@@ -74,13 +75,13 @@ class StorageSession(Base):
   __tablename__ = "sessions"
 
   app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   user_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH),
+      KeyString(DEFAULT_MAX_KEY_LENGTH),
       primary_key=True,
       default=platform_uuid.new_uuid,
   )
@@ -166,16 +167,16 @@ class StorageEvent(Base):
   __tablename__ = "events"
 
   id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   user_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   session_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
@@ -247,7 +248,7 @@ class StorageAppState(Base):
   __tablename__ = "app_states"
 
   app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default=dict
@@ -263,10 +264,10 @@ class StorageUserState(Base):
   __tablename__ = "user_states"
 
   app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   user_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+      KeyString(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default=dict
