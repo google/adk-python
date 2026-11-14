@@ -31,6 +31,7 @@ from pydantic import BaseModel
 if not hasattr(types, 'AvatarConfig'):
   types.AvatarConfig = type('AvatarConfig', (BaseModel,), {})
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.integrations.openai._openai_common import OpenAIGenerateContentConfig
 from google.adk.integrations.openai._openai_responses_llm import _content_to_response_input_items
 from google.adk.integrations.openai._openai_responses_llm import _file_data_part_to_response_content
@@ -42,7 +43,9 @@ from google.adk.integrations.openai._openai_responses_llm import _serialize_syst
 from google.adk.integrations.openai._openai_responses_llm import _tool_choice
 from google.adk.integrations.openai._openai_responses_llm import AzureOpenAIResponsesLlm
 from google.adk.integrations.openai._openai_responses_llm import OpenAIResponsesLlm
+from google.adk.models._capabilities import LlmCapabilities
 from google.adk.models.llm_request import LlmRequest
+from google.adk.runners import InMemoryRunner
 from google.adk.utils._schema_utils import enforce_strict_openai_schema
 from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam
@@ -1959,3 +1962,106 @@ def test_serialize_system_instruction_content_shaped_mapping():
 def test_serialize_system_instruction_unparseable_mapping_returns_none():
   """A mapping that fits neither Part nor Content is dropped, not raised."""
   assert _serialize_system_instruction({'not_a_field': 123}) is None
+
+
+def test_capabilities_declares_output_schema_and_tools_on_default_host(
+    monkeypatch,
+):
+  """The real OpenAI host supports output_schema alongside tools."""
+  monkeypatch.delenv('OPENAI_BASE_URL', raising=False)
+  assert OpenAIResponsesLlm(model='gpt-5').capabilities == LlmCapabilities(
+      output_schema_and_tools=True
+  )
+
+
+@pytest.mark.parametrize(
+    'llm',
+    [
+        pytest.param(
+            OpenAIResponsesLlm(model='gpt-5', base_url='http://proxy/v1'),
+            id='base_url',
+        ),
+        pytest.param(
+            OpenAIResponsesLlm(model='gpt-5', client=AsyncOpenAI(api_key='x')),
+            id='client',
+        ),
+        pytest.param(
+            AzureOpenAIResponsesLlm(
+                model='deployment', azure_endpoint='https://r.openai.azure.com'
+            ),
+            id='azure',
+        ),
+    ],
+)
+def test_capabilities_falls_back_on_compatible_backend(monkeypatch, llm):
+  """A compatible backend keeps the SetModelResponseTool fallback."""
+  monkeypatch.delenv('OPENAI_BASE_URL', raising=False)
+  assert llm.capabilities == LlmCapabilities(output_schema_and_tools=False)
+
+
+def test_capabilities_falls_back_when_openai_base_url_env_is_set(monkeypatch):
+  """OPENAI_BASE_URL redirects the default client to a compatible backend."""
+  monkeypatch.setenv('OPENAI_BASE_URL', 'http://proxy/v1')
+  assert OpenAIResponsesLlm(model='gpt-5').capabilities == LlmCapabilities(
+      output_schema_and_tools=False
+  )
+
+
+@pytest.mark.asyncio
+async def test_output_schema_with_tools_uses_native_text_format(monkeypatch):
+  """An agent with output_schema and tools sends text.format without set_model_response."""
+
+  class Answer(BaseModel):
+    answer: str
+
+  def get_weather(city: str) -> str:
+    return f'Sunny in {city}'
+
+  monkeypatch.delenv('OPENAI_BASE_URL', raising=False)
+  capture_client = _CaptureClient({
+      'id': 'resp_structured',
+      'model': 'gpt-5',
+      'status': 'completed',
+      'output': [{
+          'type': 'message',
+          'role': 'assistant',
+          'content': [{
+              'type': 'output_text',
+              'text': '{"answer": "Sunny in Tokyo"}',
+          }],
+      }],
+      'usage': None,
+  })
+  llm = OpenAIResponsesLlm(model='gpt-5')
+  llm.__dict__['_openai_client'] = capture_client
+
+  agent = LlmAgent(
+      name='weather_agent',
+      model=llm,
+      tools=[get_weather],
+      output_schema=Answer,
+  )
+  runner = InMemoryRunner(agent=agent, app_name='test_app')
+  session = await runner.session_service.create_session(
+      app_name='test_app', user_id='u1'
+  )
+
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id='u1',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[types.Part.from_text(text='Weather in Tokyo?')],
+          ),
+      )
+  ]
+
+  kwargs = capture_client.responses.kwargs
+  assert kwargs is not None
+  assert kwargs['text']['format']['type'] == 'json_schema'
+  assert kwargs['text']['format']['name'] == 'Answer'
+  assert kwargs['text']['format']['strict'] is True
+  assert [tool['name'] for tool in kwargs['tools']] == ['get_weather']
+  assert events[-1].content.parts[0].text == '{"answer": "Sunny in Tokyo"}'
