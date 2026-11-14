@@ -81,6 +81,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [MongoDbMemoryService](integrations/mongodb/memory_service/index.md) - Storing session events in a MongoDB collection and recalling them by keyword match.
 * [MongoDbSessionService](integrations/mongodb/session_service/index.md) - Sharing sessions across processes through MongoDB, with transactional writes where the deployment supports them.
 * [MongoDbToolset](integrations/mongodb/mongodb_toolset/index.md) - Vector and hybrid search over a MongoDB database, with the query text embedded on the way through.
+* [OkfToolset](integrations/okf/toolset/index.md) - Reading an Open Knowledge Format bundle progressively: frontmatter index first, one concept body at a time.
 * [OpenAIDecisionsClassifier](integrations/openai/openai_decisions_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with the OpenAI Decisions API, including questions OpenAI declines to answer.
 * [RedisSessionService](integrations/redis/redis_session_service/index.md) - Sharing sessions across processes through Redis, including the expiry every other backend lacks.
 * [GoogleMapsToolset](integrations/google_maps/index.md) - Street View images, address validation, and reverse geocoding with Google Maps Platform.
