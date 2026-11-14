@@ -16,7 +16,9 @@
 
 import asyncio
 import logging
+from typing import Annotated
 from typing import Any
+from typing import Literal
 from unittest import mock
 import warnings
 
@@ -42,6 +44,7 @@ from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 
@@ -1441,3 +1444,19 @@ def test_llm_agent_iter_static_children_sub_agents_and_node_tools():
   children = list(parent._iter_static_children())
   assert [c.name for c in children] == ['sub', 'tool_wf', 'appended_node']
   assert agent_tool_agent not in children
+
+
+@pytest.mark.parametrize(
+    'schema',
+    [
+        Literal['yes', 'no'],
+        Annotated[BaseModel, Field(title='Answer')],
+        Annotated[int, Field(gt=0)],
+    ],
+)
+def test_output_schema_preserves_typing_alias(schema):
+  """Typing aliases retain their constraints instead of becoming empty schemas."""
+  agent = LlmAgent(name='test_agent', output_schema=schema)
+
+  assert agent.output_schema is schema
+  assert agent.model_dump()['output_schema'] is schema

@@ -15,7 +15,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 from typing import Any
+from typing import get_origin
+from typing import Literal
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -26,6 +29,7 @@ from pydantic import PrivateAttr
 
 from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
+from ..utils._schema_utils import schema_to_json_schema
 from ..utils._schema_utils import SchemaType
 from ._service_tier import ServiceTier
 from .cache_metadata import CacheMetadata
@@ -409,7 +413,12 @@ class LlmRequest(BaseModel):
           " Pass output_schema=<your_schema> (base_model is deprecated)."
       )
 
-    self.config.response_schema = schema
+    if get_origin(schema) in (Literal, Annotated):
+      self.config.response_schema = None
+      self.config.response_json_schema = schema_to_json_schema(schema)
+    else:
+      self.config.response_json_schema = None
+      self.config.response_schema = schema
     self.config.response_mime_type = "application/json"
 
   def to_generate_content_body(

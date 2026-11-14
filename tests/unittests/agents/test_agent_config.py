@@ -17,6 +17,7 @@ import ntpath
 import os
 from pathlib import Path
 from textwrap import dedent
+from typing import Annotated
 from typing import Any
 from typing import Literal
 from unittest import mock
@@ -39,6 +40,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import jsonschema
 from pydantic import BaseModel
+from pydantic import Field
 from pydantic import ValidationError
 import pytest
 import yaml
@@ -1938,3 +1940,31 @@ def test_shipped_agent_config_json_rejects_invalid_configs(
   assert isinstance(schema, dict)
   with pytest.raises(jsonschema.ValidationError):
     jsonschema.validate(invalid_config_dict, schema)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        Literal["yes", "no"],
+        Annotated[BaseModel, Field(title="Answer")],
+        Annotated[int, Field(gt=0)],
+    ],
+)
+def test_from_config_resolves_output_schema_alias(tmp_path, schema):
+  """YAML schema references still resolve through the wrapped schema type."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(
+      yaml.safe_dump({
+          "name": "test_agent",
+          "instruction": "",
+          "output_schema": {"name": "schemas.Answer"},
+      })
+  )
+
+  with mock.patch.object(
+      config_agent_utils, "resolve_code_reference", return_value=schema
+  ) as resolve:
+    agent = config_agent_utils.from_config(str(config_file))
+
+  resolve.assert_called_once_with(CodeConfig(name="schemas.Answer"))
+  assert agent.output_schema is schema

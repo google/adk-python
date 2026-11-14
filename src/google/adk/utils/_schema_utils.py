@@ -32,6 +32,7 @@ from typing import Any
 from typing import cast
 from typing import get_args
 from typing import get_origin
+from typing import Literal
 from typing import Union
 
 from google.genai import types
@@ -39,6 +40,8 @@ from pydantic import AliasChoices
 from pydantic import AliasPath
 from pydantic import BaseModel
 from pydantic import TypeAdapter
+from pydantic import ValidatorFunctionWrapHandler
+from pydantic import WrapValidator
 from pydantic.fields import FieldInfo
 from typing_extensions import Annotated
 
@@ -47,9 +50,19 @@ from .content_utils import extract_text_from_content
 
 logger = logging.getLogger("google_adk." + __name__)
 
+
+def _preserve_schema_alias(
+    value: Any, handler: ValidatorFunctionWrapHandler
+) -> Any:
+  """Keeps typing aliases that Schema would otherwise coerce from attributes."""
+  if get_origin(value) in (Literal, Annotated):
+    return value
+  return handler(value)
+
+
 # Use SchemaUnion from google.genai.types to support all schema types
 # that the underlying API supports.
-SchemaType = types.SchemaUnion
+SchemaType = Annotated[types.SchemaUnion, WrapValidator(_preserve_schema_alias)]
 """Type for schema fields (e.g., output_schema, input_schema).
 
 Supports all schema types that the underlying Google GenAI API supports:
