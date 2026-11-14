@@ -59,6 +59,7 @@ from ...tool_context import ToolContext
 from ..auth.auth_helpers import credential_to_param
 from ..auth.auth_helpers import dict_to_auth_scheme
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
+from ..common.common import _is_json_media_type
 from ..common.common import ApiParameter
 from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
@@ -205,6 +206,7 @@ class RestApiTool(BaseTool):
       *,
       credential_key: Optional[str] = None,
       allow_private_network_access: bool = False,
+      include_response_schema: bool = False,
   ):
     """Initializes the RestApiTool with the given parameters.
 
@@ -261,6 +263,11 @@ class RestApiTool(BaseTool):
           ``*.local`` targets and return an error response. Set this to ``True``
           to allow requests to private networks, localhost, and custom non-DNS
           transports.
+        include_response_schema: If True, the function declaration includes
+          the tool's declared success shapes as ``response_json_schema`` when
+          known. Explicitly non-JSON responses are returned as a text object.
+          This adds the schema to every model request that includes the tool.
+          Defaults to False.
     """
     # Gemini restrict the length of function name to be less than 64 characters
     self.name = name[:_MAX_TOOL_NAME_LENGTH]
@@ -289,6 +296,7 @@ class RestApiTool(BaseTool):
     self._httpx_client_factory = httpx_client_factory
     self._logger = logger
     self._allow_private_network_access = allow_private_network_access
+    self._include_response_schema = include_response_schema
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -303,6 +311,7 @@ class RestApiTool(BaseTool):
       httpx_client_factory: Optional[HttpxClientFactory] = None,
       *,
       allow_private_network_access: bool = False,
+      include_response_schema: bool = False,
   ) -> "RestApiTool":
     """Initializes the RestApiTool from a ParsedOperation object.
 
@@ -322,6 +331,8 @@ class RestApiTool(BaseTool):
           ``*.local`` targets and return an error response. Set this to ``True``
           to allow requests to private networks, localhost, and custom non-DNS
           transports.
+        include_response_schema: Whether the function declaration includes the
+          tool's declared success shapes. See ``RestApiTool.__init__``.
 
     Returns:
         A RestApiTool object.
@@ -344,6 +355,7 @@ class RestApiTool(BaseTool):
         header_provider=header_provider,
         httpx_client_factory=httpx_client_factory,
         allow_private_network_access=allow_private_network_access,
+        include_response_schema=include_response_schema,
     )
     generated._operation_parser = operation_parser
     return generated
@@ -372,6 +384,11 @@ class RestApiTool(BaseTool):
           name=self.name,
           description=self.description,
           parameters_json_schema=schema_dict,
+          response_json_schema=(
+              self._operation_parser.get_response_json_schema()
+              if self._include_response_schema
+              else None
+          ),
       )
     else:
       parameters = _to_gemini_schema(schema_dict)
@@ -630,12 +647,13 @@ class RestApiTool(BaseTool):
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
-  ) -> Dict[str, Any]:
+  ) -> Any:
+    """Runs the REST operation and returns its decoded result."""
     return await self.call(args=args, tool_context=tool_context)
 
   async def call(
       self, *, args: dict[str, Any], tool_context: Optional[ToolContext]
-  ) -> Dict[str, Any]:
+  ) -> Any:
     """Executes the REST API call.
 
     Args:
@@ -645,9 +663,9 @@ class RestApiTool(BaseTool):
           attempt and the guard that bounds the retry.
 
     Returns:
-        The API response as a dictionary. HTTP, authorization, and URL
-        validation failures are reported as an "error" entry rather than
-        raised.
+        The decoded JSON value or a dictionary containing the response text.
+        HTTP, authorization, and URL validation failures return an "error"
+        entry.
     """
     # Prepare auth credentials for the API call
     tool_auth_handler = ToolAuthHandler.from_tool_context(
@@ -764,7 +782,11 @@ class RestApiTool(BaseTool):
     # Parse API response
     try:
       response.raise_for_status()  # Raise HTTPStatusError for bad responses
-      return response.json()  # Try to decode JSON
+      if self._include_response_schema:
+        content_type = response.headers.get("content-type")
+        if content_type and not _is_json_media_type(content_type):
+          return {"text": response.text}
+      return response.json()
     except httpx.HTTPStatusError:
       error_details = response.text
       self._logger.warning(

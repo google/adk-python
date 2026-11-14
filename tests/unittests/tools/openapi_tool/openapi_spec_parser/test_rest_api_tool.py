@@ -30,6 +30,7 @@ from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
+from fastapi.openapi.models import Response
 from fastapi.openapi.models import Schema as OpenAPISchema
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -60,6 +61,7 @@ from google.adk.utils import _mtls_utils
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
 import httpx
+from jsonschema import Draft202012Validator
 import pytest
 import requests
 
@@ -324,6 +326,120 @@ class TestRestApiToolWithJsonSchema:
         },
         "required": ["test_param"],
     }
+
+  @pytest.mark.parametrize(
+      "include_response_schema,expected",
+      [
+          (
+              True,
+              {"type": "object", "properties": {"name": {"type": "string"}}},
+          ),
+          (False, None),
+      ],
+  )
+  def test_get_declaration_response_json_schema(
+      self, include_response_schema, expected
+  ):
+    operation = Operation(
+        operationId="getPet",
+        responses={
+            "200": Response(
+                description="The pet.",
+                content={
+                    "application/json": MediaType(
+                        schema=OpenAPISchema(
+                            type="object",
+                            properties={"name": OpenAPISchema(type="string")},
+                        )
+                    )
+                },
+            )
+        },
+    )
+    tool = RestApiTool(
+        name="get_pet",
+        description="Get a pet.",
+        endpoint=OperationEndpoint(
+            base_url="https://petstore.example.com",
+            path="/pets/1",
+            method="GET",
+        ),
+        operation=operation,
+        include_response_schema=include_response_schema,
+    )
+
+    declaration = tool._get_declaration()
+
+    assert declaration.response_json_schema == expected
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_declared_schema_matches_successful_results(
+      self, mock_request: AsyncMock, sample_endpoint: OperationEndpoint
+  ) -> None:
+    operation = Operation(
+        operationId="getPets",
+        responses={
+            "200": Response(
+                description="Pets",
+                content={
+                    "application/json": MediaType(
+                        schema=OpenAPISchema(
+                            type="array", items={"type": "string"}
+                        )
+                    ),
+                    "text/plain": MediaType(
+                        schema=OpenAPISchema(type="string")
+                    ),
+                },
+            ),
+            "202": Response(
+                description="Job accepted",
+                content={
+                    "application/vnd.example+json": MediaType(
+                        schema=OpenAPISchema(
+                            type="object",
+                            properties={"jobId": OpenAPISchema(type="string")},
+                            required=["jobId"],
+                        )
+                    )
+                },
+            ),
+            "204": Response(description="No content"),
+        },
+    )
+    tool = RestApiTool(
+        name="get_pets",
+        description="Get pets.",
+        endpoint=sample_endpoint,
+        operation=operation,
+        include_response_schema=True,
+    )
+    validator = Draft202012Validator(
+        tool._get_declaration().response_json_schema
+    )
+    request = httpx.Request("GET", "https://example.com/pets")
+    cases = [
+        (httpx.Response(200, request=request, json=["Milo"]), ["Milo"]),
+        (httpx.Response(200, request=request, text="42"), {"text": "42"}),
+        (
+            httpx.Response(
+                202,
+                request=request,
+                json={"jobId": "job-1"},
+                headers={"Content-Type": "application/vnd.example+json"},
+            ),
+            {"jobId": "job-1"},
+        ),
+        (httpx.Response(204, request=request), {"text": ""}),
+    ]
+    for reply, expected in cases:
+      mock_request.return_value = reply
+      result = await tool.run_async(args={}, tool_context=None)
+      assert result == expected
+      validator.validate(result)
 
 
 class TestRestApiTool:
