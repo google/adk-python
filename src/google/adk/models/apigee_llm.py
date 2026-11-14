@@ -813,9 +813,18 @@ class CompletionsHTTPClient:
       if tools:
         payload['tools'] = tools
         if config.tool_config and config.tool_config.function_calling_config:
-          mode = config.tool_config.function_calling_config.mode
+          function_calling_config = config.tool_config.function_calling_config
+          mode = function_calling_config.mode
+          allowed_names = function_calling_config.allowed_function_names or []
           if mode == types.FunctionCallingConfigMode.ANY:
-            payload['tool_choice'] = 'required'
+            # One allowed name forces that function, as AnthropicLlm does.
+            if len(allowed_names) == 1:
+              payload['tool_choice'] = {
+                  'type': 'function',
+                  'function': {'name': allowed_names[0]},
+              }
+            else:
+              payload['tool_choice'] = 'required'
           elif mode == types.FunctionCallingConfigMode.NONE:
             payload['tool_choice'] = 'none'
           elif mode == types.FunctionCallingConfigMode.AUTO:
