@@ -93,8 +93,13 @@ class ToolSpecMockStrategy(MockStrategy):
   """Mocks a tool response based on the tool's specification."""
 
   def __init__(
-      self, llm_name: str, llm_config: genai_types.GenerateContentConfig
+      self,
+      llm_name: str,
+      llm_config: genai_types.GenerateContentConfig,
+      *,
+      raise_on_error: bool = False,
   ):
+    super().__init__(raise_on_error=raise_on_error)
     self._llm_name = llm_name
     self._llm_config = llm_config
     llm_registry = LLMRegistry()
@@ -113,10 +118,7 @@ class ToolSpecMockStrategy(MockStrategy):
   ) -> Dict[str, Any]:
     declaration = tool._get_declaration()
     if not declaration:
-      return {
-          "status": "error",
-          "error_message": "Could not get tool declaration.",
-      }
+      return self._error_response(tool, "Could not get tool declaration.")
 
     tool_connection_map_json = (
         json.dumps(tool_connection_map.model_dump(exclude_none=True), indent=2)
@@ -191,11 +193,11 @@ class ToolSpecMockStrategy(MockStrategy):
       if not isinstance(parsed_response, dict) or not all(
           isinstance(key, str) for key in parsed_response
       ):
-        return {
-            "status": "error",
-            "error_message": "Generated mock response was not a JSON object.",
-            "llm_output": response_text,
-        }
+        return self._error_response(
+            tool,
+            "Generated mock response was not a JSON object.",
+            response_text,
+        )
       # Keys checked to be str by the guard above; isinstance only narrows the
       # value type as far as dict[Any, Any].
       mock_response = cast(dict[str, Any], parsed_response)
@@ -229,8 +231,6 @@ class ToolSpecMockStrategy(MockStrategy):
 
       return mock_response
     except json.JSONDecodeError:
-      return {
-          "status": "error",
-          "error_message": "Failed to generate valid JSON mock response.",
-          "llm_output": response_text,
-      }
+      return self._error_response(
+          tool, "Failed to generate valid JSON mock response.", response_text
+      )

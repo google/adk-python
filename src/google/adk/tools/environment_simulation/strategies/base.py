@@ -26,6 +26,22 @@ from google.genai import types as genai_types
 class MockStrategy:
   """Base class for mock strategies."""
 
+  def __init__(self, *, raise_on_error: bool = False):
+    self._raise_on_error = raise_on_error
+
+  def _error_response(
+      self, tool: BaseTool, message: str, llm_output: str | None = None
+  ) -> Dict[str, Any]:
+    """Reports a simulator failure, without model output in strict diagnostics."""
+    if self._raise_on_error:
+      raise ValueError(
+          f"Mock strategy for tool '{tool.name}' failed: {message}"
+      )
+    response = {"status": "error", "error_message": message}
+    if llm_output is not None:
+      response["llm_output"] = llm_output
+    return response
+
   async def mock(
       self,
       tool: BaseTool,
@@ -46,7 +62,10 @@ class TracingMockStrategy(MockStrategy):
       self,
       llm_name: str = "",
       llm_config: Optional[genai_types.GenerateContentConfig] = None,
+      *,
+      raise_on_error: bool = False,
   ):
+    super().__init__(raise_on_error=raise_on_error)
     self._llm_name = llm_name
     self._llm_config = llm_config
 
@@ -60,4 +79,4 @@ class TracingMockStrategy(MockStrategy):
       environment_data: Optional[str] = None,
       tracing: Optional[str] = None,
   ) -> Dict[str, Any]:
-    return {"status": "error", "error_message": "Not implemented"}
+    return self._error_response(tool, "Not implemented")
