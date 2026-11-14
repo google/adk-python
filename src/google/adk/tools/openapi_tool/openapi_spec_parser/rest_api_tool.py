@@ -59,6 +59,7 @@ from ...tool_context import ToolContext
 from ..auth.auth_helpers import credential_to_param
 from ..auth.auth_helpers import dict_to_auth_scheme
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
+from ..common.common import _is_dictionary_schema
 from ..common.common import ApiParameter
 from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
@@ -573,7 +574,7 @@ class RestApiTool(BaseTool):
         schema = media_type_object.schema_
         body_data = None
 
-        if schema.type == "object":
+        if schema.type == "object" and not _is_dictionary_schema(schema):
           body_data = {}
           for param in parameters:
             if param.param_location == "body" and param.py_name in kwargs:

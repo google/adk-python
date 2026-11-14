@@ -32,6 +32,7 @@ from fastapi.openapi.models import Response
 from fastapi.openapi.models import Schema
 
 from ..._gemini_schema_util import _to_snake_case
+from ..common.common import _is_dictionary_schema
 from ..common.common import _schema_from_openapi
 from ..common.common import ApiParameter
 from ..common.common import PydocHelper
@@ -189,7 +190,17 @@ class OperationParser:
       )
       description = request_body.description or ''
 
-      if schema.type == 'object':
+      if _is_dictionary_schema(schema):
+        self._params.append(
+            ApiParameter(
+                original_name='body',
+                param_location='body',
+                param_schema=schema,
+                description=description,
+                required=bool(request_body.required),
+            )
+        )
+      elif schema.type == 'object':
         properties = schema.properties or {}
         required_properties = set(schema.required or [])
         for prop_name, prop_details in properties.items():
