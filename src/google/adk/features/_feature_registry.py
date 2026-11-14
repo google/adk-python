@@ -55,6 +55,7 @@ class FeatureName(str, Enum):
   GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
   GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
   GCS_TOOLSET = "GCS_TOOLSET"
+  GOOGLE_CHAT = "GOOGLE_CHAT"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
@@ -204,6 +205,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.GCS_TOOLSET: FeatureConfig(
         FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.GOOGLE_CHAT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
         FeatureStage.STABLE, default_on=True
