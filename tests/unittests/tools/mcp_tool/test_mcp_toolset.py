@@ -61,6 +61,7 @@ from mcp import StdioServerParameters
 from mcp.shared.memory import create_client_server_memory_streams
 from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
+from mcp.types import PaginatedRequestParams
 from mcp.types import ReadResourceResult
 from mcp.types import Resource
 from mcp.types import TextResourceContents
@@ -87,6 +88,18 @@ class MockListToolsResult:
 
   def __init__(self, tools):
     self.tools = tools
+
+
+def _list_resources_page(
+    name: str, *, next_cursor: str | None = None
+) -> ListResourcesResult:
+  """Returns a resources/list page holding one text resource."""
+  return ListResourcesResult(
+      resources=[
+          Resource(name=name, mimeType="text/plain", uri=f"file:///{name}")
+      ],
+      nextCursor=next_cursor,
+  )
 
 
 class TestMcpToolset:
@@ -888,7 +901,101 @@ class TestMcpToolset:
     result = await toolset.list_resources()
 
     assert result == ["file1.txt", "data.json"]
-    self.mock_session.list_resources.assert_called_once()
+    self.mock_session.list_resources.assert_called_once_with()
+
+  @pytest.mark.parametrize("next_cursor", ["page-2", ""])
+  @pytest.mark.asyncio
+  async def test_list_resources_reads_every_page(
+      self, next_cursor: str
+  ) -> None:
+    """Resources on every resources/list page are listed, on one session."""
+    self.mock_session.list_resources = AsyncMock(
+        side_effect=[
+            _list_resources_page("file1.txt", next_cursor=next_cursor),
+            _list_resources_page("file2.txt"),
+        ]
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.list_resources()
+
+    assert result == ["file1.txt", "file2.txt"]
+    second_call = self.mock_session.list_resources.await_args_list[1]
+    assert second_call.kwargs["params"].cursor == next_cursor
+    self.mock_session_manager.create_session.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_list_resources_follows_a_repeated_cursor(self) -> None:
+    """A server that sends the same cursor on each page has every page read."""
+    self.mock_session.list_resources = AsyncMock(
+        side_effect=[
+            _list_resources_page("file1.txt", next_cursor=""),
+            _list_resources_page("file2.txt", next_cursor=""),
+            _list_resources_page("file3.txt"),
+        ]
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.list_resources()
+
+    assert result == ["file1.txt", "file2.txt", "file3.txt"]
+    later_calls = self.mock_session.list_resources.await_args_list[1:]
+    assert [call.kwargs["params"].cursor for call in later_calls] == ["", ""]
+
+  @pytest.mark.asyncio
+  async def test_list_resources_on_a_server_whose_last_cursor_is_empty(
+      self,
+  ) -> None:
+    """A server that sends `""` on its last page hits the page limit.
+
+    The server reads `int(cursor or 0)`, so the `""` cursor brings back the
+    first page. Lookups that end on an earlier page still succeed.
+    """
+
+    async def list_resources(
+        params: PaginatedRequestParams | None = None,
+    ) -> ListResourcesResult:
+      page = int(params.cursor or 0) if params else 0
+      return _list_resources_page(
+          f"file{page + 1}.txt", next_cursor="" if page == 1 else str(page + 1)
+      )
+
+    self.mock_session.list_resources = AsyncMock(side_effect=list_resources)
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with pytest.raises(ConnectionError, match="past 100 pages"):
+      await toolset.list_resources()
+    assert self.mock_session.list_resources.await_count == 100
+
+    self.mock_session.list_resources.reset_mock()
+    result = await toolset.get_resource_info("file2.txt")
+    assert result["name"] == "file2.txt"
+    assert self.mock_session.list_resources.await_count == 2
+
+  @pytest.mark.asyncio
+  async def test_list_resources_fails_past_the_page_limit(self) -> None:
+    """A server that keeps paginating gets an error after 100 pages."""
+
+    async def list_resources(
+        params: PaginatedRequestParams | None = None,
+    ) -> ListResourcesResult:
+      page = 1 if params is None else int(params.cursor)
+      return _list_resources_page(f"file{page}.txt", next_cursor=str(page + 1))
+
+    self.mock_session.list_resources = AsyncMock(side_effect=list_resources)
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with pytest.raises(ConnectionError, match="past 100 pages"):
+      await toolset.list_resources()
+    assert self.mock_session.list_resources.await_count == 100
 
   @pytest.mark.asyncio
   async def test_get_resource_info_success(self):
@@ -950,6 +1057,54 @@ class TestMcpToolset:
     assert "mime_type" not in result
     assert result["meta"] == {"trace": "t"}
     assert "_meta" not in result
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_finds_a_resource_on_a_later_page(
+      self,
+  ) -> None:
+    """A resource on a later resources/list page is found."""
+    self.mock_session.list_resources = AsyncMock(
+        side_effect=[
+            _list_resources_page("file1.txt", next_cursor="page-2"),
+            _list_resources_page("file2.txt"),
+        ]
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.get_resource_info("file2.txt")
+
+    assert result == {
+        "name": "file2.txt",
+        "mimeType": "text/plain",
+        "uri": "file:///file2.txt",
+    }
+
+  @pytest.mark.parametrize(
+      ("name", "pages_read"), [("file1.txt", 1), ("file2.txt", 2)]
+  )
+  @pytest.mark.asyncio
+  async def test_get_resource_info_reads_no_page_past_the_match(
+      self, name: str, pages_read: int
+  ) -> None:
+    """A lookup stops at the page that lists the name, below the page limit."""
+
+    async def list_resources(
+        params: PaginatedRequestParams | None = None,
+    ) -> ListResourcesResult:
+      page = 1 if params is None else int(params.cursor)
+      return _list_resources_page(f"file{page}.txt", next_cursor=str(page + 1))
+
+    self.mock_session.list_resources = AsyncMock(side_effect=list_resources)
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.get_resource_info(name)
+
+    assert result["name"] == name
+    assert self.mock_session.list_resources.await_count == pages_read
 
   @pytest.mark.asyncio
   async def test_get_resource_info_not_found(self):
