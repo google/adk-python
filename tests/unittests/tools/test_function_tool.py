@@ -544,6 +544,48 @@ async def test_run_async_with_require_confirmation():
 
 
 @pytest.mark.asyncio
+async def test_check_require_confirmation_callable_none_fail_closed():
+  """Callable returning None must not skip the confirmation gate (#7010)."""
+
+  executed = []
+
+  def sample_func(arg1: str):
+    executed.append(arg1)
+    return {"received_arg": arg1}
+
+  def forgot_a_branch(arg1: str):
+    if arg1 == "force":
+      return True
+    # Falls through and returns None.
+
+  tool = FunctionTool(sample_func, require_confirmation=forgot_a_branch)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context._state_schema = None
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  mock_invocation_context.agent = MagicMock()
+  mock_invocation_context.agent.name = "test_agent"
+  tool_context_mock = ToolContext(invocation_context=mock_invocation_context)
+  tool_context_mock.function_call_id = "test_function_call_id"
+
+  assert (
+      await tool.check_require_confirmation(
+          {"arg1": "hello"}, tool_context_mock
+      )
+      is True
+  )
+
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {
+      "error": "This tool call requires confirmation, please approve or reject."
+  }
+  assert executed == []
+
+
+@pytest.mark.asyncio
 async def test_run_async_parameter_filtering(mock_tool_context):
   """Test that parameter filtering works correctly for functions with explicit parameters."""
 

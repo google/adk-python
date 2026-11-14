@@ -1711,6 +1711,33 @@ class TestMCPTool:
       tool_context.request_confirmation.assert_called_once()
 
   @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_callable_none_fail_closed(
+      self,
+  ):
+    """An omitted predicate return must request confirmation."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=lambda **kwargs: None,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    tool_context.actions = EventActions()
+
+    result = await tool.run_async(
+        args={"param1": "test_value"}, tool_context=tool_context
+    )
+
+    assert result == {
+        "error": (
+            "This tool call requires confirmation, please approve or reject."
+        )
+    }
+    tool_context.request_confirmation.assert_called_once()
+    assert tool_context.actions.skip_summarization is True
+
+  @pytest.mark.asyncio
   async def test_run_async_require_confirmation_callable_true_no_confirmation(
       self,
   ):

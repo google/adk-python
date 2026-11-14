@@ -600,9 +600,14 @@ class McpTool(BaseAuthenticatedTool):
       args_to_call = self._prepare_callable_args(
           self._require_confirmation, args, tool_context
       )
-      return await self._invoke_callable(
+      result = await self._invoke_callable(
           self._require_confirmation, args_to_call
       )
+      # typing.cast is erased at runtime. A callable that returns None (e.g. an
+      # unhandled branch) must not skip the confirmation gate.
+      if isinstance(result, bool):
+        return result
+      return True
     return bool(self._require_confirmation)
 
   @override
