@@ -1535,12 +1535,14 @@ class TestRestApiTool:
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
+  @pytest.mark.parametrize("args", [{}, {"user_id": None}])
   async def test_call_missing_required_path_param_returns_error(
       self,
       mock_request,
       mock_tool_context,
       sample_auth_scheme,
       sample_auth_credential,
+      args,
   ):
     """A required path param with no default and no value must not crash."""
     mock_operation = Operation(
@@ -1568,8 +1570,8 @@ class TestRestApiTool:
         auth_credential=sample_auth_credential,
     )
 
-    # Call without providing userId and without a default to fall back on.
-    result = await tool.call(args={}, tool_context=mock_tool_context)
+    # Call without a userId value and without a default to fall back on.
+    result = await tool.call(args=args, tool_context=mock_tool_context)
 
     assert not mock_request.called
     assert "error" in result
@@ -2434,6 +2436,70 @@ class TestRestApiTool:
     assert "parent-directory" in result["error"]
     assert not mock_request.called
     assert tool._detect_error_in_response(result) == "HTTP_ERROR"
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("path", "value", "expected_path"),
+      [
+          ("/pets/{petId}/toys", "", None),
+          ("/pets/{petId}/toys", "  ", None),
+          ("/pets/{petId}/toys", "\t\n", None),
+          ("/pets/.{petId}/toys", "", None),
+          ("/exports/{petId}.csv", "", "/exports/.csv"),
+          ("/exports/{petId}.csv", " ", "/exports/%20.csv"),
+      ],
+  )
+  async def test_call_with_blank_path_param(
+      self,
+      mock_request: AsyncMock,
+      mock_tool_context: MagicMock,
+      path: str,
+      value: str,
+      expected_path: str | None,
+  ) -> None:
+    """Reject blank segments while allowing blank values inside a segment."""
+    tool = RestApiTool(
+        name="list_toys",
+        description="List a pet's toys.",
+        endpoint=OperationEndpoint(
+            base_url="https://petstore.example.com",
+            path=path,
+            method="GET",
+        ),
+        operation=Operation(
+            operationId="listToys",
+            parameters=[
+                OpenAPIParameter(**{
+                    "name": "petId",
+                    "in": "path",
+                    "required": True,
+                    "schema": OpenAPISchema(type="string"),
+                })
+            ],
+        ),
+    )
+
+    mock_request.return_value = httpx.Response(
+        200,
+        json={},
+        request=httpx.Request("GET", "https://petstore.example.com"),
+    )
+    result = await tool.call(
+        args={"pet_id": value}, tool_context=mock_tool_context
+    )
+
+    if expected_path is None:
+      assert "Path parameter 'pet_id' must not be empty." in result["error"]
+      assert "petId" not in result["error"]
+      mock_request.assert_not_called()
+    else:
+      assert result == {}
+      assert mock_request.call_args.kwargs["url"] == (
+          f"https://petstore.example.com{expected_path}"
+      )
 
   def test_prepare_request_params_header_param(
       self,
