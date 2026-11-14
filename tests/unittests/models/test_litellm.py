@@ -37,6 +37,7 @@ from google.adk.models.lite_llm import _build_tool_call_from_json_dict
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _decode_reasoning_details_envelope
+from google.adk.models.lite_llm import _decode_reasoning_envelope_model
 from google.adk.models.lite_llm import _extract_gemini_model_from_litellm
 from google.adk.models.lite_llm import _extract_json_from_deepseek_args
 from google.adk.models.lite_llm import _extract_reasoning_details
@@ -14449,10 +14450,11 @@ _OPENROUTER_REASONING_DETAILS = [
 ]
 
 
-def _details_envelope(details):
-  return json.dumps(
-      {"adk_reasoning_details": details}, separators=(",", ":")
-  ).encode("utf-8")
+def _details_envelope(details, model=None):
+  payload = {"adk_reasoning_details": details}
+  if model:
+    payload["adk_reasoning_model"] = model
+  return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
 def test_extract_reasoning_details_from_provider_specific_fields():
@@ -14617,6 +14619,7 @@ async def test_content_to_message_param_does_not_decode_opaque_signature_as_deta
 @pytest.mark.asyncio
 async def test_generate_content_async_replays_reasoning_details_next_turn():
   first_response = ModelResponse(
+      model="openrouter/openai/gpt-5",
       id="resp-1",
       choices=[
           Choices(
@@ -14694,3 +14697,268 @@ async def test_generate_content_async_replays_reasoning_details_next_turn():
   assert len(with_details) == 1
   assert with_details[0]["reasoning_details"] == (_OPENROUTER_REASONING_DETAILS)
   assert with_details[0]["tool_calls"][0]["id"] == "call_1"
+
+
+def test_message_to_generate_content_response_stores_producing_model():
+  message = {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "Let me think about this step by step.",
+      "provider_specific_fields": {
+          "reasoning_details": _OPENROUTER_REASONING_DETAILS
+      },
+  }
+
+  response = _message_to_generate_content_response(
+      message, model_version="openrouter/openai/gpt-5"
+  )
+
+  thought_parts = [p for p in response.content.parts if p.thought]
+  assert (
+      _decode_reasoning_envelope_model(thought_parts[-1].thought_signature)
+      == "openrouter/openai/gpt-5"
+  )
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_skips_replay_for_other_provider():
+  # The envelope was produced on an OpenRouter route; other providers reject
+  # the reasoning_details field, so the plain reasoning text is sent instead.
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(
+          _OPENROUTER_REASONING_DETAILS, model="openrouter/openai/gpt-5"
+      ),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(content, model="openai/gpt-5")
+
+  assert "reasoning_details" not in message
+  assert message["reasoning_content"] == "Let me think about this step by step."
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_skips_replay_for_different_model():
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(
+          _OPENROUTER_REASONING_DETAILS, model="openrouter/openai/gpt-5"
+      ),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/anthropic/claude-sonnet-4"
+  )
+
+  assert "reasoning_details" not in message
+  assert message["reasoning_content"] == "Let me think about this step by step."
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_replays_same_model_envelope():
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(
+          _OPENROUTER_REASONING_DETAILS, model="openrouter/openai/gpt-5"
+      ),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/openai/gpt-5"
+  )
+
+  assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
+  assert message["reasoning_content"] is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_replays_envelope_model_without_prefix():
+  # LiteLLM response messages report the model without the routing prefix, so
+  # the comparison ignores a leading `openrouter/`.
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(
+          _OPENROUTER_REASONING_DETAILS, model="openai/gpt-5"
+      ),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/openai/gpt-5"
+  )
+
+  assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_replays_with_custom_llm_provider():
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(
+          _OPENROUTER_REASONING_DETAILS, model="openai/gpt-5"
+      ),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, model="openai/gpt-5", custom_llm_provider="openrouter"
+  )
+
+  assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_no_envelope_leak_into_anthropic_signature():
+  # A session that produced reasoning_details on an OpenRouter-routed Claude
+  # model must not leak the envelope into the Anthropic thinking signature
+  # when it switches to the direct Anthropic route.
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(
+          _OPENROUTER_REASONING_DETAILS,
+          model="openrouter/anthropic/claude-sonnet-4",
+      ),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, provider="anthropic", model="anthropic/claude-sonnet-4"
+  )
+
+  thinking_blocks = [
+      b for b in message["content"] if b.get("type") == "thinking"
+  ]
+  assert len(thinking_blocks) == 1
+  assert (
+      thinking_blocks[0]["thinking"] == "Let me think about this step by step."
+  )
+  assert "signature" not in thinking_blocks[0]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_skips_replay_after_model_switch():
+  first_response = ModelResponse(
+      model="openrouter/openai/gpt-5",
+      id="resp-1",
+      choices=[
+          Choices(
+              finish_reason="tool_calls",
+              message={
+                  "role": "assistant",
+                  "content": None,
+                  "reasoning_content": "Let me think about this step by step.",
+                  "provider_specific_fields": {
+                      "reasoning_details": _OPENROUTER_REASONING_DETAILS
+                  },
+                  "tool_calls": [{
+                      "type": "function",
+                      "id": "call_1",
+                      "function": {
+                          "name": "get_weather",
+                          "arguments": '{"city": "Zurich"}',
+                      },
+                  }],
+              },
+          )
+      ],
+  )
+  second_response = ModelResponse(
+      id="resp-2",
+      choices=[
+          Choices(
+              finish_reason="stop",
+              message={"role": "assistant", "content": "It is sunny."},
+          )
+      ],
+  )
+  acompletion = AsyncMock(side_effect=[first_response, second_response])
+  client = MockLLMClient(acompletion, Mock())
+  model = LiteLlm(model="openrouter/openai/gpt-5", llm_client=client)
+
+  first_llm_response = None
+  async for response in model.generate_content_async(
+      LLM_REQUEST_WITH_FUNCTION_DECLARATION
+  ):
+    first_llm_response = response
+
+  function_call_part = next(
+      p for p in first_llm_response.content.parts if p.function_call
+  )
+  follow_up_request = LlmRequest(
+      model="openrouter/anthropic/claude-sonnet-4",
+      contents=[
+          *LLM_REQUEST_WITH_FUNCTION_DECLARATION.contents,
+          first_llm_response.content,
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_part.function_call.id,
+                          name=function_call_part.function_call.name,
+                          response={"result": "sunny"},
+                      )
+                  )
+              ],
+          ),
+      ],
+      config=LLM_REQUEST_WITH_FUNCTION_DECLARATION.config,
+  )
+  async for _ in model.generate_content_async(follow_up_request):
+    pass
+
+  assert acompletion.await_count == 2
+  second_messages = acompletion.await_args_list[1].kwargs["messages"]
+  assistant_messages = [
+      m for m in second_messages if m.get("role") == "assistant"
+  ]
+  assert assistant_messages
+  for assistant_message in assistant_messages:
+    assert "reasoning_details" not in assistant_message
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_replays_without_stored_model():
+  # Envelopes recorded before the producing model was stored carry no model;
+  # they stay replayable to any OpenRouter model.
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(_OPENROUTER_REASONING_DETAILS),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, model="openrouter/anthropic/claude-sonnet-4"
+  )
+
+  assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_replays_on_proxy_routed_model():
+  # `litellm_proxy/` selects the transport, not the model, so a proxy-routed
+  # OpenRouter request still replays the envelope.
+  thought = types.Part(
+      text="Let me think about this step by step.",
+      thought=True,
+      thought_signature=_details_envelope(
+          _OPENROUTER_REASONING_DETAILS, model="openrouter/openai/gpt-5"
+      ),
+  )
+  content = types.Content(role="model", parts=[thought])
+
+  message = await _content_to_message_param(
+      content, model="litellm_proxy/openrouter/openai/gpt-5"
+  )
+
+  assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
