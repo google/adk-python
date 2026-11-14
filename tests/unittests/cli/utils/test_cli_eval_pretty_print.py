@@ -18,7 +18,7 @@ from google.adk.cli.cli_eval import _format_metric_cell
 from google.adk.cli.cli_eval import _format_tool_call
 from google.adk.cli.cli_eval import _pretty_print_eval_results_across_runs
 from google.adk.cli.cli_eval import pretty_print_eval_result
-from google.adk.evaluation._eval_case_result_multi_run_aggregator import MethodResult
+from google.adk.cli.cli_eval import pretty_print_multi_run_summary_table
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation
@@ -30,6 +30,7 @@ from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.eval_metrics import RubricsBasedCriterion
 from google.adk.evaluation.eval_metrics import TokenUsageDetails
 from google.adk.evaluation.eval_result import EvalCaseResult
+from google.adk.evaluation.eval_result import MethodResult
 from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
 from google.genai import types as genai_types
@@ -696,3 +697,92 @@ def test_pretty_print_eval_results_across_runs_prints_cross_run_criteria(
   )
   run_at = out.index("Run: 1 of 1\n")
   assert metric_at < criterion_at < run_at
+
+
+def test_pretty_print_multi_run_summary_table_renders_pass_rate_and_run_scores(
+    capsys,
+):
+  """Summary output shows Status, Runs strip with Pass Rate, criteria, and per-run scores."""
+  runs = [
+      _run_result(repetition_index=0, score=1.0, eval_status=EvalStatus.PASSED),
+      _run_result(repetition_index=1, score=0.6, eval_status=EvalStatus.FAILED),
+  ]
+  verdict = MultiRunCaseResult(
+      eval_set_id="eval-set",
+      eval_id="flaky-case",
+      final_eval_status=EvalStatus.FAILED,
+      overall_eval_metric_results=[
+          EvalMetricResult(
+              metric_name=PrebuiltMetrics.RESPONSE_MATCH_SCORE.value,
+              score=0.8,
+              threshold=0.8,
+              eval_status=EvalStatus.PASSED,
+          )
+      ],
+      runs=runs,
+      cross_run_results=[
+          MethodResult(
+              name="pass_rate",
+              value=0.5,
+              threshold=0.8,
+              status=EvalStatus.FAILED,
+              note="1 of 2 runs passed",
+          )
+      ],
+  )
+
+  pretty_print_multi_run_summary_table([verdict])
+
+  out = capsys.readouterr().out
+  assert (
+      "\n"
+      "  flaky-case  FAILED  PF  1/2 (50%)  pass_rate=0.50 (FAILED)\n"
+      "    response_match_score: 0.80 (threshold 0.80, PASSED, runs: [1.00,"
+      " 0.60])\n"
+  ) == out
+
+
+def test_pretty_print_multi_run_summary_table_uses_decided_runs_denominator(
+    capsys,
+):
+  """The pass fraction denominator uses decided runs to match `pass_rate`."""
+  crashed_run = EvalCaseResult(
+      eval_set_id="eval-set",
+      eval_id="crashed-case",
+      final_eval_status=EvalStatus.FAILED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+      session_id="session-3",
+      repetition_index=3,
+  )
+  runs = [
+      _run_result(repetition_index=0, score=1.0, eval_status=EvalStatus.PASSED),
+      _run_result(repetition_index=1, score=0.9, eval_status=EvalStatus.PASSED),
+      _run_result(repetition_index=2, score=0.5, eval_status=EvalStatus.FAILED),
+      crashed_run,
+  ]
+  verdict = MultiRunCaseResult(
+      eval_set_id="eval-set",
+      eval_id="crashed-case",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[
+          EvalMetricResult(
+              metric_name=PrebuiltMetrics.RESPONSE_MATCH_SCORE.value,
+              score=0.8,
+              threshold=0.8,
+              eval_status=EvalStatus.PASSED,
+          )
+      ],
+      runs=runs,
+      max_crashed_runs=1,
+  )
+
+  pretty_print_multi_run_summary_table([verdict])
+
+  out = capsys.readouterr().out
+  assert (
+      "\n"
+      "  crashed-case  PASSED  PPFC  2/3 (67%)\n"
+      "    response_match_score: 0.80 (threshold 0.80, PASSED, runs: [1.00,"
+      " 0.90, 0.50, -])\n"
+  ) == out

@@ -1497,6 +1497,7 @@ def cli_eval(
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
+    from .cli_eval import pretty_print_multi_run_summary_table
     from .utils import _eval_storage
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
@@ -1644,6 +1645,7 @@ def cli_eval(
             eval_service=eval_service,
             eval_metrics=eval_metrics,
             parallelism=parallelism,
+            multi_run_config=eval_config.multi_run_config,
         )
     )
     aggregate_eval_results = aggregate_eval_case_results(
@@ -1671,11 +1673,18 @@ def cli_eval(
         f"Each eval case was run {num_runs} times and judged on all"
         f" {num_runs} runs."
     )
+  show_multi_run_summary = num_runs > 1 or has_pass_count_rules(
+      eval_config.multi_run_config
+  )
   for eval_set_id, pass_fail_count in eval_run_summary.items():
     click.echo(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
+    if show_multi_run_summary:
+      pretty_print_multi_run_summary_table(
+          [r for r in aggregate_eval_results if r.eval_set_id == eval_set_id]
+      )
 
   if print_detailed_results:
     # Rules that count passing runs judge a case run once as well, so its

@@ -24,6 +24,8 @@ from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation._eval_set_results_manager_utils import _sanitize_eval_set_result_name
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_result import EvalSetResult
+from google.adk.evaluation.eval_result import MethodResult
+from google.adk.evaluation.eval_result import MultiRunCaseSummary
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.local_eval_set_results_manager import _ADK_EVAL_HISTORY_DIR
 from google.adk.evaluation.local_eval_set_results_manager import _EVAL_SET_RESULT_FILE_EXTENSION
@@ -204,3 +206,41 @@ class TestLocalEvalSetResultsManager:
     # No eval set results saved for the app
     results = self.manager.list_eval_set_results(self.app_name)
     assert results == []
+
+  def test_save_and_get_eval_set_result_with_multi_run_case_summaries(
+      self, mocker
+  ):
+    """Multi-run case summaries round-trip through local eval history JSON."""
+    mock_time = mocker.patch("time.time")
+    mock_time.return_value = self.timestamp
+    summaries = [
+        MultiRunCaseSummary(
+            eval_set_id=self.eval_set_id,
+            eval_id="case1",
+            final_eval_status=EvalStatus.PASSED,
+            num_runs=2,
+            passed_runs=1,
+            failed_runs=1,
+            pass_rate=0.5,
+            metric_methods={
+                "response_match_score": MethodResult(
+                    name="mean_over_invocations",
+                    value=0.8,
+                    threshold=0.8,
+                    status=EvalStatus.PASSED,
+                )
+            },
+        )
+    ]
+
+    self.manager.save_eval_set_result(
+        self.app_name,
+        self.eval_set_id,
+        self.eval_case_results,
+        multi_run_case_summaries=summaries,
+    )
+    retrieved = self.manager.get_eval_set_result(
+        self.app_name, self.eval_set_result_name
+    )
+
+    assert retrieved.multi_run_case_summaries == summaries
