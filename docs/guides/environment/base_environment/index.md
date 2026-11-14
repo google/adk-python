@@ -92,17 +92,28 @@ An environment moves through four steps, always in this order.
     leaves a directory you supplied alone.
 
 `initialize` and `close` have no-op default implementations on the base class,
-and `read_file_stream` defaults to yielding the `read_file` result as one chunk,
-so an environment that needs none of them can leave them alone. The four core
-members, `working_dir`, `execute`, `read_file` and `write_file`, are abstract,
-and a subclass that does not provide all of them cannot be instantiated at all.
+`read_file_stream` defaults to yielding the `read_file` result as one chunk, and
+`working_dir` defaults to `None`, so an environment that needs none of them can
+leave them alone. The three core methods, `execute`, `read_file` and
+`write_file`, are abstract, and a subclass that does not provide all of them
+cannot be instantiated at all.
+
+`working_dir` is `None` while the environment does not know its working
+directory, for example before `initialize` creates the temporary one of a
+`LocalEnvironment`. The remote sandbox environments use a fixed path and return
+it before `initialize`, so the model is told the working directory from the
+first request. A custom environment should also return `None` rather than
+raise, since the toolsets read it while building every model request. They
+treat a `RuntimeError` from `working_dir` as `None`, so an environment that
+still raises one before `initialize` keeps working.
 
 `is_initialized` is a plain boolean property. The tools of both toolsets call
 `initialize` whether or not it is set, and set it once `initialize` returns if
 the environment has not. Each toolset's `close()` clears it after closing the
-environment, and both toolsets read it to decide whether to tell the model the
-working directory yet. No environment method checks it, so read it as a status
-report rather than as a guard that will stop you. Calling `execute` before
+environment. The toolsets tell the model the working directory once
+`working_dir` is not `None`, whatever `is_initialized` says. No environment
+method checks `is_initialized`, so read it as a status report rather than as a
+guard that will stop you. Calling `execute` before
 `initialize` on `LocalEnvironment` raises `RuntimeError: `working_dir` is not
 set. Call initialize() first.`
 
@@ -178,7 +189,8 @@ one working directory.
 
 ### Write your own environment
 
-Writing an environment means implementing the four abstract members. The
+Writing an environment means implementing the three abstract methods, and
+overriding `working_dir` if it has one. The
 lifecycle hooks are optional, and the one detail worth getting right is that
 `initialize` and `close` may both be called more than once.
 
