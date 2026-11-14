@@ -102,15 +102,22 @@ client = redis_asyncio.Redis.from_url(
 session_service = RedisSessionService(redis_client=client)
 ```
 
+Native Redis Cluster is not supported. When an event updates `app:` or `user:`
+state, the service watches the session and state keys in one transaction. These
+keys are not guaranteed to share a Cluster hash slot, so the transaction can
+fail with `CROSSSLOT`. Use a standalone Redis instance for this service.
+
 ## Key Schema & State Scoping
 
 `RedisSessionService` stores session data and state using the following Redis key structure:
 
 | Key Pattern | Data | Description |
 | :--- | :--- | :--- |
-| `{key_prefix}{app_name}:{user_id}:{session_id}` | JSON (`Session`) | Contains session ID, state, events list, and last update timestamp. Expired based on `ttl_seconds`. |
-| `{key_prefix}user_state:{app_name}:{user_id}` | JSON (`dict`) | Persisted user-scoped state (keys prefixed with `user:`). Shared across sessions for the same user. Expired based on `ttl_seconds`. |
-| `{key_prefix}app_state:{app_name}` | JSON (`dict`) | Persisted app-scoped state (keys prefixed with `app:`). Shared across all sessions and users for the app. Expired based on `ttl_seconds`. |
+| `{key_prefix}v2:s2_{b64url(app_name)}.{b64url(user_id)}.{b64url(session_id)}` | JSON (`Session`) | Contains session ID, state, events list, and last update timestamp. Expired based on `ttl_seconds`. |
+| `{key_prefix}v2:u2_{b64url(app_name)}.{b64url(user_id)}` | JSON (`dict`) | Persisted user-scoped state (keys prefixed with `user:`). Shared across sessions for the same user. Expired based on `ttl_seconds`. |
+| `{key_prefix}v2:a2_{b64url(app_name)}` | JSON (`dict`) | Persisted app-scoped state (keys prefixed with `app:`). Shared across all sessions and users for the app. Expired based on `ttl_seconds`. |
+
+`b64url(value)` is the unpadded URL-safe Base64 encoding of the UTF-8 value. With the default `key_prefix`, the new namespace is `adk:session:v2:`. These versioned keys are not compatible with keys written by earlier versions. This service does not read, migrate, or delete legacy entries; existing entries remain untouched and are not visible to this version. Plan a coordinated migration or cutover before upgrading. Legacy keys can expire under their configured TTL; if expiry is disabled, inventory and back up relevant entries before any manual cleanup, excluding the new `{key_prefix}v2:` keys. Do not flush a Redis instance shared with other applications.
 
 When events append state deltas:
 - `user:<key>` updates are synchronized to the user state key.
