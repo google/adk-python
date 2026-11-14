@@ -20,6 +20,7 @@ from typing import Callable
 from typing import cast
 
 from sqlalchemy import Dialect
+from sqlalchemy import String
 from sqlalchemy import Text
 from sqlalchemy.dialects import mssql
 from sqlalchemy.dialects import mysql
@@ -46,6 +47,51 @@ def utc_datetime_to_timestamp(value: datetime.datetime) -> float:
   if value.tzinfo is None:
     value = value.replace(tzinfo=datetime.timezone.utc)
   return value.timestamp()
+
+
+def _mysql_exact_collation(dialect: Dialect) -> str:
+  """Returns a MySQL/MariaDB collation that compares strings byte for byte.
+
+  The ``NO PAD`` collations also keep ``"bob"`` and ``"bob "`` apart, which the
+  older ``utf8mb4_bin`` (``PAD SPACE``) does not.
+  """
+  if getattr(dialect, "is_mariadb", False):
+    # Available since MariaDB 10.2.
+    return "utf8mb4_nopad_bin"
+  version = dialect.server_version_info
+  if version is not None and tuple(version[:3]) >= (8, 0, 17):
+    return "utf8mb4_0900_bin"
+  return "utf8mb4_bin"
+
+
+class KeyString(TypeDecorator[str]):  # type: ignore[misc]
+  """A string key column that compares exactly on every backend.
+
+  MySQL and MariaDB give a column the database's default collation, which is
+  usually case- and accent-insensitive, so ``"alice"``, ``"Alice"`` and
+  ``"ALICE"`` would be one key there. Key columns such as ``user_id`` separate
+  users' sessions and state, so on those backends they use a binary collation.
+  Other backends keep a plain ``VARCHAR``.
+
+  Tables created before this type was used keep their old collation until
+  they are altered.
+  """
+
+  impl = String
+  # The collation depends only on the dialect (and its server version), which
+  # the compiled cache already keys on.
+  cache_ok = True
+
+  def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
+    if dialect.name in ("mysql", "mariadb"):
+      return dialect.type_descriptor(
+          mysql.VARCHAR(
+              cast(String, self.impl_instance).length,
+              charset="utf8mb4",
+              collation=_mysql_exact_collation(dialect),
+          )
+      )
+    return dialect.type_descriptor(self.impl_instance)
 
 
 class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
