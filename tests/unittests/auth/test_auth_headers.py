@@ -79,6 +79,83 @@ def test_http_basic_auth():
   assert build_auth_headers(credential) == {"Authorization": f"Basic {encoded}"}
 
 
+def test_http_basic_auth_with_empty_password():
+  """An API key as the username with an empty password is valid."""
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username="api-key", password=""),
+      ),
+  )
+
+  encoded = base64.b64encode(b"api-key:").decode()
+  assert build_auth_headers(credential) == {"Authorization": f"Basic {encoded}"}
+
+
+def test_http_basic_auth_with_empty_username():
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username="", password="pass"),
+      ),
+  )
+
+  encoded = base64.b64encode(b":pass").decode()
+  assert build_auth_headers(credential) == {"Authorization": f"Basic {encoded}"}
+
+
+def test_http_basic_auth_with_empty_username_and_password():
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username="", password=""),
+      ),
+  )
+
+  encoded = base64.b64encode(b":").decode()
+  assert build_auth_headers(credential) == {"Authorization": f"Basic {encoded}"}
+
+
+def test_http_basic_auth_without_credentials_is_unsupported():
+  """Absent (None) username and password still yield no header."""
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(),
+      ),
+  )
+
+  assert build_auth_headers(credential) is None
+
+
+def test_http_basic_auth_with_only_username_is_unsupported():
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username="user"),
+      ),
+  )
+
+  assert build_auth_headers(credential) is None
+
+
+def test_http_basic_auth_with_only_password_is_unsupported():
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(password="pass"),
+      ),
+  )
+
+  assert build_auth_headers(credential) is None
+
+
 def test_http_custom_scheme_uses_scheme_name():
   credential = AuthCredential(
       auth_type=AuthCredentialTypes.HTTP,

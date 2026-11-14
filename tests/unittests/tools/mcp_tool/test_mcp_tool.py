@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import base64
 import inspect
 import logging
 import time
@@ -1157,6 +1158,56 @@ class TestMCPTool:
 
     expected_encoded = base64.b64encode(b"user:pass").decode()
     assert headers == {"Authorization": f"Basic {expected_encoded}"}
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "username, password, expected_headers",
+      [
+          (
+              "api-key",
+              "",
+              {
+                  "Authorization": (
+                      f"Basic {base64.b64encode(b'api-key:').decode()}"
+                  )
+              },
+          ),
+          (
+              "",
+              "pass",
+              {"Authorization": f"Basic {base64.b64encode(b':pass').decode()}"},
+          ),
+          (
+              "",
+              "",
+              {"Authorization": f"Basic {base64.b64encode(b':').decode()}"},
+          ),
+          (None, None, None),
+          ("user", None, None),
+          (None, "pass", None),
+      ],
+  )
+  async def test_get_headers_http_basic_empty_credentials(
+      self, username, password, expected_headers
+  ):
+    """Empty username/password are valid Basic credentials; absent ones are not."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    http_auth = HttpAuth(
+        scheme="basic",
+        credentials=HttpCredentials(username=username, password=password),
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP, http=http_auth
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, credential)
+
+    assert headers == expected_headers
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize(
