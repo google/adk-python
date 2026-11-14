@@ -345,7 +345,7 @@ class GoogleCredentialsManager:
     )
 
     # Check if OAuth response is available
-    auth_response = tool_context.get_auth_response(
+    auth_response = await tool_context.get_auth_response_async(
         AuthConfig(auth_scheme=auth_scheme, raw_auth_credential=auth_credential)
     )
 

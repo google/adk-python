@@ -672,6 +672,37 @@ class Context(ReadonlyContext):
 
     return AuthHandler(auth_config).get_auth_response(self.state)
 
+  async def get_auth_response_async(
+      self, auth_config: AuthConfig
+  ) -> AuthCredential | None:
+    """Gets the auth response credential from session state, without blocking.
+
+    Same as `get_auth_response`, but the token request is awaited instead of
+    blocking the calling thread, so concurrent work on the same event loop
+    keeps running while the authorization code is redeemed.
+
+    Args:
+      auth_config: The authentication configuration for the credential.
+
+    Returns:
+      The auth credential from the auth response, or None if not found.
+    """
+    from ..auth.auth_handler import AuthHandler
+
+    return await AuthHandler(auth_config).get_auth_response_async(
+        self.state, lock_scope=self._auth_lock_scope()
+    )
+
+  def _auth_lock_scope(self) -> tuple[str, ...]:
+    """Returns the scope that identifies this session's stored credentials.
+
+    The scope keeps the credential exchange of one session from blocking the
+    exchange of another session, which would let one user's slow token request
+    delay another user's.
+    """
+    session = self.session
+    return (session.app_name, session.user_id, session.id)
+
   def request_credential(self, auth_config: AuthConfig) -> None:
     """Requests a credential for the current tool call.
 

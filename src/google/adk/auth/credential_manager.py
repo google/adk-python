@@ -429,7 +429,12 @@ class CredentialManager:
   ) -> Optional[AuthCredential]:
     """Load credential from auth response in context."""
     return await AuthHandler(self._auth_config)._get_auth_response_async(
-        context.state
+        context.state,
+        lock_scope=(
+            context.session.app_name,
+            context.session.user_id,
+            context.session.id,
+        ),
     )
 
   async def _exchange_credential(
