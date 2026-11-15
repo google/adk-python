@@ -39,17 +39,26 @@ import pytest_asyncio
 class _FakeEnvironment(BaseEnvironment):
   """Fake environment to return customized execution and read results."""
 
-  def __init__(self, *, stdout: str, file_content: bytes):
+  def __init__(
+      self,
+      *,
+      stdout: str,
+      file_content: bytes,
+      working_dir: Path | None = None,
+  ):
     self._stdout = stdout
     self._file_content = file_content
+    self._working_dir = working_dir
     self.contexts: list[tuple[str, Any]] = []
 
   @property
-  def working_dir(self) -> Path:
-    return Path("/workspace")
+  def working_dir(self) -> Path | None:
+    return self._working_dir
 
   async def initialize(self, *, ctx: Any = None) -> None:
     self.contexts.append(("initialize", ctx))
+    if self._working_dir is None:
+      self._working_dir = Path("/workspace")
 
   async def close(self) -> None:
     pass
@@ -181,7 +190,7 @@ async def _instruction(toolset: EnvironmentToolset) -> str:
 
 @pytest.mark.asyncio
 async def test_process_llm_request_does_not_initialize_environment():
-  """Before initialization the instruction has the rules, not the directory."""
+  """Without a working directory the instruction has only the rules."""
   env = _FakeEnvironment(stdout="", file_content=b"")
   toolset = EnvironmentToolset(environment=env)
 
@@ -206,10 +215,11 @@ async def test_instruction_includes_working_dir_after_tool_call():
 
 
 @pytest.mark.asyncio
-async def test_instruction_includes_working_dir_of_shared_environment():
-  """An environment another toolset initialized shows its directory too."""
-  env = _FakeEnvironment(stdout="", file_content=b"")
-  env.is_initialized = True
+async def test_instruction_includes_working_dir_before_initialization():
+  """A working directory known before initialization is shown right away."""
+  env = _FakeEnvironment(
+      stdout="", file_content=b"", working_dir=Path("/workspace")
+  )
   toolset = EnvironmentToolset(environment=env)
 
   instruction = await _instruction(toolset)
@@ -217,6 +227,31 @@ async def test_instruction_includes_working_dir_of_shared_environment():
   assert "Your environment is at /workspace/" in instruction
   assert "# Environment Rules" in instruction
   assert not env.contexts
+
+
+class _RaisingBeforeInitEnvironment(_FakeEnvironment):
+  """Raises from `working_dir` until initialized, as older environments do."""
+
+  @property
+  def working_dir(self) -> Path:
+    if self._working_dir is None:
+      raise RuntimeError("`working_dir` is not set. Call initialize() first.")
+    return self._working_dir
+
+
+@pytest.mark.asyncio
+async def test_instruction_tolerates_working_dir_raising_before_initialization():
+  """A `working_dir` that raises RuntimeError counts as not known yet."""
+  env = _RaisingBeforeInitEnvironment(stdout="", file_content=b"")
+  toolset = EnvironmentToolset(environment=env)
+
+  before = await _instruction(toolset)
+  await _run_execute(toolset)
+  after = await _instruction(toolset)
+
+  assert "# Environment Rules" in before
+  assert "Your environment is at" not in before
+  assert "Your environment is at /workspace/" in after
 
 
 @pytest.mark.asyncio

@@ -33,7 +33,7 @@ MAX_OUTPUT_CHARS = 30_000
 ENVIRONMENT_WORKING_DIR_INSTRUCTION = """\
 Your environment is at {working_dir}/
 """
-"""Prepended to the rules once the environment is initialized."""
+"""Prepended to the rules once the environment has a working directory."""
 
 ENVIRONMENT_INSTRUCTION = """\
 # Environment Rules

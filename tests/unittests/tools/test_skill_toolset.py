@@ -1618,29 +1618,62 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
 
 
 def _uninitialized_env_mock():
-  """An environment mock that reports it has not been initialized."""
+  """An environment mock that has no working directory until initialized."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=None)
+  mock_env.is_initialized = False
+  return mock_env
+
+
+def _set_env_mock_working_dir(mock_env):
+  """Gives an environment mock its working directory, nothing else."""
   type(mock_env).working_dir = mock.PropertyMock(
       return_value=Path("/workspace")
   )
-  mock_env.is_initialized = False
-  return mock_env
+
+
+def _mark_env_mock_initialized(mock_env):
+  """Gives an `_uninitialized_env_mock` what `initialize` sets up."""
+  _set_env_mock_working_dir(mock_env)
+  mock_env.is_initialized = True
 
 
 @pytest.mark.asyncio
 async def test_process_llm_request_does_not_initialize_environment(
     mock_skill1, tool_context_instance
 ):
-  """The skills folder is left out of the instruction until initialization."""
+  """The skills folder is left out of the instruction until it is known."""
   mock_env = _uninitialized_env_mock()
   toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
 
   (before,) = await _instructions_for(toolset, tool_context_instance)
-  mock_env.is_initialized = True
+  # Only the working directory: `is_initialized` stays false.
+  _set_env_mock_working_dir(mock_env)
   (after,) = await _instructions_for(toolset, tool_context_instance)
 
   mock_env.initialize.assert_not_called()
   assert "NOTE ON ENVIRONMENT EXECUTION" not in before
+  assert "/workspace/skills/<skill_name>/" not in before
+  assert "/workspace/skills/<skill_name>/" in after
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_tolerates_working_dir_raising_before_init(
+    mock_skill1, tool_context_instance
+):
+  """A `working_dir` that raises RuntimeError counts as not known yet."""
+  mock_env = _uninitialized_env_mock()
+  type(mock_env).working_dir = mock.PropertyMock(
+      side_effect=RuntimeError("Call initialize() first.")
+  )
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  (before,) = await _instructions_for(toolset, tool_context_instance)
+  # Only the working directory: `is_initialized` stays false.
+  _set_env_mock_working_dir(mock_env)
+  (after,) = await _instructions_for(toolset, tool_context_instance)
+
+  assert toolset.skills_folder == Path("/workspace/skills")
   assert "/workspace/skills/<skill_name>/" not in before
   assert "/workspace/skills/<skill_name>/" in after
 
@@ -1669,7 +1702,7 @@ async def test_run_skill_script_initializes_environment_first(mock_skill1):
 
   def _initialize(*, ctx):
     calls.append(("initialize", ctx))
-    mock_env.is_initialized = True
+    _mark_env_mock_initialized(mock_env)
 
   def _read_file(path, *, ctx):
     calls.append(("read_file", ctx))
@@ -7187,19 +7220,15 @@ async def test_a_changed_skill_is_rewritten_into_the_environment(
 async def test_a_changed_skill_leaves_an_uninitialized_environment_alone(
     lifecycle_context, caplog
 ):
-  """Building the request neither initializes the environment nor reads it."""
+  """Building the request neither initializes the environment nor writes."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
-  working_dir = mock.PropertyMock(
-      side_effect=RuntimeError("Call initialize() first.")
-  )
-  type(mock_env).working_dir = working_dir
+  type(mock_env).working_dir = mock.PropertyMock(return_value=None)
   mock_env.is_initialized = False
   toolset = _revalidating_toolset(
       _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
   )
   await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
   toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
-  working_dir.reset_mock()
 
   with caplog.at_level(logging.WARNING):
     instructions = await _instructions_for(toolset, lifecycle_context)
@@ -7207,7 +7236,6 @@ async def test_a_changed_skill_leaves_an_uninitialized_environment_alone(
   assert [i for i in instructions if "has changed" in i]
   mock_env.initialize.assert_not_awaited()
   mock_env.write_file.assert_not_awaited()
-  working_dir.assert_not_called()
   assert "Could not refresh skill" not in caplog.text
 
 
