@@ -26,6 +26,8 @@ import weakref
 from ._constants import MAX_OUTPUT_CHARS
 
 if TYPE_CHECKING:
+  from pathlib import Path
+
   from ...agents.context import Context
   from ...environment._base_environment import BaseEnvironment
 
@@ -45,6 +47,19 @@ def truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
   if len(text) <= limit:
     return text
   return text[:limit] + f'\n... (truncated, {len(text)} total chars)'
+
+
+def working_dir_or_none(environment: BaseEnvironment) -> Path | None:
+  """Returns *environment*'s working directory, or None when it has none yet.
+
+  Environments written before ``working_dir`` could return ``None`` raise
+  ``RuntimeError`` from it until ``initialize`` has run. That counts as
+  ``None`` here, so reading it while building a model request does not fail.
+  """
+  try:
+    return environment.working_dir
+  except RuntimeError:
+    return None
 
 
 @contextlib.asynccontextmanager
