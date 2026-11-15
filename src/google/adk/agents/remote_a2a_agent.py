@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from ..a2a.agent._remote_a2a_agent import A2A_CLIENT_ERROR_CODE as A2A_CLIENT_ERROR_CODE
 from ..a2a.agent._remote_a2a_agent import A2A_METADATA_PREFIX as A2A_METADATA_PREFIX
 from ..a2a.agent._remote_a2a_agent import A2AClientError as A2AClientError
 from ..a2a.agent._remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH as AGENT_CARD_WELL_KNOWN_PATH

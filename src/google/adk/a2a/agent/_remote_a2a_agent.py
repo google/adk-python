@@ -110,6 +110,12 @@ __all__ = [
 
 # Constants
 A2A_METADATA_PREFIX = "a2a:"
+
+# Error code stamped on events for a failure of the RemoteA2aAgent itself --
+# resolving the agent card, authenticating, sending the request, or processing
+# a response -- as opposed to ``A2A_TASK_FAILED_ERROR_CODE``, which marks a
+# failure the remote peer reported for its task.
+A2A_CLIENT_ERROR_CODE = "A2A_CLIENT_ERROR"
 DEFAULT_TIMEOUT = 600.0
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -1862,8 +1868,12 @@ class RemoteA2aAgent(BaseAgent):
         event = Event(
             author=self.name,
             error_message="Unknown A2A response type",
+            error_code=A2A_CLIENT_ERROR_CODE,
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
+            custom_metadata={
+                A2A_METADATA_PREFIX + "error": "Unknown A2A response type",
+            },
         )
       # Filter out thought parts from user-facing response content.
       # Intermediate (submitted/working) events have all parts marked as
@@ -1879,8 +1889,13 @@ class RemoteA2aAgent(BaseAgent):
       return Event(
           author=self.name,
           error_message=f"Failed to process A2A response: {e}",
+          error_code=A2A_CLIENT_ERROR_CODE,
           invocation_id=ctx.invocation_id,
           branch=ctx.branch,
+          custom_metadata={
+              A2A_METADATA_PREFIX
+              + "error": f"Failed to process A2A response: {e}",
+          },
       )
 
   async def _handle_a2a_response_v2(
@@ -1961,8 +1976,12 @@ class RemoteA2aAgent(BaseAgent):
         event = Event(
             author=self.name,
             error_message="Unknown A2A response type",
+            error_code=A2A_CLIENT_ERROR_CODE,
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
+            custom_metadata={
+                A2A_METADATA_PREFIX + "error": "Unknown A2A response type",
+            },
         )
       return event
     except A2AClientError as e:
@@ -1970,8 +1989,13 @@ class RemoteA2aAgent(BaseAgent):
       return Event(
           author=self.name,
           error_message=f"Failed to process A2A response: {e}",
+          error_code=A2A_CLIENT_ERROR_CODE,
           invocation_id=ctx.invocation_id,
           branch=ctx.branch,
+          custom_metadata={
+              A2A_METADATA_PREFIX
+              + "error": f"Failed to process A2A response: {e}",
+          },
       )
 
   async def _run_async_impl(
@@ -1994,8 +2018,12 @@ class RemoteA2aAgent(BaseAgent):
           yield Event(
               author=self.name,
               error_message=task_error_message,
+              error_code=A2A_CLIENT_ERROR_CODE,
               invocation_id=ctx.invocation_id,
               branch=ctx.branch,
+              custom_metadata={
+                  A2A_METADATA_PREFIX + "error": task_error_message,
+              },
           )
           return
         if auth_request_event:
@@ -2012,8 +2040,12 @@ class RemoteA2aAgent(BaseAgent):
         yield Event(
             author=self.name,
             error_message=task_error_message,
+            error_code=A2A_CLIENT_ERROR_CODE,
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
+            custom_metadata={
+                A2A_METADATA_PREFIX + "error": task_error_message,
+            },
         )
         return
 
@@ -2213,16 +2245,20 @@ class RemoteA2aAgent(BaseAgent):
           yield Event(
               author=self.name,
               error_message=task_error_message,
+              error_code=A2A_CLIENT_ERROR_CODE,
               invocation_id=ctx.invocation_id,
               branch=ctx.branch,
-              custom_metadata=(
-                  {
-                      A2A_METADATA_PREFIX
-                      + "request": _compat.a2a_to_dict(a2a_request),
-                  }
-                  if a2a_request
-                  else None
-              ),
+              custom_metadata={
+                  A2A_METADATA_PREFIX + "error": task_error_message,
+                  **(
+                      {
+                          A2A_METADATA_PREFIX
+                          + "request": _compat.a2a_to_dict(a2a_request),
+                      }
+                      if a2a_request
+                      else {}
+                  ),
+              },
           )
 
       except _compat.A2A_HTTP_ERRORS as e:
@@ -2242,6 +2278,7 @@ class RemoteA2aAgent(BaseAgent):
         yield Event(
             author=self.name,
             error_message=error_message,
+            error_code=A2A_CLIENT_ERROR_CODE,
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
             custom_metadata=custom_metadata,
@@ -2262,6 +2299,7 @@ class RemoteA2aAgent(BaseAgent):
         yield Event(
             author=self.name,
             error_message=error_message,
+            error_code=A2A_CLIENT_ERROR_CODE,
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
             custom_metadata=custom_metadata,
