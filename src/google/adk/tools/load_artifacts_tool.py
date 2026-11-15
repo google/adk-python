@@ -136,7 +136,9 @@ def _try_extract_docx_text(data: bytes) -> str | None:
       t_tag = f'{prefix}:t'
 
       paragraphs = []
-      for p in re.split(rf'<{p_tag}(?:[^>]*)>', xml_content):
+      # Match only the paragraph tag itself, not other tags whose name starts
+      # with it (e.g. <w:proofErr>, <w:pPr>).
+      for p in re.split(rf'<{p_tag}(?=[\s/>])[^>]*>', xml_content):
         texts = re.findall(rf'<{t_tag}(?:[^>]*)>([^<]*)</{t_tag}>', p)
         if texts:
           paragraphs.append(''.join(texts))
