@@ -235,7 +235,12 @@ async def call_llm_async(
     invocation_context.increment_llm_call_count()
 
     if run_config.support_cfc:
-      if invocation_context.live_request_queue is None:
+      # Each CFC call opens a new connection, and the previous call's queue
+      # was closed on turn_complete. Anything sent to it after that (a tool
+      # that finished late) is already in the session history the new
+      # connection gets, so start from a fresh queue.
+      queue = invocation_context.live_request_queue
+      if queue is None or queue.closed:
         invocation_context.live_request_queue = LiveRequestQueue()
       async with Aclosing(
           flow._run_and_handle_error(

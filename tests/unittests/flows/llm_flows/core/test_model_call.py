@@ -340,6 +340,70 @@ async def test_cfc_llm_calls_are_counted_against_max_llm_calls():
     await _drive_one_llm_call(flow, invocation_context)
 
 
+class _LateFunctionResponseCfcFlow(BaseLlmFlow):
+  """Sends a function response after the turn completes, as a slow tool does.
+
+  Records, for each call, whether the queue it was handed was already closed
+  and which requests were waiting in it.
+  """
+
+  def __init__(self):
+    super().__init__()
+    self.queues_seen: list[tuple[bool, list[Any]]] = []
+
+  async def run_live(self, invocation_context):
+    queue = invocation_context.live_request_queue
+    pending = []
+    while not queue._queue.empty():
+      pending.append(queue._queue.get_nowait())
+    self.queues_seen.append((queue.closed, pending))
+    yield Event(
+        author='root_agent',
+        content=types.Content(
+            role='model', parts=[types.Part.from_text(text='done')]
+        ),
+        turn_complete=True,
+    )
+    # The run_live merge loop forwards a tool's response to the model when the
+    # tool finishes, which can be after the turn_complete event was handled.
+    queue.send_content(
+        types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id='fc1', name='lookup', response={'answer': 42}
+                    )
+                )
+            ],
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_cfc_call_does_not_reuse_the_previous_calls_closed_queue():
+  """Each CFC model call opens a new connection with an open, empty queue.
+
+  The previous call's queue was closed on turn_complete. Anything sent to it
+  afterwards, such as a late function response, is already in the session
+  history the next connection is given, so it must not be delivered again.
+  """
+  agent = Agent(
+      name='root_agent', model=testing_utils.MockModel.create(responses=[])
+  )
+  flow = _LateFunctionResponseCfcFlow()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(support_cfc=True),
+  )
+
+  await _drive_one_llm_call(flow, invocation_context)
+  await _drive_one_llm_call(flow, invocation_context)
+
+  assert flow.queues_seen == [(False, []), (False, [])]
+
+
 # --- Tests for tracing a streamed call ---
 
 
