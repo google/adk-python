@@ -9091,6 +9091,129 @@ def test_runtime_config_rejects_half_specified_logo(tmp_path):
     get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
 
 
+def test_no_file_observer_without_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """No watchdog observer, and so no inotify instance, without reload_agents."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+    )
+    with client:
+      pass
+
+  mock_observer.assert_not_called()
+
+
+def test_file_observer_started_and_stopped_with_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """reload_agents starts the observer and stops it when the app shuts down."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        reload_agents=True,
+    )
+    observer = mock_observer.return_value
+    observer.start.assert_called_once()
+    observer.stop.assert_not_called()
+    with client:
+      pass
+
+  observer.stop.assert_called_once()
+  observer.join.assert_called_once()
+
+
+def test_api_server_skips_tear_down_observer_without_setup_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """tear_down_observer is not called when setup_observer is None."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  tear_down_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(tear_down_observer=tear_down_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_not_called()
+  tear_down_observer.assert_not_called()
+
+
+def test_api_server_allows_setup_observer_without_tear_down_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Shutting down succeeds when setup_observer is given without tear_down_observer."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  setup_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(setup_observer=setup_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_called_once_with()
+  setup_observer.assert_called_once_with(mock_observer.return_value, api_server)
+
+
 @pytest.mark.parametrize(
     ("url_prefix", "expected_root_path"),
     [

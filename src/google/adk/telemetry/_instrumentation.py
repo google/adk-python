@@ -568,9 +568,12 @@ class InferenceScope:
   """When the inference span started, in `time.time_ns` nanoseconds. For a span
   that records no start time (sampled out, or no tracer provider), when it
   opened."""
+  ended_at: float | None = None
+  """When the inference span was ended, in `time.monotonic` seconds. A span
+  that records no end time (sampled out, or no tracer provider) is timed to
+  here."""
   _last_chunk_received_ns: int | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
-  _inference_span_ended: bool = False
 
   @property
   def llm_responses(self) -> list[LlmResponse]:
@@ -582,7 +585,7 @@ class InferenceScope:
     self._llm_responses.append(response)
     # Anything after the span ended (a second complete response) is neither
     # traced nor timed, but still counts for the metrics.
-    if self._inference_span_ended:
+    if self.ended_at is not None:
       return
 
     # A stream's aggregate (`partial=False`) is assembled by ADK rather than
@@ -609,7 +612,7 @@ class InferenceScope:
         and (exit_stack := self.span._exit_stack) is not None  # pylint: disable=protected-access
     ):
       exit_stack.close()
-      self._inference_span_ended = True
+      self.ended_at = time.monotonic()
 
   def _record_chunk_timing(self, response: LlmResponse) -> None:
     """Records the wait for ``response``, if it is a chunk being timed.
@@ -1150,7 +1153,9 @@ async def record_inference_telemetry(
     if usage is not None:
       _accumulate_tokens(usage, workflow_scope)
     agent = invocation_context.agent
-    elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
+    elapsed_s = _metrics.get_elapsed_s(
+        tel_ctx.span, start_time, fallback_end=tel_ctx.ended_at
+    )
     try:
       if agent is not None and isinstance(
           tel_ctx.span, tracing.GenerateContentSpan

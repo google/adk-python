@@ -15,6 +15,7 @@
 """Tests for E2BEnvironment."""
 
 import contextlib
+from pathlib import Path
 from unittest import mock
 
 from e2b import CommandExitException
@@ -89,10 +90,9 @@ async def test_close_kills_sandbox_and_is_idempotent(create_patch, sandbox):
 
 
 @pytest.mark.asyncio
-async def test_working_dir_requires_initialize():
+async def test_working_dir_is_known_before_initialize():
   env = E2BEnvironment()
-  with pytest.raises(RuntimeError):
-    _ = env.working_dir
+  assert env.working_dir == Path('/home/user')
 
 
 @pytest.mark.asyncio

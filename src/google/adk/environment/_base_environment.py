@@ -178,9 +178,15 @@ class BaseEnvironment(ABC):
     """
 
   @property
-  @abstractmethod
-  def working_dir(self) -> Path:
-    """The absolute path to the environment's working directory."""
+  def working_dir(self) -> Path | None:
+    """The absolute path to the environment's working directory.
+
+    ``None`` when the environment does not know its working directory yet,
+    for example a temporary directory that ``initialize`` creates. An
+    environment whose working directory is a fixed path returns it before
+    ``initialize``. The default implementation returns ``None``.
+    """
+    return None
 
   @abstractmethod
   async def execute(
