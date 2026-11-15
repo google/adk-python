@@ -2307,7 +2307,9 @@ class SkillToolset(BaseToolset):
     if self._skills_folder is not None:
       return self._skills_folder
     if self._env is not None:
-      return self._env.working_dir / "skills"
+      working_dir = _env_utils.working_dir_or_none(self._env)
+      if working_dir is not None:
+        return working_dir / "skills"
     return None
 
   def _has_script_execution(self, context: ReadonlyContext | None) -> bool:
@@ -2803,18 +2805,10 @@ class SkillToolset(BaseToolset):
         t.name for t in self._tools if self._is_tool_selected(t, tool_context)
     }
 
-    # The environment is initialized on the first script run. Until then its
-    # working_dir, and so the default skills folder, may not exist yet.
-    # TODO: Check initialization through a method that takes `ctx`, so a
-    # session-scoped environment can answer from `ctx.state`.
-    if (
-        self._skills_folder is None
-        and self._env is not None
-        and not self._env.is_initialized
-    ):
-      skills_folder = None
-    else:
-      skills_folder = self.skills_folder
+    # None while the environment has no working_dir yet.
+    # TODO: Read the working directory through a method that takes `ctx`, so
+    # a session-scoped environment can answer from `ctx.state`.
+    skills_folder = self.skills_folder
 
     instructions = [
         _build_skill_system_instruction(

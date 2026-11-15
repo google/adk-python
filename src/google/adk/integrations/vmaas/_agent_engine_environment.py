@@ -168,8 +168,7 @@ class AgentEngineEnvironment(BaseEnvironment):
   @property
   @override
   def working_dir(self) -> Path:
-    if not self._is_initialized:
-      raise RuntimeError("Sandbox is not started. Call initialize() first.")
+    # A fixed path in every sandbox, known before `initialize` starts one.
     return Path(_WORKSPACE)
 
   @override

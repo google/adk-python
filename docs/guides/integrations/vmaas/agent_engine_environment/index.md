@@ -100,7 +100,8 @@ the sandbox's default of 300 seconds.
 
 `read_file()` and `write_file()` move file contents through shell commands in
 the sandbox. A relative path resolves against the sandbox working directory,
-`/workspace`, which `working_dir` returns once the environment is initialized.
+`/workspace`, which `working_dir` returns even before the environment is
+initialized.
 `write_file()` creates any missing parent directories, and `read_file()` raises
 `FileNotFoundError` for a path that does not exist.
 
@@ -212,9 +213,6 @@ in well under a second.
 A paused sandbox still counts against its time to live. A sandbox that stays
 paused past that time is deleted with its files, and the environment replaces
 it with an empty one the next time it initializes.
-
-The `working_dir` property is not available until `initialize()` has run, and
-accessing it earlier raises `RuntimeError`.
 
 ## Related samples
 
