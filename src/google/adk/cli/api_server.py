@@ -1464,12 +1464,8 @@ class ApiServer:
       lifespan: Optional[Lifespan[FastAPI]] = None,
       allow_origins: Optional[list[str]] = None,
       web_assets_dir: Optional[str] = None,
-      setup_observer: Callable[
-          [Observer, "ApiServer"], None
-      ] = lambda o, s: None,
-      tear_down_observer: Callable[
-          [Observer, "ApiServer"], None
-      ] = lambda o, s: None,
+      setup_observer: Callable[[Observer, ApiServer], None] | None = None,
+      tear_down_observer: Callable[[Observer, ApiServer], None] | None = None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
       with_ui: bool = False,
@@ -1489,7 +1485,8 @@ class ApiServer:
         patterns prefixed with 'regex:' (e.g.,
         'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
-      setup_observer: Callback for setting up the file system observer.
+      setup_observer: Callback for setting up the file system observer. No
+        observer is created when it is None.
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
@@ -1509,10 +1506,14 @@ class ApiServer:
     self._session_trace_dict = session_trace_dict
 
     # Set up a file system watcher to detect changes in the agents directory.
-    from watchdog.observers import Observer as PlatformObserver
+    # Only create it when a caller sets it up: the inotify observer opens an
+    # inotify instance and starts a thread as soon as it is constructed.
+    observer: Observer | None = None
+    if setup_observer is not None:
+      from watchdog.observers import Observer as PlatformObserver
 
-    observer = PlatformObserver()
-    setup_observer(observer, self)
+      observer = PlatformObserver()
+      setup_observer(observer, self)
 
     @asynccontextmanager
     async def internal_lifespan(
@@ -1525,7 +1526,8 @@ class ApiServer:
         else:
           yield None
       finally:
-        tear_down_observer(observer, self)
+        if observer is not None and tear_down_observer is not None:
+          tear_down_observer(observer, self)
         # Create tasks for all runner closures to run concurrently
         await cleanup.close_runners(list(self.runner_dict.values()))
 
