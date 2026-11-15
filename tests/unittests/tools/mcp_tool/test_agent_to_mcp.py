@@ -23,10 +23,17 @@ from typing import AsyncGenerator
 from typing import Optional
 import weakref
 
+import anyio
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.dependencies._mcp import ClientSession
+from google.adk.dependencies._mcp import IS_MCP_SDK_V2
+from google.adk.dependencies._mcp import streamable_http_client
 from google.adk.events.event import Event
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.mcp_tool._agent_to_mcp import _connection_key
 from google.adk.tools.mcp_tool._agent_to_mcp import _MAX_REAP_ATTEMPTS
 from google.adk.tools.mcp_tool._agent_to_mcp import _reap_orphaned_sessions
@@ -35,6 +42,7 @@ from google.adk.tools.mcp_tool._agent_to_mcp import to_mcp_server
 from google.genai import types
 import pytest
 
+from ._in_memory_session import _lowlevel_server
 from ._in_memory_session import connected_client_session
 from ._sdk_compat import field
 
@@ -53,6 +61,42 @@ class _EchoAgent(BaseAgent):
             role="model", parts=[types.Part(text=self.reply)]
         ),
     )
+
+
+class _ResourceToolset(BaseToolset):
+  """Records the lifetime of an asynchronously released tool resource."""
+
+  def __init__(self):
+    super().__init__()
+    self.resource_open = False
+    self.close_count = 0
+    self.close_started = asyncio.Event()
+    self.release_close: asyncio.Event | None = None
+
+  async def get_tools(self, readonly_context=None) -> list[BaseTool]:
+    self.resource_open = True
+    return []
+
+  async def close(self) -> None:
+    self.close_started.set()
+    if self.release_close is not None:
+      await self.release_close.wait()
+    # Exercise cleanup under the SDK's cancelled AnyIO scope.
+    await anyio.sleep(0)
+    self.resource_open = False
+    self.close_count += 1
+
+
+class _ToolsetAgent(_EchoAgent):
+  tools: list[BaseToolset]
+
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    for toolset in self.tools:
+      await toolset.get_tools()
+    async for event in super()._run_async_impl(ctx):
+      yield event
 
 
 def _text_event(text: str, *, partial: bool = False) -> Event:
@@ -208,6 +252,257 @@ async def test_call_tool_runs_agent_end_to_end():
 
   assert not field(result, "isError")
   assert "hello from the agent" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_server_shutdown_closes_owned_runner_toolsets():
+  """An MCP server releases the resources its default runner opened."""
+  toolset = _ResourceToolset()
+  server = to_mcp_server(_ToolsetAgent(name="assistant", tools=[toolset]))
+
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "hi"})
+    assert toolset.resource_open
+
+  assert not toolset.resource_open
+  assert toolset.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_shutdown_closes_owned_resources():
+  """Streamable HTTP releases resources at application lifecycle shutdown."""
+  toolset = _ResourceToolset()
+  server = to_mcp_server(_ToolsetAgent(name="assistant", tools=[toolset]))
+  if IS_MCP_SDK_V2:
+    import httpx2 as httpx
+
+    app = server.streamable_http_app(json_response=True)
+  else:
+    import httpx
+
+    server.settings.json_response = True
+    app = server.streamable_http_app()
+
+  async with app.router.lifespan_context(app):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app)
+    ) as http:
+      async with streamable_http_client(
+          "http://127.0.0.1:8000/mcp",
+          http_client=http,
+          terminate_on_close=False,
+      ) as streams:
+        async with ClientSession(streams[0], streams[1]) as client:
+          await client.initialize()
+          result = await client.call_tool("assistant", {"request": "hi"})
+          assert not field(result, "isError")
+          assert result.content[0].text == "hello from the agent"
+
+    # Leave the HTTP session alive so application shutdown owns its cleanup.
+    assert toolset.resource_open
+    assert toolset.close_count == 0
+
+  assert not toolset.resource_open
+  assert toolset.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_server_shutdown_leaves_borrowed_runner_open():
+  """A caller retains ownership of an explicitly supplied runner."""
+  toolset = _ResourceToolset()
+  agent = _ToolsetAgent(name="assistant", tools=[toolset])
+  runner = Runner(
+      app_name=agent.name,
+      agent=agent,
+      session_service=InMemorySessionService(),
+  )
+  server = to_mcp_server(agent, runner=runner)
+
+  try:
+    async with connected_client_session(server) as client:
+      await client.call_tool("assistant", {"request": "hi"})
+
+    assert toolset.resource_open
+    assert toolset.close_count == 0
+  finally:
+    await runner.close()
+
+  assert not toolset.resource_open
+  assert toolset.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_connection_shutdown_keeps_other_connections_usable():
+  """Closing one connection cannot release another connection's tools.
+
+  Setup: two SDK connections share the server and its default runner.
+  Act: close one connection, then call the agent on the surviving connection.
+  Assert: tool resources remain open until the final connection exits.
+  """
+  toolset = _ResourceToolset()
+  server = to_mcp_server(_ToolsetAgent(name="assistant", tools=[toolset]))
+
+  async with connected_client_session(server) as first:
+    await first.call_tool("assistant", {"request": "first"})
+    async with connected_client_session(server) as second:
+      await second.call_tool("assistant", {"request": "second"})
+
+    assert toolset.resource_open
+    assert toolset.close_count == 0
+    result = await first.call_tool("assistant", {"request": "still here"})
+    assert not field(result, "isError")
+    assert result.content[0].text == "hello from the agent"
+
+  assert not toolset.resource_open
+  assert toolset.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_server_can_reopen_resources_after_shutdown():
+  """A later server lifecycle can open and close its resources again."""
+  toolset = _ResourceToolset()
+  server = to_mcp_server(_ToolsetAgent(name="assistant", tools=[toolset]))
+
+  for expected_closes in (1, 2):
+    async with connected_client_session(server) as client:
+      result = await client.call_tool("assistant", {"request": "hi"})
+      assert not field(result, "isError")
+      assert toolset.resource_open
+
+    assert not toolset.resource_open
+    assert toolset.close_count == expected_closes
+
+
+@pytest.mark.asyncio
+async def test_independent_servers_close_only_their_own_resources():
+  """An active server does not keep another server's resources open."""
+  first_tools = _ResourceToolset()
+  second_tools = _ResourceToolset()
+  first = to_mcp_server(_ToolsetAgent(name="first", tools=[first_tools]))
+  second = to_mcp_server(_ToolsetAgent(name="second", tools=[second_tools]))
+
+  async with connected_client_session(first) as first_client:
+    await first_client.call_tool("first", {"request": "hi"})
+    async with connected_client_session(second) as second_client:
+      await second_client.call_tool("second", {"request": "hi"})
+
+    assert not second_tools.resource_open
+    assert second_tools.close_count == 1
+    assert first_tools.resource_open
+    assert first_tools.close_count == 0
+
+  assert not first_tools.resource_open
+  assert first_tools.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_server_lifespan_error_still_closes_resources():
+  """A failure inside the server lifecycle still releases owned resources."""
+  toolset = _ResourceToolset()
+  server = _lowlevel_server(
+      to_mcp_server(_ToolsetAgent(name="assistant", tools=[toolset]))
+  )
+
+  with pytest.raises(RuntimeError, match="server failed"):
+    async with server.lifespan(server):
+      await toolset.get_tools()
+      raise RuntimeError("server failed")
+
+  assert not toolset.resource_open
+  assert toolset.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_server_scope_still_closes_resources():
+  """An AnyIO cancellation cannot skip asynchronous runner cleanup."""
+  toolset = _ResourceToolset()
+  server = _lowlevel_server(
+      to_mcp_server(_ToolsetAgent(name="assistant", tools=[toolset]))
+  )
+
+  with anyio.CancelScope() as scope:
+    async with server.lifespan(server):
+      await toolset.get_tools()
+      scope.cancel()
+      await anyio.sleep(0)
+
+  assert not toolset.resource_open
+  assert toolset.close_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_phase", [None, "shutdown", "startup"])
+async def test_new_lifespan_waits_for_previous_cleanup(cancel_phase):
+  """A new connection cannot race with the previous lifecycle's cleanup.
+
+  Setup: hold the final connection's asynchronous resource cleanup open.
+  Act: begin a new lifecycle, optionally cancelling shutdown or a waiting start.
+  Assert: the new lifecycle enters only after cleanup and remains usable.
+  """
+  toolset = _ResourceToolset()
+  toolset.release_close = asyncio.Event()
+  server = _lowlevel_server(
+      to_mcp_server(_ToolsetAgent(name="assistant", tools=[toolset]))
+  )
+  first_ready = asyncio.Event()
+  finish_first = asyncio.Event()
+  second_ready = asyncio.Event()
+  finish_second = asyncio.Event()
+
+  async def first_lifecycle():
+    async with server.lifespan(server):
+      await toolset.get_tools()
+      first_ready.set()
+      await finish_first.wait()
+
+  async def second_lifecycle():
+    async with server.lifespan(server):
+      await toolset.get_tools()
+      second_ready.set()
+      await finish_second.wait()
+
+  first = asyncio.create_task(first_lifecycle())
+  second = None
+  try:
+    await asyncio.wait_for(first_ready.wait(), timeout=2)
+    finish_first.set()
+    await asyncio.wait_for(toolset.close_started.wait(), timeout=2)
+    if cancel_phase == "shutdown":
+      first.cancel()
+
+    second = asyncio.create_task(second_lifecycle())
+    await asyncio.sleep(0)
+    assert not second_ready.is_set()
+    assert toolset.close_count == 0
+    if cancel_phase == "startup":
+      second.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await second
+      second = None
+
+    toolset.release_close.set()
+    if cancel_phase == "shutdown":
+      with pytest.raises(asyncio.CancelledError):
+        await first
+    else:
+      await first
+    if second is None:
+      second = asyncio.create_task(second_lifecycle())
+    await asyncio.wait_for(second_ready.wait(), timeout=2)
+    assert toolset.resource_open
+    assert toolset.close_count == 1
+    finish_second.set()
+    await second
+  finally:
+    finish_first.set()
+    finish_second.set()
+    toolset.release_close.set()
+    await asyncio.gather(
+        first, *([second] if second is not None else []), return_exceptions=True
+    )
+
+  assert not toolset.resource_open
+  assert toolset.close_count == 2
 
 
 @pytest.mark.asyncio
