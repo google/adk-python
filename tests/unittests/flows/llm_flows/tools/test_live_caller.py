@@ -933,3 +933,96 @@ async def test_launch_live_call_no_stream_if_after_callback_fails() -> None:
   )
   assert 'error' in function_response.response
   assert not stream_started
+
+
+@pytest.mark.asyncio
+async def test_plain_tool_declaring_an_input_stream_receives_one() -> None:
+  """A live tool that returns a single value gets the stream it declares."""
+  seen: list[LiveRequestQueue] = []
+
+  async def watch(input_stream: LiveRequestQueue) -> dict[str, str]:
+    seen.append(input_stream)
+    return {'watching': 'video'}
+
+  tool = FunctionTool(watch)
+  invocation_context = await _context_with_tools(tool)
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='watch', id='fc-1', args={}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  (function_response,) = (
+      function_response_queue.get_nowait().get_function_responses()
+  )
+  assert function_response.response == {'watching': 'video'}
+  assert len(seen) == 1
+  assert isinstance(seen[0], LiveRequestQueue)
+
+
+@pytest.mark.asyncio
+async def test_non_blocking_tool_declaring_an_input_stream_receives_one() -> (
+    None
+):
+  """A non-blocking live tool gets the stream it declares too."""
+  seen: list[LiveRequestQueue] = []
+
+  async def watch(input_stream: LiveRequestQueue) -> dict[str, str]:
+    seen.append(input_stream)
+    return {'watching': 'video'}
+
+  tool = FunctionTool(watch)
+  tool.behavior = types.Behavior.NON_BLOCKING
+  invocation_context = await _context_with_tools(tool)
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context._event_queue = asyncio.Queue()
+  invocation_context._enqueue_event = mock.AsyncMock()
+
+  await _live_caller._launch_non_blocking_call_live(
+      invocation_context=invocation_context,
+      function_call=types.FunctionCall(name='watch', id='fc-1', args={}),
+      tool=tool,
+      tools_dict={tool.name: tool},
+      agent=invocation_context.agent,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  assert len(seen) == 1
+  assert isinstance(seen[0], LiveRequestQueue)
+
+
+@pytest.mark.asyncio
+async def test_parallel_plain_calls_each_get_their_own_stream() -> None:
+  """Two calls of one input-reading tool read two different streams."""
+  both_started = asyncio.Event()
+  seen: dict[str, LiveRequestQueue] = {}
+
+  async def watch(label: str, input_stream: LiveRequestQueue) -> dict[str, str]:
+    seen[label] = input_stream
+    if len(seen) == 2:
+      both_started.set()
+    return {'label': label}
+
+  tool = FunctionTool(watch)
+  invocation_context = await _context_with_tools(tool)
+  event = _function_call_event(
+      types.FunctionCall(name='watch', id='fc-a', args={'label': 'a'}),
+      types.FunctionCall(name='watch', id='fc-b', args={'label': 'b'}),
+  )
+
+  _live_caller.launch_function_calls_live(
+      invocation_context, event, {tool.name: tool}, asyncio.Queue()
+  )
+  active = invocation_context._active_background_tools or {}
+  tasks = [active['fc-a'].task, active['fc-b'].task]
+  await asyncio.wait_for(both_started.wait(), timeout=5)
+  await asyncio.gather(*tasks)
+
+  assert set(seen) == {'a', 'b'}
+  assert seen['a'] is not seen['b']
