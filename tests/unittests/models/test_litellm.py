@@ -14617,7 +14617,12 @@ async def test_content_to_message_param_does_not_decode_opaque_signature_as_deta
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_replays_reasoning_details_next_turn():
+@pytest.mark.parametrize(
+    "next_provider", [None, "openrouter", "litellm_proxy", "openai"]
+)
+async def test_generate_content_async_scopes_reasoning_details_next_turn(
+    next_provider,
+):
   first_response = ModelResponse(
       model="openrouter/openai/gpt-5",
       id="resp-1",
@@ -14684,19 +14689,29 @@ async def test_generate_content_async_replays_reasoning_details_next_turn():
       ],
       config=LLM_REQUEST_WITH_FUNCTION_DECLARATION.config,
   )
-  async for _ in model.generate_content_async(follow_up_request):
+  next_model = LiteLlm(
+      model=model.model,
+      llm_client=client,
+      **({"custom_llm_provider": next_provider} if next_provider else {}),
+  )
+  async for _ in next_model.generate_content_async(follow_up_request):
     pass
 
   assert acompletion.await_count == 2
   second_messages = acompletion.await_args_list[1].kwargs["messages"]
-  with_details = [
-      m
-      for m in second_messages
-      if m.get("role") == "assistant" and m.get("reasoning_details") is not None
+  assistant_messages = [
+      m for m in second_messages if m.get("role") == "assistant"
   ]
-  assert len(with_details) == 1
-  assert with_details[0]["reasoning_details"] == (_OPENROUTER_REASONING_DETAILS)
-  assert with_details[0]["tool_calls"][0]["id"] == "call_1"
+  assert len(assistant_messages) == 1
+  assistant = assistant_messages[0]
+  if next_provider == "openai":
+    assert "reasoning_details" not in assistant
+    assert assistant["reasoning_content"] == (
+        "Let me think about this step by step."
+    )
+  else:
+    assert assistant["reasoning_details"] == _OPENROUTER_REASONING_DETAILS
+  assert assistant["tool_calls"][0]["id"] == "call_1"
 
 
 def test_message_to_generate_content_response_stores_producing_model():
@@ -14721,7 +14736,17 @@ def test_message_to_generate_content_response_stores_producing_model():
 
 
 @pytest.mark.asyncio
-async def test_content_to_message_param_skips_replay_for_other_provider():
+@pytest.mark.parametrize(
+    ("model", "custom_llm_provider"),
+    [
+        ("openai/gpt-5", None),
+        ("openrouter/openai/gpt-5", "openai"),
+        ("litellm_proxy/openrouter/openai/gpt-5", "openai"),
+    ],
+)
+async def test_content_to_message_param_skips_replay_for_other_provider(
+    model, custom_llm_provider
+):
   # The envelope was produced on an OpenRouter route; other providers reject
   # the reasoning_details field, so the plain reasoning text is sent instead.
   thought = types.Part(
@@ -14733,7 +14758,9 @@ async def test_content_to_message_param_skips_replay_for_other_provider():
   )
   content = types.Content(role="model", parts=[thought])
 
-  message = await _content_to_message_param(content, model="openai/gpt-5")
+  message = await _content_to_message_param(
+      content, model=model, custom_llm_provider=custom_llm_provider
+  )
 
   assert "reasoning_details" not in message
   assert message["reasoning_content"] == "Let me think about this step by step."
@@ -14945,7 +14972,10 @@ async def test_content_to_message_param_replays_without_stored_model():
 
 
 @pytest.mark.asyncio
-async def test_content_to_message_param_replays_on_proxy_routed_model():
+@pytest.mark.parametrize("custom_llm_provider", [None, "litellm_proxy"])
+async def test_content_to_message_param_replays_on_proxy_routed_model(
+    custom_llm_provider,
+):
   # `litellm_proxy/` selects the transport, not the model, so a proxy-routed
   # OpenRouter request still replays the envelope.
   thought = types.Part(
@@ -14958,7 +14988,9 @@ async def test_content_to_message_param_replays_on_proxy_routed_model():
   content = types.Content(role="model", parts=[thought])
 
   message = await _content_to_message_param(
-      content, model="litellm_proxy/openrouter/openai/gpt-5"
+      content,
+      model="litellm_proxy/openrouter/openai/gpt-5",
+      custom_llm_provider=custom_llm_provider,
   )
 
   assert message["reasoning_details"] == _OPENROUTER_REASONING_DETAILS

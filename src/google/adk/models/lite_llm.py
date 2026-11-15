@@ -1207,11 +1207,13 @@ def _is_openrouter_route(
       routes a bare model string through a named provider.
 
   Returns:
-    True when either signal identifies an OpenRouter route.
+    True when the effective provider is OpenRouter.
   """
-  if _strip_proxy_prefix(model).lower().startswith("openrouter/"):
-    return True
-  return (custom_llm_provider or "").strip().lower() == "openrouter"
+  custom_provider = (custom_llm_provider or "").strip().lower()
+  # An explicit provider overrides the prefix; a proxy only selects transport.
+  if custom_provider and custom_provider != _PROXY_PROVIDER:
+    return custom_provider == "openrouter"
+  return _strip_proxy_prefix(model).lower().startswith("openrouter/")
 
 
 def _normalize_openrouter_model(model: str) -> str:
