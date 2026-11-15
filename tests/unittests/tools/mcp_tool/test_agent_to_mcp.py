@@ -25,7 +25,11 @@ import weakref
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.events.event import Event
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.mcp_tool._agent_to_mcp import _connection_key
 from google.adk.tools.mcp_tool._agent_to_mcp import _MAX_REAP_ATTEMPTS
@@ -94,6 +98,17 @@ class _FakeSessionService(InMemorySessionService):
         app_name=app_name, user_id=user_id
     )
 
+  async def get_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      config: Any = None,
+  ) -> Any:
+    del app_name, user_id, config
+    return await self._runner._get_session(session_id)
+
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
@@ -121,6 +136,12 @@ class _FakeRunner:
       await asyncio.sleep(self.create_session_delay)
     self.create_session_calls += 1
     return SimpleNamespace(id=f"session-{self.create_session_calls}")
+
+  async def _get_session(self, session_id: str):
+    """Returns the session only if a previous call created it."""
+    if session_id in self.session_ids:
+      return SimpleNamespace(id=session_id)
+    return None
 
   async def _delete_session(
       self, *, app_name: str, user_id: str, session_id: str
@@ -547,10 +568,6 @@ async def test_call_tool_concurrent_first_calls_reuse_session():
 @pytest.mark.asyncio
 async def test_call_tool_does_not_reap_persistent_session():
   """A caller-supplied persistent session service must not have its sessions deleted on connection teardown."""
-  from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-  from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-  from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
-  from google.adk.runners import Runner
   from google.adk.sessions.database_session_service import DatabaseSessionService
 
   agent = _EchoAgent(name="assistant")
@@ -577,3 +594,169 @@ async def test_call_tool_does_not_reap_persistent_session():
       app_name="assistant", user_id="mcp_user"
   )
   assert len(sessions_response.sessions) == 2
+
+
+class _TurnCountingAgent(BaseAgent):
+  """Reports how many user turns the conversation already holds."""
+
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    turns = sum(
+        1
+        for event in ctx.session.events
+        if event.content is not None and event.content.role == "user"
+    )
+    yield Event(
+        author=self.name,
+        content=types.Content(
+            role="model", parts=[types.Part(text=f"turn {turns}")]
+        ),
+    )
+
+
+def _session_runner(agent: BaseAgent) -> Runner:
+  return Runner(
+      app_name=agent.name,
+      agent=agent,
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      memory_service=InMemoryMemoryService(),
+      credential_service=InMemoryCredentialService(),
+  )
+
+
+@pytest.mark.asyncio
+async def test_session_id_arg_can_be_omitted_to_start_a_conversation():
+  server = to_mcp_server(_EchoAgent(name="assistant"), session_id_arg=True)
+
+  tools = await server.list_tools()
+  schema = field(tools[0], "inputSchema")
+
+  assert "session_id" in schema["properties"]
+  assert "session_id" not in schema.get("required", [])
+  assert "Pass back the returned session_id" in tools[0].description
+
+
+@pytest.mark.asyncio
+async def test_session_id_arg_reuses_the_returned_session():
+  """The id a call returns continues the same conversation on the next call."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner, session_id_arg=True)
+
+  async with connected_client_session(server) as client:
+    first = await client.call_tool("assistant", {"request": "my name is X"})
+    session_id = field(first, "structuredContent")["session_id"]
+    second = await client.call_tool(
+        "assistant",
+        {"request": "what is my name?", "session_id": session_id},
+    )
+
+  assert session_id == "session-1"
+  assert field(second, "structuredContent")["session_id"] == session_id
+  assert runner.create_session_calls == 1
+  assert runner.session_ids == ["session-1", "session-1"]
+  assert second.content[0].text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_session_id_arg_shares_the_conversation_across_connections():
+  """A reconnect keeps the conversation because the host, not the connection,
+  names it."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner, session_id_arg=True)
+
+  async with connected_client_session(server) as client:
+    first = await client.call_tool("assistant", {"request": "first"})
+  session_id = field(first, "structuredContent")["session_id"]
+  async with connected_client_session(server) as client:
+    second = await client.call_tool(
+        "assistant", {"request": "second", "session_id": session_id}
+    )
+
+  assert runner.create_session_calls == 1
+  assert runner.session_ids == ["session-1", "session-1"]
+  assert field(second, "structuredContent")["session_id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_session_id_arg_starts_over_for_an_unknown_session_id():
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner, session_id_arg=True)
+
+  async with connected_client_session(server) as client:
+    result = await client.call_tool(
+        "assistant", {"request": "hi", "session_id": "expired"}
+    )
+
+  assert field(result, "structuredContent")["session_id"] == "session-1"
+  assert runner.session_ids == ["session-1"]
+
+
+@pytest.mark.asyncio
+async def test_session_id_arg_does_not_key_on_the_connection():
+  """Without an id every call is its own conversation, even on one connection."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner, session_id_arg=True)
+
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "first"})
+    await client.call_tool("assistant", {"request": "second"})
+
+  assert runner.session_ids == ["session-1", "session-2"]
+
+
+@pytest.mark.asyncio
+async def test_session_id_arg_leaves_orphan_reaping_to_the_host():
+  """The host owns the session lifetime, so closing a connection deletes
+  nothing."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner, session_id_arg=True)
+
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "first"})
+  gc.collect()
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "second"})
+
+  assert runner.deleted_session_ids == []
+
+
+@pytest.mark.asyncio
+async def test_without_session_id_arg_the_tool_keeps_its_old_shape():
+  agent = _EchoAgent(name="assistant", description="does useful things")
+  server = to_mcp_server(agent)
+
+  tools = await server.list_tools()
+  schema = field(tools[0], "inputSchema")
+  async with connected_client_session(server) as client:
+    result = await client.call_tool("assistant", {"request": "hi"})
+
+  assert list(schema["properties"]) == ["request"]
+  assert tools[0].description == "does useful things"
+  assert field(result, "structuredContent") is None
+
+
+@pytest.mark.asyncio
+async def test_session_id_arg_keeps_agent_history_across_calls():
+  """Two calls that pass the same id see one growing conversation."""
+  agent = _TurnCountingAgent(name="assistant")
+  server = to_mcp_server(
+      agent, runner=_session_runner(agent), session_id_arg=True
+  )
+
+  async with connected_client_session(server) as client:
+    first = await client.call_tool("assistant", {"request": "my name is X"})
+    session_id = field(first, "structuredContent")["session_id"]
+    second = await client.call_tool(
+        "assistant",
+        {"request": "what is my name?", "session_id": session_id},
+    )
+
+  assert first.content[0].text == "turn 1"
+  assert second.content[0].text == "turn 2"

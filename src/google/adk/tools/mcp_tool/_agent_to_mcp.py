@@ -88,6 +88,29 @@ def _part_to_content(part: types.Part) -> Optional[mcp_types.ContentBlock]:
   return None
 
 
+def _tool_result(
+    content: list[mcp_types.ContentBlock], session_id: str
+) -> mcp_types.CallToolResult:
+  """Builds a tool result carrying the ADK session id as structured content.
+
+  The field is ``structuredContent`` in MCP SDK 1.x and ``structured_content``
+  in 2.x, which renamed it and kept the old spelling as an alias. Validation
+  accepts the 1.x spelling under both majors; a keyword argument does not, so
+  the payload goes through ``model_validate``.
+
+  Args:
+    content: The agent's response content blocks.
+    session_id: The ADK session the response was produced in.
+
+  Returns:
+    The tool result the host receives.
+  """
+  return mcp_types.CallToolResult.model_validate({
+      "content": content,
+      "structuredContent": {"session_id": session_id},
+  })
+
+
 def _connection_key(ctx: Context[ServerSession, Any]) -> object:
   """Returns the object that identifies the MCP connection behind ``ctx``.
 
@@ -195,6 +218,7 @@ async def _run_agent(
     sessions: Optional[MutableMapping[object, str]] = None,
     created: Optional[set[str]] = None,
     locks: Optional[MutableMapping[object, asyncio.Lock]] = None,
+    session_id: Optional[str] = None,
 ) -> list[mcp_types.ContentBlock]:
   """Runs the agent for one request and returns its final response content.
 
@@ -213,50 +237,54 @@ async def _run_agent(
       so `_reap_orphaned_sessions` can delete the ones whose connection dies.
     locks: Per-connection locks preventing concurrent session creation on the
       same connection.
+    session_id: An existing ADK session to run in. Takes precedence over the
+      per-connection lookup, so a caller that names its conversation keeps it
+      regardless of which connection the call arrived on. The caller is
+      responsible for creating the session first.
 
   Returns:
     The agent's final response as a list of MCP content blocks (text plus any
     images, audio, or other data the agent produced).
   """
-  session_id: Optional[str] = None
+  resolved_session_id: Optional[str] = session_id
   connection: Optional[object] = None
-  if ctx is not None and sessions is not None:
+  if resolved_session_id is None and ctx is not None and sessions is not None:
     connection = _connection_key(ctx)
-    session_id = sessions.get(connection)
-  if session_id is None:
+    resolved_session_id = sessions.get(connection)
+  if resolved_session_id is None:
     if locks is not None and connection is not None and sessions is not None:
       lock = locks.get(connection)
       if lock is None:
         lock = asyncio.Lock()
         locks[connection] = lock
       async with lock:
-        session_id = sessions.get(connection)
-        if session_id is None:
+        resolved_session_id = sessions.get(connection)
+        if resolved_session_id is None:
           session = await runner.session_service.create_session(
               app_name=runner.app_name, user_id=_MCP_USER_ID
           )
-          session_id = session.id
+          resolved_session_id = session.id
           # No await between the two writes: an id is either absent from both or
           # present in both, so the reaper never sees a session it cannot delete.
-          sessions[connection] = session_id
+          sessions[connection] = resolved_session_id
           if created is not None:
-            created.add(session_id)
+            created.add(resolved_session_id)
     else:
       session = await runner.session_service.create_session(
           app_name=runner.app_name, user_id=_MCP_USER_ID
       )
-      session_id = session.id
+      resolved_session_id = session.id
       if sessions is not None and connection is not None:
         # No await between the two writes: an id is either absent from both or
         # present in both, so the reaper never sees a session it cannot delete.
-        sessions[connection] = session_id
+        sessions[connection] = resolved_session_id
         if created is not None:
-          created.add(session_id)
+          created.add(resolved_session_id)
   new_message = types.Content(role="user", parts=[types.Part(text=request)])
   final_content: list[mcp_types.ContentBlock] = []
   async for event in runner.run_async(
       user_id=_MCP_USER_ID,
-      session_id=session_id,
+      session_id=resolved_session_id,
       new_message=new_message,
   ):
     if not (event.content and event.content.parts):
@@ -281,6 +309,7 @@ def to_mcp_server(
     name: Optional[str] = None,
     instructions: Optional[str] = None,
     runner: Optional[Runner] = None,
+    session_id_arg: bool = False,
 ) -> FastMCP:
   """Exposes an ADK agent as an MCP server.
 
@@ -304,12 +333,25 @@ def to_mcp_server(
   call is its own single-turn conversation whose session is likewise
   reclaimed when using an in-memory session service.
 
+  Some deployments cannot rely on the connection to identify the conversation:
+  a stateless transport, several server instances behind a load balancer, or an
+  MCP protocol revision that neither initializes a session nor sends an
+  ``Mcp-Session-Id`` header. For those, pass ``session_id_arg=True``. The tool
+  then takes an optional ``session_id`` argument and returns the id of the
+  session it ran in as structured content, so the host can carry the
+  conversation itself by passing the id back on the next call. The id is the
+  only handle on the conversation: any caller that knows it joins it, so only
+  enable this for hosts you trust to hold it.
+
   Args:
     agent: The ADK agent to serve.
     name: The MCP server and tool name. Defaults to the agent's name.
     instructions: Optional instructions the MCP host may show to its model.
     runner: A pre-built Runner. If omitted, one is created with in-memory
       services.
+    session_id_arg: Whether the tool exposes a ``session_id`` argument and
+      returns the session id instead of keying the conversation on the MCP
+      connection. Off by default, which keeps the per-connection behavior.
 
   Returns:
     A ``FastMCP`` server exposing the agent as a single tool.
@@ -323,6 +365,56 @@ def to_mcp_server(
   tool_name = name or agent.name or "adk_agent"
   server = FastMCP(name=tool_name, instructions=instructions)
   agent_runner = runner if runner is not None else _build_runner(agent)
+  tool_description = agent.description or f"Run the {tool_name} agent."
+  if session_id_arg:
+    tool_description = (
+        f"{tool_description} Pass back the returned session_id on every later"
+        " call of the same conversation. Omit it to start a new one."
+    )
+
+    # The host owns the conversation lifetime, so there is no per-connection
+    # map and no orphan reaper: a session lives exactly as long as the host
+    # keeps handing its id back.
+    async def call_agent_with_session_id(
+        request: str,
+        ctx: Context[ServerSession, Any],
+        session_id: Optional[str] = None,
+    ) -> mcp_types.CallToolResult:
+      """Runs the agent for one turn of a conversation.
+
+      Args:
+        request: The user request text for this turn.
+        ctx: The MCP tool call context, used for progress notifications.
+        session_id: The id an earlier call returned, to continue that
+          conversation. Omit it to start a new one.
+
+      Returns:
+        The agent's response, plus the id of the session it ran in.
+      """
+      session = None
+      if session_id:
+        session = await agent_runner.session_service.get_session(
+            app_name=agent_runner.app_name,
+            user_id=_MCP_USER_ID,
+            session_id=session_id,
+        )
+      if session is None:
+        session = await agent_runner.session_service.create_session(
+            app_name=agent_runner.app_name, user_id=_MCP_USER_ID
+        )
+      content = await _run_agent(
+          agent_runner, request, ctx, session_id=session.id
+      )
+      return _tool_result(content, session.id)
+
+    server.add_tool(
+        call_agent_with_session_id,
+        name=tool_name,
+        description=tool_description,
+        structured_output=False,
+    )
+    return server
+
   reap_sessions = isinstance(
       agent_runner.session_service, InMemorySessionService
   )
@@ -360,7 +452,7 @@ def to_mcp_server(
   server.add_tool(
       call_agent,
       name=tool_name,
-      description=agent.description or f"Run the {tool_name} agent.",
+      description=tool_description,
       structured_output=False,
   )
   return server
