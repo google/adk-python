@@ -88,6 +88,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [TypesafeClassifier](integrations/typesafe/typesafe_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with TypeSafe's Jev decision models instead of a model turn.
 
 ### Labs
+* [adaptive_team](labs/adaptive_team/team/index.md) - Coordinating specialists from a shared plan, with stall detection, replanning, and an optional pause to accept the plan.
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
 * [ClassifierNode](labs/classifiers/classifier_node/index.md) - Routing a workflow on a classifier's answer to one `Choice` or `Binary` question.
 * [LlmClassifier](labs/classifiers/llm_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with any model, in one structured-output call.

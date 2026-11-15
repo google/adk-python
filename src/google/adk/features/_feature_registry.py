@@ -27,6 +27,7 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
+  ADAPTIVE_TEAM = "ADAPTIVE_TEAM"
   AGENT_CONFIG = "AGENT_CONFIG"
   AGENT_ENGINE_SANDBOX_ENVIRONMENT = "AGENT_ENGINE_SANDBOX_ENVIRONMENT"
   AGENT_STATE = "AGENT_STATE"
@@ -121,6 +122,9 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
+    FeatureName.ADAPTIVE_TEAM: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.AGENT_CONFIG: FeatureConfig(
         FeatureStage.STABLE, default_on=True
     ),
