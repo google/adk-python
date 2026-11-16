@@ -132,6 +132,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Sessions
 * [Session and BaseSessionService](sessions/session/index.md) - The session lifecycle, state scoping, and choosing a session service.
+* [BufferedSessionService](sessions/buffered_session_service/index.md) - Persisting session events in the background and flushing them.
 * [State](sessions/state/index.md) - Session state and the app:, user:, and temp: prefixes that decide what is shared and what is stored.
 
 ### Skills
