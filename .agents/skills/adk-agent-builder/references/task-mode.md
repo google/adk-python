@@ -13,7 +13,7 @@ node.
 |---|---|---|---|
 | `chat` | the `transfer_to_agent` tool | full conversation | transfers back |
 | `task` | a tool named after the sub-agent | can ask the user for clarification | calls `finish_task` |
-| `single_turn` | a tool named after the sub-agent | none — told no reply is coming | calls `finish_task` |
+| `single_turn` | a tool named after the sub-agent | none | returns its final answer; it has no `finish_task` |
 
 The delegation tool takes the sub-agent's **`name`** verbatim. An agent called
 `researcher` is exposed to the coordinator as a tool called `researcher`, and
@@ -74,9 +74,10 @@ researcher works, possibly talking to the user; the researcher calls
 
 ## Single-turn mode
 
-Same shape, no conversation. The framework appends a nudge to the sub-agent's
-input telling it no further user replies will arrive, so it must finish from the
-input alone.
+Same shape, no conversation. The sub-agent runs once on the delegation input and
+its final answer, validated against `output_schema` when one is set, goes back
+to the coordinator. It gets no `finish_task` tool and has no conversation with
+the user, so it must finish from the input alone.
 
 ```python
 class SummaryOutput(BaseModel):
@@ -89,7 +90,7 @@ summarizer = Agent(
     mode='single_turn',
     output_schema=SummaryOutput,
     description='Summarizes documents autonomously.',
-    instruction='Summarize the document with extract_text, then finish_task.',
+    instruction='Summarize the document with extract_text.',
     tools=[extract_text],
 )
 
@@ -104,7 +105,8 @@ root_agent = Agent(
 ## Schemas
 
 `input_schema` types the delegation tool's parameters; `output_schema` types
-`finish_task`'s parameters. Both are optional.
+`finish_task`'s parameters (for `single_turn`, the final answer). Both are
+optional.
 
 ```python
 agent = Agent(
@@ -154,7 +156,7 @@ weather_checker = Agent(
     mode='single_turn',         # autonomous
     output_schema=WeatherOutput,
     description='Checks weather for a destination.',
-    instruction='Check the weather and call finish_task.',
+    instruction='Check the weather and report it.',
     tools=[get_weather],
 )
 
@@ -175,9 +177,9 @@ root_agent = Agent(
   `LlmAgent` ancestor.
 - Every delegating sub-agent needs a `description` — it is the entire tool
   description the coordinator's model sees.
-- The delegation tool is marked as deferring its response and its description
-  tells the model **not** to call it in parallel with other tools. Do not build
-  a prompt that asks for several delegations in one turn.
+- A `mode='task'` delegation tool is marked as deferring its response and its
+  description tells the model **not** to call it in parallel with other tools.
+  Do not build a prompt that asks for several delegations in one turn.
 - A `mode='chat'` sub-agent gets neither a delegation tool nor `finish_task`; it
   stays a `transfer_to_agent` target.
 
@@ -187,7 +189,7 @@ root_agent = Agent(
 |---|---|---|
 | input | free-form conversation | schema-validated |
 | output | free-form conversation | schema-validated |
-| control returns when | the agent transfers back | the agent calls `finish_task` |
+| control returns when | the agent transfers back | `task`: the agent calls `finish_task`; `single_turn`: the agent gives its final answer |
 | user interaction | full chat | `task`: multi-turn, `single_turn`: none |
 
 ## Where the code lives

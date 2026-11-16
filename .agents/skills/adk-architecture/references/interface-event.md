@@ -61,6 +61,7 @@ Passing both `message` and `content` raises `ValueError`.
   via `abort_signal`, the runner appends a terminal event with
   `error_code='INVOCATION_ABORTED'` carrying synthetic `FunctionResponse`
   parts for any unclosed `FunctionCall`s so later turns see a balanced log.
-- **Beware stateful flags on events.** Background compaction may rewrite or
-  drop aged events, so a transient status stored on one can survive or vanish
-  in ways you did not intend.
+- **Beware stateful flags on events.** Compaction appends a summary event and
+  the model then sees that summary in place of the aged events it covers (the
+  raw events stay in the session), so a transient status stored on one can
+  vanish from the model's view in ways you did not intend.

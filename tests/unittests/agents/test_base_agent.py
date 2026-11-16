@@ -1407,6 +1407,22 @@ def test_set_parent_agent_for_sub_agent_twice(
     )
 
 
+def test_repr_omits_parent_agent(request: pytest.FixtureRequest):
+  """An agent's repr shows its sub-agents but not its parent."""
+  sub_agents: list[BaseAgent] = [
+      _TestingAgent(name=f'{request.function.__name__}_sub_agent_{i}')
+      for i in range(3)
+  ]
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=sub_agents,
+  )
+
+  assert 'parent_agent=' not in repr(sub_agents[0])
+  assert repr(parent).count(f"name='{parent.name}'") == 1
+  assert all(f"name='{a.name}'" in repr(parent) for a in sub_agents)
+
+
 def test_validate_sub_agents_unique_names_single_duplicate(
     request: pytest.FixtureRequest,
     caplog: pytest.LogCaptureFixture,
