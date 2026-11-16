@@ -767,6 +767,35 @@ async def test_dynamic_node_use_as_output_with_interrupt():
   assert len(parent_outputs) == 0
 
 
+@pytest.mark.asyncio
+async def test_dynamic_node_use_as_output_propagates_to_downstream_node():
+  """Dynamic child with use_as_output=True sets parent ctx.output for downstream nodes.
+
+  Regression test for #8183: Calling await ctx.run_node(..., use_as_output=True)
+  without an explicit return must populate the parent node's output so that
+  downstream workflow steps receive the delegated value.
+  """
+
+  @node(rerun_on_resume=True)
+  async def child(ctx, node_input):
+    return '10 folders'
+
+  @node(rerun_on_resume=True)
+  async def dispatch(ctx, node_input):
+    await ctx.run_node(child, node_input, use_as_output=True)
+
+  def receipt(node_input: str | None = None) -> str:
+    return 'Packed: ' + (node_input or 'MISSING_ORDER')
+
+  wf = Workflow(name='wf_delegated', edges=[(START, dispatch, receipt)])
+  ss = InMemorySessionService()
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  events = await _run(runner, ss, session, 'Please pack 10 folders.')
+  outputs = _outputs(events)
+  assert any('Packed: 10 folders' in str(o) for o in outputs)
+
+
 # =========================================================================
 # None-output completion after interrupt
 # =========================================================================
