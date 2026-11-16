@@ -372,6 +372,43 @@ class TestRestApiToolWithJsonSchema:
 
     assert declaration.response_json_schema == expected
 
+  @pytest.mark.parametrize(
+      "include_response_schema,expected",
+      [(True, "application/json"), (False, None)],
+  )
+  def test_prepare_request_params_asks_for_declared_json(
+      self, include_response_schema, expected
+  ):
+    operation = Operation(
+        operationId="getPet",
+        responses={
+            "200": Response(
+                description="The pet.",
+                content={
+                    "application/json": MediaType(
+                        schema=OpenAPISchema(type="object")
+                    ),
+                    "text/csv": MediaType(schema=OpenAPISchema(type="string")),
+                },
+            )
+        },
+    )
+    tool = RestApiTool(
+        name="get_pet",
+        description="Get a pet.",
+        endpoint=OperationEndpoint(
+            base_url="https://petstore.example.com",
+            path="/pets/1",
+            method="GET",
+        ),
+        operation=operation,
+        include_response_schema=include_response_schema,
+    )
+
+    request_params = tool._prepare_request_params([], {})
+
+    assert request_params["headers"].get("Accept") == expected
+
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
@@ -393,6 +430,12 @@ class TestRestApiToolWithJsonSchema:
                     "text/plain": MediaType(
                         schema=OpenAPISchema(type="string")
                     ),
+                },
+            ),
+            "201": Response(
+                description="Created",
+                content={
+                    "text/plain": MediaType(schema=OpenAPISchema(type="string"))
                 },
             ),
             "202": Response(
@@ -423,7 +466,7 @@ class TestRestApiToolWithJsonSchema:
     request = httpx.Request("GET", "https://example.com/pets")
     cases = [
         (httpx.Response(200, request=request, json=["Milo"]), ["Milo"]),
-        (httpx.Response(200, request=request, text="42"), {"text": "42"}),
+        (httpx.Response(201, request=request, text="42"), {"text": "42"}),
         (
             httpx.Response(
                 202,
@@ -440,6 +483,9 @@ class TestRestApiToolWithJsonSchema:
       result = await tool.run_async(args={}, tool_context=None)
       assert result == expected
       validator.validate(result)
+      assert mock_request.call_args.kwargs["headers"]["Accept"] == (
+          "application/json, text/plain, application/vnd.example+json"
+      )
 
 
 class TestRestApiTool:

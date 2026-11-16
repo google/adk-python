@@ -176,7 +176,9 @@ class OpenAPIToolset(BaseToolset):
       include_response_schema: If True, each generated tool's function
         declaration includes the tool's declared success shapes as
         ``response_json_schema`` when known. Explicitly non-JSON responses
-        are returned as a text object.
+        are returned as a text object. A response that lists JSON beside other
+        media types is declared by its JSON alone, which the tool requests
+        with an ``Accept`` header.
         This adds the schemas to every model request that includes the tools.
         Defaults to False.
     """

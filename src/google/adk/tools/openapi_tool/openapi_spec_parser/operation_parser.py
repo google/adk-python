@@ -24,6 +24,7 @@ from typing import List
 from typing import Optional
 
 from fastapi.encoders import jsonable_encoder
+from fastapi.openapi.models import MediaType
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter
 from fastapi.openapi.models import ParameterInType
@@ -87,6 +88,12 @@ def _normalize_response_schema(schema: dict[str, Any]) -> None:
     child = schema.get(key)
     if isinstance(child, dict):
       _normalize_response_schema(child)
+
+
+def _requested_media_types(content: dict[str, MediaType]) -> list[str]:
+  """Returns the media types a tool asks for: the JSON ones, if any."""
+  json_types = [t for t in content if _is_json_media_type(t)]
+  return json_types or list(content)
 
 
 def _required_scheme_name(
@@ -416,7 +423,8 @@ class OperationParser:
       if not response.content or status in ('204', '205'):
         text_response = True
         continue
-      for media_type, media in response.content.items():
+      for media_type in _requested_media_types(response.content):
+        media = response.content[media_type]
         if '*' in media_type:
           return None
         if not _is_json_media_type(media_type):
@@ -442,6 +450,29 @@ class OperationParser:
     if len(variants) > 1:
       return {'anyOf': variants}
     return variants[0] if variants else None
+
+  def get_accept_header(self) -> str | None:
+    """Returns an Accept value for the declared success shapes.
+
+    A success response that lists JSON beside other media types is declared by
+    its JSON alone, so the tool must ask for it. Returns None when the response
+    schema is unknown or every listed media type is declared.
+    """
+    if self.get_response_json_schema() is None:
+      return None
+    listed: list[str] = []
+    requested: list[str] = []
+    for status, response in (self._operation.responses or {}).items():
+      if (
+          status.startswith('2')
+          and isinstance(response, Response)
+          and response.content
+      ):
+        listed.extend(response.content)
+        requested.extend(_requested_media_types(response.content))
+    if len(requested) == len(listed):
+      return None
+    return ', '.join(dict.fromkeys(requested))
 
   def get_signature_parameters(self) -> List[inspect.Parameter]:
     """Returns a list of inspect.Parameter objects for the function."""

@@ -266,6 +266,8 @@ class RestApiTool(BaseTool):
         include_response_schema: If True, the function declaration includes
           the tool's declared success shapes as ``response_json_schema`` when
           known. Explicitly non-JSON responses are returned as a text object.
+          A response that lists JSON beside other media types is declared by
+          its JSON alone, which the tool requests with an ``Accept`` header.
           This adds the schema to every model request that includes the tool.
           Defaults to False.
     """
@@ -494,6 +496,13 @@ class RestApiTool(BaseTool):
     # Set the custom User-Agent header
     user_agent = f"google-adk/{adk_version} (tool: {self.name})"
     header_params["User-Agent"] = user_agent
+
+    if self._include_response_schema:
+      # Without it, httpx sends `*/*` and the server may pick a media type
+      # that the declaration leaves out.
+      accept = self._operation_parser.get_accept_header()
+      if accept:
+        header_params["Accept"] = accept
 
     if (
         self.auth_credential

@@ -537,6 +537,65 @@ def test_get_response_json_schema_preserves_null_const() -> None:
   }
 
 
+def test_get_response_json_schema_declares_json_beside_other_media_types() -> (
+    None
+):
+  operation = Operation(
+      responses={
+          '200': Response(
+              description='Success',
+              content={
+                  'text/csv': MediaType(schema=Schema(type='string')),
+                  'application/json': MediaType(schema=Schema(type='integer')),
+                  '*/*': MediaType(schema=Schema(type='string')),
+              },
+          )
+      }
+  )
+
+  assert OperationParser(operation).get_response_json_schema() == {
+      'type': 'integer'
+  }
+
+
+_JSON = MediaType(schema=Schema(type='object'))
+_TEXT = MediaType(schema=Schema(type='string'))
+
+
+@pytest.mark.parametrize(
+    'contents, expected',
+    [
+        (
+            {'200': {'application/json; version=2': _JSON, 'text/csv': _TEXT}},
+            'application/json; version=2',
+        ),
+        (
+            {
+                '200': {'application/json': _JSON, 'text/csv': _TEXT},
+                '201': {'application/hal+json': _JSON},
+                '202': {'text/plain': _TEXT},
+            },
+            'application/json, application/hal+json, text/plain',
+        ),
+        ({'200': {'application/json': _JSON}}, None),
+        ({'200': {'text/csv': _TEXT}}, None),
+        # Without a JSON schema nothing is declared, so nothing is requested.
+        ({'200': {'application/json': MediaType(), 'text/csv': _TEXT}}, None),
+    ],
+)
+def test_get_accept_header(
+    contents: dict[str, dict[str, MediaType]], expected: str | None
+) -> None:
+  operation = Operation(
+      responses={
+          status: Response(description='Success', content=content)
+          for status, content in contents.items()
+      }
+  )
+
+  assert OperationParser(operation).get_accept_header() == expected
+
+
 def test_get_signature_parameters(sample_operation):
   """Test get_signature_parameters method."""
   parser = OperationParser(sample_operation)
