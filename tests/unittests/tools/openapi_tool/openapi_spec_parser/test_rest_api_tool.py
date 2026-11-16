@@ -1483,6 +1483,7 @@ class TestRestApiTool:
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
+  @pytest.mark.parametrize("args", [{}, {"user_id": None}])
   async def test_call_with_required_param_defaults(
       self,
       mock_request,
@@ -1490,6 +1491,7 @@ class TestRestApiTool:
       sample_endpoint,
       sample_auth_scheme,
       sample_auth_credential,
+      args,
   ):
     """Test that required parameters with defaults are auto-filled."""
     mock_response = MagicMock()
@@ -1522,8 +1524,8 @@ class TestRestApiTool:
         auth_credential=sample_auth_credential,
     )
 
-    # Call without providing userId - should use default "me"
-    result = await tool.call(args={}, tool_context=mock_tool_context)
+    # Call without a userId value - should use default "me"
+    result = await tool.call(args=args, tool_context=mock_tool_context)
 
     # Verify the default was applied
     assert mock_request.called

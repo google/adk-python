@@ -468,6 +468,7 @@ class RestApiTool(BaseTool):
       raise ValueError("Operation method not found.")
 
     path_params: Dict[str, Any] = {}
+    # Original name -> name the model sees, for blank path params.
     blank_path_params: dict[str, str] = {}
     query_params: Dict[str, Any] = {}
     spread_query_keys: set[str] = set()
@@ -696,9 +697,9 @@ class RestApiTool(BaseTool):
     api_params = self._operation_parser.get_parameters().copy()
     api_args = args.copy()
 
-    # Add any required arguments that are missing and have defaults:
+    # Add any required arguments that are missing or None and have defaults:
     for api_param in api_params:
-      if api_param.py_name not in api_args:
+      if api_args.get(api_param.py_name) is None:
         if (
             api_param.required
             and isinstance(api_param.param_schema, Schema)
