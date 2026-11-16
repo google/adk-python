@@ -47,3 +47,9 @@ class TestPrompt:
     xml = prompt.format_skills_as_xml(skills)
     assert "my-skill" in xml
     assert "desc&lt;ription&gt;" in xml
+
+  def test_format_skills_as_xml_preserves_description_quotes(self):
+    description = 'never break the user\'s spaghetti, "al dente" is the law'
+    skills = [models.Frontmatter(name="my-skill", description=description)]
+    xml = prompt.format_skills_as_xml(skills)
+    assert description in xml
