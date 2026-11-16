@@ -178,6 +178,31 @@ class BaseSessionService(abc.ABC):
     event = self._trim_temp_delta_state(event)
     return self._commit_event_to_session(session, event)
 
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    """Appends events to a session object, in order.
+
+    The default calls `append_event` for each event. A service that overrides
+    this method must store all of the events or none of them, in order, with
+    the same effect on `session` and the store as calling `append_event` for
+    each event, so `BufferedSessionService` can send a session's queued events
+    in one call.
+
+    Args:
+      session: The session to append events to.
+      events: The events to append, in order.
+
+    Returns:
+      The processed events in order, matching what `append_event` returns for
+      each event.
+
+    Raises:
+      StaleSessionError: When a persistent implementation detects that the
+        supplied session has been superseded by a newer stored revision.
+    """
+    return [await self.append_event(session, event) for event in events]
+
   def _commit_event_to_session(self, session: Session, event: Event) -> Event:
     """Applies non-temp state delta and appends the event to the in-memory session."""
     self._update_session_state(session, event)

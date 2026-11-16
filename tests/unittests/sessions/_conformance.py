@@ -41,6 +41,7 @@ import pathlib
 
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
 from google.adk.errors import SessionPersistenceError
+from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
 from google.adk.integrations.mongodb import MongoDbSessionService
@@ -50,8 +51,10 @@ from google.adk.sessions import BufferedSessionService
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
+from typing_extensions import override
 
 from ..integrations.mongodb._fake_mongo import FakeMongoClient
 from ..integrations.redis._fake_redis import FakeRedisAsync
@@ -166,6 +169,28 @@ async def _make_buffered_database(
       await delegate.close()
 
 
+class _BatchingInMemorySessionService(InMemorySessionService):
+  """An in-memory store that also takes several events in one call."""
+
+  @override
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    return [await self.append_event(session, event) for event in events]
+
+
+@contextlib.asynccontextmanager
+async def _make_buffered_batching(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  del tmp_path
+  service = BufferedSessionService(_BatchingInMemorySessionService())
+  try:
+    yield service
+  finally:
+    await _close_buffered(service)
+
+
 async def _close_buffered(service: BufferedSessionService) -> None:
   # A contract test may leave a failed write behind on purpose, and the test
   # itself checks what it expects of it.
@@ -219,6 +244,18 @@ BACKENDS = [
         'buffered_database',
         _make_buffered_database,
         divergences=_BUFFERED_DIVERGENCES,
+    ),
+    _Backend(
+        'buffered_batching',
+        _make_buffered_batching,
+        divergences={
+            **_BUFFERED_DIVERGENCES,
+            'test_append_event_with_non_serializable_state_delta': (
+                'The test tells in-memory storage apart by its class, and an'
+                ' in-memory store behind BufferedSessionService keeps raw'
+                ' Python values just as in-memory storage does.'
+            ),
+        },
     ),
 ]
 
