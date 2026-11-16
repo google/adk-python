@@ -900,17 +900,22 @@ async def test_run_live_resumes_a_connection_lost_while_not_resumable(
 class _OpenUntilClosedConnection(testing_utils.MockLlmConnection):
   """A connection the model keeps open, sending nothing, until it is closed."""
 
-  def __init__(self, *, close_suspends: bool):
+  def __init__(self, *, close_mode: str):
     super().__init__(llm_responses=[])
-    self.close_suspends = close_suspends
+    self.close_mode = close_mode
+    self.close_calls = 0
 
   @property
   def closed(self) -> bool:
     return self._closed.is_set()
 
   async def close(self) -> None:
+    self.close_calls += 1
+    if self.close_mode == 'fails':
+      # Fails before it closes anything, so `receive` keeps waiting.
+      raise OSError('Close failed.')
     await super().close()
-    if self.close_suspends:
+    if self.close_mode == 'suspends':
       # Like a websocket close handshake, return only after other tasks ran.
       await asyncio.sleep(0)
 
@@ -918,7 +923,7 @@ class _OpenUntilClosedConnection(testing_utils.MockLlmConnection):
 class _OpenUntilClosedModel(testing_utils.MockModel):
   """Opens an `_OpenUntilClosedConnection` on each connect."""
 
-  close_suspends: bool = False
+  close_mode: str = 'returns'
   connections: list[_OpenUntilClosedConnection] = []
 
   # MockModel.connect is annotated as returning the connection itself, so
@@ -927,17 +932,17 @@ class _OpenUntilClosedModel(testing_utils.MockModel):
   async def connect(  # type: ignore[override]
       self, llm_request: LlmRequest
   ) -> AsyncGenerator[_OpenUntilClosedConnection, None]:
-    connection = _OpenUntilClosedConnection(close_suspends=self.close_suspends)
+    connection = _OpenUntilClosedConnection(close_mode=self.close_mode)
     self.connections.append(connection)
     yield connection
 
 
 @pytest.mark.parametrize(
-    'close_suspends', [False, True], ids=['close_returns', 'close_suspends']
+    'close_mode',
+    ['returns', 'suspends', 'fails'],
+    ids=lambda close_mode: f'close_{close_mode}',
 )
-async def test_run_live_raises_when_the_sender_fails(
-    close_suspends: bool,
-) -> None:
+async def test_run_live_raises_when_the_sender_fails(close_mode: str) -> None:
   """A failure in the send half ends the run with that error.
 
   Setup: a before_model_callback that raises on the user's message, which the
@@ -946,7 +951,8 @@ async def test_run_live_raises_when_the_sender_fails(
   Assert: the run raises the callback's error and closes the connection,
     instead of waiting on a model that never hears from the send half again.
     A close that suspends lets the run cancel the send half before the close
-    returns, and the error must survive that too.
+    returns, and the error must survive that too. A close that fails leaves
+    the connection open, and the run must still end with the error.
   """
 
   def _fail_screening(
@@ -954,7 +960,7 @@ async def test_run_live_raises_when_the_sender_fails(
   ) -> None:
     raise RuntimeError('Screening failed.')
 
-  model = _OpenUntilClosedModel(responses=[], close_suspends=close_suspends)
+  model = _OpenUntilClosedModel(responses=[], close_mode=close_mode)
   session_service = InMemorySessionService()
   session = await session_service.create_session(app_name='app', user_id='u')
   runner = Runner(
@@ -989,7 +995,9 @@ async def test_run_live_raises_when_the_sender_fails(
     pytest.fail('The run kept waiting on the open connection.')
   with pytest.raises(RuntimeError, match='Screening failed.'):
     run.result()
-  assert model.connections[0].closed
+  connection = model.connections[0]
+  assert connection.close_calls == 1
+  assert connection.closed == (close_mode != 'fails')
 
 
 async def test_turn_complete_saves_image_frames_sent_to_the_model():
