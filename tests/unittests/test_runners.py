@@ -59,7 +59,6 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
-from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
@@ -1396,14 +1395,13 @@ async def test_runner_root_task_mode_writes_output_key_to_session_state():
 
 @pytest.mark.asyncio
 async def test_runner_raises_on_root_llm_agent_with_single_turn_mode():
-  """Runner raises ValueError if root LlmAgent runs with mode='single_turn'."""
+  """Runner raises ValueError if root LlmAgent runs with mode='single_turn' before fetching session."""
   session_service = InMemorySessionService()
+  spy = AsyncMock(wraps=session_service.get_session)
+  session_service.get_session = spy
   agent = LlmAgent(name="single_turn_agent", mode="single_turn")
   runner = Runner(
       app_name=TEST_APP_ID, agent=agent, session_service=session_service
-  )
-  await session_service.create_session(
-      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
   )
 
   with pytest.raises(
@@ -1421,6 +1419,8 @@ async def test_runner_raises_on_root_llm_agent_with_single_turn_mode():
         ),
     ):
       pass
+
+  spy.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -1177,19 +1177,6 @@ class Runner:
     if new_message and new_message.role != 'user':
       new_message = types.Content(role='user', parts=new_message.parts)
 
-    session = await self._get_or_create_session(
-        user_id=user_id,
-        session_id=session_id,
-        get_session_config=run_config.get_session_config,
-    )
-
-    if not invocation_id and new_message is None and not session.events:
-      raise ValueError(
-          'Running an agent requires either a new_message or an '
-          'invocation_id to resume a previous invocation. '
-          f'Session: {session_id}, User: {user_id}'
-      )
-
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
 
@@ -1203,22 +1190,36 @@ class Runner:
       # finish_task tool and its result is promoted onto the terminal event's
       # output field (an A2A server turns that into an artifact; a direct caller
       # reads it off the event stream).
-      if effective_mode in (_AgentMode.CHAT, _AgentMode.TASK):
-        agent_to_run: BaseAgent
-        if self._uses_legacy_sub_agent_picker():
-          agent_to_run = self._find_agent_to_run(
-              _session_for_routing(session, new_message), self.agent
-          )
-        else:
-          agent_to_run = self.agent
-
-        # The agent_to_run will be built/cloned inside Context.run_node,
-        # so we don't call build_node here to avoid double cloning.
-      else:
+      if effective_mode not in (_AgentMode.CHAT, _AgentMode.TASK):
         raise ValueError(
             "LlmAgent as root agent must have mode='chat' or 'task', but got"
             f" mode='{effective_mode}'."
         )
+
+    session = await self._get_or_create_session(
+        user_id=user_id,
+        session_id=session_id,
+        get_session_config=run_config.get_session_config,
+    )
+
+    if not invocation_id and new_message is None and not session.events:
+      raise ValueError(
+          'Running an agent requires either a new_message or an '
+          'invocation_id to resume a previous invocation. '
+          f'Session: {session_id}, User: {user_id}'
+      )
+
+    if isinstance(self.agent, LlmAgent):
+      agent_to_run: BaseAgent
+      if self._uses_legacy_sub_agent_picker():
+        agent_to_run = self._find_agent_to_run(
+            _session_for_routing(session, new_message), self.agent
+        )
+      else:
+        agent_to_run = self.agent
+
+      # The agent_to_run will be built/cloned inside Context.run_node,
+      # so we don't call build_node here to avoid double cloning.
       async with aclosing(
           self._run_node_async(
               user_id=user_id,
