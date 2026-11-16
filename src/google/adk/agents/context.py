@@ -689,7 +689,19 @@ class Context(ReadonlyContext):
     """
     from ..auth.auth_handler import AuthHandler
 
-    return await AuthHandler(auth_config).get_auth_response_async(self.state)
+    return await AuthHandler(auth_config).get_auth_response_async(
+        self.state, lock_scope=self._auth_lock_scope()
+    )
+
+  def _auth_lock_scope(self) -> tuple[str, ...]:
+    """Returns the scope that identifies this session's stored credentials.
+
+    The scope keeps the credential exchange of one session from blocking the
+    exchange of another session, which would let one user's slow token request
+    delay another user's.
+    """
+    session = self.session
+    return (session.app_name, session.user_id, session.id)
 
   def request_credential(self, auth_config: AuthConfig) -> None:
     """Requests a credential for the current tool call.
