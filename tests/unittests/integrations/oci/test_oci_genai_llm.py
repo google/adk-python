@@ -667,6 +667,100 @@ async def test_streaming_tool_call(oci_llm):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("call_ids", [("call_1", "call_2"), ("", "")])
+async def test_streaming_parallel_tool_calls_in_separate_chunks(
+    oci_llm, llm_request, call_ids
+):
+  """Calls sent in separate chunks without an index stay apart, in order."""
+  chunks = _make_sse_chunks(
+      text_tokens=[],
+      tool_calls=[
+          {"id": call_ids[0], "name": "get_weather", "args": {"city": "Paris"}},
+          {"id": call_ids[1], "name": "get_time", "args": {"tz": "CET"}},
+      ],
+  )
+
+  with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
+    responses = [
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  final = responses[-1]
+  assert not final.partial
+  calls = [p.function_call for p in final.content.parts]
+  assert [(fc.id, fc.name, fc.args) for fc in calls] == [
+      (call_ids[0], "get_weather", {"city": "Paris"}),
+      (call_ids[1], "get_time", {"tz": "CET"}),
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["same_index", "same_id", "id_first_only"])
+async def test_streaming_tool_calls_split_across_chunks(
+    oci_llm, llm_request, shape
+):
+  """Argument pieces are merged into the call they belong to."""
+  pieces = []
+  for i, (name, head, tail) in enumerate([
+      ("get_weather", '{"city": ', '"Paris"}'),
+      ("get_time", '{"tz": ', '"CET"}'),
+  ]):
+    start = {"id": f"call_{i}", "name": name, "arguments": head}
+    more = {"arguments": tail}
+    if shape == "same_index":
+      start["index"] = more["index"] = i
+    elif shape == "same_id":
+      more["id"] = start["id"]
+    pieces += [start, more]
+  chunks = [
+      {"index": 0, "message": {"role": "ASSISTANT", "toolCalls": [piece]}}
+      for piece in pieces
+  ]
+
+  with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
+    responses = [
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  calls = [p.function_call for p in responses[-1].content.parts]
+  assert [(fc.id, fc.name, fc.args) for fc in calls] == [
+      ("call_0", "get_weather", {"city": "Paris"}),
+      ("call_1", "get_time", {"tz": "CET"}),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_piece_without_id_follows_last_resolved_call(
+    oci_llm, llm_request
+):
+  """A piece with no index, id or name continues the call resolved last."""
+  pieces = [
+      {"id": "call_a", "name": "get_weather", "arguments": '{"city": '},
+      {"id": "call_b", "name": "get_time", "arguments": '{"tz": "CET"}'},
+      {"id": "call_a", "arguments": '"Par'},
+      {"arguments": 'is"}'},
+  ]
+  chunks = [
+      {"index": 0, "message": {"role": "ASSISTANT", "toolCalls": [piece]}}
+      for piece in pieces
+  ]
+
+  with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
+    responses = [
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  calls = [p.function_call for p in responses[-1].content.parts]
+  assert [(fc.id, fc.name, fc.args) for fc in calls] == [
+      ("call_a", "get_weather", {"city": "Paris"}),
+      ("call_b", "get_time", {"tz": "CET"}),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_streaming_empty_chunks(oci_llm, llm_request):
   """Empty SSE chunk list yields a single empty final response."""
   with patch.object(oci_llm, "_call_oci_stream", return_value=[]):

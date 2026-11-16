@@ -17,6 +17,7 @@ from __future__ import annotations
 import abc
 import asyncio
 from collections.abc import Iterator
+from collections.abc import Mapping
 import inspect
 import logging
 import sys
@@ -37,6 +38,7 @@ from pydantic import model_validator
 from pydantic import PrivateAttr
 from pydantic import ValidationInfo
 from typing_extensions import override
+from typing_extensions import Self
 from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
@@ -301,6 +303,9 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   _model_cache: _ModelCache = PrivateAttr(default_factory=_ModelCache)
   """Models built from model names, shared with copies of this agent."""
+
+  _constructed_mode_tools: list[BaseTool] = PrivateAttr(default_factory=list)
+  """The mode tools construction added to `tools`, for clone() to replace."""
 
   config_type: ClassVar[type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent.
@@ -1363,10 +1368,67 @@ class LlmAgent(BaseAgent, abc.ABC):
           stacklevel=3,
       )
 
+    self._constructed_mode_tools = self._build_mode_tools()
+    self.tools.extend(self._constructed_mode_tools)
+
+  @override
+  def clone(self, update: Mapping[str, Any] | None = None) -> Self:
+    """Creates a copy of this agent, rebuilding its mode tools for the copy.
+
+    The finish_task tool and the tools for single_turn and task sub-agents that
+    construction added are replaced with tools built from the copy's own
+    `mode`, `output_schema` and `sub_agents`. Changes made to `tools` after
+    construction carry over: a tool added or swapped in is kept and no mode
+    tool is added under its name, and a mode tool that was removed is not
+    added back. A custom tool for a sub-agent therefore still wraps the
+    original sub-agent.
+
+    Args:
+      update: Optional mapping of new values for the fields of the cloned agent.
+
+    Returns:
+      A new agent instance with the fields in `update` applied.
+
+    Raises:
+      ValueError: If `update` sets `parent_agent` or names a field the agent
+        does not have.
+    """
+    cloned_agent = super().clone(update)
+    # model_copy does not run model_post_init again, so the copied mode tools
+    # still wrap this agent and its sub-agents. Tools are matched by identity
+    # against what construction added, because subclasses and model_post_init
+    # patches remove or swap in tools afterwards, and a stock tool next to a
+    # custom one gives the model two tools with the same name.
+    constructed_ids = {id(tool) for tool in self._constructed_mode_tools}
+    current_ids = {id(tool) for tool in self.tools}
+    kept_tools = [
+        tool for tool in cloned_agent.tools if id(tool) not in constructed_ids
+    ]
+    taken_names = {
+        tool.name for tool in kept_tools if isinstance(tool, BaseTool)
+    }
+    taken_names.update(
+        tool.name
+        for tool in self._constructed_mode_tools
+        if id(tool) not in current_ids
+    )
+    rebuilt_tools = [
+        tool
+        for tool in cloned_agent._build_mode_tools()
+        if tool.name not in taken_names
+    ]
+    kept_tools.extend(rebuilt_tools)
+    cloned_agent.tools = kept_tools
+    cloned_agent._constructed_mode_tools = rebuilt_tools
+    return cloned_agent
+
+  def _build_mode_tools(self) -> list[BaseTool]:
+    """Builds the tools implied by this agent's mode and its sub-agents' modes."""
+    tools: list[BaseTool] = []
     if self.mode == _AgentMode.TASK:
       from .llm.task._finish_task_tool import FinishTaskTool
 
-      self.tools.append(FinishTaskTool(self))
+      tools.append(FinishTaskTool(self))
 
     # Add sub-agents as tools based on their mode
     from ..tools.agent_tool import _SingleTurnAgentTool
@@ -1384,9 +1446,10 @@ class LlmAgent(BaseAgent, abc.ABC):
           sub_agent.mode = _AgentMode.CHAT.value
           mode = _AgentMode.CHAT.value
         if mode == _AgentMode.SINGLE_TURN:
-          self.tools.append(_SingleTurnAgentTool(sub_agent))
+          tools.append(_SingleTurnAgentTool(sub_agent))
         elif mode == _AgentMode.TASK:
-          self.tools.append(_TaskAgentTool(sub_agent))
+          tools.append(_TaskAgentTool(sub_agent))
+    return tools
 
 
 Agent: TypeAlias = LlmAgent

@@ -798,3 +798,10 @@ async def test_working_dir_is_workspace():
   environment = await _make_environment()
 
   assert str(environment.working_dir) == "/workspace"
+
+
+def test_working_dir_is_known_before_initialize():
+  """The workspace path is fixed, so it is known before a sandbox starts."""
+  environment = AgentEngineEnvironment(vertexai_client=_make_client())
+
+  assert str(environment.working_dir) == "/workspace"

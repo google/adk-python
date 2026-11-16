@@ -113,9 +113,6 @@ class BaseEnvironment(ABC):
   ``write_file``, so an implementation can key its resources off the
   session or user, read and write session state, or request credentials.
   ``ctx`` is ``None`` when the environment is used outside an agent run.
-  The toolsets currently call ``initialize`` while building the model
-  request rather than from a tool call, so state written through its
-  ``ctx`` is not saved and ``ctx.request_credential`` raises there.
   """
 
   _is_initialized: bool = False
@@ -160,6 +157,13 @@ class BaseEnvironment(ABC):
     Called before first use. The default implementation is a
     no-op. Sub-classes should ensure this method is idempotent.
 
+    The environment and skill toolsets call it before every tool call
+    that uses the environment, with that call's ``ctx``, so it should
+    return quickly once the environment is set up. An environment that
+    keeps resources per session, such as a sandbox whose name it stores
+    in ``ctx.state``, looks them up here and creates them when missing;
+    ``is_initialized`` describes only the environment as a whole.
+
     Args:
       ctx: Context of the agent run that triggered initialization, or
         ``None`` when called outside an agent run.
@@ -174,9 +178,15 @@ class BaseEnvironment(ABC):
     """
 
   @property
-  @abstractmethod
-  def working_dir(self) -> Path:
-    """The absolute path to the environment's working directory."""
+  def working_dir(self) -> Path | None:
+    """The absolute path to the environment's working directory.
+
+    ``None`` when the environment does not know its working directory yet,
+    for example a temporary directory that ``initialize`` creates. An
+    environment whose working directory is a fixed path returns it before
+    ``initialize``. The default implementation returns ``None``.
+    """
+    return None
 
   @abstractmethod
   async def execute(

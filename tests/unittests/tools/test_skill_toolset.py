@@ -389,6 +389,15 @@ async def test_list_skills_tool(
                     "name": "skill1",
                     "description": "Skill 1 description",
                 },
+                "resources": [
+                    "references/ref1.md",
+                    "references/doc.pdf",
+                    "assets/asset1.txt",
+                    "assets/image.png",
+                    "scripts/setup.sh",
+                    "scripts/run.py",
+                    "scripts/build.rb",
+                ],
             },
         ),
         (
@@ -414,6 +423,21 @@ async def test_load_skill_run_async(
   tool = skill_toolset.LoadSkillTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_omits_empty_resources(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.resources.list_references.return_value = []
+  mock_skill1.resources.list_assets.return_value = []
+  mock_skill1.resources.list_scripts.return_value = []
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+  assert "resources" not in result
 
 
 @pytest.mark.asyncio
@@ -1591,6 +1615,142 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
       mock_env.execute.call_args.kwargs["command"]
       == "cd skills/skill1 && python3 scripts/run.py --flag 1"
   )
+
+
+def _uninitialized_env_mock():
+  """An environment mock that has no working directory until initialized."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=None)
+  mock_env.is_initialized = False
+  return mock_env
+
+
+def _set_env_mock_working_dir(mock_env):
+  """Gives an environment mock its working directory, nothing else."""
+  type(mock_env).working_dir = mock.PropertyMock(
+      return_value=Path("/workspace")
+  )
+
+
+def _mark_env_mock_initialized(mock_env):
+  """Gives an `_uninitialized_env_mock` what `initialize` sets up."""
+  _set_env_mock_working_dir(mock_env)
+  mock_env.is_initialized = True
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_does_not_initialize_environment(
+    mock_skill1, tool_context_instance
+):
+  """The skills folder is left out of the instruction until it is known."""
+  mock_env = _uninitialized_env_mock()
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  (before,) = await _instructions_for(toolset, tool_context_instance)
+  # Only the working directory: `is_initialized` stays false.
+  _set_env_mock_working_dir(mock_env)
+  (after,) = await _instructions_for(toolset, tool_context_instance)
+
+  mock_env.initialize.assert_not_called()
+  assert "NOTE ON ENVIRONMENT EXECUTION" not in before
+  assert "/workspace/skills/<skill_name>/" not in before
+  assert "/workspace/skills/<skill_name>/" in after
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_tolerates_working_dir_raising_before_init(
+    mock_skill1, tool_context_instance
+):
+  """A `working_dir` that raises RuntimeError counts as not known yet."""
+  mock_env = _uninitialized_env_mock()
+  type(mock_env).working_dir = mock.PropertyMock(
+      side_effect=RuntimeError("Call initialize() first.")
+  )
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  (before,) = await _instructions_for(toolset, tool_context_instance)
+  # Only the working directory: `is_initialized` stays false.
+  _set_env_mock_working_dir(mock_env)
+  (after,) = await _instructions_for(toolset, tool_context_instance)
+
+  assert toolset.skills_folder == Path("/workspace/skills")
+  assert "/workspace/skills/<skill_name>/" not in before
+  assert "/workspace/skills/<skill_name>/" in after
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_keeps_explicit_skills_folder_before_init(
+    mock_skill1, tool_context_instance
+):
+  """An explicit skills_folder does not depend on the environment."""
+  mock_env = _uninitialized_env_mock()
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], environment=mock_env, skills_folder="/custom/skills"
+  )
+
+  (instruction,) = await _instructions_for(toolset, tool_context_instance)
+
+  mock_env.initialize.assert_not_called()
+  assert "/custom/skills/<skill_name>/" in instruction
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_initializes_environment_first(mock_skill1):
+  """Each script run initializes the environment first with its tool context."""
+  mock_env = _uninitialized_env_mock()
+  calls = []
+
+  def _initialize(*, ctx):
+    calls.append(("initialize", ctx))
+    _mark_env_mock_initialized(mock_env)
+
+  def _read_file(path, *, ctx):
+    calls.append(("read_file", ctx))
+    raise FileNotFoundError(path)
+
+  mock_env.initialize.side_effect = _initialize
+  mock_env.read_file.side_effect = _read_file
+  mock_env.write_file.side_effect = lambda *a, ctx: calls.append(
+      ("write_file", ctx)
+  )
+  mock_env.execute.return_value = mock.MagicMock(
+      stdout="", stderr="", exit_code=0, timed_out=False
+  )
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  second_ctx = _make_tool_context_with_agent()
+
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"}, tool_context=ctx
+  )
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=second_ctx,
+  )
+
+  assert calls[0] == ("initialize", ctx)
+  assert [c for c in calls if c[0] == "initialize"] == [
+      ("initialize", ctx),
+      ("initialize", second_ctx),
+  ]
+  assert ("read_file", ctx) in calls
+  mock_env.execute.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_close_closes_initialized_environment_once(mock_skill1):
+  """close() closes an initialized environment and marks it uninitialized."""
+  mock_env = _uninitialized_env_mock()
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  await toolset.close()
+  mock_env.close.assert_not_called()
+
+  mock_env.is_initialized = True
+  await asyncio.gather(*(toolset.close() for _ in range(4)))
+
+  mock_env.close.assert_awaited_once()
+  assert not mock_env.is_initialized
 
 
 def test_build_skill_system_instruction_environment_omits_command():
@@ -7039,6 +7199,7 @@ async def test_a_changed_skill_is_rewritten_into_the_environment(
   """Its scripts were copied into the sandbox and would still be the old ones."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  mock_env.is_initialized = True
   toolset = _revalidating_toolset(
       _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
   )
@@ -7056,12 +7217,36 @@ async def test_a_changed_skill_is_rewritten_into_the_environment(
 
 
 @pytest.mark.asyncio
+async def test_a_changed_skill_leaves_an_uninitialized_environment_alone(
+    lifecycle_context, caplog
+):
+  """Building the request neither initializes the environment nor writes."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=None)
+  mock_env.is_initialized = False
+  toolset = _revalidating_toolset(
+      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
+  )
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
+
+  with caplog.at_level(logging.WARNING):
+    instructions = await _instructions_for(toolset, lifecycle_context)
+
+  assert [i for i in instructions if "has changed" in i]
+  mock_env.initialize.assert_not_awaited()
+  mock_env.write_file.assert_not_awaited()
+  assert "Could not refresh skill" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_the_environment_is_rewritten_once_per_version(
     lifecycle_context,
 ):
   """A stale skill is re-stated every request; the files only change once."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  mock_env.is_initialized = True
   toolset = _revalidating_toolset(
       _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
   )

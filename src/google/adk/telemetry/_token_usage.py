@@ -106,12 +106,12 @@ class TokenUsage:
   `tool_input` is the whole of `input_tokens`, as `candidate_output` plus
   `reasoning_output` is of `output_tokens`; the other two are overlapping
   subsets. `system_instruction_tokens` reaches spans only, and
-  `cache_write_input_tokens` spans and the schema v2 cache_write metric only.
+  `cache_write_input_tokens` spans and the inference cache_write metric only.
   `prompt_input_tokens` and `candidate_output_tokens` reach ADK eval's breakdown
   only; no metric reads either.
 
   The `*_details` lists are Gemini's per-modality breakdown of the bucket they
-  name, which the schema v2 metrics split by. They describe one call only;
+  name, which the inference token metrics split by. They describe one call only;
   `add` leaves them alone.
   """
 

@@ -2493,9 +2493,20 @@ def _fake_inference_and_scoring(
     return []
 
   async def _fake_collect_eval_results(
-      inference_results, eval_service, eval_metrics, *, parallelism=None
+      inference_results,
+      eval_service,
+      eval_metrics,
+      *,
+      parallelism=None,
+      multi_run_config=None,
   ):
-    del inference_results, eval_service, eval_metrics, parallelism
+    del (
+        inference_results,
+        eval_service,
+        eval_metrics,
+        parallelism,
+        multi_run_config,
+    )
     return eval_results
 
   monkeypatch.setattr(
@@ -2542,6 +2553,11 @@ def test_cli_eval_with_num_runs_aggregates_per_eval_case(
   )
   assert "Tests passed: 1" in result.output
   assert "Tests failed: 0" in result.output
+  assert "case1  PASSED  PF  1/2 (50%)" in result.output
+  assert (
+      "response_match_score: 0.80 (threshold 0.80, PASSED, runs: [1.00, 0.60])"
+      in result.output
+  )
 
 
 @pytest.mark.unmute_click

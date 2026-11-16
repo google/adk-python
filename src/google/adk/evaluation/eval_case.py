@@ -24,10 +24,18 @@ from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import TypeAlias
 
+from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .conversation_scenarios import ConversationScenario as ConversationScenario
 from .eval_rubrics import Rubric
+
+# `adk_request_input` is kept: the public `request_input` tool is model-chosen.
+_FRAMEWORK_FUNCTION_CALL_NAMES = frozenset({
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+})
 
 
 class IntermediateData(EvalBaseModel):
@@ -239,7 +247,12 @@ class EvalCase(EvalBaseModel):
 def get_all_tool_calls(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[genai_types.FunctionCall]:
-  """A utility method to retrieve tools calls from intermediate data."""
+  """A utility method to retrieve tools calls from intermediate data.
+
+  Function calls that ADK itself emits to the client (for example
+  `adk_request_confirmation` for tools with `require_confirmation=True`) are
+  excluded, since the model did not choose them.
+  """
   if not intermediate_data:
     return []
 
@@ -260,13 +273,21 @@ def get_all_tool_calls(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return tool_calls
+  return [
+      call
+      for call in tool_calls
+      if call.name not in _FRAMEWORK_FUNCTION_CALL_NAMES
+  ]
 
 
 def get_all_tool_responses(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[genai_types.FunctionResponse]:
-  """A utility method to retrieve tools responses from intermediate data."""
+  """A utility method to retrieve tools responses from intermediate data.
+
+  Responses to ADK's own client function calls are excluded, matching
+  `get_all_tool_calls`.
+  """
   if not intermediate_data:
     return []
 
@@ -287,7 +308,11 @@ def get_all_tool_responses(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return tool_responses
+  return [
+      response
+      for response in tool_responses
+      if response.name not in _FRAMEWORK_FUNCTION_CALL_NAMES
+  ]
 
 
 ToolCallAndResponse: TypeAlias = tuple[

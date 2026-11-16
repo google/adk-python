@@ -36,6 +36,7 @@ from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
 from ..utils._sync_runner import _is_async_callable
 from ..workflow._base_node import BaseNode
+from ._eval_case_result_multi_run_aggregator import summarize_eval_case_results
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -313,14 +314,27 @@ class LocalEvalService(BaseEvalService):
       yield eval_case_result
 
     if self._eval_set_results_manager:
+      multi_run_config = evaluate_request.evaluate_config.multi_run_config
       for eval_set_id, results in results_by_set.items():
         app_name = results[0][0]
         cases = [r[1] for r in results]
-        self._eval_set_results_manager.save_eval_set_result(
-            app_name=app_name,
-            eval_set_id=eval_set_id,
-            eval_case_results=cases,
-        )
+        has_multiple_runs = len(cases) > len({c.eval_id for c in cases})
+        if multi_run_config is not None or has_multiple_runs:
+          multi_run_case_summaries = summarize_eval_case_results(
+              cases, multi_run_config=multi_run_config
+          )
+          self._eval_set_results_manager.save_eval_set_result(
+              app_name=app_name,
+              eval_set_id=eval_set_id,
+              eval_case_results=cases,
+              multi_run_case_summaries=multi_run_case_summaries,
+          )
+        else:
+          self._eval_set_results_manager.save_eval_set_result(
+              app_name=app_name,
+              eval_set_id=eval_set_id,
+              eval_case_results=cases,
+          )
 
   async def _evaluate_single_inference_result(
       self, inference_result: InferenceResult, evaluate_config: EvaluateConfig

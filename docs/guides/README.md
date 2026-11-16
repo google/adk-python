@@ -83,6 +83,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [MongoDbToolset](integrations/mongodb/mongodb_toolset/index.md) - Vector and hybrid search over a MongoDB database, with the query text embedded on the way through.
 * [OpenAIDecisionsClassifier](integrations/openai/openai_decisions_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with the OpenAI Decisions API, including questions OpenAI declines to answer.
 * [RedisSessionService](integrations/redis/redis_session_service/index.md) - Sharing sessions across processes through Redis, including the expiry every other backend lacks.
+* [GoogleMapsToolset](integrations/google_maps/index.md) - Street View images, address validation, and reverse geocoding with Google Maps Platform.
 * [TeamsRunner](integrations/teams/teams_runner/index.md) - Running an agent as a Microsoft Teams bot, and why replies arrive after the request is acknowledged.
 * [TypesafeClassifier](integrations/typesafe/typesafe_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with TypeSafe's Jev decision models instead of a model turn.
 
