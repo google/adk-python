@@ -152,22 +152,23 @@ ENV PATH="/home/myuser/.local/bin:$PATH"
 
 # Install ADK - Start
 {install_adk}
+# Install ADK - End
+
+# Copy agent - Start
+{extra_packages_copy}
+
+# Set permission
+COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
+# Copy agent - End
+
+# Install Agent Deps - Start
+{install_agent_deps}
+{reinstall_extra_packages}
 # Remove dev_server.py to ensure production-safe endpoints only (disabling dev endpoints in production)
 # Shell form on purpose: this instruction interpolates nothing, and `|| true`
 # is shell syntax. Do not add a `{{...}}` placeholder to it without moving it to
 # exec form first.
 RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
-# Install ADK - End
-
-# Copy agent - Start
-
-# Set permission
-COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-{extra_packages_copy}
-# Copy agent - End
-
-# Install Agent Deps - Start
-{install_agent_deps}
 # Install Agent Deps - End
 
 EXPOSE {port}
@@ -217,6 +218,7 @@ def _render_dockerfile(
     gemini_enterprise_option: str = '',
     express_mode_option: str = '',
     extra_packages_copy: str = '',
+    reinstall_extra_packages: str = '',
     extra_env_vars: str = '',
     python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> str:
@@ -248,7 +250,11 @@ def _render_dockerfile(
     gemini_enterprise_option: `--gemini_enterprise_app_name=...` or an empty
       string.
     express_mode_option: `--express_mode` or an empty string.
-    extra_packages_copy: Extra `COPY`/`ENV` instructions, or an empty string.
+    extra_packages_copy: Extra `COPY`/`ENV`/`RUN` instructions staged before
+      `install_agent_deps`, or an empty string.
+    reinstall_extra_packages: Post-requirements `RUN` instruction that
+      reinstalls extra packages with `--force-reinstall --no-deps`, or an empty
+      string.
     extra_env_vars: Extra `ENV` lines, or an empty string.
     python_version: The Python version for the base image (default: '3.11').
 
@@ -298,6 +304,7 @@ def _render_dockerfile(
       install_adk=install_adk,
       install_agent_deps=install_agent_deps,
       extra_packages_copy=extra_packages_copy,
+      reinstall_extra_packages=reinstall_extra_packages,
       extra_env_vars=extra_env_vars,
       start_command=start_command,
   )

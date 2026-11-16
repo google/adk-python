@@ -1245,6 +1245,68 @@ def _get_extra_packages_copy(
   return '\n'.join(copy_lines)
 
 
+def _get_extra_packages_reinstall(
+    staged_extra_packages: Sequence[str],
+    build_context: str,
+    *,
+    has_requirements: bool,
+) -> str:
+  """Returns the post-requirements `pip install` override line, if needed.
+
+  `_get_extra_packages_copy` installs extra packages before `requirements.txt`
+  so dependencies shipped only via `--extra_packages` are already in
+  site-packages when `requirements.txt` resolves. Two cases still require a
+  `--force-reinstall --no-deps` pass afterward:
+
+  * `pip` skips a local `.whl` when the same version is already installed (for
+    example from `install_adk`), unlike a local directory or sdist which `pip`
+    marks `should_reinstall`.
+  * When `requirements.txt` is present, `pip install -r requirements.txt` runs
+    after `_get_extra_packages_copy` and can overwrite an extra package with a
+    pinned or upgraded version from the index.
+
+  Args:
+    staged_extra_packages: Basenames returned by `_stage_extra_packages`.
+    build_context: The folder the entries were staged into.
+    has_requirements: Whether `requirements.txt` is installed in the image.
+
+  Returns:
+    A `RUN` instruction in exec form, or an empty string when nothing needs to
+    be reinstalled.
+  """
+  if not staged_extra_packages:
+    return ''
+  reinstall_targets: list[str] = []
+  for base in staged_extra_packages:
+    _validate_extra_package_name(base)
+    staged_path = os.path.join(build_context, base)
+    if os.path.isdir(staged_path):
+      if not has_requirements:
+        continue
+      has_build_file = os.path.isfile(
+          os.path.join(staged_path, 'pyproject.toml')
+      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
+      has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
+      if has_build_file and not has_root_init:
+        reinstall_targets.append(f'/tmp/extra_packages/{base}')
+    elif base.endswith('.whl') or (
+        has_requirements and base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES)
+    ):
+      reinstall_targets.append(f'/tmp/extra_packages/{base}')
+  if not reinstall_targets:
+    return ''
+  return _to_exec_form(
+      'RUN',
+      [
+          'pip',
+          'install',
+          '--force-reinstall',
+          '--no-deps',
+          *reinstall_targets,
+      ],
+  )
+
+
 def run(
     *,
     agent_folder: str,
@@ -1403,6 +1465,11 @@ def run(
         express_mode_option='',
         extra_packages_copy=_get_extra_packages_copy(
             staged_extra_packages, temp_folder
+        ),
+        reinstall_extra_packages=_get_extra_packages_reinstall(
+            staged_extra_packages,
+            temp_folder,
+            has_requirements=os.path.exists(requirements_txt_path),
         ),
         extra_env_vars='',
         python_version=python_version,
@@ -2024,6 +2091,11 @@ def to_agent_engine(
           extra_packages_copy=_get_extra_packages_copy(
               staged_extra_packages, temp_folder_path
           ),
+          reinstall_extra_packages=_get_extra_packages_reinstall(
+              staged_extra_packages,
+              temp_folder_path,
+              has_requirements=os.path.exists(requirements_txt_path),
+          ),
           extra_env_vars=extra_env_vars,
           python_version=python_version,
       )
@@ -2232,6 +2304,11 @@ def to_gke(
         express_mode_option='',
         extra_packages_copy=_get_extra_packages_copy(
             staged_extra_packages, temp_folder
+        ),
+        reinstall_extra_packages=_get_extra_packages_reinstall(
+            staged_extra_packages,
+            temp_folder,
+            has_requirements=os.path.exists(requirements_txt_path),
         ),
         extra_env_vars='',
         python_version=python_version,
