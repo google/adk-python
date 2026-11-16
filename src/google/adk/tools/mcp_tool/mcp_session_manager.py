@@ -318,6 +318,78 @@ def _is_session_terminated_error(exc: BaseException | None) -> bool:
   return False
 
 
+_DEFAULT_OPERATION_TIMEOUT_SECONDS = 60.0
+"""Fallback budget for a single MCP operation when none is configured."""
+
+_MCP_LIST_PAGE_LIMIT = 100
+"""Upper bound on pages fetched for a paginated listing."""
+
+
+def _operation_timeout(connection_params: Any) -> float | None:
+  """Returns the per-operation timeout for a connection.
+
+  `timeout` bounds only connection setup. A tool call or listing has its own
+  budget: an explicit `tool_timeout`, else the transport's read timeout, else
+  `_DEFAULT_OPERATION_TIMEOUT_SECONDS`. Connection params are extensible, so
+  neither attribute is guaranteed.
+  """
+  explicit = getattr(connection_params, 'tool_timeout', None)
+  if isinstance(explicit, (int, float)):
+    return float(explicit)
+  read_timeout = getattr(connection_params, 'sse_read_timeout', None)
+  if isinstance(read_timeout, (int, float)):
+    return float(read_timeout)
+  return _DEFAULT_OPERATION_TIMEOUT_SECONDS
+
+
+def _next_cursor(result: Any) -> str | None:
+  """Returns the pagination cursor of an MCP list result, if any."""
+  cursor = getattr(result, 'nextCursor', None)
+  if not isinstance(cursor, str):
+    cursor = getattr(result, 'next_cursor', None)
+  return cursor if isinstance(cursor, str) and cursor else None
+
+
+async def _list_all_pages(
+    session: Any,
+    method_name: str,
+    result_attr: str,
+    max_pages: int = _MCP_LIST_PAGE_LIMIT,
+) -> list[Any]:
+  """Drains every page of a paginated MCP listing (M6).
+
+  Servers cap page size and rely on `nextCursor`; reading only the first page
+  silently hides tools, resources, or prompts. Fetches at most `max_pages`
+  pages so a broken cursor cannot loop forever.
+
+  Args:
+    session: The MCP client session.
+    method_name: Name of the session's list method (e.g. "list_tools").
+    result_attr: Attribute on the result holding the items (e.g. "tools").
+    max_pages: Safety bound on the number of round trips.
+
+  Returns:
+    The concatenated items across all pages.
+  """
+  method = getattr(session, method_name)
+  items: list[Any] = []
+  cursor: str | None = None
+  for page in range(max_pages):
+    result = await (method(cursor=cursor) if cursor else method())
+    items.extend(getattr(result, result_attr, None) or [])
+    cursor = _next_cursor(result)
+    if cursor is None:
+      return items
+    if page == max_pages - 1:
+      logger.warning(
+          'Stopped at %d pages of %s while the server still returned a cursor;'
+          ' some results may be missing.',
+          max_pages,
+          method_name,
+      )
+  return items
+
+
 class StdioConnectionParams(BaseModel):
   """Parameters for the MCP Stdio connection.
 
@@ -325,10 +397,15 @@ class StdioConnectionParams(BaseModel):
       server_params: Parameters for the MCP Stdio server.
       timeout: Timeout in seconds for establishing the connection to the MCP
         stdio server.
+      tool_timeout: Timeout in seconds for a single tool call or listing. None
+        falls back to `_DEFAULT_OPERATION_TIMEOUT_SECONDS`. Kept separate from
+        `timeout` so a long-running tool is not killed by the (short) connect
+        budget.
   """
 
   server_params: StdioServerParameters
   timeout: float = 5.0
+  tool_timeout: float | None = None
 
 
 class SseConnectionParams(BaseModel):
@@ -346,6 +423,8 @@ class SseConnectionParams(BaseModel):
         server.
       httpx_client_factory: Factory function to create a custom HTTPX client. If
         not provided, a default factory will be used.
+      tool_timeout: Timeout in seconds for a single tool call or listing.
+        Defaults to `sse_read_timeout` when None.
   """
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -354,6 +433,7 @@ class SseConnectionParams(BaseModel):
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
+  tool_timeout: float | None = None
   httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
@@ -469,12 +549,27 @@ class _DebugHttpxClientFactory:
       response_body = '<SSE stream>'
     elif capture_bodies:
       try:
-        await response.aread()
-        response_body = response.text
-        if len(response_body) > _MAX_LOG_BODY_LENGTH:
-          response_body = (
-              response_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
+        # `aread()` buffers the whole body before the length check below, so a
+        # large or hostile response is fully materialized even though only the
+        # first `_MAX_LOG_BODY_LENGTH` chars are kept. Read the declared length
+        # first and skip the read entirely when it is already too big (M11).
+        declared_length = response.headers.get('content-length')
+        try:
+          declared_bytes = (
+              int(declared_length) if declared_length is not None else None
           )
+        except ValueError:
+          declared_bytes = None
+
+        if declared_bytes is not None and declared_bytes > _MAX_LOG_BODY_LENGTH:
+          response_body = f'<body omitted: {declared_bytes} bytes>'
+        else:
+          await response.aread()
+          response_body = response.text
+          if len(response_body) > _MAX_LOG_BODY_LENGTH:
+            response_body = (
+                response_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
+            )
       except Exception as e:  # pylint: disable=broad-exception-caught
         response_body = f'<failed to read body: {e}>'
 
@@ -483,7 +578,7 @@ class _DebugHttpxClientFactory:
 
     if debug_list is not None:
       debug_list.append({
-          'url': _sanitize_url(response.url),
+          'url': _sanitize_url(response.url, redact_query=True),
           'status_code': response.status_code,
           'method': response.request.method,
           'request_headers': request_headers,
@@ -538,6 +633,8 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
+      tool_timeout: Timeout in seconds for a single tool call or listing.
+        Defaults to `sse_read_timeout` when None.
       httpx_client_factory: Factory function to create a custom HTTPX client. If
         not provided, a default factory will be used.
   """
@@ -548,8 +645,20 @@ class StreamableHTTPConnectionParams(BaseModel):
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
+  tool_timeout: float | None = None
   terminate_on_close: bool = True
   httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
+
+
+# Errors that will recur identically on a retry: a retry cannot fix them and
+# may repeat a partial side effect.
+_NON_RETRYABLE_EXCEPTIONS = (
+    AttributeError,
+    KeyError,
+    NotImplementedError,
+    TypeError,
+    ValueError,
+)
 
 
 def retry_on_errors(func):
@@ -581,6 +690,11 @@ def retry_on_errors(func):
         if cancelling is not None and cancelling() > 0:
           raise
       if _has_cancelled_error_context(e):
+        raise
+      # A programming error will be raised the same way on the retry, and
+      # retrying it can repeat whatever work the first attempt managed before
+      # failing. Only transient failures are worth a second attempt (M14).
+      if isinstance(e, _NON_RETRYABLE_EXCEPTIONS):
         raise
       # If an error is thrown, we will retry the function to reconnect to the
       # server. create_session will handle detecting and replacing disconnected
@@ -1511,6 +1625,12 @@ class MCPSessionManager:
       sse_read_timeout_in_seconds = getattr(
           self._connection_params, 'sse_read_timeout', None
       )
+      if isinstance(self._connection_params, StdioConnectionParams):
+        # Stdio has no SSE read timeout; use the operation budget so a
+        # long-running tool is not bounded by the connect timeout.
+        sse_read_timeout_in_seconds = _operation_timeout(
+            self._connection_params
+        )
 
       try:
         mtls_transport = await self._get_mtls_transport()

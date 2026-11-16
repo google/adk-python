@@ -2968,9 +2968,34 @@ class TestDebugHttpxClientFactoryOtelReporting:
     debug_list = await self._run_with_debug_list(factory, self._make_response())
 
     mock_trace.assert_not_called()
-    # The legacy record keeps the query it has always carried.
+    # The legacy record redacts query values; the session id is recorded
+    # separately (M11).
     assert (
-        debug_list[0]["url"] == "https://example.com/messages?sessionId=sess-1"
+        debug_list[0]["url"]
+        == "https://example.com/messages?sessionId=REDACTED"
+    )
+
+  @pytest.mark.asyncio
+  async def test_omits_body_when_content_length_is_too_large(
+      self, no_otel_reporting, factory
+  ):
+    """A body larger than the log cap is never buffered (M11)."""
+    response = self._make_response(
+        response_headers={
+            "content-type": "application/json",
+            "content-length": str(
+                mcp_session_manager_module._MAX_LOG_BODY_LENGTH + 1
+            ),
+        }
+    )
+
+    debug_list = await self._run_with_debug_list(factory, response)
+
+    response.aread.assert_not_awaited()
+    assert (
+        debug_list[0]["response_body"]
+        == "<body omitted:"
+        f" {mcp_session_manager_module._MAX_LOG_BODY_LENGTH + 1} bytes>"
     )
 
   @pytest.mark.asyncio

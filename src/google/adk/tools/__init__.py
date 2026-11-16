@@ -107,6 +107,8 @@ _LAZY_MAPPING = {
         'VertexAiLoadProfilesTool',
     ),
     'VertexAiSearchTool': ('.vertex_ai_search_tool', 'VertexAiSearchTool'),
+    'MCPTool': ('.mcp_tool.mcp_tool', 'MCPTool'),
+    'McpTool': ('.mcp_tool.mcp_tool', 'McpTool'),
     'MCPToolset': ('.mcp_tool.mcp_toolset', 'MCPToolset'),
     'McpToolset': ('.mcp_tool.mcp_toolset', 'McpToolset'),
     'ApiRegistry': ('.api_registry', 'ApiRegistry'),

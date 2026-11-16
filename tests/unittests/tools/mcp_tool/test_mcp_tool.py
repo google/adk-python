@@ -338,10 +338,15 @@ class TestMCPToolLegacy:
         == 1
     )
 
-  async def test_process_llm_request_skips_fencing_on_unsupported_system_instruction_type(
+  async def test_process_llm_request_fails_closed_on_non_str_system_instruction(
       self, caplog
   ):
-    """When system_instruction is not a str or None, logs error and skips fencing."""
+    """A Content system instruction still fences the declaration (M12).
+
+    Skipping the fence left the remote tool description unfenced, which is the
+    exact text the fence exists to quarantine. The preamble is delivered as a
+    dynamic instruction instead.
+    """
     raw_desc = "Test tool description"
     tool = MCPTool(
         mcp_tool=MockMCPTool(name="test_tool", description=raw_desc),
@@ -351,15 +356,18 @@ class TestMCPToolLegacy:
     llm_request.config.system_instruction = 123  # Non-str unsupported type
     mock_tool_context = Mock(spec=ToolContext)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
       await tool.process_llm_request(
           tool_context=mock_tool_context, llm_request=llm_request
       )
 
-    assert "Cannot fence tool descriptions: system_instruction" in caplog.text
+    assert "not a str" in caplog.text
     decl = llm_request.config.tools[0].function_declarations[0]
-    assert decl.description == raw_desc
-    assert _fencing.UNTRUSTED_TOOL_DESCRIPTION_BEGIN not in decl.description
+    assert decl.description != raw_desc
+    assert _fencing.UNTRUSTED_TOOL_DESCRIPTION_BEGIN in decl.description
+    assert (
+        _fencing.TOOL_DESCRIPTION_PREAMBLE in llm_request._dynamic_instructions
+    )
 
   async def test_process_llm_request_replaces_declaration_with_fenced_declaration(
       self,
@@ -2713,6 +2721,29 @@ class TestMCPToolGracefulErrorHandling:
     )
     assert self.mock_session_manager.create_session.await_count == 2
     fresh_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_skips_retry_when_disabled(self, monkeypatch):
+    """Operators can opt out of the retry that can double-execute (M8)."""
+    monkeypatch.setenv(mcp_tool.DISABLE_MCP_SESSION_RETRY_ENV_VAR, "1")
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(
+        side_effect=make_mcp_error(32600, "Session terminated")
+    )
+    self.mock_session_manager._get_session_context = Mock(return_value=None)
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    with pytest.raises(McpError):
+      await tool._run_async_impl(
+          args={"param1": "x"}, tool_context=tool_context, credential=None
+      )
+
+    self.mock_session_manager.create_session.assert_awaited_once()
+    self.mock_session.call_tool.assert_awaited_once()
 
   @pytest.mark.asyncio
   async def test_run_async_impl_keeps_the_session_when_the_tool_itself_fails(
