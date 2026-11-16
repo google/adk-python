@@ -336,9 +336,6 @@ awaits the coroutine.
     crossing the threshold.
 *   **No sample in this repository uses these classes.** The GEPA sample linked
     below calls the third-party `gepa` package directly instead.
-*   **Importing `data_types` emits Pydantic deprecation warnings.** The models
-    pass a `required=True` keyword that Pydantic v2 no longer recognizes. The
-    fields are required regardless; the warning is noise.
 
 ## Related samples
 

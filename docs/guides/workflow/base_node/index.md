@@ -118,6 +118,8 @@ With the default `False`, a node completes as soon as its logic finishes, whethe
 
 With `True`, the node completes only if it yields an output or a route. Finishing without yielding either leaves it in the `WAITING` state, and its successors are not triggered. A `WAITING` node still accepts new triggers, so a predecessor firing again re-runs it. That behavior is what you want for a node that accumulates across several triggers and only emits once it has enough, such as one keeping a running total in state and producing an output when that total crosses a threshold.
 
+When an interrupted workflow resumes, a `WAITING` node in the graph is not run again with the input it already handled: it stays `WAITING` until its next trigger, which starts a new run. Agents in task or chat mode are the exception, since they wait for the user's next message rather than for a trigger, and rerun on resume. A custom node that waits on the user in the same way, rather than on another trigger, needs `rerun_on_resume=True` as well. This applies to a waiting run that recorded at least one event, such as a state update; a run that emitted nothing is still rerun today.
+
 The failure mode is worth knowing before you set this. A node that is *never* triggered again stays `WAITING` to the end of the run, and the run does not wait for it. The workflow finishes straight away, having emitted nothing, and the whole downstream half of your graph is silently skipped. Nothing raises and nothing is logged about it, at any level. The framework treats this as a configuration mistake rather than a fault to report.
 
 One node type ignores this flag entirely. `JoinNode` does not use it, because it synchronizes by waiting for all of its predecessors, which is a different mechanism.

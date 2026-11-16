@@ -92,6 +92,9 @@ jobs:
     needs: release-checks
     if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Validate branch
         run: |
@@ -155,10 +158,30 @@ jobs:
       - name: Build package
         run: uv build
 
-      - name: Publish to PyPI
+      - name: Authenticate to OSS Exit Gate
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: 'projects/305452601764/locations/global/workloadIdentityPools/builders/providers/github'
+
+      - name: Stage package in OSS Exit Gate Artifact Registry
+        run: |
+          python -m pip install "twine==6.1.0" "keyrings.google-artifactregistry-auth==1.1.2"
+          python -m twine upload --skip-existing \
+            --repository-url https://us-python.pkg.dev/oss-exit-gate-prod/adk-python--pypi \
+            dist/*
+
+      - name: Trigger OSS Exit Gate release
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish
+          PEP440_VERSION: ${{ steps.version.outputs.pep440 }}
+        run: |
+          MANIFEST_FILE="$(mktemp)"
+          # Name this build's version so nothing else staged in the registry is released.
+          jq -n --arg version "${PEP440_VERSION}" \
+            '{publish_all: false, publishing_groups: [{packages: [{name: "google-adk", version: $version}]}]}' \
+            > "${MANIFEST_FILE}"
+          gcloud storage cp "${MANIFEST_FILE}" \
+            "gs://oss-exit-gate-prod-projects-bucket/adk-python/pypi/manifests/manifest-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          rm -f "${MANIFEST_FILE}"
 
       - name: Create merge-back PR
         env:

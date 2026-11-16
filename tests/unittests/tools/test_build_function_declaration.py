@@ -1275,3 +1275,45 @@ class TestBuildFunctionDeclarationFromSchemaDict:
     )
 
     assert decl.parameters.required == ['name']
+
+  def test_for_langchain_collapses_a_union_to_its_first_non_null_member(self):
+    class TagArgs(BaseModel):
+      tags: list[str] | int
+
+    def tool_func(tags) -> str:
+      return str(tags)
+
+    util = _automatic_function_calling_util
+    decl = util.build_function_declaration_for_langchain(
+        False,
+        'tag',
+        'Tag something.',
+        tool_func,
+        TagArgs.model_json_schema()['properties'],
+    )
+
+    schema = decl.parameters.properties['tags']
+    assert schema.type == 'ARRAY'
+    assert schema.items is not None
+    assert schema.items.type == 'STRING'
+    assert schema.any_of is None
+
+  def test_for_crewai_collapses_a_union_to_its_first_non_null_member(self):
+    class TagArgs(BaseModel):
+      count: int | str
+
+    def tool_func(count) -> str:
+      return str(count)
+
+    util = _automatic_function_calling_util
+    decl = util.build_function_declaration_for_params_for_crewai(
+        False,
+        'tag',
+        'Tag something.',
+        tool_func,
+        TagArgs.model_json_schema(),
+    )
+
+    schema = decl.parameters.properties['count']
+    assert schema.type == 'INTEGER'
+    assert schema.any_of is None
