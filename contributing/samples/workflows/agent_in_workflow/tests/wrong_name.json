@@ -83,6 +83,9 @@
         "role": "user"
       },
       "author": "intake_agent",
+      "actions": {
+        "skipSummarization": true
+      },
       "output": {
         "name": "John Doe",
         "phone_number": "555-1234"
@@ -179,6 +182,9 @@
         "role": "user"
       },
       "author": "intake_agent",
+      "actions": {
+        "skipSummarization": true
+      },
       "output": {
         "name": "Jane Doe",
         "phone_number": "555-1234"

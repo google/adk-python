@@ -164,7 +164,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=False
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
         FeatureStage.STABLE, default_on=True

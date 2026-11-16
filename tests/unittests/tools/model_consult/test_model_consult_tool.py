@@ -19,9 +19,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
+from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
@@ -31,6 +33,9 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.sessions.state import State
+from google.adk.telemetry import _genai_instrumentor
+from google.adk.telemetry import _metrics
+from google.adk.telemetry.context import TelemetryConfig
 from google.adk.tools import model_consult as model_consult_pkg
 from google.adk.tools import ModelConsultContextConfig as TopLevelContextConfig
 from google.adk.tools import ModelConsultTool as TopLevelModelConsultTool
@@ -152,6 +157,7 @@ def _make_tool_context(
     session: Session | None = None,
     invocation_id: str = 'inv-1',
     function_call_id: str | None = 'fc-consult',
+    run_config: RunConfig | None = None,
 ) -> ToolContext:
   agent = LlmAgent(
       name='executor',
@@ -175,6 +181,7 @@ def _make_tool_context(
       invocation_id=invocation_id,
       agent=agent,
       session=session,
+      run_config=run_config,
   )
   return ToolContext(
       invocation_context,
@@ -314,6 +321,42 @@ async def test_returns_guidance_and_accounting():
   assert result['usage']['prompt_tokens'] == 1000
   assert result['usage']['thoughts_tokens'] == 50
   assert result['latency_ms'] >= 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('semconv_opt_in', 'records_natively'), [(None, False), ('stable', True)]
+)
+async def test_advisor_metrics_follow_the_run_telemetry_config(
+    monkeypatch: pytest.MonkeyPatch,
+    semconv_opt_in: str | None,
+    records_natively: bool,
+):
+  """A per-request stable semconv keeps ADK's metrics beside the instrumentor."""
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
+  tool = ModelConsultTool(model=_FakeAdvisorLlm(model='gemini-2.5-pro'))
+  ctx = _make_tool_context(
+      run_config=RunConfig(
+          telemetry=TelemetryConfig(
+              genai_semconv_stability_opt_in=semconv_opt_in
+          )
+      )
+  )
+
+  with (
+      mock.patch.object(
+          _genai_instrumentor, 'is_instrumented', return_value=True
+      ),
+      mock.patch.object(
+          _metrics, 'record_client_operation_duration', autospec=True
+      ) as mock_duration,
+  ):
+    result = await _run(tool, ctx, question='Should I bisect deploys?')
+
+  assert result['status'] == 'ok'
+  assert mock_duration.called is records_natively
 
 
 @pytest.mark.asyncio

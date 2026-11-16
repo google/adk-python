@@ -38,6 +38,7 @@ from ..telemetry._token_usage import PROMPT_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from ..telemetry._token_usage import TOOL_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import TOTAL_TOKENS_MEANING
+from ..tools.tool_args_matcher._tool_args_matcher import ToolArgsMatcher
 from .common import EvalBaseModel
 from .eval_case import Invocation
 from .eval_rubrics import Rubric as Rubric
@@ -57,6 +58,8 @@ class EvalStatus(Enum):
 
 class PrebuiltMetrics(Enum):
   TOOL_TRAJECTORY_AVG_SCORE = "tool_trajectory_avg_score"
+
+  TOOL_PARAMETER_MATCH = "tool_parameter_match"
 
   RESPONSE_EVALUATION_SCORE = "response_evaluation_score"
 
@@ -299,13 +302,65 @@ class ToolTrajectoryCriterion(BaseCriterion):
   @field_validator("match_type", mode="before")
   @classmethod
   def _coerce_match_type(cls, value: object) -> object:
-    if isinstance(value, cls.MatchType):
-      return value
-    if isinstance(value, str):
-      normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
-      if normalized in cls.MatchType.__members__:
-        return cls.MatchType[normalized]
+    return _to_tool_trajectory_match_type(value)
+
+
+def _to_tool_trajectory_match_type(value: object) -> object:
+  """Accepts a `ToolTrajectoryCriterion.MatchType` name in any common spelling.
+
+  Args:
+    value: The raw config value, for example `"IN_ORDER"` or `"in-order"`.
+
+  Returns:
+    The matching `MatchType`, or `value` unchanged for Pydantic to validate.
+  """
+  match_type = ToolTrajectoryCriterion.MatchType
+  if isinstance(value, match_type):
     return value
+  if isinstance(value, str):
+    normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
+    if normalized in match_type.__members__:
+      return match_type[normalized]
+  return value
+
+
+class ToolParameterMatchCriterion(BaseCriterion):
+  """Criterion for scoring the arguments of expected tool calls."""
+
+  args_matcher: Optional[ToolArgsMatcher] = Field(
+      default=None,
+      description=(
+          "How each expected argument is compared with the actual one. When"
+          " not set, arguments must be equal. Each tool call scores the mean"
+          " argument score, so `allowExtraArgs` does not affect this metric."
+          " A custom matcher must be registered with `register_arg_matcher`"
+          " to be named in config."
+      ),
+  )
+
+  match_type: ToolTrajectoryCriterion.MatchType = Field(
+      default=ToolTrajectoryCriterion.MatchType.IN_ORDER,
+      description=(
+          "How expected tool calls are paired with actual calls, using the"
+          " same names as `tool_trajectory_avg_score`. `EXACT` pairs the call"
+          " at each position with the actual call at the same position."
+          " `IN_ORDER` pairs each expected call with the next actual call of"
+          " the same name after the previous pair, allowing other calls in"
+          " between. It pairs by name alone, so unlike"
+          " `tool_trajectory_avg_score` it does not skip a same-name call with"
+          " wrong arguments: a retried call is scored on its first attempt."
+          " `ANY_ORDER` pairs calls of the same name in any order so"
+          " that the total score is as high as possible, scoring every"
+          " same-name pair (`n * m` pairs for a tool expected `n` times and"
+          " called `m` times). A pair whose names differ, or an expected call"
+          " left unpaired, scores 0.0."
+      ),
+  )
+
+  @field_validator("match_type", mode="before")
+  @classmethod
+  def _coerce_match_type(cls, value: object) -> object:
+    return _to_tool_trajectory_match_type(value)
 
 
 class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):

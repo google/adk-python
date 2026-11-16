@@ -381,6 +381,50 @@ def test_to_agent_engine_raises_when_explicit_config_file_missing(
   assert expected_abs in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "cli_display_name, config_display_name, expected_display_name",
+    [
+        ("", "Name From Config", "Name From Config"),
+        ("Name From CLI", "Name From Config", "Name From CLI"),
+        ("", None, "agent"),
+        ("", "", "agent"),
+    ],
+)
+def test_to_agent_engine_display_name_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    cli_display_name: str,
+    config_display_name: str | None,
+    expected_display_name: str,
+) -> None:
+  """--display_name wins over the config file, which wins over the folder."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  config: Dict[str, Any] = {}
+  if config_display_name is not None:
+    config["display_name"] = config_display_name
+  (src_dir / ".agent_engine_config.json").write_text(json.dumps(config))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name=cli_display_name,
+      adk_version="1.2.0",
+  )
+
+  assert len(captured) == 1
+  assert captured[0]["display_name"] == expected_display_name
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_gke_happy_path(
     monkeypatch: pytest.MonkeyPatch,

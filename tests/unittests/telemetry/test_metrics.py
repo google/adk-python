@@ -518,7 +518,7 @@ _INFERENCE_ATTRIBUTES = {
 
 @pytest.fixture(name="inference_token_instruments")
 def _inference_token_instruments(monkeypatch):
-  """Redirects the schema v2 inference token instruments."""
+  """Redirects the inference token instruments."""
   instruments = {
       attr: mock.MagicMock() for attr in _INFERENCE_TOKEN_INSTRUMENTS
   }
@@ -747,7 +747,7 @@ def test_record_inference_token_usage_schema_v2_keeps_usage_before_trailing(
 def test_record_inference_token_usage_schema_v1(
     monkeypatch, inference_token_instruments
 ):
-  """Under v1 none of the inference token metrics are recorded."""
+  """Under v1 every metric is recorded too, with the semconv provider name."""
   monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
 
   _record_inference_tokens(
@@ -756,9 +756,18 @@ def test_record_inference_token_usage_schema_v1(
       )
   )
 
-  assert not any(
-      _points(instrument) for instrument in inference_token_instruments.values()
-  )
+  assert {
+      attr: _points(instrument)
+      for attr, instrument in inference_token_instruments.items()
+  } == {
+      "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 20)],
+      "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 30)],
+      "_inference_usage_input_tokens": _by_modality({"unknown": 20}),
+      "_inference_usage_output_tokens": _by_modality({"unknown": 30}),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 0}),
+  }
 
 
 @pytest.fixture(name="call_count_histograms")

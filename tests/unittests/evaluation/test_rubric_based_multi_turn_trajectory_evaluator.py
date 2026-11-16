@@ -377,3 +377,41 @@ class TestDialogueAssembly:
     assert (
         "AGENT (agent) TURN 1: Agent response." in evaluator._formatted_dialogue
     )
+
+  def test_thought_parts_are_left_out_of_dialogue(self, evaluator):
+    """Agent thought parts are left out of the judge's dialogue."""
+    invocation = Invocation(
+        invocation_id="banking_agent",
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="What is my balance?")]
+        ),
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(
+                    author="banking_agent",
+                    content=genai_types.Content(
+                        parts=[
+                            genai_types.Part(
+                                text="I need the balance tool.", thought=True
+                            ),
+                            genai_types.Part(text="Let me check."),
+                        ]
+                    ),
+                ),
+            ]
+        ),
+        final_response=genai_types.Content(
+            parts=[
+                genai_types.Part(text="The tool said 100.", thought=True),
+                genai_types.Part(text="Your balance is $100."),
+            ]
+        ),
+    )
+
+    evaluator._assemble_dialogue_history([invocation])
+
+    assert evaluator._formatted_dialogue == (
+        "USER TURN 1: What is my balance?\n"
+        "AGENT (banking_agent) TURN 1: Let me check.\n"
+        "AGENT (banking_agent) TURN 1: Your balance is $100."
+    )

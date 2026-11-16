@@ -48,8 +48,7 @@ _ACTIVE_NON_BLOCKING_TOOL_TASKS = 'active_non_blocking_tool_tasks'
 class ActiveBackgroundTool(BaseModel):
   """One tool call running in the background of a live invocation.
 
-  Streaming tools (async generators) and non-blocking tools are both tracked
-  with this model, one entry per function call.
+  Every live function call is tracked with this model, one entry per call.
   """
 
   model_config = ConfigDict(

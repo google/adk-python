@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
+from google.adk.events.event_actions import EventActions
 from google.adk.events.request_input import RequestInput
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
@@ -945,6 +946,143 @@ class TestScanNodeEvents:
     assert results["review@1"].interrupt_ids == {"review"}
     assert results["review@1"].resolved_ids == set()
     assert results["review@1"].resolved_responses == {}
+
+  @pytest.mark.parametrize(
+      (
+          "scenario",
+          "owner_key",
+          "expected_interrupts",
+          "expected_output",
+          "expected_error_code",
+          "expected_finished",
+      ),
+      [
+          ("direct_seal", "node_a@1", set(), None, "RuntimeError", False),
+          ("nested_sub_branch_seal", "worker@1", {"sub-1"}, None, None, False),
+          (
+              "nested_seal_then_done",
+              "worker@1",
+              set(),
+              ["ok", None],
+              None,
+              True,
+          ),
+          (
+              "done_then_nested_seal",
+              "worker@1",
+              set(),
+              ["ok", None],
+              None,
+              True,
+          ),
+          (
+              "pathless_abort_seal",
+              "node_a@1",
+              set(),
+              None,
+              "INVOCATION_ABORTED",
+              False,
+          ),
+      ],
+  )
+  def test_scan_error_function_response_clears_interrupt_without_resolving(
+      self,
+      scenario: str,
+      owner_key: str,
+      expected_interrupts: set[str],
+      expected_output: list[str | None] | None,
+      expected_error_code: str | None,
+      expected_finished: bool,
+  ) -> None:
+    """Error FunctionResponses clear interrupts without resolving them."""
+
+    def _ev(
+        path: str,
+        *,
+        author: str = "node_a",
+        output: object = None,
+        iid: str | None = None,
+        actions: EventActions | None = None,
+    ) -> Event:
+      return Event(
+          author=author,
+          node_info=NodeInfo(path=path),
+          output=output,
+          long_running_tool_ids={iid} if iid else None,
+          actions=actions or EventActions(),
+          invocation_id="test_id",
+      )
+
+    def _seal(fc_id: str, code: str, path: str | None = None) -> Event:
+      part = types.Part(
+          function_response=types.FunctionResponse(
+              id=fc_id, name="adk_request_input", response={"error": code}
+          )
+      )
+      return Event(
+          author="node_a",
+          node_info=NodeInfo(path=path) if path else NodeInfo(),
+          error_code=code,
+          error_message=code,
+          content=types.Content(role="user", parts=[part]),
+          invocation_id="test_id",
+      )
+
+    stale_actions = EventActions(
+        route="stale_route", transfer_to_agent="stale_agent"
+    )
+    events_by_scenario = {
+        "direct_seal": [
+            _ev(
+                "/wf@1/node_a@1",
+                output="partial work",
+                actions=stale_actions,
+            ),
+            _ev("/wf@1/node_a@1", iid="int-a"),
+            _seal("int-a", "RuntimeError", "/wf@1/node_a@1"),
+        ],
+        "nested_sub_branch_seal": [
+            _ev("/wf@1/worker@1/sub_0@1", author="ask_0", iid="sub-0"),
+            _ev("/wf@1/worker@1/sub_1@1", author="ask_1", iid="sub-1"),
+            _seal("sub-0", "RuntimeError", "/wf@1/worker@1/sub_0@1"),
+        ],
+        "nested_seal_then_done": [
+            _ev("/wf@1/worker@1/sub_0@1", author="ask_0", iid="sub-0"),
+            _seal("sub-0", "RuntimeError", "/wf@1/worker@1/sub_0@1"),
+            _ev("/wf@1/worker@1", author="worker", output=["ok", None]),
+        ],
+        "done_then_nested_seal": [
+            _ev("/wf@1/worker@1/sub_0@1", author="ask_0", iid="sub-0"),
+            _ev("/wf@1/worker@1", author="worker", output=["ok", None]),
+            _seal("sub-0", "RuntimeError", "/wf@1/worker@1/sub_0@1"),
+        ],
+        "pathless_abort_seal": [
+            _ev(
+                "/wf@1/node_a@1",
+                output="partial work",
+                actions=stale_actions,
+            ),
+            _ev("/wf@1/node_a@1", iid="int-a"),
+            _seal("int-a", "INVOCATION_ABORTED"),
+        ],
+    }
+
+    results = _reconstruct_node_states(
+        events_by_scenario[scenario],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    state = results[owner_key]
+    assert state.interrupt_ids == expected_interrupts
+    assert state.resolved_ids == set()
+    assert state.resolved_responses == {}
+    assert state.output == expected_output
+    assert state.route is None
+    assert state.transfer_to_agent is None
+    assert state.error_code == expected_error_code
+    assert state.finished_after_resume is expected_finished
 
   def test_scan_claimed_output_branch_does_not_overwrite_child_branch(
       self,

@@ -19,18 +19,24 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+from typing import Any
+from typing import AsyncGenerator
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.tools import _live_caller
 from google.adk.flows.llm_flows.tools._caller import _PreparedFunctionCall
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
+
+from .... import testing_utils
 
 
 def test_is_live_request_queue_annotation_matches_class_and_string() -> None:
@@ -401,3 +407,529 @@ async def test_handle_function_calls_live_only_non_blocking_returns_none() -> (
 
   assert res is None
   mock_launch.assert_awaited_once()
+
+
+# --- Background function calls ------------------------------------------------
+
+
+async def _context_with_tools(
+    *tools: BaseTool, **agent_kwargs: Any
+) -> InvocationContext:
+  """Returns an invocation context whose agent has `tools`."""
+  agent = Agent(
+      name='test_agent',
+      model=testing_utils.MockModel.create(responses=[]),
+      tools=list(tools),
+      **agent_kwargs,
+  )
+  return await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+
+def _function_call_event(*function_calls: types.FunctionCall) -> Event:
+  """Returns a model event carrying `function_calls`."""
+  return Event(
+      invocation_id='inv-1',
+      author='test_agent',
+      content=types.Content(
+          role='model',
+          parts=[types.Part(function_call=fc) for fc in function_calls],
+      ),
+  )
+
+
+def _gated_lookup_tool(
+    name: str = 'gated_lookup_tool',
+) -> tuple[FunctionTool, asyncio.Event]:
+  """Returns a tool that answers only once the returned event is set."""
+  release = asyncio.Event()
+
+  async def gated_lookup_tool(label: str) -> dict[str, str]:
+    await release.wait()
+    return {'label': label}
+
+  gated_lookup_tool.__name__ = name
+  return FunctionTool(gated_lookup_tool), release
+
+
+async def lookup_tool(label: str) -> dict[str, str]:
+  """Looks up `label` right away."""
+  return {'label': label}
+
+
+async def broken_tool(label: str) -> dict[str, str]:
+  """Always fails."""
+  raise RuntimeError(f'broken_tool failed on purpose (label={label!r})')
+
+
+async def cancelled_tool(label: str) -> dict[str, str]:
+  """Always cancels."""
+  raise asyncio.CancelledError()
+
+
+async def broken_streaming_tool(label: str) -> AsyncGenerator[str, None]:
+  """Always fails."""
+  yield f'started {label}'
+  raise RuntimeError(
+      f'broken_streaming_tool failed on purpose (label={label!r})'
+  )
+
+
+async def streaming_tool(label: str) -> AsyncGenerator[str, None]:
+  """Streams updates for `label` until cancelled."""
+  yield f'started {label}'
+  await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_launch_live_calls_runs_each_call_in_its_own_task() -> None:
+  """Each call runs in its own background task."""
+  tool_a, release_a = _gated_lookup_tool('gated_lookup_tool_a')
+  tool_b, release_b = _gated_lookup_tool('gated_lookup_tool_b')
+  invocation_context = await _context_with_tools(tool_a, tool_b)
+  event = _function_call_event(
+      types.FunctionCall(
+          name='gated_lookup_tool_a', id='fc-a', args={'label': 'A'}
+      ),
+      types.FunctionCall(
+          name='gated_lookup_tool_b', id='fc-b', args={'label': 'B'}
+      ),
+  )
+
+  _live_caller.launch_function_calls_live(
+      invocation_context,
+      event,
+      {tool_a.name: tool_a, tool_b.name: tool_b},
+      asyncio.Queue(),
+  )
+
+  active = invocation_context._active_background_tools or {}
+  task_a, task_b = active['fc-a'].task, active['fc-b'].task
+  assert task_a is not task_b
+  assert not task_a.done() and not task_b.done()
+
+  release_a.set()
+  release_b.set()
+  await asyncio.gather(task_a, task_b)
+
+
+@pytest.mark.asyncio
+async def test_launch_live_calls_queues_responses_in_finish_order() -> None:
+  """Each call answers in an event of its own, in the order the calls finish."""
+  tool_a, release_a = _gated_lookup_tool('gated_lookup_tool_a')
+  tool_b, release_b = _gated_lookup_tool('gated_lookup_tool_b')
+  invocation_context = await _context_with_tools(tool_a, tool_b)
+  event = _function_call_event(
+      types.FunctionCall(
+          name='gated_lookup_tool_a', id='fc-a', args={'label': 'A'}
+      ),
+      types.FunctionCall(
+          name='gated_lookup_tool_b', id='fc-b', args={'label': 'B'}
+      ),
+  )
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller.launch_function_calls_live(
+      invocation_context,
+      event,
+      {tool_a.name: tool_a, tool_b.name: tool_b},
+      function_response_queue,
+  )
+  active = invocation_context._active_background_tools or {}
+  task_a, task_b = active['fc-a'].task, active['fc-b'].task
+
+  release_b.set()
+  await task_b
+
+  assert not task_a.done()
+  first_event = function_response_queue.get_nowait()
+  assert [fr.id for fr in first_event.get_function_responses()] == ['fc-b']
+
+  release_a.set()
+  await task_a
+
+  second_event = function_response_queue.get_nowait()
+  assert [fr.id for fr in second_event.get_function_responses()] == ['fc-a']
+
+
+@pytest.mark.asyncio
+async def test_launch_live_calls_keeps_sibling_running_on_failure() -> None:
+  """A call that raises gets an error response; its sibling keeps running."""
+  broken = FunctionTool(broken_tool)
+  gated, release = _gated_lookup_tool()
+  invocation_context = await _context_with_tools(broken, gated)
+  event = _function_call_event(
+      types.FunctionCall(
+          name='broken_tool', id='fc-broken', args={'label': 'A'}
+      ),
+      types.FunctionCall(
+          name='gated_lookup_tool', id='fc-gated', args={'label': 'B'}
+      ),
+  )
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller.launch_function_calls_live(
+      invocation_context,
+      event,
+      {broken.name: broken, gated.name: gated},
+      function_response_queue,
+  )
+  gated_task = invocation_context._active_background_tools['fc-gated'].task
+  broken_event = await asyncio.wait_for(function_response_queue.get(), 1)
+
+  (broken_response,) = broken_event.get_function_responses()
+  assert broken_response.id == 'fc-broken'
+  assert 'error' in broken_response.response
+  assert not gated_task.done()
+
+  release.set()
+  await gated_task
+
+  gated_event = function_response_queue.get_nowait()
+  assert [fr.id for fr in gated_event.get_function_responses()] == ['fc-gated']
+
+
+@pytest.mark.asyncio
+async def test_launch_live_calls_keeps_sibling_running_on_cancel() -> None:
+  """A call that is cancelled leaves its sibling running."""
+  cancelled = FunctionTool(cancelled_tool)
+  gated, release = _gated_lookup_tool()
+  invocation_context = await _context_with_tools(cancelled, gated)
+  event = _function_call_event(
+      types.FunctionCall(
+          name='cancelled_tool', id='fc-cancelled', args={'label': 'A'}
+      ),
+      types.FunctionCall(
+          name='gated_lookup_tool', id='fc-gated', args={'label': 'B'}
+      ),
+  )
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller.launch_function_calls_live(
+      invocation_context,
+      event,
+      {cancelled.name: cancelled, gated.name: gated},
+      function_response_queue,
+  )
+  active_tools = invocation_context._active_background_tools
+  cancelled_task = active_tools['fc-cancelled'].task
+  gated_task = active_tools['fc-gated'].task
+  await asyncio.gather(cancelled_task, return_exceptions=True)
+
+  assert cancelled_task.cancelled()
+  assert not gated_task.done()
+
+  release.set()
+  await gated_task
+
+  gated_event = function_response_queue.get_nowait()
+  assert [fr.id for fr in gated_event.get_function_responses()] == ['fc-gated']
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_stores_call_in_registry_while_running() -> None:
+  """The running call is tracked in the registry under its call id."""
+  tool, release = _gated_lookup_tool()
+  invocation_context = await _context_with_tools(tool)
+  function_call = types.FunctionCall(
+      name='gated_lookup_tool', id='fc-1', args={'label': 'A'}
+  )
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      function_call,
+      {tool.name: tool},
+      invocation_context.agent,
+      asyncio.Queue(),
+      None,
+  )
+
+  entry = (invocation_context._active_background_tools or {})['fc-1']
+  assert entry.tool_name == 'gated_lookup_tool'
+  assert entry.function_call_id == 'fc-1'
+  assert not entry.task.done()
+
+  release.set()
+  await entry.task
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_returns_correct_response_when_done() -> None:
+  """The call's response names the call and carries the tool's result."""
+  tool = FunctionTool(lookup_tool)
+  invocation_context = await _context_with_tools(tool)
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='lookup_tool', id='fc-1', args={'label': 'A'}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  (function_response,) = (
+      function_response_queue.get_nowait().get_function_responses()
+  )
+  assert function_response.name == 'lookup_tool'
+  assert function_response.id == 'fc-1'
+  assert function_response.response == {'label': 'A'}
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_stores_response_in_queue_when_done() -> None:
+  """The response is put on the queue once the call is done, not before."""
+  tool, release = _gated_lookup_tool()
+  invocation_context = await _context_with_tools(tool)
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(
+          name='gated_lookup_tool', id='fc-1', args={'label': 'A'}
+      ),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  task = invocation_context._active_background_tools['fc-1'].task
+  await asyncio.sleep(0)
+  assert function_response_queue.empty()
+
+  release.set()
+  await task
+
+  assert function_response_queue.qsize() == 1
+  response_event = function_response_queue.get_nowait()
+  assert [fr.id for fr in response_event.get_function_responses()] == ['fc-1']
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_sets_matching_live_session_id() -> None:
+  """The response carries the live session id of the call's event."""
+  tool = FunctionTool(lookup_tool)
+  invocation_context = await _context_with_tools(tool)
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='lookup_tool', id='fc-1', args={'label': 'A'}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      'live-1',
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  assert function_response_queue.get_nowait().live_session_id == 'live-1'
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_queues_nothing_for_long_running_tool() -> None:
+  """A long-running call that returns nothing puts nothing on the queue."""
+
+  def start_job(label: str) -> None:
+    """Starts a job whose result arrives later."""
+
+  tool = LongRunningFunctionTool(start_job)
+  invocation_context = await _context_with_tools(tool)
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='start_job', id='fc-1', args={'label': 'A'}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  assert function_response_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_queues_error_on_exception() -> None:
+  """A call that raises puts an error response for the call on the queue."""
+  tool = FunctionTool(broken_tool)
+  invocation_context = await _context_with_tools(tool)
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='broken_tool', id='fc-1', args={'label': 'A'}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  (function_response,) = (
+      function_response_queue.get_nowait().get_function_responses()
+  )
+  assert function_response.id == 'fc-1'
+  assert function_response.response == {
+      'error': 'Invoking `broken_tool()` failed with an internal error.'
+  }
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_queues_error_on_streaming_exception() -> None:
+  """A stream that raises puts an error response for the call on the queue."""
+  tool = FunctionTool(broken_streaming_tool)
+  invocation_context = await _context_with_tools(tool)
+  invocation_context.live_request_queue = LiveRequestQueue()
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(
+          name='broken_streaming_tool', id='fc-1', args={'label': 'A'}
+      ),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  function_response_queue.get_nowait()  # The "pending" response.
+  (function_response,) = (
+      function_response_queue.get_nowait().get_function_responses()
+  )
+  assert function_response.id == 'fc-1'
+  assert function_response.response == {
+      'error': (
+          'Invoking `broken_streaming_tool()` failed with an internal error.'
+      )
+  }
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_removes_call_from_registry_when_done() -> None:
+  """The call's registry entry is removed once the call is done."""
+  tool, release = _gated_lookup_tool()
+  invocation_context = await _context_with_tools(tool)
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(
+          name='gated_lookup_tool', id='fc-1', args={'label': 'A'}
+      ),
+      {tool.name: tool},
+      invocation_context.agent,
+      asyncio.Queue(),
+      None,
+  )
+  task = invocation_context._active_background_tools['fc-1'].task
+  assert 'fc-1' in invocation_context._active_background_tools
+
+  release.set()
+  await task
+
+  assert 'fc-1' not in (invocation_context._active_background_tools or {})
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_streams_in_the_call_task() -> None:
+  """A streaming call answers "pending", then streams in the same task."""
+  tool = FunctionTool(streaming_tool)
+  invocation_context = await _context_with_tools(tool)
+  invocation_context.live_request_queue = LiveRequestQueue()
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='streaming_tool', id='fc-1', args={'label': 'A'}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  entry = invocation_context._active_background_tools['fc-1']
+  pending_event = await asyncio.wait_for(function_response_queue.get(), 1)
+  chunk = await asyncio.wait_for(invocation_context.live_request_queue.get(), 1)
+
+  (pending_response,) = pending_event.get_function_responses()
+  assert 'pending' in pending_response.response['status']
+  assert chunk.content.parts[0].function_response.id == 'fc-1'
+  assert invocation_context._active_background_tools['fc-1'] is entry
+  assert entry.is_generator
+  assert not entry.task.done()
+
+  entry.task.cancel()
+  await asyncio.gather(entry.task, return_exceptions=True)
+  assert 'fc-1' not in (invocation_context._active_background_tools or {})
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_no_stream_if_before_callback_answers() -> None:
+  """A streaming call answered by a before-tool callback never streams."""
+  stream_started = False
+
+  async def watch() -> AsyncGenerator[str, None]:
+    nonlocal stream_started
+    stream_started = True
+    yield 'chunk'
+
+  tool = FunctionTool(watch)
+  invocation_context = await _context_with_tools(
+      tool, before_tool_callback=mock.Mock(return_value={'answer': 'callback'})
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='watch', id='fc-1', args={}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  (function_response,) = (
+      function_response_queue.get_nowait().get_function_responses()
+  )
+  assert function_response.response == {'answer': 'callback'}
+  assert not stream_started
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_no_stream_if_after_callback_fails() -> None:
+  """A streaming call whose after-tool callback raises never streams."""
+  stream_started = False
+
+  async def watch() -> AsyncGenerator[str, None]:
+    nonlocal stream_started
+    stream_started = True
+    yield 'chunk'
+
+  tool = FunctionTool(watch)
+  invocation_context = await _context_with_tools(
+      tool, after_tool_callback=mock.Mock(side_effect=RuntimeError('boom'))
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='watch', id='fc-1', args={}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  (function_response,) = (
+      function_response_queue.get_nowait().get_function_responses()
+  )
+  assert 'error' in function_response.response
+  assert not stream_started
