@@ -213,3 +213,24 @@ def test_outdated_override_keeps_abstract_methods_enforced():
 
   with pytest.raises(TypeError, match="abstract"):
     _Incomplete()
+
+
+def test_working_dir_defaults_to_none():
+  """An environment that does not override `working_dir` reports None."""
+
+  class _NoWorkingDirEnvironment(BaseEnvironment):
+
+    async def execute(
+        self, command: str, *, timeout: float | None = None, ctx: Any = None
+    ) -> ExecutionResult:
+      return ExecutionResult()
+
+    async def read_file(self, path: Path, *, ctx: Any = None) -> bytes:
+      return b""
+
+    async def write_file(
+        self, path: Path, content: str | bytes, *, ctx: Any = None
+    ) -> None:
+      pass
+
+  assert _NoWorkingDirEnvironment().working_dir is None

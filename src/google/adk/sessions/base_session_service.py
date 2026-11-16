@@ -191,6 +191,16 @@ class BaseSessionService(abc.ABC):
     """
     pass
 
+  async def flush_session(
+      self, *, app_name: str, user_id: str, session_id: str
+  ) -> None:
+    """Flushes any buffered events for one session.
+
+    The default calls `flush()`. A buffering implementation can override this to
+    wait only for the named session's writes.
+    """
+    await self.flush()
+
   def _apply_temp_state(self, session: Session, event: Event) -> None:
     """Applies temp-scoped state delta to the in-memory session state.
 

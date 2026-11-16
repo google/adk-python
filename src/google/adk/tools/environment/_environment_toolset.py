@@ -30,6 +30,7 @@ from ._edit_file_tool import EditFileTool
 from ._execute_tool import ExecuteTool
 from ._read_file_tool import ReadFileTool
 from ._utils import close_if_initialized
+from ._utils import working_dir_or_none
 from ._write_file_tool import WriteFileTool
 
 if TYPE_CHECKING:
@@ -122,17 +123,16 @@ class EnvironmentToolset(BaseToolset):
   ) -> None:
     """Inject environment-level system instruction.
 
-    Does not initialize the environment. Until a tool call has, the
-    instruction leaves out the working directory, which may not exist yet.
+    Does not initialize the environment. While the environment has no
+    working directory, the instruction leaves it out.
     """
     instruction = ENVIRONMENT_INSTRUCTION
-    # TODO: Check initialization through a method that takes `ctx`, so a
-    # session-scoped environment can answer from `ctx.state`.
-    if self._environment.is_initialized:
+    # TODO: Read the working directory through a method that takes `ctx`, so
+    # a session-scoped environment can answer from `ctx.state`.
+    working_dir = working_dir_or_none(self._environment)
+    if working_dir is not None:
       instruction = (
-          ENVIRONMENT_WORKING_DIR_INSTRUCTION.format(
-              working_dir=self._environment.working_dir
-          )
+          ENVIRONMENT_WORKING_DIR_INSTRUCTION.format(working_dir=working_dir)
           + '\n'
           + instruction
       )

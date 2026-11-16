@@ -50,6 +50,18 @@ permissions:
   contents: read
   pull-requests: write
 
+# Both jobs install the candidate the way a user does, so they should see
+# close to what `pip install google-adk` gets rather than pyproject.toml's
+# 7-day cutoff. A 1-day window keeps them near users while still skipping
+# releases young enough to be yanked, and avoids resolving a release whose
+# wheels PyPI is still uploading. The packages exempted in
+# `exclude-newer-package` (google-adk and friends) have no cutoff at all, so
+# the auto baseline is still the latest release. This only affects these
+# throwaway check environments; the published wheel is built by
+# release-publish.yml under the full cutoff.
+env:
+  UV_EXCLUDE_NEWER: "1 day"
+
 jobs:
   artifact-check:
     if: github.repository == 'google/adk-python'

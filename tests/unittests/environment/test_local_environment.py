@@ -32,6 +32,21 @@ async def _env(tmp_path: Path):
   await environment.close()
 
 
+@pytest.mark.asyncio
+async def test_working_dir_is_none_until_initialize_creates_it():
+  """Without a given directory, `working_dir` is None outside initialize/close."""
+  environment = LocalEnvironment()
+
+  before = environment.working_dir
+  await environment.initialize()
+  created = environment.working_dir
+  await environment.close()
+
+  assert before is None
+  assert created is not None
+  assert environment.working_dir is None
+
+
 class TestReadFileWriteFile:
   """Verify read_file and write_file accept both str and Path arguments."""
 

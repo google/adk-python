@@ -99,9 +99,7 @@ class LocalEnvironment(BaseEnvironment):
 
   @property
   @override
-  def working_dir(self) -> Path:
-    if self._working_dir is None:
-      raise RuntimeError('`working_dir` is not set. Call initialize() first.')
+  def working_dir(self) -> Path | None:
     return self._working_dir
 
   @override
@@ -246,8 +244,10 @@ class LocalEnvironment(BaseEnvironment):
 
   def _resolve_path(self, path: str | Path) -> Path:
     """Resolve a file path inside the working directory."""
+    if self._working_dir is None:
+      raise RuntimeError('`working_dir` is not set. Call initialize() first.')
     candidate = Path(path)
-    working_dir = self.working_dir.resolve()
+    working_dir = self._working_dir.resolve()
     if not candidate.is_absolute():
       candidate = working_dir / candidate
 

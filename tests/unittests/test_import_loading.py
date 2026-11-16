@@ -43,6 +43,7 @@ _LAZY_PACKAGES = (
     'google.adk.cli.utils',
     'google.adk.flows.llm_flows',
     'google.adk.flows.llm_flows.prompt',
+    'google.adk.integrations.fsspec',
     'google.adk.telemetry',
     'google.adk.workflow',
 )
@@ -214,6 +215,13 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             'google.adk.integrations.parameter_manager',
             ('google.api_core', 'google.cloud.parametermanager_v1'),
         ),
+        (
+            'google.adk.integrations.fsspec',
+            (
+                'fsspec',
+                'google.adk.integrations.fsspec._fsspec_artifact_service',
+            ),
+        ),
     ],
     ids=(
         'root',
@@ -231,6 +239,7 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
         'gcs',
         'secret_manager',
         'parameter_manager',
+        'fsspec',
     ),
 )
 def test_package_import_defers_unrelated_runtime(
