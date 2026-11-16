@@ -60,7 +60,7 @@ from google.adk.a2a.converters import event_converter
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
-from google.adk.a2a.converters.utils import A2A_REQUEST_FAILED_ERROR_CODE
+from google.adk.a2a.converters.utils import A2A_CLIENT_ERROR_CODE
 from google.adk.a2a.converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
@@ -2233,6 +2233,53 @@ class TestRemoteA2aAgentMessageHandling:
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_unknown_response_type(self):
+    """An unknown response type is reported as a client error event."""
+    result = await self.agent._handle_a2a_response(object(), self.mock_context)
+
+    assert result is not None
+    assert result.author == self.agent.name
+    assert result.error_message == "Unknown A2A response type"
+    assert result.error_code == A2A_CLIENT_ERROR_CODE
+    assert result.custom_metadata == {
+        A2A_METADATA_PREFIX + "error": "Unknown A2A response type"
+    }
+    assert result.content is None
+    assert result.invocation_id == self.mock_context.invocation_id
+    assert result.branch == self.mock_context.branch
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_handles_client_error(self):
+    """An A2AClientError while converting a response is a client error event."""
+    from google.adk.agents.remote_a2a_agent import A2AClientError
+
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.metadata = {}
+
+    with patch(
+        "google.adk.a2a.agent._remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.side_effect = A2AClientError("Test client error")
+
+      result = await self.agent._handle_a2a_response(
+          mock_a2a_message, self.mock_context
+      )
+
+    assert result is not None
+    assert result.author == self.agent.name
+    assert (
+        result.error_message
+        == "Failed to process A2A response: Test client error"
+    )
+    assert result.error_code == A2A_CLIENT_ERROR_CODE
+    assert result.custom_metadata == {
+        A2A_METADATA_PREFIX + "error": result.error_message
+    }
+    assert result.content is None
+    assert result.invocation_id == self.mock_context.invocation_id
+    assert result.branch == self.mock_context.branch
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_message_converter_returns_none(self):
@@ -4521,7 +4568,7 @@ class TestRemoteA2aAgentMessageHandlingV2:
     assert result is not None
     assert result.author == self.agent.name
     assert result.error_message == "Unknown A2A response type"
-    assert result.error_code == A2A_REQUEST_FAILED_ERROR_CODE
+    assert result.error_code == A2A_CLIENT_ERROR_CODE
     assert result.invocation_id == self.mock_context.invocation_id
     assert result.branch == self.mock_context.branch
 
@@ -4548,7 +4595,7 @@ class TestRemoteA2aAgentMessageHandlingV2:
         "Failed to process A2A response: Test client error"
         in result.error_message
     )
-    assert result.error_code == A2A_REQUEST_FAILED_ERROR_CODE
+    assert result.error_code == A2A_CLIENT_ERROR_CODE
     assert result.invocation_id == self.mock_context.invocation_id
     assert result.branch == self.mock_context.branch
 
@@ -4789,7 +4836,7 @@ class TestRemoteA2aAgentExecution:
 
       assert len(events) == 1
       assert "Failed to initialize remote A2A agent" in events[0].error_message
-      assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+      assert events[0].error_code == A2A_CLIENT_ERROR_CODE
       assert events[0].custom_metadata == {
           A2A_METADATA_PREFIX + "error": events[0].error_message
       }
@@ -5242,7 +5289,12 @@ class TestRemoteA2aAgentExecution:
 
           # Mock A2A client that throws an exception
           mock_a2a_client = AsyncMock()
-          mock_a2a_client.send_message.side_effect = Exception("Send failed")
+
+          async def failing_send_message(*args, **kwargs):
+            raise Exception("Send failed")
+            yield  # An async generator, like the real client's stream.
+
+          mock_a2a_client.send_message = failing_send_message
           self.agent._a2a_client = mock_a2a_client
           # _ensure_resolved now returns the client to use for the run.
           self.agent._ensure_resolved.return_value = mock_a2a_client
@@ -5258,8 +5310,8 @@ class TestRemoteA2aAgentExecution:
               events.append(event)
 
             assert len(events) == 1
-            assert "A2A request failed" in events[0].error_message
-            assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+            assert events[0].error_message == "A2A request failed: Send failed"
+            assert events[0].error_code == A2A_CLIENT_ERROR_CODE
 
   @pytest.mark.asyncio
   async def test_run_async_impl_task_mode_rejects_missing_trigger_fc(self):
@@ -5310,7 +5362,7 @@ class TestRemoteA2aAgentExecution:
 
       assert len(events) == 3
       assert "Failed to initialize remote A2A agent" in events[0].error_message
-      assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+      assert events[0].error_code == A2A_CLIENT_ERROR_CODE
       assert (
           events[1].content.parts[0].function_response.name
           == FINISH_TASK_TOOL_NAME
@@ -5437,7 +5489,7 @@ class TestRemoteA2aAgentExecution:
             assert len(events) == 3
 
             assert "A2A request failed" in events[0].error_message
-            assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+            assert events[0].error_code == A2A_CLIENT_ERROR_CODE
 
             # The second event should be the finish_task error event
             assert events[1].content is not None
@@ -5584,7 +5636,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
 
       assert len(events) == 1
       assert "Failed to initialize remote A2A agent" in events[0].error_message
-      assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+      assert events[0].error_code == A2A_CLIENT_ERROR_CODE
 
   @pytest.mark.asyncio
   async def test_run_async_impl_no_message_parts(self):
@@ -5707,7 +5759,12 @@ class TestRemoteA2aAgentExecutionFromFactory:
 
           # Mock A2A client that throws an exception
           mock_a2a_client = AsyncMock()
-          mock_a2a_client.send_message.side_effect = Exception("Send failed")
+
+          async def failing_send_message(*args, **kwargs):
+            raise Exception("Send failed")
+            yield  # An async generator, like the real client's stream.
+
+          mock_a2a_client.send_message = failing_send_message
           self.agent._a2a_client = mock_a2a_client
           # _ensure_resolved now returns the client to use for the run.
           self.agent._ensure_resolved.return_value = mock_a2a_client
@@ -5723,8 +5780,8 @@ class TestRemoteA2aAgentExecutionFromFactory:
               events.append(event)
 
             assert len(events) == 1
-            assert "A2A request failed" in events[0].error_message
-            assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+            assert events[0].error_message == "A2A request failed: Send failed"
+            assert events[0].error_code == A2A_CLIENT_ERROR_CODE
 
   @pytest.mark.asyncio
   async def test_run_live_impl_not_implemented(self):
@@ -7081,7 +7138,7 @@ class TestRemoteA2aAgentStreamTruncation:
     assert events[1].error_message == (
         "A2A response stream ended before task task-1 reached a terminal state."
     )
-    assert events[1].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+    assert events[1].error_code == A2A_CLIENT_ERROR_CODE
 
   @pytest.mark.asyncio
   async def test_reports_stream_that_ends_on_unknown_task_state(self):
@@ -7091,7 +7148,7 @@ class TestRemoteA2aAgentStreamTruncation:
     assert events[1].error_message == (
         "A2A response stream ended before task task-1 reached a terminal state."
     )
-    assert events[1].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+    assert events[1].error_code == A2A_CLIENT_ERROR_CODE
 
   @pytest.mark.asyncio
   async def test_accepts_stream_that_ends_on_completed_task(self):
@@ -8597,7 +8654,7 @@ class TestRemoteA2aAgentAuth:
 
     assert len(events) == 1
     assert "Failed to authenticate remote A2A agent" in events[0].error_message
-    assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+    assert events[0].error_code == A2A_CLIENT_ERROR_CODE
     ensure_resolved.assert_not_called()
 
   def _task_context(self):
@@ -8625,7 +8682,7 @@ class TestRemoteA2aAgentAuth:
     )
 
     assert "Failed to authenticate remote A2A agent" in events[0].error_message
-    assert events[0].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+    assert events[0].error_code == A2A_CLIENT_ERROR_CODE
     assert (
         events[1].content.parts[0].function_response.name
         == FINISH_TASK_TOOL_NAME
@@ -9461,9 +9518,7 @@ async def test_unreachable_remote_agent_in_workflow_is_a_failed_node():
   ):
     events = await runner.run_async(testing_utils.get_user_content("start"))
 
-  failures = [
-      e for e in events if e.error_code == A2A_REQUEST_FAILED_ERROR_CODE
-  ]
+  failures = [e for e in events if e.error_code == A2A_CLIENT_ERROR_CODE]
   assert len(failures) == 1
   assert "card unreachable" in failures[0].error_message
   assert failures[0].output is None
@@ -9476,7 +9531,7 @@ async def test_unreachable_remote_agent_in_workflow_is_a_failed_node():
   recovered = _rehydration_utils._reconstruct_node_states(
       events, base_path="wf@1", invocation_id="", group_by_direct_child=True
   )
-  assert recovered["currency@1"].error_code == A2A_REQUEST_FAILED_ERROR_CODE
+  assert recovered["currency@1"].error_code == A2A_CLIENT_ERROR_CODE
   assert recovered["currency@1"].output is None
 
 

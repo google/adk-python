@@ -85,7 +85,7 @@ from ..converters.to_adk_event import _warn_if_peer_metadata_has_state_delta
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..converters.utils import _is_failed_status
-from ..converters.utils import A2A_REQUEST_FAILED_ERROR_CODE
+from ..converters.utils import A2A_CLIENT_ERROR_CODE
 from ..converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from ..converters.utils import A2A_TASK_FAILED_ERROR_MESSAGE
 from ..logs.log_utils import build_a2a_request_log
@@ -537,7 +537,7 @@ def _create_task_failure_events(
   return error_event, finish_event
 
 
-def _create_request_failed_event(
+def _create_client_error_event(
     ctx: InvocationContext,
     agent_name: str,
     error_message: str,
@@ -564,7 +564,7 @@ def _create_request_failed_event(
       author=agent_name,
       invocation_id=ctx.invocation_id,
       branch=ctx.branch,
-      error_code=A2A_REQUEST_FAILED_ERROR_CODE,
+      error_code=A2A_CLIENT_ERROR_CODE,
       error_message=error_message,
       custom_metadata=metadata,
   )
@@ -1893,7 +1893,7 @@ class RemoteA2aAgent(BaseAgent):
               a2a_response.context_id
           )
       else:
-        event = _create_request_failed_event(
+        event = _create_client_error_event(
             ctx, self.name, "Unknown A2A response type"
         )
       # Filter out thought parts from user-facing response content.
@@ -1907,7 +1907,7 @@ class RemoteA2aAgent(BaseAgent):
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
-      return _create_request_failed_event(
+      return _create_client_error_event(
           ctx, self.name, f"Failed to process A2A response: {e}"
       )
 
@@ -1986,13 +1986,13 @@ class RemoteA2aAgent(BaseAgent):
               a2a_response.context_id
           )
       else:
-        event = _create_request_failed_event(
+        event = _create_client_error_event(
             ctx, self.name, "Unknown A2A response type"
         )
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
-      return _create_request_failed_event(
+      return _create_client_error_event(
           ctx, self.name, f"Failed to process A2A response: {e}"
       )
 
@@ -2013,7 +2013,7 @@ class RemoteA2aAgent(BaseAgent):
         except Exception as e:  # pylint: disable=broad-except
           task_error_message = f"Failed to authenticate remote A2A agent: {e}"
           should_release_task_control = True
-          yield _create_request_failed_event(ctx, self.name, task_error_message)
+          yield _create_client_error_event(ctx, self.name, task_error_message)
           return
         if auth_request_event:
           # A pause, not a failure: the invocation resumes once the client
@@ -2026,7 +2026,7 @@ class RemoteA2aAgent(BaseAgent):
       except Exception as e:
         task_error_message = f"Failed to initialize remote A2A agent: {e}"
         should_release_task_control = True
-        yield _create_request_failed_event(ctx, self.name, task_error_message)
+        yield _create_client_error_event(ctx, self.name, task_error_message)
         return
 
       # Create A2A request for function response or regular message
@@ -2222,7 +2222,7 @@ class RemoteA2aAgent(BaseAgent):
           )
           logger.error(task_error_message)
           should_release_task_control = True
-          yield _create_request_failed_event(
+          yield _create_client_error_event(
               ctx, self.name, task_error_message, a2a_request=a2a_request
           )
 
@@ -2232,7 +2232,7 @@ class RemoteA2aAgent(BaseAgent):
         should_release_task_control = True
         logger.error(error_message)
         status_code: object = getattr(e, "status_code", None)
-        yield _create_request_failed_event(
+        yield _create_client_error_event(
             ctx,
             self.name,
             error_message,
@@ -2247,7 +2247,7 @@ class RemoteA2aAgent(BaseAgent):
         task_error_message = error_message
         should_release_task_control = True
         logger.error(error_message)
-        yield _create_request_failed_event(
+        yield _create_client_error_event(
             ctx, self.name, error_message, a2a_request=a2a_request
         )
 
