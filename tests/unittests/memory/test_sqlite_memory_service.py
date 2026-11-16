@@ -996,6 +996,40 @@ async def test_search_keeps_combining_marks_in_query_word(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "decoy", "query"),
+    [
+        ("র\u200d্যাব এসেছে", "আমার নাম রাজ", "র\u200d্যাব"),
+        ("मैं क्\u200cष लिखता हूँ", "मैं क्षमा माँगता हूँ", "क्\u200cष"),
+        ("کتاب\u200cها روی میز است", "مرد\u200cها آمدند", "کتاب\u200cها"),
+        ("আমার নাম রাজ", "আমি ভাত খাই", "রাজ\u200d"),
+        ("আমার নাম রাজ", "আমি ভাত খাই", "\u200cরাজ"),
+        (
+            "Family photo",
+            "I \u2764\ufe0f\u200d\U0001f525 this",
+            "photo \U0001f468\u200d\U0001f469\u200d\U0001f467",
+        ),
+    ],
+)
+async def test_search_keeps_joiners_in_query_word(
+    tmp_path, fts_mode, text, decoy, query
+):
+  """A query word is not split at a zero-width joiner or non-joiner."""
+  db_path = tmp_path / "memory.db"
+  service = SqliteMemoryService(db_path=db_path, fts=fts_mode)
+  session = _make_session([
+      _make_event("user", text, 1.0),
+      _make_event("user", decoy, 2.0),
+  ])
+  await service.add_session_to_memory(session)
+  response = await service.search_memory(
+      app_name="app", user_id="user", query=query
+  )
+  assert [m.content.parts[0].text for m in response.memories] == [text]
+  await service.close()
+
+
+@pytest.mark.asyncio
 async def test_search_ignores_emoji_variation_selector(tmp_path, fts_mode):
   """The U+FE0F after an emoji in a query does not match other emoji."""
   db_path = tmp_path / "memory.db"

@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
 import itertools
@@ -49,11 +50,29 @@ def _is_mark(c: str) -> bool:
   return unicodedata.category(c).startswith('M')
 
 
-# Combining marks count as word characters: \w alone would split a word at
-# them, such as the Thai vowel and tone marks in ข้าว. This matches the
-# tokenizer of SqliteMemoryService.
+# The zero-width non-joiner and joiner. Bengali, Hindi and Persian, among
+# others, use them inside a word to pick a glyph form, such as the ZWJ
+# between র and ্যাব in the Bengali word RAB.
+_JOINERS = '\u200c\u200d'
+
+
+# Combining marks and joiners count as word characters: \w alone would split
+# a word at them, such as the Thai vowel and tone marks in ข้าว. This matches
+# the tokenizer of SqliteMemoryService.
 def _is_word_char(c: str) -> bool:
-  return c.isalnum() or c == '_' or _is_mark(c)
+  return c.isalnum() or c == '_' or _is_mark(c) or c in _JOINERS
+
+
+def _trim_word(chars: Iterable[str]) -> str:
+  """Joins chars, dropping leading marks and joiners and trailing joiners."""
+  # Marks with no letter before them are dropped: the emoji variation
+  # selector U+FE0F is a mark, and as a word it would match any emoji. A
+  # joiner at the start or end of a word is dropped too, so the ZWJs that
+  # join the emoji of a family emoji are not words either.
+  word = ''.join(
+      itertools.dropwhile(lambda c: _is_mark(c) or c in _JOINERS, chars)
+  )
+  return word.rstrip(_JOINERS)
 
 
 def _find_words(text: str) -> list[str]:
@@ -62,9 +81,7 @@ def _find_words(text: str) -> list[str]:
   for is_word, group in itertools.groupby(text, _is_word_char):
     if not is_word:
       continue
-    # Marks with no letter before them are dropped: the emoji variation
-    # selector U+FE0F is a mark, and as a word it would match any emoji.
-    word = ''.join(itertools.dropwhile(_is_mark, group))
+    word = _trim_word(group)
     if word:
       words.append(word)
   return words
@@ -100,7 +117,7 @@ def _extract_searchable_words(text: str) -> set[str]:
       for _, group in itertools.groupby(word, _is_latin):
         # A combining mark on a Latin letter is not Latin itself, so it can
         # form a run of its own; like a leading mark, it is not a word.
-        run = ''.join(itertools.dropwhile(_is_mark, group))
+        run = _trim_word(group)
         if run:
           words.add(run.lower())
   return words

@@ -456,6 +456,19 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
         # Keycap emoji: 1, U+FE0F and the enclosing keycap mark U+20E3
         ('Room 1️⃣ is free', '1️⃣', 1),
         ('Room 2 is busy', '1️⃣', 0),
+        # A zero-width joiner or non-joiner inside a word does not split it
+        ('র\u200d্যাব এসেছে', 'র\u200d্যাব', 1),
+        ('আমার নাম রাজ', 'র\u200d্যাব', 0),
+        ('मैं क्\u200cष लिखता हूँ', 'क्\u200cष', 1),
+        ('मैं क्षमा माँगता हूँ', 'क्\u200cष', 0),
+        ('کتاب\u200cها روی میز است', 'کتاب\u200cها', 1),
+        ('مرد\u200cها آمدند', 'کتاب\u200cها', 0),
+        ('می\u200cخواهم بروم', 'خواهم', 1),
+        # A joiner at the start or end of a query word is not part of it
+        ('আমার নাম রাজ', 'রাজ\u200d', 1),
+        ('আমার নাম রাজ', '\u200cরাজ', 1),
+        # The joiners of an emoji sequence are not a word
+        ('I ❤️\u200d🔥 this', 'Family 👨\u200d👩\u200d👧', 0),
         # Latin partial-word must NOT match (regression guard)
         ('I like to code in Python.', 'thon', 0),
         ('私はPythonでADKを使っています', 'thon', 0),
