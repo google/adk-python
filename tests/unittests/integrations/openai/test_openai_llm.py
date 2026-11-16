@@ -1701,3 +1701,313 @@ def test_usage_metadata_maps_reasoning_tokens(details, expected):
   metadata = _usage_metadata(usage)
   assert metadata.thoughts_token_count == expected
   assert metadata.candidates_token_count == 50
+
+
+def _tool_call_completion(
+    tool_calls, *, content=None, finish_reason="tool_calls"
+):
+  """Builds a mock ChatCompletion carrying tool calls."""
+  response = mock.MagicMock()
+  choice = mock.MagicMock()
+  message = mock.MagicMock()
+  message.content = content
+  mock_calls = []
+  for call_id, name, arguments in tool_calls:
+    tc = mock.MagicMock()
+    tc.id = call_id
+    tc.function = mock.MagicMock()
+    tc.function.name = name
+    tc.function.arguments = arguments
+    mock_calls.append(tc)
+  message.tool_calls = mock_calls
+  choice.message = message
+  choice.finish_reason = finish_reason
+  response.choices = [choice]
+  response.usage.prompt_tokens = 10
+  response.usage.completion_tokens = 5
+  response.usage.total_tokens = 15
+  response.usage.prompt_tokens_details = None
+  response.usage.completion_tokens_details = None
+  return response
+
+
+def _tool_call_stream_chunk(
+    *,
+    index=0,
+    call_id=None,
+    name=None,
+    arguments=None,
+    content=None,
+    finish_reason=None,
+):
+  """Builds a streaming chunk carrying a tool-call delta."""
+  chunk = mock.MagicMock()
+  chunk.usage = None
+  choice = mock.MagicMock()
+  choice.finish_reason = finish_reason
+  delta = mock.MagicMock()
+  delta.content = content
+  if call_id is None and name is None and arguments is None:
+    delta.tool_calls = None
+  else:
+    tc = mock.MagicMock()
+    tc.index = index
+    tc.id = call_id
+    tc.function = mock.MagicMock()
+    tc.function.name = name
+    tc.function.arguments = arguments
+    delta.tool_calls = [tc]
+  choice.delta = delta
+  chunk.choices = [choice]
+  return chunk
+
+
+async def _run_non_streaming_completion(mock_response):
+  """Runs one non-streaming OpenAILlm call returning mock_response."""
+  openai_llm = OpenAILlm(model="gpt-4o", api_key="k")
+  llm_request = LlmRequest(
+      model="gpt-4o",
+      contents=[Content(role="user", parts=[Part.from_text(text="Run tool")])],
+  )
+
+  async def mock_create(*args, **kwargs):
+    return mock_response
+
+  with mock.patch(
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
+  ) as mock_client_class:
+    mock_client = mock.MagicMock()
+    mock_client_class.return_value = mock_client
+    mock_client.chat.completions.create = mock_create
+    return [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_truncated_tool_call_reports_max_tokens():
+  """A non-streaming tool call cut off at length returns MAX_TOKENS, no call."""
+  mock_response = _tool_call_completion(
+      [("call_1", "write_file", '{"path": "a.txt", "content": "hel')],
+      finish_reason="length",
+  )
+
+  responses = await _run_non_streaming_completion(mock_response)
+
+  assert len(responses) == 1
+  resp = responses[0]
+  assert resp.error_code == types.FinishReason.MAX_TOKENS
+  assert resp.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "max_output_tokens" in resp.error_message
+  assert not resp.get_function_calls()
+  assert resp.content is None
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_truncated_tool_call_keeps_text_and_drops_batch():
+  """A truncated call drops the whole tool batch while preserving text."""
+  mock_response = _tool_call_completion(
+      [
+          ("call_1", "read_file", '{"path": "a.txt"}'),
+          ("call_2", "write_file", '{"path": "a.txt", "content": "hel'),
+      ],
+      content="Writing file.",
+      finish_reason="length",
+  )
+
+  responses = await _run_non_streaming_completion(mock_response)
+
+  assert len(responses) == 1
+  resp = responses[0]
+  assert resp.error_code == types.FinishReason.MAX_TOKENS
+  assert resp.finish_reason == types.FinishReason.MAX_TOKENS
+  assert not resp.get_function_calls()
+  assert [p.text for p in resp.content.parts] == ["Writing file."]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", ["[]", "null", '"x"'])
+async def test_non_streaming_non_object_tool_call_reports_malformed(arguments):
+  """Non-object JSON tool arguments are rejected as MALFORMED_FUNCTION_CALL."""
+  mock_response = _tool_call_completion(
+      [("call_1", "write_file", arguments)],
+      finish_reason="tool_calls",
+  )
+
+  responses = await _run_non_streaming_completion(mock_response)
+
+  assert len(responses) == 1
+  resp = responses[0]
+  assert resp.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert resp.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "write_file" in resp.error_message
+  assert not resp.get_function_calls()
+  assert resp.content is None
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_invalid_json_tool_call_reports_malformed():
+  """Invalid JSON tool arguments with finish tool_calls report malformed."""
+  mock_response = _tool_call_completion(
+      [("call_1", "write_file", '{"path": "a.txt"')],
+      content="Calling tool.",
+      finish_reason="tool_calls",
+  )
+
+  responses = await _run_non_streaming_completion(mock_response)
+
+  assert len(responses) == 1
+  resp = responses[0]
+  assert resp.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert resp.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "write_file" in resp.error_message
+  assert not resp.get_function_calls()
+  assert [p.text for p in resp.content.parts] == ["Calling tool."]
+
+
+@pytest.mark.asyncio
+async def test_streaming_truncated_tool_call_reports_max_tokens():
+  """Streamed argument deltas cut mid-JSON with finish length report MAX_TOKENS."""
+  openai_llm = OpenAILlm(model="gpt-4o", api_key="k")
+  llm_request = LlmRequest(
+      model="gpt-4o",
+      contents=[Content(role="user", parts=[Part.from_text(text="Write")])],
+  )
+  chunks = [
+      _tool_call_stream_chunk(
+          call_id="call_1",
+          name="write_file",
+          arguments='{"path": "a.txt",',
+      ),
+      _tool_call_stream_chunk(
+          arguments=' "content": "hel',
+          finish_reason="length",
+      ),
+      _usage_only_chunk(),
+  ]
+
+  with _stream_client(chunks):
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  final = responses[-1]
+  assert final.partial is False
+  assert final.error_code == types.FinishReason.MAX_TOKENS
+  assert final.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "max_output_tokens" in final.error_message
+  assert not final.get_function_calls()
+  assert final.content is None
+  assert final.usage_metadata.total_token_count == 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    ['{"path": "a.txt"', "[]", "null", '"x"'],
+)
+async def test_streaming_malformed_tool_call_reports_malformed(arguments):
+  """Streamed malformed or non-object tool arguments report malformed."""
+  openai_llm = OpenAILlm(model="gpt-4o", api_key="k")
+  llm_request = LlmRequest(
+      model="gpt-4o",
+      contents=[Content(role="user", parts=[Part.from_text(text="Write")])],
+  )
+  chunks = [
+      _tool_call_stream_chunk(
+          call_id="call_1",
+          name="write_file",
+          arguments=arguments,
+          content="Calling tool.",
+          finish_reason="tool_calls",
+      ),
+      _usage_only_chunk(),
+  ]
+
+  with _stream_client(chunks):
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  final = responses[-1]
+  assert final.partial is False
+  assert final.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert final.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "write_file" in final.error_message
+  assert not final.get_function_calls()
+  assert [p.text for p in final.content.parts] == ["Calling tool."]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("arguments", "expected_args"),
+    [
+        ('{"location": "NYC"}', {"location": "NYC"}),
+        ("", {}),
+        ("{}", {}),
+    ],
+)
+async def test_non_streaming_valid_and_empty_tool_call_arguments_succeed(
+    arguments, expected_args
+):
+  """Valid JSON object and empty-string tool arguments still succeed."""
+  mock_response = _tool_call_completion(
+      [("call_1", "get_weather", arguments)],
+      finish_reason="tool_calls",
+  )
+
+  responses = await _run_non_streaming_completion(mock_response)
+
+  assert len(responses) == 1
+  resp = responses[0]
+  assert resp.error_code is None
+  assert resp.finish_reason == types.FinishReason.STOP
+  calls = resp.get_function_calls()
+  assert len(calls) == 1
+  assert calls[0].name == "get_weather"
+  assert calls[0].args == expected_args
+
+
+@pytest.mark.asyncio
+async def test_streaming_empty_tool_call_arguments_succeed():
+  """Streamed no-argument tool call with empty arguments string yields {}."""
+  openai_llm = OpenAILlm(model="gpt-4o", api_key="k")
+  llm_request = LlmRequest(
+      model="gpt-4o",
+      contents=[Content(role="user", parts=[Part.from_text(text="Ping")])],
+  )
+  chunks = [
+      _tool_call_stream_chunk(
+          call_id="call_1",
+          name="ping",
+          arguments="",
+          finish_reason="tool_calls",
+      ),
+      _usage_only_chunk(),
+  ]
+
+  with _stream_client(chunks):
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  final = responses[-1]
+  assert final.partial is False
+  assert final.error_code is None
+  assert final.finish_reason == types.FinishReason.STOP
+  calls = final.get_function_calls()
+  assert len(calls) == 1
+  assert calls[0].name == "ping"
+  assert calls[0].args == {}

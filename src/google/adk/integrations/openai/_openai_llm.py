@@ -282,18 +282,94 @@ def _usage_metadata(
   )
 
 
-def _tool_call_parts(message: ChatCompletionMessage) -> list[types.Part]:
+def _parse_tool_call_arguments(
+    raw_arguments: Any,
+    name: str | None,
+    is_length_finish: bool,
+    malformed_names: list[str],
+) -> dict[str, Any] | None:
+  """Parses tool call arguments into a JSON object, or None if invalid."""
+  if not raw_arguments and not is_length_finish:
+    return {}
+  if raw_arguments and (
+      not isinstance(raw_arguments, str) or raw_arguments.strip()
+  ):
+    try:
+      parsed = json.loads(raw_arguments)
+      if isinstance(parsed, dict):
+        return parsed
+    except (ValueError, RecursionError, TypeError):
+      pass
+  safe_name = name if isinstance(name, str) and name else "<unnamed>"
+  # Never log raw arguments: they can be large and carry user data.
+  logger.warning(
+      "Discarding tool call %r with malformed arguments (%d chars).",
+      safe_name,
+      len(raw_arguments) if isinstance(raw_arguments, str) else 0,
+  )
+  malformed_names.append(safe_name)
+  return None
+
+
+def _malformed_tool_call_response(
+    malformed_names: list[str],
+    parts: list[types.Part],
+    raw_finish_reason: str | None,
+    usage: CompletionUsage | None,
+    *,
+    streaming: bool = False,
+) -> LlmResponse:
+  """Builds an error LlmResponse when tool call arguments are invalid."""
+  finish_reason = _map_finish_reason(raw_finish_reason)
+  msg = (
+      "Arguments for the following function calls were not a valid JSON"
+      f" object: {', '.join(malformed_names)}"
+  )
+  if raw_finish_reason == "length":
+    error_code = types.FinishReason.MAX_TOKENS
+    msg = (
+        "Tool call arguments were truncated and could not be parsed as valid"
+        " JSON. Increase `max_output_tokens` and retry."
+    )
+  elif finish_reason in (
+      None,
+      types.FinishReason.STOP,
+      types.FinishReason.FINISH_REASON_UNSPECIFIED,
+  ):
+    finish_reason = error_code = types.FinishReason.MALFORMED_FUNCTION_CALL
+  else:
+    error_code = finish_reason
+    msg = f"OpenAI response finished with reason {raw_finish_reason!r}. {msg}"
+  text = [p for p in parts if not p.function_call]
+  return LlmResponse(
+      content=types.Content(role="model", parts=text) if text else None,
+      partial=False if streaming else None,
+      error_code=error_code,
+      error_message=msg,
+      finish_reason=finish_reason,
+      usage_metadata=_usage_metadata(usage),
+  )
+
+
+def _tool_call_parts(
+    message: ChatCompletionMessage,
+    is_length_finish: bool = False,
+    malformed_names: list[str] | None = None,
+) -> list[types.Part]:
   """Converts OpenAI tool calls on a message to ADK function-call parts."""
   parts: list[types.Part] = []
+  invalid: list[str] = []
   for message_tool_call in message.tool_calls or []:
     # Only function tools are sent, so the model returns only function calls.
     tool_call = cast(ChatCompletionMessageFunctionToolCall, message_tool_call)
-    args = {}
-    if tool_call.function.arguments:
-      try:
-        args = json.loads(tool_call.function.arguments)
-      except json.JSONDecodeError:
-        logger.warning("Failed to parse tool call arguments as JSON.")
+    args = _parse_tool_call_arguments(
+        tool_call.function.arguments,
+        tool_call.function.name,
+        is_length_finish,
+        invalid,
+    )
+    if args is None:
+      continue
     parts.append(
         types.Part(
             function_call=types.FunctionCall(
@@ -301,7 +377,9 @@ def _tool_call_parts(message: ChatCompletionMessage) -> list[types.Part]:
             )
         )
     )
-  return parts
+  if invalid and malformed_names is not None:
+    malformed_names.extend(invalid)
+  return [] if invalid else parts
 
 
 def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
@@ -319,13 +397,20 @@ def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
 
   choice = response.choices[0]
   message = choice.message
+  raw_finish_reason = getattr(choice, "finish_reason", None)
 
   parts = []
   if message.content:
     parts.append(types.Part.from_text(text=message.content))
-  parts.extend(_tool_call_parts(message))
+  malformed_names: list[str] = []
+  parts.extend(
+      _tool_call_parts(message, raw_finish_reason == "length", malformed_names)
+  )
+  if malformed_names:
+    return _malformed_tool_call_response(
+        malformed_names, parts, raw_finish_reason, usage
+    )
 
-  raw_finish_reason = getattr(choice, "finish_reason", None)
   finish_reason = _map_finish_reason(raw_finish_reason)
 
   if not parts and finish_reason not in (None, types.FinishReason.STOP):
@@ -604,16 +689,17 @@ class OpenAILlm(BaseLlm):
     if text_accumulated:
       parts.append(types.Part.from_text(text=text_accumulated))
 
+    malformed_names: list[str] = []
     for index in sorted(tool_calls_accumulated.keys()):
       acc = tool_calls_accumulated[index]
-      args = {}
-      if acc["arguments"]:
-        try:
-          args = json.loads(acc["arguments"])
-        except json.JSONDecodeError:
-          logger.warning(
-              "Failed to parse accumulated tool call arguments as JSON."
-          )
+      args = _parse_tool_call_arguments(
+          acc["arguments"],
+          acc["name"],
+          finish_reason == "length",
+          malformed_names,
+      )
+      if args is None:
+        continue
 
       parts.append(
           types.Part(
@@ -624,6 +710,12 @@ class OpenAILlm(BaseLlm):
       )
 
     mapped_finish_reason = _map_finish_reason(finish_reason)
+
+    if malformed_names:
+      yield _malformed_tool_call_response(
+          malformed_names, parts, finish_reason, usage, streaming=True
+      )
+      return
 
     if not parts and mapped_finish_reason not in (
         None,
