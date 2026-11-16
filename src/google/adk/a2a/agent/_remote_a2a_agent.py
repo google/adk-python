@@ -2508,11 +2508,16 @@ class RemoteA2aAgent(BaseAgent):
     ):
       return None
 
-    task = await _compat.get_task(
-        client,
-        task_id=request.task_id,
-        context=parameters.client_call_context,
-    )
+    try:
+      task = await _compat.get_task(
+          client,
+          task_id=request.task_id,
+          context=parameters.client_call_context,
+      )
+    except Exception as error:
+      if _compat.is_get_task_unsupported(error):
+        return None
+      raise
     if task.id != request.task_id or task.context_id != request.context_id:
       raise A2AClientError("Peer returned a different task or context")
     if task.status.state != _compat.TS_COMPLETED:
