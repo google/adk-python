@@ -96,6 +96,14 @@ so it cannot remove an event from a row that it keeps. `raw_where_clause` sees
 single events, so it decides which events a row is built from, and a condition
 that drops an event of a session changes that session's row.
 
+Nested `AgentTool` child sessions, whose events carry
+`attributes.adk.parent_session_id`, are excluded automatically from both
+session and turn evaluation rows because their tool call and response are
+already recorded inside the parent turn's `trace`. That exclusion requires the
+`attributes` column: when `attributes` is in `denied_columns`, such as when
+`payload_column_denylist` includes `"attributes"`, the query reads `NULL` in
+place of `attributes` and returns child sessions as their own rows.
+
 The query declares no query parameters of its own: your job binds every `@name`
 parameter that the two conditions use. The query also ends without a
 semicolon, so the job can append `ORDER BY` or `LIMIT` to it or read it as a

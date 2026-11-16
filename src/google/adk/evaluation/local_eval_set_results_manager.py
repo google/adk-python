@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 from typing_extensions import override
 
@@ -25,6 +26,7 @@ from ._eval_set_results_manager_utils import parse_eval_set_result_json
 from ._path_validation import validate_path_segment
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
+from .eval_result import MultiRunCaseSummary
 from .eval_set_results_manager import EvalSetResultsManager
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -45,12 +47,16 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
       app_name: str,
       eval_set_id: str,
       eval_case_results: list[EvalCaseResult],
+      multi_run_case_summaries: Optional[list[MultiRunCaseSummary]] = None,
   ) -> None:
     """Creates and saves a new EvalSetResult given eval_case_results."""
     validate_path_segment(app_name, "app_name")
     validate_path_segment(eval_set_id, "eval_set_id")
     eval_set_result = create_eval_set_result(
-        app_name, eval_set_id, eval_case_results
+        app_name,
+        eval_set_id,
+        eval_case_results,
+        multi_run_case_summaries=multi_run_case_summaries,
     )
     # Write eval result file, with eval_set_result_name.
     app_eval_history_dir = self._get_eval_history_dir(app_name)

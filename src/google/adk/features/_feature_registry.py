@@ -36,6 +36,7 @@ class FeatureName(str, Enum):
   BIG_QUERY_TOOL_CONFIG = "BIG_QUERY_TOOL_CONFIG"
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
   BIGTABLE_TOOLSET = "BIGTABLE_TOOLSET"
+  BUFFERED_SESSION_SERVICE = "BUFFERED_SESSION_SERVICE"
   CASCADE_LIVE = "CASCADE_LIVE"
   CLASSIFIER = "CLASSIFIER"
   COMPUTER_USE = "COMPUTER_USE"
@@ -148,6 +149,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.BIGTABLE_TOOLSET: FeatureConfig(
         FeatureStage.STABLE, default_on=True
     ),
+    FeatureName.BUFFERED_SESSION_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.CASCADE_LIVE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -164,7 +168,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=False
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
         FeatureStage.STABLE, default_on=True

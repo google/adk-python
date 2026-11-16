@@ -40,11 +40,13 @@ import dataclasses
 import pathlib
 
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
+from google.adk.errors import SessionPersistenceError
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
 from google.adk.integrations.mongodb import MongoDbSessionService
 from google.adk.integrations.redis._config import RedisSessionServiceConfig
 from google.adk.integrations.redis._redis_session_service import RedisSessionService
+from google.adk.sessions import BufferedSessionService
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -134,6 +136,52 @@ async def _make_mongodb(
 
 
 @contextlib.asynccontextmanager
+async def _make_buffered_in_memory(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  del tmp_path
+  service = BufferedSessionService(InMemorySessionService())
+  try:
+    yield service
+  finally:
+    await _close_buffered(service)
+
+
+@contextlib.asynccontextmanager
+async def _make_buffered_database(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  # A file rather than an in-memory database: background writes run while the
+  # caller reads, and an in-memory database shares one connection between them.
+  delegate = DatabaseSessionService(
+      f'sqlite+aiosqlite:///{tmp_path / "buffered.db"}'
+  )
+  service = BufferedSessionService(delegate)
+  try:
+    yield service
+  finally:
+    try:
+      await _close_buffered(service)
+    finally:
+      await delegate.close()
+
+
+async def _close_buffered(service: BufferedSessionService) -> None:
+  # A contract test may leave a failed write behind on purpose, and the test
+  # itself checks what it expects of it.
+  with contextlib.suppress(SessionPersistenceError):
+    await service.aclose()
+
+
+_BUFFERED_DIVERGENCES = {
+    'test_append_event_to_unknown_session_raises_session_not_found': (
+        'Appends return before the store sees the event, so the missing'
+        ' session is reported later, as a SessionPersistenceError from flush.'
+    ),
+}
+
+
+@contextlib.asynccontextmanager
 async def _make_per_agent_database(
     tmp_path: pathlib.Path,
 ) -> AsyncIterator[BaseSessionService]:
@@ -155,6 +203,23 @@ BACKENDS = [
     ),
     _Backend('mongodb', _make_mongodb),
     _Backend('per_agent_database', _make_per_agent_database),
+    _Backend(
+        'buffered_in_memory',
+        _make_buffered_in_memory,
+        divergences={
+            **_BUFFERED_DIVERGENCES,
+            'test_append_event_with_non_serializable_state_delta': (
+                'The test tells in-memory storage apart by its class, and an'
+                ' in-memory store behind BufferedSessionService keeps raw'
+                ' Python values just as in-memory storage does.'
+            ),
+        },
+    ),
+    _Backend(
+        'buffered_database',
+        _make_buffered_database,
+        divergences=_BUFFERED_DIVERGENCES,
+    ),
 ]
 
 

@@ -165,7 +165,10 @@ class BaseAgent(BaseNode, abc.ABC):
   One-line description is enough and preferred.
   """
 
-  parent_agent: BaseAgent | None = Field(default=None, init=False, exclude=True)
+  # Not in repr: following it would print every ancestor's whole agent tree.
+  parent_agent: BaseAgent | None = Field(
+      default=None, init=False, exclude=True, repr=False
+  )
   """The parent agent of this agent.
 
   Note that an agent can ONLY be added as sub-agent once.
