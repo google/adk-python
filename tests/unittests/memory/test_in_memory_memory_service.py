@@ -444,6 +444,18 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
         # A mark with no letter before it, such as the emoji variation
         # selector U+FE0F, is not a word
         ('I love cats ❤️', 'Dogs ❤️', 0),
+        # Bengali and Tamil vowel signs and virama
+        ('আমি ভাত খাই', 'ভাত', 1),
+        ('ভালো আছি', 'ভাত', 0),
+        ('தமிழ் எனக்கு பிடிக்கும்', 'தமிழ்', 1),
+        ('நான் சாதம் சாப்பிடுகிறேன்', 'தமிழ்', 0),
+        # Latin word inside Thai text
+        ('ฉันใช้Pythonเขียนโปรแกรม', 'Python', 1),
+        ('ฉันใช้Pythonเขียนโปรแกรม', 'เขียน', 1),
+        ('ฉันใช้Pythonเขียนโปรแกรม', 'ข้าว', 0),
+        # Keycap emoji: 1, U+FE0F and the enclosing keycap mark U+20E3
+        ('Room 1️⃣ is free', '1️⃣', 1),
+        ('Room 2 is busy', '1️⃣', 0),
         # Latin partial-word must NOT match (regression guard)
         ('I like to code in Python.', 'thon', 0),
         ('私はPythonでADKを使っています', 'thon', 0),
