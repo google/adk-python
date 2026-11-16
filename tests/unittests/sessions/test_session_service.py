@@ -2766,8 +2766,8 @@ async def test_get_session_with_config(session_service):
   )
   assert not session.events
 
-  # Both filters applied, i.e., of 3 most recent events, only 2 are after
-  # timestamp 4.0, so expect 2 events.
+  # Both filters applied, i.e., of the 2 events at or after timestamp 4.0, at
+  # most 3 are kept, so expect 2 events.
   config = GetSessionConfig(
       after_timestamp=after_timestamp, num_recent_events=num_recent_events
   )
@@ -2824,6 +2824,36 @@ async def test_get_session_after_timestamp_zero_filters_negative_events(
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
   )
   assert [event.timestamp for event in session.events] == [1.0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('num_recent_events', 'expected'),
+    [(None, [30.0, 40.0, 50.0]), (2, [40.0, 50.0])],
+    ids=['no_limit', 'limit_2'],
+)
+async def test_get_session_after_timestamp_keeps_event_appended_before_older_one(
+    session_service, num_recent_events, expected
+):
+  """An older event appended later hides no event at or after the cutoff."""
+  app_name = 'my_app'
+  user_id = 'user'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  for timestamp in (30.0, 40.0, 10.0, 50.0):
+    await session_service.append_event(
+        session, Event(author='user', timestamp=timestamp)
+    )
+
+  config = GetSessionConfig(
+      after_timestamp=20.0, num_recent_events=num_recent_events
+  )
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+
+  assert [event.timestamp for event in session.events] == expected
 
 
 # ---------------------------------------------------------------------------
