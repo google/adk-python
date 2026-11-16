@@ -136,7 +136,12 @@ class FsspecArtifactService(BaseArtifactService):
   ``file_data`` URI references, and non-empty ``custom_metadata`` are rejected
   with ``InputValidationError``, ``inline_data.display_name`` is not persisted,
   and empty (``0``-byte) payloads with no stored content type load as ``None``
-  so session-rewind tombstones work without object metadata.
+  so session-rewind tombstones work without object metadata. On hierarchical
+  filesystems (such as ``file://`` and ``memory://``), an artifact cannot share
+  a prefix with a nested artifact whose next path segment is a numeric version
+  (for example ``report`` and ``report/0``), because the version file and the
+  nested directory map to the same path; conflicting saves raise
+  ``InputValidationError``.
 
   S3 (``s3fs``) also stores content type and custom metadata. Its
   ``custom_metadata`` keys come back lowercased with ``_`` turned into ``-``.
@@ -258,6 +263,26 @@ class FsspecArtifactService(BaseArtifactService):
     scope = self._scope_path(app_name, user_id, session_id, filename)
     return f"{scope}/{filename}"
 
+  def _path_type(self, path: str) -> Optional[str]:
+    """Returns the fsspec entry type for ``path``, or ``None`` if absent."""
+    self._fs.invalidate_cache(path)
+    try:
+      info = self._fs.info(path)
+    except (FileNotFoundError, NotADirectoryError):
+      return None
+    return info.get("type", "file")
+
+  def _has_file_ancestor(self, artifact_path: str, filename: str) -> bool:
+    """Returns True if ``artifact_path`` or a filename ancestor is a file."""
+    path = artifact_path
+    for _ in range(filename.count("/") + 1):
+      if self._path_type(path) == "file":
+        return True
+      path, _, _ = path.rpartition("/")
+      if not path:
+        break
+    return False
+
   def _find_detail(self, path: str) -> dict[str, dict[str, Any]]:
     """Returns file detail mappings under ``path``, keyed by relative path."""
     prefix = self._fs._strip_protocol(path) + "/"
@@ -370,6 +395,16 @@ class FsspecArtifactService(BaseArtifactService):
           "Artifact must have either inline_data, text, or file_data."
       )
 
+    if getattr(self._fs, "auto_mkdir", True) is False:
+      try:
+        self._fs.makedirs(artifact_path, exist_ok=True)
+      except (FileExistsError, NotADirectoryError) as exc:
+        if self._has_file_ancestor(artifact_path, filename):
+          raise InputValidationError(
+              f"Artifact name {filename!r} conflicts with an existing"
+              " artifact on this filesystem."
+          ) from exc
+        raise
     versions = self._versions_under(artifact_path)
     version = 0 if not versions else max(versions) + 1
 
@@ -383,7 +418,19 @@ class FsspecArtifactService(BaseArtifactService):
         self._backend_adapter.create_object(
             key, data, content_type=content_type, metadata=blob_metadata
         )
-      except FileExistsError:
+      except (FileExistsError, IsADirectoryError, NotADirectoryError) as exc:
+        if self._path_type(key) == "directory":
+          raise InputValidationError(
+              f"Artifact name {filename!r} conflicts with an existing nested"
+              " artifact on this filesystem."
+          ) from exc
+        if self._has_file_ancestor(artifact_path, filename):
+          raise InputValidationError(
+              f"Artifact name {filename!r} conflicts with an existing"
+              " artifact on this filesystem."
+          ) from exc
+        if not isinstance(exc, FileExistsError):
+          raise
         attempts_left -= 1
         if not attempts_left:
           raise
@@ -534,6 +581,24 @@ class FsspecArtifactService(BaseArtifactService):
         self._delete_artifact, app_name, user_id, session_id, filename
     )
 
+  def _prune_empty_dirs(self, artifact_path: str, filename: str) -> None:
+    """Removes empty artifact directories left behind on hierarchical filesystems."""
+    path = artifact_path
+    for _ in range(filename.count("/") + 1):
+      try:
+        self._fs.rmdir(path)
+      except (
+          FileNotFoundError,
+          NotADirectoryError,
+          NotImplementedError,
+          OSError,
+      ):
+        break
+      self._fs.invalidate_cache(path)
+      path, _, _ = path.rpartition("/")
+      if not path:
+        break
+
   def _delete_artifact(
       self,
       app_name: str,
@@ -549,6 +614,7 @@ class FsspecArtifactService(BaseArtifactService):
       except (FileNotFoundError, NotADirectoryError):
         pass
       self._fs.invalidate_cache(key)
+    self._prune_empty_dirs(artifact_path, filename)
     self._fs.invalidate_cache(artifact_path)
 
   @override

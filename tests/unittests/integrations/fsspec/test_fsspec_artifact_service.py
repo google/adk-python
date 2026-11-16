@@ -1440,6 +1440,81 @@ async def test_local_backend_handles_file_ancestor_as_absent(
   )
 
 
+@pytest.mark.parametrize("backend", ["memory", "file"])
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    [
+        ("report", "report/0"),
+        ("report", "report/0/sub"),
+        ("report/0", "report"),
+        ("report/0/sub", "report"),
+    ],
+)
+async def test_hierarchical_backend_rejects_numeric_nested_collision(
+    tmp_path: Path,
+    backend: str,
+    first_name: str,
+    second_name: str,
+) -> None:
+  """Saving colliding parent and '<parent>/<version>' names raises InputValidationError."""
+  base_url = (
+      f"memory://adk-fsspec-{uuid.uuid4().hex}"
+      if backend == "memory"
+      else tmp_path.as_uri()
+  )
+  service = FsspecArtifactService(base_url)
+  payload = types.Part.from_bytes(data=b"data", mime_type="application/pdf")
+
+  v0 = await service.save_artifact(**SCOPE, filename=first_name, artifact=payload)
+  assert v0 == 0
+
+  with pytest.raises(InputValidationError, match="conflicts"):
+    await service.save_artifact(**SCOPE, filename=second_name, artifact=payload)
+
+  assert await service.list_versions(**SCOPE, filename=first_name) == [0]
+  assert await service.list_versions(**SCOPE, filename=second_name) == []
+  loaded = await service.load_artifact(**SCOPE, filename=first_name, version=0)
+  assert loaded is not None and loaded.inline_data is not None
+  assert loaded.inline_data.data == b"data"
+  assert await service.load_artifact(**SCOPE, filename=second_name, version=0) is None
+
+
+@pytest.mark.parametrize("backend", ["memory", "file"])
+async def test_hierarchical_backend_rejects_later_version_collision(
+    tmp_path: Path, backend: str
+) -> None:
+  """Saving a second version of 'report' fails cleanly when 'report/1' exists."""
+  base_url = (
+      f"memory://adk-fsspec-{uuid.uuid4().hex}"
+      if backend == "memory"
+      else tmp_path.as_uri()
+  )
+  service = FsspecArtifactService(base_url)
+  payload = types.Part.from_bytes(
+      data=b"data", mime_type="application/octet-stream"
+  )
+
+  assert await service.save_artifact(**SCOPE, filename="report", artifact=payload) == 0
+  assert await service.save_artifact(**SCOPE, filename="report/1", artifact=payload) == 0
+
+  with pytest.raises(InputValidationError, match="conflicts"):
+    await service.save_artifact(**SCOPE, filename="report", artifact=payload)
+
+  assert await service.list_versions(**SCOPE, filename="report") == [0]
+
+
+async def test_gcs_backend_allows_numeric_nested_artifact(
+    store: FakeFsspecObjectStore, svc: FsspecArtifactService
+) -> None:
+  """Flat object stores like gs:// allow both 'report' and 'report/0'."""
+  del store
+  payload = types.Part.from_bytes(data=b"data", mime_type="application/pdf")
+  assert await svc.save_artifact(**SCOPE, filename="report/0", artifact=payload) == 0
+  assert await svc.save_artifact(**SCOPE, filename="report", artifact=payload) == 0
+  assert await svc.list_versions(**SCOPE, filename="report") == [0]
+  assert await svc.list_versions(**SCOPE, filename="report/0") == [0]
+
+
 async def test_memory_backend_rejects_metadata_and_honors_tombstone() -> None:
   """Real memory:// rejects metadata inputs and honors rewind tombstones."""
   root = f"adk-fsspec-{uuid.uuid4().hex}"
@@ -1762,3 +1837,27 @@ async def test_gcs_service_reads_and_versions_match_artifacts_written_by_fsspec(
       ) == await service.get_artifact_version(
           **SCOPE, filename=filename, version=version
       )
+
+
+async def test_delete_nested_artifact_cleans_empty_dirs_on_local_filesystem(
+    tmp_path: Path,
+) -> None:
+  """Deleting ``report/0`` on ``file://`` removes empty dirs so ``report`` saves."""
+  service = FsspecArtifactService(f"file://{tmp_path / 'artifacts'}")
+  await service.save_artifact(
+      **SCOPE,
+      filename="report/0",
+      artifact=types.Part.from_bytes(data=b"nested", mime_type="text/plain"),
+  )
+  await service.delete_artifact(**SCOPE, filename="report/0")
+
+  version = await service.save_artifact(
+      **SCOPE,
+      filename="report",
+      artifact=types.Part.from_bytes(data=b"parent", mime_type="text/plain"),
+  )
+  assert version == 0
+  loaded = await service.load_artifact(**SCOPE, filename="report")
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.data == b"parent"
