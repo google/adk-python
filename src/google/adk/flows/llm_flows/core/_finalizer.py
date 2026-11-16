@@ -20,12 +20,15 @@ import asyncio
 from collections.abc import Mapping
 from collections.abc import Sequence
 import contextlib
+import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Iterator
 from typing import TYPE_CHECKING
 
+from google.genai import types
 from opentelemetry import trace
+from pydantic import ValidationError
 
 from ....agents._callback_metadata import _callback_scope
 from ....agents._callback_metadata import CallbackType
@@ -48,9 +51,9 @@ from ..tools._functions import populate_client_function_call_id
 from ._utils import as_llm_agent as _as_llm_agent
 
 if TYPE_CHECKING:
-  from google.genai import types
-
   from ....tools.base_tool import BaseTool
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _collect_tool_display_names(
@@ -323,6 +326,13 @@ async def handle_after_model_callback(
         'temp:_adk_grounding_metadata', None
     )
     if not ground_metadata:
+      return response
+    # Parallel tool calls merge their state deltas through model_dump, so the
+    # stored GroundingMetadata can arrive here as a dict.
+    try:
+      ground_metadata = types.GroundingMetadata.model_validate(ground_metadata)
+    except ValidationError as e:
+      logger.warning('Ignoring invalid temp:_adk_grounding_metadata: %s', e)
       return response
 
     if not response:
