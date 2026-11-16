@@ -435,6 +435,15 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
         ('私と犬', 'Pythonと', 0),
         # "İ".lower() is "i" plus U+0307: no stray "i" word to match on
         ('I like cats.', 'İstanbul旅行', 0),
+        # Combining marks are part of a word: Thai vowel and tone marks,
+        # Devanagari vowel signs
+        ('ข้าวผัดอร่อยมาก', 'ข้าว', 1),
+        ('ขอบคุณครับ', 'ข้าว', 0),
+        ('मुझे हिंदी पसंद है', 'हिंदी', 1),
+        ('मैं हैदराबाद में रहता हूँ', 'हिंदी', 0),
+        # A mark with no letter before it, such as the emoji variation
+        # selector U+FE0F, is not a word
+        ('I love cats ❤️', 'Dogs ❤️', 0),
         # Latin partial-word must NOT match (regression guard)
         ('I like to code in Python.', 'thon', 0),
         ('私はPythonでADKを使っています', 'thon', 0),
