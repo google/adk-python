@@ -28,6 +28,8 @@ from unittest.mock import patch
 from a2a.client import Client as A2AClient
 from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
+from a2a.client.transports.jsonrpc import JsonRpcTransport
+from a2a.client.transports.rest import RestTransport
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentInterface
@@ -8902,10 +8904,96 @@ async def test_completed_peer_does_not_take_output_from_user_history():
   client.send_message.assert_not_called()
 
 
-async def test_peer_lookup_failure_does_not_resend_input():
+@pytest.mark.parametrize("code", [-32601, -32004, -32001])
+async def test_paused_peer_lookup_jsonrpc_error(code):
+  agent, ctx, client = _completed_peer_setup()
+  url = "https://example.com/a2a"
+
+  def respond(request):
+    call = json.loads(request.content)
+    assert call["method"] in {"tasks/get", "GetTask"}
+    return httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": call["id"],
+            "error": {"code": code, "message": "Cannot look up task"},
+        },
+    )
+
+  async def send_message(*args, **kwargs):
+    yield _make_stream_task(client.get_task.return_value)
+
+  client.send_message.side_effect = send_message
+  async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+    transport = JsonRpcTransport(
+        http, agent_card=create_test_agent_card(url=url), url=url
+    )
+    client.get_task.side_effect = transport.get_task
+    with patch.object(agent, "_ensure_resolved", return_value=client):
+      events = [event async for event in agent.run_async(ctx)]
+
+  client.get_task.assert_awaited_once()
+  if code == -32001:
+    client.send_message.assert_not_called()
+    assert any(event.error_message for event in events)
+  else:
+    client.send_message.assert_called_once()
+    args, kwargs = client.send_message.call_args
+    message = args[0].message if _compat.IS_A2A_V1 else kwargs["request"]
+    assert message.task_id == "peer-task"
+    assert message.context_id == "context"
+    assert not any(event.error_message for event in events)
+
+
+@pytest.mark.skipif(not _compat.IS_A2A_V1, reason="SDK 1.x REST error mapping")
+@pytest.mark.parametrize("reason", [None, "METHOD_NOT_FOUND"])
+async def test_paused_peer_lookup_rest_404(reason):
+  agent, ctx, client = _completed_peer_setup()
+  url = "https://example.com/a2a"
+
+  def respond(request):
+    if reason is None:
+      return httpx.Response(404, text="Not found")
+    return httpx.Response(
+        404,
+        json={
+            "error": {
+                "message": "GetTask is not available",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": reason,
+                }],
+            },
+        },
+    )
+
+  async def send_message(*args, **kwargs):
+    yield _make_stream_task(client.get_task.return_value)
+
+  client.send_message.side_effect = send_message
+  async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+    transport = RestTransport(
+        http, agent_card=create_test_agent_card(url=url), url=url
+    )
+    client.get_task.side_effect = transport.get_task
+    with patch.object(agent, "_ensure_resolved", return_value=client):
+      events = [event async for event in agent.run_async(ctx)]
+
+  client.get_task.assert_awaited_once()
+  if reason is None:
+    client.send_message.assert_not_called()
+    assert any(event.error_message for event in events)
+  else:
+    client.send_message.assert_called_once()
+    assert not any(event.error_message for event in events)
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, httpx.ReadTimeout])
+async def test_peer_lookup_failure_does_not_resend_input(error_type):
   """An unsuccessful task lookup must not repeat a confirmation message."""
   agent, ctx, client = _completed_peer_setup()
-  client.get_task.side_effect = RuntimeError("Task lookup unavailable")
+  client.get_task.side_effect = error_type("Task lookup unavailable")
 
   with patch.object(agent, "_ensure_resolved", return_value=client):
     events = [event async for event in agent.run_async(ctx)]

@@ -56,6 +56,7 @@ from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.json_format import ParseDict
+import httpx
 
 from ..utils.context_utils import Aclosing
 
@@ -664,6 +665,8 @@ if IS_A2A_V1:
   # ``ClientCallContext`` moved from ``a2a.client.middleware`` to ``a2a.client.client``
   # ``A2AClientHTTPError`` is gone; use ``A2AClientError`` (carries status_code attr)
   from a2a.client.errors import A2AClientError as _A2AClientError
+  from a2a.utils.errors import MethodNotFoundError as _MethodNotFoundError
+  from a2a.utils.errors import UnsupportedOperationError as _UnsupportedOperationError
 
   A2A_HTTP_ERRORS = (_A2AClientError,)
 else:
@@ -673,6 +676,9 @@ else:
   )
 
   A2A_HTTP_ERRORS = (A2AClientHTTPError,)
+  _LegacyJSONRPCError = _dynamic_type(
+      "a2a.client.errors", "A2AClientJSONRPCError"
+  )
 
 
 # -----------------------------------------------------------------------------
@@ -878,6 +884,38 @@ async def get_task(
       "a2a.types", "GetTaskRequest" if IS_A2A_V1 else "TaskQueryParams"
   )
   return await client.get_task(request_type(id=task_id), context=context)
+
+
+def is_get_task_unsupported(error: Exception) -> bool:
+  """Returns whether the peer explicitly rejected the task lookup method."""
+  if not IS_A2A_V1:
+    # JSON-RPC method not found and A2A unsupported operation.
+    return isinstance(error, _LegacyJSONRPCError) and error.error.code in (
+        -32601,
+        -32004,
+    )
+  if isinstance(error, _UnsupportedOperationError):
+    return True
+  if not isinstance(error, _MethodNotFoundError):
+    return False
+
+  cause = error.__cause__
+  if not isinstance(cause, httpx.HTTPStatusError):
+    return True
+
+  # The REST client also maps a plain HTTP 404 to MethodNotFoundError.
+  try:
+    payload = cause.response.json()
+  except ValueError:
+    return False
+  status = payload.get("error") if isinstance(payload, dict) else None
+  details = status.get("details") if isinstance(status, dict) else None
+  return isinstance(details, list) and any(
+      isinstance(detail, dict)
+      and detail.get("@type") == "type.googleapis.com/google.rpc.ErrorInfo"
+      and detail.get("reason") == "METHOD_NOT_FOUND"
+      for detail in details
+  )
 
 
 # -----------------------------------------------------------------------------
