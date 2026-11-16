@@ -45,3 +45,37 @@ def test_output_schema():
   assert mockModel.requests[0].config.response_schema == CustomOutput
   assert mockModel.requests[0].config.response_mime_type == 'application/json'
   assert mockModel.requests[0].config.labels == {'adk_agent_name': 'root_agent'}
+
+
+def test_session_id_is_set_on_llm_request():
+  mock_model = testing_utils.MockModel.create(responses=['response1'])
+  root_agent = Agent(name='root_agent', model=mock_model)
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert len(mock_model.requests) == 1
+  assert mock_model.requests[0].session_id == runner.session.id
+
+
+def test_session_id_is_the_same_for_a_transferred_sub_agent():
+  sub_model = testing_utils.MockModel.create(responses=['sub response'])
+  sub_agent = Agent(name='sub_agent', model=sub_model)
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(
+              name='transfer_to_agent', args={'agent_name': 'sub_agent'}
+          )
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent', model=root_model, sub_agents=[sub_agent]
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert len(root_model.requests) == 1
+  assert len(sub_model.requests) == 1
+  assert root_model.requests[0].session_id == runner.session.id
+  assert sub_model.requests[0].session_id == runner.session.id

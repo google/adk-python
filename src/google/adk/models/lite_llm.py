@@ -416,6 +416,7 @@ _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 # Routing-only prefix: requests go through a LiteLLM Proxy deployment, but the
 # payload must still be shaped for the provider named in the next segment.
 _PROXY_PROVIDER = "litellm_proxy"
+_PROXY_SESSION_ID_HEADER = "x-litellm-session-id"
 
 _MIME_TYPE_TO_EXTENSION = {
     "application/pdf": ".pdf",
@@ -4821,6 +4822,21 @@ class LiteLlm(BaseLlm):
 
       if http_opts.extra_body is not None:
         completion_args["extra_body"] = http_opts.extra_body
+
+    # Lets a LiteLLM Proxy group the calls of an ADK session. Done after the
+    # headers are merged so that a session ID header set by the caller wins.
+    if llm_request.session_id and _is_proxied_model(
+        effective_model, completion_args
+    ):
+      extra_headers = completion_args.get("extra_headers")
+      extra_headers = (
+          dict(extra_headers) if isinstance(extra_headers, dict) else {}
+      )
+      if not any(
+          name.lower() == _PROXY_SESSION_ID_HEADER for name in extra_headers
+      ):
+        extra_headers[_PROXY_SESSION_ID_HEADER] = llm_request.session_id
+        completion_args["extra_headers"] = extra_headers
 
     include_thoughts = (
         llm_request.config.thinking_config.include_thoughts

@@ -226,6 +226,11 @@ async def call_llm_async(
     if ADK_AGENT_NAME_LABEL_KEY not in llm_request.config.labels:
       llm_request.config.labels[ADK_AGENT_NAME_LABEL_KEY] = agent.name
 
+    # Tell the model which session the call belongs to, so that it can
+    # forward it to a backend that groups calls by conversation.
+    if llm_request.session_id is None:
+      llm_request.session_id = invocation_context.session.id
+
     # Calls the LLM.
     llm = await flow._get_llm(invocation_context)
 
