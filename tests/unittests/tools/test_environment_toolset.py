@@ -21,6 +21,7 @@ from typing import Any
 from typing import Optional
 from unittest import mock
 
+from google.adk.agents.llm_agent import Agent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.environment._base_environment import BaseEnvironment
 from google.adk.environment._base_environment import ExecutionResult
@@ -32,8 +33,11 @@ from google.adk.tools.environment._execute_tool import ExecuteTool
 from google.adk.tools.environment._read_file_tool import ReadFileTool
 from google.adk.tools.environment._write_file_tool import WriteFileTool
 from google.adk.tools.tool_context import ToolContext
+from google.genai import types
 import pytest
 import pytest_asyncio
+
+from .. import testing_utils
 
 
 class _FakeEnvironment(BaseEnvironment):
@@ -318,6 +322,111 @@ async def test_tool_without_toolset_initializes_environment(
   assert res["status"] == "ok"
   assert env.contexts[0] == ("initialize", tool_context)
   assert env.is_initialized
+
+
+class _FailingInitEnvironment(_FakeEnvironment):
+  """Fails to initialize."""
+
+  def __init__(self) -> None:
+    super().__init__(stdout="out", file_content=b"old")
+
+  async def initialize(self, *, ctx: Any = None) -> None:
+    await super().initialize(ctx=ctx)
+    raise RuntimeError("no sandbox quota")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_class", "args"),
+    [
+        (ExecuteTool, {"command": "ls"}),
+        (ReadFileTool, {"path": "a.txt"}),
+        (WriteFileTool, {"path": "a.txt", "content": "x"}),
+        (
+            EditFileTool,
+            {"path": "a.txt", "old_string": "old", "new_string": "new"},
+        ),
+    ],
+)
+async def test_tool_raises_when_initialize_fails(
+    tool_class: type[BaseTool], args: dict[str, Any]
+):
+  """A failed initialize is raised from the tool; nothing else is called."""
+  env = _FailingInitEnvironment()
+  tool = tool_class(env)
+  tool_context = mock.MagicMock(spec=ToolContext)
+
+  with pytest.raises(RuntimeError, match="no sandbox quota"):
+    await tool.run_async(args=args, tool_context=tool_context)
+
+  assert env.contexts == [("initialize", tool_context)]
+  assert not env.is_initialized
+
+
+def _agent_calling_execute(
+    env: BaseEnvironment, **agent_kwargs: Any
+) -> tuple[Agent, testing_utils.MockModel]:
+  """An agent whose model calls `Execute` once and then answers."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name="Execute", args={"command": "ls"}),
+          "done",
+      ]
+  )
+  agent = Agent(
+      name="root_agent",
+      model=mock_model,
+      tools=[EnvironmentToolset(environment=env)],
+      **agent_kwargs,
+  )
+  return agent, mock_model
+
+
+def test_failed_initialize_reaches_on_tool_error_callback():
+  """The callback gets the error and its answer goes to the model.
+
+  Setup: an environment whose initialize raises, and an agent with an
+    on_tool_error_callback that returns an error result.
+  Act: the model calls Execute.
+  Assert: the callback received the exception, the model received the
+    callback's result as the tool response, and the run continued.
+  """
+  errors: list[Exception] = []
+
+  def on_tool_error(tool, args, tool_context, error):
+    errors.append(error)
+    return {"status": "error", "error": f"{type(error).__name__}: {error}"}
+
+  agent, _ = _agent_calling_execute(
+      _FailingInitEnvironment(), on_tool_error_callback=on_tool_error
+  )
+
+  events = testing_utils.simplify_events(
+      testing_utils.InMemoryRunner(agent).run("test")
+  )
+
+  assert [str(e) for e in errors] == ["no sandbox quota"]
+  assert events[1:] == [
+      (
+          "root_agent",
+          types.Part.from_function_response(
+              name="Execute",
+              response={
+                  "status": "error",
+                  "error": "RuntimeError: no sandbox quota",
+              },
+          ),
+      ),
+      ("root_agent", "done"),
+  ]
+
+
+def test_failed_initialize_fails_the_run_without_an_error_callback():
+  """With nothing to handle it, the error ends the run."""
+  agent, _ = _agent_calling_execute(_FailingInitEnvironment())
+
+  with pytest.raises(RuntimeError, match="no sandbox quota"):
+    testing_utils.InMemoryRunner(agent).run("test")
 
 
 async def _run_execute(toolset: EnvironmentToolset) -> None:

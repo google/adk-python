@@ -20,6 +20,7 @@ import warnings
 
 from google.adk.environment._base_environment import BaseEnvironment
 from google.adk.environment._base_environment import ExecutionResult
+from google.adk.environment._environment_scope import EnvironmentScope
 import pytest
 
 
@@ -234,3 +235,19 @@ def test_working_dir_defaults_to_none():
       pass
 
   assert _NoWorkingDirEnvironment().working_dir is None
+
+
+def test_scope_defaults_to_shared():
+  """An environment that does not override `scope` is shared by all runs."""
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    environment = _define_current_environment()()
+
+  assert environment.scope == EnvironmentScope.SHARED
+
+
+def test_environment_scope_is_exported():
+  """`EnvironmentScope` is importable from the environment package."""
+  from google.adk import environment
+
+  assert environment.EnvironmentScope is EnvironmentScope

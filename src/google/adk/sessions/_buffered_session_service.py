@@ -19,13 +19,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Sequence
 import copy
+import datetime
 import math
 from typing import Any
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_validator
 from typing_extensions import override
 
 from ..errors._stale_session_error import StaleSessionError
@@ -53,6 +56,16 @@ _DEFAULT_BACKOFF_FACTOR = 2.0
 _DEFAULT_JITTER = 1.0
 
 
+def _stores_batches(service: BaseSessionService) -> bool:
+  """Returns whether the service's class overrides `append_events`."""
+  # Checked on the class, since a mock answers every attribute.
+  append_events = getattr(service.__class__, 'append_events', None)
+  return (
+      callable(append_events)
+      and append_events is not BaseSessionService.append_events
+  )
+
+
 class BufferedSessionServiceConfig(BaseModel):
   """Configuration for `BufferedSessionService`."""
 
@@ -64,6 +77,24 @@ class BufferedSessionServiceConfig(BaseModel):
   """How a failed write is retried. Off by default, since a retry can store an
   event twice if its first attempt committed. Stale and not-found errors are
   never retried."""
+
+  max_write_delay: datetime.timedelta = datetime.timedelta(0)
+  """How long a session's first queued write waits for more events to join it.
+
+  Applies when the wrapped service overrides `append_events`.
+  """
+
+  max_batch_events: int = Field(default=50, ge=1)
+  """The most events sent in one `append_events` call."""
+
+  @field_validator('max_write_delay')
+  @classmethod
+  def _validate_max_write_delay(
+      cls, value: datetime.timedelta
+  ) -> datetime.timedelta:
+    if value < datetime.timedelta(0):
+      raise ValueError('max_write_delay must not be negative.')
+    return value
 
 
 @experimental(FeatureName.BUFFERED_SESSION_SERVICE)
@@ -91,11 +122,24 @@ class BufferedSessionService(BaseSessionService):
     Args:
       delegate: The service that stores the events. Closing this service
         leaves it open.
-      config: How failed writes are retried.
+      config: How failed writes are retried, and how writes are batched.
     """
     self._delegate = delegate
     self._config = config or BufferedSessionServiceConfig()
-    self._buffer = SessionWriteBuffer(self._persist)
+    self._batch_writes = _stores_batches(delegate)
+    # A delay only helps writes that share a call.
+    delay = (
+        self._config.max_write_delay.total_seconds()
+        if self._batch_writes
+        else 0.0
+    )
+    self._buffer = SessionWriteBuffer(
+        self._persist,
+        max_write_delay=delay,
+        max_batch_events=(
+            self._config.max_batch_events if self._batch_writes else 1
+        ),
+    )
 
   @override
   async def create_session(
@@ -254,15 +298,17 @@ class BufferedSessionService(BaseSessionService):
     await self.aclose()
 
   async def _persist(
-      self, store_session: Session, event: Event
+      self, store_session: Session, events: Sequence[Event]
   ) -> BaseException | None:
-    """Writes the event, retrying as configured; returns the last error."""
+    """Writes `events` with retries and returns the final error, if any."""
 
     async def attempt() -> None:
-      # A failed attempt may have added the event to the store session, and
-      # the store session must hold no events when the store gets it.
+      # A failed attempt may have left events on the store session.
       store_session.events.clear()
-      await self._delegate.append_event(store_session, event)
+      if self._batch_writes:
+        await self._delegate.append_events(store_session, list(events))
+      else:
+        await self._delegate.append_event(store_session, events[0])
 
     return await self._with_retries(attempt)
 
