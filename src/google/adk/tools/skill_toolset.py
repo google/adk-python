@@ -2258,9 +2258,6 @@ class SkillToolset(BaseToolset):
         in ({config.default_mode} | set(config.skill_overrides.values()))
     )
     self._revalidate_skills = config.enabled and config.revalidate_skills
-    # Digest last written into the sandbox, per skill, so a stale skill is
-    # rewritten once rather than every request.
-    self._materialized_skill_hashes: dict[str, str] = {}
 
     skills = skills or []
 
@@ -2956,16 +2953,6 @@ class SkillToolset(BaseToolset):
         raise skill
       if skill is None or _skill_content_hash(skill) == loaded_hash:
         continue
-      try:
-        await self._rematerialize_skill(skill, tool_context)
-      except Exception as e:  # pylint: disable=broad-exception-caught
-        # Still worth re-stating the skill; only the sandbox copy is stale.
-        logger.warning(
-            "Could not refresh skill '%s' in the environment: %s",
-            skill_name,
-            e,
-            exc_info=e,
-        )
       logger.info(
           "Skill '%s' changed since it was loaded; re-stating it.", skill_name
       )
@@ -2976,44 +2963,6 @@ class SkillToolset(BaseToolset):
           f" gave you:\n\n{skill.instructions}"
       )
     return instructions
-
-  async def _rematerialize_skill(
-      self, skill: models.Skill, tool_context: ToolContext
-  ) -> None:
-    """Rewrites a changed skill's resources into the environment.
-
-    Scripts are copied into the sandbox on first run and left there, so
-    without this the model would run the old copy of a script it has just been
-    re-briefed on.
-
-    Only writes. `BaseEnvironment` has no delete, so a resource the new version
-    dropped stays on disk; the re-stated instructions no longer mention it.
-
-    Does nothing while the environment is uninitialized: nothing has been
-    copied into it yet, and the first script run writes the current version.
-    This runs while the model request is built, so it must not initialize the
-    environment itself.
-
-    Args:
-      skill: The changed skill to write.
-      tool_context: Context of the request being built, passed to the
-        environment.
-    """
-    env = self._env
-    # TODO: Check initialization through a method that takes `ctx`, so a
-    # session-scoped environment can answer from `ctx.state`.
-    if env is None or not env.is_initialized:
-      return
-    skills_folder = self.skills_folder
-    if skills_folder is None:
-      return
-    content_hash = _skill_content_hash(skill)
-    if self._materialized_skill_hashes.get(skill.name) == content_hash:
-      return
-    await _write_skill_resources_to_env(
-        skill, skills_folder / skill.name, env, tool_context
-    )
-    self._materialized_skill_hashes[skill.name] = content_hash
 
   @override
   async def close(self) -> None:

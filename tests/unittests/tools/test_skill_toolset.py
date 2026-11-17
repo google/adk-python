@@ -6938,30 +6938,6 @@ async def test_env_materialization_safe_backslash_path_writes_correctly(
   assert script_path == PurePosixPath(expected_script)
 
 
-@pytest.mark.asyncio
-async def test_rematerialize_skill_rejects_path_traversal(tmp_path):
-  """Rematerializing a changed skill must validate resource paths."""
-  skill = models.Skill(
-      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
-      instructions="instructions",
-      resources=models.Resources(
-          references={
-              "good.md": "good content",
-              "../../tmp/pwned.txt": "pwned",
-          },
-          scripts={"run.py": models.Script(src="print('exploit')")},
-      ),
-  )
-  mock_env = mock.AsyncMock()
-  mock_env.is_initialized = True
-  toolset = skill_toolset.SkillToolset(
-      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
-  )
-  with pytest.raises(PermissionError, match="Path traversal detected"):
-    await toolset._rematerialize_skill(skill, mock.sentinel.tool_context)
-  mock_env.write_file.assert_not_called()
-
-
 # Revalidating skills that changed after they were loaded
 
 
@@ -7193,74 +7169,6 @@ async def test_a_cancelled_revalidation_is_not_swallowed(
 
   with pytest.raises(asyncio.CancelledError):
     await _instructions_for(toolset, lifecycle_context)
-
-
-@pytest.mark.asyncio
-async def test_a_changed_skill_is_rewritten_into_the_environment(
-    lifecycle_context,
-):
-  """Its scripts were copied into the sandbox and would still be the old ones."""
-  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
-  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
-  mock_env.is_initialized = True
-  toolset = _revalidating_toolset(
-      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
-  )
-  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
-  mock_env.write_file.reset_mock()
-
-  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
-  await _instructions_for(toolset, lifecycle_context)
-
-  mock_env.write_file.assert_awaited_once_with(
-      PurePosixPath("skills/a/scripts/s.py"),
-      "print(2)",
-      ctx=lifecycle_context,
-  )
-
-
-@pytest.mark.asyncio
-async def test_a_changed_skill_leaves_an_uninitialized_environment_alone(
-    lifecycle_context, caplog
-):
-  """Building the request neither initializes the environment nor writes."""
-  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
-  type(mock_env).working_dir = mock.PropertyMock(return_value=None)
-  mock_env.is_initialized = False
-  toolset = _revalidating_toolset(
-      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
-  )
-  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
-  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
-
-  with caplog.at_level(logging.WARNING):
-    instructions = await _instructions_for(toolset, lifecycle_context)
-
-  assert [i for i in instructions if "has changed" in i]
-  mock_env.initialize.assert_not_awaited()
-  mock_env.write_file.assert_not_awaited()
-  assert "Could not refresh skill" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_the_environment_is_rewritten_once_per_version(
-    lifecycle_context,
-):
-  """A stale skill is re-stated every request; the files only change once."""
-  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
-  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
-  mock_env.is_initialized = True
-  toolset = _revalidating_toolset(
-      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
-  )
-  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
-  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
-  mock_env.write_file.reset_mock()
-
-  await _instructions_for(toolset, lifecycle_context)
-  await _instructions_for(toolset, lifecycle_context)
-
-  assert mock_env.write_file.await_count == 1
 
 
 def test_clone_keeps_revalidating(mock_skill1):
@@ -7601,6 +7509,38 @@ async def test_a_failed_copy_is_retried_by_the_next_run():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("initialized", [True, False])
+async def test_restating_a_changed_skill_leaves_the_environment_alone(
+    initialized,
+):
+  """A request re-states a changed skill and calls no environment method.
+
+  The next script run refreshes the copy in the environment instead. A
+  session-scoped environment may not have a sandbox for this session yet.
+  """
+  env = _SandboxPerSessionEnvironment()
+  env.is_initialized = initialized
+  toolset = _revalidating_toolset(
+      _real_skill(instructions="v1", scripts={"s.py": "print('v1')"}),
+      environment=env,
+  )
+  ctx = _session()
+  await _load(skill_toolset.LoadSkillTool(toolset), ctx, "a")
+  toolset._skills["a"] = _real_skill(
+      instructions="v2", scripts={"s.py": "print('v2')"}
+  )
+  env.calls.clear()
+
+  instructions = await _instructions_for(toolset, ctx)
+
+  (restated,) = [
+      i for i in instructions if "has changed since it was loaded" in i
+  ]
+  assert "v2" in restated
+  assert env.calls == []
+
+
+@pytest.mark.asyncio
 async def test_script_path_with_scripts_prefix_dot_and_dot_slash(tmp_path):
   """Script paths 'scripts/.' and 'scripts/' must raise PermissionError."""
   skill = models.Skill(
@@ -7661,12 +7601,15 @@ async def test_write_skill_resources_to_env_rejects_cross_subdir_symlink(
       ),
   )
   mock_env = mock.AsyncMock()
-  mock_env.is_initialized = True
+  mock_env.read_file.side_effect = FileNotFoundError()
   toolset = skill_toolset.SkillToolset(
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await toolset._rematerialize_skill(skill, mock.sentinel.tool_context)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
   mock_env.write_file.assert_not_called()
 
 
