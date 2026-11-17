@@ -517,6 +517,59 @@ def test_recursive_smart_truncate_redaction():
   assert truncated["nested"]["normal"] == "value"
 
 
+def test_recursive_smart_truncate_redacts_oauth_code_flow_keys():
+  """The OAuth2 authorization-code fields are redacted like other secrets."""
+  obj = {
+      "auth_code": "4/0AX4XfWh-code",
+      "code_verifier": "pkce-verifier",
+      "auth_response_uri": "https://app.example/callback?code=4/0AX4XfWh-code",
+      "private_key_id": "0123456789abcdef",
+      "nested": {"AUTH_CODE": "nested-code"},
+      "redirect_uri": "https://app.example/callback",
+  }
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj, 1000)
+  )
+  assert not is_truncated
+  assert truncated["auth_code"] == "[REDACTED]"
+  assert truncated["code_verifier"] == "[REDACTED]"
+  assert truncated["auth_response_uri"] == "[REDACTED]"
+  assert truncated["private_key_id"] == "[REDACTED]"
+  assert truncated["nested"]["AUTH_CODE"] == "[REDACTED]"
+  assert truncated["redirect_uri"] == "https://app.example/callback"
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        (
+            "token exchange failed: auth_code=4/0AX4-code redirect ok",
+            "token exchange failed: auth_code=[REDACTED] redirect ok",
+        ),
+        (
+            "https://app.example/cb?auth-code=4/0AX4-code&state=x",
+            "https://app.example/cb?auth-code=[REDACTED]&state=x",
+        ),
+        (
+            "code_verifier: pkce-verifier, state: abc",
+            "code_verifier: [REDACTED], state: abc",
+        ),
+        (
+            "private_key_id: 0123abcd in config",
+            "private_key_id: [REDACTED] in config",
+        ),
+        # A longer word that only contains a key name is left alone.
+        ("the author_code_review is done", "the author_code_review is done"),
+    ],
+)
+def test_sanitize_sensitive_text_redacts_oauth_code_flow_keys(text, expected):
+  """The OAuth2 authorization-code fields are redacted in free text and URLs."""
+  sanitized, _ = bigquery_agent_analytics_plugin._sanitize_sensitive_text(
+      text, 1000
+  )
+  assert sanitized == expected
+
+
 class TestBigQueryAgentAnalyticsPlugin:
   """Tests for the BigQueryAgentAnalyticsPlugin."""
 
