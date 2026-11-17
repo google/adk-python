@@ -1481,6 +1481,8 @@ def cli_eval(
     from ..evaluation._eval_case_result_multi_run_aggregator import check_pass_k_criteria_against_num_runs
     from ..evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
     from ..evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
+    from ..evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
+    from ..evaluation._eval_case_result_multi_run_aggregator import summarize_cross_run_criteria
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
     from ..evaluation.eval_config import get_eval_metrics_from_config
@@ -1493,6 +1495,7 @@ def cli_eval(
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import _format_eval_set_criterion_summary
     from .cli_eval import _pretty_print_eval_results_across_runs
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
@@ -1658,10 +1661,14 @@ def cli_eval(
       "*********************************************************************"
   )
   eval_run_summary = {}
+  case_results_by_eval_set: dict[str, list[MultiRunCaseResult]] = {}
 
   for aggregate_eval_result in aggregate_eval_results:
     if aggregate_eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[aggregate_eval_result.eval_set_id] = [0, 0]
+    case_results_by_eval_set.setdefault(
+        aggregate_eval_result.eval_set_id, []
+    ).append(aggregate_eval_result)
 
     if aggregate_eval_result.final_eval_status == EvalStatus.PASSED:
       eval_run_summary[aggregate_eval_result.eval_set_id][0] += 1
@@ -1681,9 +1688,18 @@ def cli_eval(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
+    # Each cross-run criterion's mean over the eval set's cases. Averaged
+    # over cases, pass@k and pass^k show whether failures are concentrated
+    # in a few cases or spread across all of them, which no single case's
+    # value and no pass/fail count can. Report-only: the verdict and the
+    # exit code come from the counts above.
+    for criterion_summary in summarize_cross_run_criteria(
+        case_results_by_eval_set[eval_set_id]
+    ):
+      click.echo(f"  {_format_eval_set_criterion_summary(criterion_summary)}")
     if show_multi_run_summary:
       pretty_print_multi_run_summary_table(
-          [r for r in aggregate_eval_results if r.eval_set_id == eval_set_id]
+          case_results_by_eval_set[eval_set_id]
       )
 
   if print_detailed_results:

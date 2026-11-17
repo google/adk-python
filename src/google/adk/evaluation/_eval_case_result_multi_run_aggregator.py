@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
 import dataclasses
+import statistics
 
 from ._multi_run_aggregation_methods import AggregationMethod
 from ._multi_run_aggregation_methods import DEFAULT_AGGREGATION_METHOD
@@ -88,6 +89,28 @@ class MultiRunCaseResult:
   The config's `max_crashed_runs` for a case judged on its runs. 0 for a case
   run once and kept as it is, which a crash fails through the run's own status.
   """
+
+
+@dataclasses.dataclass(frozen=True)
+class CrossRunCriterionSummary:
+  """The mean of one cross-run criterion's values over the cases of an eval set.
+
+  Averaged over the eval cases, pass@k and pass^k show what no single case
+  can: whether failures are concentrated in a few cases or spread across all
+  of them. Two eval sets with the same mean pass rate can differ widely here.
+  """
+
+  name: str
+  """The criterion's name as shown in output, e.g. "pass^3"."""
+
+  mean: float | None
+  """The mean of the per-case values, or None if no case had a value."""
+
+  num_cases_with_value: int
+  """How many cases had a value and so were averaged."""
+
+  num_cases: int
+  """How many cases the eval set has."""
 
 
 def _is_crashed(eval_case_result: EvalCaseResult) -> bool:
@@ -807,4 +830,41 @@ def summarize_eval_case_results(
       for case_result in aggregate_eval_case_results(
           eval_case_results, multi_run_config=multi_run_config
       )
+  ]
+
+
+def summarize_cross_run_criteria(
+    case_results: Sequence[MultiRunCaseResult],
+) -> list[CrossRunCriterionSummary]:
+  """Returns the mean of each cross-run criterion over the given eval cases.
+
+  The cases come from one eval set judged by one `multi_run_config`, so the
+  i-th cross-run result of every case is the same criterion, and the summaries
+  keep that order. A case with no value for a criterion is left out of its
+  mean: one with fewer decided runs than the criterion's k, or one run once
+  that the config did not judge, which has no cross-run results at all. Each
+  summary says how many cases it averaged, so a mean over few cases is not
+  read as one over all of them.
+
+  Args:
+    case_results: The eval cases of one eval set, judged on their runs.
+
+  Returns:
+    One summary per configured cross-run criterion, in config order. Empty
+    when no case has a cross-run result.
+  """
+  values_by_criterion: dict[tuple[int, str], list[float]] = {}
+  for case_result in case_results:
+    for index, method_result in enumerate(case_result.cross_run_results):
+      values = values_by_criterion.setdefault((index, method_result.name), [])
+      if method_result.value is not None:
+        values.append(method_result.value)
+  return [
+      CrossRunCriterionSummary(
+          name=name,
+          mean=statistics.mean(values) if values else None,
+          num_cases_with_value=len(values),
+          num_cases=len(case_results),
+      )
+      for (_, name), values in sorted(values_by_criterion.items())
   ]

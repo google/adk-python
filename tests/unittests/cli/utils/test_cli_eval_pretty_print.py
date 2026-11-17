@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+from google.adk.cli.cli_eval import _format_eval_set_criterion_summary
 from google.adk.cli.cli_eval import _format_metric_cell
 from google.adk.cli.cli_eval import _format_tool_call
 from google.adk.cli.cli_eval import _pretty_print_eval_results_across_runs
 from google.adk.cli.cli_eval import pretty_print_eval_result
 from google.adk.cli.cli_eval import pretty_print_multi_run_summary_table
+from google.adk.evaluation._eval_case_result_multi_run_aggregator import CrossRunCriterionSummary
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation
@@ -786,3 +788,44 @@ def test_pretty_print_multi_run_summary_table_uses_decided_runs_denominator(
       "    response_match_score: 0.80 (threshold 0.80, PASSED, runs: [1.00,"
       " 0.90, 0.50, -])\n"
   ) == out
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        (
+            CrossRunCriterionSummary(
+                name="pass^3",
+                mean=0.4125,
+                num_cases_with_value=12,
+                num_cases=12,
+            ),
+            "pass^3: 0.41 (mean over 12 cases)",
+        ),
+        (
+            CrossRunCriterionSummary(
+                name="pass^3",
+                mean=0.4125,
+                num_cases_with_value=11,
+                num_cases=12,
+            ),
+            "pass^3: 0.41 (mean over 11 of 12 cases)",
+        ),
+        (
+            CrossRunCriterionSummary(
+                name="pass@3", mean=1.0, num_cases_with_value=1, num_cases=1
+            ),
+            "pass@3: 1.00 (mean over 1 case)",
+        ),
+        (
+            CrossRunCriterionSummary(
+                name="pass^3", mean=None, num_cases_with_value=0, num_cases=12
+            ),
+            "pass^3: n/a (no case had a value)",
+        ),
+    ],
+    ids=["all_cases", "some_cases", "one_case", "no_value"],
+)
+def test_format_eval_set_criterion_summary(summary, expected):
+  """The mean comes with how many cases it covers, or says it has none."""
+  assert _format_eval_set_criterion_summary(summary) == expected
