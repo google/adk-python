@@ -853,3 +853,149 @@ async def test_playwright_computer_sleeps_asynchronously(
     await highlighted.highlight_mouse(10, 20)
     assert len(page.evaluated) == 1
     assert slept == [0.5, 1]
+
+
+def _search_docs_invocation(documents: Any) -> Any:
+  """Builds a one-turn invocation with a single search_docs response.
+
+  `documents` is the value of the response's `documents` field. Pass None to
+  build an invocation in which the tool was never called.
+  """
+  # Imported here so that collecting this module does not need the eval extra.
+  from google.adk.evaluation.eval_case import IntermediateData
+  from google.adk.evaluation.eval_case import Invocation
+
+  tool_responses = []
+  if documents is not None:
+    tool_responses.append(
+        types.FunctionResponse(
+            name="search_docs", response={"documents": documents}
+        )
+    )
+  return Invocation(
+      user_content=types.Content(role="user", parts=[types.Part(text="q")]),
+      final_response=types.Content(role="model", parts=[types.Part(text="a")]),
+      intermediate_data=IntermediateData(tool_responses=tool_responses),
+  )
+
+
+def _load_retrieval_recall_metric() -> Any:
+  """Loads the retrieval_recall sample's metric module from its file.
+
+  The sample folder is not a package, and its README has users put the folder
+  on PYTHONPATH, so importing it by name would depend on the environment.
+  """
+  from importlib import util as importlib_util
+
+  path = SAMPLES_DIR / "evaluation" / "retrieval_recall" / "retrieval_recall.py"
+  spec = importlib_util.spec_from_file_location(
+      "_retrieval_recall_sample", path
+  )
+  module = importlib_util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  return module
+
+
+def _doc_ids(*ids: str) -> list[dict[str, str]]:
+  """Returns search_docs documents with the given ids."""
+  return [{"id": doc_id} for doc_id in ids]
+
+
+@pytest.mark.parametrize(
+    "retrieved, expected, score",
+    [
+        (_doc_ids("a", "b"), _doc_ids("a", "b"), 1.0),
+        # Documents nobody asked for do not lower recall.
+        (_doc_ids("a", "b", "c"), _doc_ids("a", "b"), 1.0),
+        (_doc_ids("a", "c"), _doc_ids("a", "b"), 0.5),
+        (_doc_ids("c"), _doc_ids("a"), 0.0),
+        # The retrieval tool was never called.
+        (None, _doc_ids("a"), 0.0),
+        # A response that is not a list of documents retrieves nothing.
+        ("not a list", _doc_ids("a"), 0.0),
+        (["a"], _doc_ids("a"), 0.0),
+        ([{"text": "no id"}], _doc_ids("a"), 0.0),
+    ],
+)
+def test_retrieval_recall_scores_share_of_expected_documents(
+    retrieved: Any, expected: Any, score: float
+):
+  """The custom metric scores how many expected documents were retrieved."""
+  pytest.importorskip("google.adk.evaluation.eval_case")
+  from google.adk.evaluation.eval_metrics import EvalMetric
+  from google.adk.evaluation.evaluator import EvalStatus
+
+  metric_module = _load_retrieval_recall_metric()
+  result = metric_module.retrieval_recall(
+      EvalMetric(metric_name="retrieval_recall"),
+      [_search_docs_invocation(retrieved)],
+      [_search_docs_invocation(expected)],
+      None,
+  )
+  assert result.overall_score == pytest.approx(score)
+  assert result.overall_eval_status == (
+      EvalStatus.PASSED if score == 1.0 else EvalStatus.FAILED
+  )
+
+
+def test_retrieval_recall_leaves_turns_without_expected_documents_unscored():
+  """A turn that expects no retrieval is not scored and not averaged in."""
+  pytest.importorskip("google.adk.evaluation.eval_case")
+  from google.adk.evaluation.eval_metrics import EvalMetric
+  from google.adk.evaluation.evaluator import EvalStatus
+
+  metric_module = _load_retrieval_recall_metric()
+  result = metric_module.retrieval_recall(
+      EvalMetric(metric_name="retrieval_recall"),
+      [
+          _search_docs_invocation(_doc_ids("c")),
+          _search_docs_invocation(_doc_ids("a")),
+      ],
+      [
+          _search_docs_invocation(None),
+          _search_docs_invocation(_doc_ids("a")),
+      ],
+      None,
+  )
+  assert result.overall_score == 1.0
+  assert result.per_invocation_results[0].score is None
+  assert (
+      result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+  )
+  assert result.per_invocation_results[1].score == 1.0
+
+
+def test_retrieval_recall_rejects_mismatched_turn_counts():
+  """Actual and expected conversations must have the same number of turns."""
+  pytest.importorskip("google.adk.evaluation.eval_case")
+  from google.adk.evaluation.eval_metrics import EvalMetric
+
+  turn = _search_docs_invocation(_doc_ids("a"))
+  metric_module = _load_retrieval_recall_metric()
+  with pytest.raises(ValueError, match="same number"):
+    metric_module.retrieval_recall(
+        EvalMetric(metric_name="retrieval_recall"), [turn, turn], [turn], None
+    )
+
+
+@pytest.mark.parametrize(
+    "query, expected_ids",
+    [
+        # "refund" must match "Refunds" and "return" must match "returned".
+        (
+            "return policy refund headphones",
+            ["returns-policy", "refund-timing"],
+        ),
+        ("reset password", ["account-password"]),
+        ("pizza", []),
+    ],
+)
+def test_support_kb_search_docs_ranks_articles_by_word_overlap(
+    query: str, expected_ids: list[str]
+):
+  """search_docs matches plural and past-tense forms and returns the top two."""
+  with _sample_module(
+      SAMPLES_DIR / "evaluation" / "support_kb_agent", "agent"
+  ) as agent_module:
+    documents = agent_module.search_docs(query)["documents"]
+  assert [document["id"] for document in documents] == expected_ids

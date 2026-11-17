@@ -28,8 +28,7 @@ the query and returns the best two.
 The eval set (`support_kb.evalset.json`) contains four single-turn cases:
 
 - `How many days do I have to return an item?` expects `returns-policy`
-- `I want to return my headphones. What is the returns policy and when will my
-  refund arrive?` expects `returns-policy` and `refund-timing`
+- `I want to return my headphones. What is the returns policy and when will my refund arrive?` expects `returns-policy` and `refund-timing`
 - `How long does international shipping take?` expects
   `international-shipping`
 - `How do I reset my password?` expects `account-password`
