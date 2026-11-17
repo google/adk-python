@@ -1435,9 +1435,6 @@ def run(
     # create Dockerfile
     click.echo('Creating Dockerfile...')
     host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
     a2a_option = '--a2a' if a2a else ''
     trigger_sources_option = (
         f'--trigger_sources={trigger_sources}' if trigger_sources else ''
@@ -1466,7 +1463,7 @@ def run(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
@@ -2092,7 +2089,7 @@ def to_agent_engine(
           ),
           trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
           otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-          allow_origins_option='',  # Not supported for now.
+          allow_origins=None,  # Not supported for now.
           adk_version=adk_version,
           host_option='--host=0.0.0.0',
           a2a_option='--a2a',
@@ -2278,10 +2275,6 @@ def to_gke(
     )
     click.secho('✅ Environment prepared.', fg='green')
 
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
-
     # create Dockerfile
     click.secho('\nSTEP 2: Generating deployment files...', bold=True)
     click.echo('  - Creating Dockerfile...')
@@ -2310,7 +2303,7 @@ def to_gke(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',

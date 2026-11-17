@@ -66,6 +66,20 @@ class _Recorder:
     return self.calls[-1][1]
 
 
+def _allow_origins_args(dockerfile_content: str) -> List[str]:
+  """Returns the `--allow_origins` entries of the Dockerfile's exec-form CMD."""
+  cmd_line = next(
+      line
+      for line in dockerfile_content.splitlines()
+      if line.startswith("CMD ")
+  )
+  return [
+      arg
+      for arg in json.loads(cmd_line[len("CMD ") :])
+      if arg.startswith("--allow_origins")
+  ]
+
+
 # Fixtures
 @pytest.fixture(autouse=True)
 def _mute_click(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -521,10 +535,10 @@ def test_to_gke_happy_path(
   ]
   assert creds_args == expected_creds_args
 
-  assert (
-      "--allow_origins=http://localhost:3000,https://my-app.com"
-      in dockerfile_content
-  )
+  assert _allow_origins_args(dockerfile_content) == [
+      "--allow_origins=http://localhost:3000",
+      "--allow_origins=https://my-app.com",
+  ]
 
   apply_args = run_recorder.calls[2][0][0]
   expected_apply_args = [
@@ -2323,6 +2337,57 @@ def test_to_gke_dockerfile_trigger_oidc_options(
 
 
 @pytest.mark.parametrize(
+    "provider, provider_args",
+    [
+        ("cloud_run", ["--project=my-project", "--region=us-central1"]),
+        ("docker", []),
+    ],
+)
+def test_cli_deploy_passes_each_allow_origin_as_its_own_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+    provider: str,
+    provider_args: List[str],
+) -> None:
+  """Every repeated --allow_origins reaches the deployed api_server."""
+  src_dir = agent_dir(False, False)
+  dockerfiles: List[str] = []
+
+  class _FakeDeployer:
+
+    def deploy(self, *, temp_folder: str, **_: Any) -> None:
+      dockerfiles.append((Path(temp_folder) / "Dockerfile").read_text())
+
+  monkeypatch.setattr(
+      cli_deploy.DeployerFactory,
+      "get_deployer",
+      lambda _: _FakeDeployer(),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          provider,
+          *provider_args,
+          f"--temp_folder={tmp_path / 'build'}",
+          "--allow_origins=https://a.example.com",
+          "--allow_origins=regex:https://.*\\.b\\.example\\.com",
+          str(src_dir),
+      ],
+      catch_exceptions=False,
+  )
+
+  assert result.exit_code == 0, result.output
+  assert len(dockerfiles) == 1
+  assert _allow_origins_args(dockerfiles[0]) == [
+      "--allow_origins=https://a.example.com",
+      "--allow_origins=regex:https://.*\\.b\\.example\\.com",
+  ]
+
+
+@pytest.mark.parametrize(
     "adk_version, expect_flag",
     [
         ("2.1.0", False),
@@ -3120,7 +3185,7 @@ def test_render_dockerfile_with_python_version(
       service_options=[],
       trace_to_cloud_option="",
       otel_to_cloud_option="",
-      allow_origins_option="",
+      allow_origins=None,
       adk_version="1.2.0",
       host_option="--host=0.0.0.0",
       a2a_option="",
@@ -3155,7 +3220,7 @@ def test_render_dockerfile_rejects_invalid_python_version(
         service_options=[],
         trace_to_cloud_option="",
         otel_to_cloud_option="",
-        allow_origins_option="",
+        allow_origins=None,
         adk_version="1.2.0",
         host_option="--host=0.0.0.0",
         a2a_option="",

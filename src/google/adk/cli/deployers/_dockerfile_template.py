@@ -208,7 +208,7 @@ def _render_dockerfile(
     service_options: list[str],
     trace_to_cloud_option: str,
     otel_to_cloud_option: str,
-    allow_origins_option: str,
+    allow_origins: list[str] | None,
     adk_version: str,
     host_option: str,
     a2a_option: str,
@@ -238,7 +238,8 @@ def _render_dockerfile(
     service_options: Session/artifact/memory service flags, one per entry.
     trace_to_cloud_option: `--trace_to_cloud` or an empty string.
     otel_to_cloud_option: `--otel_to_cloud` or an empty string.
-    allow_origins_option: `--allow_origins=...` or an empty string.
+    allow_origins: Origins for CORS, each emitted as its own `--allow_origins`
+      entry.
     adk_version: The ADK version to install in the image.
     host_option: `--host=...` or an empty string.
     a2a_option: `--a2a` or an empty string.
@@ -275,7 +276,7 @@ def _render_dockerfile(
           *service_options,
           trace_to_cloud_option,
           otel_to_cloud_option,
-          allow_origins_option,
+          *(f'--allow_origins={origin}' for origin in allow_origins or ()),
           a2a_option,
           trigger_sources_option,
           trigger_oidc_audience_option,
