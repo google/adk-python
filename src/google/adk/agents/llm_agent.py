@@ -401,6 +401,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
   thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
 
+  When the app configures ``context_cache_config``, ADK uses
+  ``cached_content`` as the first-turn cache seed (stripping
+  ``system_instruction``, ``tools``, and ``tool_config`` from requests that
+  attach it, so the pre-created cache must already hold them) and rolls over to
+  its own session cache after ``cache_intervals``, ``ttl_seconds``, or a
+  fingerprint change.
+
   For example: use this config to adjust model temperature, configure safety
   settings, etc.
   """
