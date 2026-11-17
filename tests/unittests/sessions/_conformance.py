@@ -217,6 +217,11 @@ async def _make_per_agent_database(
     await service.close()
 
 
+CONTRACT_TEST_MODULES = (
+    'test_session_service',
+    'test_session_service_resume',
+)
+
 BACKENDS = [
     _Backend('in_memory', _make_in_memory),
     _Backend('in_memory_light_copy', _make_in_memory_light_copy),
