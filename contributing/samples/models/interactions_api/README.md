@@ -8,26 +8,28 @@ conversation history.
 ## Features Tested
 
 1. **Basic Text Generation** - Simple conversation without tools
-1. **Google Search Tool** - Web search using `GoogleSearchTool` with
-   `bypass_multi_tools_limit=True`
+1. **Google Search Tool** - Web search using the built-in `GoogleSearchTool`
 1. **Multi-Turn Conversations** - Stateful interactions with context retention
    via `previous_interaction_id`
+1. **Google Search Tool (Additional)** - A second web search query
 1. **Custom Function Tool** - Weather lookup using `get_current_weather`
+1. **PDF Summarization** - Summarizing a PDF attached as an inline data part
 
 ## Important: Tool Compatibility
 
-The Interactions API does **NOT** support mixing custom function calling tools
-with built-in tools (like `google_search`) in the same agent. To work around
-this limitation:
+This agent keeps `google_search` as a built-in tool next to the custom
+`get_current_weather` function tool, so search results come back grounded
+rather than as a function call.
+
+If a backend rejects that combination, convert search to a function calling
+tool instead:
 
 ```python
-# Use bypass_multi_tools_limit=True to convert google_search to a function tool
 GoogleSearchTool(bypass_multi_tools_limit=True)
 ```
 
-This converts the built-in `google_search` to a function calling tool (via
-`GoogleSearchAgentTool`), which allows it to work alongside custom function
-tools.
+With the flag set, ADK wraps the built-in `google_search` in a
+`GoogleSearchAgentTool`, and the model calls it as `google_search_agent`.
 
 ## How to Run
 
@@ -52,7 +54,14 @@ export GOOGLE_API_KEY=your-api-key
 cd contributing/samples
 
 # Run automated tests with Interactions API
-python -m interactions_api.main
+python -m models.interactions_api.main
+```
+
+The `tests/` directory holds recorded request/response fixtures that can be
+replayed offline, without calling a live model:
+
+```bash
+adk test models/interactions_api
 ```
 
 ## Key Differences: Interactions API vs Standard API
@@ -79,8 +88,7 @@ interactions_api/
 ├── __init__.py                    # Package initialization
 ├── agent.py                       # Agent definition with Interactions API
 ├── main.py                        # Test runner
-├── test_interactions_curl.sh      # cURL-based API tests
-├── test_interactions_direct.py    # Direct API tests
+├── tests/                         # Replay fixtures for agent_test_runner
 └── README.md                      # This file
 ```
 
@@ -93,12 +101,12 @@ from google.adk.tools.google_search_tool import GoogleSearchTool
 
 root_agent = Agent(
     model=Gemini(
-        model="gemini-2.5-flash",
+        model="gemini-3.1-flash-lite",
         use_interactions_api=True,  # Enable Interactions API
     ),
     name="interactions_test_agent",
     tools=[
-        GoogleSearchTool(bypass_multi_tools_limit=True),  # Converted to function tool
+        GoogleSearchTool(),  # Built-in tool
         get_current_weather,  # Custom function tool
     ],
 )
@@ -121,8 +129,6 @@ TEST 2: Function Calling (Google Search Tool)
 ============================================================
 
 >> User: Search for the capital of France.
-   [Tool Call] google_search_agent({'request': 'capital of France'})
-   [Tool Result] google_search_agent: {'result': 'The capital of France is Paris...'}
 << Agent: The capital of France is Paris.
    [Interaction ID: v1_def456...]
 PASSED: Google search tool works
@@ -131,13 +137,19 @@ PASSED: Google search tool works
 TEST 3: Multi-Turn Conversation (Stateful)
 ============================================================
 
->> User: Remember the number 42.
-<< Agent: I'll remember that number - 42.
+>> User: My favorite color is blue. Just acknowledge this, don't use any tools.
+<< Agent: Got it - your favorite color is blue.
    [Interaction ID: v1_ghi789...]
 
->> User: What number did I ask you to remember?
-<< Agent: You asked me to remember the number 42.
+>> User: What's the weather like in London?
+   [Tool Call] get_current_weather({'city': 'London'})
+   [Tool Result] get_current_weather: {'city': 'London', 'temperature_f': 59, ...}
+<< Agent: London is 59F and Cloudy.
    [Interaction ID: v1_jkl012...]
+
+>> User: What is my favorite color that I mentioned earlier in our conversation?
+<< Agent: You said your favorite color is blue.
+   [Interaction ID: v1_mno345...]
 PASSED: Multi-turn conversation works with context retention
 
 ============================================================
@@ -148,8 +160,8 @@ TEST 5: Custom Function Tool (get_current_weather)
    [Tool Call] get_current_weather({'city': 'Tokyo'})
    [Tool Result] get_current_weather: {'city': 'Tokyo', 'temperature_f': 68, ...}
 << Agent: The weather in Tokyo is 68F and Partly Cloudy.
-   [Interaction ID: v1_mno345...]
-PASSED: Custom function tool works with bypass_multi_tools_limit
+   [Interaction ID: v1_pqr678...]
+PASSED: Custom function tool works alongside the built-in search tool
 
 ALL TESTS PASSED (Interactions API)
 ```
