@@ -216,6 +216,59 @@ async def test_tool_subclass_overriding_run_uses_run():
   assert result == "HI"
 
 
+@pytest.mark.asyncio
+async def test_tool_subclass_overriding_run_with_func_uses_run():
+  """A Tool subclass that overrides _run keeps it even when built with func.
+
+  Matches LangChain's own Tool.run(), which calls the override.
+  """
+
+  class OverridingShoutTool(Tool):
+
+    def _run(self, text: str) -> str:
+      return f"override:{text}"
+
+  langchain_tool = LangchainTool(
+      tool=OverridingShoutTool(name="shout", func=shout, description="Shouts")
+  )
+
+  assert (
+      getattr(langchain_tool.func, "__func__", None) is OverridingShoutTool._run
+  )
+  names, required = _declared_params(langchain_tool)
+  assert names == ["text"]
+  assert required == ["text"]
+  result = await langchain_tool.run_async(
+      args={"text": "hi"}, tool_context=MagicMock()
+  )
+  assert result == "override:hi"
+
+
+@pytest.mark.asyncio
+async def test_structured_tool_subclass_with_func_stays_func_first():
+  """A StructuredTool subclass built with func runs func, as since #707."""
+
+  class AddTool(StructuredTool):
+
+    def _run(self, x: int, y: int) -> int:
+      return -1
+
+  langchain_tool = LangchainTool(
+      tool=AddTool(
+          name="add",
+          func=sync_add,
+          description="Adds",
+          args_schema=AddSchema,
+      )
+  )
+
+  assert langchain_tool.func is sync_add
+  result = await langchain_tool.run_async(
+      args={"x": 1, "y": 3}, tool_context=MagicMock()
+  )
+  assert result == 4
+
+
 def test_plain_tool_without_func_or_coroutine_raises():
   """A plain Tool has no runnable function, so it is rejected."""
   tool = Tool(name="shout", func=None, description="Shouts")

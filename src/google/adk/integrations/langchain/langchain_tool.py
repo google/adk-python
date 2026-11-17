@@ -74,7 +74,13 @@ class LangchainTool(FunctionTool):
 
     # Determine which function to use
     func: Optional[Callable[..., Any]] = None
-    if isinstance(tool, (StructuredTool, Tool)):
+    # StructuredTool is func-first (#707). A plain Tool matches LangChain's
+    # own Tool.run(): a subclass that overrides _run keeps the override, so
+    # only an unmodified Tool uses func/coroutine. Overrides fall through to
+    # the _run fallback below.
+    if isinstance(tool, StructuredTool) or (
+        isinstance(tool, Tool) and type(tool)._run is Tool._run
+    ):
       func = tool.func
       # For async tools, func might be None but coroutine exists
       if func is None and hasattr(tool, 'coroutine') and tool.coroutine:
