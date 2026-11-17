@@ -601,7 +601,7 @@ google-crc32c==1.9.0
     #   google-cloud-bigtable
     #   google-cloud-storage
     #   google-resumable-media
-google-genai==2.30.0
+google-genai==2.34.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
     #   google-adk (pyproject.toml)
