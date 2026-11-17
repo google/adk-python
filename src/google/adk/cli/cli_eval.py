@@ -31,6 +31,7 @@ from google.genai import types as genai_types
 from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..evaluation._eval_case_result_multi_run_aggregator import count_runs_failed_without_metric_results
+from ..evaluation._eval_case_result_multi_run_aggregator import CrossRunCriterionSummary
 from ..evaluation._eval_case_result_multi_run_aggregator import describe_run_statuses
 from ..evaluation._eval_case_result_multi_run_aggregator import get_run_status
 from ..evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
@@ -385,6 +386,24 @@ def _format_method_result(method_result: MethodResult) -> str:
   if method_result.note:
     text += f" ({method_result.note})"
   return text
+
+
+def _format_eval_set_criterion_summary(
+    summary: CrossRunCriterionSummary,
+) -> str:
+  """Formats a cross-run criterion's mean over an eval set's cases.
+
+  The line says how many cases the mean covers when some case had no value,
+  so "pass^3: 0.41 (mean over 11 of 12 cases)" is not read as a mean over
+  all twelve.
+  """
+  if summary.mean is None:
+    return f"{summary.name}: n/a (no case had a value)"
+  if summary.num_cases_with_value == summary.num_cases:
+    cases = "1 case" if summary.num_cases == 1 else f"{summary.num_cases} cases"
+  else:
+    cases = f"{summary.num_cases_with_value} of {summary.num_cases} cases"
+  return f"{summary.name}: {summary.mean:.2f} (mean over {cases})"
 
 
 def _describe_crashed_runs(*, crashed: int, runs: int, allowed: int) -> str:

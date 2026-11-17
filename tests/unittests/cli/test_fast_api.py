@@ -6996,6 +6996,21 @@ def test_telemetry_post_endpoint_missing_header(test_app):
   assert "Forbidden: missing required security header" in response.text
 
 
+def test_telemetry_post_endpoint_rejects_remote_client(
+    remote_builder_test_client,
+):
+  """Any non-browser caller can set the header, so the peer address gates it."""
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    response = remote_builder_test_client.post(
+        "/config/telemetry",
+        json={"telemetry": True},
+        headers={"x-adk-telemetry-request": "true"},
+    )
+
+  assert response.status_code == 403
+  mock_write.assert_not_called()
+
+
 def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
   """A service-account key file ADC has requires_scopes=True and no scopes,
 

@@ -42,7 +42,7 @@ from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.integrations import fsspec as fsspec_pkg
-from google.adk.integrations.fsspec import _fsspec_artifact_service
+from google.adk.integrations.fsspec import _backends
 from google.adk.integrations.fsspec._fsspec_artifact_service import FsspecArtifactService
 from google.genai import types
 import pytest
@@ -1128,7 +1128,7 @@ async def test_get_artifact_version_parses_backend_timestamps(
   store.objects["b/app/u/s/f.txt/0"][1].update(info_fields)
 
   with mock.patch.object(
-      _fsspec_artifact_service.platform_time,
+      _backends.platform_time,
       "get_time",
       return_value=9876.5,
   ):
