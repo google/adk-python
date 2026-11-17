@@ -50,10 +50,11 @@ import pytest
 class TestEnvironmentSimulationEngineSimulate:
   """Test cases for the simulate method of EnvironmentSimulationEngine."""
 
-  async def test_simulate_no_op_for_unconfigured_tool(
-      self, mock_create_strategy, mock_analyzer
+  @pytest.mark.parametrize("log_level", [logging.DEBUG, logging.INFO])
+  async def test_unconfigured_tool_logs_passthrough_only_at_debug(
+      self, mock_create_strategy, mock_analyzer, caplog, log_level
   ):
-    """Test that simulate returns None for a tool not in the config."""
+    """Unconfigured passthrough is visible at debug level without arguments."""
     config = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
@@ -67,8 +68,25 @@ class TestEnvironmentSimulationEngineSimulate:
     engine = EnvironmentSimulationEngine(config)
     mock_tool = MagicMock()
     mock_tool.name = "unconfigured_tool"
-    result = await engine.simulate(mock_tool, {}, MagicMock())
+    caplog.set_level(log_level, logger="environment_simulation_logger")
+
+    result = await engine.simulate(
+        mock_tool, {"token": "private-test-value"}, MagicMock()
+    )
+
     assert result is None
+    records = [
+        r for r in caplog.records if r.name == "environment_simulation_logger"
+    ]
+    if log_level == logging.DEBUG:
+      assert len(records) == 1
+      assert records[0].levelno == logging.DEBUG
+      assert "unconfigured_tool" in records[0].getMessage()
+      assert "Allowing real tool execution" in records[0].getMessage()
+      assert "private-test-value" not in records[0].getMessage()
+      assert "token" not in records[0].getMessage()
+    else:
+      assert records == []
 
   @pytest.mark.parametrize("response", [{}, {"injected": True}])
   @pytest.mark.parametrize(
@@ -142,6 +160,7 @@ class TestEnvironmentSimulationEngineSimulate:
         config.tool_simulation_configs[0].mock_strategy_type,
         config.simulation_model,
         config.simulation_model_configuration,
+        raise_on_error=False,
     )
     mock_strategy_instance.mock.assert_awaited_once()
 
@@ -219,6 +238,7 @@ class TestEnvironmentSimulationEngineSimulate:
         config_mocked.tool_simulation_configs[0].mock_strategy_type,
         config_mocked.simulation_model,
         config_mocked.simulation_model_configuration,
+        raise_on_error=False,
     )
     mock_strategy_instance.mock.assert_awaited_once()
 
@@ -819,7 +839,9 @@ class TestEnvironmentSimulationEngineArgsMatcher:
     assert result == {"from": "a"}
     assert cancelled_at_sleep == [(1.5, ["b"])]
 
-  async def test_matcher_error_propagates(self, mock_analyzer):
+  @pytest.mark.parametrize("policy", ["passthrough", "error"])
+  @pytest.mark.parametrize("allowed", [False, True])
+  async def test_matcher_error_propagates(self, mock_analyzer, policy, allowed):
     """A failing comparison surfaces instead of silently missing."""
     matcher = _ScriptedMatcher(answers={"a": RuntimeError("judge down")})
     config = InjectionConfig(
@@ -827,7 +849,10 @@ class TestEnvironmentSimulationEngineArgsMatcher:
         args_matcher=ToolArgsMatcher(default_matcher=matcher),
         injected_response={"injected": True},
     )
-    engine = EnvironmentSimulationEngine(_semantic_config([config]))
+    simulation_config = _semantic_config([config])
+    simulation_config.unmocked_tool_policy = policy
+    simulation_config.allowed_real_tools = ["search"] if allowed else []
+    engine = EnvironmentSimulationEngine(simulation_config)
 
     with pytest.raises(RuntimeError, match="judge down"):
       await engine.simulate(_search_tool(), {"query": "x"}, MagicMock())
@@ -1084,3 +1109,28 @@ def test_engine_reused_across_event_loops(mock_analyzer):
   assert result_1 == {"from": values[-1]}
   assert result_2 == {"from": values[-1]}
   assert matcher._max_in_flight == _MAX_CONCURRENT_ARG_MATCHES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["passthrough", "error"])
+async def test_unimplemented_tracing_strategy_reports_failure(policy):
+  config = EnvironmentSimulationConfig(
+      unmocked_tool_policy=policy,
+      allowed_real_tools=["search"],
+      tool_simulation_configs=[
+          ToolSimulationConfig(
+              tool_name="search",
+              mock_strategy_type=MockStrategy.MOCK_STRATEGY_TRACING,
+          )
+      ],
+  )
+  engine = EnvironmentSimulationEngine(config)
+
+  if policy == "error":
+    with pytest.raises(ValueError, match="tool 'search'.*Not implemented"):
+      await engine.simulate(_search_tool(), {}, MagicMock())
+  else:
+    assert await engine.simulate(_search_tool(), {}, MagicMock()) == {
+        "status": "error",
+        "error_message": "Not implemented",
+    }

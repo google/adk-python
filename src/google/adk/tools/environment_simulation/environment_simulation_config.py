@@ -18,6 +18,7 @@ import enum
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -151,6 +152,23 @@ class ToolSimulationConfig(BaseModel):
 
 class EnvironmentSimulationConfig(BaseModel):
   """Configuration for EnvironmentSimulation."""
+
+  unmocked_tool_policy: Literal["passthrough", "error"] = "passthrough"
+  """What to do when neither an injection nor a mock strategy handles a call.
+
+  The default allows normal tool execution. With "error", before-tool
+  simulation raises UnmockedToolCallError unless the tool is explicitly
+  allowed by allowed_real_tools. Attach strict simulation before tool execution;
+  an after-tool callback cannot prevent side effects.
+  """
+
+  allowed_real_tools: list[str] = Field(default_factory=list)
+  """Exact, case-sensitive tool names permitted to run without simulation.
+
+  Injections and configured mock strategies take precedence, and their errors
+  still propagate. Names apply across all agents intercepted by this simulator;
+  wildcards and implicit exceptions for framework tools are not supported.
+  """
 
   tool_simulation_configs: List[ToolSimulationConfig] = Field(
       default_factory=list

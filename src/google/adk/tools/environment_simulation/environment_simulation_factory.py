@@ -37,6 +37,11 @@ class EnvironmentSimulationFactory:
   ]:
     """Creates a callback function for EnvironmentSimulation.
 
+    With unmocked_tool_policy="error", attach this as the first
+    before_tool_callback. An after-tool callback cannot block real execution.
+    Agent callbacks cover only that agent and run after plugin callbacks; use
+    create_plugin for app-wide interception, including sub-agent tools.
+
     Args:
       config: The configuration for the EnvironmentSimulation.
 
@@ -58,6 +63,12 @@ class EnvironmentSimulationFactory:
       config: EnvironmentSimulationConfig,
   ) -> EnvironmentSimulationPlugin:
     """Creates an ADK Plugin for EnvironmentSimulation.
+
+    For strict interception, place this plugin first in App.plugins so an
+    earlier before-tool override cannot skip it. This intercepts the normal
+    tool pipeline across agents, not direct external calls in user callbacks.
+    Plugin errors are wrapped in RuntimeError with the original exception
+    chained as its cause.
 
     Args:
       config: The configuration for the EnvironmentSimulation.

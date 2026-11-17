@@ -29,7 +29,9 @@ from google.genai import types
 import pytest
 
 
-def _make_strategy(response_chunks: List[str]) -> ToolSpecMockStrategy:
+def _make_strategy(
+    response_chunks: List[str], *, raise_on_error: bool = False
+) -> ToolSpecMockStrategy:
   """Builds a strategy whose LLM streams back ``response_chunks``."""
 
   async def fake_generate_content_async(request):
@@ -50,6 +52,7 @@ def _make_strategy(response_chunks: List[str]) -> ToolSpecMockStrategy:
     return ToolSpecMockStrategy(
         llm_name="fake-model",
         llm_config=types.GenerateContentConfig(),
+        raise_on_error=raise_on_error,
     )
 
 
@@ -104,6 +107,35 @@ async def test_tool_without_declaration_is_reported_as_an_error():
       "status": "error",
       "error_message": "Could not get tool declaration.",
   }
+
+
+@pytest.mark.asyncio
+async def test_strict_strategy_rejects_missing_declaration():
+  strategy = _make_strategy([], raise_on_error=True)
+
+  with pytest.raises(
+      ValueError, match="tool 't'.*Could not get tool declaration"
+  ):
+    await _mock(strategy, _make_tool("t", declared=False), {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response", ["{}", '{"status":"error","error_message":"simulated failure"}']
+)
+async def test_strict_strategy_accepts_empty_and_simulated_error_responses(
+    response,
+):
+  strategy = _make_strategy([response], raise_on_error=True)
+
+  result = await _mock(strategy, _make_tool("t"), {})
+
+  assert isinstance(result, dict)
+  assert result == (
+      {}
+      if response == "{}"
+      else {"status": "error", "error_message": "simulated failure"}
+  )
 
 
 @pytest.mark.asyncio

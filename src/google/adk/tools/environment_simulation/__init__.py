@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.tools.environment_simulation.environment_simulation_engine import UnmockedToolCallError
 from google.adk.tools.environment_simulation.environment_simulation_factory import EnvironmentSimulationFactory
 
-__all__ = ["EnvironmentSimulationFactory"]
+__all__ = ["EnvironmentSimulationFactory", "UnmockedToolCallError"]
