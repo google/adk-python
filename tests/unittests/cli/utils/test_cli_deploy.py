@@ -3622,6 +3622,70 @@ def test_get_extra_packages_copy_keeps_package_with_root_init_on_pythonpath(
 
 
 @pytest.mark.parametrize(
+    "pyproject_content",
+    [
+        "[tool.ruff]\nline-length = 100\n",
+        "",
+        "[tool.ruff\nline-length = ",
+    ],
+    ids=["tool_settings_only", "empty", "unparsable"],
+)
+def test_get_extra_packages_copy_keeps_non_project_folder_on_pythonpath(
+    tmp_path: Path,
+    pyproject_content: str,
+) -> None:
+  """A folder of modules whose pyproject.toml is not a project stays in /app."""
+  shared = tmp_path / "shared"
+  shared.mkdir()
+  (shared / "models.py").write_text("VALUE = 1\n")
+  (shared / "utils.py").write_text("VALUE = 2\n")
+  (shared / "pyproject.toml").write_text(pyproject_content)
+
+  rendered = cli_deploy._get_extra_packages_copy(["shared"], str(tmp_path))
+
+  assert 'COPY --chown=myuser:myuser "shared/" "/app/shared/"' in rendered
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in rendered
+  assert "pip" not in rendered
+  assert "/tmp/extra_packages" not in rendered
+  assert not cli_deploy._get_extra_packages_reinstall(
+      ["shared"], str(tmp_path), has_requirements=True
+  )
+
+
+@pytest.mark.parametrize(
+    "pyproject_content",
+    [
+        '[project]\nname = "shared"\nversion = "0.1.0"\n',
+        '[build-system]\nrequires = ["setuptools"]\n',
+    ],
+    ids=["project", "build_system"],
+)
+def test_get_extra_packages_copy_pip_installs_pyproject_project(
+    tmp_path: Path,
+    pyproject_content: str,
+) -> None:
+  """A pyproject.toml declaring a project or build system is pip-installed."""
+  shared = tmp_path / "shared"
+  (shared / "src" / "shared").mkdir(parents=True)
+  (shared / "pyproject.toml").write_text(pyproject_content)
+
+  rendered = cli_deploy._get_extra_packages_copy(["shared"], str(tmp_path))
+
+  assert (
+      'COPY --chown=myuser:myuser "shared/" "/tmp/extra_packages/shared/"'
+      in rendered
+  )
+  assert "PYTHONPATH" not in rendered
+  assert 'RUN ["pip", "install", "/tmp/extra_packages/shared"]' in rendered
+  assert cli_deploy._get_extra_packages_reinstall(
+      ["shared"], str(tmp_path), has_requirements=True
+  ) == (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/shared"]'
+  )
+
+
+@pytest.mark.parametrize(
     "archive_name",
     ["pkg-0.1.0.tar.gz", "pkg-0.1.0.tgz", "pkg-0.1.0.zip"],
 )
