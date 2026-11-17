@@ -49,8 +49,8 @@ runner = Runner(
 ```
 
 `DatabaseSessionService` needs the `db` extra (`pip install "google-adk[db]"`).
-It also serializes everything you put in state and in a `JoinNode`'s parked
-inputs, so a non-JSON-serializable value that works in memory fails here.
+It also serializes everything you put in state, so a non-JSON-serializable
+value that works in memory fails here.
 
 ## Artifacts
 

@@ -246,8 +246,8 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
 
   Args:
     response_data: The data to validate.
-    schema: The schema to validate against (Python type, GenericAlias, or raw
-      JSON Schema dict).
+    schema: The JSON Schema recorded on the stored request_input call. Anything
+      else is skipped: the stored schema is JSON, never a Python type.
 
   Returns:
     The validated and coerced data.
@@ -316,11 +316,11 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
     # Fallback: skip validation for complex schemas (similar to base node)
     return response_data
 
-  # For Python types and Pydantic models, use TypeAdapter directly
-  try:
-    return TypeAdapter(schema).validate_python(response_data)
-  except ValidationError as e:
-    raise WorkflowDataError(f'Validation failed against schema: {e}') from e
+  logger.warning(
+      'Skipping validation of resume response: %r is not a JSON Schema.',
+      schema,
+  )
+  return response_data
 
 
 def _reconstruct_node_states(

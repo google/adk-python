@@ -440,8 +440,15 @@ sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
 sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
 
 [tool.uv]
+required-version = ">=0.13.4"
 # Extras that depend on ADK must use this checkout's dependency requirements.
 sources.google-adk = { path = ".", editable = true }
+exclude-newer = "7 days"
+# Google-published packages that ADK releases or raises floors on in lockstep
+# are exempt, so a same-week release does not wait out the cooldown. Only
+# `false` is used: an environment that disables the global cutoff with
+# UV_EXCLUDE_NEWER=false would still apply a per-package date.
+exclude-newer-package = { google-adk = false, google-adk-community = false, google-cloud-aiplatform = false, google-genai = false }
 
 [tool.ruff]
 extend-exclude = [

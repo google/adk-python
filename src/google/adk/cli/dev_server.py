@@ -28,10 +28,11 @@ evaluation and debugging code. This server is intended solely for local
 development on a trusted machine. Never expose it to an untrusted or public
 network, and never use it for a production or multi-user deployment.
 
-Mutating ``/dev`` endpoints (and the Agent Builder YAML readback) additionally
-reject callers that are not on the loopback interface, so that binding the
-server to a routable address does not by itself hand out write or code-execution
-access over the network. See ``_require_local_agent_builder_client``.
+Mutating ``/dev`` endpoints, the Agent Builder YAML readback and the telemetry
+consent write additionally reject callers that are not on the loopback
+interface, so that binding the server to a routable address does not by itself
+hand out write or code-execution access over the network. See
+``_require_local_agent_builder_client``.
 """
 
 from __future__ import annotations
@@ -131,11 +132,11 @@ _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes"})
 
 
 def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
-  """Rejects mutating ``/dev`` and Agent Builder requests from remote callers.
+  """Rejects remote callers on mutating routes and the Agent Builder readback.
 
-  Mutating ``/dev`` endpoints (and the Agent Builder YAML readback) read and
-  write files under ``agents_dir`` or spawn test, evaluation and deployment
-  runs, and like every other endpoint on this server, are unauthenticated. The
+  The endpoints behind this check read or write files under ``agents_dir`` or
+  in the user's ADK config, or spawn test, evaluation and deployment runs, and
+  like every other endpoint on this server, are unauthenticated. The
   origin check in ``_OriginCheckMiddleware`` only stops a browser from being
   used as a confused deputy; it lets a request through when ``Origin`` is
   absent, so a non-browser client skips it just by omitting the header.
@@ -162,11 +163,11 @@ def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
   raise HTTPException(
       status_code=403,
       detail=(
-          "This /dev endpoint only accepts requests from the machine running"
+          "This endpoint only accepts requests from the machine running"
           " the server. Set"
           f" {_ALLOW_REMOTE_AGENT_BUILDER_ENV}=1 to allow remote access, and"
           " only on a network you trust: these endpoints are unauthenticated"
-          " and write agent files to disk."
+          " and write files to disk."
       ),
   )
 
@@ -670,7 +671,10 @@ class DevServer(ApiServer):
       """Gets the user configuration for telemetry consent."""
       return {"telemetry": read_telemetry_consent()}
 
-    @app.post("/config/telemetry")
+    @app.post(
+        "/config/telemetry",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def set_telemetry_consent(
         req: TelemetryConsentRequest, request: FastAPIRequest
     ) -> dict[str, Any]:

@@ -40,7 +40,7 @@ Meaningful only inside a workflow node:
 | Property | Type | Notes |
 |---|---|---|
 | `node` | `BaseNode \| None` | The node being executed |
-| `node_path` | `str` | Full path, e.g. `'WorkflowA/node1'` |
+| `node_path` | `str` | Full path, e.g. `'WorkflowA@1/node1@1'` |
 | `run_id` | `str` | This node-run, e.g. `'1'`, `'2'` |
 | `attempt_count` | `int` | 1 on the first try, higher on a retry |
 | `resume_inputs` | `dict[str, Any]` | Human-in-the-loop answers, keyed by `interrupt_id` |
@@ -111,8 +111,8 @@ async def verbose_node(ctx: Context, node_input: str):
 
 ## What the workflow itself outputs
 
-After every node settles, the workflow emits one more event of its own. Its
-value comes from the terminal nodes — those with no outgoing edges. That event
-is authored by the workflow, with `node_info.path` set to the workflow's own
-path, which is why filtering test assertions on `event.author` picks up the
-wrapper rather than the node you meant.
+The workflow emits no output event of its own. Its output is the output event
+of the terminal node — the one with no outgoing edges. Every function-node
+event is authored by the enclosing workflow and carries the node's own
+`node_info.path`, which is why filtering test assertions on `event.author`
+matches every node in the workflow rather than the node you meant.
