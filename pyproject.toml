@@ -73,7 +73,7 @@ optional-dependencies.all = [
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # chromadb/pypika fail on 3.12+
-  "daytona>=0.191",
+  "daytona>=0.191,<1",
   "docker>=7",
   "e2b>=2.29.5,<3",
   "elevenlabs>=2.22.1,<3",
@@ -175,7 +175,7 @@ optional-dependencies.community = [
   "google-adk-community",
 ]
 optional-dependencies.daytona = [
-  "daytona>=0.191", # For DaytonaEnvironment remote sandbox.
+  "daytona>=0.191,<1", # For DaytonaEnvironment remote sandbox.
 ]
 optional-dependencies.db = [
   "sqlalchemy[asyncio]>=2,<3",
@@ -344,7 +344,7 @@ optional-dependencies.test = [
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
-  "daytona>=0.191",
+  "daytona>=0.191,<1",
   "docker>=7",                                                       # For ContainerCodeExecutor tests
   "e2b>=2.29.5,<3",
   "fsspec>=2026.4",
