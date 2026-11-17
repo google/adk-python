@@ -2402,17 +2402,14 @@ class ApiServer:
       try:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
-        logger.debug("Events generated: %s", events)
-        return JSONResponse(
-            content=[
-                _redact_credential_secrets(
-                    event.model_dump(
-                        exclude_none=True, by_alias=True, mode="json"
-                    )
-                )
-                for event in events
-            ]
-        )
+        redacted_events = [
+            _redact_credential_secrets(
+                event.model_dump(exclude_none=True, by_alias=True, mode="json")
+            )
+            for event in events
+        ]
+        logger.debug("Events generated: %s", redacted_events)
+        return JSONResponse(content=redacted_events)
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)

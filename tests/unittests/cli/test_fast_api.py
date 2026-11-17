@@ -3847,6 +3847,91 @@ def test_agent_run_redacts_oauth2_client_secret(
   )
 
 
+def test_agent_run_debug_log_redacts_credential_secrets(
+    test_app, create_test_session, monkeypatch, oauth2_auth_config_dict, caplog
+):
+  """/run must not log secrets its response redacts.
+
+  A JSON-backed session service hands a stored credential back as a plain
+  dict, so `state_delta` carries one whose secrets no `repr=False` covers.
+  """
+  info = create_test_session
+
+  async def run_async_with_auth_request(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="adk_request_credential",
+                        id="adk-req-cred-id",
+                        args={
+                            "functionCallId": "adk-original-fc-id",
+                            "authConfig": oauth2_auth_config_dict,
+                        },
+                    )
+                )
+            ],
+        ),
+        actions=EventActions(
+            state_delta={
+                "temp:my_tool:oauth2:abcd1234": {
+                    "authType": "oauth2",
+                    "oauth2": {
+                        "clientId": "public-client-id",
+                        "accessToken": "access-token-should-not-be-logged",
+                        "refreshToken": "refresh-token-should-not-be-logged",
+                    },
+                }
+            },
+        ),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_auth_request)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+  }
+
+  with caplog.at_level(logging.DEBUG, logger="google_adk.google.adk.cli"):
+    response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+
+  secrets = (
+      "access-token-should-not-be-logged",
+      "refresh-token-should-not-be-logged",
+      "should-never-reach-the-client",
+      "pkce-verifier-should-not-leak-either",
+  )
+  for secret in secrets:
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+  stored = response.json()[0]["actions"]["stateDelta"][
+      "temp:my_tool:oauth2:abcd1234"
+  ]
+  assert "accessToken" not in stored["oauth2"]
+  assert "refreshToken" not in stored["oauth2"]
+  assert stored["oauth2"]["clientId"] == "public-client-id"
+  assert "Events generated:" in caplog.text
+
+
 def test_agent_run_sse_redacts_oauth2_client_secret(
     test_app, create_test_session, monkeypatch, oauth2_auth_config_dict
 ):
