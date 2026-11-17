@@ -21,6 +21,7 @@ import logging
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
+import shlex
 import sys
 from unittest import mock
 
@@ -32,6 +33,7 @@ from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.environment import BaseEnvironment
+from google.adk.environment import ExecutionResult
 from google.adk.environment import LocalEnvironment
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -1607,7 +1609,7 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
       "timed_out": False,
   }
   mock_env.read_file.assert_called_once_with(
-      PurePosixPath("skills/skill1/scripts/run.py"), ctx=ctx
+      PurePosixPath("skills/skill1/.adk_skill_hash"), ctx=ctx
   )
   assert mock_env.execute.call_count == 1
   assert mock_env.execute.call_args.kwargs["ctx"] is ctx
@@ -1908,8 +1910,10 @@ async def test_run_skill_script_environment_execute_exception(mock_skill1):
   """RunSkillScriptTool handles env.execute exception gracefully."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
-  # Script exists, but execute script raises exception
-  mock_env.read_file.return_value = b"ok"
+  # The environment holds the current version, but executing the script raises.
+  mock_env.read_file.return_value = skill_toolset._skill_content_hash(
+      mock_skill1
+  ).encode()
   mock_env.execute.side_effect = RuntimeError("Sandbox connection lost")
 
   toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
@@ -2032,7 +2036,8 @@ async def test_run_skill_script_materialize_writes_concurrently():
       tool_context=ctx,
   )
 
-  assert mock_env.write_file.call_count == 4
+  # The four resources together, then the version marker on its own.
+  assert mock_env.write_file.call_count == 5
   assert max_active_writes == 4
 
 
@@ -6684,7 +6689,8 @@ async def test_env_materialization_safe_path_writes_correctly(tmp_path):
   await tool._ensure_skill_materialized_in_env(
       skill, "run.py", mock_env, mock.sentinel.tool_context
   )
-  assert mock_env.write_file.call_count == 3
+  # Three resources, then the version marker.
+  assert mock_env.write_file.call_count == 4
 
 
 @pytest.mark.asyncio
@@ -6911,7 +6917,7 @@ async def test_env_materialization_safe_backslash_path_writes_correctly(
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
-  await tool._ensure_skill_materialized_in_env(
+  script_path = await tool._ensure_skill_materialized_in_env(
       skill, "sub\\run.py", mock_env, mock.sentinel.tool_context
   )
   written_paths = {
@@ -6929,10 +6935,7 @@ async def test_env_materialization_safe_backslash_path_writes_correctly(
   assert expected_ref in written_paths
   assert expected_asset in written_paths
   assert expected_script in written_paths
-  expected_probe = PurePosixPath(expected_script)
-  mock_env.read_file.assert_called_once_with(
-      expected_probe, ctx=mock.sentinel.tool_context
-  )
+  assert script_path == PurePosixPath(expected_script)
 
 
 @pytest.mark.asyncio
@@ -7337,6 +7340,266 @@ async def test_reactivating_without_the_definition_keeps_the_digest(
   ]
 
 
+# Keeping a skill's copy in the environment current
+
+
+class _SandboxPerSessionEnvironment(BaseEnvironment):
+  """Keeps one in-memory sandbox per `ctx.state["sandbox"]`.
+
+  `execute` runs nothing: it returns the source of the script the command
+  names, so a test can see which version ran.
+  """
+
+  def __init__(self):
+    self.sandboxes = collections.defaultdict(dict)
+    self.calls = []
+    self.failing_writes = set()
+
+  @property
+  def working_dir(self):
+    return Path("/work")
+
+  def _files(self, ctx):
+    return self.sandboxes[ctx.state.get("sandbox", "shared")]
+
+  async def initialize(self, *, ctx=None):
+    self.calls.append(("initialize", None))
+
+  async def read_file(self, path, *, ctx=None):
+    self.calls.append(("read_file", str(path)))
+    try:
+      content = self._files(ctx)[str(path)]
+    except KeyError:
+      raise FileNotFoundError(path) from None
+    return content.encode() if isinstance(content, str) else content
+
+  async def write_file(self, path, content, *, ctx=None):
+    self.calls.append(("write_file", str(path)))
+    if str(path) in self.failing_writes:
+      self.failing_writes.discard(str(path))
+      raise OSError(f"Could not write {path}")
+    self._files(ctx)[str(path)] = content
+
+  async def execute(self, command, *, timeout=None, ctx=None):
+    self.calls.append(("execute", command))
+    # The tool runs `cd <skill_dir> && <interpreter> <script> ...`.
+    _, skill_dir, _, _, script, *_ = shlex.split(command)
+    source = self._files(ctx).get(f"{skill_dir}/{script}")
+    if source is None:
+      return ExecutionResult(exit_code=2, stderr=f"{script}: not found")
+    return ExecutionResult(stdout=source)
+
+
+_SKILL_DIR = "/work/skills/a"
+_HASH_MARKER = f"{_SKILL_DIR}/.adk_skill_hash"
+
+
+def _session(sandbox="shared"):
+  """A tool context for its own session, using the given sandbox."""
+  ctx = mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx.agent_name = "test_agent"
+  ctx.invocation_id = "test_invocation"
+  ctx.state = {"sandbox": sandbox}
+  return ctx
+
+
+async def _run_script(toolset, ctx, file_path="s.py"):
+  return await skill_toolset.RunSkillScriptTool(toolset).run_async(
+      args={"skill_name": "a", "file_path": file_path}, tool_context=ctx
+  )
+
+
+@pytest.mark.asyncio
+async def test_a_new_session_runs_the_current_version_of_a_changed_skill():
+  """A sandbox with an older copy of a skill gets the new one at the next run.
+
+  Setup: session A loads v1 of skill `a` and runs its script, which copies v1
+    into the shared sandbox.
+  Act: the skill changes to v2; session B loads v2 and runs the script, with
+    no model request in between.
+  Assert: B runs v2.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = _revalidating_toolset(
+      _real_skill(scripts={"s.py": "print('v1')"}), environment=env
+  )
+  session_a, session_b = _session(), _session()
+  await _load(skill_toolset.LoadSkillTool(toolset), session_a, "a")
+  await _run_script(toolset, session_a)
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print('v2')"})
+  await _load(skill_toolset.LoadSkillTool(toolset), session_b, "a")
+
+  result = await _run_script(toolset, session_b)
+
+  assert result["stdout"] == "print('v2')"
+
+
+@pytest.mark.asyncio
+async def test_the_first_run_copies_the_skill_into_the_environment():
+  """An empty sandbox gets every resource of the skill and its version."""
+  env = _SandboxPerSessionEnvironment()
+  skill = _real_skill(
+      references={"r.md": "ref v1"}, scripts={"s.py": "print('v1')"}
+  )
+  toolset = skill_toolset.SkillToolset([skill], environment=env)
+
+  result = await _run_script(toolset, _session())
+
+  assert result["stdout"] == "print('v1')"
+  assert env.sandboxes["shared"] == {
+      f"{_SKILL_DIR}/references/r.md": "ref v1",
+      f"{_SKILL_DIR}/scripts/s.py": "print('v1')",
+      _HASH_MARKER: skill_toolset._skill_content_hash(skill),
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revalidate_skills", [False, True])
+async def test_running_an_unchanged_skill_again_writes_nothing(
+    revalidate_skills,
+):
+  """A second run of an unchanged skill reads once and writes nothing."""
+  env = _SandboxPerSessionEnvironment()
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})],
+      environment=env,
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          revalidate_skills=revalidate_skills
+      ),
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  env.calls.clear()
+
+  result = await _run_script(toolset, ctx)
+
+  assert result["stdout"] == "print('v1')"
+  assert [c for c in env.calls if c[0] in ("read_file", "write_file")] == [
+      ("read_file", _HASH_MARKER)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_a_changed_skill_is_rewritten_at_its_next_run():
+  """The first run after a change writes the new version and runs it.
+
+  With `revalidate_skills`; without it the first copy is kept.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = _revalidating_toolset(
+      _real_skill(
+          references={"r.md": "ref v1"}, scripts={"s.py": "print('v1')"}
+      ),
+      environment=env,
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  v2 = _real_skill(
+      references={"r.md": "ref v2"}, scripts={"s.py": "print('v2')"}
+  )
+  toolset._skills["a"] = v2
+
+  result = await _run_script(toolset, ctx)
+
+  assert result["stdout"] == "print('v2')"
+  assert env.sandboxes["shared"] == {
+      f"{_SKILL_DIR}/references/r.md": "ref v2",
+      f"{_SKILL_DIR}/scripts/s.py": "print('v2')",
+      _HASH_MARKER: skill_toolset._skill_content_hash(v2),
+  }
+
+
+@pytest.mark.asyncio
+async def test_each_sandbox_is_brought_up_to_date_when_it_is_used():
+  """A refresh of one sandbox does not count for another sandbox.
+
+  Setup: one toolset with `revalidate_skills`; sessions in sandboxes `s1` and
+    `s2` both run v1.
+  Act: the skill changes to v2; each session runs the script again.
+  Assert: both run v2.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = _revalidating_toolset(
+      _real_skill(scripts={"s.py": "print('v1')"}), environment=env
+  )
+  in_s1, in_s2 = _session("s1"), _session("s2")
+  await _run_script(toolset, in_s1)
+  await _run_script(toolset, in_s2)
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print('v2')"})
+
+  from_s1 = await _run_script(toolset, in_s1)
+  from_s2 = await _run_script(toolset, in_s2)
+
+  assert from_s1["stdout"] == "print('v2')"
+  assert from_s2["stdout"] == "print('v2')"
+
+
+@pytest.mark.asyncio
+async def test_without_revalidation_a_written_skill_is_left_as_it_is():
+  """Without `revalidate_skills`, a changed skill keeps its first copy."""
+  env = _SandboxPerSessionEnvironment()
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})], environment=env
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print('v2')"})
+
+  result = await _run_script(toolset, ctx)
+
+  assert result["stdout"] == "print('v1')"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revalidate_skills", [False, True])
+async def test_a_script_added_by_a_newer_version_runs(revalidate_skills):
+  """A script the copy in the environment lacks is written before it runs.
+
+  Setup: v1 of skill `a`, with only `s.py`, is written by a run of `s.py`.
+  Act: the skill changes to v2, which adds `t.py`; a run asks for `t.py`.
+  Assert: `t.py` runs, with or without `revalidate_skills`.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})],
+      environment=env,
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          revalidate_skills=revalidate_skills
+      ),
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  toolset._skills["a"] = _real_skill(
+      scripts={"s.py": "print('v1')", "t.py": "print('t')"}
+  )
+
+  result = await _run_script(toolset, ctx, file_path="t.py")
+
+  assert result["stdout"] == "print('t')"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_copy_is_retried_by_the_next_run():
+  """After a failed write, the next run writes the skill again.
+
+  A resource that cannot be written leaves no version marker behind.
+  """
+  env = _SandboxPerSessionEnvironment()
+  env.failing_writes.add(f"{_SKILL_DIR}/scripts/s.py")
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})], environment=env
+  )
+  ctx = _session()
+
+  first = await _run_script(toolset, ctx)
+  files_after_first = dict(env.sandboxes["shared"])
+  second = await _run_script(toolset, ctx)
+
+  assert first["error_code"] == "EXECUTION_ERROR"
+  assert _HASH_MARKER not in files_after_first
+  assert second["stdout"] == "print('v1')"
+
+
 @pytest.mark.asyncio
 async def test_script_path_with_scripts_prefix_dot_and_dot_slash(tmp_path):
   """Script paths 'scripts/.' and 'scripts/' must raise PermissionError."""
@@ -7367,14 +7630,11 @@ async def test_script_path_with_scripts_prefix_dot_and_dot_slash(tmp_path):
       )
   mock_env.read_file.assert_not_called()
 
-  await tool._ensure_skill_materialized_in_env(
+  script_path = await tool._ensure_skill_materialized_in_env(
       skill, "./scripts/run.py", mock_env, mock.sentinel.tool_context
   )
-  expected_probe = PurePosixPath(
+  assert script_path == PurePosixPath(
       (tmp_path / "skills" / "safe-skill" / "scripts" / "run.py").as_posix()
-  )
-  mock_env.read_file.assert_called_once_with(
-      expected_probe, ctx=mock.sentinel.tool_context
   )
 
 

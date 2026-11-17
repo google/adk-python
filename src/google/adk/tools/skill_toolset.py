@@ -79,6 +79,8 @@ _MAX_GENERATED_ARTIFACTS_TOTAL_BYTES = 16 * 1024 * 1024  # 16 MiB total
 _MAX_GENERATED_ARTIFACTS_COUNT = 50  # 50 files max
 # Printed by the skill wrapper after execution; stripped from tool stdout.
 _GENERATED_FILES_MARKER = "__ADK_SKILL_GENERATED_FILES__:"
+# Holds the digest of the skill version written into the environment.
+_SKILL_HASH_MARKER_FILE = ".adk_skill_hash"
 
 # Message used for the "Content Injection" pattern.
 _BINARY_FILE_DETECTED_MSG = (
@@ -2110,8 +2112,24 @@ class RunSkillScriptTool(BaseTool):
       env: BaseEnvironment,
       tool_context: ToolContext,
   ) -> PurePosixPath:
-    # JIT Materialization: Check if the script exists in the environment.
-    # If not, write all skill resources (including scripts) to the environment.
+    """Writes the skill into the environment unless it holds this version.
+
+    The digest of the version last written is kept in a marker file in the
+    skill's folder in the environment, not on the toolset. One toolset can
+    serve several sandboxes, another process can write the same sandbox, and
+    a recreated sandbox starts empty, so the version has to be read from the
+    sandbox itself. The marker is written after every resource, so a failed
+    or partial write is retried by the next run.
+
+    Without `revalidate_skills`, a copy of another version is kept unless it
+    lacks the requested script.
+
+    Only writes. `BaseEnvironment` has no delete, so a resource the new version
+    dropped stays on disk.
+
+    Returns:
+      The path of the script in the environment.
+    """
     skills_folder = self._toolset.skills_folder
     if skills_folder is None:
       raise RuntimeError(
@@ -2125,17 +2143,37 @@ class RunSkillScriptTool(BaseTool):
         (skill_dir / "scripts" / normalized_file).as_posix()
     )
 
+    marker_path = cast(
+        Path,
+        PurePosixPath((skill_dir / _SKILL_HASH_MARKER_FILE).as_posix()),
+    )
+    content_hash = _skill_content_hash(skill)
+    marker: bytes | None
     try:
-      await env.read_file(cast(Path, script_path), ctx=tool_context)
-      script_exists = True
+      marker = await env.read_file(marker_path, ctx=tool_context)
     except FileNotFoundError:
-      script_exists = False
+      marker = None
 
-    if not script_exists:
+    if marker is None:
+      stale = True
+    elif marker.decode("utf-8", errors="replace").strip() == content_hash:
+      stale = False
+    elif self._toolset._revalidate_skills:
+      stale = True
+    else:
+      # Without revalidate_skills the written copy is kept, but a script it
+      # lacks still triggers a write, as before the marker existed.
+      try:
+        await env.read_file(cast(Path, script_path), ctx=tool_context)
+        stale = False
+      except FileNotFoundError:
+        stale = True
+    if stale:
       logger.info(
           "Materializing skill resources for %s in environment", skill.name
       )
       await _write_skill_resources_to_env(skill, skill_dir, env, tool_context)
+      await env.write_file(marker_path, content_hash, ctx=tool_context)
     return script_path
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
