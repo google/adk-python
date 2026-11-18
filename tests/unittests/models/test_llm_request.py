@@ -932,3 +932,15 @@ def test_insert_transient_user_content_goes_before_trailing_user_turns():
       'follow-up part 1',
       'follow-up part 2',
   ]
+
+
+def test_transient_user_content_is_told_apart_from_equal_user_text():
+  """Only the inserted content counts as transient, not user text equal to it."""
+  inserted = _user_text('transient context')
+  user_copy = _user_text('transient context')
+  request = LlmRequest(contents=[user_copy])
+
+  request._insert_transient_user_content([inserted])
+
+  assert request._is_transient_user_content(inserted)
+  assert not request._is_transient_user_content(user_copy)

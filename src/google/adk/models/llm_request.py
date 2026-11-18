@@ -146,9 +146,27 @@ class LlmRequest(BaseModel):
   stable-prefix guarantee.
   """
 
+  _transient_user_contents: list[types.Content] = PrivateAttr(
+      default_factory=list
+  )
+  """Contents placed by ``_insert_transient_user_content``.
+
+  They are user-role contents ADK adds for this request only (an instruction,
+  recalled memory), not something the user said. Kept so that callers looking
+  for the user's input, such as a guardrail plugin, can skip them.
+  """
+
   def _append_dynamic_instructions(self, instructions: list[str]) -> None:
     """Appends dynamic instructions to the request."""
     self._dynamic_instructions.extend(instructions)
+
+  def _is_transient_user_content(self, content: types.Content) -> bool:
+    """Returns whether ADK inserted ``content`` rather than the user.
+
+    Matched by identity, so user text that copies an inserted content still
+    counts as user input.
+    """
+    return any(content is added for added in self._transient_user_contents)
 
   def append_instructions(
       self, instructions: list[str] | types.Content
@@ -348,6 +366,7 @@ class LlmRequest(BaseModel):
     """
     if not contents:
       return
+    self._transient_user_contents.extend(contents)
 
     if (
         self._has_static_instruction
