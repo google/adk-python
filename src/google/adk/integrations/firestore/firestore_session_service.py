@@ -81,8 +81,29 @@ _NESTED_LIST_KEY = "_adk_list"
 _ESCAPED_DICT_KEY = "_adk_dict"
 
 
+# Scalars the Firestore client stores as they are. The timestamps it returns,
+# DatetimeWithNanoseconds, are datetime subclasses.
+_FIRESTORE_NATIVE_TYPES = (bool, int, float, str, bytes, datetime)
+
+
+def _is_firestore_native(value: Any) -> bool:
+  """Reports whether the Firestore client can store `value` as it is."""
+  return (
+      value is None
+      or isinstance(value, (*_FIRESTORE_NATIVE_TYPES, firestore.GeoPoint))
+      # The client recognizes a document reference by this attribute too.
+      or getattr(value, "_document_path", None) is not None
+  )
+
+
 def _encode_firestore_value(value: Any, *, in_list: bool = False) -> Any:
-  """Wraps arrays nested in arrays, which Firestore rejects, in one-key maps."""
+  """Converts a state value into one the Firestore client can store.
+
+  Arrays nested in arrays, which Firestore rejects, are wrapped in one-key
+  maps. A value Firestore cannot store, such as a date, UUID, Decimal or
+  Pydantic model, would abort the whole transaction, so it is coerced to the
+  JSON-safe form that the session bucket and the other session services store.
+  """
   if isinstance(value, dict):
     encoded = {k: _encode_firestore_value(v) for k, v in value.items()}
     if (
@@ -95,7 +116,12 @@ def _encode_firestore_value(value: Any, *, in_list: bool = False) -> Any:
   if isinstance(value, (list, tuple, set, frozenset)):
     items = [_encode_firestore_value(x, in_list=True) for x in value]
     return {_NESTED_LIST_KEY: items} if in_list else items
-  return value
+  if _is_firestore_native(value):
+    return value
+  # The JSON-safe form is built only from dicts, lists and native scalars, so
+  # encoding it again terminates, and wraps any nested arrays it holds.
+  json_safe = _session_util.make_json_safe_state({"value": value})["value"]
+  return _encode_firestore_value(json_safe, in_list=in_list)
 
 
 def _encode_firestore_map(data: dict[str, Any]) -> dict[str, Any]:
