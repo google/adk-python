@@ -22,7 +22,9 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models.llm_response import LlmResponse
+from google.adk.models.registry import LLMRegistry
 from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectedError
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
@@ -30,6 +32,7 @@ from google.adk.tools.environment_simulation.environment_simulation_config impor
 from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_engine import _MAX_CONCURRENT_ARG_MATCHES
 from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_args_matcher import _semantic_arg_matcher
 from google.adk.tools.tool_args_matcher import ArgMatchResult
 from google.adk.tools.tool_args_matcher import BaseArgMatcher
@@ -38,6 +41,8 @@ from google.adk.tools.tool_args_matcher import ToolArgsMatcher
 from google.genai import types as genai_types
 from pydantic import PrivateAttr
 import pytest
+
+from ... import testing_utils
 
 
 @patch(
@@ -1133,3 +1138,69 @@ def test_engine_reused_across_event_loops(mock_analyzer):
   assert result_1 == {"from": values[-1]}
   assert result_2 == {"from": values[-1]}
   assert matcher._max_in_flight == _MAX_CONCURRENT_ARG_MATCHES
+
+
+@pytest.mark.parametrize(
+    ("simulation_model", "expected_thinking_config"),
+    [
+        (
+            "gemini-4-hydrogen",
+            genai_types.ThinkingConfig(
+                include_thoughts=False,
+                thinking_level=genai_types.ThinkingLevel.MEDIUM,
+            ),
+        ),
+        (
+            "gemini-2.5-flash",
+            genai_types.ThinkingConfig(
+                include_thoughts=False, thinking_budget=10240
+            ),
+        ),
+        (
+            "claude-sonnet-4-5",
+            genai_types.ThinkingConfig(
+                include_thoughts=False, thinking_budget=10240
+            ),
+        ),
+    ],
+)
+async def test_default_thinking_config_follows_simulation_model(
+    monkeypatch, simulation_model, expected_thinking_config
+):
+  """Analysis and mock requests get level MEDIUM only on Gemini 4+."""
+  mock_model = testing_utils.MockModel.create(
+      responses=['{"stateful_parameters": []}'] * 2
+  )
+  monkeypatch.setattr(
+      LLMRegistry, "resolve", staticmethod(lambda _: lambda model: mock_model)
+  )
+
+  def search(query: str) -> dict[str, str]:
+    """Searches for flights."""
+    return {"query": query}
+
+  tool = FunctionTool(search)
+  tool_context = MagicMock()
+  tool_context._invocation_context.agent = LlmAgent(
+      name="agent", model="gemini-2.5-flash", tools=[tool]
+  )
+  engine = EnvironmentSimulationEngine(
+      EnvironmentSimulationConfig(
+          tool_simulation_configs=[
+              ToolSimulationConfig(
+                  tool_name="search",
+                  mock_strategy_type=MockStrategy.MOCK_STRATEGY_TOOL_SPEC,
+              )
+          ],
+          simulation_model=simulation_model,
+      )
+  )
+
+  await engine.simulate(tool, {"query": "flights"}, tool_context)
+
+  assert [
+      request.config.thinking_config for request in mock_model.requests
+  ] == [
+      expected_thinking_config,
+      expected_thinking_config,
+  ]
