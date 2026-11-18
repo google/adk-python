@@ -533,7 +533,6 @@ def _create_task_failure_events(
       ctx=ctx,
       agent_name=agent_name,
       error_message=error_message,
-      output={"error": error_message},
       is_error=True,
   )
   return error_event, finish_event
@@ -2866,7 +2865,6 @@ class RemoteA2aAgent(BaseAgent):
               ctx=ctx,
               agent_name=self.name,
               error_message=task_error_message,
-              output={"error": task_error_message},
               is_error=True,
           )
         ctx.set_agent_state(self.name, end_of_agent=True)

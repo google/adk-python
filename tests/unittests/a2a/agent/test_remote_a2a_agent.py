@@ -6881,10 +6881,7 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
           assert events[-2].content.parts[0].function_response.response == {
               "result": FINISH_TASK_ERROR_RESULT
           }
-          assert events[-2].output == {
-              "error": ("Remote A2A task failed: Simulated remote task failure"
-                  if has_content else "Remote A2A task failed: Unknown error")
-          }
+          assert events[-2].output is None
           assert events[-1].actions.end_of_agent is True
 
           mock_context.set_agent_state.assert_called_once_with(
@@ -6978,9 +6975,7 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
           assert events[-2].content.parts[0].function_response.response == {
               "result": FINISH_TASK_ERROR_RESULT
           }
-          assert events[-2].output == {
-              "error": "Remote A2A task failed: Task canceled"
-          }
+          assert events[-2].output is None
           assert (
               events[-2].error_message == "Remote A2A task failed: Task canceled"
           )
