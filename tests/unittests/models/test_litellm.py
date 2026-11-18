@@ -14597,4 +14597,77 @@ def test_gemini_detection_uses_resolved_provider(
       Mock(return_value=(resolved_model, provider, None, None)),
   )
 
-  assert _is_litellm_gemini_model("custom-alias") is expected
+  assert _is_litellm_gemini_model("custom/alias") is expected
+
+
+@pytest.mark.parametrize(
+    "model", ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o-mini"]
+)
+@pytest.mark.parametrize("litellm_loaded", [True, False])
+def test_bare_model_detection_matches_main(model, litellm_loaded, monkeypatch):
+  """Bare model IDs retain main's False result regardless of import state."""
+  monkeypatch.setattr(
+      "google.adk.models.lite_llm.litellm", litellm if litellm_loaded else None
+  )
+
+  assert _is_litellm_gemini_model(model) is False
+
+
+@pytest.mark.parametrize("litellm_loaded", [True, False])
+def test_bare_gemini_schema_payload_matches_main(litellm_loaded, monkeypatch):
+  """Bare Gemini keeps main's JSON schema format and nullable fields."""
+  monkeypatch.setattr(
+      "google.adk.models.lite_llm.litellm", litellm if litellm_loaded else None
+  )
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "city": types.Schema(type=types.Type.STRING, nullable=True),
+          "choice": types.Schema(
+              type=types.Type.STRING, nullable=True, enum=["x", "y"]
+          ),
+      },
+  )
+  declaration = types.FunctionDeclaration(name="lookup", parameters=schema)
+
+  tool = _function_declaration_to_tool_param(
+      declaration, model="gemini-2.5-flash"
+  )
+  response = _to_litellm_response_format(schema, model="gemini-2.5-flash")
+
+  expected = {
+      "type": "object",
+      "properties": {
+          "city": {"type": "string", "nullable": True},
+          "choice": {"type": "string", "nullable": True, "enum": ["x", "y"]},
+      },
+  }
+  assert tool["function"]["parameters"] == expected
+  assert response == {
+      "type": "json_schema",
+      "json_schema": {
+          "name": "response",
+          "strict": True,
+          "schema": {
+              **expected,
+              "required": ["choice", "city"],
+              "additionalProperties": False,
+          },
+      },
+  }
+
+
+async def test_bare_gemini_tracking_headers_match_main(mock_client):
+  """Bare Gemini requests keep caller headers without adding tracking headers."""
+  client = LiteLlm(
+      model="gemini-2.5-flash",
+      llm_client=mock_client,
+      headers={"x-test": "caller"},
+  )
+
+  async for _ in client.generate_content_async(LlmRequest()):
+    pass
+
+  assert mock_client.acompletion_mock.call_args.kwargs["headers"] == {
+      "x-test": "caller"
+  }

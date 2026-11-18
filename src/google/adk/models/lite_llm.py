@@ -3391,7 +3391,8 @@ def _function_declaration_to_tool_param(
     }
 
   lowercase_schema_types(
-      parameters, convert_nullable=not _is_litellm_gemini_model(model)
+      parameters,
+      convert_nullable=not _preserve_litellm_nullable(model),
   )
 
   tool_params: dict[str, Any] = {
@@ -3914,7 +3915,11 @@ def _to_litellm_response_format(
   # OpenAI-compatible format (default) per LiteLLM docs:
   # https://docs.litellm.ai/docs/completion/json_mode
   if isinstance(schema_dict, dict):
-    lowercase_schema_types(schema_dict)
+    # Bare Gemini IDs retain nullable without changing main's response format.
+    lowercase_schema_types(
+        schema_dict,
+        convert_nullable=not _preserve_litellm_nullable(model),
+    )
     enforce_strict_openai_schema(schema_dict)
 
   return {
@@ -4422,14 +4427,15 @@ def _is_litellm_gemini_model(
   Args:
     model_string: A LiteLLM model string (e.g., "gemini/gemini-2.5-pro" or
       "vertex_ai/gemini-2.5-flash")
-    resolve_provider: Use LiteLLM resolution when already imported. Disable for
-      constructor warnings to avoid provider lookups during initialization.
+    resolve_provider: Use LiteLLM resolution for explicit provider prefixes when
+      already imported. Disable for constructor warnings to avoid provider
+      lookups during initialization. Bare IDs retain the prefix-only result.
 
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
   model = _strip_proxy_prefix(model_string)
-  if resolve_provider and litellm is not None:
+  if "/" in model and resolve_provider and litellm is not None:
     try:
       # LiteLLM resolves provider aliases locally, without making an API request.
       resolved = litellm.get_llm_provider(model)
@@ -4449,6 +4455,14 @@ def _is_litellm_gemini_model(
   return provider in {"gemini", "vertex_ai", "vertex_ai_beta"} and (
       model_name.startswith("gemini-")
   )
+
+
+def _preserve_litellm_nullable(model_string: str) -> bool:
+  """Keep Gemini nullability without changing routing for bare model IDs."""
+  model = _strip_proxy_prefix(model_string)
+  if "/" not in model and model.startswith("gemini-"):
+    return True
+  return _is_litellm_gemini_model(model)
 
 
 def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
