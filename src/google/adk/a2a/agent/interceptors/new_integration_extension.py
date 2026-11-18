@@ -40,15 +40,23 @@ async def _before_request(
   if params.client_call_context is None:
     params.client_call_context = _compat.ClientCallContext()
 
-  http_kwargs = params.client_call_context.state.get('http_kwargs', {})
-  headers = http_kwargs.get('headers', {})
+  context = params.client_call_context
+  if _compat.IS_A2A_V1:
+    # a2a-sdk 1.x transports only read headers from service_parameters.
+    headers = dict(context.service_parameters or {})
+  else:
+    http_kwargs = context.state.get('http_kwargs', {})
+    headers = http_kwargs.get('headers', {})
   a2a_extensions = headers.get(HTTP_EXTENSION_HEADER, '').split(',')
   a2a_extensions = [ext for ext in a2a_extensions if ext]
   if _NEW_A2A_ADK_INTEGRATION_EXTENSION not in a2a_extensions:
     a2a_extensions.append(_NEW_A2A_ADK_INTEGRATION_EXTENSION)
   headers[HTTP_EXTENSION_HEADER] = ','.join(a2a_extensions)
-  http_kwargs['headers'] = headers
-  params.client_call_context.state['http_kwargs'] = http_kwargs
+  if _compat.IS_A2A_V1:
+    context.service_parameters = headers
+  else:
+    http_kwargs['headers'] = headers
+    context.state['http_kwargs'] = http_kwargs
   return a2a_request, params
 
 

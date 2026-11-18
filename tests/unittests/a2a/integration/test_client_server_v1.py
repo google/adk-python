@@ -19,6 +19,7 @@ from __future__ import annotations
 from a2a.types import Artifact
 from a2a.types import TaskArtifactUpdateEvent
 from google.adk.a2a import _compat
+from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
@@ -219,6 +220,7 @@ async def _run_client(agent, *, message_text: str = "Hi"):
   )
 
   texts = []
+  responses = []
   artifact_deltas = []
   func_calls = []
   func_responses = []
@@ -231,11 +233,17 @@ async def _run_client(agent, *, message_text: str = "Hi"):
           texts.append(part.text)
         if part.function_response:
           func_responses.append(part.function_response)
+    if (
+        event.custom_metadata
+        and A2A_METADATA_PREFIX + "response" in event.custom_metadata
+    ):
+      responses.append(event.custom_metadata[A2A_METADATA_PREFIX + "response"])
     func_calls.extend(event.get_function_calls())
     if event.actions and event.actions.artifact_delta:
       artifact_deltas.append(event.actions.artifact_delta)
   return {
       "texts": texts,
+      "responses": responses,
       "artifact_deltas": artifact_deltas,
       "func_calls": func_calls,
       "func_responses": func_responses,
@@ -258,6 +266,29 @@ async def test_non_streaming_round_trip():
   assert len(received_requests) == 1
   assert received_requests[0]["session_id"] is not None
   assert "Hello world" in result["texts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_non_legacy_client_selects_new_executor(streaming):
+  """The 1.x transport negotiates the new executor through the real server."""
+  received_requests = []
+  app = create_server_app_v1(_non_streaming_run_async(received_requests))
+
+  async with app.router.lifespan_context(app):
+    agent = create_client(app, streaming=streaming, use_legacy=False)
+    try:
+      result = await _run_client(agent)
+    finally:
+      await agent.cleanup()
+
+  assert len(received_requests) == 1
+  assert "Hello world" in result["texts"]
+  assert any(
+      response.get("metadata", {}).get(_NEW_A2A_ADK_INTEGRATION_EXTENSION)
+      == {"adk_agent_executor_v2": True}
+      for response in result["responses"]
+  )
 
 
 @pytest.mark.asyncio
