@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ class _InvocationReplayState(BaseModel):
   test_case_path: str
   user_message_index: int
   recordings: Recordings
+  replay_tool_responses: dict[str, list[str]] = Field(default_factory=dict)
 
   # Per-agent replay indices for parallel execution
   # key: agent_name -> current tool replay index for that agent
@@ -111,6 +113,24 @@ class ReplayPlugin(BasePlugin):
     )
 
     from google.adk.tools.agent_tool import AgentTool
+
+    use_recorded_response = tool.name in state.replay_tool_responses.get(
+        agent_name, ()
+    )
+    if use_recorded_response:
+      if isinstance(tool, AgentTool):
+        raise ReplayConfigError(
+            "Recorded response replay is not supported for AgentTool"
+            f" '{tool.name}'."
+        )
+      if (
+          recording.tool_response is None
+          or recording.tool_response.response is None
+      ):
+        raise ReplayVerificationError(
+            f"Tool recording for agent '{agent_name}' has no tool_response."
+        )
+      return deepcopy(recording.tool_response.response)
 
     if not isinstance(tool, AgentTool):
       # TODO: support replay requests and responses from AgentTool.
@@ -207,7 +227,26 @@ class ReplayPlugin(BasePlugin):
         test_case_path=case_dir,
         user_message_index=msg_index,
         recordings=recordings,
+        replay_tool_responses=config.get("replay_tool_responses", {}),
     )
+    recorded_tools = {
+        (recording.agent_name, recording.tool_recording.tool_call.name)
+        for recording in recordings.recordings
+        if recording.tool_recording and recording.tool_recording.tool_call
+    }
+    unknown_tools = {
+        (agent_name, tool_name)
+        for agent_name, tool_names in state.replay_tool_responses.items()
+        for tool_name in tool_names
+    } - recorded_tools
+    if unknown_tools:
+      raise ReplayConfigError(
+          "Recorded response replay selected tools absent from recordings: "
+          + ", ".join(
+              f"{agent_name}.{tool_name}"
+              for agent_name, tool_name in sorted(unknown_tools)
+          )
+      )
     self._invocation_states[invocation_id] = state
     logger.debug(
         "Loaded replay state for invocation %s: case_dir=%s, msg_index=%s, "
