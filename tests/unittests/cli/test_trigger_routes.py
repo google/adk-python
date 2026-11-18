@@ -39,10 +39,13 @@ from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import trigger_routes as trigger_routes_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.trigger_routes import _is_transient_error
+from google.adk.cli.trigger_routes import _make_trigger_user_id
 from google.adk.cli.trigger_routes import TransientError
 from google.adk.cli.trigger_routes import TRIGGER_DELIVERY_STATE_KEY
+from google.adk.cli.trigger_routes import TRIGGER_USER_ID_PREFIX
 from google.adk.cli.trigger_routes import TriggerRouter
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.utils._error_reporting import ENV_DEBUG_ERRORS
@@ -912,7 +915,10 @@ class TestTriggerPubSub:
 
     assert resp.status_code == 200
     assert len(captured_user_ids) == 1
-    assert captured_user_ids[0] == "projects--p--subscriptions--orders-sub"
+    assert (
+        captured_user_ids[0]
+        == "trigger--pubsub--projects--p--subscriptions--orders-sub"
+    )
     assert "/" not in captured_user_ids[0]
 
   def test_default_user_id_when_no_subscription(self, client, monkeypatch):
@@ -936,7 +942,7 @@ class TestTriggerPubSub:
 
     assert resp.status_code == 200
     assert len(captured_user_ids) == 1
-    assert captured_user_ids[0] == "pubsub-caller"
+    assert captured_user_ids[0] == "trigger--pubsub"
 
   def test_subscription_user_id_is_path_safe(
       self, client, mock_session_service
@@ -952,7 +958,7 @@ class TestTriggerPubSub:
 
     assert resp.status_code == 200
     assert (
-        "projects--p--subscriptions--orders-sub"
+        "trigger--pubsub--projects--p--subscriptions--orders-sub"
         in mock_session_service.sessions["test_app"]
     )
 
@@ -1088,7 +1094,8 @@ class TestTriggerEventarc:
     assert resp.status_code == 200
     assert len(captured_user_ids) == 1
     assert (
-        captured_user_ids[0] == "pubsub.googleapis.com--projects--p--topics--t"
+        captured_user_ids[0]
+        == "trigger--eventarc--pubsub.googleapis.com--projects--p--topics--t"
     )
     assert "/" not in captured_user_ids[0]
 
@@ -1120,9 +1127,9 @@ class TestTriggerEventarc:
 
     assert resp.status_code == 200
     assert len(captured_user_ids) == 1
-    assert (
-        captured_user_ids[0]
-        == "storage.googleapis.com--projects--_--buckets--my-bucket"
+    assert captured_user_ids[0] == (
+        "trigger--eventarc--storage.googleapis.com--projects--_--buckets--"
+        "my-bucket"
     )
     assert "/" not in captured_user_ids[0]
 
@@ -1146,7 +1153,7 @@ class TestTriggerEventarc:
 
     assert resp.status_code == 200
     assert len(captured_user_ids) == 1
-    assert captured_user_ids[0] == "eventarc-caller"
+    assert captured_user_ids[0] == "trigger--eventarc"
 
   def test_eventarc_source_user_id_is_path_safe(
       self, client, mock_session_service
@@ -1163,7 +1170,7 @@ class TestTriggerEventarc:
 
     assert resp.status_code == 200
     assert (
-        "pubsub.googleapis.com--projects--p--topics--t"
+        "trigger--eventarc--pubsub.googleapis.com--projects--p--topics--t"
         in mock_session_service.sessions["test_app"]
     )
 
@@ -1426,6 +1433,135 @@ class TestTriggerEventarc:
     assert len(captured_run_configs) == 1
     assert captured_run_configs[0] is not None
     assert captured_run_configs[0].max_llm_calls == 42
+
+
+# ===================================================================
+# Trigger-owned user namespace
+# ===================================================================
+
+
+class TestTriggerUserIdNamespace:
+  """Unit tests for building a user id from trigger metadata."""
+
+  def test_namespaces_a_subscription(self):
+    assert (
+        _make_trigger_user_id(
+            "projects/p/subscriptions/orders", trigger="pubsub"
+        )
+        == "trigger--pubsub--projects--p--subscriptions--orders"
+    )
+
+  def test_namespaces_a_bare_value_that_looks_like_a_user_id(self):
+    assert _make_trigger_user_id("alice", trigger="eventarc") == (
+        "trigger--eventarc--alice"
+    )
+
+  @pytest.mark.parametrize("raw_value", [None, "", "  ", "/"])
+  def test_falls_back_to_the_trigger_namespace(self, raw_value):
+    assert _make_trigger_user_id(raw_value, trigger="pubsub") == (
+        "trigger--pubsub"
+    )
+
+  def test_strips_leading_and_trailing_slashes(self):
+    assert (
+        _make_trigger_user_id("//projects/p/topics/t//", trigger="eventarc")
+        == "trigger--eventarc--projects--p--topics--t"
+    )
+
+
+class TestTriggerUserIsolation:
+  """A trigger run must not adopt a user id supplied by the request body."""
+
+  @staticmethod
+  def _create_user_with_state(client, user_id, state):
+    resp = client.post(
+        f"/apps/test_app/users/{user_id}/sessions", json={"state": state}
+    )
+    assert resp.status_code == 200
+
+  @staticmethod
+  def _run_writes_user_state(monkeypatch, captured_user_ids):
+    async def dummy_run_async_write(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_user_ids.append(user_id)
+      session = await self.session_service.get_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_id
+      )
+      await self.session_service.append_event(
+          session=session,
+          event=Event(
+              author="trigger_test_agent",
+              invocation_id="inv-trigger-write",
+              actions=EventActions(
+                  state_delta={"user:note": "written by a trigger run"}
+              ),
+          ),
+      )
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_write)
+
+  @pytest.mark.parametrize(
+      "endpoint,payload,headers",
+      [
+          pytest.param(
+              "/apps/test_app/trigger/pubsub",
+              {
+                  "message": {
+                      "data": base64.b64encode(b"hi").decode("utf-8"),
+                      "messageId": "msg-impersonation",
+                  },
+                  "subscription": "alice",
+              },
+              None,
+              id="pubsub",
+          ),
+          pytest.param(
+              "/apps/test_app/trigger/eventarc",
+              {"data": {"key": "value"}, "source": "alice"},
+              None,
+              id="eventarc-body-source",
+          ),
+          pytest.param(
+              "/apps/test_app/trigger/eventarc",
+              {"data": {"key": "value"}},
+              {"ce-source": "alice"},
+              id="eventarc-header-source",
+          ),
+      ],
+  )
+  def test_request_cannot_select_an_existing_user(
+      self,
+      client,
+      mock_session_service,
+      monkeypatch,
+      endpoint,
+      payload,
+      headers,
+  ):
+    """A trigger cannot read or write another user's per-user data."""
+    captured_user_ids = []
+    self._run_writes_user_state(monkeypatch, captured_user_ids)
+    self._create_user_with_state(
+        client, "alice", {"user:secret": "alice-secret-4711"}
+    )
+
+    resp = client.post(endpoint, json=payload, headers=headers)
+
+    assert resp.status_code == 200
+    assert len(captured_user_ids) == 1
+    run_user_id = captured_user_ids[0]
+    assert run_user_id != "alice"
+    assert run_user_id.startswith(f"{TRIGGER_USER_ID_PREFIX}--")
+    assert mock_session_service.user_state["test_app"]["alice"] == {
+        "secret": "alice-secret-4711"
+    }
+    assert (
+        mock_session_service.user_state["test_app"][run_user_id]["note"]
+        == "written by a trigger run"
+    )
 
 
 # ===================================================================
