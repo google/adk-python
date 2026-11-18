@@ -38,6 +38,12 @@ logger = logging.getLogger("google_adk." + __name__)
 # opaque tuned-model and endpoint IDs, the server remains authoritative.
 _GEMINI_2_5_MIN_CACHE_TOKENS = 2048
 _GEMINI_3_MIN_CACHE_TOKENS = 4096
+_EXPLICIT_CACHING_UNSUPPORTED_SUBSTRINGS = (
+    "does not support explicit context caching",
+    "explicit caching is not supported for ",
+    "is not supported for context caching",
+)
+_models_without_explicit_caching: set[tuple[str, str]] = set()
 
 if TYPE_CHECKING:
   from google.genai import Client
@@ -51,6 +57,14 @@ def _minimum_cache_tokens(model: str | None) -> int | None:
   if model_name.startswith("gemini-3"):
     return _GEMINI_3_MIN_CACHE_TOKENS
   return None
+
+
+def _is_explicit_caching_unsupported(error: Exception) -> bool:
+  """Return whether an API error reports no explicit caching for the model."""
+  message = str(error).lower()
+  return any(
+      phrase in message for phrase in _EXPLICIT_CACHING_UNSUPPORTED_SUBSTRINGS
+  )
 
 
 def _require_cache_config(llm_request: LlmRequest) -> ContextCacheConfig:
@@ -432,6 +446,13 @@ class GeminiContextCacheManager:
         Cache metadata if successful, None otherwise
     """
     cache_config = _require_cache_config(llm_request)
+    model = _require_model(llm_request)
+    refusal_key = (
+        json.dumps(self._cache_scope(), sort_keys=True, default=str),
+        model,
+    )
+    if refusal_key in _models_without_explicit_caching:
+      return None
 
     # Check if we have token count from previous response for cache size validation
     if llm_request.cacheable_contents_token_count is None:
@@ -460,7 +481,7 @@ class GeminiContextCacheManager:
     cacheable_prefix_tokens = self._estimate_cacheable_prefix_tokens(
         llm_request, cache_contents_count
     )
-    minimum_cache_tokens = _minimum_cache_tokens(llm_request.model)
+    minimum_cache_tokens = _minimum_cache_tokens(model)
     if (
         minimum_cache_tokens is not None
         and cacheable_prefix_tokens < minimum_cache_tokens
@@ -476,6 +497,16 @@ class GeminiContextCacheManager:
       # Create cache using Gemini API directly
       return await self._create_gemini_cache(llm_request, cache_contents_count)
     except Exception as e:
+      if _is_explicit_caching_unsupported(e):
+        if refusal_key not in _models_without_explicit_caching:
+          _models_without_explicit_caching.add(refusal_key)
+          logger.warning(
+              "Model %s does not support explicit context caching; "
+              "ContextCacheConfig has no effect for this model and requests "
+              "will be sent without an explicit cache.",
+              model,
+          )
+        return None
       logger.warning("Failed to create cache: %s", e)
       return None
 
