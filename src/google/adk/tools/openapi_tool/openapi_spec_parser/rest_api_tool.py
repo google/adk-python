@@ -174,6 +174,49 @@ def _encode_path_param(*, name: str, value: str) -> str:
   return quote(value, safe="")
 
 
+def _serialize_path_param(param: ApiParameter, value: object) -> str:
+  """Serializes label/matrix paths, preserving the existing simple style.
+
+  Encode data before adding style punctuation so values cannot introduce URL
+  structure. OAS 3.0.3's Style Examples use dots between label items with
+  either explode setting; explode only changes label objects' key/value pairs.
+  """
+  name = param.original_name
+  style = param.style or "simple"
+  if style not in ("label", "matrix"):
+    return _encode_path_param(name=name, value=_to_param_string(value))
+
+  def encode(item: object) -> str:
+    return _encode_path_param(name=name, value=_to_param_string(item))
+
+  explode = bool(param.explode)
+  separator = "." if style == "label" else ","
+  encoded_name = quote(name, safe="")
+
+  def matrix_pair(key: str, item: str) -> str:
+    return f";{key}={item}" if item else f";{key}"
+
+  if isinstance(value, dict):
+    pairs = [(encode(k), encode(v)) for k, v in value.items() if v is not None]
+    if explode:
+      if style == "matrix":
+        return "".join(matrix_pair(k, v) for k, v in pairs)
+      serialized = ".".join(f"{k}={v}" for k, v in pairs)
+    else:
+      serialized = separator.join(part for pair in pairs for part in pair)
+  elif isinstance(value, (list, tuple)):
+    items = [encode(item) for item in value if item is not None]
+    if style == "matrix" and explode:
+      return "".join(matrix_pair(encoded_name, item) for item in items)
+    serialized = separator.join(items)
+  else:
+    serialized = encode(value)
+
+  if style == "label":
+    return "." + serialized
+  return matrix_pair(encoded_name, serialized)
+
+
 class RestApiTool(BaseTool):
   """A generic tool that interacts with a REST API.
 
@@ -497,18 +540,7 @@ class RestApiTool(BaseTool):
       param_location = param_obj.param_location
 
       if param_location == "path":
-        # Percent-encode path parameter values (including '/') before they
-        # are substituted into the URL template below. Path parameter
-        # values ultimately originate from the model's tool-call
-        # arguments. quote() leaves '.' literal (RFC 3986 unreserved), so
-        # '.' / '..' segments are rejected first: otherwise backends that
-        # decode '%2F' and merge dot-segments can redirect the request --
-        # with this tool's configured auth -- onto an undeclared path.
-        # Reserved characters ('/', '?', '#') are still escaped so a
-        # value cannot introduce a query string or fragment.
-        path_params[original_k] = _encode_path_param(
-            name=original_k, value=_to_param_string(v)
-        )
+        path_params[original_k] = _serialize_path_param(param_obj, v)
       elif param_location == "query":
         if v is not None:
           serialized = _serialize_query_param(param_obj, v)
