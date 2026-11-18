@@ -33,6 +33,7 @@ from google.adk.a2a import _compat
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -70,6 +71,8 @@ from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
 from google.genai import types
@@ -1811,12 +1814,78 @@ def test_get_adk_app_info_llm_agent_with_function_tool(
 
 
 def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
-  """Test retrieving app info when root agent is not an LlmAgent raises 400."""
+  """Test retrieving app info when root agent is a non-LLM BaseAgent."""
   agent = DummyAgent("dummy_agent")
   with patch.object(mock_agent_loader, "load_agent", return_value=agent):
     response = test_app.get("/apps/test_app/app-info")
-    assert response.status_code == 400
-    assert "Root agent is not an LlmAgent" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "test_app"
+    assert data["rootAgentName"] == "dummy_agent"
+    assert data["language"] == "python"
+    assert data["agents"] == {}
+
+
+def test_get_adk_app_info_workflow_root(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is a graph Workflow."""
+
+  def tell_weather(city: str) -> str:
+    """Get the weather for a city."""
+    return f"Sunny in {city}"
+
+  weather_agent = LlmAgent(
+      name="weather_agent",
+      description="Weather agent.",
+      instruction="Tell weather.",
+      model="test_model",
+      tools=[tell_weather],
+  )
+  translate_agent = LlmAgent(
+      name="translate_agent",
+      description="Translate agent.",
+      instruction="Translate to German.",
+      model="test_model",
+  )
+  workflow = Workflow(
+      name="root_agent",
+      description="Weather translation workflow.",
+      edges=[(START, weather_agent, translate_agent)],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=workflow):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "test_app"
+    assert data["rootAgentName"] == "root_agent"
+    assert data["description"] == "Weather translation workflow."
+    assert data["language"] == "python"
+    assert "root_agent" not in data["agents"]
+    assert set(data["agents"]) == {"weather_agent", "translate_agent"}
+    weather_tools = data["agents"]["weather_agent"]["tools"]
+    assert weather_tools[0]["functionDeclarations"][0]["name"] == "tell_weather"
+
+
+def test_get_adk_app_info_sequential_agent_root(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is a SequentialAgent."""
+  writer = LlmAgent(
+      name="writer", description="Writes drafts.", model="test_model"
+  )
+  critic = LlmAgent(
+      name="critic", description="Reviews drafts.", model="test_model"
+  )
+  pipeline = SequentialAgent(
+      name="pipeline",
+      description="Write and review pipeline.",
+      sub_agents=[writer, critic],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=pipeline):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "pipeline"
+    assert data["description"] == "Write and review pipeline."
+    assert "pipeline" not in data["agents"]
+    assert set(data["agents"]) == {"writer", "critic"}
 
 
 def test_get_adk_app_info_unknown_app_returns_404(test_app, mock_agent_loader):
@@ -6446,8 +6515,8 @@ def test_special_agent_allows_own_origin_with_wildcard(
       headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
   )
 
-  assert response.status_code == 400
-  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+  assert response.status_code == 200
+  assert response.json()["rootAgentName"] == "dummy_agent"
 
 
 def test_special_agent_allows_proxied_origin_without_allow_origins(
@@ -6479,8 +6548,8 @@ def test_special_agent_allows_proxied_origin_without_allow_origins(
       },
   )
 
-  assert response.status_code == 400
-  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+  assert response.status_code == 200
+  assert response.json()["rootAgentName"] == "dummy_agent"
 
 
 def test_builder_save_rejects_remote_client(
@@ -8722,7 +8791,7 @@ def test_app_info_serves_special_agent_only_on_loopback_dev_server(
   assert "internal special agents" in blocked.json()["detail"]
 
   # Same request on a loopback-bound dev server gets past the guard and is
-  # answered on the merits of the loaded agent (which here is not an LlmAgent).
+  # answered on the merits of the loaded DummyAgent (200 with empty agents).
   dev_client = _create_test_client(
       mock_session_service,
       mock_artifact_service,
@@ -8736,8 +8805,8 @@ def test_app_info_serves_special_agent_only_on_loopback_dev_server(
       "/apps/__internal_assistant/app-info",
       headers={"host": "127.0.0.1:8000"},
   )
-  assert allowed.status_code == 400
-  assert allowed.json()["detail"] == "Root agent is not an LlmAgent"
+  assert allowed.status_code == 200
+  assert allowed.json()["rootAgentName"] == "dummy_agent"
 
 
 @pytest.mark.parametrize("bind_host", ["0.0.0.0", None])

@@ -73,7 +73,6 @@ import yaml
 
 from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
-from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import RunConfig
 from ..apps.app import App
 from ..artifacts.base_artifact_service import ArtifactVersion
@@ -1868,18 +1867,13 @@ class ApiServer:
         _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
-      if isinstance(root_agent, LlmAgent):
-        return AppInfo(
-            name=app_name,
-            root_agent_name=root_agent.name,
-            description=root_agent.description,
-            language="python",
-            agents=await get_agents_dict(root_agent),
-        )
-      else:
-        raise HTTPException(
-            status_code=400, detail="Root agent is not an LlmAgent"
-        )
+      return AppInfo(
+          name=app_name,
+          root_agent_name=root_agent.name,
+          description=root_agent.description,
+          language="python",
+          agents=await get_agents_dict(root_agent),
+      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
