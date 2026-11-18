@@ -233,7 +233,10 @@ async def _run_client(agent, *, message_text: str = "Hi"):
           texts.append(part.text)
         if part.function_response:
           func_responses.append(part.function_response)
-    if event.custom_metadata and A2A_METADATA_PREFIX + "response" in event.custom_metadata:
+    if (
+        event.custom_metadata
+        and A2A_METADATA_PREFIX + "response" in event.custom_metadata
+    ):
       responses.append(event.custom_metadata[A2A_METADATA_PREFIX + "response"])
     func_calls.extend(event.get_function_calls())
     if event.actions and event.actions.artifact_delta:
