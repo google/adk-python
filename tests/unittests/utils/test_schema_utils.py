@@ -273,7 +273,10 @@ class TestValidateSchema:
         type="OBJECT",
         properties={
             "a": types.Schema(
-                any_of=[types.Schema(type="STRING"), types.Schema(type="NUMBER")]
+                any_of=[
+                    types.Schema(type="STRING"),
+                    types.Schema(type="NUMBER"),
+                ]
             )
         },
         required=["a"],
