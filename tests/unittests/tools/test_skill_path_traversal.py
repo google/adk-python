@@ -179,12 +179,12 @@ class TestBuildWrapperCodePathTraversal:
 
     # Verify the generated code contains path traversal protection
     assert (
-        "normpath" in code
-    ), "Generated code must normalize paths with os.path.normpath()"
-    assert (
-        "startswith('..')" in code
-    ), "Generated code must check for parent directory traversal"
-    assert "isabs" in code, "Generated code must check for absolute paths"
+        "realpath" in code
+    ), "Generated code must resolve paths with os.path.realpath()"
+    assert "commonpath" in code, (
+        "Generated code must check for parent directory traversal via"
+        " commonpath()"
+    )
     assert (
         "PermissionError" in code
     ), "Generated code must raise PermissionError on traversal"
@@ -235,12 +235,14 @@ class TestBuildWrapperCodePathTraversal:
         tool_context=ctx,
     )
 
-    # The script should either error or the executor should receive code
+    # The script should error and the executor should receive code
     # that contains the traversal protection
     call_args = executor.execute_code.call_args
     code_input = call_args[0][1]
-    assert "normpath" in code_input.code
+    assert "commonpath" in code_input.code
     assert "PermissionError" in code_input.code
+    assert result["status"] == "error"
+    assert "Path traversal detected" in result["stderr"]
 
   def test_double_dot_path_blocked(self, safe_skill: models.Skill) -> None:
     """Test that ../../ paths are explicitly blocked in generated code."""
@@ -260,21 +262,4 @@ class TestBuildWrapperCodePathTraversal:
     # The files dict in the generated code should contain the malicious path
     assert "../../etc/shadow" in code
     # But the validation code should block it at runtime
-    assert "normpath" in code
-    assert "startswith('..')" in code
-
-  def test_absolute_path_blocked(self, safe_skill: models.Skill) -> None:
-    """Test that absolute paths like /etc/passwd are blocked."""
-    executor = _make_mock_executor()
-
-    safe_skill.resources.list_assets.return_value = ["/etc/passwd"]
-    safe_skill.resources.get_asset.side_effect = lambda name: "root:x:0:0:root"
-
-    script_executor = skill_toolset._SkillScriptCodeExecutor(
-        safe_skill, executor
-    )
-    code = script_executor._build_wrapper_code(safe_skill, "run.py", None)
-
-    # The validation should check for absolute paths
-    assert "isabs" in code
-    assert "PermissionError" in code
+    assert "commonpath" in code

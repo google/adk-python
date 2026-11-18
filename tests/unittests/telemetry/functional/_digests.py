@@ -33,6 +33,8 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+  from collections.abc import Mapping
+
   from opentelemetry.sdk._logs import ReadableLogRecord
   from opentelemetry.sdk.metrics.export import MetricsData
   from opentelemetry.sdk.trace import ReadableSpan
@@ -51,6 +53,9 @@ NON_DETERMINISTIC_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
     "gen_ai.conversation.id",
     "gcp.vertex.agent.invocation_id",
     "gcp.vertex.agent.session_id",
+    "gen_ai.compaction.result_event_id",
+    "gen_ai.compaction.start_timestamp",
+    "gen_ai.compaction.end_timestamp",
 })
 
 # Payload fields that carry a generated id rather than anything recorded --
@@ -68,6 +73,8 @@ JSON_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
     "gen_ai.output.messages",
     "gen_ai.system_instructions",
     "gen_ai.tool.definitions",
+    "gen_ai.tool.call.arguments",
+    "gen_ai.tool.call.result",
 })
 
 
@@ -88,15 +95,22 @@ class LogDigest:
     return cls(
         event_name=log.log_record.event_name or "",
         body=_normalize(log.log_record.body),
-        attributes={
-            key: (
-                PRESENT
-                if key in NON_DETERMINISTIC_ATTRIBUTE_KEYS
-                else _normalize(value)
-            )
-            for key, value in (log.log_record.attributes or {}).items()
-        },
+        attributes=normalized_attributes(log.log_record.attributes or {}),
     )
+
+
+def normalized_attributes(
+    attributes: Mapping[str, object],
+) -> dict[str, object]:
+  """Normalizes log attributes: non-deterministic keys collapse to PRESENT."""
+  return {
+      key: (
+          PRESENT
+          if key in NON_DETERMINISTIC_ATTRIBUTE_KEYS
+          else _normalize(value)
+      )
+      for key, value in attributes.items()
+  }
 
 
 @dataclass(frozen=True)
@@ -259,10 +273,12 @@ def _grouped_metric_points(
             value = dp.value
           else:
             value = PRESENT
-          # ``*.duration`` histograms record wall-clock timings, which are
-          # non-deterministic; replace them so expectations need not pin a
-          # timing.
-          if metric.name.endswith(".duration"):
+          # ``*.duration`` and chunk timing histograms record wall-clock
+          # timings, which are non-deterministic; replace them so expectations
+          # need not pin a timing.
+          if metric.name.endswith(".duration") or metric.name.endswith(
+              "_chunk"
+          ):
             value = PRESENT
           grouped.setdefault(metric.name, set()).add(
               MetricPoint(attributes=dict(dp.attributes), value=value)

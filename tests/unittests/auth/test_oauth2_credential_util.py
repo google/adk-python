@@ -128,8 +128,8 @@ class TestOAuth2CredentialUtil:
     assert client is None
     assert token_endpoint is None
 
-  def test_create_oauth2_session_missing_credentials(self):
-    """Test create_oauth2_session with missing credentials."""
+  def test_create_oauth2_session_missing_client_id(self):
+    """Test create_oauth2_session with missing client_id."""
     scheme = OpenIdConnectWithConfig(
         type_="openIdConnect",
         openId_connect_url=(
@@ -142,8 +142,80 @@ class TestOAuth2CredentialUtil:
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
         oauth2=OAuth2Auth(
-            client_id="test_client_id",
-            # Missing client_secret
+            client_secret="test_client_secret",
+        ),
+    )
+
+    client, token_endpoint = create_oauth2_session(scheme, credential)
+
+    assert client is None
+    assert token_endpoint is None
+
+  @pytest.mark.parametrize(
+      "token_endpoint_auth_method",
+      ["client_secret_basic", "client_secret_post", "client_secret_jwt"],
+  )
+  def test_create_oauth2_session_public_client_without_secret(
+      self, token_endpoint_auth_method, caplog
+  ):
+    """Public clients have a client_id and no client_secret."""
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="public-client",
+            redirect_uri="https://app/cb",
+            token_endpoint_auth_method=token_endpoint_auth_method,
+        ),
+    )
+
+    with caplog.at_level("WARNING", logger="google_adk"):
+      client, token_endpoint = create_oauth2_session(scheme, credential)
+
+    assert client is not None
+    assert token_endpoint == "https://example.com/token"
+    assert client.client_id == "public-client"
+    assert client.client_secret is None
+    assert client.token_endpoint_auth_method == "none"
+    assert any(
+        "client_secret is not set" in record.message
+        and "public-client" in record.message
+        for record in caplog.records
+    )
+
+    caplog.clear()
+    credential.oauth2.code_challenge_method = "S256"
+    with caplog.at_level("WARNING", logger="google_adk"):
+      client, _ = create_oauth2_session(scheme, credential)
+    assert client is not None
+    assert client.token_endpoint_auth_method == "none"
+    assert not caplog.records
+
+  def test_create_oauth2_session_private_key_jwt_without_secret(self):
+    """private_key_jwt without client_secret returns None, None."""
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="jwt-client",
+            redirect_uri="https://app/cb",
+            token_endpoint_auth_method="private_key_jwt",
         ),
     )
 
@@ -357,6 +429,36 @@ class TestOAuth2CredentialUtil:
     client.refresh_token(token_endpoint, refresh_token="old_refresh_token")
 
     assert "scope" not in captured["data"]
+
+  def test_public_client_refresh_without_authorization_header(self):
+    """Public client refresh requests omit the Authorization header."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="public-client",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+
+    client, token_endpoint = create_oauth2_session(
+        self._oauth2_scheme_with_scopes(), credential
+    )
+    assert client is not None
+
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {
+        "access_token": "new_access_token",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": "new_refresh_token",
+    }
+    client.send = Mock(return_value=response)
+    client.refresh_token(token_endpoint, refresh_token="old_refresh_token")
+
+    req = client.send.call_args[0][0]
+    assert "Authorization" not in req.headers
+    assert "client_id=public-client" in req.body
 
   def test_token_exchange_omits_scope(self):
     """Authorization-code exchange must not carry scope (it is redundant)."""

@@ -68,21 +68,22 @@ The service is configured through the `RedisSessionServiceConfig` class.
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `uri` | `Optional[str]` | `None` | A Redis connection string. |
-| `host` | `Optional[str]` | `None` | The hostname of the Redis server. |
-| `port` | `Optional[int]` | `None` | The port of the Redis server. |
+| `host` | `Optional[str]` | `"localhost"` | The hostname of the Redis server. |
+| `port` | `Optional[int]` | `6379` | The port of the Redis server. |
 | `password` | `Optional[str]` | `None` | The password for authentication. |
 | `ssl` | `bool` | `False` | Whether to use a secure SSL connection. |
 | `db` | `int` | `0` | The Redis database index to use. |
-| `ttl_seconds` | `int` | `0` | Expiration time for all session keys. |
-| `key_prefix` | `str` | `""` | A prefix added to every Redis key. |
+| `ttl_seconds` | `int` | `604800` | Expiration time for session and state keys, in seconds (7 days by default). |
+| `key_prefix` | `str` | `"adk:session:"` | A prefix added to every Redis key. |
 
 The `uri` option takes precedence over individual `host` and `port` settings.
 If `uri` is not provided, `host` defaults to `localhost` and `port` defaults to
 `6379` during client initialization.
 
 The `ttl_seconds` value determines how long session and state data persist in
-Redis. If set to `0`, keys do not expire. When a non-zero TTL is set, every
-update to a session or its associated state refreshes the expiration timer.
+Redis. By default, keys expire after `604800` seconds (7 days). Set
+`ttl_seconds=0` explicitly to disable expiration. When a positive TTL is set,
+each write to a session or state key refreshes that key's expiration timer.
 
 The `key_prefix` is useful for namespacing data when multiple applications
 share the same Redis database.

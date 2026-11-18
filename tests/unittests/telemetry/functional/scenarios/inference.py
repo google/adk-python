@@ -34,6 +34,7 @@ from google.genai.types import Candidate
 from google.genai.types import Content
 from google.genai.types import FinishReason
 from google.genai.types import GenerateContentResponse
+from google.genai.types import GroundingMetadata
 from opentelemetry.instrumentation._semconv import _OpenTelemetrySemanticConventionStability
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 import pytest
@@ -52,6 +53,7 @@ def mock_test_model(
     *,
     turns: tuple[Turn, ...] = TOOL_CALLING_TURNS,
     model_exception: Exception | None = None,
+    grounding_metadata: GroundingMetadata | None = None,
 ) -> MockModel:
   """The canned conversation as a ``MockModel``, for the ADK-native path.
 
@@ -67,8 +69,13 @@ def mock_test_model(
                   content=Content(role="model", parts=[copy.deepcopy(part)]),
                   finish_reason=FinishReason.STOP,
                   usage_metadata=usage,
+                  grounding_metadata=(
+                      copy.deepcopy(grounding_metadata)
+                      if index == len(turns) - 1
+                      else None
+                  ),
               )
-              for part, usage in turns
+              for index, (part, usage) in enumerate(turns)
           ]
       ),
       error=model_exception,
@@ -82,6 +89,7 @@ def gemini_test_model(
     *,
     turns: tuple[Turn, ...] = TOOL_CALLING_TURNS,
     model_exception: Exception | None = None,
+    grounding_metadata: GroundingMetadata | None = None,
 ) -> Gemini:
   """The canned conversation as a real ``Gemini`` over a mocked-out SDK.
 
@@ -98,11 +106,16 @@ def gemini_test_model(
               Candidate(
                   content=Content(role="model", parts=[copy.deepcopy(part)]),
                   finish_reason=FinishReason.STOP,
+                  grounding_metadata=(
+                      copy.deepcopy(grounding_metadata)
+                      if index == len(turns) - 1
+                      else None
+                  ),
               )
           ],
           usage_metadata=usage,
       )
-      for part, usage in turns
+      for index, (part, usage) in enumerate(turns)
   ])
 
   async def mock_generate_content(
@@ -213,6 +226,7 @@ def inference_under_test(
     turns: tuple[Turn, ...] = TOOL_CALLING_TURNS,
     streamed_turns: tuple[StreamedTurn, ...] | None = None,
     model_exception: Exception | None = None,
+    grounding_metadata: GroundingMetadata | None = None,
 ) -> Iterator[BaseLlm]:
   """Yields the model to run a scenario with, its instrumentation active.
 
@@ -238,14 +252,21 @@ def inference_under_test(
     yield (
         streaming_gemini_test_model(monkeypatch, streamed_turns)
         if streamed_turns is not None
-        else mock_test_model(turns=turns, model_exception=model_exception)
+        else mock_test_model(
+            turns=turns,
+            model_exception=model_exception,
+            grounding_metadata=grounding_metadata,
+        )
     )
   elif instrumentation == "otel":
     model = (
         streaming_gemini_test_model(monkeypatch, streamed_turns)
         if streamed_turns is not None
         else gemini_test_model(
-            monkeypatch, turns=turns, model_exception=model_exception
+            monkeypatch,
+            turns=turns,
+            model_exception=model_exception,
+            grounding_metadata=grounding_metadata,
         )
     )
     with otel_instrumentor(monkeypatch, providers):

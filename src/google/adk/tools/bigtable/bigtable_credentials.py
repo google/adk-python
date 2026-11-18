@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from ...features import experimental
-from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 BIGTABLE_TOKEN_CACHE_KEY = "bigtable_token_cache"
@@ -25,12 +23,8 @@ BIGTABLE_DEFAULT_SCOPE = [
 ]
 
 
-@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class BigtableCredentialsConfig(BaseGoogleCredentialsConfig):
-  """Bigtable Credentials Configuration for Google API tools (Experimental).
-
-  Please do not use this in production, as it may be deprecated later.
-  """
+  """Bigtable Credentials Configuration for Google API tools."""
 
   def __post_init__(self) -> BigtableCredentialsConfig:
     """Populate default scope if scopes is None."""

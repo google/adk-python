@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import sys
 from typing import Any
-from typing import Dict
+from typing import Callable
+from typing import Mapping
 from typing import TextIO
 
 from ..dependencies._mcp import types
@@ -35,6 +36,12 @@ class McpInstructionProvider(InstructionProvider):  # type: ignore[misc]
       connection_params: Any,
       prompt_name: str,
       errlog: TextIO = sys.stderr,
+      *,
+      arguments: (
+          Mapping[str, str]
+          | Callable[[ReadonlyContext], Mapping[str, str]]
+          | None
+      ) = None,
   ):
     """Initializes the McpInstructionProvider.
 
@@ -42,6 +49,9 @@ class McpInstructionProvider(InstructionProvider):  # type: ignore[misc]
         connection_params: Parameters for connecting to the MCP server.
         prompt_name: The name of the MCP Prompt to fetch.
         errlog: TextIO stream for error logging.
+        arguments: The arguments to send with the prompt request, either a fixed
+          mapping or a callable that builds one from the context. No arguments
+          are sent when None.
     """
     self._connection_params = connection_params
     self._errlog = errlog
@@ -50,6 +60,7 @@ class McpInstructionProvider(InstructionProvider):  # type: ignore[misc]
         errlog=self._errlog,
     )
     self.prompt_name = prompt_name
+    self._arguments = arguments
 
   async def __call__(self, context: ReadonlyContext) -> str:
     """Fetches the instruction from the MCP server.
@@ -60,29 +71,22 @@ class McpInstructionProvider(InstructionProvider):  # type: ignore[misc]
     Returns:
         The instruction string.
     """
+    # The caller decides what is sent; the server's declared argument names are
+    # not consulted, so it cannot pick which session values it receives.
+    arguments = (
+        self._arguments(context)
+        if callable(self._arguments)
+        else self._arguments
+    )
+    arguments = None if arguments is None else dict(arguments)
+
     session = await self._mcp_session_manager.create_session()
     # Hold the session out of the pool's idle sweep while it is in use, so
     # another caller's sweep cannot close the transport mid-call.
     self._mcp_session_manager._begin_session_use()  # pylint: disable=protected-access
     try:
-      # Fetch prompt definition to get the required argument names
-      prompt_definitions = await session.list_prompts()
-      prompt_definition = next(
-          (p for p in prompt_definitions.prompts if p.name == self.prompt_name),
-          None,
-      )
-
-      # Fetch arguments from context state if the prompt requires them
-      prompt_args: Dict[str, Any] = {}
-      if prompt_definition and prompt_definition.arguments:
-        arg_names = {arg.name for arg in prompt_definition.arguments}
-        prompt_args = {
-            k: v for k, v in (context.state or {}).items() if k in arg_names
-        }
-
-      # Fetch the specific prompt by name with arguments from context state
       prompt_result: types.GetPromptResult = await session.get_prompt(
-          self.prompt_name, arguments=prompt_args
+          self.prompt_name, arguments=arguments
       )
     finally:
       self._mcp_session_manager._end_session_use()  # pylint: disable=protected-access

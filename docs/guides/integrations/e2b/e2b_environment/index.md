@@ -59,8 +59,8 @@ unsaved files, is lost when recreation occurs.
 
 All relative file paths provided to `read_file` or `write_file` are resolved
 against the sandbox home directory located at `/home/user`. The `working_dir`
-property returns this path as a `Path` object, but it is only accessible after
-the environment has been initialized.
+property returns this path as a `Path` object. The path is the same in every
+sandbox, so it is available before the environment has been initialized.
 
 ## Configuration options
 
@@ -98,7 +98,7 @@ from google.adk.integrations.e2b import E2BEnvironment
 async def setup_custom_env(env: E2BEnvironment):
     # Install a specific version of pandas
     await env.execute("pip install pandas==2.2.0")
-    
+
     # Verify the installation
     result = await env.execute("python -c 'import pandas; print(pandas.__version__)'")
     print(f"Installed version: {result.stdout}")
@@ -119,9 +119,6 @@ the TTL is extended during use, a genuine period of inactivity exceeding the
 automatically recreates the sandbox when the next call is made, but the new
 instance starts from the original template state. Any files created or packages
 installed in the expired sandbox are not preserved.
-
-The `working_dir` property is not available until `initialize` is called.
-Accessing it before initialization results in a `RuntimeError`.
 
 ## Related samples
 

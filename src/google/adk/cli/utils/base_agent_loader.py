@@ -21,8 +21,15 @@ from abc import abstractmethod
 from typing import Any
 from typing import Union
 
-from ...agents.base_agent import BaseAgent
 from ...apps.app import App
+from ...workflow._base_node import BaseNode
+
+
+class _AgentLoadError(RuntimeError):
+  """An agent exists but raised while loading.
+
+  Deliberately not a ValueError, which from a loader means no such agent.
+  """
 
 
 class BaseAgentLoader(ABC):
@@ -31,8 +38,13 @@ class BaseAgentLoader(ABC):
   _allow_special_agents: bool = False
 
   @abstractmethod
-  def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
-    """Loads an instance of an agent with the given name."""
+  def load_agent(self, agent_name: str) -> Union[BaseNode, App]:
+    """Loads an instance of an agent with the given name.
+
+    Raises:
+      ValueError: If no agent exists under this name. The API server answers
+        it with a 404.
+    """
 
   @abstractmethod
   def list_agents(self) -> list[str]:

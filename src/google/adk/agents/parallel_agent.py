@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from typing import AsyncGenerator
 from typing import ClassVar
 import warnings
@@ -92,9 +91,10 @@ def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:
 
 async def _merge_agent_run(
     agent_runs: list[AsyncGenerator[Event, None]],
-    sub_agent_names: set[str],
+    sub_agent_names: set[str] | None = None,
 ) -> AsyncGenerator[Event, None]:
   """Merges agent runs using asyncio.TaskGroup on Python 3.11+."""
+  sub_agent_names = sub_agent_names or set()
   sentinel = _AgentRunComplete()
   queue: asyncio.Queue[
       tuple[Event | _AgentRunComplete, asyncio.Event | BaseException | None]
@@ -165,82 +165,8 @@ async def _merge_agent_run(
     raise
 
 
-# TODO - remove once Python <3.11 is no longer supported.
-async def _merge_agent_run_pre_3_11(
-    agent_runs: list[AsyncGenerator[Event, None]],
-    sub_agent_names: set[str],
-) -> AsyncGenerator[Event, None]:
-  """Merges agent runs for Python 3.10 without asyncio.TaskGroup.
-
-  Uses custom cancellation and exception handling to mirror TaskGroup
-  semantics. Each agent waits until the runner processes emitted events.
-
-  Args:
-      agent_runs: Async generators that yield events from each agent.
-      sub_agent_names: Names of the parallel agent's direct sub-agents.
-
-  Yields:
-      Event: The next event from the merged generator.
-  """
-  sentinel = _AgentRunComplete()
-  queue: asyncio.Queue[
-      tuple[Event | _AgentRunComplete, asyncio.Event | BaseException | None]
-  ] = asyncio.Queue()
-
-  # Agents are processed in parallel.
-  # Events for each agent are put on queue sequentially.
-  async def process_an_agent(
-      events_for_one_agent: AsyncGenerator[Event, None],
-  ) -> None:
-    error: BaseException | None = None
-    try:
-      async with Aclosing(events_for_one_agent):
-        async for event in events_for_one_agent:
-          resume_signal = asyncio.Event()
-          await queue.put((event, resume_signal))
-          # Wait for upstream to consume event before generating new events.
-          await resume_signal.wait()
-    except asyncio.CancelledError:
-      # Cancellation is not a branch failure; keep it off the queue.
-      raise
-    except Exception as e:
-      error = e
-    finally:
-      # Mark agent as finished, carrying the failure that ended it, if any.
-      await queue.put((sentinel, error))
-
-  tasks: list[asyncio.Task[None]] = []
-  try:
-    for events_for_one_agent in agent_runs:
-      tasks.append(asyncio.create_task(process_an_agent(events_for_one_agent)))
-
-    sentinel_count = 0
-    # Run until all agents finished processing.
-    while sentinel_count < len(agent_runs):
-      event, payload = await queue.get()
-      # Agent finished processing.
-      if isinstance(event, _AgentRunComplete):
-        sentinel_count += 1
-        if isinstance(payload, BaseException):
-          raise payload
-      else:
-        yield event
-        if _asks_this_agent_to_exit(event, sub_agent_names):
-          _cancel_tasks(tasks)
-          return
-        # Signal to agent that event has been processed by runner and it can
-        # continue now.
-        if not isinstance(payload, asyncio.Event):
-          raise RuntimeError(
-              'Parallel-agent event is missing its resume signal.'
-          )
-        payload.set()
-  finally:
-    _cancel_tasks(tasks)
-    if tasks:
-      # Await cancellation so siblings are no longer mid-iteration when the
-      # caller `aclose()`s them (else "generator is already running").
-      await asyncio.gather(*tasks, return_exceptions=True)
+# Backward-compatibility alias for callers referencing the pre-3.11 helper.
+_merge_agent_run_pre_3_11 = _merge_agent_run
 
 
 @deprecated(
@@ -297,12 +223,7 @@ class ParallelAgent(BaseAgent):
 
     escalated = False
     pause_invocation = False
-    merge_func = (
-        _merge_agent_run
-        if sys.version_info >= (3, 11)
-        else _merge_agent_run_pre_3_11
-    )
-    async with Aclosing(merge_func(agent_runs, sub_agent_names)) as agen:
+    async with Aclosing(_merge_agent_run(agent_runs, sub_agent_names)) as agen:
       async for event in agen:
         yield event
         if _asks_this_agent_to_exit(event, sub_agent_names):

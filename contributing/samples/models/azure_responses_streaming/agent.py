@@ -137,7 +137,7 @@ def _required_env(name: str) -> str:
 
 def _build_model() -> BaseLlm:
   """Build the Azure Responses model used by this sample."""
-  from google.adk.labs.openai import AzureOpenAIResponsesLlm
+  from google.adk.integrations.openai import AzureOpenAIResponsesLlm
 
   endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
   if not endpoint:

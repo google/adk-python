@@ -8,8 +8,9 @@ of a single node is covered separately.
 The first thing to be clear about: a `Workflow` reconstructs its progress from
 the session event stream on every run, so it resumes whether or not resumability
 is configured. The `is_resumable` flag does not switch resume on or off. What it
-switches on is **durability** — persisting loadable checkpoints and letting an
-invocation be continued across separate runner calls.
+switches on is **durability** — persisting loadable checkpoints and, for a root
+`BaseAgent` that is not an `LlmAgent`, letting an invocation be continued across
+separate runner calls.
 
 ## Current model
 
@@ -31,26 +32,33 @@ invocation, a workflow is inherently replay-resumable, flag or no flag.
 
 `ResumabilityConfig.is_resumable` is a durability switch. When it is set:
 
-1.  **Cross-call resume.** The runner will continue an existing invocation
-    without a fresh user message and set up a "resumed invocation" context,
-    rehydrating the recorded agent state and end-of-agent markers from history.
-    With the flag off, the runner requires a new message and starts a fresh
-    invocation instead.
+1.  **Cross-call resume, for a root `BaseAgent` that is not an `LlmAgent`.**
+    The runner will continue an existing invocation without a fresh user message
+    and set up a "resumed invocation" context, rehydrating the recorded agent
+    state and end-of-agent markers from history. With the flag off, the runner
+    requires a new message and starts a fresh invocation instead. A root
+    `Workflow` (or root `LlmAgent`) takes `Runner._run_node_async`, which never
+    reads the flag: passing `invocation_id`, or a function response, continues
+    that invocation either way.
 2.  **Checkpoint markers in the log.** Composite agents (`LlmAgent`,
     `SequentialAgent`, `LoopAgent`, `ParallelAgent`, and `LlmAgent`s wrapped as
     workflow nodes) write `agent_state` / `end_of_agent` events into the session
     only when the invocation is resumable. These make progress loadable across a
     process boundary.
-3.  **Function-response routing.** Routing an incoming function response back to
-    its originating invocation is enabled only when resumable.
+3.  **Strict function-response routing, for a root `BaseAgent` that is not an
+    `LlmAgent`.** An incoming function response is routed back to its
+    originating invocation with or without the flag. With it, a response whose
+    call is missing from the session, or responses that span invocations, raise
+    `ValueError`; without it that mismatch is ignored. `Runner._run_node_async`
+    is strict either way.
 
 The config's own definition is durability-shaped: pause an invocation on a
 long-running call, and resume it from the last event if it paused or failed
 midway, best-effort and at-least-once, with in-memory state lost. So the
 accurate statement is: the flag decides whether progress is persisted as
-loadable checkpoints and whether an invocation can be resumed across runner
-calls — not whether the workflow can resume. Resumability here is really
-durability.
+loadable checkpoints and, for a root `BaseAgent` that is not an `LlmAgent`,
+whether an invocation can be resumed across runner calls — not whether the
+workflow can resume. Resumability here is really durability.
 
 ### The `Workflow` node writes a checkpoint, but does not read one
 

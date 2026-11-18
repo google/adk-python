@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfoNotFoundError
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
+from litellm.types.utils import ModelResponse
 
 
 class InlineJsonToolClient(LiteLLMClient):
@@ -35,10 +36,10 @@ class InlineJsonToolClient(LiteLLMClient):
     tool_message = _find_last_role(messages, role="tool")
     if tool_message:
       tool_summary = _coerce_to_text(tool_message.get("content"))
-      return {
-          "id": "mock-inline-tool-final-response",
-          "model": model,
-          "choices": [{
+      return ModelResponse(
+          id="mock-inline-tool-final-response",
+          model=model,
+          choices=[{
               "message": {
                   "role": "assistant",
                   "content": (
@@ -47,12 +48,12 @@ class InlineJsonToolClient(LiteLLMClient):
               },
               "finish_reason": "stop",
           }],
-          "usage": {
+          usage={
               "prompt_tokens": 60,
               "completion_tokens": 12,
               "total_tokens": 72,
           },
-      }
+      )
 
     timezone = _extract_timezone(messages) or "Asia/Taipei"
     inline_call = json.dumps(
@@ -63,10 +64,10 @@ class InlineJsonToolClient(LiteLLMClient):
         separators=(",", ":"),
     )
 
-    return {
-        "id": "mock-inline-tool-call",
-        "model": model,
-        "choices": [{
+    return ModelResponse(
+        id="mock-inline-tool-call",
+        model=model,
+        choices=[{
             "message": {
                 "role": "assistant",
                 "content": (
@@ -75,12 +76,12 @@ class InlineJsonToolClient(LiteLLMClient):
             },
             "finish_reason": "tool_calls",
         }],
-        "usage": {
+        usage={
             "prompt_tokens": 45,
             "completion_tokens": 15,
             "total_tokens": 60,
         },
-    }
+    )
 
 
 def _find_last_role(

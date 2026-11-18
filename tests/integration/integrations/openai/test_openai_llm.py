@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration tests for the labs OpenAI models against live backends.
+"""Integration tests for the OpenAI models against live backends.
 
 Each test runs against a matrix of ``_Case``s — one per (model, API surface)
 combination that is configured via environment variables. Two model classes are
@@ -79,9 +79,9 @@ from typing import Optional
 from typing import Type
 from typing import Union
 
-from google.adk.labs.openai._openai_common import is_reasoning_model
-from google.adk.labs.openai._openai_llm import OpenAILlm
-from google.adk.labs.openai._openai_responses_llm import OpenAIResponsesLlm
+from google.adk.integrations.openai._openai_common import is_reasoning_model
+from google.adk.integrations.openai._openai_llm import OpenAILlm
+from google.adk.integrations.openai._openai_responses_llm import OpenAIResponsesLlm
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.utils._mtls_utils import get_api_endpoint

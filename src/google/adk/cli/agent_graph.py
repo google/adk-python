@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 from typing import Union
 
 import graphviz
@@ -27,6 +28,9 @@ from ..agents.sequential_agent import SequentialAgent
 from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
+
+if TYPE_CHECKING:
+  from collections.abc import Sequence
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -41,7 +45,9 @@ else:
 async def build_graph(
     graph: graphviz.Digraph,
     agent: BaseAgent,
-    highlight_pairs: list[tuple[str, str]] | None,
+    highlight_pairs: (
+        list[tuple[str, str]] | Sequence[tuple[str | None, str | None]] | None
+    ),
     parent_agent: BaseAgent | None = None,
 ) -> None:
   """
@@ -197,12 +203,12 @@ async def build_graph(
         await build_graph(child, sub_agent, highlight_pairs)
         if parent_agent:
           draw_edge(parent_agent.name, sub_agent.name)
-    elif isinstance(agent, Workflow) and agent._graph is not None:
-      for wf_node in agent._graph.nodes:
+    elif isinstance(agent, Workflow) and agent.graph is not None:
+      for wf_node in agent.graph.nodes:
         if wf_node.name == START.name:
           continue
         await build_graph(child, wf_node, highlight_pairs)
-      for edge in agent._graph.edges:
+      for edge in agent.graph.edges:
         if edge.from_node.name == START.name:
           continue
         label = str(edge.route) if edge.route is not None else ''
@@ -302,8 +308,11 @@ async def build_graph(
 
 
 async def get_agent_graph(
-    root_agent, highlights_pairs, image=False, dark_mode=True
-):
+    root_agent: BaseAgent,
+    highlights_pairs: Sequence[tuple[str | None, str | None]] | None,
+    image: bool = False,
+    dark_mode: bool = True,
+) -> graphviz.Digraph | bytes:
   bg_color = '#333537' if dark_mode else '#ffffff'
   graph = graphviz.Digraph(
       graph_attr={'rankdir': 'LR', 'bgcolor': bg_color}, strict=True

@@ -26,7 +26,6 @@ from fastapi.openapi.models import SecurityScheme
 from fastapi.openapi.models import SecuritySchemeType
 from pydantic import Field
 
-from ..utils.feature_decorator import experimental
 from .auth_credential import BaseModelWithConfig
 
 
@@ -85,7 +84,6 @@ class OAuthGrantType(str, Enum):
 AuthSchemeType = SecuritySchemeType
 
 
-@experimental
 class ExtendedOAuth2(OAuth2):
   """OAuth2 scheme that incorporates auto-discovery for endpoints."""
 

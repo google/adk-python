@@ -27,7 +27,6 @@ from pydantic import model_validator
 from pydantic import ValidationError
 
 from ...events.event import Event
-from ...utils.feature_decorator import experimental
 from ..common import EvalBaseModel
 from ..evaluator import Evaluator
 
@@ -93,7 +92,6 @@ not able to do so."""
     return self
 
 
-@experimental
 class UserSimulator(ABC):
   """A user simulator for the purposes of automating interaction with an Agent.
 

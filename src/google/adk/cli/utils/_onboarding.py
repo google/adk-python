@@ -243,7 +243,7 @@ def handle_login_with_google() -> VertexAIAuth | ExpressModeAuth:
         project_id=google_cloud_project, region=google_cloud_region
     )
 
-  elif action == "2":
+  else:
     if gcp_utils.check_express_eligibility():
       click.secho(_EXPRESS_TOS_MSG, fg="yellow")
       if click.confirm("Do you accept the Terms of Service?", default=False):
@@ -326,5 +326,5 @@ def prompt_to_choose_backend(
     return VertexAIAuth(
         project_id=google_cloud_project, region=google_cloud_region
     )
-  elif backend_choice == "3":
+  else:
     return handle_login_with_google()

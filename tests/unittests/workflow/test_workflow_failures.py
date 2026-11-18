@@ -25,6 +25,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 # Added for the moved test
@@ -32,6 +33,8 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
+from google.adk.workflow import FunctionNode
+from google.adk.workflow import JoinNode
 from google.adk.workflow import START
 from google.adk.workflow._errors import NodeTimeoutError
 from google.adk.workflow._graph import Graph
@@ -41,7 +44,6 @@ from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
@@ -95,10 +97,15 @@ class _FlakyNode(BaseNode):
     )
 
 
-async def _run_workflow(wf, message='start'):
+from .._invariants import InvariantPlugin
+
+
+async def _run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name='test', node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name='test', user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []
@@ -770,6 +777,91 @@ def test_retry_config_normalizes_classes_to_strings():
   assert config.exceptions == ['ValueError', 'KeyError']
 
 
+@pytest.mark.parametrize('topology', ['static', 'nested', 'dynamic'])
+@pytest.mark.parametrize('termination', ['sibling_failure', 'caller_cancel'])
+async def test_cancellation_awaits_cleanup_without_retrying(
+    topology: str, termination: str
+) -> None:
+  """Cancellation finishes asynchronous child cleanup before returning.
+
+  Setup: a retry-enabled worker holds a resource inside a static branch,
+    nested workflow, or dynamically scheduled child.
+  Act: fail a sibling or cancel the caller while the worker is running;
+    pause its asynchronous resource release until explicitly allowed.
+  Assert: the invocation stays pending until release completes, preserves
+    the original error/cancellation, and never retries the cancelled worker.
+  """
+  started = asyncio.Event()
+  cleanup_started = asyncio.Event()
+  release_cleanup = asyncio.Event()
+  attempts: list[int] = []
+  released: list[str] = []
+
+  @node(retry_config=RetryConfig(max_attempts=3, initial_delay=0, jitter=0))
+  async def worker(ctx: Context) -> str:
+    attempts.append(ctx.attempt_count)
+    started.set()
+    try:
+      await asyncio.Event().wait()
+      return 'unreachable'
+    finally:
+      cleanup_started.set()
+      await release_cleanup.wait()
+      released.append('resource')
+
+  @node(rerun_on_resume=True)
+  async def parent(ctx: Context) -> Any:
+    return await ctx.run_node(worker)
+
+  if topology == 'nested':
+    branch = Workflow(name='inner', edges=[(START, worker)])
+  elif topology == 'dynamic':
+    branch = parent
+  else:
+    branch = worker
+
+  @node
+  async def failing_sibling() -> str:
+    await started.wait()
+    raise ValueError('sibling failed')
+
+  edges = [(START, branch)]
+  if termination == 'sibling_failure':
+    edges.append((START, failing_sibling))
+  runner = testing_utils.InMemoryRunner(node=Workflow(name='wf', edges=edges))
+  run_task = asyncio.create_task(runner.run_async('start'))
+
+  try:
+    await asyncio.wait_for(started.wait(), timeout=5)
+    if termination == 'caller_cancel':
+      run_task.cancel()
+    await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+
+    # Keep cleanup blocked while giving an invocation that incorrectly skips
+    # the cleanup wait an opportunity to finish. Unlike wait_for, wait does
+    # not cancel the invocation when this observation window expires.
+    done, _ = await asyncio.wait({run_task}, timeout=0.1)
+    assert not done
+    assert released == []
+    release_cleanup.set()
+
+    if termination == 'caller_cancel':
+      with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=5)
+    else:
+      with pytest.raises(ValueError, match='sibling failed'):
+        await asyncio.wait_for(run_task, timeout=5)
+
+    assert released == ['resource']
+    assert attempts == [1]
+  finally:
+    # Unblock and reap the invocation even when a contract assertion fails.
+    release_cleanup.set()
+    if not run_task.done():
+      run_task.cancel()
+    await asyncio.gather(run_task, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_node_cancellation_on_sibling_failure(
     request: pytest.FixtureRequest,
@@ -1334,12 +1426,10 @@ async def test_fail_fast_preserves_completed_siblings(
   original_handle_completion = Workflow._handle_completion
   handle_completion_calls = []
 
-  def spy_handle_completion(
-      self, loop_state, node_name, node_obj, child_ctx, ctx
-  ):
+  def spy_handle_completion(self, loop_state, node_name, child_ctx, ctx):
     handle_completion_calls.append(node_name)
     return original_handle_completion(
-        self, loop_state, node_name, node_obj, child_ctx, ctx
+        self, loop_state, node_name, child_ctx, ctx
     )
 
   app = App(name=request.function.__name__, root_agent=wf)
@@ -1356,9 +1446,8 @@ async def test_fail_fast_preserves_completed_siblings(
   assert node_success_completed is True
 
   # Under the bug, succeeding_node's completion handler was skipped.
-  # With the fix, succeeding_node's completion is handled.
-  assert 'failing_node' not in handle_completion_calls
-  assert 'succeeding_node' in handle_completion_calls
+  # With the fix, succeeding_node's completion is handled after failing_node.
+  assert handle_completion_calls == ['failing_node', 'succeeding_node']
 
 
 @pytest.mark.asyncio
@@ -1653,7 +1742,7 @@ async def test_retried_node_not_rerun_on_resume(
   assert flaky_in_graph.tracker['iteration_count'] == 2
 
   req_events = get_request_input_events(events)
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   user_input = create_request_input_response(interrupt_id, {'ok': True})
   await runner.run_async(
       new_message=testing_utils.UserContent(user_input),
@@ -1718,3 +1807,77 @@ async def test_failed_node_in_nested_workflow_reruns_on_resume(
   assert inner_flaky_runs == 2
   assert inner_downstream_inputs == ['inner output']
   assert outer_upstream_runs == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_replays_sibling_with_pending_event_persist() -> None:
+  """A retried workflow does not re-run a sibling with a pending event append.
+
+  The sibling's task completes its body but can still be blocked in
+  _enqueue_event waiting for the runner to append its output event (slow
+  plugin callbacks or a session service with awaited I/O). The retry's
+  rescan must wait for those queued appends, otherwise the sibling is not
+  recovered and its side effect happens twice.
+  """
+  sibling_attempts = 0
+  flaky_attempts = 0
+  plugin_events: list[Event] = []
+
+  class SlowAppendPlugin(BasePlugin):
+    """Simulates slow event persistence (plugin callbacks or DB I/O)."""
+
+    @override
+    async def on_event_callback(
+        self, *, invocation_context: InvocationContext, event: Event
+    ) -> Event | None:
+      plugin_events.append(event)
+      await asyncio.sleep(0.05)
+      return None
+
+  async def sibling_node(ctx: Context) -> AsyncGenerator[str, None]:
+    nonlocal sibling_attempts
+    sibling_attempts += 1
+    yield 'side effect done'
+
+  async def flaky_node(ctx: Context) -> AsyncGenerator[str, None]:
+    nonlocal flaky_attempts
+    flaky_attempts += 1
+    if flaky_attempts == 1:
+      raise CustomRetryableError('Node failed')
+    yield 'recovered'
+
+  sibling = FunctionNode(func=sibling_node, name='sibling')
+  flaky = FunctionNode(func=flaky_node, name='flaky')
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='body',
+      edges=[
+          (START, (flaky, sibling)),
+          (flaky, join),
+          (sibling, join),
+      ],
+      retry_config=RetryConfig(
+          max_attempts=2,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner.plugin_manager.plugins.insert(0, InvariantPlugin())
+  runner.plugin_manager.plugins.append(SlowAppendPlugin(name='slow_append'))
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='start')], role='user')
+  streamed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=msg
+      )
+  ]
+
+  assert flaky_attempts == 2
+  assert sibling_attempts == 1
+  assert not any(e.partial for e in plugin_events)
+  assert not any(e.partial for e in streamed_events)

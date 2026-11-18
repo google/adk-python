@@ -13,9 +13,11 @@
 # limitations under the License.
 
 from ._invocation_not_found_error import InvocationNotFoundError
+from ._session_persistence_error import SessionPersistenceError
 from ._stale_session_error import StaleSessionError
 
 __all__ = [
     "InvocationNotFoundError",
+    "SessionPersistenceError",
     "StaleSessionError",
 ]

@@ -21,10 +21,13 @@ import dataclasses
 import datetime
 from typing import Any
 from typing import cast
+from typing import TYPE_CHECKING
 from typing import TypeAlias
 
-from ..sessions.state import State
 from .code_execution_utils import File
+
+if TYPE_CHECKING:
+  from ..sessions.state import State
 
 _CONTEXT_KEY = '_code_execution_context'
 _SESSION_ID_KEY = 'execution_session_id'
@@ -34,7 +37,7 @@ _ERROR_COUNT_KEY = '_code_executor_error_counts'
 
 _CODE_EXECUTION_RESULTS_KEY = '_code_execution_results'
 
-_SessionState: TypeAlias = State | dict[str, Any]
+_SessionState: TypeAlias = 'State | dict[str, Any]'
 
 
 class CodeExecutorContext:

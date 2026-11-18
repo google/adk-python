@@ -14,8 +14,13 @@
 
 from __future__ import annotations
 
+import collections
 import logging
+import re
+import time
 from typing import Any
+from typing import cast
+from typing import Protocol
 
 from google.adk.runners import Runner
 from google.genai import types
@@ -31,6 +36,21 @@ except ImportError as e:
 
 logger = logging.getLogger("google_adk." + __name__)
 
+_SESSION_ID_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+_MAX_PROCESSED_EVENTS = 1024
+_PROCESSED_EVENT_TTL_SECONDS = 600.0
+
+
+def _sanitize_session_id(value: str) -> str:
+  """Converts Slack identifiers into ADK session-id-safe strings."""
+  return _SESSION_ID_UNSAFE_CHARS.sub("_", value)
+
+
+class _SocketModeHandler(Protocol):
+
+  async def start_async(self) -> None:
+    ...
+
 
 class SlackRunner:
   """Runner for ADK agents on Slack."""
@@ -42,7 +62,29 @@ class SlackRunner:
   ):
     self.runner = runner
     self.slack_app = slack_app
+    self._processed_events: collections.OrderedDict[tuple[str, str], float] = (
+        collections.OrderedDict()
+    )
     self._setup_handlers()
+
+  def _is_duplicate_event(self, channel_id: str, ts: str | None) -> bool:
+    """Records `(channel_id, ts)` and returns whether it was seen within the TTL."""
+    if not ts:
+      return False
+    now = time.monotonic()
+    expired_before = now - _PROCESSED_EVENT_TTL_SECONDS
+    while (
+        self._processed_events
+        and next(iter(self._processed_events.values())) < expired_before
+    ):
+      self._processed_events.popitem(last=False)
+    event_key = (channel_id, ts)
+    if event_key in self._processed_events:
+      return True
+    self._processed_events[event_key] = now
+    if len(self._processed_events) > _MAX_PROCESSED_EVENTS:
+      self._processed_events.popitem(last=False)
+    return False
 
   def _setup_handlers(self) -> None:
     """Sets up event handlers for Slack."""
@@ -72,9 +114,15 @@ class SlackRunner:
 
     if not text or not user_id or not channel_id:
       return
+    if self._is_duplicate_event(channel_id, event.get("ts")):
+      return
 
-    # In Slack, we can use the channel_id (and optionally thread_ts) as a session ID.
-    session_id = f"{channel_id}-{thread_ts}" if thread_ts else channel_id
+    # In Slack, we can use the channel_id (and optionally thread_ts) as a
+    # session ID. Slack timestamps contain "." but managed session services only
+    # accept letters, numbers, "_" and "-".
+    session_id = _sanitize_session_id(
+        f"{channel_id}-{thread_ts}" if thread_ts else channel_id
+    )
 
     new_message = types.Content(role="user", parts=[types.Part(text=text)])
 
@@ -119,5 +167,8 @@ class SlackRunner:
 
   async def start(self, app_token: str) -> None:
     """Starts the Slack app using Socket Mode."""
-    handler = AsyncSocketModeHandler(self.slack_app, app_token)
+    handler = cast(
+        _SocketModeHandler,
+        AsyncSocketModeHandler(self.slack_app, app_token),
+    )
     await handler.start_async()

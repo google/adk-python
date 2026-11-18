@@ -32,7 +32,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-2",
       "invocationId": "i-1",
       "longRunningToolIds": [],
@@ -51,15 +50,17 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-3",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/weather_agent@1"
         ],
         "path": "root_agent@1/weather_agent@1"
+      },
+      "output": {
+        "conditions": "unknown",
+        "temperature": "unknown"
       }
     },
     {
@@ -95,7 +96,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-5",
       "invocationId": "i-1",
       "nodeInfo": {

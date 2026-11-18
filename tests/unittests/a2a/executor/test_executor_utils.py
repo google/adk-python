@@ -19,8 +19,10 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 from google.adk.a2a import _compat
+from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.executor.config import ExecuteInterceptor
 from google.adk.a2a.executor.executor_context import ExecutorContext
+from google.adk.a2a.executor.utils import _require_user_id
 from google.adk.a2a.executor.utils import execute_after_agent_interceptors
 from google.adk.a2a.executor.utils import execute_after_event_interceptors
 from google.adk.a2a.executor.utils import execute_before_agent_interceptors
@@ -40,6 +42,17 @@ def _executor_context() -> ExecutorContext:
 
 def _adk_event() -> Event:
   return Event(author='test-agent', invocation_id='inv-1')
+
+
+def test_require_user_id_returns_the_request_user_id():
+  """A request carrying a user ID yields that ID unchanged."""
+  assert _require_user_id(AgentRunRequest(user_id='user-1')) == 'user-1'
+
+
+def test_require_user_id_rejects_a_request_without_one():
+  """A request with no user ID fails with a ValueError naming the user ID."""
+  with pytest.raises(ValueError, match='no user ID'):
+    _require_user_id(AgentRunRequest())
 
 
 def _a2a_event(task_id: str):

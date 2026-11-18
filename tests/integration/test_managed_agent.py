@@ -31,11 +31,20 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools import google_search
 from google.adk.tools import RemoteMcpServer
 from google.adk.utils.context_utils import Aclosing
+from google.adk.utils.env_utils import is_enterprise_mode_enabled
 from google.genai import types
 import httpx
 import pytest
 
-_AGENT_ID = 'antigravity-preview-05-2026'
+_GEMINI_API_AGENT_ID = 'antigravity-preview-09-2026'
+# Vertex / GEAP only serves antigravity-preview-05-2026 today.
+_VERTEX_AGENT_ID = 'antigravity-preview-05-2026'
+
+
+def _agent_id() -> str:
+  return (
+      _VERTEX_AGENT_ID if is_enterprise_mode_enabled() else _GEMINI_API_AGENT_ID
+  )
 
 
 async def _run_turn(runner, session, text: str) -> list:
@@ -68,7 +77,7 @@ def _joined_text(events) -> str:
 async def test_google_search_project_hail_mary():
   agent = ManagedAgent(
       name='managed_search_agent',
-      agent_id=_AGENT_ID,
+      agent_id=_agent_id(),
       environment={'type': 'remote'},
       tools=[google_search],
   )
@@ -120,7 +129,7 @@ async def test_interactions_request_carries_managed_agent_suffix(monkeypatch):
 
   agent = ManagedAgent(
       name='managed_header_agent',
-      agent_id=_AGENT_ID,
+      agent_id=_agent_id(),
       environment={'type': 'remote'},
       tools=[google_search],
   )
@@ -177,7 +186,7 @@ async def test_interactions_request_carries_managed_agent_suffix(monkeypatch):
 async def test_code_execution_prime_sum():
   agent = ManagedAgent(
       name='managed_code_execution_agent',
-      agent_id=_AGENT_ID,
+      agent_id=_agent_id(),
       environment={'type': 'remote'},
       tools=[types.Tool(code_execution=types.ToolCodeExecution())],
   )
@@ -222,7 +231,7 @@ async def test_code_execution_prime_sum():
 async def test_remote_mcp_maps_grounding_lite():
   agent = ManagedAgent(
       name='managed_maps_agent',
-      agent_id=_AGENT_ID,
+      agent_id=_agent_id(),
       environment={'type': 'remote'},
       tools=[
           RemoteMcpServer(

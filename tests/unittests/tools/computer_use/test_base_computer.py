@@ -105,6 +105,8 @@ class MockComputer(BaseComputer):
   def __init__(self):
     self.initialized = False
     self.closed = False
+    self.key_combinations: list[list[str]] = []
+    self.current_state_calls = 0
 
   async def screen_size(self) -> tuple[int, int]:
     return (1920, 1080)
@@ -158,6 +160,7 @@ class MockComputer(BaseComputer):
     return ComputerState(url=url)
 
   async def key_combination(self, keys: list[str]) -> ComputerState:
+    self.key_combinations.append(keys)
     return ComputerState(url="https://example.com")
 
   async def drag_and_drop(
@@ -166,6 +169,7 @@ class MockComputer(BaseComputer):
     return ComputerState(url="https://example.com")
 
   async def current_state(self) -> ComputerState:
+    self.current_state_calls += 1
     return ComputerState(
         url="https://example.com", screenshot=b"screenshot_data"
     )
@@ -234,6 +238,26 @@ class TestBaseComputer:
         100, 200, "Hello", press_enter=False, clear_before_typing=False
     )
     assert isinstance(state, ComputerState)
+
+  @pytest.mark.asyncio
+  async def test_type_text_default_implementation(self, mock_computer):
+    """Test default type_text presses each char and optional Enter."""
+    state = await mock_computer.type_text("ab", press_enter=False)
+    assert isinstance(state, ComputerState)
+    assert mock_computer.key_combinations == [["a"], ["b"]]
+    assert mock_computer.current_state_calls == 0
+
+    mock_computer.key_combinations.clear()
+    state = await mock_computer.type_text("hi", press_enter=True)
+    assert isinstance(state, ComputerState)
+    assert mock_computer.key_combinations == [["h"], ["i"], ["Enter"]]
+    assert mock_computer.current_state_calls == 0
+
+    mock_computer.key_combinations.clear()
+    state = await mock_computer.type_text("", press_enter=False)
+    assert isinstance(state, ComputerState)
+    assert mock_computer.key_combinations == []
+    assert mock_computer.current_state_calls == 1
 
   @pytest.mark.asyncio
   async def test_scroll_document(self, mock_computer):

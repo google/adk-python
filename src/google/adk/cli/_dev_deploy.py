@@ -42,6 +42,7 @@ from __future__ import annotations
 import abc
 import asyncio
 from collections.abc import AsyncIterator
+from collections.abc import Sequence
 from datetime import datetime
 import json
 import logging
@@ -55,6 +56,7 @@ from typing import Callable
 from typing import ClassVar
 from typing import Literal
 from typing import Optional
+import uuid
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -784,7 +786,7 @@ async def _spawn_deploy(
   would block forever once an undrained pipe buffer filled. A file has no such
   limit, and it leaves the full log behind for debugging.
   """
-  stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+  stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
   base = os.path.join(tempfile.gettempdir(), "adk_deploy")
   staging_dir = os.path.join(base, f"{app_name}_{request.target}_{stamp}")
   log_path = os.path.join(base, f"{app_name}_{request.target}_{stamp}.log")
@@ -900,6 +902,7 @@ def register_dev_deploy_endpoints(
     app: FastAPI,
     *,
     get_agent_dir: Callable[[str], str],
+    dependencies: Optional[Sequence[Any]] = None,
 ) -> None:
   """Registers the dev-only deploy endpoints on `app`.
 
@@ -909,6 +912,8 @@ def register_dev_deploy_endpoints(
       that escape the agents directory. `DevServer._get_agent_dir` passed in
       rather than the server itself, to keep this module free of a circular
       import.
+    dependencies: Optional FastAPI route dependencies applied to the mutating
+      deploy endpoints.
   """
 
   def _resolve_agent_dir(app_name: str) -> str:
@@ -985,6 +990,7 @@ def register_dev_deploy_endpoints(
       "/dev/apps/{app_name}/deploy/agent_engine",
       tags=[TAG_DEPLOY],
       response_class=StreamingResponse,
+      dependencies=dependencies,
   )
   async def deploy_to_agent_engine(
       app_name: str,
@@ -1005,6 +1011,7 @@ def register_dev_deploy_endpoints(
       "/dev/apps/{app_name}/deploy/cloud_run",
       tags=[TAG_DEPLOY],
       response_class=StreamingResponse,
+      dependencies=dependencies,
   )
   async def deploy_to_cloud_run(
       app_name: str,
@@ -1021,6 +1028,7 @@ def register_dev_deploy_endpoints(
       "/dev/apps/{app_name}/deploy/gke",
       tags=[TAG_DEPLOY],
       response_class=StreamingResponse,
+      dependencies=dependencies,
   )
   async def deploy_to_gke(
       app_name: str,

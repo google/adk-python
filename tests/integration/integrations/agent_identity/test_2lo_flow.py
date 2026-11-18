@@ -31,6 +31,7 @@ from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsRequest
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsResponse
 from google.genai import types
+from mcp.types import CallToolResult
 from mcp.types import Tool as McpBaseTool
 import pytest
 
@@ -215,7 +216,7 @@ async def test_gcp_agent_identity_2lo_sends_authorization_header_to_mcp_session(
 
     mock_session_mgr = mock.AsyncMock()
     mock_session_mgr.create_session.return_value.call_tool.return_value = (
-        mock.MagicMock()
+        CallToolResult(content=[])
     )
 
     mcp_tool = McpTool(

@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import cast
 from typing import Dict
 from typing import Optional
 
@@ -76,7 +75,7 @@ async def query_schema(
       result = await query_schema("field", field_path="model.name")
   """
   try:
-    schema = cast(Dict[str, Any], load_agent_config_schema(raw_format=False))
+    schema = load_agent_config_schema(raw_format=False)
 
     if query_type == "overview":
       return _get_schema_overview(schema)

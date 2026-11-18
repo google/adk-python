@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
@@ -24,11 +25,15 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.function_tool import FunctionTool
 from ..utils.content_utils import SKIP_THOUGHT_SIGNATURE_VALIDATOR
+from ._reflect_retry_utils import is_paused_invocation
 from ._reflect_retry_utils import REFLECT_AND_RETRY_RESPONSE_TYPE
 from ._reflect_retry_utils import resolve_scope_key
 from ._reflect_retry_utils import ScopedFailureTracker
 from ._reflect_retry_utils import TrackingScope
 from .base_plugin import BasePlugin
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 RESERVED_TOOL_CALL_ERROR_TYPE = "RESERVED_TOOL_CALL"
 
@@ -296,6 +301,51 @@ Formulate a new plan based on your analysis and try a corrected or different app
         ),
         thought_signature=SKIP_THOUGHT_SIGNATURE_VALIDATOR,
     )
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Drops the failure counts of an invocation once it has ended."""
+    await self._clear_invocation_failures(
+        invocation_context, keep_if_paused=True
+    )
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Drops the failure counts of an invocation whose run failed."""
+    del error  # The counts are dropped whatever ended the run.
+    await self._clear_invocation_failures(
+        invocation_context, keep_if_paused=False
+    )
+
+  async def _clear_invocation_failures(
+      self, invocation_context: InvocationContext, *, keep_if_paused: bool
+  ) -> None:
+    """Drops the counts kept for an invocation under the INVOCATION scope.
+
+    Each invocation gets its own scope, and nothing reads it once the
+    invocation is over, so keeping it would grow the tracker with every
+    invocation that saw a failure.
+    """
+    if self.scope != TrackingScope.INVOCATION:
+      return
+    scope_key = self._get_model_scope_key(
+        callback_context.CallbackContext(invocation_context)
+    )
+    # A key that does not embed the invocation id, such as one from a
+    # per-session or per-user override, is meant to outlive the invocation.
+    if (
+        invocation_context.invocation_id not in scope_key
+        or scope_key not in self._tracker._scoped_failure_counters
+    ):
+      return
+    if keep_if_paused and is_paused_invocation(invocation_context):
+      return
+    await self._tracker.clear_scope(scope_key)
 
   def _get_model_retry_uuid(self) -> str:
     """Generates a unique ID for the model retry tool call."""

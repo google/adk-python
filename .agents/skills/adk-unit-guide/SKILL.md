@@ -118,6 +118,96 @@ Then add the guide to `docs/guides/README.md` under the right category heading,
 as `* [Title](path/index.md) - one-line summary.` That index is the only table
 of contents; a guide missing from it is unreachable.
 
+## When a guide is not required
+
+`scripts/check_new_py_files.py` enforces this convention on the Python files a
+change adds under `src/google/adk/`. Some it passes over without asking, and
+the rest you can waive, so work out which case you are in before writing a
+guide the rule does not ask for.
+
+Three subtrees sit outside the rule, because nothing in them is published:
+`src/google/adk/internal/`, `src/google/adk/platform/internal/`, and
+`src/google/adk/v1/`.
+
+Elsewhere a file is exempt on one of two grounds. It carries no unit of its
+own, which covers `__init__.py` and any path with a `cli/` or `utils/`
+component. Or it holds declarations that belong in the guide of whatever uses
+them rather than in a guide of their own, which covers any filename ending
+`_utils.py`, `_helper.py`, `_helpers.py`, `_types.py`, `_errors.py`,
+`_exceptions.py`, or `_constants.py`.
+
+A module is also exempt when no package `__init__.py` imports from it or names
+it, because then it has no public interface for a guide to describe. The check
+reads every `__init__.py` under `src/google/adk/`, and lazy re-exports count:
+an import under `if TYPE_CHECKING:` or inside `__getattr__`, and a string that
+names the module in a lazy-import table. A `_`-prefixed name bound in
+`__init__.py`, such as `from ._mod import X as _X`, is private to that file and
+does not count as an export. The module's own `_` prefix decides nothing, so
+export a public name from a new module and that module needs a guide.
+
+A page that documents several units covers each of them. The check reads every
+page in the module's own directory under `docs/guides/` and below it, plus the
+`index.md` of each directory above that one, and passes the module when those
+pages document everything the package exports from it. That is how
+`docs/guides/errors/index.md`, one page for all of `google.adk.errors`, covers
+`InvocationNotFoundError`. The names come from the same imports and lazy-import
+tables, so a star import or `from . import _mod`, which take the module whole
+without naming anything, leaves it needing a page of its own, even when another
+import names some of its exports. So does a module at the package root. Pages
+anywhere else are not read: `docs/guides/README.md` is the table of contents
+and names nearly every unit, and a module documented only in another topic's
+guide still needs a waiver.
+
+A page documents a name where a heading, the first cell of a table row, or a
+fenced code example names it. A mention in prose or in another table column
+(such as a type column) only refers to the unit, so it does not count: the
+`InvocationContext` guide names `SequentialAgent` once, in passing, and says
+nothing else about it. Each name has to match as a whole word, so `RunResultV2`
+does not document `RunResult`.
+
+Everything else needs a guide or a waiver. A waiver is a `NO_UNIT_GUIDE=` or
+`SKIP_UNIT_GUIDE=` tag carrying the reason, and the two names behave
+identically. It waives the unit guide requirement alone; the `_` prefix rule
+shares the same hook and the same error report, and has no waiver at all. One
+tag waives every file the change adds, not the one its reason names, so a
+change adding several needs a reason that covers all of them.
+
+Write a reason a reviewer can check against the code, because the tag becomes
+the only record of why the guide is absent:
+
+```
+NO_UNIT_GUIDE=ElevenLabsTTS is shown in docs/guides/live/cascade_live/index.md, a guide in another topic.
+```
+
+### Where to put the waiver
+
+The tag reaches the check through a commit message or through the environment,
+and which one applies depends on whether the commit exists yet.
+
+Once the commit exists, its message carries the tag. Continuous integration
+reads the messages of the commits a pull request contains, so a waiver a
+contributor writes there satisfies the check that gates the pull request. Start
+the tag at the left margin with no space before the `=`, because the check
+matches at the start of a line. An indented tag, or one inside a list item, is
+not found, and nothing reports the miss.
+
+The environment carries the tag for a commit that does not exist yet:
+
+```
+NO_UNIT_GUIDE='shown in docs/guides/live/cascade_live/index.md' git commit ...
+```
+
+Reach for that form when the pre-commit hook stops you. A pre-commit hook runs
+before git records your message anywhere, and the check declines to read the
+previous commit's message in its place, so the environment is the channel left
+open. Quote the reason: an unquoted one ends at the first space, and the shell
+takes the next word for the command to run, so no commit happens at all. Write
+the tag into the message as well, so the reason survives in the history rather
+than only in the shell that ran the commit.
+
+A tag carrying no reason waives nothing, in either channel. The reason is the
+only record of the decision, so a waiver without one leaves nothing to review.
+
 ## Code examples
 
 - One minimal example under "Get started", with enough of the surrounding
@@ -129,8 +219,7 @@ of contents; a guide missing from it is unreachable.
 - Show what a developer would actually write. An example that only demonstrates
   the shape of an interface, or that drives a service the reader would normally
   reach through `Runner`, does not belong in a guide.
-- Do not set `model=` on a sample agent — guides stay model-agnostic, and no
-  guide in `docs/guides/` currently pins a model.
+- Do not set `model=` on a sample agent — guides stay model-agnostic.
 - For workflow nodes, show the logic as a plain Python function rather than a
   `BaseNode` subclass, unless the use case genuinely requires the subclass.
 - Wrap a function as a node with the `@node` decorator rather than

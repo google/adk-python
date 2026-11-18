@@ -22,7 +22,9 @@ import os
 from pathlib import Path
 from typing import Any
 from typing import Dict
+from typing import Literal
 from typing import Optional
+from typing import overload
 
 # Set up logger for ADK source utils
 logger = logging.getLogger("google_adk." + __name__)
@@ -118,6 +120,27 @@ def get_adk_schema_path(start_path: Optional[str] = None) -> Optional[str]:
     return str(schema_path)
 
   return None
+
+
+@overload
+def load_agent_config_schema(
+    raw_format: Literal[False] = False, escape_braces: bool = False
+) -> Dict[str, Any]:
+  ...
+
+
+@overload
+def load_agent_config_schema(
+    raw_format: Literal[True], escape_braces: bool = False
+) -> str:
+  ...
+
+
+@overload
+def load_agent_config_schema(
+    raw_format: bool = False, escape_braces: bool = False
+) -> str | Dict[str, Any]:
+  ...
 
 
 def load_agent_config_schema(

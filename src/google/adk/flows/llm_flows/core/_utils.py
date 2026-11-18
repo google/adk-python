@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
@@ -34,25 +33,9 @@ if TYPE_CHECKING:
 _ModelT = TypeVar('_ModelT', bound=BaseModel)
 
 
-def copy_or_none(model: Optional[_ModelT]) -> Optional[_ModelT]:
+def copy_or_none(model: _ModelT | None) -> _ModelT | None:
   """Returns a deep copy of a sub-model that request assembly then mutates."""
   return None if model is None else model.model_copy(deep=True)
-
-
-def run_config_for_new_live_session(run_config: RunConfig) -> RunConfig:
-  """Copies ``run_config`` for a fresh live session, clearing any handle.
-
-  Only ``session_resumption`` is copied. A deep copy of the whole config would
-  drag ``http_options`` along, and that can hold a live httpx or aiohttp client
-  which raises ``TypeError: cannot pickle``; the rest of the config is not
-  mutated here, so sharing it is what the caller wants anyway.
-  """
-  copied = run_config.model_copy(
-      update={'session_resumption': copy_or_none(run_config.session_resumption)}
-  )
-  if copied.session_resumption:
-    copied.session_resumption.handle = None
-  return copied
 
 
 def copy_http_options(

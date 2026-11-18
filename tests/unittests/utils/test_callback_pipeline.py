@@ -14,6 +14,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest import mock
+
+from google.adk.agents import CallbackType
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.utils._callback_pipeline import _invoke_cleanup_callback
 from google.adk.utils._callback_pipeline import _normalize_callbacks
 from google.adk.utils._callback_pipeline import _run_callbacks
 from google.adk.utils._callback_pipeline import _stop_on_non_none
@@ -449,3 +455,233 @@ async def test_on_model_error_callback_with_reordered_kwargs_maintains_canonical
   )
 
   assert result == 'ctx_val:req_val:err_val'
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_scopes_callback_context_with_callback_type():
+  """_run_callbacks scopes callback_context with the provided callback_type."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  callback_context = CallbackContext(mock_invocation_context)
+  observed_type = None
+
+  def callback(callback_context: CallbackContext) -> str:
+    nonlocal observed_type
+    if callback_context.callback_info is not None:
+      observed_type = callback_context.callback_info.type
+    return 'ok'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context=callback_context,
+      callback_type=CallbackType.BEFORE_AGENT,
+  )
+
+  assert result == 'ok'
+  assert observed_type == CallbackType.BEFORE_AGENT
+  assert callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_scopes_tool_context_with_callback_type():
+  """_run_callbacks scopes tool_context with the provided callback_type."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  tool_context = CallbackContext(mock_invocation_context)
+  observed_type = None
+
+  def callback(tool: str, args: dict, tool_context: CallbackContext) -> str:
+    nonlocal observed_type
+    if tool_context.callback_info is not None:
+      observed_type = tool_context.callback_info.type
+    return 'tool_ok'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      tool='my_tool',
+      args={},
+      tool_context=tool_context,
+      callback_type=CallbackType.BEFORE_TOOL,
+  )
+
+  assert result == 'tool_ok'
+  assert observed_type == CallbackType.BEFORE_TOOL
+  assert tool_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_without_callback_type_leaves_callback_info_none():
+  """_run_callbacks without a callback_type does not set callback_info."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  callback_context = CallbackContext(mock_invocation_context)
+  observed_info = 'unset'
+
+  def callback(callback_context: CallbackContext) -> str:
+    nonlocal observed_info
+    observed_info = callback_context.callback_info
+    return 'ok'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context=callback_context,
+  )
+
+  assert result == 'ok'
+  assert observed_info is None
+  assert callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_forwards_positional_args_with_callback_type():
+  """Positional callback arguments are not consumed by callback_type."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  callback_context = CallbackContext(mock_invocation_context)
+  observed_type = None
+
+  def callback(prefix: str, *, callback_context: CallbackContext) -> str:
+    nonlocal observed_type
+    if callback_context.callback_info is not None:
+      observed_type = callback_context.callback_info.type
+    return f'{prefix}-ok'
+
+  result_no_type = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      'item',
+      callback_context=callback_context,
+  )
+  assert result_no_type == 'item-ok'
+  assert observed_type is None
+
+  result_with_type = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      'item',
+      callback_context=callback_context,
+      callback_type=CallbackType.BEFORE_AGENT,
+  )
+  assert result_with_type == 'item-ok'
+  assert observed_type == CallbackType.BEFORE_AGENT
+  assert callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_none_is_noop(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """A missing cleanup callback returns None without logging."""
+  await _invoke_cleanup_callback(
+      None,
+      owner_kind='Plugin',
+      owner_name='p1',
+      callback_name='on_tool_error_callback',
+      subject='tool',
+      subject_name='my_tool',
+  )
+
+  assert not caplog.records
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_invokes_sync_and_async() -> None:
+  """Cleanup callbacks run sync and async callables and adapt args."""
+  seen: list[tuple[str, str, type[BaseException]]] = []
+
+  def sync_cb(ctx: str, req: str, err: BaseException) -> dict[str, str]:
+    seen.append(('sync', f'{ctx}:{req}', type(err)))
+    return {'ignored': 'yes'}
+
+  async def async_cb(
+      *,
+      callback_context: str,
+      llm_request: str,
+      error: BaseException,
+  ) -> dict[str, str]:
+    await asyncio.sleep(0)
+    seen.append(('async', f'{callback_context}:{llm_request}', type(error)))
+    return {'ignored': 'yes'}
+
+  cancelled = asyncio.CancelledError('aborted')
+  for cb in (sync_cb, async_cb):
+    await _invoke_cleanup_callback(
+        cb,
+        owner_kind='Agent',
+        owner_name='root_agent',
+        callback_name='on_model_error callback',
+        subject='model call for agent',
+        subject_name='root_agent',
+        error=cancelled,
+        llm_request='req_1',
+        callback_context='ctx_1',
+    )
+
+  assert seen == [
+      ('sync', 'ctx_1:req_1', asyncio.CancelledError),
+      ('async', 'ctx_1:req_1', asyncio.CancelledError),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_swallows_and_logs_cancelled_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """CancelledError raised inside a cleanup callback is logged and swallowed."""
+
+  async def cancelling_cb(**kwargs: object) -> None:
+    del kwargs
+    await asyncio.sleep(0)
+    raise asyncio.CancelledError()
+
+  await _invoke_cleanup_callback(
+      cancelling_cb,
+      owner_kind='Plugin',
+      owner_name='plugin_c',
+      callback_name='on_tool_error_callback',
+      subject='tool',
+      subject_name='slow_tool',
+      error=asyncio.CancelledError(),
+  )
+
+  assert (
+      "Plugin 'plugin_c' on_tool_error_callback was cancelled while tool"
+      " 'slow_tool' was being cancelled; continuing remaining cleanup"
+      ' callbacks.'
+      in caplog.text
+  )
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_swallows_and_logs_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Exceptions raised inside a cleanup callback are logged and swallowed."""
+
+  def failing_cb(**kwargs: object) -> None:
+    del kwargs
+    raise RuntimeError('cleanup boom')
+
+  await _invoke_cleanup_callback(
+      failing_cb,
+      owner_kind='Agent',
+      owner_name='root_agent',
+      callback_name='on_model_error callback',
+      subject='model call for agent',
+      subject_name='root_agent',
+      error=asyncio.CancelledError(),
+  )
+
+  assert (
+      "Agent 'root_agent' on_model_error callback raised while model call for"
+      " agent 'root_agent' was being cancelled; the cancellation propagates"
+      ' regardless.'
+      in caplog.text
+  )
