@@ -296,6 +296,38 @@ def _without_credential_parts(event: Event) -> Event:
   return new_event
 
 
+def _without_sibling_calls(
+    event: Event, task_scope: str, remote_fc_ids: set[str]
+) -> Event:
+  """Returns ``event`` without the function calls that belong to other tasks.
+
+  A coordinator turn that delegates several tasks at once holds all of their
+  calls in one event. Each task keeps only its own call, plus any call this
+  agent's peer made itself.
+  """
+  if event.content is None or not event.content.parts:
+    return event
+
+  def is_sibling(part: genai_types.Part) -> bool:
+    fc = part.function_call
+    return (
+        isinstance(fc, genai_types.FunctionCall)
+        and fc.id is not None
+        and fc.id != task_scope
+        and fc.id not in remote_fc_ids
+    )
+
+  if not any(is_sibling(part) for part in event.content.parts):
+    return event
+  new_event = event.model_copy(deep=True)
+  new_content = new_event.content
+  assert new_content is not None
+  new_content.parts = [
+      part for part in new_content.parts or [] if not is_sibling(part)
+  ]
+  return new_event
+
+
 def _adopted_card_description(
     description: str, agent_card_source: Optional[str]
 ) -> str:
@@ -1706,6 +1738,14 @@ class RemoteA2aAgent(BaseAgent):
     """
     if not ctx.session.events or ctx.session.events[-1].author != "user":
       return None
+    # In task mode, a response to an earlier delegation to this agent closes
+    # that task. It is not a pause the peer raised, so there is nothing to
+    # resume, and the next delegation starts a new task.
+    if self.mode == AgentMode.TASK and any(
+        fr.name == self.name
+        for fr in ctx.session.events[-1].get_function_responses()
+    ):
+      return None
     function_call_event = find_matching_function_call(ctx.session.events)
     if not function_call_event:
       return None
@@ -1896,6 +1936,13 @@ class RemoteA2aAgent(BaseAgent):
       # function_response as text with their payloads inlined, so scrubbing
       # after it would be too late.
       scrubbed_event = _without_credential_parts(event)
+      if self.mode == AgentMode.TASK and task_scope:
+        # Drop the coordinator's calls meant for other tasks before the event
+        # is rendered as quoted text below, where they can no longer be told
+        # apart from this task's own request.
+        scrubbed_event = _without_sibling_calls(
+            scrubbed_event, task_scope, remote_fc_ids
+        )
       processed_event: Optional[Event] = scrubbed_event
       if _is_other_agent_reply(self.name, scrubbed_event):
         processed_event = _present_other_agent_message(scrubbed_event)
@@ -1908,18 +1955,6 @@ class RemoteA2aAgent(BaseAgent):
         continue
 
       for part in processed_event.content.parts:
-        if (
-            self.mode == AgentMode.TASK
-            and task_scope
-            and part.function_call
-            and isinstance(part.function_call, genai_types.FunctionCall)
-            and part.function_call.id is not None
-            and part.function_call.id != task_scope
-            and part.function_call.id not in remote_fc_ids
-        ):
-          # Skip sibling function calls from the coordinator intended for other tools/agents.
-          continue
-
         if (
             part.function_response
             and isinstance(part.function_response, genai_types.FunctionResponse)

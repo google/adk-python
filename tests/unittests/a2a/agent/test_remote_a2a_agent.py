@@ -3328,53 +3328,79 @@ class TestRemoteA2aAgentTaskModeMessageHandling:
       assert context_id is None
 
   def test_construct_message_parts_from_session_filters_sibling_fcs(self):
-    """Test that sibling FunctionCalls from the coordinator are filtered out."""
-    trigger_fc = genai_types.FunctionCall(
-        id="task-1", name="test_agent", args={"request": "start"}
-    )
-    sibling_fc = genai_types.FunctionCall(
-        id="sibling-2", name="other_tool", args={"other": "data"}
-    )
-
-    trigger_part = Mock()
-    trigger_part.function_call = trigger_fc
-    trigger_part.function_response = None
-    trigger_part.text = None
-
-    sibling_part = Mock()
-    sibling_part.function_call = sibling_fc
-    sibling_part.function_response = None
-    sibling_part.text = None
-
-    trigger_event = Mock(
-        live_session_id=None,
-        isolation_scope=None,
+    """A task's request holds its own call, not the coordinator's others."""
+    trigger_event = Event(
         author="coordinator",
+        invocation_id="invocation-123",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(
+                    function_call=genai_types.FunctionCall(
+                        id=call_id, name="test_agent", args={"request": request}
+                    )
+                )
+                for call_id, request in (
+                    ("task-1", "own request"),
+                    ("task-2", "sibling request"),
+                )
+            ],
+        ),
     )
-    trigger_event.get_function_calls.return_value = [trigger_fc, sibling_fc]
-    trigger_event.get_function_responses.return_value = []
-    trigger_event.content = Mock()
-    trigger_event.content.parts = [trigger_part, sibling_part]
-
     self.mock_session.events = [trigger_event]
+    self.mock_genai_part_converter.side_effect = convert_genai_part_to_a2a_part
 
-    def mock_converter(part):
-      return _compat.make_text_part(f"FC:{part.function_call.id}")
+    parts, context_id = self.agent._construct_message_parts_from_session(
+        self.mock_context
+    )
 
-    self.mock_genai_part_converter.side_effect = mock_converter
+    text = " ".join(_compat.part_text(part) or "" for part in parts)
+    assert "own request" in text
+    assert "sibling request" not in text
+    assert context_id is None
 
-    with patch(
-        "google.adk.a2a.agent._remote_a2a_agent._present_other_agent_message"
-    ) as mock_present:
-      mock_present.side_effect = lambda event: event
+  def test_create_a2a_request_for_user_function_response_after_earlier_task(
+      self,
+  ):
+    """The response that closed an earlier task does not resume this one."""
+    trigger_event = Event(
+        author="coordinator",
+        invocation_id="invocation-123",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(
+                    function_call=genai_types.FunctionCall(
+                        id=call_id, name="test_agent", args={"request": call_id}
+                    )
+                )
+                for call_id in ("task-0", "task-1")
+            ],
+        ),
+    )
+    earlier_task_response = Event(
+        author="user",
+        invocation_id="invocation-123",
+        content=genai_types.Content(
+            role="user",
+            parts=[
+                genai_types.Part(
+                    function_response=genai_types.FunctionResponse(
+                        id="task-0",
+                        name="test_agent",
+                        response={"output": "report"},
+                    )
+                )
+            ],
+        ),
+    )
+    self.mock_session.events = [trigger_event, earlier_task_response]
 
-      parts, context_id = self.agent._construct_message_parts_from_session(
-          self.mock_context
-      )
+    result = self.agent._create_a2a_request_for_user_function_response(
+        self.mock_context
+    )
 
-      assert len(parts) == 1
-      assert _compat.part_text(parts[0]) == "FC:task-1"
-      assert context_id is None
+    assert result is None
 
   def test_construct_message_parts_from_session_foreign_function_response_converted(
       self,
