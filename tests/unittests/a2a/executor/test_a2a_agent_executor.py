@@ -1623,7 +1623,22 @@ class TestA2aAgentExecutor:
         app_name="test-app", agent=agent, session_service=session_service
     )
 
-    executor = A2aAgentExecutor(runner=runner)
+    config = A2aAgentExecutorConfig()
+    original_converter = config.event_converter
+
+    def converter_with_pause_metadata(*args):
+      for event in original_converter(*args):
+        if (
+            isinstance(event, TaskStatusUpdateEvent)
+            and event.status.state == _compat.TS_INPUT_REQUIRED
+        ):
+          metadata = _compat.meta_to_dict(event.metadata)
+          metadata["pause-proof"] = {"preserved": True}
+          _compat.set_event_metadata(event, metadata)
+        yield event
+
+    config.event_converter = converter_with_pause_metadata
+    executor = A2aAgentExecutor(runner=runner, config=config)
 
     event_queue = Mock(spec=EventQueue)
     enqueued_events = []
@@ -1656,6 +1671,10 @@ class TestA2aAgentExecutor:
     final_events = _final_events(event_queue.enqueue_event.call_args_list)
     assert len(final_events) >= 1
     assert final_events[-1].status.state == _compat.TS_INPUT_REQUIRED
+
+    assert _compat.metadata_get(final_events[-1].metadata, "pause-proof") == {
+        "preserved": True
+    }
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize("force_new_version", [False, True])
