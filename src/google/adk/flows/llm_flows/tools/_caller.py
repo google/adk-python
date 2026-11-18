@@ -23,6 +23,7 @@ from collections.abc import Awaitable
 import contextvars
 import copy
 import dataclasses
+import enum
 import json
 import logging
 from typing import Any
@@ -265,6 +266,22 @@ def _extract_multimodal_parts(
   return remaining or {}, parts
 
 
+def _unwrap_enums(value: object) -> object:
+  """Returns a copy with Enum members in dicts, lists and tuples as values."""
+  if isinstance(value, enum.Enum):
+    return value.value
+  if isinstance(value, dict):
+    return {
+        (k.value if isinstance(k, enum.Enum) else k): _unwrap_enums(v)
+        for k, v in value.items()
+    }
+  if isinstance(value, list):
+    return [_unwrap_enums(item) for item in value]
+  if isinstance(value, tuple):
+    return tuple(_unwrap_enums(item) for item in value)
+  return value
+
+
 def _build_function_response_content(
     tool: BaseTool,
     function_result: object,
@@ -294,7 +311,7 @@ def _build_function_response_content(
 
   part_function_response = types.Part.from_function_response(
       name=tool.name,
-      response=function_result,
+      response=cast(dict[str, Any], _unwrap_enums(function_result)),
       parts=function_response_parts,
   )
   function_response = part_function_response.function_response

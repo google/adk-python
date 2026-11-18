@@ -294,11 +294,6 @@ because the URL was set correctly by hand.
 
 ## Limitations
 
-*   **Experimental.** `to_a2a` is decorated `@a2a_experimental`, so every call
-    emits a `UserWarning` saying the ADK A2A implementation is subject to
-    breaking changes. Set `ADK_SUPPRESS_A2A_EXPERIMENTAL_FEATURE_WARNINGS` to
-    `1`, `true`, `yes`, or `on` to silence it. The A2A protocol itself is not
-    experimental; only ADK's implementation of it is.
 *   **Nothing binds.** `host`, `port`, and `protocol` shape a string in the
     agent card and nothing else. Listening is the ASGI server's job.
 *   **The card is a startup snapshot.** It is built once, inside the lifespan,

@@ -20,9 +20,11 @@ results into a single number. It only computes: comparing the number with a
 threshold, and deciding the case's verdict, is the aggregator's job.
 
 A method either combines scores, so it applies only to a metric, or counts the
-runs that passed, so it applies to a metric or to the whole eval case. Besides
-the built-in methods, an eval config can declare custom ones, each a Python
-function that is imported by its fully qualified name.
+runs that passed, so it applies to a metric or to the whole eval case. Of the
+latter, `pass_at_k` and `pass_hat_k` look at k runs at a time, and the rule
+that names them gives k. Besides the built-in methods, an eval config can
+declare custom ones, each a Python function that is imported by its fully
+qualified name.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from collections.abc import Callable
 from collections.abc import Sequence
 import dataclasses
 import importlib
+import math
 import numbers
 import statistics
 from typing import TYPE_CHECKING
@@ -67,6 +70,9 @@ class RunResult:
 AggregationMethodFn = Callable[[Sequence[RunResult]], float | None]
 """Combines a target's runs into one number, or None if the runs allow none."""
 
+AggregationMethodWithKFn = Callable[[Sequence[RunResult], int], float | None]
+"""Like `AggregationMethodFn`, for a method that draws k runs at a time."""
+
 
 @dataclasses.dataclass(frozen=True)
 class AggregationMethod:
@@ -83,6 +89,39 @@ class AggregationMethod:
 
   custom: bool = False
   """True for a method declared in the eval config rather than built in."""
+
+  compute_with_k: AggregationMethodWithKFn | None = None
+  """For a method that draws k runs at a time, such as "pass_hat_k", its value.
+
+  A rule that names such a method gives `k`, and `with_k` binds it into
+  `compute`. Until then, `compute` raises.
+  """
+
+  def with_k(self, k: int) -> AggregationMethod:
+    """Returns this method with `k` bound, named for it, e.g. "pass^3".
+
+    Args:
+      k: The number of runs drawn at a time, at least 1.
+
+    Raises:
+      TypeError: If the method does not draw k runs at a time.
+      ValueError: If `k` is less than 1.
+    """
+    compute_with_k = self.compute_with_k
+    if compute_with_k is None:
+      raise TypeError(f"Method {self.name!r} does not take k.")
+    _check_k(k)
+
+    def compute(runs: Sequence[RunResult]) -> float | None:
+      return compute_with_k(runs, k)
+
+    template = _K_METHOD_DISPLAY_NAMES.get(self.name, self.name + "(k={k})")
+    return dataclasses.replace(
+        self,
+        name=template.format(k=k),
+        compute=compute,
+        compute_with_k=None,
+    )
 
 
 def mean_over_invocations(runs: Sequence[RunResult]) -> float | None:
@@ -146,6 +185,17 @@ def min_over_runs(runs: Sequence[RunResult]) -> float | None:
   return min(scores) if scores else None
 
 
+def _count_decided_and_passed(runs: Sequence[RunResult]) -> tuple[int, int]:
+  """Returns how many runs were decided, and how many of those passed.
+
+  A run is decided when its status is PASSED or FAILED. Any other status, such
+  as NOT_EVALUATED, carries no pass or fail signal, so that run is left out.
+  """
+  passed = sum(run.status == EvalStatus.PASSED for run in runs)
+  failed = sum(run.status == EvalStatus.FAILED for run in runs)
+  return passed + failed, passed
+
+
 def pass_rate(runs: Sequence[RunResult]) -> float | None:
   """Returns the fraction of the decided runs that passed.
 
@@ -160,14 +210,83 @@ def pass_rate(runs: Sequence[RunResult]) -> float | None:
     The number of passed runs divided by the number of decided runs, or None
     if no run was decided.
   """
-  decided = [
-      run.status
-      for run in runs
-      if run.status in (EvalStatus.PASSED, EvalStatus.FAILED)
-  ]
+  decided, passed = _count_decided_and_passed(runs)
   if not decided:
     return None
-  return decided.count(EvalStatus.PASSED) / len(decided)
+  return passed / decided
+
+
+def pass_at_k(runs: Sequence[RunResult], k: int) -> float | None:
+  """Returns the chance that at least one of k runs passes: pass@k.
+
+  pass@k measures capability: whether the agent can pass at all. It is the
+  unbiased estimator of Chen et al. (2021): the share of the subsets of k
+  decided runs, drawn without replacement, that hold a pass. At k = 1 it is
+  the pass rate. Undecided runs are left out, as in `pass_rate`.
+
+  Args:
+    runs: One target's result in each run of an eval case: a metric's, or the
+      whole eval case's.
+    k: The number of runs drawn, at least 1.
+
+  Returns:
+    The estimate, from 0.0 to 1.0, or None if fewer than k runs were decided.
+
+  Raises:
+    ValueError: If `k` is less than 1.
+  """
+  _check_k(k)
+  decided, passed = _count_decided_and_passed(runs)
+  if decided < k:
+    return None
+  return 1.0 - math.comb(decided - passed, k) / math.comb(decided, k)
+
+
+def pass_hat_k(runs: Sequence[RunResult], k: int) -> float | None:
+  """Returns the chance that all of k runs pass: pass^k.
+
+  pass^k measures reliability: whether the agent passes every time. It is the
+  unbiased estimator of Yao et al. (2024, tau-bench): the share of the subsets
+  of k decided runs, drawn without replacement, that hold only passes. At
+  k = 1 it is the pass rate. Undecided runs are left out, as in `pass_rate`.
+
+  Args:
+    runs: One target's result in each run of an eval case: a metric's, or the
+      whole eval case's.
+    k: The number of runs drawn, at least 1.
+
+  Returns:
+    The estimate, from 0.0 to 1.0, or None if fewer than k runs were decided.
+
+  Raises:
+    ValueError: If `k` is less than 1.
+  """
+  _check_k(k)
+  decided, passed = _count_decided_and_passed(runs)
+  if decided < k:
+    return None
+  # math.comb(passed, k) is 0 when fewer than k runs passed.
+  return math.comb(passed, k) / math.comb(decided, k)
+
+
+def _check_k(k: int) -> None:
+  """Raises ValueError unless at least one run is drawn."""
+  if k < 1:
+    raise ValueError(f"k must be at least 1, got {k}.")
+
+
+def _requires_k(name: str) -> AggregationMethodFn:
+  """Returns a `compute` for a method whose rule has not bound k yet."""
+
+  def compute(runs: Sequence[RunResult]) -> float | None:
+    del runs  # Unused: there is no value without k.
+    raise TypeError(f"Method {name!r} needs k; bind it with `with_k`.")
+
+  return compute
+
+
+_K_METHOD_DISPLAY_NAMES = {"pass_at_k": "pass@{k}", "pass_hat_k": "pass^{k}"}
+"""The names shown in output for the methods that draw k runs at a time."""
 
 
 DEFAULT_AGGREGATION_METHOD = AggregationMethod(
@@ -189,6 +308,18 @@ _BUILT_IN_AGGREGATION_METHODS: dict[str, AggregationMethod] = {
         ),
         AggregationMethod(
             name="pass_rate", compute=pass_rate, uses_scores=False
+        ),
+        *(
+            AggregationMethod(
+                name=name,
+                compute=_requires_k(name),
+                uses_scores=False,
+                compute_with_k=compute_with_k,
+            )
+            for name, compute_with_k in (
+                ("pass_at_k", pass_at_k),
+                ("pass_hat_k", pass_hat_k),
+            )
         ),
     )
 }

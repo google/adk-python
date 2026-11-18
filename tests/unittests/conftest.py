@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import os
+import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -136,3 +139,51 @@ def mock_gcp_metadata_off(request):
     _gcp_metadata.get_project_id_from_metadata = orig_get_project_id
     _gcp_metadata._cached_project_id = orig_cached_project_id
     _cloud_sdk.get_application_default_credentials_path = orig_get_adc_path
+
+
+_GCLOUD_PROGRAMS = frozenset({'gcloud', 'gcloud.cmd'})
+
+
+def _runs_gcloud(args: Any) -> bool:
+  """Returns whether a subprocess call would run the gcloud CLI."""
+  if isinstance(args, (str, bytes, os.PathLike)):
+    args = os.fsdecode(args).split()
+  if not args:
+    return False
+  return os.path.basename(os.fsdecode(args[0])) in _GCLOUD_PROGRAMS
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gcloud():
+  """Fails any test that would run the developer's real gcloud CLI.
+
+  The CLI onboarding and deploy code shells out to gcloud. A test that reaches
+  it unmocked opens a browser sign-in or changes the developer's gcloud
+  config, so it fails here instead. Tests that mock subprocess themselves
+  replace this guard for their own duration.
+
+  It calls pytest.fail, whose exception derives from BaseException, so code
+  under test that catches Exception around the gcloud call can't swallow it.
+
+  The guard uses its own MonkeyPatch rather than the monkeypatch fixture, so
+  it doesn't change the order in which other tests' fixtures are torn down.
+  """
+  real_run = subprocess.run
+  real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+  def run(args: Any, *rest: Any, **kwargs: Any) -> Any:
+    if _runs_gcloud(args):
+      pytest.fail(f'Test ran the real gcloud CLI: {args}')
+    return real_run(args, *rest, **kwargs)
+
+  async def create_subprocess_exec(
+      program: Any, *rest: Any, **kwargs: Any
+  ) -> Any:
+    if _runs_gcloud([program]):
+      pytest.fail(f'Test ran the real gcloud CLI: {[program, *rest]}')
+    return await real_create_subprocess_exec(program, *rest, **kwargs)
+
+  with pytest.MonkeyPatch.context() as patcher:
+    patcher.setattr(subprocess, 'run', run)
+    patcher.setattr(asyncio, 'create_subprocess_exec', create_subprocess_exec)
+    yield

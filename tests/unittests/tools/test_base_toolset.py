@@ -15,6 +15,7 @@
 """Unit tests for BaseToolset."""
 
 from typing import Optional
+from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
@@ -449,6 +450,36 @@ async def test_get_tools_with_prefix_caching():
       readonly_context=readonly_context2
   )
   assert tools4 is not tools5
+
+
+@pytest.mark.asyncio
+async def test_toolset_created_without_caching_lists_tools_on_every_call():
+  """Test that disable_invocation_cache=True re-lists tools in an invocation."""
+  toolset = _TestingToolset(
+      tools=[_TestingTool(name='tool1', description='Test tool 1')],
+      disable_invocation_cache=True,
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  readonly_context = ReadonlyContext(
+      InvocationContext(
+          invocation_id='inv-1',
+          agent=LlmAgent(name='test_agent'),
+          session=session,
+          session_service=session_service,
+      )
+  )
+
+  with mock.patch.object(
+      toolset, 'get_tools', wraps=toolset.get_tools
+  ) as get_tools:
+    await toolset.get_tools_with_prefix(readonly_context=readonly_context)
+    await toolset.get_tools_with_prefix(readonly_context=readonly_context)
+
+  assert get_tools.await_count == 2
+  assert toolset.use_invocation_cache is False
 
 
 @pytest.mark.asyncio

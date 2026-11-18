@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from typing import Any
 from typing import cast
@@ -27,7 +26,7 @@ from ....agents._callback_metadata import _callback_scope
 from ....agents._callback_metadata import CallbackType
 from ....tools.base_tool import BaseTool
 from ....tools.tool_context import ToolContext
-from ....utils._callback_pipeline import _invoke_callback
+from ....utils._callback_pipeline import _invoke_cleanup_callback
 from ....utils._callback_pipeline import _run_callbacks
 from ....utils._callback_pipeline import _stop_on_non_none
 
@@ -165,57 +164,32 @@ async def notify_tool_cancelled(
   """
   with _callback_scope(CallbackType.ON_TOOL_ERROR, tool_context):
     for plugin in invocation_context.plugin_manager.plugins:
-      try:
-        callback_method = getattr(plugin, 'on_tool_error_callback', None)
-        if callback_method is not None:
-          result = callback_method(
-              tool=tool,
-              tool_args=tool_args,
-              tool_context=tool_context,
-              error=cancelled,
-          )
-          if inspect.isawaitable(result):
-            await result
-      except asyncio.CancelledError:
-        logger.warning(
-            'Plugin %r on_tool_error_callback was cancelled while tool %r was'
-            ' being cancelled; continuing remaining cleanup callbacks.',
-            plugin.name,
-            tool.name,
-        )
-      except Exception:  # pylint: disable=broad-exception-caught
-        logger.exception(
-            'Plugin %r on_tool_error_callback raised while tool %r was being'
-            ' cancelled; the cancellation propagates regardless.',
-            plugin.name,
-            tool.name,
-        )
+      await _invoke_cleanup_callback(
+          getattr(plugin, 'on_tool_error_callback', None),
+          owner_kind='Plugin',
+          owner_name=plugin.name,
+          callback_name='on_tool_error_callback',
+          subject='tool',
+          subject_name=tool.name,
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          error=cancelled,
+      )
 
     if agent is None:
       return
 
     for callback in agent.canonical_on_tool_error_callbacks:
-      try:
-        result = _invoke_callback(
-            callback,
-            tool=tool,
-            args=tool_args,
-            tool_context=tool_context,
-            error=cancelled,
-        )
-        if inspect.isawaitable(result):
-          await result
-      except asyncio.CancelledError:
-        logger.warning(
-            'Agent %r on_tool_error callback was cancelled while tool %r was'
-            ' being cancelled; continuing remaining cleanup callbacks.',
-            agent.name,
-            tool.name,
-        )
-      except Exception:  # pylint: disable=broad-exception-caught
-        logger.exception(
-            'Agent %r on_tool_error callback raised while tool %r was being'
-            ' cancelled; the cancellation propagates regardless.',
-            agent.name,
-            tool.name,
-        )
+      await _invoke_cleanup_callback(
+          callback,
+          owner_kind='Agent',
+          owner_name=agent.name,
+          callback_name='on_tool_error callback',
+          subject='tool',
+          subject_name=tool.name,
+          tool=tool,
+          args=tool_args,
+          tool_context=tool_context,
+          error=cancelled,
+      )

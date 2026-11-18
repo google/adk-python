@@ -160,6 +160,7 @@ def mock_sampler(mocker):
 @pytest.fixture
 def mock_agent(mocker):
   agent = mocker.create_autospec(Agent, instance=True)
+  agent.max_parallel_workers = None
   agent.instruction = "Initial instruction"
   agent.sub_agents = {}
   agent.clone.return_value = agent

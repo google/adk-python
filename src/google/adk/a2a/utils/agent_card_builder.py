@@ -36,7 +36,6 @@ from ...tools.example_tool import ExampleTool
 from ...workflow import BaseNode
 from ...workflow import START
 from ...workflow import Workflow
-from ..experimental import a2a_experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -47,7 +46,6 @@ _SkillSecurity = list[dict[str, list[str]]]
 _SKILL_SECURITY_METADATA_KEY = 'security'
 
 
-@a2a_experimental
 class AgentCardBuilder:
   """Builder class for creating agent cards from ADK agents.
 

@@ -27,6 +27,7 @@ from google.adk.evaluation.eval_config import get_eval_metrics_from_config
 from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
 from google.adk.evaluation.eval_config import MultiRunConfig
 from google.adk.evaluation.eval_config import MultiRunCriterion
+from google.adk.evaluation.eval_config import PassKMultiRunCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
@@ -586,7 +587,7 @@ def test_multi_run_config_reads_rules_for_metrics_and_the_case():
     "multi_run_config",
     [
         {"cross_run_scoring": "mean"},
-        {"cross_run_scoring": {"method": "pass_at_k", "threshold": 0.5}},
+        {"cross_run_scoring": {"method": "pass_ratio", "threshold": 0.5}},
     ],
     ids=["name", "object"],
 )
@@ -674,8 +675,145 @@ def test_multi_run_criterion_rejects_unknown_keys():
   """A misspelled key raises instead of being silently dropped from a rule."""
   with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
     MultiRunCriterion.model_validate(
-        {"method": "pass_rate", "threshold": 0.5, "k": 3}
+        {"method": "pass_rate", "threshold": 0.5, "metrics": "a"}
     )
+
+
+def test_multi_run_config_reads_pass_k_criteria():
+  """pass@k criteria give k, may leave out the threshold, and load as PassK."""
+  eval_config = EvalConfig.model_validate({
+      "criteria": {"response_match_score": 0.8},
+      "multi_run_config": {
+          "num_runs": 4,
+          "cross_run_criteria": [
+              {"method": "pass_hat_k", "k": 3},
+              {"method": "pass_at_k", "k": 2, "threshold": 0.9},
+              {"method": "pass_rate", "threshold": 0.5},
+          ],
+      },
+  })
+
+  assert eval_config.multi_run_config.cross_run_criteria == [
+      PassKMultiRunCriterion(method="pass_hat_k", k=3),
+      PassKMultiRunCriterion(method="pass_at_k", k=2, threshold=0.9),
+      MultiRunCriterion(method="pass_rate", threshold=0.5),
+  ]
+  assert [
+      type(criterion)
+      for criterion in eval_config.multi_run_config.cross_run_criteria
+  ] == [PassKMultiRunCriterion, PassKMultiRunCriterion, MultiRunCriterion]
+
+
+def test_multi_run_config_reads_k_above_num_runs_in_the_config():
+  """`--num_runs` can raise the runs, so k is checked when the eval starts."""
+  multi_run_config = MultiRunConfig.model_validate(
+      {"num_runs": 2, "cross_run_criteria": [{"method": "pass_hat_k", "k": 4}]}
+  )
+
+  assert multi_run_config.cross_run_criteria == [
+      PassKMultiRunCriterion(method="pass_hat_k", k=4)
+  ]
+
+
+@pytest.mark.parametrize(
+    ("criterion", "message"),
+    [
+        (
+            {"method": "pass_hat_k"},
+            "PassKMultiRunCriterion.k\n  Field required",
+        ),
+        (
+            {"method": "pass_hat_k", "threshold": 0.5},
+            "PassKMultiRunCriterion.k\n  Field required",
+        ),
+        (
+            {"method": "pass_rate", "threshold": 0.5, "k": 2},
+            "Extra inputs are not permitted",
+        ),
+        ({"method": "pass_rate"}, "'pass_rate' needs a threshold"),
+        ({"method": "pass_hat_k", "k": 0}, "greater than or equal to 1"),
+    ],
+    ids=[
+        "missing_k",
+        "missing_k_with_threshold",
+        "k_for_pass_rate",
+        "report_only_pass_rate",
+        "k_below_one",
+    ],
+)
+def test_multi_run_config_rejects_invalid_pass_k_criterion(criterion, message):
+  """k goes with pass@k methods only, and only they may skip the threshold."""
+  with pytest.raises(ValidationError, match=re.escape(message)):
+    MultiRunConfig.model_validate({"cross_run_criteria": [criterion]})
+
+
+@pytest.mark.parametrize(
+    "criterion",
+    [
+        {"method": "pass_hat_k", "k": 0},
+        {"method": "pass_rate", "threshold": 0.5, "k": 2},
+        {"method": "pass_hat_k", "k": 2, "metric": "response_match_score"},
+    ],
+    ids=["k_below_one", "k_for_pass_rate", "unknown_key"],
+)
+def test_multi_run_config_reports_criterion_error_once(criterion):
+  """A malformed criterion gets one error, from the model its method picks."""
+  with pytest.raises(ValidationError) as exc_info:
+    MultiRunConfig.model_validate({"cross_run_criteria": [criterion]})
+
+  assert exc_info.value.error_count() == 1
+
+
+@pytest.mark.parametrize(
+    ("multi_run_config", "message"),
+    [
+        (
+            {"cross_run_scoring": {"method": "pass_hat_k", "threshold": 0.5}},
+            "only supported in `cross_run_criteria`",
+        ),
+        (
+            {
+                "cross_run_scoring_by_metric": {
+                    "response_match_score": {
+                        "method": "pass_at_k",
+                        "k": 2,
+                        "threshold": 0.5,
+                    }
+                }
+            },
+            "Extra inputs are not permitted",
+        ),
+    ],
+    ids=["default_rule", "metric_rule_with_k"],
+)
+def test_multi_run_config_rejects_pass_k_method_as_a_metric_rule(
+    multi_run_config, message
+):
+  """pass@k and pass^k count the runs of the whole case, not of one metric."""
+  with pytest.raises(ValidationError, match=re.escape(message)):
+    MultiRunConfig.model_validate(multi_run_config)
+
+
+def test_multi_run_config_rejects_pass_k_criterion_object_as_a_metric_rule():
+  """A PassKMultiRunCriterion built in Python is rejected as a metric rule."""
+  with pytest.raises(
+      ValidationError, match="only supported in `cross_run_criteria`"
+  ):
+    MultiRunConfig(
+        cross_run_scoring=PassKMultiRunCriterion(
+            method="pass_hat_k", k=2, threshold=0.5
+        )
+    )
+
+
+def test_multi_run_criterion_rejects_metric():
+  """Cross-run criteria judge the whole eval case, so they name no metric."""
+  with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+    MultiRunConfig.model_validate({
+        "cross_run_criteria": [
+            {"method": "pass_hat_k", "k": 2, "metric": "response_match_score"}
+        ]
+    })
 
 
 def _custom_method(*, uses_scores: bool) -> dict[str, object]:

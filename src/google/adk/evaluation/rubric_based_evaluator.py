@@ -24,6 +24,7 @@ from typing_extensions import override
 
 from ..models.llm_response import LlmResponse
 from .common import EvalBaseModel
+from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
 from .eval_rubrics import Rubric
@@ -415,6 +416,23 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
     return self._effective_rubrics_list
 
   @override
+  def _convert_auto_rater_response_to_score_for_invocation(
+      self,
+      auto_rater_response: LlmResponse,
+      *,
+      actual: Invocation,
+      expected: Invocation | None,
+  ) -> AutoRaterScore:
+    # Every prompt is formatted before any response arrives, so the effective
+    # list now holds the last invocation's rubrics. Rebuild it from
+    # `actual.rubrics`, as the prompt was; nothing awaits before the parse, so
+    # concurrent samples cannot interleave.
+    self.create_effective_rubrics_list(actual.rubrics)
+    return super()._convert_auto_rater_response_to_score_for_invocation(
+        auto_rater_response, actual=actual, expected=expected
+    )
+
+  @override
   def convert_auto_rater_response_to_score(
       self,
       auto_rater_response: LlmResponse,
@@ -440,7 +458,8 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
 
     normalized_rubric_to_rubric_map = {}
     rubric_by_id = {}
-    for r in self.get_effective_rubrics_list():
+    effective_rubrics = self.get_effective_rubrics_list()
+    for r in effective_rubrics:
       normalized_rubric_to_rubric_map[
           _normalize_text(r.rubric_content.text_property)
       ] = r
@@ -471,15 +490,13 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
     # Like a partial parse, a rubric left without a verdict (never answered,
     # answered under an id and text that match no rubric, or given a verdict
     # that is neither yes nor no) would drop out of the average and inflate the
-    # score, so the sample is not scored at all. Only criterion rubrics are
-    # checked: evaluate_invocations formats every prompt before scoring, so the
-    # effective list holds the last invocation's rubrics, not this response's.
+    # score, so the sample is not scored at all.
     answered_rubric_ids = {
         s.rubric_id for s in rubric_scores if s.score is not None
     }
     missing_rubric_ids = [
         r.rubric_id
-        for r in self._rubrics
+        for r in effective_rubrics
         if r.rubric_id not in answered_rubric_ids
     ]
     if rubric_responses and missing_rubric_ids:

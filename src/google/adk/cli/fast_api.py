@@ -638,18 +638,6 @@ def get_fast_api_app(
           " tracing."
       )
 
-    @app.middleware("http")
-    async def context_propagation(
-        request: Request, call_next: Callable[[Request], Awaitable[Any]]
-    ) -> Any:
-      ctx = get_propagated_context(request)
-      token = context.attach(ctx)
-      try:
-        response = await call_next(request)
-        return response
-      finally:
-        context.detach(token)
-
     @app.post(
         "/api/reasoning_engine",
         response_model_exclude_none=True,
@@ -750,5 +738,17 @@ def get_fast_api_app(
           content=json_generator(content_iter),
           media_type="application/json",
       )
+
+  @app.middleware("http")
+  async def context_propagation(
+      request: Request, call_next: Callable[[Request], Awaitable[Any]]
+  ) -> Any:
+    ctx = get_propagated_context(request)
+    token = context.attach(ctx)
+    try:
+      response = await call_next(request)
+      return response
+    finally:
+      context.detach(token)
 
   return app

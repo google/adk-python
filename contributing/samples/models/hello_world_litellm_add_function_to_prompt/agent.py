@@ -60,9 +60,12 @@ def check_prime(number: int) -> str:
 root_agent = Agent(
     model=LiteLlm(
         model="vertex_ai/meta/llama-4-maverick-17b-128e-instruct-maas",
-        # If the model is not trained with functions and you would like to
-        # enable function calling, you can add functions to the models, and the
-        # functions will be added to the prompts during inferences.
+        # `functions` is passed through to LiteLLM as the legacy OpenAI
+        # `functions` parameter, and it replaces the declarations ADK would
+        # otherwise generate from `tools` below, so keep the two in sync.
+        # LiteLLM only rewrites `functions` into the prompt for its `ollama`
+        # provider; other providers, including the `vertex_ai` one used here,
+        # get a normal function-calling request.
         functions=[
             convert_to_openai_function(roll_die),
             convert_to_openai_function(check_prime),

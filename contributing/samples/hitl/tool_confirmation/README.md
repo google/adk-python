@@ -38,9 +38,17 @@ def transfer_funds(amount: float, recipient: str, tool_context: ToolContext):
 When the user responds to the confirmation request, the tool will be called again. This time, `tool_context.tool_confirmation` will be populated with the user's decision (`confirmed` boolean).
 
 ```python
+def transfer_funds(amount: float, recipient: str, tool_context: ToolContext):
+    if amount >= 100:
+        if not tool_context.tool_confirmation:
+            tool_context.request_confirmation(
+                hint=f"Confirm transfer of ${amount} to {recipient}.",
+            )
+            return {"error": "This tool call requires confirmation, please approve or reject."}
         elif not tool_context.tool_confirmation.confirmed:
             return {"error": "Transfer rejected by user."}
 
+    # Proceed with transfer for amounts < 100 or if confirmed
     return {"result": f"Successfully transferred ${amount} to {recipient}."}
 ```
 
@@ -56,7 +64,7 @@ def close_account(account_id: str, tool_context: ToolContext):
     return {"result": f"Account {account_id} closed."}
 
 root_agent = Agent(
-    ...
+    # ...
     tools=[
         FunctionTool(func=close_account, require_confirmation=True),
     ],

@@ -421,6 +421,27 @@ class TestMCPSessionManager:
     })
     assert merged == expected
 
+  def test_merge_headers_override_replaces_base_header_in_any_case(self):
+    """A request header replaces a static header that differs only in case."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="https://example.com/mcp",
+            headers={
+                "authorization": "Bearer shared-service-token",
+                "X-Static": "kept",
+            },
+        )
+    )
+
+    merged = manager._merge_headers(  # pylint: disable=protected-access
+        {"Authorization": "Bearer per-user-token"}
+    )
+
+    assert httpx.Headers(merged).get_list("authorization") == [
+        "Bearer per-user-token"
+    ]
+    assert merged["X-Static"] == "kept"
+
   def test_merge_headers_adds_adk_user_agent(self):
     """An MCP server can attribute the request to ADK."""
     manager = MCPSessionManager(

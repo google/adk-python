@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
 from enum import Enum
 import logging
 import os
@@ -105,7 +107,11 @@ class AgentRegistrySingleMcpToolset(McpToolset):
       ),
       tool_name_prefix: str | None = None,
       header_provider: (
-          Callable[[ReadonlyContext], Dict[str, str]] | None
+          Callable[
+              [ReadonlyContext],
+              dict[str, str] | Awaitable[dict[str, str]],
+          ]
+          | None
       ) = None,
       auth_scheme: AuthScheme | None = None,
       auth_credential: AuthCredential | None = None,
@@ -387,6 +393,7 @@ class AgentRegistry:
     self._base_path = f"projects/{self.project_id}/locations/{self.location}"
     self._header_provider = header_provider
     self._connect_lock = threading.Lock()
+    self._auth_refresh_lock = threading.Lock()
     self._connect()
 
   def _connect(self) -> None:
@@ -434,27 +441,31 @@ class AgentRegistry:
     state["_credentials"] = None
     state["_session"] = None
     del state["_connect_lock"]
+    del state["_auth_refresh_lock"]
     return state
 
   def __setstate__(self, state: Dict[str, Any]) -> None:
     self.__dict__.update(state)
     self._connect_lock = threading.Lock()
+    self._auth_refresh_lock = threading.Lock()
 
   def _get_auth_headers(self) -> Dict[str, str]:
-    """Refreshes credentials and returns authorization headers."""
+    """Refreshes credentials if needed and returns authorization headers."""
     self._ensure_connected()
-    try:
-      request = google.auth.transport.requests.Request()
-      self._credentials.refresh(request)
-      headers = {
-          "Authorization": f"Bearer {self._credentials.token}",
-          "Content-Type": "application/json",
-      }
-      return headers
-    except google.auth.exceptions.RefreshError as e:
-      raise RuntimeError(
-          f"Failed to refresh Google Cloud credentials: {e}"
-      ) from e
+    with self._auth_refresh_lock:
+      if not self._credentials.valid:
+        try:
+          request = google.auth.transport.requests.Request()
+          self._credentials.refresh(request)
+        except google.auth.exceptions.RefreshError as e:
+          raise RuntimeError(
+              f"Failed to refresh Google Cloud credentials: {e}"
+          ) from e
+      token = self._credentials.token
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
 
   def _make_request(
       self,
@@ -825,14 +836,16 @@ class AgentRegistry:
         url=endpoint_uri,
     )
 
-    def combined_header_provider(context: ReadonlyContext) -> Dict[str, str]:
-      headers = {}
+    async def combined_header_provider(
+        context: ReadonlyContext,
+    ) -> dict[str, str]:
+      headers: dict[str, str] = {}
       if (
           not auth_scheme
           and not auth_credential
           and _is_google_api(endpoint_uri)
       ):
-        headers.update(self._get_auth_headers())
+        headers.update(await asyncio.to_thread(self._get_auth_headers))
       if self._header_provider:
         headers.update(self._header_provider(context))
       return headers

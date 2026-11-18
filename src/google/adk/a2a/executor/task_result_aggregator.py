@@ -23,7 +23,6 @@ from a2a.types import TaskStatusUpdateEvent
 from .. import _compat
 from ...events._abort_events import _INVOCATION_ABORTED
 from ..converters.utils import _get_adk_metadata_key
-from ..experimental import a2a_experimental
 
 _ERROR_CODE_KEY = _get_adk_metadata_key("error_code")
 
@@ -40,13 +39,18 @@ def _is_canceled_status_event(event: TaskStatusUpdateEvent) -> bool:
   )
 
 
-@a2a_experimental
 class TaskResultAggregator:
   """Aggregates the task status updates and provides the final task state."""
 
   def __init__(self) -> None:
+    # The state and message from the non-failure signals (auth required,
+    # input required, working). A failure is recorded separately, so that
+    # these keep being tracked while the task is failed and survive a failure
+    # that the run recovers from.
     self._task_state = _compat.TS_WORKING
     self._task_status_message: Message | None = None
+    self._failed = False
+    self._failure_message: Message | None = None
 
   def process_event(self, event: Event) -> None:
     """Process an event from the agent run and detect signals about the task status.
@@ -63,25 +67,16 @@ class TaskResultAggregator:
       elif self._task_state == _compat.TS_CANCELED:
         pass
       elif event.status.state == _compat.TS_FAILED:
-        self._task_state = _compat.TS_FAILED
-        self._task_status_message = _compat.normalize_message(
-            event.status.message
-        )
-      elif (
-          event.status.state == _compat.TS_AUTH_REQUIRED
-          and self._task_state != _compat.TS_FAILED
-      ):
+        self._failed = True
+        self._failure_message = _compat.normalize_message(event.status.message)
+      elif event.status.state == _compat.TS_AUTH_REQUIRED:
         self._task_state = _compat.TS_AUTH_REQUIRED
         self._task_status_message = _compat.normalize_message(
             event.status.message
         )
       elif (
           event.status.state == _compat.TS_INPUT_REQUIRED
-          and self._task_state
-          not in (
-              _compat.TS_FAILED,
-              _compat.TS_AUTH_REQUIRED,
-          )
+          and self._task_state != _compat.TS_AUTH_REQUIRED
       ):
         self._task_state = _compat.TS_INPUT_REQUIRED
         self._task_status_message = _compat.normalize_message(
@@ -104,10 +99,25 @@ class TaskResultAggregator:
       if hasattr(event, "final"):
         event.final = False
 
+  def _keep_failures(self, messages: list[Message | None]) -> None:
+    """Replaces the recorded failures with ``messages``, in emission order.
+
+    Used by the executor to drop the failures the run recovered from; with no
+    messages left it falls back to the non-failure state.
+    """
+    self._failed = bool(messages)
+    self._failure_message = (
+        _compat.normalize_message(messages[-1]) if messages else None
+    )
+
   @property
   def task_state(self) -> Any:
+    if self._failed:
+      return _compat.TS_FAILED
     return self._task_state
 
   @property
   def task_status_message(self) -> Message | None:
+    if self._failed:
+      return self._failure_message
     return self._task_status_message

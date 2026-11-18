@@ -985,18 +985,51 @@ class TestRubricBasedEvaluator:
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
     assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1", "2"]
 
+  @pytest.mark.parametrize(
+      "invocation_rubrics, response_text, missing_rubric_id",
+      [
+          pytest.param(
+              None,
+              """
+              Property: Is the response good?
+              Rationale: It was good.
+              Verdict: yes
+              """,
+              "2",
+              id="criterion_rubric",
+          ),
+          pytest.param(
+              [
+                  Rubric(
+                      rubric_id="3",
+                      rubric_content=RubricContent(
+                          text_property="Is the response short?"
+                      ),
+                  )
+              ],
+              """
+              Property: Is the response good?
+              Rationale: It was good.
+              Verdict: yes
+              Property: Is the response bad?
+              Rationale: It was not.
+              Verdict: no
+              """,
+              "3",
+              id="invocation_rubric",
+          ),
+      ],
+  )
   def test_convert_does_not_score_a_response_missing_a_rubric(
       self,
       evaluator: RubricBasedEvaluator,
       caplog: pytest.LogCaptureFixture,
+      invocation_rubrics: list[Rubric] | None,
+      response_text: str,
+      missing_rubric_id: str,
   ):
     """A rubric without a verdict must not drop out of the average."""
-    evaluator.create_effective_rubrics_list(None)
-    response_text = """
-    Property: Is the response good?
-    Rationale: It was good.
-    Verdict: yes
-    """
+    evaluator.create_effective_rubrics_list(invocation_rubrics)
     response = LlmResponse(
         content=genai_types.Content(
             parts=[genai_types.Part(text=response_text)]
@@ -1006,10 +1039,10 @@ class TestRubricBasedEvaluator:
       auto_rater_score = evaluator.convert_auto_rater_response_to_score(
           response
       )
-    # Averaging over the one answered rubric would report 1.0.
+    # Averaging over the answered rubrics alone would report a score.
     assert auto_rater_score.score is None
     assert auto_rater_score.rubric_scores == []
-    assert "no verdict for rubric(s) ['2']" in caplog.text
+    assert f"no verdict for rubric(s) ['{missing_rubric_id}']" in caplog.text
 
   def test_convert_does_not_score_a_verdict_matching_no_rubric(
       self,
@@ -1085,7 +1118,7 @@ class TestRubricBasedEvaluator:
       self,
       evaluator: RubricBasedEvaluator,
   ):
-    """An invocation is scored even when a later one adds other rubrics."""
+    """An invocation is scored on its own rubrics, not on a later one's."""
 
     def _format_prompt(actual: Invocation, expected: Invocation | None) -> str:
       evaluator.create_effective_rubrics_list(actual.rubrics)
@@ -1105,8 +1138,13 @@ class TestRubricBasedEvaluator:
           ],
       )
 
+    # Given invocations "a" and "b" that each add one rubric to the criterion's
+    # two, and a judge that answers no to the rubric of "a" and yes to the rest.
     async def _generate(llm_request):
-      rubric_id = "3" if llm_request.contents[0].parts[0].text == "a" else "4"
+      if llm_request.contents[0].parts[0].text == "a":
+        rubric_id, verdict = "3", "no"
+      else:
+        rubric_id, verdict = "4", "yes"
       yield LlmResponse(
           content=genai_types.Content(parts=[genai_types.Part(text=f"""
                       Property: Is the response good?
@@ -1116,8 +1154,8 @@ class TestRubricBasedEvaluator:
                       Rationale: Yes.
                       Verdict: yes
                       Property: Rubric {rubric_id}?
-                      Rationale: Yes.
-                      Verdict: yes
+                      Rationale: {verdict}.
+                      Verdict: {verdict}
                       """)])
       )
 
@@ -1125,11 +1163,19 @@ class TestRubricBasedEvaluator:
     evaluator._judge_model = mock.MagicMock()
     evaluator._judge_model.generate_content_async = _generate
 
+    # When both invocations are evaluated together
     result = await evaluator.evaluate_invocations(
         [_invocation("a", "3"), _invocation("b", "4")]
     )
 
-    assert [r.score for r in result.per_invocation_results] == [1.0, 1.0]
+    # Then "a" keeps the no on its own rubric, and "b" is scored on rubric 4
+    assert [
+        [(s.rubric_id, s.score) for s in r.rubric_scores]
+        for r in result.per_invocation_results
+    ] == [
+        [("1", 1.0), ("2", 1.0), ("3", 0.0)],
+        [("1", 1.0), ("2", 1.0), ("4", 1.0)],
+    ]
 
 
 class TestMajorityVoteAggregatorEvalStatus:

@@ -38,6 +38,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
+from typing import get_args
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -50,6 +51,7 @@ from google.genai.interactions import CodeExecutionCallStepParam
 from google.genai.interactions import CodeExecutionResultDelta
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import CodeExecutionResultStepParam
+from google.genai.interactions import Content
 from google.genai.interactions import ContentParam
 from google.genai.interactions import DocumentContentParam
 from google.genai.interactions import DocumentDelta
@@ -60,6 +62,7 @@ from google.genai.interactions import FunctionParam
 from google.genai.interactions import FunctionResultDelta
 from google.genai.interactions import FunctionResultStep
 from google.genai.interactions import FunctionResultStepParam
+from google.genai.interactions import FunctionResultSubcontentParam
 from google.genai.interactions import GenerationConfigParam
 from google.genai.interactions import GoogleSearchCallDelta
 from google.genai.interactions import GoogleSearchResultDelta
@@ -187,6 +190,23 @@ _UNSUPPORTED_SAMPLING_PARAMS = (
 # once per process instead of once per model turn.
 _WARNED_SAMPLING_PARAMS: set[str] = set()
 
+# Media content types a function result can carry. google-genai 2.33 added
+# audio, document and video to image; earlier releases reject them on send.
+_FUNCTION_RESULT_MEDIA_TYPES = frozenset(
+    content_type
+    for content_type, content_param in (
+        ('image', ImageContentParam),
+        ('audio', AudioContentParam),
+        ('video', VideoContentParam),
+        ('document', DocumentContentParam),
+    )
+    if content_param in get_args(FunctionResultSubcontentParam.__value__)
+)
+
+# Tool result mime types already reported as dropped, so the warning below is
+# emitted once per process instead of on every turn that reconverts history.
+_WARNED_FUNCTION_RESULT_MIME_TYPES: set[str] = set()
+
 
 def _extract_stream_interaction_id(
     event: InteractionSSEEvent,
@@ -259,6 +279,46 @@ def _code_execution_call_arguments(
   if executable_code.language == types.Language.PYTHON:
     arguments['language'] = 'python'
   return arguments
+
+
+def _function_response_media_contents(
+    function_response: types.FunctionResponse,
+) -> list[FunctionResultSubcontentParam]:
+  """Converts media a tool attached to its response into result contents."""
+  contents: list[FunctionResultSubcontentParam] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    file_data = response_part.file_data
+    payload: dict[str, str]
+    if blob is not None and blob.data is not None and blob.mime_type:
+      mime_type = blob.mime_type
+      payload = {'data': _encode_base64_string(blob.data)}
+    elif file_data is not None and file_data.file_uri and file_data.mime_type:
+      mime_type = file_data.mime_type
+      payload = {'uri': file_data.file_uri}
+    else:
+      continue
+    content_type = mime_type.split('/', 1)[0]
+    if content_type not in ('image', 'audio', 'video'):
+      content_type = 'document'
+    if content_type not in _FUNCTION_RESULT_MEDIA_TYPES:
+      if mime_type not in _WARNED_FUNCTION_RESULT_MIME_TYPES:
+        _WARNED_FUNCTION_RESULT_MIME_TYPES.add(mime_type)
+        logger.warning(
+            'Dropping tool result media of type %s, which the installed'
+            ' google-genai cannot send in a function result; google-genai'
+            ' 2.33 and later can.',
+            mime_type,
+        )
+      continue
+    contents.append(
+        # The content type is picked at runtime, so no one TypedDict fits.
+        cast(
+            'FunctionResultSubcontentParam',
+            {'type': content_type, **payload, 'mime_type': mime_type},
+        )
+    )
+  return contents
 
 
 @deprecated(
@@ -435,6 +495,15 @@ def _convert_part_to_interaction_content(
     # cause double-escaping.
     if not isinstance(func_resp, (dict, str, list)):
       func_resp = str(func_resp)
+    media = _function_response_media_contents(part.function_response)
+    if media:
+      # Media needs the list form of result, which takes the JSON as text.
+      text = (
+          func_resp
+          if isinstance(func_resp, str)
+          else json.dumps(func_resp, ensure_ascii=False, default=str)
+      )
+      func_resp = [TextContentParam(type='text', text=text), *media]
     logger.debug(
         'Converting function_response: name=%s, call_id=%s',
         part.function_response.name,
@@ -687,6 +756,36 @@ def _function_result_to_response(
   return {'result': result}
 
 
+def _convert_interaction_contents_to_parts(
+    contents: list[Content],
+) -> list[types.Part]:
+  """Converts text and media content items to parts, skipping other types."""
+  parts = []
+  for content in contents:
+    if content.type == 'text':
+      parts.append(types.Part.from_text(text=content.text))
+    elif content.type in ('image', 'audio', 'document', 'video'):
+      if content.data:
+        parts.append(
+            types.Part(
+                inline_data=types.Blob(
+                    data=content.data,
+                    mime_type=content.mime_type,
+                )
+            )
+        )
+      elif content.uri:
+        parts.append(
+            types.Part(
+                file_data=types.FileData(
+                    file_uri=content.uri,
+                    mime_type=content.mime_type,
+                )
+            )
+        )
+  return parts
+
+
 def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
   """Convert an interaction output content to a list of types.Part.
 
@@ -697,33 +796,7 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
     A list of types.Part objects.
   """
   if isinstance(step, ModelOutputStep):
-    if not step.content:
-      return []
-
-    parts = []
-    for content in step.content:
-      if content.type == 'text':
-        parts.append(types.Part.from_text(text=content.text))
-      elif content.type in ('image', 'audio', 'document', 'video'):
-        if content.data:
-          parts.append(
-              types.Part(
-                  inline_data=types.Blob(
-                      data=content.data,
-                      mime_type=content.mime_type,
-                  )
-              )
-          )
-        elif content.uri:
-          parts.append(
-              types.Part(
-                  file_data=types.FileData(
-                      file_uri=content.uri,
-                      mime_type=content.mime_type,
-                  )
-              )
-          )
-    return parts
+    return _convert_interaction_contents_to_parts(step.content or [])
   elif isinstance(step, FunctionCallStep):
     logger.debug(
         'Converting function_call output: name=%s, id=%s',
@@ -762,15 +835,25 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
       ]
     return []
   elif isinstance(step, CodeExecutionResultStep):
+    output = step.result
+    media_parts: list[types.Part] = []
+    if isinstance(output, list):
+      media_parts = _convert_interaction_contents_to_parts(
+          [content for content in output if content.type != 'text']
+      )
+      output = ''.join(
+          content.text for content in output if content.type == 'text'
+      )
     return [
         types.Part(
             code_execution_result=types.CodeExecutionResult(
-                output=step.result or '',
+                output=output or '',
                 outcome=types.Outcome.OUTCOME_FAILED
                 if step.is_error
                 else types.Outcome.OUTCOME_OK,
             )
-        )
+        ),
+        *media_parts,
     ]
   elif isinstance(step, CodeExecutionCallStep):
     args = step.arguments
