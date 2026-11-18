@@ -7,18 +7,19 @@ An intelligent assistant for building ADK multi-agent systems using YAML configu
 ### Using ADK Web Interface
 ```bash
 # From the ADK project root
-adk web src/google/adk/agent_builder_assistant
+adk web src/google/adk/cli/built_in_agents
 ```
 
 ### Programmatic Usage
 ```python
+from google.adk.cli.built_in_agents import AgentBuilderAssistant
+
 # Create with defaults
 agent = AgentBuilderAssistant.create_agent()
 
 # Create with custom settings
 agent = AgentBuilderAssistant.create_agent(
     model="gemini-2.5-pro",
-    schema_mode="query",
     working_directory="/path/to/project"
 )
 ```
@@ -50,25 +51,11 @@ agent = AgentBuilderAssistant.create_agent(
 - **Working Directory**: Automatic detection and context provision
 - **ADK Source Discovery**: Finds ADK installation dynamically (no hardcoded paths)
 
-## Schema Modes
+## Schema Handling
 
-Choose between two schema handling approaches:
-
-### Embedded Mode (Default)
-```python
-agent = AgentBuilderAssistant.create_agent(schema_mode="embedded")
-```
-- Full AgentConfig schema embedded in context
-- Faster execution, higher token usage
-- Best for comprehensive schema work
-
-### Query Mode
-```python
-agent = AgentBuilderAssistant.create_agent(schema_mode="query")
-```
-- Dynamic schema queries via tools
-- Lower initial token usage
-- Best for targeted schema operations
+The full AgentConfig schema is embedded in the assistant's instruction
+context when the agent is created, so YAML generation does not depend on
+extra schema lookups.
 
 ## Example Interactions
 
@@ -95,15 +82,16 @@ Please analyze my existing project structure at './config_based/roll_and_check' 
 - **`read_files`** - Read multiple files of any type
 - **`write_files`** - Write multiple files with backup options
 - **`delete_files`** - Delete multiple files with backup options
+- **`cleanup_unused_files`** - Remove files that are no longer referenced
 
 ### Project Analysis
 - **`explore_project`** - Analyze project structure and suggest paths
-- **`resolve_root_directory`** - Resolve paths with working directory context
 
-### ADK knowledge Context
-- **`google_search`** - Search for ADK examples and documentation
-- **`url_context`** - Fetch content from URLs (GitHub, docs, etc.)
+### ADK Knowledge Context
 - **`search_adk_source`** - Search ADK source code with regex patterns
+
+Paths passed to these tools are resolved against the session's working
+directory.
 
 
 ## File Organization Conventions
@@ -156,7 +144,7 @@ agent = AgentBuilderAssistant.create_agent(
 No hardcoded paths - works in any ADK installation:
 
 ```python
-from google.adk.agent_builder_assistant.utils import (
+from google.adk.cli.built_in_agents.utils import (
     find_adk_source_folder,
     get_adk_schema_path,
     load_agent_config_schema
