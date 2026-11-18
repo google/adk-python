@@ -155,7 +155,6 @@ async def test_delete_files_blocks_relative_traversal(
   result = await delete_files(
       file_paths=[payload],
       tool_context=_tool_context(tmp_path),
-      confirm_deletion=True,
   )
 
   assert not result["success"]
