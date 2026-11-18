@@ -2655,7 +2655,8 @@ class RemoteA2aAgent(BaseAgent):
                 self.mode == AgentMode.TASK
                 and task is not None
                 and task.status is not None
-                and task.status.state in (_compat.TS_FAILED, _compat.TS_CANCELED)
+                and task.status.state
+                in (_compat.TS_FAILED, _compat.TS_CANCELED)
             )
             if not events_to_emit and not failed_task:
               continue
