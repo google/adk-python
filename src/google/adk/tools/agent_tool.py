@@ -529,14 +529,14 @@ class AgentTool(BaseTool):
         else []
     )
     merged_text = '\n'.join(t for t in parts_text if t)
+    if not merged_text and last_error_message:
+      return last_error_message
     if not merged_text and last_output is not None:
       tool_result = last_output
     elif not merged_text and last_skip_summarization_response is not None:
       tool_result = last_skip_summarization_response
     elif last_content is None or last_content.parts is None:
       return last_error_message or ''
-    elif not merged_text and last_error_message:
-      return last_error_message
     else:
       output_schema = _get_output_schema(self.agent)
       tool_result = (

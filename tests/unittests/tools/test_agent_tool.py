@@ -2019,6 +2019,32 @@ async def test_run_async_extracts_output_when_final_event_has_no_content():
 
 
 @mark.asyncio
+@mark.parametrize('use_output', [True, False])
+async def test_run_async_preserves_error_after_structured_result(use_output):
+  result_event = Event(author='inner_agent', output={'result': 'stale'})
+  if not use_output:
+    result_event = Event(
+        author='inner_agent',
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name='lookup', response={'result': 'stale'}
+                    )
+                )
+            ],
+        ),
+        actions=EventActions(skip_summarization=True),
+    )
+  result = await _run_agent_tool_with_events([
+      result_event,
+      Event(author='inner_agent', error_message='The wrapped task failed'),
+  ])
+  assert result == 'The wrapped task failed'
+
+
+@mark.asyncio
 async def test_run_async_extracts_skip_summarization_function_response():
   """A tool response with `skip_summarization` set carries the real result."""
   result = await _run_agent_tool_with_events([
