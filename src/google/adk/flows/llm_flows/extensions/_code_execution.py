@@ -21,6 +21,7 @@ import base64
 import copy
 import dataclasses
 import datetime
+import hashlib
 import logging
 import os
 import re
@@ -485,7 +486,7 @@ def _extract_and_replace_inline_files(
 ) -> list[File]:
   """Extracts and replaces inline files with file names in the LLM request."""
   all_input_files: list[File] = code_executor_context.get_input_files()
-  saved_file_names = set(f.name for f in all_input_files)
+  saved_files = {f.name: f for f in all_input_files}
 
   # [Step 1] Process input files from LlmRequest and cache them in CodeExecutor.
   for i in range(len(llm_request.contents)):
@@ -509,20 +510,32 @@ def _extract_and_replace_inline_files(
         logger.warning('Skipping inline data file without byte content.')
         continue
 
-      # Replace the inline data file with a file name placeholder.
       mime_type = inline_data.mime_type
-      file_name = f'data_{i+1}_{j+1}' + _DATA_FILE_UTIL_MAP[mime_type].extension
+      extension = _DATA_FILE_UTIL_MAP[mime_type].extension
+      file_name = f'data_{i+1}_{j+1}' + extension
+      # Inline data is raw bytes, even when it happens to look like base64.
+      encoded_content = base64.b64encode(data).decode()
+      saved_file = saved_files.get(file_name)
+      if saved_file is not None and (
+          saved_file.content != encoded_content
+          or saved_file.mime_type != mime_type
+      ):
+        # Request indices can repeat across turns. Preserve earlier references
+        # while giving a different upload its own stable name.
+        digest = hashlib.sha256(mime_type.encode() + b'\0' + data).hexdigest()
+        file_name = f'data_{i+1}_{j+1}_{digest}' + extension
+
       parts[j] = types.Part(text='\nAvailable file: `%s`\n' % file_name)
 
-      # Add the inline data as input file to the code executor context.
-      file = File(
-          name=file_name,
-          content=CodeExecutionUtils.get_encoded_file_content(data).decode(),
-          mime_type=mime_type,
-      )
-      if file_name not in saved_file_names:
+      if file_name not in saved_files:
+        file = File(
+            name=file_name,
+            content=encoded_content,
+            mime_type=mime_type,
+        )
         code_executor_context.add_input_files([file])
         all_input_files.append(file)
+        saved_files[file_name] = file
 
   return all_input_files
 

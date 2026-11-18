@@ -32,6 +32,8 @@ from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.code_execution_utils import File
 from google.adk.code_executors.code_executor_context import CodeExecutorContext
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
+from google.adk.events.event import Event
+from google.adk.flows.llm_flows.context._contents import _get_current_turn_contents
 from google.adk.flows.llm_flows.extensions._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows.extensions._code_execution import _extract_and_replace_inline_files
 from google.adk.flows.llm_flows.extensions._code_execution import _get_data_file_preprocessing_code
@@ -847,3 +849,95 @@ async def test_append_new_message_to_session_stamps_isolation_scope_and_honors_s
 
   assert len(target_session.events) == 2
   assert target_session.events[-1].isolation_scope == 'task_scope_1'
+
+
+@pytest.mark.parametrize('data', [b'1234', b'value\n10\n'])
+async def test_inline_csv_preserves_raw_bytes_in_executor_input(data):
+  """The executor receives exactly the bytes uploaded in an inline CSV."""
+  executor = _stub_code_executor()
+  executor.optimize_data_file = True
+  executor.execution_result_delimiters = ('```tool_output\n', '\n```')
+  agent = Agent(name='test_agent', code_executor=executor)
+  ctx = await testing_utils.create_invocation_context(
+      agent=agent, user_content='analyze this CSV'
+  )
+  request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part.from_bytes(data=data, mime_type='text/csv')],
+          )
+      ]
+  )
+
+  _ = [event async for event in request_processor.run_async(ctx, request)]
+
+  executor.execute_code.assert_called_once()
+  execution_input = executor.execute_code.call_args.args[1]
+  assert len(execution_input.input_files) == 1
+  file = execution_input.input_files[0]
+  assert file.name == 'data_1_1.csv'
+  assert file.mime_type == 'text/csv'
+  assert get_content_as_bytes(file.content) == data
+  assert request.contents[0].parts[0].text == (
+      '\nAvailable file: `data_1_1.csv`\n'
+  )
+
+
+@pytest.mark.parametrize('reuploaded_data', [b'value\n10\n', b'value\n99\n'])
+def test_current_turn_csv_upload_resolves_to_its_own_bytes(reuploaded_data):
+  """Rebased uploads preserve old references and only process new payloads.
+
+  Setup: cache and mark the first turn's CSV as processed.
+  Act: upload at the same position in a new current-turn-only request,
+    then upload those same bytes once more.
+  Assert: placeholders resolve to the right bytes without duplicate files.
+  """
+  context = CodeExecutorContext({})
+  history = []
+
+  def upload(data):
+    history.append(
+        Event(
+            author='user',
+            content=types.Content(
+                role='user',
+                parts=[types.Part.from_bytes(data=data, mime_type='text/csv')],
+            ),
+        )
+    )
+    request = LlmRequest(
+        contents=_get_current_turn_contents(None, history, 'agent')
+    )
+    files = _extract_and_replace_inline_files(context, request)
+    placeholder = request.contents[0].parts[0].text
+    history.append(
+        Event(
+            author='agent',
+            content=types.Content(
+                role='model', parts=[types.Part(text='Done')]
+            ),
+        )
+    )
+    return files, placeholder
+
+  first_files, first_placeholder = upload(b'value\n10\n')
+  context.add_processed_file_names([file.name for file in first_files])
+
+  second_files, second_placeholder = upload(reuploaded_data)
+  repeated_files, repeated_placeholder = upload(reuploaded_data)
+
+  current_file = next(
+      file for file in second_files if f'`{file.name}`' in second_placeholder
+  )
+  assert get_content_as_bytes(current_file.content) == reuploaded_data
+  assert first_placeholder == '\nAvailable file: `data_1_1.csv`\n'
+  assert get_content_as_bytes(second_files[0].content) == b'value\n10\n'
+  changed = reuploaded_data != b'value\n10\n'
+  assert len(second_files) == (2 if changed else 1)
+  assert (
+      current_file.name not in context.get_processed_file_names()
+  ) == changed
+  assert repeated_files == second_files
+  assert repeated_placeholder == second_placeholder
+  assert context.get_input_files() == second_files
