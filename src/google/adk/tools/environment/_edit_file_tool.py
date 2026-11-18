@@ -26,8 +26,8 @@ from google.genai import types
 from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
-from ...utils.feature_decorator import experimental
 from ..base_tool import BaseTool
+from ._utils import ensure_initialized
 
 if TYPE_CHECKING:
   from ..tool_context import ToolContext
@@ -36,7 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
 class EditFileTool(BaseTool):
   """Perform a surgical text replacement in an existing file."""
 
@@ -99,9 +98,10 @@ class EditFileTool(BaseTool):
           ),
       }
 
+    await ensure_initialized(self._environment, tool_context)
     try:
-      data_bytes = await self._environment.read_file(path)
-      content = data_bytes.decode('utf-8', errors='replace')
+      data_bytes = await self._environment.read_file(path, ctx=tool_context)
+      content = data_bytes.decode('utf-8', errors='surrogateescape')
     except FileNotFoundError:
       return {'status': 'error', 'error': f'File not found: {path}'}
 
@@ -113,6 +113,16 @@ class EditFileTool(BaseTool):
     count = len(matches)
 
     if count == 0:
+      if '\ufffd' in old_string and re.search(
+          pattern, data_bytes.decode('utf-8', errors='replace')
+      ):
+        return {
+            'status': 'error',
+            'error': (
+                'The file has bytes that are not valid UTF-8 near this text. '
+                'Choose an `old_string` that does not include them.'
+            ),
+        }
       return {
           'status': 'error',
           'error': (
@@ -129,8 +139,21 @@ class EditFileTool(BaseTool):
           ),
       }
 
+    try:
+      # Encode before writing: rejects all lone surrogates without truncating.
+      new_string.encode('utf-8')
+    except UnicodeEncodeError:
+      return {
+          'status': 'error',
+          'error': (
+              '`new_string` contains characters that cannot be encoded. '
+              'The file was not modified.'
+          ),
+      }
+
     new_content = re.sub(pattern, lambda m: new_string, content, count=1)
-    await self._environment.write_file(path, new_content)
+    data = new_content.encode('utf-8', errors='surrogateescape')
+    await self._environment.write_file(path, data, ctx=tool_context)
     return {'status': 'ok', 'message': f'Edited {path}'}
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:

@@ -174,6 +174,17 @@ class TestContextInitialization:
 
     assert context.actions is context._event_actions
 
+  def test_actions_include_a_write_into_a_nested_state_dict(
+      self, mock_invocation_context
+  ):
+    """The event built from actions carries the write to storage."""
+    mock_invocation_context.session.state = {"cfg": {"a": 1}}
+    context = Context(mock_invocation_context)
+
+    context.state["cfg"]["b"] = 2
+
+    assert context.actions.state_delta == {"cfg": {"a": 1, "b": 2}}
+
   def test_custom_metadata_property(self, mock_invocation_context):
     """Test that custom_metadata property delegates to invocation context."""
     mock_invocation_context._custom_metadata = {"key": "value"}
@@ -620,6 +631,47 @@ class TestContextMemoryMethods:
           ]
       )
 
+  async def test_delete_memory_success(self, mock_invocation_context):
+    """Tests that delete_memory forwards the memory ID to the service."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = Context(mock_invocation_context)
+    await context.delete_memory(memory_id="mem-123")
+
+    memory_service.delete_memory.assert_called_once_with(
+        app_name=mock_invocation_context.app_name,
+        user_id=mock_invocation_context.user_id,
+        memory_id="mem-123",
+    )
+
+  async def test_delete_memory_no_service_raises(self, mock_invocation_context):
+    """Tests that delete_memory raises ValueError when no service."""
+    mock_invocation_context.memory_service = None
+
+    context = Context(mock_invocation_context)
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot delete memory: memory service is not available\.",
+    ):
+      await context.delete_memory(memory_id="mem-123")
+
+  async def test_delete_memory_accepts_none_default(
+      self, mock_invocation_context
+  ):
+    """Tests that delete_memory defaults memory_id to None when omitted."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = Context(mock_invocation_context)
+    await context.delete_memory()
+
+    memory_service.delete_memory.assert_called_once_with(
+        app_name=mock_invocation_context.app_name,
+        user_id=mock_invocation_context.user_id,
+        memory_id=None,
+    )
+
 
 class TestContextAddUiWidget:
   """Test render_ui_widget method in Context."""
@@ -788,6 +840,8 @@ class TestContextGetInvocationContext:
     mock_copy.branch = None
     mock_copy.invocation_id = "inv-1"
     mock_copy.session = mock_invocation_context.session
+    mock_copy._enqueue_event = AsyncMock()
+    mock_copy.model_copy.return_value = mock_copy
     mock_invocation_context.model_copy.return_value = mock_copy
 
     node_ic = caller_ctx.get_invocation_context()
@@ -828,8 +882,10 @@ class TestContextGetInvocationContext:
         tool_context=tool_ctx,
     )
 
+    # NodeTool keys its child run by function_call_id so repeated calls of the
+    # same tool get distinct node paths.
     assert captured_paths == [
-        "wf@1/caller@1/tool_node@1",
+        "wf@1/caller@1/tool_node@fc-tool-1",
         "wf@1/caller@1/sub_agent@1",
     ]
 

@@ -70,17 +70,25 @@ async def test_barrier_wait_blocks_and_unblocks():
   assert barrier.events['NodeB@1'].is_set()
 
 
-def test_barrier_advance_out_of_order_ignored():
-  """Verifies that out-of-order advance calls are ignored and do not progress index."""
-  sequence = ['NodeA@1', 'NodeB@1']
+def test_barrier_advance_out_of_order_buffered_until_head_completes():
+  """Verifies out-of-order advance calls are buffered until earlier keys complete."""
+  sequence = ['NodeA@1', 'NodeB@1', 'NodeC@1']
   barrier = ReplaySequenceBarrier(sequence)
 
-  # When second key tries to advance out of order
+  # When second key advances out of order before the head key
   barrier.check_and_advance('NodeB@1')
 
-  # Then state remains unchanged
+  # Then head index remains at 0 until NodeA@1 completes
   assert barrier.current_index == 0
   assert not barrier.events['NodeB@1'].is_set()
+  assert not barrier.events['NodeC@1'].is_set()
+
+  # When the head key finally completes, the barrier drains through NodeB@1
+  barrier.check_and_advance('NodeA@1')
+
+  assert barrier.current_index == 2
+  assert barrier.events['NodeB@1'].is_set()
+  assert barrier.events['NodeC@1'].is_set()
 
 
 @pytest.mark.asyncio

@@ -14,14 +14,13 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.utils.agent_info import get_agents_dict
 from google.adk.utils.agent_info import get_tools_info
+from google.adk.workflow import node
 from google.genai import types
 import pytest
 
@@ -34,7 +33,7 @@ class _CountingTool(BaseTool):
     self.declaration_calls = 0
     self._declared = declared
 
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
     self.declaration_calls += 1
     if not self._declared:
       return None
@@ -50,7 +49,7 @@ class _CountingToolset(BaseToolset):
     self._tools = tools
 
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     return self._tools
 
@@ -117,6 +116,24 @@ async def test_get_tools_info_wraps_plain_callable():
   assert declaration.name == 'echo'
   assert declaration.description == 'Echoes the text.'
   assert list(_declared_parameters(declaration)) == ['text']
+
+
+@pytest.mark.asyncio
+async def test_get_tools_info_wraps_base_node():
+  """Adapts a BaseNode into a NodeTool and extracts its declaration."""
+
+  @node
+  def double(x: int) -> int:
+    """Doubles x."""
+    return x * 2
+
+  tools_info = await get_tools_info([double])
+
+  assert len(tools_info) == 1
+  declaration = tools_info[0].function_declarations[0]
+  assert declaration.name == 'double'
+  assert declaration.description == 'Doubles x.'
+  assert list(_declared_parameters(declaration)) == ['x']
 
 
 @pytest.mark.asyncio

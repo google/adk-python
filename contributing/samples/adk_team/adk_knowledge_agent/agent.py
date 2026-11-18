@@ -14,7 +14,6 @@
 
 import json
 import os
-from typing import Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.context import Context
@@ -34,7 +33,7 @@ if not VERTEXAI_DATASTORE_ID:
 def citation_retrieval_after_model_callback(
     callback_context: Context,
     llm_response: LlmResponse,
-) -> Optional[LlmResponse]:
+) -> LlmResponse | None:
   """Callback function to retrieve citations after model response is generated."""
   grounding_metadata = llm_response.grounding_metadata
   if not grounding_metadata:

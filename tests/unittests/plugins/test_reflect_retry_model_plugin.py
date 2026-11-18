@@ -19,14 +19,21 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins import ReflectAndRetryToolPlugin
 from google.adk.plugins._reflect_retry_model_plugin import REFLECT_AND_RETRY_RESPONSE_TYPE
 from google.adk.plugins._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
 from google.adk.plugins._reflect_retry_model_plugin import RESERVED_TOOL_CALL_ERROR_TYPE
 from google.adk.plugins._reflect_retry_model_plugin import TrackingScope
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+
+from .. import testing_utils
 
 
 class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
@@ -673,3 +680,267 @@ class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
     self.assertEqual(
         resp2.content.parts[0].function_call.args["retry_count"], 2
     )
+
+  async def test_invocation_scope_counts_are_dropped_after_each_run(
+      self,
+  ) -> None:
+    """Invocation-scoped model failure counts do not outlive the run."""
+    plugin = ReflectAndRetryModelPlugin(max_retries=2)
+    malformed = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+    )
+    done = LlmResponse(
+        content=types.Content(role="model", parts=[types.Part(text="done")])
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[malformed, done, malformed, done]
+    )
+    agent = LlmAgent(name="root_agent", model=mock_model)
+    runner = testing_utils.TestInMemoryRunner(agent=agent, plugins=[plugin])
+
+    for _ in range(2):
+      await runner.run_async_with_new_session("go")
+
+    self.assertEqual(plugin._tracker._scoped_failure_counters, {})
+
+  async def test_invocation_scope_counts_are_dropped_when_the_run_fails(
+      self,
+  ) -> None:
+    """Model failure counts are dropped when a later tool error ends the run."""
+    plugin = ReflectAndRetryModelPlugin(max_retries=2)
+    malformed = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+    )
+
+    def failing_tool() -> dict[str, str]:
+      """A tool that always fails."""
+      raise ValueError("tool failed")
+
+    call_failing_tool = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part.from_function_call(name="failing_tool", args={})],
+        )
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[malformed, call_failing_tool]
+    )
+    agent = LlmAgent(name="root_agent", model=mock_model, tools=[failing_tool])
+    runner = testing_utils.TestInMemoryRunner(agent=agent, plugins=[plugin])
+
+    with self.assertRaises(ValueError):
+      await runner.run_async_with_new_session("go")
+
+    self.assertEqual(plugin._tracker._scoped_failure_counters, {})
+
+  async def test_invocation_scope_is_kept_while_paused(self) -> None:
+    """A paused invocation keeps its scope until the resumed run ends."""
+    plugin = ReflectAndRetryModelPlugin(max_retries=1)
+    malformed = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+    )
+
+    def wait_for_approval() -> None:
+      """A long-running tool that leaves its call pending."""
+      return None
+
+    call_wait_for_approval = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(name="wait_for_approval", args={})
+            ],
+        )
+    )
+    done = LlmResponse(
+        content=types.Content(role="model", parts=[types.Part(text="done")])
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[malformed, call_wait_for_approval, done]
+    )
+    agent = LlmAgent(
+        name="root_agent",
+        model=mock_model,
+        tools=[LongRunningFunctionTool(func=wait_for_approval)],
+    )
+    runner = testing_utils.InMemoryRunner(
+        app=App(
+            name="test_app",
+            root_agent=agent,
+            plugins=[plugin],
+            resumability_config=ResumabilityConfig(is_resumable=True),
+        )
+    )
+
+    paused_events = await runner.run_async("go")
+    invocation_id = paused_events[0].invocation_id
+    self.assertIn(invocation_id, plugin._tracker._scoped_failure_counters)
+
+    approval_call = next(
+        fc
+        for event in paused_events
+        for fc in event.get_function_calls()
+        if fc.name == "wait_for_approval"
+    )
+    await runner.run_async(
+        invocation_id=invocation_id,
+        new_message=types.UserContent(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=approval_call.id,
+                        name="wait_for_approval",
+                        response={"approved": True},
+                    )
+                )
+            ]
+        ),
+    )
+    self.assertEqual(plugin._tracker._scoped_failure_counters, {})
+
+  async def test_pending_long_running_tool_keeps_scope(self) -> None:
+    """A run paused on a pending long-running call keeps its scope."""
+    malformed = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+    )
+    done = LlmResponse(
+        content=types.Content(role="model", parts=[types.Part(text="done")])
+    )
+
+    def pending_lro() -> dict[str, str]:
+      """A long-running tool that reports a pending status."""
+      return {"status": "pending"}
+
+    call_pending_lro = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part.from_function_call(name="pending_lro", args={})],
+        )
+    )
+    plugin = ReflectAndRetryModelPlugin(max_retries=2)
+    runner = testing_utils.InMemoryRunner(
+        app=App(
+            name="test_app",
+            root_agent=LlmAgent(
+                name="root_agent",
+                model=testing_utils.MockModel.create(
+                    responses=[malformed, call_pending_lro, done]
+                ),
+                tools=[LongRunningFunctionTool(func=pending_lro)],
+            ),
+            plugins=[plugin],
+            resumability_config=ResumabilityConfig(is_resumable=True),
+        )
+    )
+    events = await runner.run_async("go")
+    self.assertIn(
+        events[0].invocation_id, plugin._tracker._scoped_failure_counters
+    )
+
+  async def test_pause_in_non_resumable_app_keeps_scope(self) -> None:
+    """A paused invocation in a non-resumable app keeps its scope."""
+    malformed = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+    )
+
+    def wait_for_approval() -> None:
+      """A long-running tool that leaves its call pending."""
+      return None
+
+    call_wait_for_approval = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(name="wait_for_approval", args={})
+            ],
+        )
+    )
+    plugin = ReflectAndRetryModelPlugin(max_retries=2)
+    runner = testing_utils.TestInMemoryRunner(
+        agent=LlmAgent(
+            name="root_agent",
+            model=testing_utils.MockModel.create(
+                responses=[malformed, call_wait_for_approval]
+            ),
+            tools=[LongRunningFunctionTool(func=wait_for_approval)],
+        ),
+        plugins=[plugin],
+    )
+    events = await runner.run_async_with_new_session("go")
+    self.assertIn(
+        events[0].invocation_id, plugin._tracker._scoped_failure_counters
+    )
+
+  async def test_long_running_tool_does_not_leak_scope(self) -> None:
+    """Drops counts when a long-running tool fails or aborts."""
+    malformed = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+    )
+    done = LlmResponse(
+        content=types.Content(role="model", parts=[types.Part(text="done")])
+    )
+
+    def failing_lro() -> dict[str, str]:
+      """A long-running tool that fails."""
+      raise ValueError("lro failed")
+
+    call_failing_lro = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part.from_function_call(name="failing_lro", args={})],
+        )
+    )
+    plugin_failed = ReflectAndRetryModelPlugin(max_retries=2)
+    runner_failed = testing_utils.TestInMemoryRunner(
+        agent=LlmAgent(
+            name="root_agent",
+            model=testing_utils.MockModel.create(
+                responses=[malformed, call_failing_lro, done]
+            ),
+            tools=[LongRunningFunctionTool(func=failing_lro)],
+        ),
+        plugins=[plugin_failed, ReflectAndRetryToolPlugin(max_retries=2)],
+    )
+    await runner_failed.run_async_with_new_session("go")
+    self.assertEqual(plugin_failed._tracker._scoped_failure_counters, {})
+
+    def aborting_lro(tool_context: ToolContext) -> None:
+      """A long-running tool that aborts the invocation while pending."""
+      tool_context._invocation_context.abort()
+      return None
+
+    call_aborting_lro = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part.from_function_call(name="aborting_lro", args={})],
+        )
+    )
+    plugin_aborted = ReflectAndRetryModelPlugin(max_retries=2)
+    runner_aborted = testing_utils.InMemoryRunner(
+        app=App(
+            name="test_app",
+            root_agent=LlmAgent(
+                name="root_agent",
+                model=testing_utils.MockModel.create(
+                    responses=[malformed, call_aborting_lro, done]
+                ),
+                tools=[LongRunningFunctionTool(func=aborting_lro)],
+            ),
+            plugins=[plugin_aborted],
+            resumability_config=ResumabilityConfig(is_resumable=True),
+        )
+    )
+    await runner_aborted.run_async("go")
+    self.assertEqual(plugin_aborted._tracker._scoped_failure_counters, {})

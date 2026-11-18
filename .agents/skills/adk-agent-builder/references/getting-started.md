@@ -21,12 +21,13 @@ uv pip install google-adk
 ```
 
 `pip install google-adk` in a `python -m venv` works too. ADK requires Python
-3.10 or newer.
+3.11 or newer.
 
 ## 2. API keys
 
-Put a `.env` file in the **agent directory**, not its parent — the loader looks
-beside `agent.py`. Do not commit it.
+Put a `.env` file in the **agent directory**. The loader looks beside
+`agent.py` first, then walks up the parent directories and loads the first
+`.env` it finds. Do not commit it.
 
 Google AI Studio (get a key at https://aistudio.google.com/app/apikey):
 
@@ -65,8 +66,9 @@ my_agent/
 └── .env
 ```
 
-`__init__.py` must re-export the module, or the agent will not appear in
-`adk web`:
+`adk create` writes an `__init__.py` that re-exports the module. The loader
+also imports `{agent_dir}.agent` directly, so the re-export is the convention
+rather than a requirement:
 
 ```python
 from . import agent
@@ -91,7 +93,7 @@ def get_weather(city: str) -> dict:
 
 
 root_agent = Agent(
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     name='root_agent',
     description='An assistant that reports the weather.',
     instruction=(
@@ -104,7 +106,7 @@ root_agent = Agent(
 
 | Field | Purpose |
 |---|---|
-| `model` | Model id, e.g. `'gemini-2.5-flash'`, `'gemini-2.5-pro'` |
+| `model` | Model id, e.g. `'gemini-3.5-flash'`, `'gemini-3.1-pro-preview'` |
 | `instruction` | System prompt; `{var}` placeholders resolve from session state |
 | `tools` | Python callables; name, docstring, and type hints become the tool schema |
 | `description` | How a parent agent decides to route to this one |
@@ -167,16 +169,16 @@ root_agent = Workflow(name='my_workflow', edges=[('START', greet)])
 > Prefer the explicit edge list above for new code; this form is documented
 > because existing agents still use it.
 
-`SequentialAgent` generates `START -> a -> b -> c` for you. Each agent's
-`output_key` publishes to session state, and the next agent reads it through an
-instruction placeholder.
+`SequentialAgent` runs its sub-agents in order, like `START -> a -> b -> c`.
+Each agent's `output_key` publishes to session state, and the next agent reads
+it through an instruction placeholder.
 
 ```python
 from google.adk.agents import LlmAgent, SequentialAgent
 
 writer = LlmAgent(
     name='CodeWriterAgent',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction=(
         'Write Python code that fulfills the user request. Output only the'
         ' code block.'
@@ -187,7 +189,7 @@ writer = LlmAgent(
 
 reviewer = LlmAgent(
     name='CodeReviewerAgent',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction=(
         'Review this code and reply with a bulleted list of issues, or "No'
         ' major issues found." if it is clean:\n\n{generated_code}'
@@ -198,7 +200,7 @@ reviewer = LlmAgent(
 
 refactorer = LlmAgent(
     name='CodeRefactorerAgent',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction=(
         'Improve this code:\n\n{generated_code}\n\nAddressing these'
         ' comments:\n\n{review_comments}\n\nOutput only the final code'
@@ -298,7 +300,7 @@ def extract_city(node_input: str) -> str:
 
 weather_agent = LlmAgent(
     name='weather_reporter',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Use get_weather, then give a natural-language report.',
     tools=[get_weather],
 )
@@ -320,6 +322,6 @@ root_agent = Workflow(
 | Symptom | Cause |
 |---|---|
 | `No module named 'google.adk'` | Virtual environment not activated, or `google-adk` not installed in it |
-| Agent missing from the `adk web` dropdown | `__init__.py` lacks `from . import agent`, or `agent.py` defines no `root_agent` |
-| API key errors | `.env` sits in the parent directory instead of the agent directory |
+| Agent missing from the `adk web` dropdown, or `No root_agent found` when it is selected | The directory has none of `agent.py`, `__init__.py`, or `root_agent.yaml`, or `agent.py` defines neither `root_agent` nor `app` |
+| API key errors | No `.env` in the agent directory or any parent, or a variable already set in the shell overrides the `.env` value |
 | Model not found | Typo in the model id; non-Google models (Anthropic, LiteLLM) need extra dependencies |

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from a2a.types import Message
 from a2a.types import Part as A2APart
@@ -28,6 +29,8 @@ from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
+from google.adk.a2a.converters.to_adk_event import _artifact_event_id
+from google.adk.a2a.converters.to_adk_event import _extract_all_metadata_fields
 from google.adk.a2a.converters.to_adk_event import _extract_genai_metadata
 from google.adk.a2a.converters.to_adk_event import _PEER_SETTABLE_ACTION_FIELDS
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
@@ -37,8 +40,12 @@ from google.adk.a2a.converters.to_adk_event import convert_a2a_task_to_event
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.a2a.converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import _internal_metadata
 from google.adk.events import Event
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event_actions import EventActions
 from google.genai import types as genai_types
 import pytest
@@ -60,6 +67,48 @@ def _make_a2a_part_for_test(metadata=None):
     m.root = Mock(spec=TextPart)
     m.root.metadata = metadata or {}
     return m
+
+
+# One wire input per inbound converter, built from a shared A2A message.
+_LONG_RUNNING_INBOUND_CONVERTERS = {
+    "task": (
+        lambda message: _compat.make_task(
+            id="task-1",
+            context_id="context-1",
+            kind="task",
+            status=_compat.make_task_status(
+                _compat.TS_INPUT_REQUIRED, timestamp="now", message=message
+            ),
+        ),
+        convert_a2a_task_to_event,
+    ),
+    "status_update": (
+        lambda message: _compat.make_task_status_update_event(
+            task_id="task-1",
+            context_id="context-1",
+            final=False,
+            status=_compat.make_task_status(
+                _compat.TS_INPUT_REQUIRED, timestamp="now", message=message
+            ),
+        ),
+        convert_a2a_status_update_to_event,
+    ),
+    "message": (lambda message: message, convert_a2a_message_to_event),
+    "artifact_update": (
+        lambda message: TaskArtifactUpdateEvent(
+            task_id="task-1",
+            context_id="context-1",
+            artifact=_compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=list(message.parts),
+            ),
+            append=True,
+            last_chunk=True,
+        ),
+        convert_a2a_artifact_update_to_event,
+    ),
+}
 
 
 class TestToAdk:
@@ -178,6 +227,70 @@ class TestToAdk:
     assert event.invocation_id == "test-invocation"
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
+
+  def test_convert_a2a_task_to_event_failed_status_sets_error(self):
+    """Test failed A2A task status maps to an error Event."""
+    a2a_part = _make_a2a_part_for_test({})
+    failed_message = Message(
+        message_id="msg-failed",
+        role=_compat.ROLE_AGENT,
+        parts=[a2a_part],
+    )
+    task = _compat.make_task(
+        id="task-failed",
+        status=_compat.make_task_status(
+            _compat.TS_FAILED, message=failed_message
+        ),
+    )
+    mock_part_converter = Mock(
+        return_value=[
+            genai_types.Part.from_text(text="Remote agent task failed")
+        ]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert event.error_message == "Remote agent task failed"
+    assert event.content.parts[0].text == "Remote agent task failed"
+
+  def test_convert_a2a_task_to_event_failed_status_preserves_error_code(
+      self,
+  ):
+    """Test failed A2A task status preserves error_code from metadata."""
+    metadata = {_get_adk_metadata_key("error_code"): "SAFETY"}
+    failed_message = Message(
+        message_id="msg-failed",
+        role=_compat.ROLE_AGENT,
+        parts=[_make_a2a_part_for_test({})],
+        metadata=metadata,
+    )
+    task = _compat.make_task(
+        id="task-failed",
+        status=_compat.make_task_status(
+            _compat.TS_FAILED, message=failed_message
+        ),
+    )
+    mock_part_converter = Mock(
+        return_value=[genai_types.Part.from_text(text="Blocked by safety")]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.error_code == "SAFETY"
+    assert event.error_message == "Blocked by safety"
 
   def test_convert_a2a_task_to_event_returns_action_only_event(self):
     """Test A2A task conversion returns action-only events."""
@@ -515,6 +628,64 @@ class TestToAdk:
       # Inert fields a peer may set are still honored.
       assert event.actions.escalate is True
 
+  def test_peer_state_delta_logs_session_boundary_warning(self, caplog):
+    """A non-empty peer state delta is dropped with a warning."""
+    metadata = {
+        _get_adk_metadata_key("actions"): {
+            "stateDelta": {"remote_result": "value"}
+        }
+    }
+    message = Message(
+        message_id="msg-1",
+        role=_compat.ROLE_AGENT,
+        parts=[_make_a2a_part_for_test({})],
+        metadata=metadata,
+    )
+
+    with caplog.at_level("WARNING"):
+      event = convert_a2a_message_to_event(
+          message,
+          "test-author",
+          self.mock_context,
+          Mock(return_value=[genai_types.Part.from_text(text="result")]),
+      )
+
+    assert event is not None
+    assert event.actions.state_delta == {}
+    assert event.content.parts[0].text == "result"
+    assert (
+        "Ignoring a session state delta from a remote A2A peer" in caplog.text
+    )
+
+  def test_peer_empty_state_delta_does_not_log_warning(self, caplog):
+    """An empty peer state delta does not log a session boundary warning."""
+    metadata = {
+        _get_adk_metadata_key("actions"): {
+            "stateDelta": {},
+        }
+    }
+    message = Message(
+        message_id="msg-1",
+        role=_compat.ROLE_AGENT,
+        parts=[_make_a2a_part_for_test({})],
+        metadata=metadata,
+    )
+
+    with caplog.at_level("WARNING"):
+      event = convert_a2a_message_to_event(
+          message,
+          "test-author",
+          self.mock_context,
+          Mock(return_value=[genai_types.Part.from_text(text="result")]),
+      )
+
+    assert event is not None
+    assert event.actions.state_delta == {}
+    assert (
+        "Ignoring a session state delta from a remote A2A peer"
+        not in caplog.text
+    )
+
   def test_peer_settable_action_fields_are_exactly_inert(self):
     """Test the peer allow-list holds every spelling of the inert fields."""
     inert_fields = {"escalate", "skip_summarization"}
@@ -776,6 +947,26 @@ class TestToAdk:
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
 
+  def test_convert_a2a_status_update_to_event_failed_status_without_message(
+      self,
+  ):
+    """Test failed status update without message still emits an error event."""
+    update = _compat.make_task_status_update_event(
+        task_id="task-failed",
+        status=_compat.make_task_status(_compat.TS_FAILED),
+        context_id="context-1",
+        final=False,
+    )
+
+    event = convert_a2a_status_update_to_event(
+        update, "test-author", self.mock_context, Mock()
+    )
+
+    assert event is not None
+    assert event.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert event.error_message == "Remote agent task failed"
+    assert event.content is None
+
   def test_convert_a2a_status_update_to_event_none(self):
     """Test convert_a2a_status_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A status update cannot be None"):
@@ -809,6 +1000,63 @@ class TestToAdk:
     assert event.partial is True
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
+
+  def test_chunks_of_one_artifact_share_the_event_id(self):
+    """The chunks of one artifact and the update that closes it share an id.
+
+    ADK's A2A server ends a streamed response with a ``last_chunk`` update that
+    replaces the artifact with the full text (``append=False``). The shared id,
+    as in local streaming, tells a consumer it replaces the chunks.
+    """
+
+    def chunk(text, *, append, last_chunk, artifact_id="art-1"):
+      return TaskArtifactUpdateEvent(
+          task_id="task-1",
+          context_id="context-1",
+          append=append,
+          last_chunk=last_chunk,
+          artifact=_compat.make_artifact(
+              artifact_id=artifact_id,
+              parts=[_compat.make_text_part(text)],
+          ),
+      )
+
+    events = [
+        convert_a2a_artifact_update_to_event(
+            update, author="test-author", invocation_context=self.mock_context
+        )
+        for update in (
+            chunk("Hello, ", append=False, last_chunk=False),
+            chunk("world!", append=True, last_chunk=False),
+            chunk("Hello, world!", append=False, last_chunk=True),
+        )
+    ]
+    other = convert_a2a_artifact_update_to_event(
+        chunk(
+            "Another answer.",
+            append=False,
+            last_chunk=True,
+            artifact_id="art-2",
+        ),
+        author="test-author",
+        invocation_context=self.mock_context,
+    )
+
+    assert [event.partial for event in events] == [True, True, False]
+    assert len({event.id for event in events}) == 1
+    assert other.id != events[0].id
+
+  def test_artifact_event_id_is_scoped_to_the_invocation(self):
+    """The same artifact id in another invocation gives another event id."""
+    other_context = Mock(spec=InvocationContext)
+    other_context.invocation_id = "other-invocation"
+    other_context.branch = None
+
+    assert _artifact_event_id("art-1", self.mock_context) != _artifact_event_id(
+        "art-1", other_context
+    )
+    assert _artifact_event_id("", self.mock_context) is None
+    assert _artifact_event_id("art-1", None) is None
 
   def test_convert_a2a_artifact_update_to_event_none(self):
     """Test convert_a2a_artifact_update_to_event with None."""
@@ -852,6 +1100,79 @@ class TestToAdk:
     )
 
     assert event.content.role == "model"
+
+  @pytest.mark.parametrize(
+      "converter_key", list(_LONG_RUNNING_INBOUND_CONVERTERS)
+  )
+  def test_long_running_tool_ids_survive_every_inbound_converter(
+      self, converter_key
+  ):
+    """Every inbound converter must surface the ids it recovers."""
+    build_input, convert = _LONG_RUNNING_INBOUND_CONVERTERS[converter_key]
+    a2a_part = _make_a2a_part_for_test({
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
+    })
+    message = Message(
+        message_id="m1", role=_compat.ROLE_AGENT, parts=[a2a_part]
+    )
+    mock_part_converter = Mock(
+        return_value=[
+            genai_types.Part(
+                function_call=genai_types.FunctionCall(
+                    name="wait_for_human_approval", args={}, id="call-1"
+                )
+            )
+        ]
+    )
+
+    event = convert(
+        build_input(message),
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.long_running_tool_ids == {"call-1"}
+
+  def test_convert_a2a_task_to_event_preserves_long_running_tool_ids_from_artifacts(
+      self,
+  ):
+    """Artifact parts in a task must retain their long-running function call IDs."""
+    a2a_part = _make_a2a_part_for_test({
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
+    })
+    artifact = _compat.make_artifact(
+        artifact_id="art-1",
+        artifact_type="message",
+        parts=[a2a_part],
+    )
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=_compat.make_task_status(_compat.TS_WORKING, timestamp="now"),
+        artifacts=[artifact],
+    )
+    mock_part_converter = Mock(
+        return_value=[
+            genai_types.Part(
+                function_call=genai_types.FunctionCall(
+                    name="wait_for_human_approval", args={}, id="call-1"
+                )
+            )
+        ]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.long_running_tool_ids == {"call-1"}
 
 
 class TestExtractGenaiMetadata:
@@ -931,6 +1252,24 @@ class TestExtractGenaiMetadata:
     assert isinstance(result, dict)
     assert result == {"key": "value"}
 
+  def test_extract_all_metadata_fields_drops_internal_custom_metadata_keys(
+      self,
+  ) -> None:
+    """A remote agent cannot set ADK-internal custom_metadata keys."""
+    metadata_dict = {
+        _get_adk_metadata_key("custom_metadata"): json.dumps({
+            "keep": 1,
+            INTERNAL_METADATA_PREFIX + "planted": "x",
+            RESTORED_EVENT_KEY: True,
+        })
+    }
+
+    with patch.object(_internal_metadata.logger, "debug") as debug:
+      fields = _extract_all_metadata_fields(metadata_dict)
+
+    assert fields["custom_metadata"] == {"keep": 1}
+    debug.assert_called_once()
+
   def test_extract_genai_metadata_dict_invalid_string(self) -> None:
     metadata_dict = {
         _get_adk_metadata_key("custom_metadata"): "{'key': 'value'}"
@@ -976,7 +1315,7 @@ class TestExtractGenaiMetadata:
     """Tests that grounding metadata can be successfully extracted from a status update."""
     event = Event(
         author="agent",
-        actions=EventActions(state_delta={"key": "val"}),
+        actions=EventActions(escalate=True),
         grounding_metadata=genai_types.GroundingMetadata(
             search_entry_point=genai_types.SearchEntryPoint(
                 rendered_content="test-status"
@@ -1001,7 +1340,7 @@ class TestExtractGenaiMetadata:
     """Tests that grounding metadata can be successfully extracted from a Message."""
     event = Event(
         author="agent",
-        actions=EventActions(state_delta={"key": "val"}),
+        actions=EventActions(escalate=True),
         grounding_metadata=genai_types.GroundingMetadata(
             search_entry_point=genai_types.SearchEntryPoint(
                 rendered_content="test-message"
@@ -1022,3 +1361,149 @@ class TestExtractGenaiMetadata:
         back.grounding_metadata.search_entry_point.rendered_content
         == "test-message"
     )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        _compat.TS_INPUT_REQUIRED,
+        _compat.TS_AUTH_REQUIRED,
+        _compat.TS_COMPLETED,
+        _compat.TS_FAILED,
+        _compat.TS_CANCELED,
+        _compat.TS_REJECTED,
+    ],
+)
+@pytest.mark.parametrize("empty_message", [False, True])
+@pytest.mark.parametrize("response_kind", ["task", "status", "empty-artifact"])
+def test_contentless_task_boundary_is_preserved(
+    state, empty_message, response_kind
+):
+  message = (
+      _compat.make_message(message_id="empty", role="agent", parts=[])
+      if empty_message
+      else None
+  )
+  status = _compat.make_task_status(state, message=message)
+  if response_kind == "status":
+    response = _compat.make_task_status_update_event(
+        task_id="task", context_id="context", status=status, final=True
+    )
+    event = convert_a2a_status_update_to_event(response)
+  else:
+    response = _compat.make_task(
+        id="task",
+        context_id="context",
+        status=status,
+        artifacts=[_compat.make_artifact(artifact_id="empty", parts=[])]
+        if response_kind == "empty-artifact"
+        else None,
+    )
+    event = convert_a2a_task_to_event(response)
+  assert event is not None
+  assert event.content is None
+  assert event.is_final_response()
+  assert not event.partial
+
+
+@pytest.mark.parametrize(
+    "state", [_compat.TS_UNKNOWN, _compat.TS_SUBMITTED, _compat.TS_WORKING]
+)
+@pytest.mark.parametrize("with_metadata", [False, True])
+def test_contentless_progress_does_not_emit_a_final_response(
+    state, with_metadata
+):
+  message = (
+      _compat.make_message(
+          message_id="progress",
+          role="agent",
+          parts=[],
+          metadata={
+              _get_adk_metadata_key("custom_metadata"): '{"step": 1}',
+              _get_adk_metadata_key(
+                  "grounding_metadata"
+              ): '{"search_entry_point": {"rendered_content": "progress"}}',
+          },
+      )
+      if with_metadata
+      else None
+  )
+  status = _compat.make_task_status(state, message=message)
+  assert (
+      convert_a2a_task_to_event(
+          _compat.make_task(id="task", context_id="context", status=status)
+      )
+      is None
+  )
+  assert (
+      convert_a2a_status_update_to_event(
+          _compat.make_task_status_update_event(
+              task_id="task", context_id="context", status=status, final=False
+          )
+      )
+      is None
+  )
+
+
+@pytest.mark.parametrize("response_kind", ["task", "status", "artifact"])
+def test_empty_boundary_fallback_does_not_override_part_filter(response_kind):
+  message = _compat.make_message(
+      message_id="prompt", role="agent", parts=[_compat.make_text_part("Input")]
+  )
+  status = _compat.make_task_status(_compat.TS_INPUT_REQUIRED, message=message)
+  part_filter = Mock(return_value=None)
+  if response_kind == "status":
+    event = convert_a2a_status_update_to_event(
+        _compat.make_task_status_update_event(
+            task_id="task", context_id="context", status=status, final=True
+        ),
+        part_converter=part_filter,
+    )
+  else:
+    event = convert_a2a_task_to_event(
+        _compat.make_task(
+            id="task",
+            context_id="context",
+            status=status,
+            artifacts=[
+                _compat.make_artifact(
+                    artifact_id="answer",
+                    parts=[_compat.make_text_part("Result")],
+                )
+            ]
+            if response_kind == "artifact"
+            else None,
+        ),
+        part_converter=part_filter,
+    )
+  assert event is None
+  part_filter.assert_called()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        _compat.TS_COMPLETED,
+        _compat.TS_FAILED,
+        _compat.TS_CANCELED,
+        _compat.TS_REJECTED,
+    ],
+)
+def test_terminal_task_with_status_message_parts_converts_message(
+    state,
+):
+  message = _compat.make_message(
+      message_id="done", role="agent", parts=[_compat.make_text_part("Done")]
+  )
+  task = _compat.make_task(
+      id="task",
+      context_id="context",
+      status=_compat.make_task_status(state, message=message),
+  )
+  event = convert_a2a_task_to_event(task)
+  assert event is not None
+  assert event.content is not None
+  assert [part.text for part in event.content.parts] == ["Done"]
+  assert (
+      convert_a2a_task_to_event(task, part_converter=lambda part: None) is None
+  )

@@ -12,15 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import _code_execution
-from . import _nl_planning
-from . import contents
-from . import context
-from . import core
-from . import extensions
-from . import functions
-from . import identity
-from . import instructions
-from . import prompt
-from . import request_confirmation
-from . import tools
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ...utils import _lazy
+
+if TYPE_CHECKING:
+  from . import _code_execution
+  from . import _nl_planning
+  from . import contents
+  from . import context
+  from . import core
+  from . import extensions
+  from . import functions
+  from . import identity
+  from . import instructions
+  from . import prompt
+  from . import request_confirmation
+  from . import tools
+
+__all__ = [
+    '_code_execution',
+    '_nl_planning',
+    'contents',
+    'context',
+    'core',
+    'extensions',
+    'functions',
+    'identity',
+    'instructions',
+    'prompt',
+    'request_confirmation',
+    'tools',
+]
+
+__getattr__, __dir__ = _lazy.accessors(globals(), {})

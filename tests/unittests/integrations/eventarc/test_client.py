@@ -13,22 +13,199 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=protected-access
 
+import asyncio
+import collections
+import gc
 import os
 import unittest
 from unittest import mock
+import weakref
 
 from google.adk.integrations.eventarc import _client as client
+from google.adk.integrations.eventarc import _message_tool as message_tool
+from google.adk.integrations.eventarc import EventarcCredentialsConfig
+from google.adk.integrations.eventarc import EventarcToolConfig
+from google.adk.integrations.eventarc import EventarcToolset
+from google.adk.utils._event_loop_cache import _PerLoopCache
 import google.auth.compute_engine.credentials
 import google.auth.credentials
 import google.auth.identity_pool
 import google.auth.impersonated_credentials
 import google.auth.pluggable
+from google.cloud import eventarc_publishing_v1
+from google.cloud.eventarc_publishing_v1.services.publisher import transports
 import google.oauth2.credentials
 import google.oauth2.service_account
 
 
+def _make_mock_publisher_client(**_kwargs):
+  mc = mock.create_autospec(
+      eventarc_publishing_v1.PublisherAsyncClient, instance=True
+  )
+  mc.transport = mock.create_autospec(
+      transports.PublisherGrpcAsyncIOTransport, instance=True
+  )
+  return mc
+
+
 class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
+
+  def setUp(self):
+    super().setUp()
+    cache_patcher = mock.patch.object(
+        client, "_publisher_client_cache", _PerLoopCache()
+    )
+    cache_patcher.start()
+    self.addCleanup(cache_patcher.stop)
+
+  def test_impersonated_credentials_are_keyed_by_source_principal(self):
+    def make_sa(email):
+      return google.oauth2.service_account.Credentials(
+          signer=mock.Mock(),
+          service_account_email=email,
+          token_uri="https://oauth2.mtls.googleapis.com/token",
+      )
+
+    def impersonate(
+        source,
+        *,
+        target_scopes=None,
+        delegates=None,
+        subject=None,
+    ):
+      return google.auth.impersonated_credentials.Credentials(
+          source_credentials=source,
+          target_principal="target@test.com",
+          target_scopes=target_scopes or [],
+          delegates=delegates,
+          subject=subject,
+      )
+
+    authorized = impersonate(make_sa("authorized@test.com"))
+    same_source = impersonate(make_sa("authorized@test.com"))
+    variants = (
+        ("source", impersonate(make_sa("unauthorized@test.com"))),
+        (
+            "source_subject",
+            impersonate(
+                make_sa("authorized@test.com").with_subject("user@test.com")
+            ),
+        ),
+        (
+            "target_scopes",
+            impersonate(
+                make_sa("authorized@test.com"),
+                target_scopes=[
+                    "https://www.googleapis.com/auth/cloud-platform"
+                ],
+            ),
+        ),
+        (
+            "delegates",
+            impersonate(
+                make_sa("authorized@test.com"),
+                delegates=["delegate@test.com"],
+            ),
+        ),
+        (
+            "subject",
+            impersonate(
+                make_sa("authorized@test.com"),
+                subject="user@test.com",
+            ),
+        ),
+    )
+
+    self.assertEqual(
+        client._get_credential_id(authorized),
+        client._get_credential_id(same_source),
+    )
+    for label, variant in variants:
+      with self.subTest(variant=label):
+        self.assertNotEqual(
+            client._get_credential_id(authorized),
+            client._get_credential_id(variant),
+        )
+        self.assertNotEqual(
+            client._get_cache_key(authorized, "ua", "project"),
+            client._get_cache_key(variant, "ua", "project"),
+        )
+
+  def test_external_account_credentials_cache_key_isolation(self):
+    def make_wif(
+        *,
+        audience="aud1",
+        credential_source=None,
+        subject_token_supplier=None,
+        impersonated_sa="target@test.com",
+        scopes=None,
+    ):
+      impersonation_url = (
+          "https://iamcredentials.googleapis.com/v1/projects/-/"
+          f"serviceAccounts/{impersonated_sa}:generateAccessToken"
+          if impersonated_sa
+          else None
+      )
+      return google.auth.identity_pool.Credentials(
+          audience=audience,
+          subject_token_type="urn:ietf:params:oauth:token-type:jwt",
+          credential_source=(
+              {"file": "path1"}
+              if credential_source is None and subject_token_supplier is None
+              else credential_source
+          ),
+          subject_token_supplier=subject_token_supplier,
+          service_account_impersonation_url=impersonation_url,
+          scopes=scopes,
+      )
+
+    direct_sa = google.oauth2.service_account.Credentials(
+        signer=mock.Mock(),
+        service_account_email="target@test.com",
+        token_uri="https://oauth2.mtls.googleapis.com/token",
+    )
+    supplier1 = lambda context: "token"
+    supplier2 = lambda context: "token"
+    wif_authorized = make_wif()
+    wif_same = make_wif()
+    wif_variants = (
+        ("wif_audience", make_wif(audience="aud2")),
+        ("wif_source", make_wif(credential_source={"file": "path2"})),
+        ("wif_supplier", make_wif(subject_token_supplier=supplier1)),
+        ("wif_target_sa", make_wif(impersonated_sa="other@test.com")),
+        ("wif_no_impersonation", make_wif(impersonated_sa=None)),
+        (
+            "wif_scopes",
+            make_wif(scopes=["https://www.googleapis.com/auth/cloud-platform"]),
+        ),
+        ("wif_vs_direct_sa", direct_sa),
+    )
+
+    self.assertEqual(
+        client._get_credential_id(wif_authorized),
+        client._get_credential_id(wif_same),
+    )
+    self.assertNotEqual(
+        client._get_credential_id(make_wif(subject_token_supplier=supplier1)),
+        client._get_credential_id(make_wif(subject_token_supplier=supplier2)),
+    )
+    for label, variant in wif_variants:
+      with self.subTest(variant=label):
+        self.assertNotEqual(
+            client._get_credential_id(wif_authorized),
+            client._get_credential_id(variant),
+        )
+        self.assertNotEqual(
+            client._get_cache_key(wif_authorized, "ua", "project"),
+            client._get_cache_key(variant, "ua", "project"),
+        )
+    self.assertTrue(
+        client._get_credential_id(wif_authorized).startswith(
+            "ExternalAccount:aud1:"
+        )
+    )
 
   def test_get_credential_id(self):
     # Service Account
@@ -37,15 +214,35 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
         service_account_email="test@test.com",
         token_uri="https://oauth2.mtls.googleapis.com/token",
     )
-    self.assertEqual(client._get_credential_id(sa_creds), "test@test.com")
+    self.assertEqual(
+        client._get_credential_id(sa_creds), "test@test.com:():None"
+    )
+    for label, variant in (
+        (
+            "scopes",
+            sa_creds.with_scopes(
+                ["https://www.googleapis.com/auth/cloud-platform"]
+            ),
+        ),
+        ("subject", sa_creds.with_subject("user@test.com")),
+    ):
+      with self.subTest(sa_variant=label):
+        self.assertNotEqual(
+            client._get_credential_id(sa_creds),
+            client._get_credential_id(variant),
+        )
 
-    # Impersonated (Uses service_account_email under the hood in google-auth)
+    # Impersonated (the identity includes the source principal)
     imp_creds = google.auth.impersonated_credentials.Credentials(
-        source_credentials=mock.Mock(),
+        source_credentials=sa_creds,
         target_principal="imp@test.com",
         target_scopes=[],
     )
-    self.assertEqual(client._get_credential_id(imp_creds), "imp@test.com")
+    self.assertEqual(
+        client._get_credential_id(imp_creds),
+        "Impersonated:imp@test.com:test@test.com:"
+        "('https://www.googleapis.com/auth/iam',):None:():():None",
+    )
 
     # Compute Engine (ADC)
     gce_creds = google.auth.compute_engine.credentials.Credentials()
@@ -226,9 +423,6 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
 
   @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
   async def test_get_publisher_client_cache(self, mock_eventarc_publishing):
-    # Reset cache
-    client._publisher_client_cache.clear()
-
     creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True
     )
@@ -255,8 +449,6 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
 
   @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
   async def test_remove_publisher_client(self, mock_eventarc_publishing):
-    client._publisher_client_cache.clear()
-
     mock_client_cls = mock.Mock()
     mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
     mock_client = mock.Mock()
@@ -267,11 +459,15 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
         google.auth.credentials.Credentials, instance=True
     )
     c1 = await client.get_publisher_client(credentials=creds, project_id="p1")
-    self.assertEqual(len(client._publisher_client_cache), 1)
+    self.assertEqual(
+        len(client._publisher_client_cache.get(collections.OrderedDict)), 1
+    )
 
     # Remove client
     await client.remove_publisher_client(credentials=creds, project_id="p1")
-    self.assertEqual(len(client._publisher_client_cache), 0)
+    self.assertEqual(
+        len(client._publisher_client_cache.get(collections.OrderedDict)), 0
+    )
     mock_client.transport.close.assert_called_once()
 
     # Remove again is safe
@@ -282,8 +478,6 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
       self, mock_eventarc_publishing
   ):
     """Verifies LRU eviction and transport closing when cache is full."""
-    client._publisher_client_cache.clear()
-
     mock_client_cls = mock.Mock()
     mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
 
@@ -317,7 +511,8 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
     await client.get_publisher_client(credentials=creds, project_id=next_proj)
 
     self.assertEqual(
-        len(client._publisher_client_cache), client._CACHE_MAX_SIZE
+        len(client._publisher_client_cache.get(collections.OrderedDict)),
+        client._CACHE_MAX_SIZE,
     )
 
     # project-1 client should be evicted (which is index 1 in clients_list)
@@ -337,7 +532,6 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
   async def test_get_publisher_client_cache_external_account(
       self, mock_eventarc_publishing
   ):
-    client._publisher_client_cache.clear()
     mock_client_cls = mock.Mock()
     mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
     mock_client_cls.side_effect = lambda **kwargs: mock.Mock()
@@ -365,7 +559,6 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
   async def test_get_publisher_client_cache_user_credentials(
       self, mock_eventarc_publishing
   ):
-    client._publisher_client_cache.clear()
     mock_client_cls = mock.Mock()
     mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
     mock_client_cls.side_effect = lambda **kwargs: mock.Mock()
@@ -392,6 +585,144 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
     # Should be a cache hit, so call count remains 1
     mock_client_cls.assert_called_once()
     self.assertIs(c1, c2)
+
+  @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
+  def test_sequential_asyncio_run_calls_create_fresh_client_per_loop(
+      self, mock_eventarc_publishing
+  ):
+    """Sequential asyncio.run calls discard closed-loop clients on next miss."""
+    creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True
+    )
+    client_refs = []
+    loop_refs = []
+
+    def make_loop_bound_client(**_kwargs):
+      bound_loop = asyncio.get_running_loop()
+      mc = _make_mock_publisher_client()
+
+      async def publish(**_publish_kwargs):
+        if (
+            bound_loop.is_closed()
+            or asyncio.get_running_loop() is not bound_loop
+        ):
+          raise RuntimeError("Event loop is closed")
+        return eventarc_publishing_v1.PublishResponse()
+
+      mc.publish.side_effect = publish
+      client_refs.append(weakref.ref(mc))
+      loop_refs.append(weakref.ref(bound_loop))
+      return mc
+
+    mock_eventarc_publishing.PublisherAsyncClient.side_effect = (
+        make_loop_bound_client
+    )
+
+    async def run_publish():
+      return await message_tool.publish_message(
+          bus="projects/p1/locations/us-central1/messageBuses/bus1",
+          type="com.example.test",
+          source="//test/source",
+          credentials=creds,
+          settings=EventarcToolConfig(project_id="p1"),
+          data={"ok": True},
+      )
+
+    first_result = asyncio.run(run_publish())
+    self.assertEqual(first_result["status"], "SUCCESS")
+    gc.collect()
+    self.assertIsNotNone(client_refs[0]())
+
+    second_result = asyncio.run(run_publish())
+    self.assertEqual(second_result["status"], "SUCCESS")
+    self.assertEqual(len(client_refs), 2)
+
+    gc.collect()
+    self.assertIsNone(client_refs[0]())
+    self.assertIsNone(loop_refs[0]())
+    self.assertIsNotNone(client_refs[1]())
+
+  @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
+  def test_remove_publisher_client_scopes_to_running_loop(
+      self, mock_eventarc_publishing
+  ):
+    """Removing a client on one loop leaves another loop's client open."""
+    creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True
+    )
+
+    mock_eventarc_publishing.PublisherAsyncClient.side_effect = (
+        _make_mock_publisher_client
+    )
+    loop1 = asyncio.new_event_loop()
+    loop2 = asyncio.new_event_loop()
+    try:
+      c1 = loop1.run_until_complete(
+          client.get_publisher_client(credentials=creds, project_id="p1")
+      )
+      c2 = loop2.run_until_complete(
+          client.get_publisher_client(credentials=creds, project_id="p1")
+      )
+      self.assertIsNot(c1, c2)
+
+      loop1.run_until_complete(
+          client.remove_publisher_client(credentials=creds, project_id="p1")
+      )
+
+      c1.transport.close.assert_called_once()
+      c2.transport.close.assert_not_called()
+      self.assertIs(
+          loop2.run_until_complete(
+              client.get_publisher_client(credentials=creds, project_id="p1")
+          ),
+          c2,
+      )
+      c1_rebuilt = loop1.run_until_complete(
+          client.get_publisher_client(credentials=creds, project_id="p1")
+      )
+      self.assertIsNot(c1, c1_rebuilt)
+    finally:
+      loop1.close()
+      loop2.close()
+
+  @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
+  def test_close_cleans_up_only_running_loop_clients(
+      self, mock_eventarc_publishing
+  ):
+    """Closing EventarcToolset cleans up only the running loop's clients."""
+    creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True
+    )
+    mock_eventarc_publishing.PublisherAsyncClient.side_effect = (
+        _make_mock_publisher_client
+    )
+    toolset = EventarcToolset(
+        tool_config=EventarcToolConfig(project_id="p1"),
+        credentials_config=EventarcCredentialsConfig(credentials=creds),
+    )
+    loop1 = asyncio.new_event_loop()
+    loop2 = asyncio.new_event_loop()
+    try:
+      c1 = loop1.run_until_complete(
+          client.get_publisher_client(credentials=creds, project_id="p1")
+      )
+      c2 = loop2.run_until_complete(
+          client.get_publisher_client(credentials=creds, project_id="p1")
+      )
+
+      loop1.run_until_complete(toolset.close())
+
+      c1.transport.close.assert_called_once()
+      c2.transport.close.assert_not_called()
+      self.assertIs(
+          loop2.run_until_complete(
+              client.get_publisher_client(credentials=creds, project_id="p1")
+          ),
+          c2,
+      )
+    finally:
+      loop1.close()
+      loop2.close()
 
 
 if __name__ == "__main__":

@@ -22,7 +22,6 @@ from typing import Optional
 from typing_extensions import override
 
 from ..models.llm_response import LlmResponse
-from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalStatus
@@ -116,17 +115,22 @@ def _parse_critique(response: str) -> Label:
       label = Label.NOT_FOUND
   elif label_match_is_response_invalid:
     label = label_match_is_response_invalid.group(1).strip().rstrip(",}")
-    label = (
-        Label.INVALID
-        if label in [Label.TRUE.value, Label.INVALID.value]
-        else Label.VALID
-    )
+    if label in [
+        Label.INVALID.value,
+        Label.ALMOST.value,
+        Label.TRUE.value,
+        *Label.PARTIALLY_VALID.value,
+    ]:
+      label = Label.INVALID
+    elif label in [Label.VALID.value, Label.FALSE.value]:
+      label = Label.VALID
+    else:
+      label = Label.NOT_FOUND
   else:
     label = Label.NOT_FOUND
   return label
 
 
-@experimental
 class FinalResponseMatchV2Evaluator(LlmAsJudge[LlmAsAJudgeCriterion]):
   """V2 final response match evaluator which uses an LLM to judge responses.
 

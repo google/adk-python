@@ -17,8 +17,9 @@
 # otherwise never installs the wheel it is about to upload.
 #
 # This runs on the release pull request, which is where the version bump and
-# the changelog live and where the release oncaller is already looking. It is
-# not a required check until someone marks it one in the repository settings.
+# the changelog live and where the release oncaller is already looking.
+# Release: Publish to PyPi refuses to run unless the artifact-check job passed
+# in every run of this workflow on the commit it is about to publish.
 name: "Release: Artifact Check"
 
 on:
@@ -48,6 +49,18 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+
+# Both jobs install the candidate the way a user does, so they should see
+# close to what `pip install google-adk` gets rather than pyproject.toml's
+# 7-day cutoff. A 1-day window keeps them near users while still skipping
+# releases young enough to be yanked, and avoids resolving a release whose
+# wheels PyPI is still uploading. The packages exempted in
+# `exclude-newer-package` (google-adk and friends) have no cutoff at all, so
+# the auto baseline is still the latest release. This only affects these
+# throwaway check environments; the published wheel is built by
+# release-publish.yml under the full cutoff.
+env:
+  UV_EXCLUDE_NEWER: "1 day"
 
 jobs:
   artifact-check:

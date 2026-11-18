@@ -40,6 +40,10 @@ class BaseAuthCredentialExchanger:
   ) -> Optional[AuthCredential]:
     """Exchanges the provided authentication credential for a usable token/credential.
 
+    Called from a worker thread, so implementations cannot rely on a running
+    event loop or on thread-local state, and may run concurrently with other
+    tool calls.
+
     Args:
         auth_scheme: The security scheme.
         auth_credential: The authentication credential.

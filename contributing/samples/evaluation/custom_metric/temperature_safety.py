@@ -27,8 +27,6 @@ passed.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import Invocation
@@ -55,8 +53,8 @@ def _is_invocation_safe(invocation: Invocation) -> bool:
 def temperature_safety_score(
     eval_metric: EvalMetric,
     actual_invocations: list[Invocation],
-    expected_invocations: Optional[list[Invocation]],
-    conversation_scenario: Optional[ConversationScenario],
+    expected_invocations: list[Invocation] | None,
+    conversation_scenario: ConversationScenario | None,
 ) -> EvaluationResult:
   """Scores 1.0 unless a set_temperature call is outside 18-30 Celsius."""
   per_invocation_results = []

@@ -74,9 +74,10 @@ Platform. If it is not provided, the tools attempt to use environment-specific
 defaults.
 
 The `bigquery_tool_config` controls the operational limits of the tools. For
-example, it defines the maximum number of rows a query can return and whether
-the agent is allowed to perform write operations. If this is omitted, the
-toolset uses a default `BigQueryToolConfig` instance.
+example, it defines the maximum number of rows a query can return,
+customer-managed encryption keys (`kms_key_name`), and whether the agent is
+allowed to perform write operations. If this is omitted, the toolset uses a
+default `BigQueryToolConfig` instance.
 
 ## Advanced applications
 
@@ -101,12 +102,47 @@ toolset = BigQueryToolset(
 )
 ```
 
+### Pairing with built-in BigQuery skills
+
+The `google.adk.integrations.bigquery` package ships with first-party BigQuery
+skills (`"bigquery-ai-ml"` and `"bigquery-graph"`) that follow the
+[agentskills.io](https://agentskills.io) specification. You can load them via
+`get_bigquery_skill` and attach them alongside `BigQueryToolset` using
+`SkillToolset` to give your agent curated guidance for BigQuery AI/ML functions
+and Graph Query Language (GQL) or SQL/PGQ queries:
+
+```python
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.integrations.bigquery import BigQueryToolset
+from google.adk.integrations.bigquery import get_bigquery_skill
+from google.adk.tools.skill_toolset import SkillToolset
+
+bigquery_toolset = BigQueryToolset()
+bigquery_skills = SkillToolset(
+    skills=[
+        get_bigquery_skill("bigquery-ai-ml"),
+        get_bigquery_skill("bigquery-graph"),
+    ]
+)
+
+agent = LlmAgent(
+    name="bigquery_analyst",
+    instruction="Analyze BigQuery datasets and run AI/ML or graph queries.",
+    tools=[bigquery_toolset, bigquery_skills],
+)
+```
+
 ## Limitations
 
 The toolset is limited to the specific operations defined in its internal tool
 modules, such as metadata inspection and SQL execution. It does not support
 every BigQuery API feature, such as managing IAM policies or creating
 reservation slots.
+
+The `kms_key_name` option on `BigQueryToolConfig` covers `SELECT` results only.
+BigQuery rejects a job-level key for DDL, DML, and multi-statement scripts, so
+those run without it, requiring a project default key under policies like
+`constraints/gcp.restrictNonCmekServices`.
 
 ## Related samples
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 from typing import AsyncGenerator
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from ....events.event import Event
@@ -33,7 +32,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-def _is_event_in_branch(current_branch: Optional[str], event: Event) -> bool:
+def _is_event_in_branch(current_branch: str | None, event: Event) -> bool:
   """Return True if ``event`` belongs to ``current_branch`` (or the root)."""
   if not current_branch:
     # No branch means we're at the root; include all events without a branch.
@@ -45,8 +44,8 @@ def _find_previous_interaction_state(
     events: list[Event],
     *,
     agent_name: str,
-    current_branch: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
+    current_branch: str | None,
+) -> tuple[str | None, str | None]:
   """Find the most recent (interaction_id, environment_id) for ``agent_name``.
 
   Scans ``events`` in reverse, skipping events outside ``current_branch``, and
@@ -95,7 +94,7 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
 
   name = 'interactions'
 
-  _last_tier_warning_invocation_id: Optional[str] = None
+  _last_tier_warning_invocation_id: str | None = None
   """Invocation that last logged the unusable-tier warning.
 
   The processor runs once per model call, so warning unconditionally would
@@ -181,7 +180,7 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
 
   def _find_previous_interaction_id(
       self, invocation_context: InvocationContext
-  ) -> Optional[str]:
+  ) -> str | None:
     """Find the previous interaction ID from session events."""
     interaction_id, _ = _find_previous_interaction_state(
         invocation_context.session.events,

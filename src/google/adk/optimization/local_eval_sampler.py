@@ -105,25 +105,22 @@ class LocalEvalSamplerConfig(BaseModel):
   """Contains configuration options required by the LocalEvalServiceInterface."""
 
   eval_config: EvalConfig = Field(
-      required=True,
       description="The configuration for the evaluation.",
   )
 
   app_name: str = Field(
-      required=True,
       description="The app name to use for evaluation.",
   )
 
   train_eval_set: str = Field(
-      required=True,
       description="The name of the eval set to use for optimization.",
   )
 
   train_eval_case_ids: Optional[list[str]] = Field(
       default=None,
       description=(
-          "The ids of the eval cases to use for optimization. If not provided,"
-          " all eval cases in the train_eval_set will be used."
+          "The ids of the eval cases to use for optimization. If None, all"
+          " eval cases in the train_eval_set will be used. Must not be empty."
       ),
   )
 
@@ -140,9 +137,9 @@ class LocalEvalSamplerConfig(BaseModel):
       default=None,
       description=(
           "The ids of the eval cases to use for validating the optimized agent."
-          " If not provided, all eval cases in the validation_eval_set will be"
-          " used. If validation_eval_set is also not provided, all train eval"
-          " cases will be used."
+          " If None, all eval cases in the validation_eval_set will be used."
+          " If validation_eval_set is also not provided, the train eval cases"
+          " will be used. If [], no eval cases will be used."
       ),
   )
 
@@ -164,13 +161,19 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
     self._train_eval_set = self._config.train_eval_set
     self._train_eval_case_ids = (
         self._config.train_eval_case_ids
-        or self._get_eval_case_ids(self._train_eval_set)
+        if self._config.train_eval_case_ids is not None
+        else self._get_eval_case_ids(self._train_eval_set)
     )
+    if not self._train_eval_case_ids:
+      raise ValueError(
+          "No train eval cases selected from eval set"
+          f" `{self._train_eval_set}`."
+      )
 
     self._validation_eval_set = (
         self._config.validation_eval_set or self._train_eval_set
     )
-    if self._config.validation_eval_case_ids:
+    if self._config.validation_eval_case_ids is not None:
       self._validation_eval_case_ids = self._config.validation_eval_case_ids
     elif self._config.validation_eval_set:
       self._validation_eval_case_ids = self._get_eval_case_ids(
@@ -223,6 +226,9 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
     Returns:
       A list of EvalCaseResult, one per eval case.
     """
+    if not eval_case_ids:
+      return []
+
     # create the inference request
     inference_request = InferenceRequest(
         app_name=self._config.app_name,

@@ -21,8 +21,6 @@ from pydantic import Field
 from typing_extensions import deprecated
 
 from ..agents.base_agent_config import BaseAgentConfig
-from ..features import experimental
-from ..features import FeatureName
 
 
 @deprecated(
@@ -30,7 +28,6 @@ from ..features import FeatureName
     "versions. Config is now loaded via reflection so the separate config "
     "class is no longer needed."
 )
-@experimental(FeatureName.AGENT_CONFIG)
 class SequentialAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a SequentialAgent."""
 

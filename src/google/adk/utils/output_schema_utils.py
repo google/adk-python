@@ -20,8 +20,6 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
-from typing import Union
-
 from typing_extensions import deprecated
 
 from ..models._capabilities import gemini_output_schema_and_tools
@@ -29,7 +27,7 @@ from ..models.base_llm import BaseLlm
 
 
 @deprecated('Use model.capabilities.output_schema_and_tools instead.')
-def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
+def can_use_output_schema_with_tools(model: str | BaseLlm) -> bool:
   """Returns True if output schema with tools is supported."""
   if not isinstance(model, str):
     return model.capabilities.output_schema_and_tools

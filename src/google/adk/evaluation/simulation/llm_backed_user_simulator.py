@@ -28,7 +28,6 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
-from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..conversation_scenarios import ConversationScenario
 from ..evaluator import Evaluator
@@ -122,7 +121,6 @@ conversation history prompt provided to the user simulator.""",
     return value
 
 
-@experimental
 class LlmBackedUserSimulator(UserSimulator):
   """A UserSimulator that uses an LLM to generate messages on behalf of the user."""
 

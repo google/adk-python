@@ -22,6 +22,7 @@ from google.adk.tools.discovery_engine_search_tool import DiscoveryEngineSearchT
 from google.adk.tools.discovery_engine_search_tool import SearchResultMode
 from google.api_core import exceptions
 from google.cloud import discoveryengine_v1beta as discoveryengine
+from google.genai import types
 import pytest
 
 from google import auth
@@ -47,6 +48,71 @@ class TestDiscoveryEngineSearchTool:
     assert (
         tool._serving_config
         == "test_search_engine/servingConfigs/default_config"
+    )
+
+  def test_init_with_custom_name_and_description(self) -> None:
+    """Test initialization with custom name and description."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="custom_search",
+        description="Custom search description.",
+    )
+    assert tool.name == "custom_search"
+    assert tool.description == "Custom search description."
+
+  def test_init_with_custom_name_only(self) -> None:
+    """Test initialization with custom name only."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="custom_search",
+    )
+    assert tool.name == "custom_search"
+    assert tool.description.startswith(
+        "Search through Vertex AI Search's discovery engine search API."
+    )
+
+  def test_init_with_custom_description_only(self) -> None:
+    """Test initialization with custom description only."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        description="Custom search description.",
+    )
+    assert tool.name == "discovery_engine_search"
+    assert tool.description == "Custom search description."
+
+  def test_get_declaration_with_custom_name_and_description(self) -> None:
+    """Test _get_declaration returns custom name and description."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="custom_search",
+        description="Custom search description.",
+    )
+    declaration = tool._get_declaration()
+    assert declaration is not None
+    assert declaration.name == "custom_search"
+    assert declaration.description == "Custom search description."
+
+  def test_get_declaration_default_name_and_description(self) -> None:
+    """Test _get_declaration returns default name and description."""
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    declaration = tool._get_declaration()
+    assert declaration is not None
+    assert declaration.name == "discovery_engine_search"
+    assert declaration.description is not None
+    assert declaration.description.startswith(
+        "Search through Vertex AI Search's discovery engine search API."
+    )
+
+  def test_init_with_empty_name_and_description_uses_defaults(self) -> None:
+    """Empty name and description strings fall back to defaults."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="",
+        description="",
+    )
+    assert tool.name == "discovery_engine_search"
+    assert tool.description.startswith(
+        "Search through Vertex AI Search's discovery engine search API."
     )
 
   def test_init_with_no_ids_raises_error(self):
@@ -325,6 +391,39 @@ class TestDiscoveryEngineSearchTool:
           credentials=mock_credentials,
           client_options=mock_client_options.ClientOptions.return_value,
       )
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_discovery_engine_search_converts_data_store_specs(
+      self, mock_search_client
+  ):
+    """genai spec objects are converted; dict specs pass through."""
+    mock_search_client.return_value.search.return_value = (
+        discoveryengine.SearchResponse()
+    )
+    data_store = "projects/p/locations/global/collections/c/dataStores/d"
+
+    tool = DiscoveryEngineSearchTool(
+        search_engine_id="projects/p/locations/global/collections/c/engines/e",
+        data_store_specs=[
+            types.VertexAISearchDataStoreSpec(
+                data_store=data_store, filter="f"
+            ),
+            {"data_store": data_store},
+        ],
+    )
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    request = mock_search_client.return_value.search.call_args.args[0]
+    assert list(request.data_store_specs) == [
+        discoveryengine.SearchRequest.DataStoreSpec(
+            data_store=data_store, filter="f"
+        ),
+        discoveryengine.SearchRequest.DataStoreSpec(data_store=data_store),
+    ]
 
   @mock.patch.object(
       discoveryengine,

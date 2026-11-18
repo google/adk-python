@@ -1,0 +1,909 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Bidirectional Live model execution flow and postprocessing logic."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import AsyncGenerator
+from typing import cast
+from typing import Optional
+from typing import TYPE_CHECKING
+
+from google.genai import types
+from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosedOK
+
+from ..agents.invocation_context import InvocationContext
+from ..events.event import Event
+from ..events.event_actions import EventActions
+from ..flows.llm_flows.core._utils import as_llm_agent as _as_llm_agent
+from ..flows.llm_flows.core._utils import require_run_config as _require_run_config
+from ..flows.llm_flows.tools import _live_caller
+from ..models.base_llm_connection import BaseLlmConnection
+from ..models.google_llm import Gemini
+from ..models.llm_request import LlmRequest
+from ..models.llm_response import LlmResponse
+from ..telemetry.tracing import trace_send_data
+from ..telemetry.tracing import tracer
+from ..utils._agent_mode import AgentMode
+from ..utils.context_utils import Aclosing
+from ..utils.variant_utils import GoogleLLMVariant
+from ._flow_utils import _ReconnectMode as _ReconnectMode
+from ._flow_utils import _ReconnectSentinel as _ReconnectSentinel
+from ._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS
+from ._flow_utils import DEFAULT_TASK_COMPLETION_DELAY
+from ._flow_utils import DEFAULT_TRANSFER_AGENT_DELAY
+from ._flow_utils import handle_control_event_flush as handle_control_event_flush
+from ._flow_utils import require_live_request_queue as require_live_request_queue
+from ._flow_utils import run_config_for_new_live_session
+from ._flow_utils import stop_background_tool_tasks as stop_background_tool_tasks
+from ._flow_utils import wait_for_tool_calls
+
+if TYPE_CHECKING:
+  from ..agents.llm_agent import LlmAgent
+  from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+
+async def screen_live_user_content(
+    flow: BaseLlmFlow,
+    invocation_context: InvocationContext,
+    content: types.Content,
+    llm_request: LlmRequest,
+) -> Optional[Event]:
+  """Screens live user content with a before model callback."""
+  callback_llm_request = llm_request.model_copy(update={'contents': [content]})
+  callback_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=_as_llm_agent(invocation_context).name,
+      branch=invocation_context.branch,
+  )
+  if blocked_response := await flow._handle_before_model_callback(
+      invocation_context,
+      callback_llm_request,
+      callback_response_event,
+  ):
+    blocked_event = flow._finalize_model_response_event(
+        callback_llm_request,
+        blocked_response,
+        callback_response_event,
+    )
+    blocked_event.turn_complete = True
+    return blocked_event
+  return None
+
+
+async def send_to_model(
+    flow: BaseLlmFlow,
+    llm_connection: BaseLlmConnection,
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+) -> None:
+  """Sends data to model."""
+  run_config = _require_run_config(invocation_context)
+  realtime_cache_manager = flow._realtime_cache_manager
+  while True:
+    live_request_queue = invocation_context.live_request_queue
+    assert live_request_queue is not None
+    live_request = await live_request_queue.get()
+    # duplicate the live_request to all the active streams
+    active_streams = [
+        active.input_stream
+        for active in (
+            invocation_context._active_background_tools or {}
+        ).values()
+        if active.input_stream is not None
+    ]
+    logger.debug(
+        'Sending live request with fields %s to %d active stream(s)',
+        sorted(live_request.model_fields_set),
+        len(active_streams),
+    )
+    for stream in active_streams:
+      stream.send(live_request)
+    # Yield to event loop for cooperative multitasking
+    await asyncio.sleep(0)
+
+    # State changes ride on the user content event when one is created below;
+    # otherwise a standalone content-less event applies them.
+    is_function_response = bool(
+        live_request.content
+        and live_request.content.parts
+        and any(part.function_response for part in live_request.content.parts)
+    )
+    content_event_created = bool(
+        live_request.content
+        and not live_request.close
+        and not live_request.partial
+        and not is_function_response
+    )
+    if live_request.state_delta and not content_event_created:
+      await invocation_context.session_service.append_event(
+          session=invocation_context.session,
+          event=Event(
+              invocation_id=invocation_context.invocation_id,
+              author='user',
+              actions=EventActions(state_delta=live_request.state_delta),
+          ),
+      )
+
+    if live_request.close:
+      await llm_connection.close()
+      return
+
+    if live_request.activity_start:
+      await llm_connection.send_realtime(types.ActivityStart())  # type: ignore[arg-type]
+    elif live_request.activity_end:
+      await llm_connection.send_realtime(types.ActivityEnd())  # type: ignore[arg-type]
+    elif live_request.audio_stream_end:
+      await llm_connection.send_realtime(
+          types.LiveClientRealtimeInput(audio_stream_end=True)  # type: ignore[arg-type]
+      )
+    elif live_request.blob:
+      if run_config.save_live_blob:
+        realtime_cache_manager.cache_blob(
+            invocation_context, live_request.blob, cache_type='input'
+        )
+
+      await llm_connection.send_realtime(live_request.blob)
+
+    if live_request.content:
+      content = live_request.content
+      if content.parts and any(p.function_call for p in content.parts):
+        raise ValueError('User message cannot contain function calls.')
+      # TODO: intercept `adk_request_confirmation` function responses here
+      # and re-execute the confirmed tool instead of forwarding them to the
+      # model. The request confirmation processor cannot do it: it runs once
+      # in `_preprocess_async`, before the live connection is opened, so an
+      # approval sent mid-session is never consumed.
+      # Persist user text content to session (similar to non-live mode)
+      # Skip function responses - they are already handled separately
+      if not is_function_response and not content.role:
+        content = content.model_copy(update={'role': 'user'})
+      if not is_function_response and not live_request.partial:
+        user_content_event = Event(
+            id=Event.new_id(),
+            invocation_id=invocation_context.invocation_id,
+            author='user',
+            content=content,
+            actions=EventActions(state_delta=live_request.state_delta)
+            if live_request.state_delta
+            else EventActions(),
+        )
+        await invocation_context.session_service.append_event(
+            session=invocation_context.session,
+            event=user_content_event,
+        )
+      # Live callback site 1 of 3: Live typed text is screened directly
+      # before sending to the model. Unlike the other callback sites, a
+      # block here does not reconnect because the model has not yet
+      # received the content.
+      #
+      # Screen everything the model receives, including the partials that the
+      # session-event branch above skips. A pure tool result is not user input.
+      is_only_function_responses = bool(
+          content.parts and all(p.function_response for p in content.parts)
+      )
+      if not is_only_function_responses:
+        if blocked_event := await screen_live_user_content(
+            flow, invocation_context, content, llm_request
+        ):
+          await invocation_context._enqueue_event(blocked_event)
+          continue
+      await llm_connection._send_content(content, partial=live_request.partial)
+
+
+async def receive_from_model(
+    flow: BaseLlmFlow,
+    llm_connection: BaseLlmConnection,
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+) -> AsyncGenerator[Event, None]:
+  """Receive data from model and process events using BaseLlmConnection."""
+  run_config = _require_run_config(invocation_context)
+  realtime_cache_manager = flow._realtime_cache_manager
+
+  def get_author_for_event(llm_response: LlmResponse) -> str:
+    """Get the author of the event.
+
+    When the model returns input transcription, the author is set to "user".
+    Otherwise, the author is the agent name (not 'model').
+
+    Args:
+      llm_response: The LLM response from the LLM call.
+
+    Returns:
+      The author of the event as a string, either "user" or the agent's name.
+    """
+    if llm_response and (
+        llm_response.input_transcription
+        or (llm_response.content and llm_response.content.role == 'user')
+    ):
+      return 'user'
+    else:
+      return cast('LlmAgent', invocation_context.agent).name
+
+  # Accumulated output transcription from the live session.
+  turn_output_transcription = ''
+  while True:
+    received_any = False
+    async with Aclosing(llm_connection.receive()) as agen:
+      async for llm_response in agen:
+        received_any = True
+        if llm_response.live_session_resumption_update:
+          logger.info(
+              'Update session resumption handle:'
+              f' {llm_response.live_session_resumption_update}.'
+          )
+          # Updates sent while the session can't be resumed (the model is
+          # generating or a tool call is running) carry no handle. Keep the
+          # last handle the server offered, so a reconnect can still resume.
+          new_handle = llm_response.live_session_resumption_update.new_handle
+          if new_handle:
+            invocation_context.live_session_resumption_handle = new_handle
+        if llm_response.go_away:
+          logger.info(f'Received go away signal: {llm_response.go_away}')
+          # The server signals that it will close the connection soon.
+          # We yield a sentinel event to request reconnection internally.
+          yield _ReconnectSentinel()
+          return
+        if llm_response.turn_complete or llm_response.interrupted:
+          turn_output_transcription = ''
+
+        model_response_event = Event(
+            id=Event.new_id(),
+            invocation_id=invocation_context.invocation_id,
+            author=get_author_for_event(llm_response),
+        )
+
+        if llm_response.output_transcription:
+          if llm_response.output_transcription.finished:
+            turn_output_transcription = ''
+          elif llm_response.output_transcription.text:
+            turn_output_transcription += llm_response.output_transcription.text
+
+          # Live callback site 2 of 3: Screen the model's accumulated output
+          # transcription chunks. If the callback blocks, yields the event and
+          # reconnects to drop the model's remaining output.
+          if turn_output_transcription:
+            callback_llm_response = llm_response.model_copy(
+                update={
+                    'output_transcription': types.Transcription(
+                        text=turn_output_transcription,
+                        finished=False,
+                    ),
+                }
+            )
+            if blocked_response := await flow._handle_after_model_callback(
+                invocation_context,
+                callback_llm_response,
+                model_response_event,
+            ):
+              blocked_output_event = flow._finalize_model_response_event(
+                  llm_request, blocked_response, model_response_event
+              )
+              blocked_output_event.turn_complete = True
+              yield blocked_output_event
+              yield _ReconnectSentinel(mode=_ReconnectMode.RESTART)
+              return
+
+        async with Aclosing(
+            postprocess_live_flow(
+                flow,
+                invocation_context,
+                llm_request,
+                llm_response,
+                model_response_event,
+            )
+        ) as postprocess_agen:
+          async for event in postprocess_agen:
+            if (
+                run_config.save_live_blob
+                and event.content
+                and event.content.parts
+            ):
+              for part in event.content.parts:
+                if part.inline_data:
+                  realtime_cache_manager.cache_blob(
+                      invocation_context, part.inline_data, cache_type='output'
+                  )
+
+            yield event
+
+        # Live callback site 3 of 3: Screen the user's spoken input returned as a
+        # finished input transcription. If the callback blocks, yields the event
+        # and reconnects to drop the model's remaining output. Input transcription
+        # is screened after the user response is postprocessed to ensure the user's
+        # input is still yielded to the event stream. This mirrors the behavior at
+        # live callback site 1.
+        if (
+            llm_response.input_transcription
+            and llm_response.input_transcription.finished
+            and llm_response.input_transcription.text
+        ):
+          spoken_content = types.Content(
+              role='user',
+              parts=[
+                  types.Part.from_text(
+                      text=llm_response.input_transcription.text
+                  )
+              ],
+          )
+          if blocked_event := await screen_live_user_content(
+              flow,
+              invocation_context,
+              spoken_content,
+              llm_request,
+          ):
+            yield blocked_event
+            yield _ReconnectSentinel(mode=_ReconnectMode.RESTART)
+            return
+
+    if not received_any:
+      # `receive()` returning without yielding means the connection is
+      # done. It is not required to raise on close, so nothing else would
+      # end this loop.
+      logger.info('Live connection produced no further responses.')
+      return
+
+    # Give opportunity for other tasks to run.
+    await asyncio.sleep(0)
+
+
+async def postprocess_live_flow(
+    flow: BaseLlmFlow,
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    llm_response: LlmResponse,
+    model_response_event: Event,
+) -> AsyncGenerator[Event, None]:
+  """Postprocess after calling the LLM asynchronously in live mode.
+
+  Args:
+    flow: The LLM flow instance.
+    invocation_context: The invocation context.
+    llm_request: The original LLM request.
+    llm_response: The LLM response from the LLM call.
+    model_response_event: A mutable event for the LLM response.
+
+  Yields:
+    A generator of events.
+  """
+  run_config = _require_run_config(invocation_context)
+
+  # Runs processors.
+  async with Aclosing(
+      flow._postprocess_run_processors_async(invocation_context, llm_response)
+  ) as agen:
+    async for event in agen:
+      yield event
+
+  # Skip the model response event if there is no content and no error code.
+  # This is needed for the code executor to trigger another loop.
+  # But don't skip control events like turn_complete or transcription events.
+  if (
+      not llm_response.content
+      and not llm_response.error_code
+      and not llm_response.interrupted
+      and not llm_response.turn_complete
+      and not llm_response.input_transcription
+      and not llm_response.output_transcription
+      and not llm_response.usage_metadata
+      and not llm_response.live_session_resumption_update
+      and not llm_response.grounding_metadata
+      and not llm_response.voice_activity
+  ):
+    return
+
+  # Handle session resumption updates for cross-connection resumption
+  if llm_response.live_session_resumption_update:
+    model_response_event.live_session_resumption_update = (
+        llm_response.live_session_resumption_update
+    )
+    yield model_response_event
+    return
+
+  # Handle voice activity events
+  if llm_response.voice_activity:
+    model_response_event.voice_activity = llm_response.voice_activity
+    yield model_response_event
+    return
+
+  # Handle transcription events ONCE per llm_response, outside the event loop
+  if llm_response.input_transcription:
+    model_response_event.input_transcription = llm_response.input_transcription
+    model_response_event.partial = llm_response.partial
+    yield model_response_event
+    return
+
+  if llm_response.output_transcription:
+    model_response_event.output_transcription = (
+        llm_response.output_transcription
+    )
+    model_response_event.partial = llm_response.partial
+    yield model_response_event
+    return
+
+  # With save_live_blob, a turn end or an interruption also saves the cached
+  # live blobs. On a barge-in, `interrupted` goes out before the model's output
+  # is saved, so the caller can drop queued playback right away. Otherwise the
+  # blobs are saved first, so a caller that stops reading at `turn_complete`
+  # still has the turn saved.
+  is_barge_in = bool(
+      llm_response.interrupted and not llm_response.turn_complete
+  )
+  if run_config.save_live_blob and not is_barge_in:
+    flushed_events = await handle_control_event_flush(
+        flow, invocation_context, llm_response
+    )
+    for event in flushed_events:
+      yield event
+
+  # Builds the event.
+  model_response_event = flow._finalize_model_response_event(
+      llm_request, llm_response, model_response_event
+  )
+  yield model_response_event
+
+  if run_config.save_live_blob and is_barge_in:
+    flushed_events = await handle_control_event_flush(
+        flow, invocation_context, llm_response
+    )
+    for event in flushed_events:
+      yield event
+
+
+async def _merge_function_responses(
+    model_events: AsyncGenerator[Event, None],
+    function_response_queue: asyncio.Queue[Event],
+) -> AsyncGenerator[Event, None]:
+  """Merges model events and function responses into a single stream."""
+  merged: asyncio.Queue[Optional[tuple[Event, asyncio.Event]]] = asyncio.Queue()
+
+  async def pump_model_events() -> None:
+    async with Aclosing(model_events) as agen:
+      async for event in agen:
+        handled = asyncio.Event()
+        merged.put_nowait((event, handled))
+        await handled.wait()
+
+  async def pump_function_responses() -> None:
+    while True:
+      result = await function_response_queue.get()
+      handled = asyncio.Event()
+      merged.put_nowait((result, handled))
+      try:
+        await handled.wait()
+      finally:
+        if not handled.is_set():
+          # Re-queue the result at the front to keep the finish order.
+          rest = []
+          while not function_response_queue.empty():
+            rest.append(function_response_queue.get_nowait())
+          function_response_queue.put_nowait(result)
+          for item in rest:
+            function_response_queue.put_nowait(item)
+
+  model_pump = asyncio.create_task(pump_model_events())
+  function_response_pump = asyncio.create_task(pump_function_responses())
+
+  # Wake the merge when the connection closes.
+  model_pump.add_done_callback(lambda _: merged.put_nowait(None))
+  try:
+    while True:
+      entry = await merged.get()
+      if entry is None or model_pump.done():
+        # The connection closed.
+        break
+      item, handled = entry
+      try:
+        yield item
+      finally:
+        # The item has been sent to the flow.
+        handled.set()
+      # Run the model pump to check if it closed.
+      await asyncio.sleep(0)
+    if model_pump.exception() is None:
+      # Flush the function responses after the connection closes cleanly.
+      function_response_pump.cancel()
+      await asyncio.gather(function_response_pump, return_exceptions=True)
+      while not function_response_queue.empty():
+        yield function_response_queue.get_nowait()
+    await model_pump  # Raise model pump errors.
+  finally:
+    model_pump.cancel()
+    function_response_pump.cancel()
+    await asyncio.gather(
+        model_pump, function_response_pump, return_exceptions=True
+    )
+
+
+async def run_live_flow(
+    flow: BaseLlmFlow,
+    invocation_context: InvocationContext,
+) -> AsyncGenerator[Event, None]:
+  """Runs the flow using live api."""
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  async def finish_in_flight_calls() -> AsyncGenerator[Event, None]:
+    await wait_for_tool_calls(invocation_context)
+    while not function_response_queue.empty():
+      yield function_response_queue.get_nowait()
+
+  try:
+    from google.genai import errors
+
+    llm_request = LlmRequest()
+    event_id = Event.new_id()
+
+    # Preprocess before calling the LLM.
+    async with Aclosing(
+        flow._preprocess_async(  # pylint: disable=protected-access
+            invocation_context, llm_request, live=True
+        )
+    ) as agen:
+      async for event in agen:
+        yield event
+    if invocation_context.end_invocation:
+      return
+
+    agent = _as_llm_agent(invocation_context)
+    # A live session has no final response to structure, and the connect
+    # config carries no `response_schema`, so `output_schema` has no effect
+    # here. Task mode is exempt: it collects structured output through
+    # `finish_task`.
+    if (
+        getattr(agent, 'output_schema', None)
+        and getattr(agent, 'mode', None) != AgentMode.TASK
+    ):
+      logger.warning(
+          'Agent %s sets output_schema, which is not supported in live mode'
+          ' and will be ignored. To capture structured data during a live'
+          ' session, give the agent a tool that writes it to session state.',
+          agent.name,
+      )
+    live_request_queue = require_live_request_queue(invocation_context)
+    llm_request.model = agent.canonical_live_model.model
+
+    llm = await flow._get_llm(invocation_context)
+    # Only log non-sensitive request metadata. The full request carries the
+    # user conversation and http_options.headers, which may hold credentials.
+    logger.debug(
+        'Establishing live connection for agent: %s, model: %s, contents: %s,'
+        ' response modalities: %s',
+        agent.name,
+        llm_request.model,
+        len(llm_request.contents),
+        llm_request.live_connect_config.response_modalities,
+    )
+
+    # A caller can resume an earlier live session by handing the flow a
+    # handle it obtained from a previous run, which request assembly has by
+    # now put on the connect config (from `RunConfig.session_resumption`).
+    # Seed the invocation with it so the very first connection is treated as
+    # a resumption like any mid-session reconnect: the history the server
+    # already holds is not replayed, and if this connection drops before the
+    # server has pushed its first `session_resumption_update`, the reconnect
+    # path still has the caller's handle to retry with instead of failing the
+    # run. Without this the handle only reached the connect config while the
+    # rest of the run still behaved as if the session were new.
+    session_resumption = llm_request.live_connect_config.session_resumption
+    if (
+        not invocation_context.live_session_resumption_handle
+        and session_resumption is not None
+        and session_resumption.handle
+    ):
+      invocation_context.live_session_resumption_handle = (
+          session_resumption.handle
+      )
+
+    attempt = 1
+    while True:
+      try:
+        # On subsequent attempts, use the saved token to reconnect
+        if invocation_context.live_session_resumption_handle:
+          logger.info('Attempting to reconnect (Attempt %s)...', attempt)
+          attempt += 1
+          if not llm_request.live_connect_config:
+            llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.session_resumption:
+            llm_request.live_connect_config.session_resumption = (
+                types.SessionResumptionConfig()
+            )
+          llm_request.live_connect_config.session_resumption.handle = (
+              invocation_context.live_session_resumption_handle
+          )
+
+          # Only set transparent=True for Vertex AI backend, as the Gemini API
+          # backend explicitly rejects it.
+          if (
+              isinstance(llm, Gemini)
+              and llm._api_backend == GoogleLLMVariant.VERTEX_AI  # pylint: disable=protected-access
+          ):
+            session_resumption = (
+                llm_request.live_connect_config.session_resumption
+            )
+            if session_resumption.transparent is None:
+              session_resumption.transparent = True
+
+        # When seeding a fresh connection with prior conversation history, set
+        # initial_history_in_client_content to True. This tells the Live server
+        # that the provided history already includes the model's past responses,
+        # preventing the server from generating duplicate responses for those replayed turns.
+        if (
+            llm_request.contents
+            and not invocation_context.live_session_resumption_handle
+        ):
+          if not llm_request.live_connect_config:
+            llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.history_config:
+            llm_request.live_connect_config.history_config = (
+                types.HistoryConfig()
+            )
+          if (
+              llm_request.live_connect_config.history_config.initial_history_in_client_content
+              is None
+          ):
+            llm_request.live_connect_config.history_config.initial_history_in_client_content = (
+                True
+            )
+
+        logger.info(
+            'Establishing live connection for agent: %s',
+            agent.name,
+        )
+        async with llm.connect(llm_request) as llm_connection:
+          # Reset retry count to allow the maximum reconnect attempts for
+          # subsequent connection drops.
+          attempt = 1
+          # Skip sending history if we are resuming a session. The server
+          # already has the state associated with the resumption handle.
+          if (
+              llm_request.contents
+              and not invocation_context.live_session_resumption_handle
+          ):
+            # Sends the conversation history to the model.
+            with tracer.start_as_current_span('send_data'):
+              # Combine regular contents with audio/transcription from session
+              logger.debug('Sending history to model: %s', llm_request.contents)
+              await llm_connection.send_history(llm_request.contents)
+              trace_send_data(
+                  invocation_context, event_id, llm_request.contents
+              )
+
+          send_task = asyncio.create_task(
+              send_to_model(
+                  flow, llm_connection, invocation_context, llm_request
+              )
+          )
+
+          should_reconnect = False
+          reconnect_mode = None
+          try:
+            async with Aclosing(
+                _merge_function_responses(
+                    receive_from_model(
+                        flow,
+                        llm_connection,
+                        invocation_context,
+                        llm_request,
+                    ),
+                    function_response_queue,
+                )
+            ) as agen:
+              async for event in agen:
+                if isinstance(event, _ReconnectSentinel):
+                  should_reconnect = True
+                  reconnect_mode = event.mode
+                  break
+                # Empty event means the queue is closed.
+                if not event:
+                  break
+                logger.debug(
+                    'Receive new event: %s, author: %s', event.id, event.author
+                )
+                yield event
+                if event.get_function_calls():
+                  _live_caller.launch_function_calls_live(
+                      invocation_context,
+                      event,
+                      llm_request.tools_dict,
+                      function_response_queue,
+                  )
+                # send back the function response to models
+                if event.get_function_responses():
+                  logger.debug(
+                      'Sending back last function response event: %s', event.id
+                  )
+                  if event.content is None:
+                    raise RuntimeError(
+                        'A function response event must contain content.'
+                    )
+                  live_request_queue.send_content(event.content)
+                # We handle agent transfer here in `run_live` rather than
+                # in `postprocess_live_flow` to prevent duplication of function
+                # response processing. If agent transfer were handled in
+                # `postprocess_live_flow`, events yielded from child agent's
+                # `run_live` would bubble up to parent agent's `run_live`,
+                # causing `event.get_function_responses()` to be true in both
+                # child and parent, and `send_content()` to be called twice for
+                # the same function response. By handling agent transfer here,
+                # we ensure that only child agent processes its own function
+                # responses after the transfer.
+                #
+                # Transfer is gated on the `transfer_to_agent` action. This
+                # matches `_postprocess_handle_function_calls_async`, and lets
+                # tools transfer by setting the action directly.
+                transfer_to_agent = event.actions.transfer_to_agent
+                if transfer_to_agent:
+                  await agen.aclose()  # Stops the model pump before handoff.
+                  # Stop background tools before the transfer delay so:
+                  # 1. In-flight responses are not forwarded to the parent agent
+                  #    during the delay while the request queue drains.
+                  # 2. Function responses are not sent to the sub-agent after
+                  #    the transfer occurs.
+                  await stop_background_tool_tasks(invocation_context)
+                  while not function_response_queue.empty():
+                    yield function_response_queue.get_nowait()
+                  await asyncio.sleep(DEFAULT_TRANSFER_AGENT_DELAY)
+                  # cancel the tasks that belongs to the closed connection.
+                  send_task.cancel()
+                  logger.debug('Closing live connection')
+                  await llm_connection.close()
+                  logger.debug('Live connection closed.')
+                  # transfer to the sub agent.
+                  logger.debug('Transferring to agent: %s', transfer_to_agent)
+                  agent_to_run = flow._get_agent_to_run(
+                      invocation_context, transfer_to_agent
+                  )
+                  child_ctx = invocation_context.model_copy()
+                  # Child Live agent should start a new Live session.
+                  # Do not reuse the parent session's resumption handle.
+                  child_ctx.live_session_resumption_handle = None
+
+                  if child_ctx.run_config:
+                    child_ctx.run_config = run_config_for_new_live_session(
+                        child_ctx.run_config
+                    )
+
+                  async with Aclosing(
+                      agent_to_run.run_live(child_ctx)
+                  ) as child_agen:
+                    async for item in child_agen:
+                      yield item
+                  return
+                # Unlike agent transfer, `task_completed` doesn't have a
+                # matching event action. Match the response by name instead.
+                if any(
+                    function_response.name == 'task_completed'
+                    for function_response in event.get_function_responses()
+                ):
+                  # this is used for sequential agent to signal the end of the agent.
+                  await agen.aclose()  # Stops the model pump before the delay.
+                  await asyncio.sleep(DEFAULT_TASK_COMPLETION_DELAY)
+                  while not function_response_queue.empty():
+                    yield function_response_queue.get_nowait()
+                  # cancel the tasks that belongs to the closed connection.
+                  send_task.cancel()
+                  return
+          finally:
+            # Clean up
+            if not send_task.done():
+              send_task.cancel()
+            try:
+              await send_task
+            except asyncio.CancelledError:
+              pass
+        if should_reconnect:
+          if reconnect_mode == _ReconnectMode.RESUME:
+            continue
+
+          if reconnect_mode == _ReconnectMode.RESTART:
+            logger.info('Restarting live session.')
+            await stop_background_tool_tasks(invocation_context)
+            while not function_response_queue.empty():
+              yield function_response_queue.get_nowait()
+            restart_context = invocation_context.model_copy()
+            restart_context.live_session_resumption_handle = None
+            if restart_context.run_config:
+              restart_context.run_config = run_config_for_new_live_session(
+                  restart_context.run_config
+              )
+            async with Aclosing(flow.run_live(restart_context)) as agen:
+              async for item in agen:
+                yield item
+            return
+        async for event in finish_in_flight_calls():
+          yield event
+        break
+      except (ConnectionClosed, ConnectionClosedOK) as e:
+        # A client-initiated close rules out reconnecting: the `close=True`
+        # sentinel is one-shot and already consumed, so a resumed session
+        # would have no sender and never finish. It does not make an
+        # abnormal closure benign -- that still has to reach the caller.
+        client_closed = (
+            invocation_context.live_request_queue is not None
+            and invocation_context.live_request_queue.closed
+        )
+        # If we have a session resumption handle, we attempt to reconnect.
+        # This handle is updated dynamically during the session.
+        if invocation_context.live_session_resumption_handle and (
+            not client_closed
+        ):
+          if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
+            logger.error('Max reconnection attempts reached (%s).', e)
+            raise
+          logger.info(
+              'Connection closed (%s), reconnecting with session handle.', e
+          )
+          continue
+        # No resumption handle + normal (1000) close = the model ended the
+        # session cleanly; end the stream instead of erroring so live nodes
+        # finish normally.
+        if isinstance(e, ConnectionClosedOK):
+          logger.info('Connection closed normally: %s.', e)
+          async for event in finish_in_flight_calls():
+            yield event
+          return
+        logger.error('Connection closed: %s.', e)
+        raise
+      except errors.APIError as e:
+        # A client-initiated close rules out reconnecting: the `close=True`
+        # sentinel is one-shot and already consumed, so a resumed session
+        # would have no sender and never finish. It does not make an
+        # abnormal closure benign -- that still has to reach the caller.
+        client_closed = (
+            invocation_context.live_request_queue is not None
+            and invocation_context.live_request_queue.closed
+        )
+        # Error code 1000, 1006 and 1011 indicates a recoverable connection drop.
+        # In that case, we attempt to reconnect with session handle if available.
+        if e.code in [1000, 1006, 1011]:
+          if invocation_context.live_session_resumption_handle and (
+              not client_closed
+          ):
+            if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
+              logger.error('Max reconnection attempts reached (%s).', e)
+              raise
+            logger.info(
+                'Connection lost (%s), reconnecting with session handle.', e
+            )
+            continue
+          # No resumption handle + normal (1000) close = the model ended the
+          # session cleanly; end the stream instead of erroring so live nodes
+          # finish normally.
+          if e.code == 1000:
+            logger.info('Live session closed normally: %s.', e)
+            async for event in finish_in_flight_calls():
+              yield event
+            return
+
+        logger.error('APIError in live flow: %s', e)
+        raise
+      except Exception as e:
+        logger.error(
+            'An unexpected error occurred in live flow: %s', e, exc_info=True
+        )
+        raise
+  except Exception:
+    while not function_response_queue.empty():
+      yield function_response_queue.get_nowait()
+    raise
+  finally:
+    await stop_background_tool_tasks(invocation_context)

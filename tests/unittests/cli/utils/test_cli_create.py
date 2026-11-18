@@ -71,7 +71,9 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
   assert "GOOGLE_GENAI_USE_ENTERPRISE=0" in env_content
   assert (agent_folder / ".gitignore").read_text() == ".env\n.adk/\n"
   assert (agent_folder / "agent.py").exists()
-  assert (agent_folder / "__init__.py").exists()
+  assert (
+      agent_folder / "__init__.py"
+  ).read_text() == "from . import agent as agent\n"
 
 
 def test_generate_files_with_gcp(agent_folder: Path) -> None:
@@ -256,6 +258,72 @@ def test_run_cmd_invalid_app_name(
     )
 
 
+@pytest.mark.parametrize("agent_type", ["code", "config", None])
+@pytest.mark.parametrize(
+    "invalid_name",
+    [
+        "my-agent",
+        "class",
+    ],
+)
+def test_run_cmd_rejects_non_identifier_or_keyword_agent_name(
+    invalid_name: str,
+    agent_type: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+  """Kebab-case and Python keywords should be rejected before any dialogs."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  prompt_called = False
+
+  def _fail_if_prompted() -> str:
+    nonlocal prompt_called
+    prompt_called = True
+    return "gemini-2.5-flash"
+
+  monkeypatch.setattr(cli_create, "_prompt_for_model", _fail_if_prompted)
+  monkeypatch.setattr(cli_create, "_prompt_to_choose_type", _fail_if_prompted)
+
+  with pytest.raises(
+      click.BadParameter, match="must be a valid Python identifier"
+  ):
+    cli_create.run_cmd(
+        invalid_name,
+        model=None,
+        google_api_key="test-key",
+        google_cloud_project=None,
+        google_cloud_region=None,
+        type=agent_type,
+    )
+  assert not prompt_called
+  assert not (tmp_path / invalid_name).exists()
+
+
+@pytest.mark.parametrize(
+    "valid_name",
+    [
+        "my_agent",
+        "MyAgent",
+        "myAgent",
+    ],
+)
+def test_run_cmd_accepts_valid_identifier_names(
+    valid_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """snake_case, PascalCase, and camelCase should be accepted."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+
+  cli_create.run_cmd(
+      valid_name,
+      model="gemini-2.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+  assert (tmp_path / valid_name / "agent.py").exists()
+
+
 def test_run_cmd_with_type_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -287,16 +355,60 @@ def test_run_cmd_with_type_config(
   assert "model: gemini-2.5-flash" in yaml_content
   assert "description: A helpful assistant for user questions." in yaml_content
 
-  # Should create empty __init__.py
-  init_file = agent_dir / "__init__.py"
-  assert init_file.exists()
-  assert init_file.read_text().strip() == ""
+  # Config agents are YAML-loaded; do not emit a package marker.
+  assert not (agent_dir / "__init__.py").exists()
 
   # Should still create .env file
   env_file = agent_dir / ".env"
   assert env_file.exists()
   assert "GOOGLE_API_KEY=test-key" in env_file.read_text()
   assert (agent_dir / ".gitignore").read_text() == ".env\n.adk/\n"
+
+
+def test_run_cmd_prints_next_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """A new agent should come with the commands to run it and grow it."""
+  echo = _Recorder()
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(click, "echo", echo)
+
+  cli_create.run_cmd(
+      "my_agent",
+      model="gemini-3.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+
+  (message,), _ = echo.calls[-1]
+  assert "adk run my_agent\n" in message
+  assert "adk web .\n" in message
+  assert "uvx google-agents-cli setup\n" in message
+
+
+def test_run_cmd_next_steps_point_adk_web_at_parent_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """A nested agent path should make adk web serve the folder holding it."""
+  echo = _Recorder()
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(click, "echo", echo)
+  agent_path = os.path.join("agents", "my_agent")
+
+  cli_create.run_cmd(
+      agent_path,
+      model="gemini-3.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+
+  (message,), _ = echo.calls[-1]
+  assert f"adk run {agent_path}\n" in message
+  assert "adk web agents\n" in message
 
 
 # Prompt helpers
@@ -474,6 +586,7 @@ def test_handle_login_with_google_option_2(
 ) -> None:
   """User selects 2, goes through express sign up."""
   monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(_onboarding, "get_gcp_project_from_gcloud", lambda: "")
   monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
@@ -548,6 +661,7 @@ def test_handle_login_with_google_option_3(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   """User selects 3, aborts."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
   monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")

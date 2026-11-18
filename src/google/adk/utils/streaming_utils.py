@@ -18,12 +18,12 @@ import json
 import re
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.genai import types
 
 from ..features import FeatureName
 from ..features import is_feature_enabled
+from ..flows.llm_flows.tools import _functions
 from ..models.llm_response import LlmResponse
 
 _MAX_ARRAY_INDEX = 10_000
@@ -37,6 +37,8 @@ _JSON_PATH_TOKEN_RE = re.compile(
     """,
     re.VERBOSE,
 )
+
+_JSON_HIGH_SURROGATE_ESCAPE_RE = re.compile(r'\\u[dD][89aAbB][0-9a-fA-F]{2}')
 
 
 def _unescape_json_path_string(s: str) -> str:
@@ -154,6 +156,18 @@ def _set_value_by_json_path(
     current[last_part] = value
 
 
+class _ActiveFunctionCall:
+  """State tracker for an in-flight streaming function call."""
+
+  def __init__(self) -> None:
+    self.name: str | None = None
+    self.args: dict[str, Any] = {}
+    self.arg_chunks: dict[str, list[str]] = {}
+    self.id: str | None = None
+    self.thought_signature: bytes | None = None
+    self.sequence_index: int | None = None
+
+
 class StreamingResponseAggregator:
   """Aggregates partial streaming responses.
 
@@ -164,26 +178,22 @@ class StreamingResponseAggregator:
   def __init__(self) -> None:
     self._text: list[str] = []
     self._thought_text: list[str] = []
-    self._usage_metadata: Optional[
-        types.GenerateContentResponseUsageMetadata
-    ] = None
-    self._grounding_metadata: Optional[types.GroundingMetadata] = None
-    self._citation_metadata: Optional[types.CitationMetadata] = None
-    self._response = None
+    self._usage_metadata: types.GenerateContentResponseUsageMetadata | None = (
+        None
+    )
+    self._grounding_metadata: types.GroundingMetadata | None = None
+    self._citation_metadata: types.CitationMetadata | None = None
+    self._response: types.GenerateContentResponse | None = None
 
     # For progressive SSE streaming mode: accumulate parts in order
-    self._parts_sequence: list[types.Part] = []
+    self._parts_sequence: list[types.Part | None] = []
     self._current_text_buffer: list[str] = []
-    self._current_text_is_thought: Optional[bool] = None
-    self._current_text_thought_signature: Optional[bytes] = None
-    self._finish_reason: Optional[types.FinishReason] = None
+    self._current_text_is_thought: bool | None = None
+    self._current_text_thought_signature: bytes | None = None
+    self._finish_reason: types.FinishReason | None = None
 
     # For streaming function call arguments
-    self._current_fc_name: Optional[str] = None
-    self._current_fc_args: dict[str, Any] = {}
-    self._current_fc_arg_chunks: dict[str, list[str]] = {}
-    self._current_fc_id: Optional[str] = None
-    self._current_thought_signature: Optional[bytes] = None
+    self._active_function_call: _ActiveFunctionCall | None = None
 
   def _flush_text_buffer_to_sequence(self) -> None:
     """Flush current text buffer to parts sequence.
@@ -219,18 +229,20 @@ class StreamingResponseAggregator:
       json_path: JSONPath for this argument
       string_chunk: The chunk to append
     """
-    chunks = self._current_fc_arg_chunks.get(json_path)
+    if not self._active_function_call:
+      return
+    chunks = self._active_function_call.arg_chunks.get(json_path)
     if chunks is None:
       parsed_path = _parse_json_path(json_path)
       existing_value, found = _get_value_by_json_path(
-          self._current_fc_args, parsed_path
+          self._active_function_call.args, parsed_path
       )
       chunks = (
           [existing_value]
           if (found and isinstance(existing_value, str))
           else []
       )
-      self._current_fc_arg_chunks[json_path] = chunks
+      self._active_function_call.arg_chunks[json_path] = chunks
       # Reserve the key so the flushed args keep their arrival order.
       self._set_value_by_json_path(json_path, '')
 
@@ -266,47 +278,58 @@ class StreamingResponseAggregator:
     return value, has_value
 
   def _set_value_by_json_path(self, json_path: str, value: Any) -> None:
-    """Set a value in _current_fc_args using JSONPath notation.
+    """Set a value in active function call args using JSONPath notation.
 
     Args:
-      json_path: JSONPath string like "$.location" or "$.location.latitude"
+      json_path: JSONPath string like '$.location' or '$.location.latitude'
       value: The value to set
     """
+    if not self._active_function_call:
+      return
     parsed_path = _parse_json_path(json_path)
-    _set_value_by_json_path(self._current_fc_args, parsed_path, value)
+    _set_value_by_json_path(self._active_function_call.args, parsed_path, value)
 
   def _flush_function_call_to_sequence(self) -> None:
-    """Flush current function call to parts sequence.
+    """Flush active function call to parts sequence.
 
     This creates a complete FunctionCall part from accumulated partial args.
     """
-    if self._current_fc_name:
-      # Join the buffered string chunks into their final values
-      for json_path, chunks in self._current_fc_arg_chunks.items():
-        self._set_value_by_json_path(json_path, ''.join(chunks))
+    if not self._active_function_call or not self._active_function_call.name:
+      self._active_function_call = None
+      return
 
-      # Create function call part with accumulated args
-      fc_part = types.Part.from_function_call(
-          name=self._current_fc_name,
-          args=self._current_fc_args.copy(),
-      )
+    state = self._active_function_call
+    assert state.name is not None
 
-      # Set the ID if provided (directly on the function_call object)
-      if self._current_fc_id and fc_part.function_call:
-        fc_part.function_call.id = self._current_fc_id
+    # Join the buffered string chunks into their final values
+    for json_path, chunks in state.arg_chunks.items():
+      self._set_value_by_json_path(json_path, ''.join(chunks))
 
-      # Set thought_signature if provided (on the Part, not FunctionCall)
-      if self._current_thought_signature:
-        fc_part.thought_signature = self._current_thought_signature
+    # Create function call part with accumulated args
+    fc_part = types.Part.from_function_call(
+        name=state.name,
+        args=state.args.copy(),
+    )
 
+    # Set the ID if provided (directly on the function_call object)
+    if state.id and fc_part.function_call:
+      fc_part.function_call.id = state.id
+
+    # Set thought_signature if provided (on the Part, not FunctionCall)
+    if state.thought_signature:
+      fc_part.thought_signature = state.thought_signature
+
+    if (
+        state.sequence_index is not None
+        and 0 <= state.sequence_index < len(self._parts_sequence)
+        and self._parts_sequence[state.sequence_index] is None
+    ):
+      self._parts_sequence[state.sequence_index] = fc_part
+    else:
       self._parts_sequence.append(fc_part)
 
-      # Reset FC state
-      self._current_fc_name = None
-      self._current_fc_args = {}
-      self._current_fc_arg_chunks = {}
-      self._current_fc_id = None
-      self._current_thought_signature = None
+    # Reset FC state
+    self._active_function_call = None
 
   def _process_streaming_function_call(self, fc: types.FunctionCall) -> None:
     """Process a streaming function call with partialArgs.
@@ -314,11 +337,9 @@ class StreamingResponseAggregator:
     Args:
       fc: The function call object with partial_args
     """
-    # Save function name if present (first chunk)
-    if fc.name:
-      self._current_fc_name = fc.name
-    if fc.id:
-      self._current_fc_id = fc.id
+    state = self._active_function_call
+    if not state:
+      return
 
     # Process each partial argument
     for partial_arg in fc.partial_args or []:
@@ -336,12 +357,14 @@ class StreamingResponseAggregator:
       # Set the value using JSONPath (only if a value was provided)
       if has_value:
         # A scalar replaces anything buffered for this path.
-        self._current_fc_arg_chunks.pop(json_path, None)
+        state.arg_chunks.pop(json_path, None)
         self._set_value_by_json_path(json_path, value)
 
-    # Check if function call is complete
+    # Check if function call is complete.
+    # Vertex omits will_continue on a closing continuation chunk (or sends
+    # False). Proto3 drops false booleans over JSON/REST, surfacing None.
+    # Therefore `not fc.will_continue` treats False and None as complete.
     if not fc.will_continue:
-      # Function call complete, flush it
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
 
@@ -355,35 +378,55 @@ class StreamingResponseAggregator:
     if fc is None:
       return
 
-    # Check if this is a streaming FC (has partialArgs or will_continue=True)
-    # The first chunk of a streaming function call may have will_continue=True
-    # but no partial_args yet, so we need to check both conditions.
-    if fc.partial_args or fc.will_continue:
-      # Streaming function call arguments
+    # Check if this is a streaming FC (has partial_args or will_continue is not
+    # None or continuation of an active function call).
+    is_streaming_chunk = (
+        bool(fc.partial_args)
+        or fc.will_continue is not None
+        or (self._active_function_call is not None and not fc.args)
+    )
 
-      # Generate ID on first chunk if not provided by LLM
-      if not fc.id and not self._current_fc_id:
-        # Lazy import to avoid circular dependency
-        from ..flows.llm_flows.tools._functions import _new_client_function_call_id
+    if is_streaming_chunk:
+      # If a new named call arrives while one is already open, flush the
+      # previous call first.
+      if (
+          fc.name
+          and self._active_function_call
+          and self._active_function_call.name
+          and fc.name != self._active_function_call.name
+      ):
+        self._flush_text_buffer_to_sequence()
+        self._flush_function_call_to_sequence()
 
-        fc.id = _new_client_function_call_id()
+      if self._active_function_call is None:
+        self._active_function_call = _ActiveFunctionCall()
+        self._flush_text_buffer_to_sequence()
+        self._active_function_call.sequence_index = len(self._parts_sequence)
+        self._parts_sequence.append(None)
+        if not fc.id:
+          fc.id = _functions._new_client_function_call_id()
+        self._active_function_call.id = fc.id
 
-      # Save thought_signature from the part (first chunk should have it)
-      if part.thought_signature and not self._current_thought_signature:
-        self._current_thought_signature = part.thought_signature
+      state = self._active_function_call
+      if fc.name:
+        state.name = fc.name
+      if fc.id and not state.id:
+        state.id = fc.id
+      if not fc.id and state.id:
+        fc.id = state.id
+      if part.thought_signature and not state.thought_signature:
+        state.thought_signature = part.thought_signature
+
       self._process_streaming_function_call(fc)
     else:
-      # Non-streaming function call (standard format with args)
-      # Skip empty function calls (used as streaming end markers)
-      if fc.name:
-        # Generate ID if not provided by LLM
-        if not fc.id:
-          # Lazy import to avoid circular dependency
-          from ..flows.llm_flows.tools._functions import _new_client_function_call_id
+      # Non-streaming function call (standard format with args).
+      # Flush any active streaming function call first.
+      self._flush_text_buffer_to_sequence()
+      self._flush_function_call_to_sequence()
 
-          fc.id = _new_client_function_call_id()
-        # Flush any buffered text first, then add the FC part
-        self._flush_text_buffer_to_sequence()
+      if fc.name:
+        if not fc.id:
+          fc.id = _functions._new_client_function_call_id()
         self._parts_sequence.append(part)
 
   async def process_response(
@@ -511,7 +554,7 @@ class StreamingResponseAggregator:
       deduped_parts.append(part)
     return deduped_parts
 
-  def close(self) -> Optional[LlmResponse]:
+  def close(self) -> LlmResponse | None:
     """Generate an aggregated response at the end, if needed.
 
     This should be called after all the model responses are processed.
@@ -530,7 +573,7 @@ class StreamingResponseAggregator:
     if not finish_reason and candidate:
       finish_reason = candidate.finish_reason
 
-    error_code = None
+    error_code: str | None = None
     error_message = None
     if finish_reason and finish_reason != types.FinishReason.STOP:
       error_code = finish_reason
@@ -544,7 +587,8 @@ class StreamingResponseAggregator:
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
 
-      deduped_parts = self._deduplicate_function_calls(self._parts_sequence)
+      valid_parts = [p for p in self._parts_sequence if p is not None]
+      deduped_parts = self._deduplicate_function_calls(valid_parts)
 
       content = (
           types.ModelContent(parts=deduped_parts) if deduped_parts else None
@@ -694,13 +738,19 @@ class _JsonPathTracker:
 
     try:
       current_dict = json.loads(completed)
-    except (json.JSONDecodeError, RecursionError):
+    except (ValueError, RecursionError):
+      # ValueError also covers an integer over the int max str digits limit.
       return []
 
     if not isinstance(current_dict, dict):
       return []
 
-    diffs = self._get_diff(self.previous_dict, current_dict)
+    try:
+      diffs = self._get_diff(self.previous_dict, current_dict)
+    except RecursionError:
+      # The diff walks the value recursively; nesting the decoder accepted
+      # can still be too deep for it. Partial args are optional.
+      return []
     self.previous_dict = current_dict
 
     if self._open_string_path is not None and not any(
@@ -739,10 +789,24 @@ class _JsonPathTracker:
     if self._in_string:
       if self._escaped:
         return ''
+      prefix = ''.join(self.accumulated_parts)
+      # A high surrogate needs the following low surrogate before json.loads
+      # can decode the pair into a character that can be serialized as UTF-8.
+      # Escaped backslashes are literal text and must not delay streaming.
+      # Only the tail is inspected so long strings are not rescanned per chunk.
+      escape_start = len(prefix) - 6
+      if escape_start >= 0 and _JSON_HIGH_SURROGATE_ESCAPE_RE.fullmatch(
+          prefix, escape_start
+      ):
+        i = escape_start - 1
+        while i >= 0 and prefix[i] == '\\':
+          i -= 1
+        if (escape_start - 1 - i) % 2 == 0:
+          return ''
       suffix = '"' + ''.join(
           '}' if op == '{' else ']' for op in reversed(self._stack)
       )
-      return ''.join(self.accumulated_parts) + suffix
+      return prefix + suffix
 
     last_non_ws = ''
     last_part_idx = -1
@@ -858,6 +922,12 @@ class _JsonPathTracker:
           json_path=path, string_value=val, will_continue=False
       )
     elif isinstance(val, (int, float)) and not isinstance(val, bool):
+      try:
+        float(val)
+      except OverflowError:
+        # number_value is a float; an integer too large for one is left
+        # valueless like other unsupported leaves.
+        return types.PartialArg(json_path=path, will_continue=False)
       return types.PartialArg(
           json_path=path, number_value=val, will_continue=False
       )

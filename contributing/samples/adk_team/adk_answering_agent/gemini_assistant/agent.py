@@ -14,8 +14,6 @@
 
 import json
 from typing import Any
-from typing import Dict
-from typing import List
 
 from adk_answering_agent.settings import ADK_GCP_SA_KEY
 from adk_answering_agent.settings import GEMINI_API_DATASTORE_ID
@@ -27,7 +25,7 @@ from google.cloud import discoveryengine_v1beta as discoveryengine
 from google.oauth2 import service_account
 
 
-def search_gemini_api_docs(queries: List[str]) -> Dict[str, Any]:
+def search_gemini_api_docs(queries: list[str]) -> dict[str, Any]:
   """Searches Gemini API docs using Vertex AI Search.
 
   Args:

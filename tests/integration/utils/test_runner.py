@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import importlib
-from typing import Optional
 
 from google.adk import Agent
 from google.adk import Runner
@@ -50,7 +49,7 @@ class TestRunner:
         app_name=self.app_name, user_id=self.user_id
     ).id
 
-  def new_session(self, session_id: Optional[str] = None) -> None:
+  def new_session(self, session_id: str | None = None) -> None:
     self.current_session_id = self.session_service.create_session(
         app_name=self.app_name, user_id=self.user_id, session_id=session_id
     ).id
@@ -74,7 +73,7 @@ class TestRunner:
         )
     )
 
-  def get_current_session(self) -> Optional[Session]:
+  def get_current_session(self) -> Session | None:
     return self.session_service.get_session(
         app_name=self.app_name,
         user_id=self.user_id,

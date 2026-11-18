@@ -39,7 +39,7 @@ from google.adk.tools import RemoteMcpServer
 # The Managed Agent id served by the Managed Agents API. Override with the
 # MANAGED_AGENT_ID environment variable if your project has access to a
 # different agent.
-_DEFAULT_AGENT_ID = 'antigravity-preview-05-2026'
+_DEFAULT_AGENT_ID = 'antigravity-preview-09-2026'
 
 # The Maps Grounding Lite MCP server (Streamable HTTP transport). Uses the mTLS
 # endpoint host (mapstools.mtls.googleapis.com); the backend opens the session.

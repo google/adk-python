@@ -14,9 +14,7 @@
 
 from __future__ import annotations
 
-from typing import List
 from typing import Literal
-from typing import Optional
 
 from google.genai import types
 from pydantic import ConfigDict
@@ -53,7 +51,7 @@ class LlmAgentConfig(BaseAgentConfig):
       ),
   )
 
-  model: Optional[str] = Field(
+  model: str | None = Field(
       default=None,
       description=(
           'Optional. LlmAgent.model. Provide a model name string (e.g.'
@@ -65,7 +63,7 @@ class LlmAgentConfig(BaseAgentConfig):
       ),
   )
 
-  model_code: Optional[CodeConfig] = Field(
+  model_code: CodeConfig | None = Field(
       default=None,
       description=(
           'Optional. A CodeConfig that instantiates a BaseLlm implementation'
@@ -94,7 +92,7 @@ class LlmAgentConfig(BaseAgentConfig):
       )
   )
 
-  static_instruction: Optional[types.ContentUnion] = Field(
+  static_instruction: types.ContentUnion | None = Field(
       default=None,
       description=(
           'Optional. LlmAgent.static_instruction. Static content sent literally'
@@ -106,24 +104,24 @@ class LlmAgentConfig(BaseAgentConfig):
       ),
   )
 
-  disallow_transfer_to_parent: Optional[bool] = Field(
+  disallow_transfer_to_parent: bool | None = Field(
       default=None,
       description='Optional. LlmAgent.disallow_transfer_to_parent.',
   )
 
-  disallow_transfer_to_peers: Optional[bool] = Field(
+  disallow_transfer_to_peers: bool | None = Field(
       default=None, description='Optional. LlmAgent.disallow_transfer_to_peers.'
   )
 
-  input_schema: Optional[CodeConfig] = Field(
+  input_schema: CodeConfig | None = Field(
       default=None, description='Optional. LlmAgent.input_schema.'
   )
 
-  output_schema: Optional[CodeConfig] = Field(
+  output_schema: CodeConfig | None = Field(
       default=None, description='Optional. LlmAgent.output_schema.'
   )
 
-  output_key: Optional[str] = Field(
+  output_key: str | None = Field(
       default=None, description='Optional. LlmAgent.output_key.'
   )
 
@@ -131,7 +129,7 @@ class LlmAgentConfig(BaseAgentConfig):
       default='default', description='Optional. LlmAgent.include_contents.'
   )
 
-  tools: Optional[list[ToolConfig]] = Field(
+  tools: list[ToolConfig] | None = Field(
       default=None,
       description="""\
 Optional. LlmAgent.tools.
@@ -188,7 +186,7 @@ Examples:
   ```""",
   )
 
-  before_model_callbacks: Optional[List[CodeConfig]] = Field(
+  before_model_callbacks: list[CodeConfig] | None = Field(
       default=None,
       description="""\
 Optional. LlmAgent.before_model_callbacks.
@@ -201,18 +199,18 @@ Example:
   ```""",
   )
 
-  after_model_callbacks: Optional[List[CodeConfig]] = Field(
+  after_model_callbacks: list[CodeConfig] | None = Field(
       default=None, description='Optional. LlmAgent.after_model_callbacks.'
   )
 
-  before_tool_callbacks: Optional[List[CodeConfig]] = Field(
+  before_tool_callbacks: list[CodeConfig] | None = Field(
       default=None, description='Optional. LlmAgent.before_tool_callbacks.'
   )
 
-  after_tool_callbacks: Optional[List[CodeConfig]] = Field(
+  after_tool_callbacks: list[CodeConfig] | None = Field(
       default=None, description='Optional. LlmAgent.after_tool_callbacks.'
   )
 
-  generate_content_config: Optional[types.GenerateContentConfig] = Field(
+  generate_content_config: types.GenerateContentConfig | None = Field(
       default=None, description='Optional. LlmAgent.generate_content_config.'
   )

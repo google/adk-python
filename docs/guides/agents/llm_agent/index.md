@@ -155,7 +155,7 @@ Settings for binding capabilities, parsing input, and constraining output format
 
 | Member | Kind | Return or Signature | Description |
 | :--- | :--- | :--- | :--- |
-| `tools` | Field | `list[ToolUnion]` | Tools available to the agent (callables, `BaseTool`, `BaseToolset`, or `NodeTool`). |
+| `tools` | Field | `list[ToolUnion]` | Tools available to the agent (callables, `BaseTool`, `BaseToolset`, or `BaseNode`). |
 | `input_schema` | Field | `type[BaseModel] \| None` | Expected input schema when the agent is invoked as a tool. |
 | `output_schema` | Field | `SchemaType \| None` | Pydantic model or schema type enforcing structured output. |
 | `output_key` | Field | `str \| None` | Session state key where the final agent output is automatically stored. |
@@ -290,6 +290,7 @@ audited_agent = LlmAgent(
 
 * **Agents cannot be passed directly as tools**: Passing another `BaseAgent` or `LlmAgent` directly into `tools=[other_agent]` raises a `ValueError`. `NodeTool` also explicitly rejects `BaseAgent` instances (`Agent '<name>' cannot be wrapped as a NodeTool`). To delegate to another agent, register it in `sub_agents` for autonomous multi-agent transfers.
 * **Static instructions and Live API**: `static_instruction` is designed for text and multimodal content caching in the standard GenerateContent API. The Multimodal Live API uses a distinct session resumption and cache architecture.
+* **Structured output and Live API**: `output_schema` has no effect in a live session (`run_live`). The Live API takes no response schema, and an ongoing conversation has no single final response to structure, so ADK ignores `output_schema` there and logs a warning. To capture structured data during a live session, give the agent a tool that writes it to session state. Agents in `mode="task"` are unaffected, since they report their output through `finish_task`.
 * **Generation settings location**: Hyperparameters such as `temperature`, `max_output_tokens`, and `safety_settings` must be passed via `generate_content_config=types.GenerateContentConfig(...)`. Direct keyword arguments for generation parameters on `LlmAgent` are not supported.
 
 ## Related samples

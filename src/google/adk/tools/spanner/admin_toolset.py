@@ -22,8 +22,6 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.spanner import admin_tool
 from typing_extensions import override
 
-from ...features import experimental
-from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
@@ -34,7 +32,6 @@ from .spanner_credentials import SpannerCredentialsConfig
 DEFAULT_SPANNER_TOOL_NAME_PREFIX = "spanner"
 
 
-@experimental(FeatureName.SPANNER_ADMIN_TOOLSET)
 class SpannerAdminToolset(BaseToolset):
   """A toolset containing tools for interacting with Spanner admin tasks.
 

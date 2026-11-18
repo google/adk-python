@@ -47,7 +47,7 @@ export LIVEKIT_API_SECRET="secret"
 
 For LiveKit Cloud, use the values from your
 [project dashboard](https://cloud.livekit.io/) instead. Either way, also set
-your Vertex/Gemini credentials for `gemini-live-2.5-flash-native-audio`.
+your Vertex/Gemini credentials for `gemini-3.8-live`.
 
 ## How To
 
