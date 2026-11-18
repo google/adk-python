@@ -136,8 +136,13 @@ class FsspecArtifactService(BaseArtifactService):
   ``file_data`` URI references, and non-empty ``custom_metadata`` are rejected
   with ``InputValidationError``, ``inline_data.display_name`` is not persisted,
   and empty (``0``-byte) payloads with no stored content type load as ``None``
-  so session-rewind tombstones work without object metadata. Backend-specific
-  custom metadata normalization for S3 and Azure is not implemented yet.
+  so session-rewind tombstones work without object metadata.
+
+  S3 (``s3fs``) also stores content type and custom metadata. Its
+  ``custom_metadata`` keys come back lowercased with ``_`` turned into ``-``.
+  ``custom_metadata`` keys and values must be ASCII, and caller keys that S3
+  would read back as ADK's own keys are rejected. Azure metadata is not
+  supported yet.
 
   Requires ``fsspec`` (``pip install "google-adk[fsspec]"``) and the backend
   implementation for the target storage protocol, such as ``gcsfs`` for
@@ -315,7 +320,7 @@ class FsspecArtifactService(BaseArtifactService):
       if blob_metadata and not self._backend_adapter.stores_custom_metadata:
         raise InputValidationError(
             "Saving custom_metadata requires a filesystem backend that"
-            " persists custom object metadata (such as gs://)."
+            " persists custom object metadata (such as gs:// or s3://)."
         )
       data = part.inline_data.data
       content_type = part.inline_data.mime_type
@@ -327,7 +332,7 @@ class FsspecArtifactService(BaseArtifactService):
       if not self._backend_adapter.stores_custom_metadata:
         raise InputValidationError(
             "Saving text artifacts requires a filesystem backend that"
-            " persists custom object metadata (such as gs://)."
+            " persists custom object metadata (such as gs:// or s3://)."
         )
       data = part.text.encode("utf-8")
       content_type = "text/plain"
@@ -339,7 +344,7 @@ class FsspecArtifactService(BaseArtifactService):
       if not self._backend_adapter.stores_custom_metadata:
         raise InputValidationError(
             "Saving file_data URI references requires a filesystem backend"
-            " that persists custom object metadata (such as gs://)."
+            " that persists custom object metadata (such as gs:// or s3://)."
         )
       if artifact_util.is_artifact_ref(part):
         parsed_uri = artifact_util.parse_artifact_uri(file_uri)
