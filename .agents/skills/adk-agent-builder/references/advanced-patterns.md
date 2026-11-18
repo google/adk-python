@@ -10,7 +10,7 @@ from google.adk.workflow import BaseNode, Edge, FunctionNode, RetryConfig, START
 
 ## Nested workflows
 
-A `Workflow` is both an agent and a node, so one can sit inside another. The
+A `Workflow` is a node, so one can sit inside another. The
 inner workflow takes the predecessor's output as its `START` input, and its
 terminal output flows on to the next node outside.
 
@@ -45,8 +45,10 @@ api_node = FunctionNode(
 )
 ```
 
-Delay for attempt *n* is
-`min(initial_delay * backoff_factor ** n, max_delay) * (1 + random(0, jitter))`.
+After failed attempt *n*, the delay starts at
+`initial_delay * backoff_factor ** (n - 1)`, is capped at
+`max_delay / (1 + jitter)`, then shifted by a random offset of up to
+`±jitter * delay`. The result is never negative and never above `max_delay`.
 
 Read the current try from the context — it is 1 on the first attempt:
 
@@ -193,8 +195,8 @@ raises `ValueError` naming the offending node or edge.
 2. A `START` node exists.
 3. No edge leaving `START` carries a route.
 4. Every node is reachable from `START`, and `START` has no incoming edges.
-5. No two edges share both a source and a target — routes are not part of edge
-   identity.
+5. No two edges with the same source and target share a route value, and an
+   unrouted edge is never combined with a routed one between that pair.
 6.  A `route` list on one edge never mixes `__DEFAULT__` with named routes.
 7. No unconditional cycle — a cycle needs at least one routed edge.
 8. Where a source declares `output_schema` and its target declares
@@ -202,15 +204,15 @@ raises `ValueError` naming the offending node or edge.
 9. No edge into a `mode='chat'` `LlmAgent` from anything but `START`, because a
    chat agent reads conversation history rather than a node input.
 
-Nodes with no outgoing edges are the graph's terminals; their outputs become the
-workflow's own output.
+Nodes with no outgoing edges are the graph's terminals. The output of the one
+terminal that produces a value becomes the workflow's own output; a run in which
+two terminals produce output fails with `WorkflowConfigurationError`.
 
 ## Ways to declare edges
 
 ```python
 edges = [
     ('START', node_a),                 # simple
-    (node_a, node_b, 'route'),         # routed
     (node_a, (node_b, node_c)),        # fan-out
     ((node_b, node_c), join_node),     # fan-in
     ('START', node_a, node_b, node_c), # chain of three edges

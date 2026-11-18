@@ -237,14 +237,25 @@ class TestValidateResumeResponse:
     with pytest.raises(ValueError, match="Failed to coerce data to array"):
       _validate_resume_response("not a list", schema)
 
-  def test_pydantic_type_validation(self):
+  def test_pydantic_type_schema_is_skipped(self):
+    """A stored schema is JSON, so a Python type is not validated against."""
+
     class User(BaseModel):
       name: str
       age: int
 
-    assert _validate_resume_response(
-        {"name": "Alice", "age": 30}, User
-    ) == User(name="Alice", age=30)
+    assert _validate_resume_response({"name": "Alice", "age": 30}, User) == {
+        "name": "Alice",
+        "age": 30,
+    }
+
+  def test_string_schema_is_not_evaluated(self, tmp_path):
+    """A schema string is ignored, not resolved as a Python expression."""
+    marker = tmp_path / "evaluated"
+    schema = f"__import__('pathlib').Path({str(marker)!r}).touch() or str"
+
+    assert _validate_resume_response("data", schema) == "data"
+    assert not marker.exists()
 
 
 # --- _reconstruct_node_states ---
@@ -527,6 +538,58 @@ class TestScanNodeEvents:
     assert results["node_a@1"].resolved_responses["interrupt-1"] == {
         "count": 42
     }
+
+  def test_scan_does_not_evaluate_a_string_schema_from_an_event(self, tmp_path):
+    """The model writes the request_input args, so a schema is never code."""
+    marker = tmp_path / "evaluated"
+    event_int = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        invocation_id="test_id",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="adk_request_input",
+                        id="interrupt-1",
+                        args={
+                            "message": "how many?",
+                            "response_schema": (
+                                "__import__('pathlib')"
+                                f".Path({str(marker)!r}).touch() or str"
+                            ),
+                        },
+                    )
+                )
+            ],
+        ),
+        long_running_tool_ids=["interrupt-1"],
+    )
+    event_fr = Event(
+        author="user",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="interrupt-1",
+                        name="adk_request_input",
+                        response={"result": "a dozen"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_int, event_fr],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert not marker.exists()
+    assert results["node_a@1"].resolved_responses["interrupt-1"] == "a dozen"
 
   def test_scan_records_error_code(self):
     """A node that raised is recovered as failed, not as an empty success."""

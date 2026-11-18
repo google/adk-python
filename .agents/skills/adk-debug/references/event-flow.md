@@ -4,13 +4,14 @@
 
 ```text
 Runner.run_async()
-  Runner._exec_with_plugin()          # plugin hooks + persisting events
-    agent.run_async()                 # BaseAgent: before/after agent callbacks
-      LlmAgent._run_async_impl()      # yields events
-        BaseLlmFlow.run_async()
-          SingleFlow | AutoFlow       # AutoFlow adds agent transfer
-            call_llm                  # request build + model call
-            handle_function_calls_async()   # tool dispatch
+  Runner._run_node_async()            # node runtime, src/google/adk/workflow/
+    LlmAgent._run_impl()              # runs the agent as a node
+      agent.run_async()               # BaseAgent: before/after agent callbacks
+        LlmAgent._run_async_impl()    # yields events
+          BaseLlmFlow.run_async()
+            SingleFlow | AutoFlow     # AutoFlow adds agent transfer
+              call_llm                # request build + model call
+              handle_function_calls_async()   # tool dispatch
 ```
 
 `LlmAgent._llm_flow` picks `SingleFlow` only when
@@ -18,8 +19,9 @@ Runner.run_async()
 the agent has no sub-agents; otherwise it is `AutoFlow`. If an agent refuses to
 transfer, check those two fields before suspecting the prompt.
 
-Workflow-graph execution takes a different path: `LlmAgent._run_impl` runs the
-agent as a node via `src/google/adk/workflow/`.
+That is the path for a root `LlmAgent`. A root that is a `BaseAgent` but not an
+`LlmAgent` (for example `SequentialAgent`) skips the node runtime:
+`Runner._exec_with_plugin()` calls its `run_async()` directly.
 
 ## Callback order
 
@@ -52,10 +54,10 @@ Field | Why it matters
 --- | ---
 `author` | `user` or the agent name — the fastest way to see which agent actually spoke.
 `branch` | `agent_1.agent_2` path. Drives which history the agent can see.
-`nodeInfo.path` | Node path inside a workflow, e.g. `wf/A@1/B@1`.
+`nodeInfo.path` | Node path inside a workflow, e.g. `wf@1/A@1/B@1`.
 `content.parts` | `text`, `functionCall`, `functionResponse` — a turn with no `text` part is not a bug, it is a tool round trip.
 `output` | Generic node output value. Absent on ordinary chat events.
-`longRunningToolIds` | Present means the run is parked on a human-in-the-loop tool.
+`longRunningToolIds` | Non-empty means the run is parked on a human-in-the-loop tool. An ordinary tool call carries an empty list.
 `actions.transferToAgent` | The agent handed control to a named agent.
 `actions.escalate` | The agent gave up to its parent, typically ending a loop.
 `actions.endOfAgent` | The agent finished.
@@ -72,9 +74,9 @@ Area | File
 Runner and event persistence | `src/google/adk/runners.py`
 Flow driver, LLM call, callbacks | `src/google/adk/flows/llm_flows/base_llm_flow.py`
 Request assembly (model, tools, schema) | `src/google/adk/flows/llm_flows/basic.py`
-Which history reaches the model | `src/google/adk/flows/llm_flows/contents.py`
-Tool dispatch and tool errors | `src/google/adk/flows/llm_flows/functions.py`
-Agent transfer | `src/google/adk/flows/llm_flows/agent_transfer.py`
+Which history reaches the model | `src/google/adk/flows/llm_flows/context/_contents.py`
+Tool dispatch and tool errors | `src/google/adk/flows/llm_flows/tools/`
+Agent transfer | `src/google/adk/flows/llm_flows/extensions/_agent_transfer.py`
 Agent config and validation | `src/google/adk/agents/llm_agent.py`
 Invocation state and call limits | `src/google/adk/agents/invocation_context.py`
 Task agents | `src/google/adk/agents/llm/task/`
