@@ -28,10 +28,10 @@ evaluation and debugging code. This server is intended solely for local
 development on a trusted machine. Never expose it to an untrusted or public
 network, and never use it for a production or multi-user deployment.
 
-Mutating ``/dev`` endpoints, the Agent Builder YAML readback and the telemetry
-consent write additionally reject callers that are not on the loopback
-interface, so that binding the server to a routable address does not by itself
-hand out write or code-execution access over the network. See
+Mutating ``/dev`` endpoints and the telemetry consent write additionally
+reject callers that are not on the loopback interface, so that binding the
+server to a routable address does not by itself hand out write or
+code-execution access over the network. See
 ``_require_local_agent_builder_client``.
 """
 
@@ -39,19 +39,16 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-import importlib.util
 import json
 import logging
 import os
 from pathlib import Path
-import shutil
 import signal
 import subprocess
 import sys
 import time
 from typing import Any
 from typing import cast
-from typing import Iterator
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -61,17 +58,13 @@ from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
 from fastapi import Response
-from fastapi import UploadFile
-from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
-from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 import graphviz
 from pydantic import Field
 from pydantic import TypeAdapter
 from pydantic import ValidationError
 from typing_extensions import deprecated
-import yaml
 
 from . import agent_graph
 from ..agents.base_agent import BaseAgent
@@ -132,7 +125,7 @@ _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes"})
 
 
 def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
-  """Rejects remote callers on mutating routes and the Agent Builder readback.
+  """Rejects remote callers on mutating dev routes.
 
   The endpoints behind this check read or write files under ``agents_dir`` or
   in the user's ADK config, or spawn test, evaluation and deployment runs, and
@@ -268,116 +261,6 @@ class TelemetryConsentRequest(common.BaseModel):
   """Request body for setting the telemetry consent configuration."""
 
   telemetry: bool
-
-
-# Agent config fields whose value names Python code that the agent loader
-# imports and calls.
-_CODE_REFERENCE_KEYS = frozenset({
-    "after_agent_callbacks",
-    "after_model_callbacks",
-    "after_tool_callbacks",
-    "agent_class",
-    "before_agent_callbacks",
-    "before_model_callbacks",
-    "before_tool_callbacks",
-    "code",
-    "input_schema",
-    "model_code",
-    "output_schema",
-    "tools",
-})
-
-# The namespaces the agent loader searches when a reference has no dots.
-_ADK_BUILT_IN_NAMESPACES = ("google.adk.agents.", "google.adk.tools.")
-
-
-def _iter_code_references(value: Any) -> Iterator[str]:
-  """Yields the names a code-reference field carries, whatever its shape."""
-  if isinstance(value, str):
-    yield value
-  elif isinstance(value, list):
-    for item in value:
-      yield from _iter_code_references(item)
-  elif isinstance(value, dict):
-    name = value.get("name")
-    if isinstance(name, str):
-      yield name
-
-
-def _is_adk_built_in(reference: str) -> bool:
-  """Whether a qualified name reaches what an undotted name would reach.
-
-  One segment after the namespace is a name that namespace exports. A deeper
-  path walks into a submodule and can reach code an undotted reference cannot,
-  so it does not count as a built-in.
-
-  Args:
-    reference: A dotted Python name.
-
-  Returns:
-    Whether the reference names an ADK built-in.
-  """
-  for namespace in _ADK_BUILT_IN_NAMESPACES:
-    if reference.startswith(namespace):
-      return "." not in reference[len(namespace) :]
-  return False
-
-
-def _app_name_shadows_module(app_name: str, app_root: Path) -> bool:
-  """Whether importing the app name would load code from outside the app."""
-  # find_spec imports a dotted name's parents, so only look up the first part.
-  try:
-    spec = importlib.util.find_spec(app_name.partition(".")[0])
-  except ValueError:
-    return True
-  if spec is None:
-    return False
-  locations = list(spec.submodule_search_locations or [])
-  if spec.has_location and spec.origin is not None:
-    locations.append(spec.origin)
-  return not locations or not all(
-      Path(location).resolve().is_relative_to(app_root)
-      for location in locations
-  )
-
-
-def _check_code_reference(
-    reference: str,
-    *,
-    app_name: str,
-    app_root: Path,
-    filename: str,
-    field_name: str,
-) -> None:
-  """Checks that a code reference stays inside the app being edited.
-
-  Args:
-    reference: The name found in the uploaded document.
-    app_name: The app the document belongs to.
-    app_root: The app's resolved directory.
-    filename: The uploaded path, used in the error message.
-    field_name: The config field the reference came from.
-
-  Raises:
-    ValueError: If the reference can reach code outside the app.
-  """
-  if "." not in reference:
-    # The loader resolves an undotted name against ADK's own built-ins.
-    return
-  if _is_adk_built_in(reference):
-    return
-  if not reference.startswith(f"{app_name}."):
-    raise ValueError(
-        f"Blocked code reference {reference!r} in {filename!r}. The"
-        f" '{field_name}' field may only reference code under"
-        f" '{app_name}' or an ADK built-in."
-    )
-  if _app_name_shadows_module(app_name, app_root):
-    raise ValueError(
-        f"Blocked code reference {reference!r} in {filename!r}. The app name"
-        f" {app_name!r} shadows an importable Python module, so a reference to"
-        " the app cannot be told apart from one that leaves it."
-    )
 
 
 async def _signal_process_tree(
@@ -689,311 +572,6 @@ class DevServer(ApiServer):
 
     # Import needed for eval endpoints
     from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-
-    # ========== BUILDER / YAML EDITOR ENDPOINTS ==========
-    agents_base_path = (Path.cwd() / self.agents_dir).resolve()
-
-    def _get_app_root(app_name: str) -> Path:
-      if app_name in ("", ".", ".."):
-        raise ValueError(f"Invalid app name: {app_name!r}")
-      if Path(app_name).name != app_name or "\\" in app_name:
-        raise ValueError(f"Invalid app name: {app_name!r}")
-      app_root = (agents_base_path / app_name).resolve()
-      if not app_root.is_relative_to(agents_base_path):
-        raise ValueError(f"Invalid app name: {app_name!r}")
-      return app_root
-
-    def _normalize_relative_path(path: str) -> str:
-      return path.replace("\\", "/").lstrip("/")
-
-    def _has_parent_reference(path: str) -> bool:
-      return any(part == ".." for part in path.split("/"))
-
-    _ALLOWED_EXTENSIONS = frozenset({".yaml", ".yml"})
-
-    # --- YAML content security ---
-    _BLOCKED_YAML_KEYS = frozenset({"args"})
-
-    def _check_uploaded_yaml(
-        content: bytes, *, filename: str, app_name: str
-    ) -> None:
-      """Raise if the YAML would let the loader run code outside the app."""
-      app_root = _get_app_root(app_name)
-      try:
-        docs = list(yaml.safe_load_all(content))
-      except yaml.YAMLError as exc:
-        raise ValueError(f"Invalid YAML in {filename!r}: {exc}") from exc
-
-      def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-          for key, value in node.items():
-            if key in _BLOCKED_YAML_KEYS:
-              raise ValueError(
-                  f"Blocked key {key!r} found in {filename!r}. "
-                  f"The '{key}' field is not allowed in builder uploads "
-                  "because it can execute arbitrary code."
-              )
-            if key in _CODE_REFERENCE_KEYS:
-              for reference in _iter_code_references(value):
-                _check_code_reference(
-                    reference,
-                    app_name=app_name,
-                    app_root=app_root,
-                    filename=filename,
-                    field_name=key,
-                )
-            _walk(value)
-        elif isinstance(node, list):
-          for item in node:
-            _walk(item)
-
-      for doc in docs:
-        _walk(doc)
-
-    def _parse_upload_filename(app_name: str, filename: Optional[str]) -> str:
-      if not filename:
-        raise ValueError("Upload filename is missing.")
-      filename = _normalize_relative_path(filename)
-      prefix = f"{app_name}/"
-      if filename.startswith(prefix):
-        rel_path = filename[len(prefix) :]
-      else:
-        rel_path = filename
-      if not rel_path:
-        raise ValueError(f"Invalid upload filename: {filename!r}")
-      if rel_path.startswith("/"):
-        raise ValueError(f"Absolute upload path rejected: {filename!r}")
-      if _has_parent_reference(rel_path):
-        raise ValueError(f"Path traversal rejected: {filename!r}")
-      ext = os.path.splitext(rel_path)[1].lower()
-      if ext not in _ALLOWED_EXTENSIONS:
-        raise ValueError(
-            f"File type not allowed: {rel_path!r}"
-            f" (allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))})"
-        )
-      return rel_path
-
-    def _parse_file_path(file_path: str) -> str:
-      file_path = _normalize_relative_path(file_path)
-      if not file_path:
-        raise ValueError("file_path is missing.")
-      if file_path.startswith("/"):
-        raise ValueError(f"Absolute file_path rejected: {file_path!r}")
-      if _has_parent_reference(file_path):
-        raise ValueError(f"Path traversal rejected: {file_path!r}")
-      ext = os.path.splitext(file_path)[1].lower()
-      if ext not in _ALLOWED_EXTENSIONS:
-        raise ValueError(
-            f"File type not allowed: {file_path!r}"
-            f" (allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))})"
-        )
-      return file_path
-
-    def _resolve_under_dir(root_dir: Path, rel_path: str) -> Path:
-      file_path = root_dir / rel_path
-      resolved_root_dir = root_dir.resolve()
-      resolved_file_path = file_path.resolve()
-      if not resolved_file_path.is_relative_to(resolved_root_dir):
-        raise ValueError(f"Path escapes root_dir: {rel_path!r}")
-      return file_path
-
-    def _get_tmp_agent_root(app_root: Path, app_name: str) -> Path:
-      tmp_agent_root = app_root / "tmp" / app_name
-      resolved_tmp_agent_root = tmp_agent_root.resolve()
-      if not resolved_tmp_agent_root.is_relative_to(app_root):
-        raise ValueError(f"Invalid tmp path for app: {app_name!r}")
-      return tmp_agent_root
-
-    def copy_dir_contents(source_dir: Path, dest_dir: Path) -> None:
-      dest_dir.mkdir(parents=True, exist_ok=True)
-      for source_path in source_dir.iterdir():
-        if source_path.name == "tmp":
-          continue
-
-        dest_path = dest_dir / source_path.name
-        if source_path.is_dir():
-          if dest_path.exists() and dest_path.is_file():
-            dest_path.unlink()
-          shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
-        elif source_path.is_file():
-          if dest_path.exists() and dest_path.is_dir():
-            shutil.rmtree(dest_path)
-          shutil.copy2(source_path, dest_path)
-
-    def cleanup_tmp(app_name: str) -> bool:
-      try:
-        app_root = _get_app_root(app_name)
-      except ValueError as exc:
-        logger.exception("Error in cleanup_tmp: %s", exc)
-        return False
-
-      try:
-        tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-      except ValueError as exc:
-        logger.exception("Error in cleanup_tmp: %s", exc)
-        return False
-
-      try:
-        shutil.rmtree(tmp_agent_root)
-      except FileNotFoundError:
-        pass
-      except OSError as exc:
-        logger.exception("Error deleting tmp agent root: %s", exc)
-        return False
-
-      tmp_dir = app_root / "tmp"
-      resolved_tmp_dir = tmp_dir.resolve()
-      if not resolved_tmp_dir.is_relative_to(app_root):
-        logger.error(
-            "Refusing to delete tmp outside app_root: %s", resolved_tmp_dir
-        )
-        return False
-
-      try:
-        tmp_dir.rmdir()
-      except OSError:
-        pass
-
-      return True
-
-    def ensure_tmp_exists(app_name: str) -> bool:
-      try:
-        app_root = _get_app_root(app_name)
-      except ValueError as exc:
-        logger.exception("Error in ensure_tmp_exists: %s", exc)
-        return False
-
-      if not app_root.is_dir():
-        return False
-
-      try:
-        tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-      except ValueError as exc:
-        logger.exception("Error in ensure_tmp_exists: %s", exc)
-        return False
-
-      if tmp_agent_root.exists():
-        return True
-
-      try:
-        tmp_agent_root.mkdir(parents=True, exist_ok=True)
-        copy_dir_contents(app_root, tmp_agent_root)
-      except OSError as exc:
-        logger.exception("Error in ensure_tmp_exists: %s", exc)
-        return False
-
-      return True
-
-    @app.post(
-        "/dev/apps/{app_name}/builder/save",
-        response_model_exclude_none=True,
-        dependencies=[Depends(_require_local_agent_builder_client)],
-    )
-    async def builder_build(
-        app_name: str, files: list[UploadFile], tmp: Optional[bool] = False
-    ) -> bool:
-      try:
-        uploads: list[tuple[str, bytes]] = []
-        for file in files:
-          rel_path = _parse_upload_filename(app_name, file.filename)
-          content = await file.read()
-          uploads.append((rel_path, content))
-
-        for rel_path, content in uploads:
-          _check_uploaded_yaml(
-              content,
-              filename=f"{app_name}/{rel_path}",
-              app_name=app_name,
-          )
-
-        if tmp:
-          app_root = _get_app_root(app_name)
-          tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-          tmp_agent_root.mkdir(parents=True, exist_ok=True)
-
-          for rel_path, content in uploads:
-            destination_path = _resolve_under_dir(tmp_agent_root, rel_path)
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-            destination_path.write_bytes(content)
-
-          return True
-
-        app_root = _get_app_root(app_name)
-        app_root.mkdir(parents=True, exist_ok=True)
-
-        tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-        if tmp_agent_root.is_dir():
-          copy_dir_contents(tmp_agent_root, app_root)
-
-        for rel_path, content in uploads:
-          destination_path = _resolve_under_dir(app_root, rel_path)
-          destination_path.parent.mkdir(parents=True, exist_ok=True)
-          destination_path.write_bytes(content)
-
-        return cleanup_tmp(app_name)
-      except ValueError as exc:
-        logger.exception("Error in builder_build: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc))
-      except OSError as exc:
-        logger.exception("Error in builder_build: %s", exc)
-        return False
-
-    @app.post(
-        "/dev/apps/{app_name}/builder/cancel",
-        response_model_exclude_none=True,
-        dependencies=[Depends(_require_local_agent_builder_client)],
-    )
-    async def builder_cancel(app_name: str) -> bool:
-      return cleanup_tmp(app_name)
-
-    @app.get(
-        "/dev/apps/{app_name}/builder",
-        response_model=None,
-        response_model_exclude_none=True,
-        response_class=PlainTextResponse,
-        dependencies=[Depends(_require_local_agent_builder_client)],
-    )
-    async def get_agent_builder(
-        app_name: str,
-        file_path: Optional[str] = None,
-        tmp: Optional[bool] = False,
-    ) -> str | FileResponse:
-      try:
-        app_root = _get_app_root(app_name)
-      except ValueError as exc:
-        logger.exception("Error in get_agent_builder: %s", exc)
-        return ""
-
-      agent_dir = app_root
-      if tmp:
-        if not ensure_tmp_exists(app_name):
-          return ""
-        agent_dir = app_root / "tmp" / app_name
-
-      if not file_path:
-        rel_path = "root_agent.yaml"
-      else:
-        try:
-          rel_path = _parse_file_path(file_path)
-        except ValueError as exc:
-          logger.exception("Error in get_agent_builder: %s", exc)
-          return ""
-
-      try:
-        agent_file_path = _resolve_under_dir(agent_dir, rel_path)
-      except ValueError as exc:
-        logger.exception("Error in get_agent_builder: %s", exc)
-        return ""
-
-      if not agent_file_path.is_file():
-        return ""
-
-      return FileResponse(
-          path=agent_file_path,
-          media_type="application/x-yaml",
-          filename=file_path or f"{app_name}.yaml",
-          headers={"Cache-Control": "no-store"},
-      )
 
     # ========== DEBUG & GRAPH ENDPOINTS ==========
 
