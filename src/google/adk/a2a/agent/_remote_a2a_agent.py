@@ -2651,7 +2651,14 @@ class RemoteA2aAgent(BaseAgent):
                   )
               )
 
-            if not events_to_emit:
+            failed_task = (
+                self.mode == AgentMode.TASK
+                and task is not None
+                and task.status is not None
+                and task.status.state
+                in (_compat.TS_FAILED, _compat.TS_CANCELED)
+            )
+            if not events_to_emit and not failed_task:
               continue
 
             for emit_idx, emitted_event in enumerate(events_to_emit):
@@ -2736,7 +2743,7 @@ class RemoteA2aAgent(BaseAgent):
                 failure_source_event = (
                     boundary_failure_event
                     if boundary_response
-                    else events_to_emit[-1]
+                    else (events_to_emit[-1] if events_to_emit else None)
                 )
                 error_text = "Unknown error"
                 if is_cancel:

@@ -6782,7 +6782,8 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
   """Test that RemoteA2aAgent propagates task failures in task mode."""
 
   @pytest.mark.asyncio
-  async def test_fails_on_task_state_failed(self):
+  @pytest.mark.parametrize("has_content", [True, False])
+  async def test_fails_on_task_state_failed(self, has_content):
     agent_card = create_test_agent_card()
     agent = RemoteA2aAgent(
         name="test_agent",
@@ -6858,34 +6859,38 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
         with patch.object(
             agent, "_handle_a2a_response", new_callable=AsyncMock
         ) as mock_handle:
-          mock_handle.return_value = mock_event
+          mock_handle.return_value = mock_event if has_content else None
 
           events = []
           async for ev in agent._run_async_impl(mock_context):
             events.append(ev)
 
-          assert len(events) == 4
-          assert events[0] == mock_event
-          assert (
-              events[1].error_message
-              == "Remote A2A task failed: Simulated remote task failure"
+          assert len(events) == (4 if has_content else 3)
+          if has_content:
+            assert events[0] == mock_event
+          assert events[-3].error_message == (
+              "Remote A2A task failed: Simulated remote task failure"
+              if has_content
+              else "Remote A2A task failed: Unknown error"
           )
           # Verify finish_task event
           assert (
-              events[2].content.parts[0].function_response.name
+              events[-2].content.parts[0].function_response.name
               == FINISH_TASK_TOOL_NAME
           )
-          assert events[2].content.parts[0].function_response.response == {
+          assert events[-2].content.parts[0].function_response.response == {
               "result": FINISH_TASK_ERROR_RESULT
           }
-          assert events[3].actions.end_of_agent is True
+          assert events[-2].output is None
+          assert events[-1].actions.end_of_agent is True
 
           mock_context.set_agent_state.assert_called_once_with(
               agent.name, end_of_agent=True
           )
 
   @pytest.mark.asyncio
-  async def test_completes_on_task_state_canceled(self):
+  @pytest.mark.parametrize("has_content", [True, False])
+  async def test_completes_on_task_state_canceled(self, has_content):
     agent_card = create_test_agent_card()
     agent = RemoteA2aAgent(
         name="test_agent",
@@ -6950,30 +6955,33 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
         with patch.object(
             agent, "_handle_a2a_response", new_callable=AsyncMock
         ) as mock_handle:
-          mock_handle.return_value = mock_event
+          mock_handle.return_value = mock_event if has_content else None
 
           events = []
           async for ev in agent._run_async_impl(mock_context):
             events.append(ev)
 
-          assert len(events) == 4
-          assert events[0] == mock_event
+          assert len(events) == (4 if has_content else 3)
+          if has_content:
+            assert events[0] == mock_event
           assert (
-              events[1].error_message == "Remote A2A task failed: Task canceled"
+              events[-3].error_message
+              == "Remote A2A task failed: Task canceled"
           )
           # Verify finish_task event
           assert (
-              events[2].content.parts[0].function_response.name
+              events[-2].content.parts[0].function_response.name
               == FINISH_TASK_TOOL_NAME
           )
-          assert events[2].content.parts[0].function_response.response == {
+          assert events[-2].content.parts[0].function_response.response == {
               "result": FINISH_TASK_ERROR_RESULT
           }
-          assert events[2].output is None
+          assert events[-2].output is None
           assert (
-              events[2].error_message == "Remote A2A task failed: Task canceled"
+              events[-2].error_message
+              == "Remote A2A task failed: Task canceled"
           )
-          assert events[3].actions.end_of_agent is True
+          assert events[-1].actions.end_of_agent is True
           assert mock_context.end_of_agents[agent.name] is True
           mock_context.set_agent_state.assert_called_once_with(
               agent.name, end_of_agent=True
