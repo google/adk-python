@@ -1496,6 +1496,10 @@ class Runner:
     for field_name in modified_event.model_fields_set:
       if field_name in {'id', 'invocation_id', 'timestamp'}:
         continue
+      if field_name == 'partial' and modified_event.partial is None:
+        # None means the callback did not choose a streaming state; keep the
+        # source event's value instead of turning a partial into a final one.
+        continue
       update[field_name] = modified_event.__dict__[field_name]
     internal = internal_metadata(original_event.custom_metadata)
     if 'custom_metadata' in update and internal:
