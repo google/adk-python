@@ -288,11 +288,11 @@ class A2aAgentExecutor(AgentExecutor):
           # Pause requests carry their call exactly once, in the terminal
           # message retained by the aggregator. Streaming the same call under
           # WORKING first makes callers request confirmation twice (#7247).
-          pending_request = (
-              isinstance(e, TaskStatusUpdateEvent)
-              and e.status.state in (
-                  _compat.TS_INPUT_REQUIRED, _compat.TS_AUTH_REQUIRED
-              )
+          pending_request = isinstance(
+              e, TaskStatusUpdateEvent
+          ) and e.status.state in (
+              _compat.TS_INPUT_REQUIRED,
+              _compat.TS_AUTH_REQUIRED,
           )
           task_result_aggregator.process_event(e)
           if not pending_request:
