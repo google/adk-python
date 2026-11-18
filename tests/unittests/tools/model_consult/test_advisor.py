@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 from typing import AsyncGenerator
 from unittest import mock
 
@@ -27,6 +28,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
 from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import _metrics
+from google.adk.tools.model_consult._advisor import _thinking_levels_by_name
 from google.adk.tools.model_consult._advisor import AdvisorError
 from google.adk.tools.model_consult._advisor import AdvisorUsage
 from google.adk.tools.model_consult._advisor import call_advisor
@@ -110,6 +112,45 @@ def test_resolve_thinking_level_invalid_raises(bad_level):
   """Raises ValueError when given an unrecognized thinking level."""
   with pytest.raises(ValueError, match='Invalid advisor thinking_level'):
     resolve_thinking_level(bad_level)
+
+
+def test_resolve_thinking_level_resolves_every_sdk_member():
+  """Resolves every specified ThinkingLevel member defined by google-genai."""
+  members = [
+      member
+      for member in types.ThinkingLevel
+      if member != types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED
+  ]
+  assert members
+  for member in members:
+    assert resolve_thinking_level(member.name.lower()) == member
+    assert resolve_thinking_level(f'  {member.name}  ') == member
+    assert resolve_thinking_level(member) == member
+  with pytest.raises(ValueError, match='Invalid advisor thinking_level'):
+    resolve_thinking_level('thinking_level_unspecified')
+
+
+def test_thinking_levels_by_name_includes_levels_the_old_list_lacked():
+  """Names every level of the given enum except the unspecified one."""
+
+  class _Levels(enum.Enum):
+    THINKING_LEVEL_UNSPECIFIED = 'THINKING_LEVEL_UNSPECIFIED'
+    HIGH = 'HIGH'
+    XHIGH = 'XHIGH'
+
+  assert _thinking_levels_by_name(_Levels) == {
+      'high': _Levels.HIGH,
+      'xhigh': _Levels.XHIGH,
+  }
+
+
+@pytest.mark.skipif(
+    not hasattr(types.ThinkingLevel, 'XHIGH'),
+    reason='The installed google-genai has no ThinkingLevel.XHIGH.',
+)
+def test_resolve_thinking_level_accepts_xhigh():
+  """Resolves 'xhigh' on an SDK that defines ThinkingLevel.XHIGH."""
+  assert resolve_thinking_level('xhigh') == types.ThinkingLevel.XHIGH
 
 
 def test_resolve_advisor_llm_passes_through_instance():

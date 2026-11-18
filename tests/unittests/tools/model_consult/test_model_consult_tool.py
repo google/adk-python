@@ -681,6 +681,26 @@ async def test_thinking_level_reaches_request(
   assert result['thinking_level'] == expected_name
 
 
+@pytest.mark.skipif(
+    not hasattr(types.ThinkingLevel, 'XHIGH'),
+    reason='The installed google-genai has no ThinkingLevel.XHIGH.',
+)
+@pytest.mark.asyncio
+async def test_thinking_level_xhigh_reaches_request():
+  """Verifies thinking_level='xhigh' is sent to the advisor model."""
+  llm = _FakeAdvisorLlm()
+  tool = ModelConsultTool(model=llm, thinking_level='xhigh')
+  ctx = _make_tool_context([_user_event('go')])
+
+  result = await _run(tool, ctx, question='Next?')
+
+  assert (
+      llm.requests[0].config.thinking_config.thinking_level
+      == types.ThinkingLevel.XHIGH
+  )
+  assert result['thinking_level'] == 'xhigh'
+
+
 @pytest.mark.asyncio
 async def test_thinking_level_none_sends_no_thinking_config():
   """Verifies thinking_level=None omits ThinkingConfig from advisor request."""

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Sequence
 import contextlib
@@ -47,12 +48,18 @@ from ...utils.model_name_utils import is_gemini_model
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-_THINKING_LEVEL_MAP: dict[str, types.ThinkingLevel] = {
-    'minimal': types.ThinkingLevel.MINIMAL,
-    'low': types.ThinkingLevel.LOW,
-    'medium': types.ThinkingLevel.MEDIUM,
-    'high': types.ThinkingLevel.HIGH,
-}
+
+def _thinking_levels_by_name(
+    levels: Iterable[types.ThinkingLevel],
+) -> dict[str, types.ThinkingLevel]:
+  return {
+      level.name.lower(): level
+      for level in levels
+      if level.name != 'THINKING_LEVEL_UNSPECIFIED'
+  }
+
+
+_THINKING_LEVEL_MAP = _thinking_levels_by_name(types.ThinkingLevel)
 
 
 class AdvisorError(RuntimeError):  # pylint: disable=g-bad-exception-name
@@ -155,9 +162,10 @@ def resolve_thinking_level(
   """Maps a user-supplied thinking level to `types.ThinkingLevel`.
 
   Args:
-    level: One of `'minimal'`, `'low'`, `'medium'`, `'high'`
-      (case-insensitive), `'none'` / `'off'` / `''` / `None` to leave thinking
-      unset, or a `types.ThinkingLevel` enum value.
+    level: Case-insensitive name of a `types.ThinkingLevel` member (such as
+      `'minimal'`, `'low'`, `'medium'`, `'high'`, or `'xhigh'` when defined by
+      the installed `google-genai`), `'none'` / `'off'` / `''` / `None` to leave
+      thinking unset, or a `types.ThinkingLevel` enum value.
 
   Returns:
     The corresponding `types.ThinkingLevel`, or `None` if disabled.
