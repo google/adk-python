@@ -1209,6 +1209,7 @@ async def test_root_task_survives_clarification(
 @pytest.mark.asyncio
 async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
     request: pytest.FixtureRequest,
+    tmp_path,
 ):
   """Four-turn regression for #7384: second root task clarification isolation.
 
@@ -1240,57 +1241,60 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
   agent_b = LlmAgent(name="task_b", model=model_b, mode="task")
 
   from google.adk.runners import Runner
-  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+  from google.adk.sessions.database_session_service import DatabaseSessionService
 
-  # Both runners share the same app_name so they can look up the shared session.
   app_name = request.function.__name__
-  session_service = InMemorySessionService()
-  session = await session_service.create_session(
-      app_name=app_name,
-      user_id="u",
-  )
-
   app_a = App(name=app_name, root_agent=agent_a)
-  runner_a = Runner(app=app_a, session_service=session_service)
-
   app_b = App(name=app_name, root_agent=agent_b)
-  runner_b = Runner(app=app_b, session_service=session_service)
+  session_id = "root-task-session"
+  db_url = f"sqlite+aiosqlite:///{tmp_path / 'root_task_sessions.db'}"
 
-  # Turn 1: Task A is invoked and asks a clarification question.
-  async for _ in runner_a.run_async(
-      user_id="u",
-      session_id=session.id,
-      new_message=testing_utils.get_user_content("Do task A"),
-  ):
-    pass
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name=app_name,
+        user_id="u",
+        session_id=session_id,
+    )
+    runner_a = Runner(app=app_a, session_service=session_service)
+    runner_b = Runner(app=app_b, session_service=session_service)
 
-  # Turn 2: User answers Task A's clarification question; Task A finishes.
-  async for _ in runner_a.run_async(
-      user_id="u",
-      session_id=session.id,
-      new_message=testing_utils.get_user_content("Clarification for A"),
-  ):
-    pass
+    # Turn 1: Task A is invoked and asks a clarification question.
+    async for _ in runner_a.run_async(
+        user_id="u",
+        session_id=session_id,
+        new_message=testing_utils.get_user_content("Do task A"),
+    ):
+      pass
 
-  # Task A made 2 LLM calls.
-  assert len(model_a.requests) == 2
+    # Turn 2: User answers Task A's clarification question; Task A finishes.
+    async for _ in runner_a.run_async(
+        user_id="u",
+        session_id=session_id,
+        new_message=testing_utils.get_user_content("Clarification for A"),
+    ):
+      pass
 
-  # Turn 3 (call 3): Task B is invoked fresh in the same session and asks
-  # its own clarification question.
-  async for _ in runner_b.run_async(
-      user_id="u",
-      session_id=session.id,
-      new_message=testing_utils.get_user_content("Do task B"),
-  ):
-    pass
+    # Task A made 2 LLM calls.
+    assert len(model_a.requests) == 2
 
-  # Turn 4 (call 4): User answers Task B's clarification question; Task B finishes.
-  async for _ in runner_b.run_async(
-      user_id="u",
-      session_id=session.id,
-      new_message=testing_utils.get_user_content("Clarification for B"),
-  ):
-    pass
+    # Turn 3: Task B starts in the same persisted session.
+    async for _ in runner_b.run_async(
+        user_id="u",
+        session_id=session_id,
+        new_message=testing_utils.get_user_content("Do task B"),
+    ):
+      pass
+
+  # Reload the persisted session and use a new Runner before Task B resumes.
+  async with DatabaseSessionService(db_url) as session_service:
+    runner_b = Runner(app=app_b, session_service=session_service)
+    # Turn 4: User answers Task B's clarification question; Task B finishes.
+    async for _ in runner_b.run_async(
+        user_id="u",
+        session_id=session_id,
+        new_message=testing_utils.get_user_content("Clarification for B"),
+    ):
+      pass
 
   # Task B made 2 LLM calls.
   assert (
@@ -1341,13 +1345,18 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
       "Task B's clarification answer not found in its resumption request; got:"
       f" {b_user_parts_turn4}"
   )
-  assert (
-      "Clarification for A" not in b_user_parts_turn4[0]
-  ), "Task A's clarification answer must not appear in Task B's prompt"
-  assert "Clarification for A" not in b_user_parts_turn4[1], (
-      "Task A's clarification answer must not appear in Task B's resumption"
-      " context"
+  req4_text = "\n".join(
+      p.text or "" for content in req4.contents for p in content.parts
   )
+  assert [content.role for content in req4.contents] == [
+      "user",
+      "model",
+      "user",
+  ]
+  assert "What details do you need for B?" in req4_text
+  assert "Do task A" not in req4_text
+  assert "What details do you need for A?" not in req4_text
+  assert "Clarification for A" not in req4_text
 
 
 @pytest.mark.asyncio

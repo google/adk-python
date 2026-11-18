@@ -37,6 +37,7 @@ pytestmark = pytest.mark.skipif(
 
 from .client import create_a2a_client
 from .client import create_client
+from .server import agent_card
 from .server import create_server_app_v1
 
 
@@ -859,6 +860,7 @@ async def test_a2a_task_clarification_and_resumption():
   and reconstruct the strictly-alternating task history correctly.
   """
   from google.adk.agents.llm_agent import LlmAgent
+
   from tests.unittests import testing_utils
 
   model = testing_utils.MockModel.create(
@@ -869,11 +871,11 @@ async def test_a2a_task_clarification_and_resumption():
   )
   server_agent = LlmAgent(name="my_task", model=model, mode="task")
 
-  from google.adk.runners import Runner
-  from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
-  from google.adk.a2a import _compat
-  from starlette.applications import Starlette
   from a2a.server.tasks import InMemoryTaskStore as TaskStore
+  from google.adk.a2a import _compat
+  from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+  from google.adk.runners import Runner
+  from starlette.applications import Starlette
 
   server_runner = Runner(
       app_name="ServerApp",
