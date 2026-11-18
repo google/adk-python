@@ -9461,5 +9461,55 @@ def test_agent_engine_keeps_spans_of_unsampled_platform_traceparent(
   assert spans[0].context.trace_id != 0x385C840E58676FDD
 
 
+@pytest.mark.parametrize(
+    ("conflict", "expected_calls"),
+    [
+        ("google-genai>=1.0.0,<3 vs google-genai 3.3.0", []),
+        (None, [True]),
+    ],
+)
+def test_setup_instrumentation_lib_checks_dependency_conflicts(
+    caplog, conflict, expected_calls
+):
+  """Incompatible google-genai skips instrument() and logs info, not error."""
+  instrument_calls = []
+  checked_deps = []
+
+  class _FakeInstrumentor:
+
+    def instrumentation_dependencies(self):
+      return ["google-genai>=1.0.0,<3"]
+
+    def instrument(self):
+      instrument_calls.append(True)
+
+  def _fake_get_dependency_conflicts(deps):
+    checked_deps.append(list(deps))
+    return conflict
+
+  fake_google_genai = type(sys)("fake_google_genai")
+  fake_google_genai.GoogleGenAiSdkInstrumentor = _FakeInstrumentor
+  fake_deps = type(sys)("fake_deps")
+  fake_deps.get_dependency_conflicts = _fake_get_dependency_conflicts
+
+  with (
+      patch.dict(
+          sys.modules,
+          {
+              "opentelemetry.instrumentation.google_genai": fake_google_genai,
+              "opentelemetry.instrumentation.dependencies": fake_deps,
+          },
+      ),
+      caplog.at_level(logging.INFO),
+  ):
+    api_server_module._setup_instrumentation_lib_if_installed()  # pylint: disable=protected-access
+
+  assert checked_deps == [["google-genai>=1.0.0,<3"]]
+  assert instrument_calls == expected_calls
+  assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+  if conflict:
+    assert "Skipping GoogleGenAiSdkInstrumentor" in caplog.text
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])

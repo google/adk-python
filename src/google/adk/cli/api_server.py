@@ -978,9 +978,20 @@ def _setup_instrumentation_lib_if_installed() -> None:
   # Currently the instrumentation lib is in extras dependencies, make sure to
   # warn the user if it's not installed.
   try:
+    from opentelemetry.instrumentation.dependencies import get_dependency_conflicts  # pylint: disable=g-import-not-at-top
     from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 
-    GoogleGenAiSdkInstrumentor().instrument()
+    instrumentor = GoogleGenAiSdkInstrumentor()
+    if conflict := get_dependency_conflicts(
+        instrumentor.instrumentation_dependencies()
+    ):
+      logger.info(
+          "Skipping GoogleGenAiSdkInstrumentor (%s); ADK records telemetry"
+          " spans itself.",
+          conflict,
+      )
+    else:
+      instrumentor.instrument()
   except ImportError:
     logger.warning(
         "Unable to import GoogleGenAiSdkInstrumentor - some"
