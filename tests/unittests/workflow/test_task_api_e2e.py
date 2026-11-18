@@ -151,6 +151,48 @@ async def test_chat_root_with_single_task_sub_agent(
   )
 
 
+@pytest.mark.asyncio
+async def test_failed_task_answers_its_call_with_the_error(
+    request: pytest.FixtureRequest,
+):
+  """A task that raises answers its call with the error and ends nothing."""
+  child = LlmAgent(
+      name="child",
+      model=testing_utils.MockModel.create(
+          responses=[], error=RuntimeError("model call failed")
+      ),
+      mode="task",
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          _delegate_part("child", "do the thing"),
+          "The helper failed.",
+          "Hello.",
+      ]
+  )
+  root = LlmAgent(name="root", model=root_model, sub_agents=[child])
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("delegate"))
+
+  responses = [
+      fr.response
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == "child"
+  ]
+  assert responses == [
+      {"error": "RuntimeError: model call failed", "is_error": True}
+  ]
+  assert "The helper failed." in _get_text_responses(events)
+
+  # The answered call is not dispatched again on the next message.
+  events = await runner.run_async(testing_utils.get_user_content("hello"))
+
+  assert "Hello." in _get_text_responses(events)
+
+
 # ---------------------------------------------------------------------------
 # 2. LlmAgent root → multiple task sub-agents (sequential)
 # ---------------------------------------------------------------------------
