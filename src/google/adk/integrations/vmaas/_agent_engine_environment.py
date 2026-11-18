@@ -133,7 +133,10 @@ class AgentEngineEnvironment(BaseEnvironment):
       agent_engine_name: Agent engine to create the template and sandbox under.
         Format: projects/{project}/locations/{location}/reasoningEngines/{id}.
           If None, one is created on first use.
-      sandbox_name: Existing shell sandbox to use instead of creating one.
+      sandbox_name: Existing shell sandbox to use instead of creating one. A
+        sandbox named here is pickled with the environment; a sandbox the
+        environment created is not, so an unpickled environment, such as a
+        deployed agent, creates a sandbox of its own.
         Format:
           projects/{project}/locations/{location}/reasoningEngines/{id}/sandboxEnvironments/{id}
       sandbox_template_name: Shell sandbox template to create the sandbox from.
@@ -143,7 +146,11 @@ class AgentEngineEnvironment(BaseEnvironment):
       sandbox_ttl_seconds: Time to live of a created sandbox. If None, the
         service default applies.
       vertexai_client: Agent Platform client. If None, one is created on first
-        use from ``project_id`` and ``location``.
+        use from ``project_id`` and ``location``. An environment given a
+        client cannot be pickled, since an Agent Platform client cannot be;
+        pass ``project_id`` and ``location`` instead to pickle it, for example
+        to deploy it. A client the environment created is not pickled, and the
+        unpickled environment creates a new one.
     """
     self._manager = SandboxManager(
         project_id=project_id,
@@ -160,6 +167,24 @@ class AgentEngineEnvironment(BaseEnvironment):
     # sandbox and never pause it while it is being set up.
     self._lifecycle_lock = asyncio.Lock()
 
+  def __getstate__(self) -> dict[str, Any]:
+    state = self.__dict__.copy()
+    # The lock belongs to this process.
+    del state["_lifecycle_lock"]
+    # A sandbox this environment created stays with this environment, so an
+    # unpickled copy, such as a deployed agent, does not share its files.
+    if self._owns_sandbox:
+      state["_sandbox_name"] = None
+      state["_owns_sandbox"] = False
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._lifecycle_lock = asyncio.Lock()
+    # A named sandbox may have been paused or deleted since the environment
+    # was pickled, so the next initialize() checks it again.
+    self._is_initialized = False
+
   @property
   def sandbox_name(self) -> str | None:
     """The resource name of the sandbox, once there is one."""
@@ -168,8 +193,7 @@ class AgentEngineEnvironment(BaseEnvironment):
   @property
   @override
   def working_dir(self) -> Path:
-    if not self._is_initialized:
-      raise RuntimeError("Sandbox is not started. Call initialize() first.")
+    # A fixed path in every sandbox, known before `initialize` starts one.
     return Path(_WORKSPACE)
 
   @override

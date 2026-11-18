@@ -27,6 +27,7 @@ environment_simulation_logger = logging.getLogger(
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.environment_simulation.environment_simulation_config import _DEFAULT_THINKING_CONFIG
 from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy as MockStrategyEnum
@@ -37,6 +38,7 @@ from google.adk.tools.environment_simulation.tool_connection_map import ToolConn
 from google.genai import types as genai_types
 
 from ...utils._event_loop_cache import per_loop_value
+from ...utils.model_name_utils import _with_gemini_4_thinking_level
 from ..tool_args_matcher._semantic_arg_matcher import SemanticArgMatcher
 from ..tool_args_matcher._tool_args_matcher import BaseArgMatcher
 from ..tool_args_matcher._tool_args_matcher import ToolArgsMatcher
@@ -58,6 +60,17 @@ def _create_mock_strategy(
   if mock_strategy_type == MockStrategyEnum.MOCK_STRATEGY_TRACING:
     return base_mock_strategies.TracingMockStrategy(llm_name, llm_config)
   raise ValueError(f"Unknown mock strategy type: {mock_strategy_type}")
+
+
+def _simulation_model_configuration(
+    config: EnvironmentSimulationConfig,
+) -> genai_types.GenerateContentConfig:
+  return _with_gemini_4_thinking_level(
+      config.simulation_model_configuration,
+      model=config.simulation_model,
+      default_thinking_config=_DEFAULT_THINKING_CONFIG,
+      thinking_level=genai_types.ThinkingLevel.MEDIUM,
+  )
 
 
 def _with_default_semantic_model(
@@ -108,7 +121,7 @@ class EnvironmentSimulationEngine:
     self._tool_connection_map: Optional[ToolConnectionMap] = None
     self._analyzer = ToolConnectionAnalyzer(
         llm_name=config.simulation_model,
-        llm_config=config.simulation_model_configuration,
+        llm_config=_simulation_model_configuration(config),
     )
     self._state_store: Dict[str, Any] = {}
     self._random_generator = random.Random()
@@ -299,7 +312,7 @@ class EnvironmentSimulationEngine:
     mock_strategy = _create_mock_strategy(
         tool_sim_config.mock_strategy_type,
         self._config.simulation_model,
-        self._config.simulation_model_configuration,
+        _simulation_model_configuration(self._config),
     )
     return await mock_strategy.mock(
         tool,

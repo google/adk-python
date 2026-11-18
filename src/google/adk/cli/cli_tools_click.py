@@ -1481,6 +1481,8 @@ def cli_eval(
     from ..evaluation._eval_case_result_multi_run_aggregator import check_pass_k_criteria_against_num_runs
     from ..evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
     from ..evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
+    from ..evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
+    from ..evaluation._eval_case_result_multi_run_aggregator import summarize_cross_run_criteria
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
     from ..evaluation.eval_config import get_eval_metrics_from_config
@@ -1493,10 +1495,12 @@ def cli_eval(
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import _format_eval_set_criterion_summary
     from .cli_eval import _pretty_print_eval_results_across_runs
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
+    from .cli_eval import pretty_print_multi_run_summary_table
     from .utils import _eval_storage
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
@@ -1644,6 +1648,7 @@ def cli_eval(
             eval_service=eval_service,
             eval_metrics=eval_metrics,
             parallelism=parallelism,
+            multi_run_config=eval_config.multi_run_config,
         )
     )
     aggregate_eval_results = aggregate_eval_case_results(
@@ -1656,10 +1661,14 @@ def cli_eval(
       "*********************************************************************"
   )
   eval_run_summary = {}
+  case_results_by_eval_set: dict[str, list[MultiRunCaseResult]] = {}
 
   for aggregate_eval_result in aggregate_eval_results:
     if aggregate_eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[aggregate_eval_result.eval_set_id] = [0, 0]
+    case_results_by_eval_set.setdefault(
+        aggregate_eval_result.eval_set_id, []
+    ).append(aggregate_eval_result)
 
     if aggregate_eval_result.final_eval_status == EvalStatus.PASSED:
       eval_run_summary[aggregate_eval_result.eval_set_id][0] += 1
@@ -1671,11 +1680,27 @@ def cli_eval(
         f"Each eval case was run {num_runs} times and judged on all"
         f" {num_runs} runs."
     )
+  show_multi_run_summary = num_runs > 1 or has_pass_count_rules(
+      eval_config.multi_run_config
+  )
   for eval_set_id, pass_fail_count in eval_run_summary.items():
     click.echo(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
         f" failed: {pass_fail_count[1]}"
     )
+    # Each cross-run criterion's mean over the eval set's cases. Averaged
+    # over cases, pass@k and pass^k show whether failures are concentrated
+    # in a few cases or spread across all of them, which no single case's
+    # value and no pass/fail count can. Report-only: the verdict and the
+    # exit code come from the counts above.
+    for criterion_summary in summarize_cross_run_criteria(
+        case_results_by_eval_set[eval_set_id]
+    ):
+      click.echo(f"  {_format_eval_set_criterion_summary(criterion_summary)}")
+    if show_multi_run_summary:
+      pretty_print_multi_run_summary_table(
+          case_results_by_eval_set[eval_set_id]
+      )
 
   if print_detailed_results:
     # Rules that count passing runs judge a case run once as well, so its
@@ -2713,8 +2738,9 @@ def cli_api_server(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
         " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
-        " .zip), or a project directory containing pyproject.toml or setup.py"
-        " (without a root __init__.py) is installed with pip. Any other entry"
+        " .zip), or a project directory (setup.py, or pyproject.toml declaring"
+        " [project] or [build-system], without a root __init__.py) is"
+        " installed with pip. Any other entry"
         " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
         " a top-level name that matches an installed dependency will shadow it"
         " at runtime; pick distinct names. Repeatable."
@@ -3149,8 +3175,9 @@ def cli_migrate_session(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
         " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
-        " .zip), or a project directory containing pyproject.toml or setup.py"
-        " (without a root __init__.py) is installed with pip. Any other entry"
+        " .zip), or a project directory (setup.py, or pyproject.toml declaring"
+        " [project] or [build-system], without a root __init__.py) is"
+        " installed with pip. Any other entry"
         " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
         " a top-level name that matches an installed dependency will shadow it"
         " at runtime; pick distinct names. Repeatable."
@@ -3454,8 +3481,9 @@ def cli_deploy_agent_engine(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
         " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
-        " .zip), or a project directory containing pyproject.toml or setup.py"
-        " (without a root __init__.py) is installed with pip. Any other entry"
+        " .zip), or a project directory (setup.py, or pyproject.toml declaring"
+        " [project] or [build-system], without a root __init__.py) is"
+        " installed with pip. Any other entry"
         " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
         " a top-level name that matches an installed dependency will shadow it"
         " at runtime; pick distinct names. Repeatable."

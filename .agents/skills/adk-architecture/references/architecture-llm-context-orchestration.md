@@ -40,5 +40,6 @@ path, which is what keeps parallel siblings from polluting each other.
 
 Long histories overflow the context window and drag stale retry loops back into
 the prompt. When the app sets `events_compaction_config`, the Runner compacts
-events after the invocation. Because compaction rewrites aged history, do not
-store transient status on an event and expect to read it back later.
+events after the invocation. Because the model then sees a summary in place of
+the compacted events (the raw events stay in the session), do not store
+transient status on an event and expect to read it back later.

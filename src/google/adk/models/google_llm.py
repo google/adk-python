@@ -39,9 +39,11 @@ from typing_extensions import override
 from google import genai
 
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._gcp_metadata import _get_enterprise_setting
 from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._google_client_headers import merge_tracking_http_options
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
@@ -63,6 +65,7 @@ _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
 _API_VERSION_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_API_VERSION'
+_GEMINI_API_VERSION = 'v1beta'
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -151,8 +154,8 @@ class Gemini(BaseLlm):
   exposes the latest preview features. Production deployments that require a
   stable, SLA-eligible endpoint can set this to ``v1`` to use the GA Vertex AI
   API. When unset, the ``GOOGLE_GENAI_API_VERSION`` environment variable is
-  consulted, and finally the SDK's own default is used so existing behavior is
-  unchanged.
+  consulted, and finally the Gemini API uses ``v1beta`` and Vertex AI the SDK's
+  own default.
 
   An API version embedded in the ``base_url`` path (e.g. a trailing ``/v1``)
   takes precedence over this field.
@@ -466,6 +469,8 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    if api_version is None and not _get_enterprise_setting(kwargs):
+      adk_http_options.api_version = _GEMINI_API_VERSION
     kwargs['http_options'] = self._with_adk_http_options(
         kwargs['http_options'], adk_http_options
     )
@@ -488,15 +493,18 @@ class Gemini(BaseLlm):
 
     Resolution order:
       1. The ``api_version`` field set on this instance.
-      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable.
+      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable. Its ``beta``
+         value asks for each backend's beta version, which is what an unset
+         version gets, so it counts as unset.
 
-    Returns ``None`` when neither is set, in which case the google-genai SDK's
-    own default (``v1beta1`` for Vertex AI) applies, preserving existing
-    behavior.
+    Returns ``None`` when neither is set.
     """
     if self.api_version:
       return self.api_version
-    return os.environ.get(_API_VERSION_ENV_VARIABLE_NAME) or None
+    env_api_version = os.environ.get(_API_VERSION_ENV_VARIABLE_NAME)
+    if env_api_version == 'beta':
+      return None
+    return env_api_version or None
 
   @cached_property
   def _base_url_and_api_version(self) -> tuple[str | None, str | None]:
@@ -585,21 +593,7 @@ class Gemini(BaseLlm):
 
     Yields:
       BaseLlmConnection, the connection to the Gemini model.
-
-    Raises:
-      ValueError: If ``live_connect_config`` sets ``http_options``, which
-        google-genai only accepts on the client for the Live API.
     """
-    if (
-        llm_request.live_connect_config
-        and llm_request.live_connect_config.http_options
-    ):
-      raise ValueError(
-          'The Live API does not support request-level http_options in'
-          ' live_connect_config. Set them on the client instead, e.g.'
-          " Gemini(client_kwargs={'http_options': ...})."
-      )
-
     if self.speech_config is not None:
       llm_request.live_connect_config.speech_config = self.speech_config
 
@@ -658,12 +652,33 @@ class Gemini(BaseLlm):
         len(llm_request.contents or []),
         llm_request.live_connect_config.response_modalities,
     )
-    logger.debug('Live connect config: %s', llm_request.live_connect_config)
+    if logger.isEnabledFor(logging.DEBUG):
+      # Excludes http_options for the same reason as _build_request_log.
+      logger.debug(
+          'Live connect config: %s',
+          llm_request.live_connect_config.model_dump(
+              exclude_none=True, exclude={'http_options': True}
+          ),
+      )
     model = llm_request.model
     if model is None:
       raise ValueError('Live Gemini requests require a model name.')
+    live_connect_config = llm_request.live_connect_config
+    # ADK adds its tracking headers only to clients it builds, so a
+    # caller-supplied client lacks them. Caller http_options headers replace
+    # the client's headers of the same name, which would drop ADK's tags, so
+    # those need them merged in too.
+    if self.client is not None or live_connect_config.http_options is not None:
+      http_options = live_connect_config.http_options
+      live_connect_config = live_connect_config.model_copy(
+          update={
+              'http_options': merge_tracking_http_options(
+                  http_options.model_copy() if http_options else None
+              )
+          }
+      )
     async with self._live_api_client.aio.live.connect(
-        model=model, config=llm_request.live_connect_config
+        model=model, config=live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(
           live_session,

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 from typing import AsyncGenerator
 from unittest import mock
 
@@ -27,6 +28,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
 from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import _metrics
+from google.adk.tools.model_consult._advisor import _thinking_levels_by_name
 from google.adk.tools.model_consult._advisor import AdvisorError
 from google.adk.tools.model_consult._advisor import AdvisorUsage
 from google.adk.tools.model_consult._advisor import call_advisor
@@ -38,6 +40,7 @@ from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
 from google.adk.utils._client_labels_utils import get_client_labels
 from google.adk.utils._client_labels_utils import MODEL_CONSULT_CLIENT_LABEL
 from google.genai import types
+from opentelemetry.instrumentation.google_genai import version as google_genai_version
 from pydantic import Field
 import pytest
 
@@ -109,6 +112,45 @@ def test_resolve_thinking_level_invalid_raises(bad_level):
   """Raises ValueError when given an unrecognized thinking level."""
   with pytest.raises(ValueError, match='Invalid advisor thinking_level'):
     resolve_thinking_level(bad_level)
+
+
+def test_resolve_thinking_level_resolves_every_sdk_member():
+  """Resolves every specified ThinkingLevel member defined by google-genai."""
+  members = [
+      member
+      for member in types.ThinkingLevel
+      if member != types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED
+  ]
+  assert members
+  for member in members:
+    assert resolve_thinking_level(member.name.lower()) == member
+    assert resolve_thinking_level(f'  {member.name}  ') == member
+    assert resolve_thinking_level(member) == member
+  with pytest.raises(ValueError, match='Invalid advisor thinking_level'):
+    resolve_thinking_level('thinking_level_unspecified')
+
+
+def test_thinking_levels_by_name_includes_levels_the_old_list_lacked():
+  """Names every level of the given enum except the unspecified one."""
+
+  class _Levels(enum.Enum):
+    THINKING_LEVEL_UNSPECIFIED = 'THINKING_LEVEL_UNSPECIFIED'
+    HIGH = 'HIGH'
+    XHIGH = 'XHIGH'
+
+  assert _thinking_levels_by_name(_Levels) == {
+      'high': _Levels.HIGH,
+      'xhigh': _Levels.XHIGH,
+  }
+
+
+@pytest.mark.skipif(
+    not hasattr(types.ThinkingLevel, 'XHIGH'),
+    reason='The installed google-genai has no ThinkingLevel.XHIGH.',
+)
+def test_resolve_thinking_level_accepts_xhigh():
+  """Resolves 'xhigh' on an SDK that defines ThinkingLevel.XHIGH."""
+  assert resolve_thinking_level('xhigh') == types.ThinkingLevel.XHIGH
 
 
 def test_resolve_advisor_llm_passes_through_instance():
@@ -269,6 +311,7 @@ async def test_call_advisor_happy_path_filters_thoughts_and_partials():
       total_tokens=100,
   )
   assert result.latency_ms > 0.0
+  assert result.thinking_level == types.ThinkingLevel.HIGH
 
   assert llm.recorded_streams == [False]
   assert len(llm.recorded_requests) == 1
@@ -349,6 +392,7 @@ async def test_call_advisor_retries_without_thinking_config_on_rejection(
     )
 
   assert result.text == 'Fallback succeeded.'
+  assert result.thinking_level is None
   assert len(llm.recorded_requests) == 2
   assert llm.recorded_requests[0].config.thinking_config is not None
   assert llm.recorded_requests[1].config.thinking_config is None
@@ -565,6 +609,26 @@ async def test_call_advisor_response_error_code_raises_and_records_telemetry():
 
 
 @pytest.mark.asyncio
+async def test_call_advisor_records_inference_tokens_when_call_raises():
+  """Records the inference token metrics when the advisor call raises."""
+  error = RuntimeError('boom')
+  llm = _FakeAdvisorLlm(scripted_outcomes=[error])
+
+  with mock.patch.object(
+      _metrics, 'record_inference_token_usage', autospec=True
+  ) as mock_inference_tokens:
+    with pytest.raises(AdvisorError):
+      await call_advisor(
+          llm,
+          _sample_contents(),
+          system_instruction='Advisor system prompt.',
+      )
+  mock_inference_tokens.assert_called_once()
+  assert mock_inference_tokens.call_args.kwargs['error'] is error
+  assert mock_inference_tokens.call_args.kwargs['responses'] == []
+
+
+@pytest.mark.asyncio
 async def test_call_advisor_telemetry_failure_does_not_break_call():
   """Swallows telemetry recording errors so advisor calls still succeed."""
   llm = _FakeAdvisorLlm(
@@ -669,13 +733,24 @@ async def test_call_advisor_timeout_bounds_total_wall_clock_across_retry():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('instrumentor_version', 'emit_inference_tokens'),
+    [('0.7b1', True), ('1.0b0', False)],
+)
 async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
     monkeypatch: pytest.MonkeyPatch,
+    instrumentor_version: str,
+    emit_inference_tokens: bool,
 ):
-  """Skips native OTel metrics for Gemini when genai OTel lib is active."""
+  """Skips native OTel metrics for Gemini when genai OTel lib is active.
+
+  The inference token metrics are still recorded when the instrumentor's
+  version doesn't record them itself.
+  """
   monkeypatch.setenv(
       'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
   )
+  monkeypatch.setattr(google_genai_version, '__version__', instrumentor_version)
   gemini_llm = _FakeAdvisorLlm(
       model='gemini-2.5-pro',
       scripted_outcomes=[[
@@ -723,6 +798,9 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
       mock.patch.object(
           _metrics, 'record_client_token_usage', autospec=True
       ) as mock_tokens,
+      mock.patch.object(
+          _metrics, 'record_inference_token_usage', autospec=True
+      ) as mock_inference_tokens,
   ):
     await call_advisor(
         gemini_llm,
@@ -731,7 +809,9 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
     )
     mock_duration.assert_not_called()
     mock_tokens.assert_not_called()
+    assert mock_inference_tokens.called is emit_inference_tokens
 
+    mock_inference_tokens.reset_mock()
     await call_advisor(
         non_gemini_llm,
         _sample_contents(),
@@ -739,6 +819,7 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
     )
     mock_duration.assert_called_once()
     mock_tokens.assert_called_once()
+    mock_inference_tokens.assert_called_once()
 
 
 @pytest.mark.asyncio

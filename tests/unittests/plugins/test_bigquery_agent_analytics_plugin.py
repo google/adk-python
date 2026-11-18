@@ -26,6 +26,7 @@ import gc
 import importlib.util
 import inspect
 import io
+import itertools
 import json
 import logging
 import os
@@ -62,6 +63,7 @@ from google.adk.tools import base_tool as base_tool_lib
 from google.adk.tools import function_tool
 from google.adk.tools import tool_context as tool_context_lib
 from google.adk.tools import transfer_to_agent_tool
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.utils import streaming_utils
 from google.adk.utils._telemetry_context import _is_visual_builder
 from google.adk.utils._telemetry_context import _telemetry_surface
@@ -80,6 +82,8 @@ from pydantic import Field
 from pydantic import field_serializer
 from pydantic import ValidationError
 import pytest
+
+from .. import testing_utils
 
 PROJECT_ID = "test-gcp-project"
 DATASET_ID = "adk_logs"
@@ -15334,6 +15338,152 @@ class TestEvalViews:
         None,
         None,
     )
+    assert evaluate_response(
+        {"text_summary": "  ", "response": "   \n\t "}
+    ) == (None, None)
+    assert evaluate_response({"response": 42}) == ("42", "42")
+    assert evaluate_response("Plain top-level answer.") == (
+        "Plain top-level answer.",
+        "Plain top-level answer.",
+    )
+    assert (
+        bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+        in bigquery_agent_analytics_plugin._RESPONSE_TEXT_SENTINELS
+    )
+    assert (
+        bigquery_agent_analytics_plugin._FORMATTING_FAILED_SENTINEL
+        in bigquery_agent_analytics_plugin._RESPONSE_TEXT_SENTINELS
+    )
+    redacted_part_formatted, _ = (
+        bigquery_agent_analytics_plugin._format_content(
+            types.Content(
+                role="model",
+                parts=[types.Part(text="api_key%3Dsuper-secret-value")],
+            )
+        )
+    )
+    assert redacted_part_formatted == "text: '[REDACTED_SENSITIVE_TEXT]'"
+    assert evaluate_response({"response": redacted_part_formatted}) == (
+        "text: '[REDACTED_SENSITIVE_TEXT]'",
+        None,
+    )
+    assert evaluate_response({"response": "text: '   '"}) == (
+        "text: '   '",
+        None,
+    )
+    assert evaluate_response({"response": "text: '  ' | text: '\t'"}) == (
+        "text: '  ' | text: '\t'",
+        None,
+    )
+
+  @pytest.mark.parametrize(
+      "sentinel",
+      sorted(bigquery_agent_analytics_plugin._RESPONSE_TEXT_SENTINELS),
+  )
+  def test_eval_formatted_response_suppresses_sentinels(self, sentinel):
+    """Dict sentinels fail closed in formatted_response and null response_text."""
+    _, turn_view = self._eval_views()
+
+    def evaluate_response(content):
+      formatted = turn_view.evaluate(
+          "formatted_response",
+          {"event_type": "AGENT_RESPONSE", "content": content},
+      )
+      response_text = turn_view.evaluate(
+          "response_text",
+          {"event_type": "AGENT_RESPONSE", "formatted_response": formatted},
+      )
+      return formatted, response_text
+
+    assert evaluate_response(sentinel) == (None, None)
+    assert evaluate_response({"response": sentinel}) == (sentinel, None)
+    assert evaluate_response({"response": f"text: '{sentinel}'"}) == (
+        f"text: '{sentinel}'",
+        None,
+    )
+    assert evaluate_response(
+        {"text_summary": sentinel, "response": "Real answer"}
+    ) == (sentinel, None)
+    assert evaluate_response({
+        "text_summary": f"text: '{sentinel}'",
+        "response": "Real answer",
+    }) == (f"text: '{sentinel}'", None)
+
+  def test_eval_session_events_excludes_nested_parent_session_id_unless_attributes_denied(
+      self,
+  ):
+    """SessionEvents excludes nested child sessions unless attributes is denied."""
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    rows = [
+        event(
+            "inv-parent",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Ask specialist."},
+            session_id="sess-parent",
+        ),
+        event(
+            "inv-child",
+            1,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Nested child request."},
+            session_id="sess-child",
+            attributes={"adk": {"parent_session_id": "sess-parent"}},
+        ),
+        event(
+            "inv-child",
+            2,
+            "AGENT_RESPONSE",
+            {"text_summary": "Nested child answer."},
+            session_id="sess-child",
+            attributes={"adk": {"parent_session_id": "sess-parent"}},
+        ),
+        event(
+            "inv-child",
+            3,
+            "INVOCATION_COMPLETED",
+            session_id="sess-child",
+            attributes={"adk": {"parent_session_id": "sess-parent"}},
+        ),
+        event(
+            "inv-parent",
+            4,
+            "AGENT_RESPONSE",
+            {"text_summary": "Parent final answer."},
+            session_id="sess-parent",
+        ),
+        event(
+            "inv-parent",
+            5,
+            "INVOCATION_COMPLETED",
+            session_id="sess-parent",
+        ),
+    ]
+
+    assert [r["session_id"] for r in session_view.run(rows)] == ["sess-parent"]
+    assert [r["session_id"] for r in turn_view.run(rows)] == ["sess-parent"]
+
+    eval_sql = _bigquery_agent_analytics_eval_sql
+    denied_session_eval = _EvalViewSqlEvaluator(
+        eval_sql.build_eval_session_query_sql(
+            "p.d.t", denied_columns=["attributes"]
+        )
+    )
+    denied_turn_eval = _EvalViewSqlEvaluator(
+        eval_sql.build_eval_turn_query_sql(
+            "p.d.t", denied_columns=["attributes"]
+        )
+    )
+    assert {r["session_id"] for r in denied_session_eval.run(rows)} == {
+        "sess-parent",
+        "sess-child",
+    }
+    assert {r["session_id"] for r in denied_turn_eval.run(rows)} == {
+        "sess-parent",
+        "sess-child",
+    }
 
   def test_eval_agent_instruction_fallback_from_session_agent_prompts(self):
     """AgentConfigs falls back to earliest session LLM_REQUEST.system_prompt.
@@ -17212,6 +17362,334 @@ class TestEvalViews:
         "s2",
         "s1",
     ]
+
+  def _turn_with_agent_response(
+      self,
+      session_id: str,
+      invocation_id: str,
+      start: int,
+      content: object,
+  ) -> list[dict[str, object]]:
+    """Builds a finished turn whose sole response is an AGENT_RESPONSE row."""
+    turn_rows = self._finished_turn(session_id, invocation_id, start)
+    response_rows = [
+        row
+        for row in turn_rows
+        if row["event_type"] in ("LLM_RESPONSE", "AGENT_RESPONSE")
+    ]
+    assert response_rows
+    kept_rows = [
+        row
+        for row in turn_rows
+        if row["event_type"] not in ("LLM_RESPONSE", "AGENT_RESPONSE")
+    ]
+    return [
+        *kept_rows,
+        {
+            **response_rows[-1],
+            "event_type": "AGENT_RESPONSE",
+            "content": content,
+            "content_parts": [],
+        },
+    ]
+
+  def _sub_agent_session_rows(
+      self,
+      session_id: str,
+      invocation_id: str,
+      start: int,
+      *,
+      parent_session_id: str,
+      parent_invocation_id: str,
+      agent: str = "child_agent",
+  ) -> list[dict[str, object]]:
+    """Builds sub-agent rows across all lifecycle and LLM event types."""
+    sub_attrs = {
+        "adk": {
+            "parent_session_id": parent_session_id,
+            "parent_invocation_id": parent_invocation_id,
+        }
+    }
+    rows = [
+        {**row, "agent": agent, "attributes": sub_attrs}
+        for row in self._finished_turn(session_id, invocation_id, start)
+    ]
+    present = {row["event_type"] for row in rows}
+    template = rows[-1]
+    required_events = (
+        ("AGENT_STARTING", {"text_summary": "Child instruction"}),
+        ("LLM_REQUEST", {"prompt": "hi", "system_prompt": "Child prompt"}),
+        ("LLM_RESPONSE", {"response": "text: 'Child draft'"}),
+        ("AGENT_RESPONSE", {"response": "text: 'Child answer'"}),
+        ("AGENT_COMPLETED", None),
+    )
+    for event_type, content in required_events:
+      if event_type not in present:
+        rows.append({
+            **template,
+            "event_type": event_type,
+            "content": content,
+            "content_parts": [],
+        })
+    return rows
+
+  def _sub_agent_exclusion_rows(self) -> list[dict[str, Any]]:
+    """Builds combined parent, legacy, and sub-agent rows for view tests."""
+    parent_rows = self._finished_turn("s-parent", "inv-parent", 0)
+    legacy_rows = [
+        {**row, "attributes": None}
+        for row in self._finished_turn("s-legacy", "inv-legacy", 10)
+    ]
+    child_rows = self._sub_agent_session_rows(
+        "s-child",
+        "inv-child",
+        20,
+        parent_session_id="s-parent",
+        parent_invocation_id="inv-parent",
+    )
+    nested_attrs = {
+        "adk": {
+            "parent_session_id": "s-parent",
+            "parent_invocation_id": "inv-parent",
+        }
+    }
+    root_on_parent = [
+        {
+            **parent_rows[0],
+            "event_type": "AGENT_STARTING",
+            "agent": "root_agent",
+            "content": {"text_summary": "Root instruction"},
+            "content_parts": [],
+        },
+        {
+            **parent_rows[0],
+            "event_type": "LLM_REQUEST",
+            "agent": "root_agent",
+            "content": {"prompt": "hi", "system_prompt": "Root prompt"},
+            "content_parts": [],
+        },
+    ]
+    nested_on_parent = [
+        {
+            **parent_rows[0],
+            "event_type": "AGENT_STARTING",
+            "agent": "child_agent",
+            "content": {"text_summary": "Nested instruction"},
+            "content_parts": [],
+            "attributes": nested_attrs,
+        },
+        {
+            **parent_rows[0],
+            "event_type": "LLM_REQUEST",
+            "agent": "child_agent",
+            "content": {"prompt": "hi", "system_prompt": "Nested prompt"},
+            "content_parts": [],
+            "attributes": nested_attrs,
+        },
+    ]
+    expected_types = {
+        "AGENT_STARTING",
+        "LLM_REQUEST",
+        "LLM_RESPONSE",
+        "AGENT_RESPONSE",
+        "AGENT_COMPLETED",
+    }
+    assert expected_types.issubset({row["event_type"] for row in child_rows})
+    return [
+        *parent_rows,
+        *root_on_parent,
+        *legacy_rows,
+        *child_rows,
+        *nested_on_parent,
+    ]
+
+  def test_eval_views_exclude_sub_agent_sessions_and_keep_legacy_rows(
+      self,
+  ) -> None:
+    """Excludes sub-agent sessions while keeping top-level and legacy rows."""
+    rows = self._sub_agent_exclusion_rows()
+
+    session_eval = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql("p.d.t")
+    )
+    turn_eval = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql("p.d.t")
+    )
+    session_results = session_eval.run(rows)
+    turn_results = turn_eval.run(rows)
+
+    assert {row["session_id"] for row in session_results} == {
+        "s-parent",
+        "s-legacy",
+    }
+    parent_session = next(
+        row for row in session_results if row["session_id"] == "s-parent"
+    )
+    assert "root_agent" in parent_session["trace"]["agents"]
+    assert all(
+        "child_agent" not in (row["trace"]["agents"] or {})
+        for row in session_results
+    )
+    assert "s-child" not in repr(session_results)
+    assert "child_agent" not in repr(session_results)
+
+    assert {row["session_id"] for row in turn_results} == {
+        "s-parent",
+        "s-legacy",
+    }
+    parent_turn = next(
+        row for row in turn_results if row["session_id"] == "s-parent"
+    )
+    assert "root_agent" in parent_turn["trace"]["agents"]
+    assert all(
+        "child_agent" not in (row["trace"]["agents"] or {})
+        for row in turn_results
+    )
+    assert "s-child" not in repr(turn_results)
+    assert "child_agent" not in repr(turn_results)
+
+  @pytest.mark.parametrize("cte_name", ["AgentRows", "SessionAgentPrompts"])
+  def test_eval_views_intermediate_ctes_exclude_sub_agent_sessions(
+      self,
+      cte_name: str,
+  ) -> None:
+    """Intermediate CTEs exclude sub-agent sessions and nested agents."""
+    rows = self._sub_agent_exclusion_rows()
+    session_eval = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql("p.d.t")
+    )
+    cte_rows = session_eval.run(rows, cte=cte_name)
+    assert any(
+        row["session_id"] == "s-parent" and row["agent_id"] == "root_agent"
+        for row in cte_rows
+    )
+    assert all(row["session_id"] != "s-child" for row in cte_rows)
+    assert all(row["agent_id"] != "child_agent" for row in cte_rows)
+
+  def test_eval_views_denied_attributes_preserves_all_rows(self) -> None:
+    """Denying attributes keeps all rows without failing on NULL JSON."""
+    parent_rows = self._finished_turn("s-parent", "inv-parent", 0)
+    legacy_rows = [
+        {**row, "attributes": None}
+        for row in self._finished_turn("s-legacy", "inv-legacy", 10)
+    ]
+    child_rows = self._sub_agent_session_rows(
+        "s-child",
+        "inv-child",
+        20,
+        parent_session_id="s-parent",
+        parent_invocation_id="inv-parent",
+    )
+    rows = [*parent_rows, *legacy_rows, *child_rows]
+
+    session_results = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_session_query_sql(
+            "p.d.t", denied_columns={"attributes"}
+        )
+    ).run(rows)
+    turn_results = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql(
+            "p.d.t", denied_columns={"attributes"}
+        )
+    ).run(rows)
+
+    assert {row["session_id"] for row in session_results} == {
+        "s-parent",
+        "s-legacy",
+        "s-child",
+    }
+    assert "child_agent" in repr(session_results)
+    assert {row["session_id"] for row in turn_results} == {
+        "s-parent",
+        "s-legacy",
+        "s-child",
+    }
+    assert "child_agent" in repr(turn_results)
+
+  def test_eval_turn_extracts_top_level_string_content_on_agent_response(
+      self,
+  ) -> None:
+    """Extracts plain JSON string content on AGENT_RESPONSE into turns."""
+    rows = [
+        *self._turn_with_agent_response(
+            "s-plain", "inv-1", 0, "Plain string response"
+        ),
+        *self._turn_with_agent_response("s-blank", "inv-1", 10, "   "),
+    ]
+    turn_eval = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql("p.d.t")
+    )
+
+    response_rows = turn_eval.run(rows, cte="ResponseEvents")
+    by_session = {
+        row["session_id"]: row["response_text"]
+        for row in response_rows
+        if row["event_type"] == "AGENT_RESPONSE"
+    }
+    assert by_session == {
+        "s-plain": "Plain string response",
+        "s-blank": None,
+    }
+
+    turn_rows = turn_eval.run(rows)
+    turn_by_session = {row["session_id"]: row for row in turn_rows}
+    plain_model_parts = [
+        e["content"]["parts"]
+        for e in turn_by_session["s-plain"]["trace"]["turns"][0]["events"]
+        if e["content"]["role"] == "model"
+    ]
+    assert plain_model_parts == [[{"text": "Plain string response"}]]
+    blank_model_events = [
+        e
+        for e in turn_by_session["s-blank"]["trace"]["turns"][0]["events"]
+        if e["content"]["role"] == "model"
+    ]
+    assert blank_model_events == []
+
+  @pytest.mark.parametrize(
+      "content, expected",
+      [
+          (
+              {"response": "text: 'Check | call: lookup now'"},
+              "Check | call: lookup now",
+          ),
+          ("Check | call: lookup now", "Check | call: lookup now"),
+          (
+              {"response": "text: 'Pick A | other | B'"},
+              "Pick A | other | B",
+          ),
+          ({"response": "text: 'Pick A | other'"}, "Pick A | other"),
+          ({"response": "text: 'Before:' | call: lookup"}, None),
+          ({"response": "text: 'Before:' | resp: lookup"}, None),
+          ({"response": "text: 'a' | other | text: 'b'"}, None),
+          ({"response": "text: 'a' | other"}, None),
+      ],
+  )
+  def test_eval_turn_response_text_quote_anchors_multipart_delimiters(
+      self, content: object, expected: str | None
+  ) -> None:
+    """Preserves literal pipe prose while dropping multi-part strings."""
+    rows = self._turn_with_agent_response("s1", "inv-1", 0, content)
+    turn_eval = _EvalViewSqlEvaluator(
+        bigquery_agent_analytics_plugin.build_eval_turn_query_sql("p.d.t")
+    )
+
+    response_rows = turn_eval.run(rows, cte="ResponseEvents")
+    agent_resp = next(
+        r for r in response_rows if r["event_type"] == "AGENT_RESPONSE"
+    )
+    assert agent_resp["response_text"] == expected
+
+    turn_rows = turn_eval.run(rows)
+    assert len(turn_rows) == 1
+    model_parts = [
+        e["content"]["parts"]
+        for e in turn_rows[0]["trace"]["turns"][0]["events"]
+        if e["content"]["role"] == "model"
+    ]
+    assert model_parts == (
+        [[{"text": expected}]] if expected is not None else []
+    )
 
   @pytest.fixture
   def eval_sql_dir(self, tmp_path, monkeypatch):
@@ -30600,6 +31078,5831 @@ class TestFormatContent:
         "[FORMATTING FAILED]",
         True,
     )
+
+
+def _make_nested_test_invocation_context(
+    invocation_id: str,
+    session_id: str,
+    agent_name: str,
+    *,
+    app_name: str = "test_app",
+    parent_invocation_id: str | None = None,
+) -> InvocationContext:
+  """Builds a real InvocationContext for nested TraceManager tests."""
+  pm = plugin_manager_lib.PluginManager()
+  session_service = mock.create_autospec(
+      base_session_service_lib.BaseSessionService, instance=True
+  )
+  ctx = InvocationContext(
+      session_service=session_service,
+      invocation_id=invocation_id,
+      agent=base_agent.BaseAgent(name=agent_name),
+      session=session_lib.Session(
+          id=session_id,
+          app_name=app_name,
+          user_id="user-123",
+      ),
+      plugin_manager=pm,
+  )
+  ctx._parent_invocation_id = (  # pylint: disable=protected-access
+      parent_invocation_id
+  )
+  return ctx
+
+
+def _collect_eval_trace_parts(node: Any) -> list[list[dict[str, Any]]]:
+  """Collects all content parts lists from an eval view trace JSON object."""
+  found: list[list[dict[str, Any]]] = []
+  if isinstance(node, dict):
+    parts = node.get("parts")
+    if isinstance(parts, list):
+      found.append(parts)
+    for val in node.values():
+      found.extend(_collect_eval_trace_parts(val))
+  elif isinstance(node, list):
+    for item in node:
+      found.extend(_collect_eval_trace_parts(item))
+  return found
+
+
+class TestNestedAgentToolIsolationAndAttribution:
+  """Tests nested AgentTool isolation, parent attribution, and eval SQL."""
+
+  @pytest.mark.asyncio
+  async def test_adk_envelope_stamps_parent_ids_when_source_event_is_none(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """Callback-only child rows stamp parent_session_id/parent_invocation_id."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    parent_inv = _make_nested_test_invocation_context(
+        "p-inv", "p-sess", "parent_agent"
+    )
+    child_inv = _make_nested_test_invocation_context(
+        "c-inv", "c-sess", "child_agent", parent_invocation_id="p-inv"
+    )
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        await plugin.before_run_callback(invocation_context=parent_inv)
+        bq_mod.TraceManager.push_span(
+            CallbackContext(parent_inv),
+            "tool",
+        )
+
+        await plugin.before_run_callback(invocation_context=child_inv)
+        envelope = plugin._build_adk_envelope(CallbackContext(child_inv), None)
+        assert envelope["parent_session_id"] == "p-sess"
+        assert envelope["parent_invocation_id"] == "p-inv"
+        assert "source_event_id" not in envelope
+
+        await plugin.after_run_callback(invocation_context=child_inv)
+        bq_mod.TraceManager.pop_span(expected_kind="tool")
+        await plugin.after_run_callback(invocation_context=parent_inv)
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      child_rows = [r for r in rows if r["invocation_id"] == "c-inv"]
+      assert {r["event_type"] for r in child_rows} == {
+          "INVOCATION_STARTING",
+          "INVOCATION_COMPLETED",
+      }
+      for row in child_rows:
+        adk = json.loads(row["attributes"])["adk"]
+        assert adk["parent_session_id"] == "p-sess"
+        assert adk["parent_invocation_id"] == "p-inv"
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  def test_finish_invocation_restores_parent_with_unclosed_child_spans(self):
+    """_finish_invocation restores parent frame even when child leaked spans."""
+    bq_mod = bigquery_agent_analytics_plugin
+    parent_cb = CallbackContext(
+        _make_nested_test_invocation_context("p-inv", "p-sess", "parent_agent")
+    )
+    child_cb = CallbackContext(
+        _make_nested_test_invocation_context(
+            "c-inv", "c-sess", "child_agent", parent_invocation_id="p-inv"
+        )
+    )
+    try:
+      bq_mod.TraceManager.ensure_invocation_span(parent_cb)
+      p_root_span = bq_mod.TraceManager.get_current_span_id()
+      p_agent_span = bq_mod.TraceManager.push_span(parent_cb, "agent")
+      p_tool_span = bq_mod.TraceManager.push_span(parent_cb, "tool")
+
+      bq_mod.TraceManager.ensure_invocation_span(child_cb)
+      c_agent_span = bq_mod.TraceManager.push_span(child_cb, "agent")
+      c_leaked_tool_span = bq_mod.TraceManager.push_span(child_cb, "tool")
+      assert bq_mod._root_agent_name_ctx.get() == "child_agent"
+      assert bq_mod._active_invocation_id_ctx.get() == "c-inv"
+
+      bq_mod.TraceManager._finish_invocation("c-inv")
+
+      assert bq_mod._parent_invocation_frames_ctx.get() == ()
+      assert bq_mod.TraceManager._get_parent_invocation_frame() is None
+      assert bq_mod._root_agent_name_ctx.get() == "parent_agent"
+      assert bq_mod._active_invocation_id_ctx.get() == "p-inv"
+      records = bq_mod._span_records_ctx.get()
+      assert records is not None
+      restored_ids = [r.span_id for r in records]
+      assert restored_ids == [p_root_span, p_agent_span, p_tool_span]
+      assert records[-1].span_id == p_tool_span
+      assert records[-1].kind == "tool"
+      assert c_agent_span not in restored_ids
+      assert c_leaked_tool_span not in restored_ids
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_sequential_agent_tool_e2e_and_eval_sql_views(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """Sequential AgentTool isolates parent/child rows and eval SQL views."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+    eval_sql = _bigquery_agent_analytics_eval_sql
+
+    child_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="child done")]
+                )
+            )
+        ]
+    )
+    child_agent = llm_agent.LlmAgent(name="child_agent", model=child_model)
+
+    parent_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name="child_agent", args={"request": "go"}
+                            )
+                        )
+                    ]
+                )
+            ),
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="parent done")]
+                )
+            ),
+        ]
+    )
+    parent_agent = llm_agent.LlmAgent(
+        name="parent_agent",
+        model=parent_model,
+        tools=[AgentTool(agent=child_agent)],
+    )
+
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(
+        root_agent=parent_agent, plugins=[plugin]
+    )
+    try:
+      events = await runner.run_async(testing_utils.UserContent("go"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+
+    parent_inv = events[0].invocation_id
+    parent_start = next(
+        r
+        for r in rows
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "INVOCATION_STARTING"
+    )
+    parent_sess = parent_start["session_id"]
+
+    tool_start_idx = next(
+        i
+        for i, r in enumerate(rows)
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "TOOL_STARTING"
+    )
+    parent_agent_starting = next(
+        r
+        for r in rows
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "AGENT_STARTING"
+    )
+    parent_tool_starting = rows[tool_start_idx]
+    assert (
+        parent_tool_starting["parent_span_id"]
+        == parent_agent_starting["span_id"]
+    )
+
+    post_tool_types = {
+        "TOOL_COMPLETED",
+        "LLM_RESPONSE",
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+    }
+    parent_post_tool = [
+        r
+        for r in rows[tool_start_idx + 1 :]
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] in post_tool_types
+    ]
+    assert {r["event_type"] for r in parent_post_tool} == post_tool_types
+    for row in parent_post_tool:
+      assert row["agent"] == "parent_agent"
+      assert row["invocation_id"] == parent_inv
+      assert row["session_id"] == parent_sess
+      attrs = json.loads(row["attributes"])
+      assert attrs["root_agent_name"] == "parent_agent"
+      assert "parent_session_id" not in attrs["adk"]
+      assert "parent_invocation_id" not in attrs["adk"]
+
+    child_rows = [r for r in rows if r["invocation_id"] != parent_inv]
+    assert child_rows
+    for row in child_rows:
+      assert row["invocation_id"] != parent_inv
+      assert row["session_id"] != parent_sess
+      attrs = json.loads(row["attributes"])
+      assert attrs["root_agent_name"] == "child_agent"
+      assert attrs["adk"]["parent_session_id"] == parent_sess
+      assert attrs["adk"]["parent_invocation_id"] == parent_inv
+
+    child_inv_starting = next(
+        r for r in child_rows if r["event_type"] == "INVOCATION_STARTING"
+    )
+    assert (
+        child_inv_starting["parent_span_id"] == parent_tool_starting["span_id"]
+    )
+
+    session_eval_rows = _EvalViewSqlEvaluator(
+        eval_sql.build_eval_session_query_sql("p.d.t")
+    ).run(rows)
+    turn_eval_rows = _EvalViewSqlEvaluator(
+        eval_sql.build_eval_turn_query_sql("p.d.t")
+    ).run(rows)
+    assert [r["session_id"] for r in session_eval_rows] == [parent_sess]
+    assert [r["session_id"] for r in turn_eval_rows] == [parent_sess]
+
+    for eval_row in (session_eval_rows[0], turn_eval_rows[0]):
+      raw_trace = eval_row["trace"]
+      trace_obj = (
+          json.loads(raw_trace) if isinstance(raw_trace, str) else raw_trace
+      )
+      assert "parent_agent" in trace_obj["agents"]
+      assert "child_agent" not in trace_obj["agents"]
+      flat_parts = [
+          part
+          for part in itertools.chain.from_iterable(
+              _collect_eval_trace_parts(trace_obj)
+          )
+          if isinstance(part, dict)
+      ]
+      assert any("function_call" in p for p in flat_parts)
+      assert any("function_response" in p for p in flat_parts)
+      assert any(p.get("text") == "parent done" for p in flat_parts)
+
+  @pytest.mark.asyncio
+  async def test_parallel_agent_tools_isolate_context_and_spans(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """Three concurrent AgentTool calls isolate sessions, spans, and parent."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+
+    def _make_delay_cb(delay_s: float):
+      async def _cb(callback_context: CallbackContext):
+        _ = callback_context
+        await asyncio.sleep(delay_s)
+
+      return _cb
+
+    delays = (0.03, 0.005, 0.015)
+    child_tools = []
+    for idx, delay_s in enumerate(delays):
+      c_model = testing_utils.MockModel(
+          responses=[
+              testing_utils.LlmResponse(
+                  content=testing_utils.ModelContent(
+                      parts=[types.Part(text=f"reply_{idx}")]
+                  )
+              )
+          ]
+      )
+      c_agent = llm_agent.LlmAgent(
+          name=f"child_{idx}",
+          model=c_model,
+          before_agent_callback=_make_delay_cb(delay_s),
+      )
+      child_tools.append(AgentTool(agent=c_agent))
+
+    parent_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name=f"child_{idx}",
+                                args={"request": f"go_{idx}"},
+                            )
+                        )
+                        for idx in range(3)
+                    ]
+                )
+            ),
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="all children done")]
+                )
+            ),
+        ]
+    )
+    parent_agent = llm_agent.LlmAgent(
+        name="parent_agent",
+        model=parent_model,
+        tools=child_tools,
+    )
+
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(
+        root_agent=parent_agent, plugins=[plugin]
+    )
+    try:
+      events = await runner.run_async(testing_utils.UserContent("fanout"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+
+    parent_inv = events[0].invocation_id
+    parent_sess = next(
+        r["session_id"]
+        for r in rows
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "INVOCATION_STARTING"
+    )
+    tool_spans_by_name = {
+        json.loads(r["content"])["tool"]: r["span_id"]
+        for r in rows
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "TOOL_STARTING"
+    }
+    assert set(tool_spans_by_name) == {"child_0", "child_1", "child_2"}
+    assert len(set(tool_spans_by_name.values())) == 3
+
+    child_inv_ids: set[str] = set()
+    child_sess_ids: set[str] = set()
+    for idx in range(3):
+      expected_agent = f"child_{idx}"
+      c_start = next(
+          r
+          for r in rows
+          if r["invocation_id"] != parent_inv
+          and r["event_type"] == "INVOCATION_STARTING"
+          and r["agent"] == expected_agent
+      )
+      c_inv = c_start["invocation_id"]
+      c_sess = c_start["session_id"]
+      child_inv_ids.add(c_inv)
+      child_sess_ids.add(c_sess)
+      assert c_start["parent_span_id"] == tool_spans_by_name[expected_agent]
+      for row in [r for r in rows if r["invocation_id"] == c_inv]:
+        attrs = json.loads(row["attributes"])
+        assert attrs["root_agent_name"] == expected_agent
+        assert attrs["adk"]["parent_session_id"] == parent_sess
+        assert attrs["adk"]["parent_invocation_id"] == parent_inv
+
+    assert len(child_inv_ids) == 3
+    assert len(child_sess_ids) == 3
+    assert parent_sess not in child_sess_ids
+
+    parent_final_resp = next(
+        r
+        for r in rows
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "AGENT_RESPONSE"
+    )
+    assert parent_final_resp["agent"] == "parent_agent"
+    final_attrs = json.loads(parent_final_resp["attributes"])
+    assert final_attrs["root_agent_name"] == "parent_agent"
+    assert "parent_session_id" not in final_attrs["adk"]
+
+  @pytest.mark.asyncio
+  async def test_multi_level_nesting_l0_l1_l2_attribution_and_unwind(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """L0 -> L1 -> L2 attributes each child to its immediate parent only."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+
+    l2_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="l2 done")]
+                )
+            )
+        ]
+    )
+    l2_agent = llm_agent.LlmAgent(name="l2_agent", model=l2_model)
+
+    l1_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name="l2_agent", args={"request": "to l2"}
+                            )
+                        )
+                    ]
+                )
+            ),
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="l1 done")]
+                )
+            ),
+        ]
+    )
+    l1_agent = llm_agent.LlmAgent(
+        name="l1_agent",
+        model=l1_model,
+        tools=[AgentTool(agent=l2_agent)],
+    )
+
+    l0_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name="l1_agent", args={"request": "to l1"}
+                            )
+                        )
+                    ]
+                )
+            ),
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="l0 done")]
+                )
+            ),
+        ]
+    )
+    l0_agent = llm_agent.LlmAgent(
+        name="l0_agent",
+        model=l0_model,
+        tools=[AgentTool(agent=l1_agent)],
+    )
+
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(root_agent=l0_agent, plugins=[plugin])
+    try:
+      await runner.run_async(testing_utils.UserContent("start l0"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+
+    starts_by_agent = {
+        r["agent"]: r for r in rows if r["event_type"] == "INVOCATION_STARTING"
+    }
+    assert set(starts_by_agent) == {"l0_agent", "l1_agent", "l2_agent"}
+    l0_inv = starts_by_agent["l0_agent"]["invocation_id"]
+    l0_sess = starts_by_agent["l0_agent"]["session_id"]
+    l1_inv = starts_by_agent["l1_agent"]["invocation_id"]
+    l1_sess = starts_by_agent["l1_agent"]["session_id"]
+    l2_inv = starts_by_agent["l2_agent"]["invocation_id"]
+    l2_sess = starts_by_agent["l2_agent"]["session_id"]
+    assert len({l0_inv, l1_inv, l2_inv}) == 3
+    assert len({l0_sess, l1_sess, l2_sess}) == 3
+
+    l0_tool_start = next(
+        r
+        for r in rows
+        if r["invocation_id"] == l0_inv and r["event_type"] == "TOOL_STARTING"
+    )
+    l1_tool_start = next(
+        r
+        for r in rows
+        if r["invocation_id"] == l1_inv and r["event_type"] == "TOOL_STARTING"
+    )
+    assert (
+        starts_by_agent["l1_agent"]["parent_span_id"]
+        == l0_tool_start["span_id"]
+    )
+    assert (
+        starts_by_agent["l2_agent"]["parent_span_id"]
+        == l1_tool_start["span_id"]
+    )
+
+    for row in [r for r in rows if r["invocation_id"] == l0_inv]:
+      attrs = json.loads(row["attributes"])
+      assert attrs["root_agent_name"] == "l0_agent"
+      assert "parent_session_id" not in attrs["adk"]
+      assert "parent_invocation_id" not in attrs["adk"]
+
+    for row in [r for r in rows if r["invocation_id"] == l1_inv]:
+      attrs = json.loads(row["attributes"])
+      assert attrs["root_agent_name"] == "l1_agent"
+      assert attrs["adk"]["parent_session_id"] == l0_sess
+      assert attrs["adk"]["parent_invocation_id"] == l0_inv
+
+    for row in [r for r in rows if r["invocation_id"] == l2_inv]:
+      attrs = json.loads(row["attributes"])
+      assert attrs["root_agent_name"] == "l2_agent"
+      assert attrs["adk"]["parent_session_id"] == l1_sess
+      assert attrs["adk"]["parent_invocation_id"] == l1_inv
+
+    l0_tool_completed = next(
+        r
+        for r in rows
+        if r["invocation_id"] == l0_inv and r["event_type"] == "TOOL_COMPLETED"
+    )
+    assert l0_tool_completed["span_id"] == l0_tool_start["span_id"]
+
+  @pytest.mark.asyncio
+  async def test_normal_function_tool_emits_no_parent_attribution(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """A normal FunctionTool neither suspends frames nor stamps parent IDs."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+    observed_in_tool: dict[str, Any] = {}
+
+    def regular_helper_tool(query: str) -> dict[str, str]:
+      records = bq_mod._span_records_ctx.get() or []
+      observed_in_tool["top_kind"] = records[-1].kind if records else None
+      observed_in_tool["parent_frame"] = (
+          bq_mod.TraceManager._get_parent_invocation_frame()
+      )
+      other_cb = CallbackContext(
+          _make_nested_test_invocation_context(
+              "other-inv", "other-sess", "other_agent"
+          )
+      )
+      observed_in_tool["nested_gate"] = (
+          bq_mod._is_nested_plugin_run(other_cb, records[-1])
+          if records
+          else None
+      )
+      mismatched_cb = CallbackContext(
+          _make_nested_test_invocation_context(
+              "other-inv",
+              "other-sess",
+              "other_agent",
+              parent_invocation_id="stale-parent-inv",
+          )
+      )
+      observed_in_tool["mismatched_gate"] = (
+          bq_mod._is_nested_plugin_run(mismatched_cb, records[-1])
+          if records
+          else None
+      )
+      return {"echo": query}
+
+    tool = function_tool.FunctionTool(regular_helper_tool)
+    model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name="regular_helper_tool",
+                                args={"query": "hello"},
+                            )
+                        )
+                    ]
+                )
+            ),
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="done")]
+                )
+            ),
+        ]
+    )
+    agent = llm_agent.LlmAgent(name="solo_agent", model=model, tools=[tool])
+
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[plugin])
+    try:
+      await runner.run_async(testing_utils.UserContent("hi"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+
+    assert observed_in_tool == {
+        "top_kind": "tool",
+        "parent_frame": None,
+        "nested_gate": False,
+        "mismatched_gate": False,
+    }
+    for row in rows:
+      adk = json.loads(row["attributes"])["adk"]
+      assert "parent_session_id" not in adk
+      assert "parent_invocation_id" not in adk
+
+  @pytest.mark.asyncio
+  async def test_child_agent_tool_error_and_cancellation_cleanup(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """RuntimeError and CancelledError inside AgentTool leave clean state."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+
+    class _FailingChildAgent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield event_lib.Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="starting")]
+            ),
+        )
+        raise RuntimeError("boom")
+
+    parent_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name="failing_child", args={"request": "go"}
+                            )
+                        )
+                    ]
+                )
+            )
+        ]
+    )
+    failing_parent = llm_agent.LlmAgent(
+        name="parent_agent",
+        model=parent_model,
+        tools=[AgentTool(agent=_FailingChildAgent(name="failing_child"))],
+    )
+
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(
+        root_agent=failing_parent, plugins=[plugin]
+    )
+    try:
+      with pytest.raises(RuntimeError, match="boom"):
+        await runner.run_async(testing_utils.UserContent("go"))
+      await plugin.flush()
+      error_rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+      assert not bq_mod._span_records_ctx.get()
+      assert bq_mod._parent_invocation_frames_ctx.get() == ()
+      assert bq_mod._root_agent_name_ctx.get() is None
+      assert bq_mod._active_invocation_id_ctx.get() is None
+
+      parent_start = next(
+          r
+          for r in error_rows
+          if r["event_type"] == "INVOCATION_STARTING"
+          and r["agent"] == "parent_agent"
+      )
+      parent_inv = parent_start["invocation_id"]
+      parent_sess = parent_start["session_id"]
+      parent_tool_start = next(
+          r
+          for r in error_rows
+          if r["invocation_id"] == parent_inv
+          and r["event_type"] == "TOOL_STARTING"
+      )
+      child_inv_err = next(
+          r
+          for r in error_rows
+          if r["invocation_id"] != parent_inv
+          and r["event_type"] == "INVOCATION_ERROR"
+      )
+      child_err_adk = json.loads(child_inv_err["attributes"])["adk"]
+      assert child_err_adk["parent_session_id"] == parent_sess
+      assert child_err_adk["parent_invocation_id"] == parent_inv
+      assert child_inv_err["parent_span_id"] == parent_tool_start["span_id"]
+
+      parent_tool_err = next(
+          r
+          for r in error_rows
+          if r["invocation_id"] == parent_inv
+          and r["event_type"] == "TOOL_ERROR"
+      )
+      parent_tool_err_attrs = json.loads(parent_tool_err["attributes"])
+      assert parent_tool_err["agent"] == "parent_agent"
+      assert parent_tool_err_attrs["root_agent_name"] == "parent_agent"
+      assert "parent_session_id" not in parent_tool_err_attrs["adk"]
+
+      class _CancelledChildAgent(base_agent.BaseAgent):
+
+        async def _run_async_impl(self, ctx):
+          yield event_lib.Event(
+              invocation_id=ctx.invocation_id,
+              author=self.name,
+              content=types.Content(
+                  role="model", parts=[types.Part(text="cancelling")]
+              ),
+          )
+          raise asyncio.CancelledError()
+
+      cancelled_tool = AgentTool(
+          agent=_CancelledChildAgent(name="cancelled_child")
+      )
+      leaked_frame_counts: list[int] = []
+
+      class _CancellingParentAgent(base_agent.BaseAgent):
+
+        async def _run_async_impl(self, ctx):
+          t_ctx = tool_context_lib.ToolContext(invocation_context=ctx)
+          await plugin.before_tool_callback(
+              tool=cancelled_tool,
+              tool_args={"request": "go"},
+              tool_context=t_ctx,
+          )
+          with pytest.raises(asyncio.CancelledError):
+            await cancelled_tool.run_async(
+                args={"request": "go"}, tool_context=t_ctx
+            )
+          leaked_frame_counts.append(
+              len(bq_mod._parent_invocation_frames_ctx.get())
+          )
+          await plugin.after_tool_callback(
+              tool=cancelled_tool,
+              tool_args={"request": "go"},
+              tool_context=t_ctx,
+              result={"cancelled": True},
+          )
+          yield event_lib.Event(
+              invocation_id=ctx.invocation_id,
+              author=self.name,
+              content=types.Content(
+                  role="model", parts=[types.Part(text="recovered")]
+              ),
+          )
+
+      cancel_runner = testing_utils.InMemoryRunner(
+          root_agent=_CancellingParentAgent(name="cancel_parent"),
+          plugins=[plugin],
+      )
+      mock_write_client.append_rows.reset_mock()
+      await cancel_runner.run_async(testing_utils.UserContent("go"))
+      await plugin.flush()
+      cancel_rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+      assert leaked_frame_counts == [1]
+      assert not bq_mod._span_records_ctx.get()
+      assert bq_mod._parent_invocation_frames_ctx.get() == ()
+      assert bq_mod._root_agent_name_ctx.get() is None
+      assert bq_mod._active_invocation_id_ctx.get() is None
+
+      tool_starting_row = next(
+          r
+          for r in cancel_rows
+          if r["agent"] == "cancel_parent"
+          and r["event_type"] == "TOOL_STARTING"
+      )
+      tool_completed_row = next(
+          r
+          for r in cancel_rows
+          if r["agent"] == "cancel_parent"
+          and r["event_type"] == "TOOL_COMPLETED"
+      )
+      tool_completed_attrs = json.loads(tool_completed_row["attributes"])
+      assert tool_completed_row["span_id"] == tool_starting_row["span_id"]
+      assert tool_completed_attrs["root_agent_name"] == "cancel_parent"
+      tool_completed_adk = tool_completed_attrs.get("adk", {})
+      assert "parent_session_id" not in tool_completed_adk
+      assert "parent_invocation_id" not in tool_completed_adk
+
+      recovered_resp_row = next(
+          r
+          for r in cancel_rows
+          if r["agent"] == "cancel_parent"
+          and r["event_type"] == "AGENT_RESPONSE"
+          and "recovered" in (r["content"] or "")
+      )
+      recovered_resp_adk = json.loads(recovered_resp_row["attributes"]).get(
+          "adk", {}
+      )
+      assert "parent_session_id" not in recovered_resp_adk
+      assert "parent_invocation_id" not in recovered_resp_adk
+
+      err_leaked_frame_counts: list[int] = []
+
+      class _CancellingErrorParentAgent(base_agent.BaseAgent):
+
+        async def _run_async_impl(self, ctx):
+          t_ctx = tool_context_lib.ToolContext(invocation_context=ctx)
+          await plugin.before_tool_callback(
+              tool=cancelled_tool,
+              tool_args={"request": "go"},
+              tool_context=t_ctx,
+          )
+          with pytest.raises(asyncio.CancelledError):
+            await cancelled_tool.run_async(
+                args={"request": "go"}, tool_context=t_ctx
+            )
+          err_leaked_frame_counts.append(
+              len(bq_mod._parent_invocation_frames_ctx.get())
+          )
+          await plugin.on_tool_error_callback(
+              tool=cancelled_tool,
+              tool_args={"request": "go"},
+              tool_context=t_ctx,
+              error=RuntimeError("child cancelled"),
+          )
+          yield event_lib.Event(
+              invocation_id=ctx.invocation_id,
+              author=self.name,
+              content=types.Content(
+                  role="model", parts=[types.Part(text="handled error")]
+              ),
+          )
+
+      cancel_err_runner = testing_utils.InMemoryRunner(
+          root_agent=_CancellingErrorParentAgent(name="cancel_err_parent"),
+          plugins=[plugin],
+      )
+      mock_write_client.append_rows.reset_mock()
+      await cancel_err_runner.run_async(testing_utils.UserContent("go"))
+      await plugin.flush()
+      cancel_err_rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+      assert err_leaked_frame_counts == [1]
+      assert not bq_mod._span_records_ctx.get()
+      assert bq_mod._parent_invocation_frames_ctx.get() == ()
+      assert bq_mod._root_agent_name_ctx.get() is None
+      assert bq_mod._active_invocation_id_ctx.get() is None
+
+      err_tool_starting_row = next(
+          r
+          for r in cancel_err_rows
+          if r["agent"] == "cancel_err_parent"
+          and r["event_type"] == "TOOL_STARTING"
+      )
+      err_tool_error_row = next(
+          r
+          for r in cancel_err_rows
+          if r["agent"] == "cancel_err_parent"
+          and r["event_type"] == "TOOL_ERROR"
+      )
+      err_tool_error_attrs = json.loads(err_tool_error_row["attributes"])
+      assert err_tool_error_row["span_id"] == err_tool_starting_row["span_id"]
+      assert err_tool_error_attrs["root_agent_name"] == "cancel_err_parent"
+      err_tool_error_adk = err_tool_error_attrs.get("adk", {})
+      assert "parent_session_id" not in err_tool_error_adk
+      assert "parent_invocation_id" not in err_tool_error_adk
+    finally:
+      await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_ambient_otel_span_parity_across_nested_agent_tool(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """Ambient OTel trace_id propagates while child links to parent tool span."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from opentelemetry.sdk import trace as trace_sdk
+
+    bq_mod = bigquery_agent_analytics_plugin
+    provider = trace_sdk.TracerProvider()
+    tracer = provider.get_tracer("test_nested_bqaa_otel")
+
+    child_agent = llm_agent.LlmAgent(
+        name="child_agent",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="child otel done")]
+                    )
+                )
+            ]
+        ),
+    )
+    parent_agent = llm_agent.LlmAgent(
+        name="parent_agent",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="child_agent",
+                                    args={"request": "go"},
+                                )
+                            )
+                        ]
+                    )
+                ),
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="parent otel done")]
+                    )
+                ),
+            ]
+        ),
+        tools=[AgentTool(agent=child_agent)],
+    )
+
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(
+        root_agent=parent_agent, plugins=[plugin]
+    )
+    try:
+      with tracer.start_as_current_span("ambient_root") as ambient_span:
+        expected_trace_id = format(
+            ambient_span.get_span_context().trace_id, "032x"
+        )
+        events = await runner.run_async(testing_utils.UserContent("go"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+      provider.shutdown()
+
+    assert rows
+    assert {r["trace_id"] for r in rows} == {expected_trace_id}
+
+    parent_inv = events[0].invocation_id
+    parent_inv_start = next(
+        r
+        for r in rows
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "INVOCATION_STARTING"
+    )
+    parent_tool_start = next(
+        r
+        for r in rows
+        if r["invocation_id"] == parent_inv
+        and r["event_type"] == "TOOL_STARTING"
+    )
+    child_starts = [
+        r
+        for r in rows
+        if r["invocation_id"] != parent_inv
+        and r["event_type"] in {"INVOCATION_STARTING", "INVOCATION_COMPLETED"}
+    ]
+    assert len(child_starts) == 2
+    assert child_starts[0]["span_id"] == child_starts[1]["span_id"]
+    for row in child_starts:
+      assert row["span_id"] != parent_inv_start["span_id"]
+      assert row["span_id"] != parent_tool_start["span_id"]
+      assert row["parent_span_id"] == parent_tool_start["span_id"]
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_unpopped_child_span_preserves_parent_span_no_cycle(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Unpopped child/top spans on run error preserve parent span cleanly."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        parent_ctx = _make_nested_test_invocation_context(
+            "parent-inv", "parent-sess", "parent_agent"
+        )
+        await plugin.before_run_callback(invocation_context=parent_ctx)
+        parent_tool_span_id = bq_mod.TraceManager.push_span(
+            tool_context_lib.ToolContext(invocation_context=parent_ctx),
+            "tool",
+        )
+        child_ctx = _make_nested_test_invocation_context(
+            "child-inv",
+            "child-sess",
+            "child_agent",
+            parent_invocation_id="parent-inv",
+        )
+        await plugin.before_run_callback(invocation_context=child_ctx)
+        bq_mod.TraceManager.push_span(child_ctx, "llm_request")
+        await plugin.on_run_error_callback(
+            invocation_context=child_ctx,
+            error=RuntimeError("unpopped child"),
+        )
+        assert bq_mod.TraceManager.get_current_span_id() == parent_tool_span_id
+        assert bq_mod.TraceManager.get_root_agent_name() == "parent_agent"
+        bq_mod.TraceManager._finish_invocation(None)
+
+        top_ctx = _make_nested_test_invocation_context(
+            "top-inv", "top-sess", "top_agent"
+        )
+        await plugin.before_run_callback(invocation_context=top_ctx)
+        bq_mod.TraceManager.push_span(top_ctx, "llm_request")
+        await plugin.on_run_error_callback(
+            invocation_context=top_ctx,
+            error=RuntimeError("top unpopped"),
+        )
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      err_rows = {
+          r["invocation_id"]: r
+          for r in rows
+          if r["event_type"] == "INVOCATION_ERROR"
+      }
+      child_err = err_rows["child-inv"]
+      assert child_err["span_id"] is None
+      assert child_err["parent_span_id"] == parent_tool_span_id
+      adk = json.loads(child_err["attributes"])["adk"]
+      assert adk["parent_session_id"] == "parent-sess"
+      assert adk["parent_invocation_id"] == "parent-inv"
+
+      top_err = err_rows["top-inv"]
+      assert top_err["span_id"] is None
+      assert top_err["parent_span_id"] is None
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_after_run_end_invocation_unpopped_child_span_unwinds_to_invocation(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Unpopped child spans and suspended frames unwind to invocation span."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    # pylint: disable=g-import-not-at-top
+    from google.adk.tools import agent_tool as _agent_tool_mod
+
+    from .. import testing_utils
+
+    # pylint: enable=g-import-not-at-top
+
+    bq_mod = bigquery_agent_analytics_plugin
+    span_depths_before_after_run: list[int] = []
+
+    class _EarlyEndingAgent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        span_depths_before_after_run.append(len(bq_mod._span_records_ctx.get()))
+        ctx.end_invocation = True
+        yield event_lib.Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="early stop")]
+            ),
+        )
+
+    try:
+      bq_mod._span_records_ctx.set(None)
+      assert bq_mod.TraceManager._pop_invocation_span() == (None, None)
+
+      parent_cb = bq_mod.CallbackContext(
+          _make_nested_test_invocation_context(
+              "inv-a", "parent-sess", "agent_a"
+          )
+      )
+      bq_mod.TraceManager.init_trace(parent_cb)
+      inv_a_span = bq_mod.TraceManager.push_span(parent_cb, "invocation")
+      assert bq_mod.TraceManager._pop_invocation_span("inv-other") == (
+          None,
+          None,
+      )
+      assert bq_mod.TraceManager._pop_invocation_span("inv-a")[0] == inv_a_span
+      bq_mod.TraceManager._finish_invocation("inv-a")
+
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+
+        mock_write_client.append_rows.reset_mock()
+        standalone_runner = testing_utils.InMemoryRunner(
+            root_agent=_EarlyEndingAgent(name="standalone_early"),
+            plugins=[plugin],
+        )
+        await standalone_runner.run_async(testing_utils.UserContent("go"))
+        await plugin.flush()
+        standalone_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        assert span_depths_before_after_run == [2]
+        assert not bq_mod._span_records_ctx.get()
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+        assert not any(
+            r["event_type"] == "AGENT_COMPLETED" for r in standalone_rows
+        )
+
+        inv_start = next(
+            r
+            for r in standalone_rows
+            if r["event_type"] == "INVOCATION_STARTING"
+        )
+        agent_start = next(
+            r for r in standalone_rows if r["event_type"] == "AGENT_STARTING"
+        )
+        inv_completed = next(
+            r
+            for r in standalone_rows
+            if r["event_type"] == "INVOCATION_COMPLETED"
+        )
+        assert inv_completed["span_id"] == inv_start["span_id"]
+        assert inv_completed["span_id"] != agent_start["span_id"]
+        assert inv_completed["parent_span_id"] is None
+
+        span_depths_before_after_run.clear()
+        early_child_tool = _agent_tool_mod.AgentTool(
+            agent=_EarlyEndingAgent(name="nested_early_child")
+        )
+        restored_parent_state: list[tuple[int, int, str | None, str | None]] = (
+            []
+        )
+
+        class _ParentEarlyCaller(base_agent.BaseAgent):
+
+          async def _run_async_impl(self, ctx):
+            t_ctx = tool_context_lib.ToolContext(invocation_context=ctx)
+            await plugin.before_tool_callback(
+                tool=early_child_tool,
+                tool_args={"request": "go"},
+                tool_context=t_ctx,
+            )
+            res = await early_child_tool.run_async(
+                args={"request": "go"}, tool_context=t_ctx
+            )
+            restored_parent_state.append((
+                len(bq_mod._span_records_ctx.get()),
+                len(bq_mod._parent_invocation_frames_ctx.get()),
+                bq_mod._active_invocation_id_ctx.get(),
+                bq_mod._root_agent_name_ctx.get(),
+            ))
+            await plugin.after_tool_callback(
+                tool=early_child_tool,
+                tool_args={"request": "go"},
+                tool_context=t_ctx,
+                result=res,
+            )
+            yield event_lib.Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                content=types.Content(
+                    role="model", parts=[types.Part(text="parent done")]
+                ),
+            )
+
+        mock_write_client.append_rows.reset_mock()
+        nested_runner = testing_utils.InMemoryRunner(
+            root_agent=_ParentEarlyCaller(name="parent_early_caller"),
+            plugins=[plugin],
+        )
+        await nested_runner.run_async(testing_utils.UserContent("go"))
+        await plugin.flush()
+        nested_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        assert span_depths_before_after_run == [2]
+        assert not bq_mod._span_records_ctx.get()
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+        assert bq_mod._root_agent_name_ctx.get() is None
+        assert bq_mod._active_invocation_id_ctx.get() is None
+        assert not any(
+            r["event_type"] == "AGENT_COMPLETED"
+            and r["agent"] == "nested_early_child"
+            for r in nested_rows
+        )
+
+        parent_inv_start = next(
+            r
+            for r in nested_rows
+            if r["event_type"] == "INVOCATION_STARTING"
+            and r["agent"] == "parent_early_caller"
+        )
+        parent_inv_id = parent_inv_start["invocation_id"]
+        assert restored_parent_state == [
+            (3, 0, parent_inv_id, "parent_early_caller")
+        ]
+
+        parent_tool_start = next(
+            r
+            for r in nested_rows
+            if r["invocation_id"] == parent_inv_id
+            and r["event_type"] == "TOOL_STARTING"
+        )
+        parent_tool_completed = next(
+            r
+            for r in nested_rows
+            if r["invocation_id"] == parent_inv_id
+            and r["event_type"] == "TOOL_COMPLETED"
+        )
+        child_inv_start = next(
+            r
+            for r in nested_rows
+            if r["invocation_id"] != parent_inv_id
+            and r["event_type"] == "INVOCATION_STARTING"
+        )
+        child_agent_start = next(
+            r
+            for r in nested_rows
+            if r["invocation_id"] != parent_inv_id
+            and r["event_type"] == "AGENT_STARTING"
+        )
+        child_inv_completed = next(
+            r
+            for r in nested_rows
+            if r["invocation_id"] != parent_inv_id
+            and r["event_type"] == "INVOCATION_COMPLETED"
+        )
+        assert child_inv_completed["span_id"] == child_inv_start["span_id"]
+        assert child_inv_completed["span_id"] != child_agent_start["span_id"]
+        assert (
+            child_inv_completed["parent_span_id"]
+            == parent_tool_start["span_id"]
+        )
+        assert (
+            child_inv_completed["parent_span_id"] != child_inv_start["span_id"]
+        )
+        assert parent_tool_completed["span_id"] == parent_tool_start["span_id"]
+
+        mock_write_client.append_rows.reset_mock()
+        parent_inv_ctx = _make_nested_test_invocation_context(
+            "aborted-parent-inv",
+            "aborted-parent-sess",
+            "aborted_parent_agent",
+        )
+        child_inv_ctx = _make_nested_test_invocation_context(
+            "aborted-child-inv",
+            "aborted-child-sess",
+            "aborted_child_agent",
+            parent_invocation_id="aborted-parent-inv",
+        )
+
+        await plugin.before_run_callback(invocation_context=parent_inv_ctx)
+        bq_mod.TraceManager.push_span(
+            bq_mod.CallbackContext(parent_inv_ctx), "tool"
+        )
+        await plugin.before_run_callback(invocation_context=child_inv_ctx)
+        assert len(bq_mod._parent_invocation_frames_ctx.get()) == 1
+        await plugin.on_run_error_callback(
+            invocation_context=parent_inv_ctx,
+            error=RuntimeError("parent aborted while child suspended"),
+        )
+        await plugin.flush()
+        aborted_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+        parent_err = next(
+            r for r in aborted_rows if r["event_type"] == "INVOCATION_ERROR"
+        )
+        assert parent_err["invocation_id"] == "aborted-parent-inv"
+        assert parent_err["session_id"] == "aborted-parent-sess"
+        parent_adk = json.loads(parent_err["attributes"]).get("adk", {})
+        assert parent_adk.get("parent_session_id") is None
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  def test_attach_current_span_prefers_trace_id_override(
+      self, callback_context
+  ):
+    """attach_current_span honors trace_id_override over ambient OTel trace."""
+    from opentelemetry.sdk import trace as trace_sdk
+
+    bq_mod = bigquery_agent_analytics_plugin
+    provider = trace_sdk.TracerProvider()
+    tracer = provider.get_tracer("attach_override_test")
+    override_trace_id = "f" * 32
+    try:
+      bq_mod.TraceManager._finish_invocation(None)
+      with tracer.start_as_current_span("ambient_span") as ambient_span:
+        ambient_ctx = ambient_span.get_span_context()
+        ambient_span_id = format(ambient_ctx.span_id, "016x")
+        ambient_trace_id = format(ambient_ctx.trace_id, "032x")
+        assert ambient_trace_id != override_trace_id
+
+        span_id = bq_mod.TraceManager.attach_current_span(
+            callback_context,
+            parent_span_id="parent-tool-span",
+            trace_id_override=override_trace_id,
+        )
+        assert span_id == ambient_span_id
+        assert (
+            bq_mod.TraceManager.get_trace_id(callback_context)
+            == override_trace_id
+        )
+
+        bq_mod.TraceManager._finish_invocation(None)
+        span_id_default = bq_mod.TraceManager.attach_current_span(
+            callback_context
+        )
+        assert span_id_default == ambient_span_id
+        assert (
+            bq_mod.TraceManager.get_trace_id(callback_context)
+            == ambient_trace_id
+        )
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+      provider.shutdown()
+
+  def test_nested_ensure_invocation_span_distinct_vs_shared_ambient_otel(self):
+    """Nested invocations keep distinct ambient spans or mint non-colliding IDs."""
+    from opentelemetry.sdk import trace as trace_sdk
+
+    bq_mod = bigquery_agent_analytics_plugin
+    provider = trace_sdk.TracerProvider()
+    tracer = provider.get_tracer("nested_otel_test")
+    l0_cb = CallbackContext(
+        _make_nested_test_invocation_context("l0-inv", "l0-sess", "l0_agent")
+    )
+    l1_cb = CallbackContext(
+        _make_nested_test_invocation_context(
+            "l1-inv", "l1-sess", "l1_agent", parent_invocation_id="l0-inv"
+        )
+    )
+    l2_cb = CallbackContext(
+        _make_nested_test_invocation_context(
+            "l2-inv", "l2-sess", "l2_agent", parent_invocation_id="l1-inv"
+        )
+    )
+    try:
+      with tracer.start_as_current_span("shared_root") as shared_span:
+        shared_ctx = shared_span.get_span_context()
+        shared_span_id = format(shared_ctx.span_id, "016x")
+        shared_trace_id = format(shared_ctx.trace_id, "032x")
+
+        bq_mod.TraceManager.ensure_invocation_span(l0_cb)
+        l0_root_id, l0_parent_id = (
+            bq_mod.TraceManager.get_current_span_and_parent()
+        )
+        assert l0_root_id == shared_span_id
+        assert l0_parent_id is None
+        l0_tool_id = bq_mod.TraceManager.push_span(l0_cb, "tool")
+
+        bq_mod.TraceManager.ensure_invocation_span(l1_cb)
+        l1_root_id, l1_parent_id = (
+            bq_mod.TraceManager.get_current_span_and_parent()
+        )
+        assert l1_root_id != l0_root_id
+        assert l1_parent_id == l0_tool_id
+        l1_tool_id = bq_mod.TraceManager.push_span(l1_cb, "tool")
+
+        bq_mod.TraceManager.ensure_invocation_span(l2_cb)
+        l2_root_id, l2_parent_id = (
+            bq_mod.TraceManager.get_current_span_and_parent()
+        )
+        assert l2_root_id not in {l0_root_id, l1_root_id}
+        assert l2_parent_id == l1_tool_id
+        assert bq_mod.TraceManager.get_trace_id(l0_cb) == shared_trace_id
+        assert bq_mod.TraceManager.get_trace_id(l1_cb) == shared_trace_id
+        assert bq_mod.TraceManager.get_trace_id(l2_cb) == shared_trace_id
+
+      bq_mod.TraceManager._finish_invocation(None)
+
+      bq_mod.TraceManager.ensure_invocation_span(l0_cb)
+      p_root_id = bq_mod.TraceManager.get_current_span_id()
+      assert p_root_id is not None
+      parent_trace_id = bq_mod.TraceManager.get_trace_id(l0_cb)
+      l0_tool_id = bq_mod.TraceManager.push_span(l0_cb, "tool")
+      with tracer.start_as_current_span("distinct_child_span") as child_span:
+        child_otel_span_id = format(
+            child_span.get_span_context().span_id, "016x"
+        )
+        bq_mod.TraceManager.ensure_invocation_span(l1_cb)
+        c_span_id, c_parent_id = (
+            bq_mod.TraceManager.get_current_span_and_parent()
+        )
+        assert c_span_id == child_otel_span_id
+        assert c_parent_id == l0_tool_id
+        assert bq_mod.TraceManager.get_trace_id(l1_cb) == parent_trace_id
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+      provider.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_uninitialized_nested_child_abort_and_short_circuit_preserve_parent(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Child abort/short-circuit before plugin.before_run preserves parent."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.plugins import base_plugin as base_plugin_lib
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+    eval_sql = _bigquery_agent_analytics_eval_sql
+
+    class _EarlyChildGatePlugin(base_plugin_lib.BasePlugin):
+
+      def __init__(self, mode: str):
+        super().__init__(name=f"early_gate_{mode}")
+
+      async def on_user_message_callback(
+          self, *, invocation_context, user_message
+      ):
+        _ = user_message
+        if invocation_context.agent.name.startswith("child_"):
+          return types.Content(
+              role="user", parts=[types.Part(text="intercepted child input")]
+          )
+        return None
+
+      async def before_run_callback(self, *, invocation_context):
+        if invocation_context.agent.name == "child_short_circuit":
+          return types.Content(
+              role="model", parts=[types.Part(text="cached child answer")]
+          )
+        if invocation_context.agent.name == "child_raise":
+          raise RuntimeError("early before_run failure")
+        return None
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+
+        mock_write_client.append_rows.reset_mock()
+        sc_child = llm_agent.LlmAgent(
+            name="child_short_circuit",
+            model=testing_utils.MockModel(responses=[]),
+        )
+        sc_parent = llm_agent.LlmAgent(
+            name="parent_sc",
+            model=testing_utils.MockModel(
+                responses=[
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[
+                                types.Part(
+                                    function_call=types.FunctionCall(
+                                        name="child_short_circuit",
+                                        args={"request": "go"},
+                                    )
+                                )
+                            ]
+                        )
+                    ),
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[types.Part(text="parent after sc")]
+                        )
+                    ),
+                ]
+            ),
+            tools=[AgentTool(agent=sc_child)],
+        )
+        sc_runner = testing_utils.InMemoryRunner(
+            root_agent=sc_parent,
+            plugins=[_EarlyChildGatePlugin("sc"), plugin],
+        )
+        sc_events = await sc_runner.run_async(testing_utils.UserContent("hi"))
+        await plugin.flush()
+        sc_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        assert not bq_mod._span_records_ctx.get()
+        assert bq_mod._active_invocation_id_ctx.get() is None
+        assert bq_mod._root_agent_name_ctx.get() is None
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+
+        p_inv = sc_events[0].invocation_id
+        p_start = next(
+            r
+            for r in sc_rows
+            if r["invocation_id"] == p_inv
+            and r["event_type"] == "INVOCATION_STARTING"
+        )
+        p_tool_start = next(
+            r
+            for r in sc_rows
+            if r["invocation_id"] == p_inv
+            and r["event_type"] == "TOOL_STARTING"
+        )
+        p_tool_done = next(
+            r
+            for r in sc_rows
+            if r["invocation_id"] == p_inv
+            and r["event_type"] == "TOOL_COMPLETED"
+        )
+        p_inv_done = next(
+            r
+            for r in sc_rows
+            if r["invocation_id"] == p_inv
+            and r["event_type"] == "INVOCATION_COMPLETED"
+        )
+        assert p_tool_done["span_id"] == p_tool_start["span_id"]
+        assert p_inv_done["span_id"] == p_start["span_id"]
+        assert (
+            json.loads(p_tool_done["attributes"])["root_agent_name"]
+            == "parent_sc"
+        )
+        assert (
+            json.loads(p_inv_done["attributes"])["root_agent_name"]
+            == "parent_sc"
+        )
+
+        c_sc_completed = next(
+            r
+            for r in sc_rows
+            if r["invocation_id"] != p_inv
+            and r["event_type"] == "INVOCATION_COMPLETED"
+        )
+        assert c_sc_completed["span_id"] is None
+        assert c_sc_completed["parent_span_id"] == p_tool_start["span_id"]
+        c_sc_attrs = json.loads(c_sc_completed["attributes"])
+        assert c_sc_attrs["root_agent_name"] == "child_short_circuit"
+        assert c_sc_attrs["adk"]["parent_session_id"] == p_start["session_id"]
+        assert c_sc_attrs["adk"]["parent_invocation_id"] == p_inv
+
+        turn_rows = _EvalViewSqlEvaluator(
+            eval_sql.build_eval_turn_query_sql("p.d.t")
+        ).run(sc_rows)
+        assert [r["session_id"] for r in turn_rows] == [p_start["session_id"]]
+
+        mock_write_client.append_rows.reset_mock()
+        err_child = llm_agent.LlmAgent(
+            name="child_raise",
+            model=testing_utils.MockModel(responses=[]),
+        )
+        err_parent = llm_agent.LlmAgent(
+            name="parent_err",
+            model=testing_utils.MockModel(
+                responses=[
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[
+                                types.Part(
+                                    function_call=types.FunctionCall(
+                                        name="child_raise",
+                                        args={"request": "go"},
+                                    )
+                                )
+                            ]
+                        )
+                    )
+                ]
+            ),
+            tools=[AgentTool(agent=err_child)],
+        )
+        err_runner = testing_utils.InMemoryRunner(
+            root_agent=err_parent,
+            plugins=[_EarlyChildGatePlugin("err"), plugin],
+        )
+        with pytest.raises(RuntimeError, match="early before_run failure"):
+          await err_runner.run_async(testing_utils.UserContent("hi"))
+        await plugin.flush()
+        err_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        assert not bq_mod._span_records_ctx.get()
+        assert bq_mod._active_invocation_id_ctx.get() is None
+        assert bq_mod._root_agent_name_ctx.get() is None
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+
+        pe_start = next(
+            r
+            for r in err_rows
+            if r["agent"] == "parent_err"
+            and r["event_type"] == "INVOCATION_STARTING"
+        )
+        pe_inv = pe_start["invocation_id"]
+        pe_tool_start = next(
+            r
+            for r in err_rows
+            if r["invocation_id"] == pe_inv
+            and r["event_type"] == "TOOL_STARTING"
+        )
+        pe_tool_err = next(
+            r
+            for r in err_rows
+            if r["invocation_id"] == pe_inv and r["event_type"] == "TOOL_ERROR"
+        )
+        pe_inv_err = next(
+            r
+            for r in err_rows
+            if r["invocation_id"] == pe_inv
+            and r["event_type"] == "INVOCATION_ERROR"
+        )
+        assert pe_tool_err["span_id"] == pe_tool_start["span_id"]
+        assert pe_inv_err["span_id"] == pe_start["span_id"]
+        assert (
+            json.loads(pe_tool_err["attributes"])["root_agent_name"]
+            == "parent_err"
+        )
+        assert (
+            json.loads(pe_inv_err["attributes"])["root_agent_name"]
+            == "parent_err"
+        )
+
+        ce_inv_err = next(
+            r
+            for r in err_rows
+            if r["invocation_id"] != pe_inv
+            and r["event_type"] == "INVOCATION_ERROR"
+        )
+        assert ce_inv_err["span_id"] is None
+        assert ce_inv_err["parent_span_id"] == pe_tool_start["span_id"]
+        ce_attrs = json.loads(ce_inv_err["attributes"])
+        assert ce_attrs["root_agent_name"] == "child_raise"
+        assert ce_attrs["adk"]["parent_session_id"] == pe_start["session_id"]
+        assert ce_attrs["adk"]["parent_invocation_id"] == pe_inv
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_nested_distinct_ambient_otel_trace_preserves_parent_trace_id_on_all_rows(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Nested AgentTool rows retain parent trace_id under distinct child OTel."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.plugins import base_plugin as base_plugin_lib
+    from google.adk.tools.agent_tool import AgentTool
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.sdk import trace as trace_sdk
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+    provider = trace_sdk.TracerProvider()
+    tracer = provider.get_tracer("nested_distinct_trace_row_test")
+
+    class _DistinctAmbientTraceAgentTool(AgentTool):
+      """Runs nested AgentTool inside an isolated root ambient OTel trace."""
+
+      def __init__(self, *, agent):
+        super().__init__(agent=agent)
+        object.__setattr__(self, "_last_child_trace_id", None)
+        object.__setattr__(self, "_last_child_span_id", None)
+
+      async def run_async(self, *, args, tool_context):
+        with tracer.start_as_current_span(
+            "child_isolated_root_trace", context=otel_context.Context()
+        ) as child_span:
+          ctx = child_span.get_span_context()
+          object.__setattr__(
+              self, "_last_child_trace_id", format(ctx.trace_id, "032x")
+          )
+          object.__setattr__(
+              self, "_last_child_span_id", format(ctx.span_id, "016x")
+          )
+          return await super().run_async(args=args, tool_context=tool_context)
+
+    class _ShortCircuitChildGatePlugin(base_plugin_lib.BasePlugin):
+
+      def __init__(self):
+        super().__init__(name="sc_distinct_otel_gate")
+
+      async def on_user_message_callback(
+          self, *, invocation_context, user_message
+      ):
+        _ = user_message
+        if invocation_context.agent.name == "child_sc_otel":
+          return types.Content(
+              role="user", parts=[types.Part(text="intercepted sc child")]
+          )
+        return None
+
+      async def before_run_callback(self, *, invocation_context):
+        if invocation_context.agent.name == "child_sc_otel":
+          return types.Content(
+              role="model", parts=[types.Part(text="short-circuited sc child")]
+          )
+        return None
+
+    def _build_parent_and_tool(parent_name: str, child_name: str):
+      child = llm_agent.LlmAgent(
+          name=child_name,
+          model=testing_utils.MockModel(
+              responses=[
+                  testing_utils.LlmResponse(
+                      content=testing_utils.ModelContent(
+                          parts=[types.Part(text=f"{child_name} answer")]
+                      )
+                  )
+              ]
+          ),
+      )
+      tool = _DistinctAmbientTraceAgentTool(agent=child)
+      parent = llm_agent.LlmAgent(
+          name=parent_name,
+          model=testing_utils.MockModel(
+              responses=[
+                  testing_utils.LlmResponse(
+                      content=testing_utils.ModelContent(
+                          parts=[
+                              types.Part(
+                                  function_call=types.FunctionCall(
+                                      name=child_name,
+                                      args={"request": "delegate"},
+                                  )
+                              )
+                          ]
+                      )
+                  ),
+                  testing_utils.LlmResponse(
+                      content=testing_utils.ModelContent(
+                          parts=[types.Part(text=f"{parent_name} done")]
+                      )
+                  ),
+              ]
+          ),
+          tools=[tool],
+      )
+      return parent, tool
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+
+        # Case A: Parent has ambient OTel trace A;
+        # child has distinct OTel trace B.
+        mock_write_client.append_rows.reset_mock()
+        observed_child_entry: dict[str, str | None] = {}
+
+        class _ChildOtelObserverPlugin(base_plugin_lib.BasePlugin):
+
+          def __init__(self):
+            super().__init__(name="child_otel_observer")
+
+          async def before_run_callback(self, *, invocation_context):
+            if invocation_context.agent.name == "child_b":
+              cur_span = otel_trace.get_current_span()
+              cur_ctx = cur_span.get_span_context()
+              parent_ctx = getattr(cur_span, "parent", None)
+              observed_child_entry["trace_id"] = format(
+                  cur_ctx.trace_id, "032x"
+              )
+              observed_child_entry["span_id"] = format(cur_ctx.span_id, "016x")
+              observed_child_entry["parent_span_id"] = (
+                  format(parent_ctx.span_id, "016x")
+                  if parent_ctx is not None
+                  else None
+              )
+            return None
+
+        parent_a, tool_a = _build_parent_and_tool("parent_otel_a", "child_b")
+        runner_a = testing_utils.InMemoryRunner(
+            root_agent=parent_a,
+            plugins=[_ChildOtelObserverPlugin(), plugin],
+        )
+        with tracer.start_as_current_span("parent_root_trace_a") as p_span_a:
+          parent_trace_a = format(p_span_a.get_span_context().trace_id, "032x")
+          events_a = await runner_a.run_async(testing_utils.UserContent("go a"))
+        await plugin.flush()
+        rows_a = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        child_trace_b = object.__getattribute__(tool_a, "_last_child_trace_id")
+        child_span_b = object.__getattribute__(tool_a, "_last_child_span_id")
+        assert child_trace_b is not None and child_trace_b != parent_trace_a
+        assert rows_a
+        assert {r["trace_id"] for r in rows_a} == {parent_trace_a}
+
+        p_inv_a = events_a[0].invocation_id
+        p_tool_start_a = next(
+            r
+            for r in rows_a
+            if r["invocation_id"] == p_inv_a
+            and r["event_type"] == "TOOL_STARTING"
+        )
+        child_rows_a = [r for r in rows_a if r["invocation_id"] != p_inv_a]
+        child_types_a = {r["event_type"] for r in child_rows_a}
+        assert {
+            "USER_MESSAGE_RECEIVED",
+            "INVOCATION_STARTING",
+            "AGENT_STARTING",
+            "LLM_REQUEST",
+            "LLM_RESPONSE",
+            "AGENT_RESPONSE",
+            "AGENT_COMPLETED",
+            "INVOCATION_COMPLETED",
+        }.issubset(child_types_a)
+        c_inv_start_a = next(
+            r for r in child_rows_a if r["event_type"] == "INVOCATION_STARTING"
+        )
+        c_inv_done_a = next(
+            r for r in child_rows_a if r["event_type"] == "INVOCATION_COMPLETED"
+        )
+        assert observed_child_entry.get("trace_id") == child_trace_b
+        assert child_span_b in (
+            observed_child_entry.get("span_id"),
+            observed_child_entry.get("parent_span_id"),
+        )
+        assert c_inv_start_a["span_id"] == observed_child_entry["span_id"]
+        assert c_inv_done_a["span_id"] == observed_child_entry["span_id"]
+        assert c_inv_start_a["parent_span_id"] == p_tool_start_a["span_id"]
+        assert c_inv_done_a["parent_span_id"] == p_tool_start_a["span_id"]
+
+        # Case B: Parent runs without ambient OTel (uuid trace);
+        # child has OTel trace B. Force ADK's built-in tracer to NoOpTracer so
+        # parent_uuid takes the genuine UUID fallback even if an earlier test in
+        # the process installed a global TracerProvider.
+        from google.adk.telemetry import tracing as tracing_lib
+
+        mock_write_client.append_rows.reset_mock()
+        observed_u_otel: dict[str, object] = {}
+
+        class _UuidParentOtelObserverPlugin(base_plugin_lib.BasePlugin):
+
+          def __init__(self):
+            super().__init__(name="uuid_parent_otel_observer")
+
+          async def before_run_callback(self, *, invocation_context):
+            span_ctx = otel_trace.get_current_span().get_span_context()
+            if invocation_context.agent.name == "parent_uuid":
+              observed_u_otel["parent_valid"] = span_ctx.is_valid
+            elif invocation_context.agent.name == "child_otel_u":
+              observed_u_otel["child_valid"] = span_ctx.is_valid
+              observed_u_otel["child_trace_id"] = format(
+                  span_ctx.trace_id, "032x"
+              )
+            return None
+
+        parent_u, tool_u = _build_parent_and_tool("parent_uuid", "child_otel_u")
+        runner_u = testing_utils.InMemoryRunner(
+            root_agent=parent_u,
+            plugins=[_UuidParentOtelObserverPlugin(), plugin],
+        )
+        noop_tracer = otel_trace.NoOpTracer()
+        with (
+            mock.patch.object(
+                tracing_lib.tracer,
+                "start_as_current_span",
+                wraps=noop_tracer.start_as_current_span,
+            ),
+            mock.patch.object(
+                tracing_lib.tracer,
+                "start_span",
+                wraps=noop_tracer.start_span,
+            ),
+        ):
+          events_u = await runner_u.run_async(testing_utils.UserContent("go u"))
+        await plugin.flush()
+        rows_u = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        p_inv_u = events_u[0].invocation_id
+        p_start_u = next(
+            r
+            for r in rows_u
+            if r["invocation_id"] == p_inv_u
+            and r["event_type"] == "INVOCATION_STARTING"
+        )
+        parent_uuid_trace = p_start_u["trace_id"]
+        child_trace_u = object.__getattribute__(tool_u, "_last_child_trace_id")
+        assert observed_u_otel.get("parent_valid") is False
+        assert observed_u_otel.get("child_valid") is True
+        assert observed_u_otel.get("child_trace_id") == child_trace_u
+        assert child_trace_u is not None and child_trace_u != parent_uuid_trace
+        assert {r["trace_id"] for r in rows_u} == {parent_uuid_trace}
+        child_types_u = {
+            r["event_type"] for r in rows_u if r["invocation_id"] != p_inv_u
+        }
+        assert {
+            "USER_MESSAGE_RECEIVED",
+            "INVOCATION_STARTING",
+            "AGENT_STARTING",
+            "AGENT_RESPONSE",
+            "INVOCATION_COMPLETED",
+        }.issubset(child_types_u)
+
+        # Case C: Uninitialized nested child short-circuits under distinct
+        # ambient OTel.
+        mock_write_client.append_rows.reset_mock()
+        parent_sc, tool_sc = _build_parent_and_tool(
+            "parent_sc_otel", "child_sc_otel"
+        )
+        runner_sc = testing_utils.InMemoryRunner(
+            root_agent=parent_sc,
+            plugins=[_ShortCircuitChildGatePlugin(), plugin],
+        )
+        with tracer.start_as_current_span("parent_sc_root") as p_span_sc:
+          parent_sc_trace = format(
+              p_span_sc.get_span_context().trace_id, "032x"
+          )
+          events_sc = await runner_sc.run_async(
+              testing_utils.UserContent("go sc")
+          )
+        await plugin.flush()
+        rows_sc = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        p_inv_sc = events_sc[0].invocation_id
+        child_sc_trace = object.__getattribute__(
+            tool_sc, "_last_child_trace_id"
+        )
+        assert child_sc_trace is not None and child_sc_trace != parent_sc_trace
+        assert {r["trace_id"] for r in rows_sc} == {parent_sc_trace}
+        child_sc_types = {
+            r["event_type"] for r in rows_sc if r["invocation_id"] != p_inv_sc
+        }
+        assert {"AGENT_RESPONSE", "INVOCATION_COMPLETED"}.issubset(
+            child_sc_types
+        )
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+      provider.shutdown()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("short_circuit_retry", [False, True])
+  async def test_sequential_nested_runner_retry_after_early_closed_child(
+      self,
+      short_circuit_retry,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """Sequential nested retry after cancelled child preserves parent."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.plugins import base_plugin as base_plugin_lib
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+
+    class _ShortCircuitRetryPlugin(base_plugin_lib.BasePlugin):
+
+      def __init__(self):
+        super().__init__(name="short_circuit_retry_gate")
+
+      async def before_run_callback(self, *, invocation_context):
+        if (
+            short_circuit_retry
+            and invocation_context.agent.name == "retry_child_c2"
+        ):
+          return types.Content(
+              role="model",
+              parts=[types.Part(text="cached c2 reply")],
+          )
+        return None
+
+    class _RetryingNestedRunnerTool(base_tool_lib.BaseTool):
+
+      def __init__(self):
+        super().__init__(
+            name="retrying_nested_runner",
+            description="Runs child c1 that aborts, then retries child c2.",
+        )
+
+      def _get_declaration(self):
+        return types.FunctionDeclaration(name=self.name, description="retry")
+
+      async def run_async(self, *, args, tool_context):
+        _ = args
+
+        try:
+          async with asyncio.timeout(None) as timeout_scope:
+
+            class _StallingC1Agent(base_agent.BaseAgent):
+
+              async def _run_async_impl(self, ctx):
+                _ = ctx
+                timeout_scope.reschedule(asyncio.get_running_loop().time())
+                await asyncio.Future()
+                if False:
+                  yield  # pragma: no cover
+
+            c1_tool = AgentTool(
+                agent=_StallingC1Agent(name="aborting_child_c1")
+            )
+            await c1_tool.run_async(
+                args={"request": "attempt 1"},
+                tool_context=tool_context,
+            )
+        except TimeoutError:
+          pass
+
+        c2_agent = llm_agent.LlmAgent(
+            name="retry_child_c2",
+            model=testing_utils.MockModel(
+                responses=[
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[types.Part(text="c2 completed")]
+                        )
+                    )
+                ]
+            ),
+        )
+        c2_tool = AgentTool(agent=c2_agent)
+        reply = await c2_tool.run_async(
+            args={"request": "attempt 2"},
+            tool_context=tool_context,
+        )
+        return {"reply": reply}
+
+    parent_agent = llm_agent.LlmAgent(
+        name="parent_retry_agent",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="retrying_nested_runner",
+                                    args={},
+                                )
+                            )
+                        ]
+                    )
+                ),
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="parent finished")]
+                    )
+                ),
+            ]
+        ),
+        tools=[_RetryingNestedRunnerTool()],
+    )
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        runner = testing_utils.InMemoryRunner(
+            root_agent=parent_agent,
+            plugins=[_ShortCircuitRetryPlugin(), plugin],
+        )
+        events = await runner.run_async(testing_utils.UserContent("go"))
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      assert not bq_mod._span_records_ctx.get()
+      assert bq_mod._active_invocation_id_ctx.get() is None
+      assert bq_mod._root_agent_name_ctx.get() is None
+      assert bq_mod._parent_invocation_frames_ctx.get() == ()
+
+      p_inv = events[0].invocation_id
+      p_start = next(
+          r
+          for r in rows
+          if r["invocation_id"] == p_inv
+          and r["event_type"] == "INVOCATION_STARTING"
+      )
+      p_tool_start = next(
+          r
+          for r in rows
+          if r["invocation_id"] == p_inv and r["event_type"] == "TOOL_STARTING"
+      )
+      p_tool_done = next(
+          r
+          for r in rows
+          if r["invocation_id"] == p_inv and r["event_type"] == "TOOL_COMPLETED"
+      )
+      p_inv_done = next(
+          r
+          for r in rows
+          if r["invocation_id"] == p_inv
+          and r["event_type"] == "INVOCATION_COMPLETED"
+      )
+      assert p_tool_done["span_id"] == p_tool_start["span_id"]
+      assert p_inv_done["span_id"] == p_start["span_id"]
+      assert (
+          json.loads(p_tool_done["attributes"])["root_agent_name"]
+          == "parent_retry_agent"
+      )
+      assert (
+          json.loads(p_inv_done["attributes"])["root_agent_name"]
+          == "parent_retry_agent"
+      )
+
+      c2_rows = [
+          r
+          for r in rows
+          if r["agent"] == "retry_child_c2"
+          or (
+              r["event_type"] == "INVOCATION_COMPLETED"
+              and r["invocation_id"] != p_inv
+          )
+      ]
+      assert c2_rows
+      c2_done = next(
+          r for r in c2_rows if r["event_type"] == "INVOCATION_COMPLETED"
+      )
+      assert c2_done["trace_id"] == p_start["trace_id"]
+      assert c2_done["parent_span_id"] == p_tool_start["span_id"]
+      c2_adk = json.loads(c2_done["attributes"])["adk"]
+      assert c2_adk["parent_session_id"] == p_start["session_id"]
+      assert c2_adk["parent_invocation_id"] == p_inv
+      if not short_circuit_retry:
+        c2_start = next(
+            r for r in c2_rows if r["event_type"] == "INVOCATION_STARTING"
+        )
+        assert c2_start["trace_id"] == p_start["trace_id"]
+        assert c2_start["parent_span_id"] == p_tool_start["span_id"]
+        assert c2_done["span_id"] == c2_start["span_id"]
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_uninitialized_top_level_run_ignores_stale_parent_frame_and_spans(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """Uninitialized top-level runs never inherit stale nested frames."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.plugins import base_plugin as base_plugin_lib
+    from opentelemetry import trace as otel_trace
+
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+    eval_sql = _bigquery_agent_analytics_eval_sql
+
+    class _EarlyTopLevelGatePlugin(base_plugin_lib.BasePlugin):
+
+      def __init__(self, *, should_raise: bool):
+        super().__init__(name=f"early_top_gate_{should_raise}")
+        self._should_raise = should_raise
+
+      async def on_user_message_callback(
+          self, *, invocation_context, user_message
+      ):
+        _ = invocation_context
+        return user_message
+
+      async def before_run_callback(self, *, invocation_context):
+        _ = invocation_context
+        if self._should_raise:
+          raise RuntimeError("early top-level failure")
+        return types.Content(
+            role="model",
+            parts=[types.Part(text="top cached reply")],
+        )
+
+    def _seed_abandoned_nested_state(*, child_only_invocation_span: bool):
+      stale_parent_ic = _make_nested_test_invocation_context(
+          "stale-parent-inv", "stale-parent-sess", "stale_parent_agent"
+      )
+      stale_parent_cb = bq_mod.CallbackContext(stale_parent_ic)
+      bq_mod.TraceManager.ensure_invocation_span(stale_parent_cb)
+      stale_tool_span = bq_mod.TraceManager.push_span(stale_parent_cb, "tool")
+      stale_trace = bq_mod.TraceManager.get_trace_id(stale_parent_cb)
+
+      stale_child_ic = _make_nested_test_invocation_context(
+          "stale-child-inv",
+          "stale-child-sess",
+          "stale_child_agent",
+          parent_invocation_id="stale-parent-inv",
+      )
+      stale_child_cb = bq_mod.CallbackContext(stale_child_ic)
+      bq_mod.TraceManager.ensure_invocation_span(stale_child_cb)
+      if not child_only_invocation_span:
+        bq_mod.TraceManager.push_span(stale_child_cb, "agent")
+      return stale_trace, stale_tool_span
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+
+        mock_write_client.append_rows.reset_mock()
+        stale_trace_1, _ = _seed_abandoned_nested_state(
+            child_only_invocation_span=False
+        )
+        top_sc_agent = llm_agent.LlmAgent(
+            name="top_short_circuit_agent",
+            model=testing_utils.MockModel(responses=[]),
+        )
+        top_sc_runner = testing_utils.InMemoryRunner(
+            root_agent=top_sc_agent,
+            plugins=[_EarlyTopLevelGatePlugin(should_raise=False), plugin],
+        )
+        with mock.patch(
+            "opentelemetry.trace.get_current_span",
+            return_value=otel_trace.INVALID_SPAN,
+        ):
+          sc_events = await top_sc_runner.run_async(
+              testing_utils.UserContent("hello top")
+          )
+        await plugin.flush()
+        sc_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        top_sc_inv = sc_events[0].invocation_id
+        assert {r["invocation_id"] for r in sc_rows} == {top_sc_inv}
+        for row in sc_rows:
+          assert row["trace_id"] != stale_trace_1
+          assert row["trace_id"] == top_sc_inv
+          assert row["span_id"] is None
+          assert row["parent_span_id"] is None
+          adk = json.loads(row["attributes"]).get("adk", {})
+          assert "parent_session_id" not in adk
+          assert "parent_invocation_id" not in adk
+        turn_evaluator = _EvalViewSqlEvaluator(
+            eval_sql.build_eval_turn_query_sql("p.d.t")
+        )
+        turns_cte = turn_evaluator.run(sc_rows, cte="Turns")
+        assert len(turns_cte) == 1
+        assert turns_cte[0]["is_complete"] is True
+        assert turns_cte[0]["has_user_message"] is False
+        turn_rows = turn_evaluator.run(sc_rows)
+        assert len(turn_rows) == 1
+        assert turn_rows[0]["invocation_id"] == top_sc_inv
+        assert turn_rows[0]["eval_ready"] is False
+        turn_events = turn_rows[0]["trace"]["turns"][0]["events"]
+        assert [
+            (e["author"], e["content"]["parts"][0]["text"]) for e in turn_events
+        ] == [("top_short_circuit_agent", "top cached reply")]
+
+        assert not bq_mod._span_records_ctx.get()
+        assert bq_mod._active_invocation_id_ctx.get() is None
+        assert bq_mod._root_agent_name_ctx.get() is None
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+
+        mock_write_client.append_rows.reset_mock()
+        stale_trace_2, _ = _seed_abandoned_nested_state(
+            child_only_invocation_span=True
+        )
+        top_err_agent = llm_agent.LlmAgent(
+            name="top_error_agent",
+            model=testing_utils.MockModel(responses=[]),
+        )
+        top_err_runner = testing_utils.InMemoryRunner(
+            root_agent=top_err_agent,
+            plugins=[_EarlyTopLevelGatePlugin(should_raise=True), plugin],
+        )
+        with mock.patch(
+            "opentelemetry.trace.get_current_span",
+            return_value=otel_trace.INVALID_SPAN,
+        ):
+          with pytest.raises(RuntimeError, match="early top-level failure"):
+            await top_err_runner.run_async(testing_utils.UserContent("err top"))
+        await plugin.flush()
+        err_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+        err_row = next(
+            r for r in err_rows if r["event_type"] == "INVOCATION_ERROR"
+        )
+        assert err_row["trace_id"] != stale_trace_2
+        assert err_row["trace_id"] == err_row["invocation_id"]
+        assert err_row["span_id"] is None
+        assert err_row["parent_span_id"] is None
+        err_adk = json.loads(err_row["attributes"]).get("adk", {})
+        assert "parent_session_id" not in err_adk
+        assert "parent_invocation_id" not in err_adk
+
+        assert not bq_mod._span_records_ctx.get()
+        assert bq_mod._active_invocation_id_ctx.get() is None
+        assert bq_mod._root_agent_name_ctx.get() is None
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_nested_parent_invocation_signal_real_and_mock_guards(self):
+    """AgentTool sets _parent_invocation_id only when plugins are shared."""
+    from google.adk.tools.agent_tool import AgentTool
+
+    bq_mod = bigquery_agent_analytics_plugin
+    observed: list[str | None] = []
+
+    class _CaptureAgent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        observed.append(ctx._parent_invocation_id)
+        if False:
+          yield  # pragma: no cover
+
+    parent_ic = _make_nested_test_invocation_context(
+        "real-parent-inv", "real-parent-sess", "parent_agent"
+    )
+    tool_ctx = tool_context_lib.ToolContext(invocation_context=parent_ic)
+    await AgentTool(
+        agent=_CaptureAgent(name="c_shared"), include_plugins=True
+    ).run_async(args={"request": "go"}, tool_context=tool_ctx)
+    await AgentTool(
+        agent=_CaptureAgent(name="c_isolated"), include_plugins=False
+    ).run_async(args={"request": "go"}, tool_context=tool_ctx)
+    assert observed == ["real-parent-inv", None]
+
+    parent_cb = CallbackContext(parent_ic)
+    try:
+      bq_mod.TraceManager.ensure_invocation_span(parent_cb)
+      bq_mod.TraceManager.push_span(parent_cb, "tool")
+      records = bq_mod._span_records_ctx.get() or []
+      mock_cb = mock.MagicMock(spec=CallbackContext)
+      mock_cb.invocation_id = "mock-child-inv"
+      assert bq_mod._get_nested_parent_invocation_id(mock_cb) is None
+      assert bq_mod._is_nested_plugin_run(mock_cb, records[-1]) is False
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.parametrize("prior_active_inv", [None, "stale-other-inv"])
+  def test_nested_frame_records_tool_span_invocation_when_parent_uninitialized(
+      self,
+      prior_active_inv,
+  ):
+    """Suspended frame records top.invocation_id when parent skipped ensure."""
+    bq_mod = bigquery_agent_analytics_plugin
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    parent_ic = _make_nested_test_invocation_context(
+        "uninit-parent-inv", "uninit-parent-sess", "parent_agent"
+    )
+    child_ic = _make_nested_test_invocation_context(
+        "uninit-child-inv", "uninit-child-sess", "child_agent"
+    )
+    child_ic._parent_invocation_id = "uninit-parent-inv"
+    parent_cb = CallbackContext(parent_ic)
+    child_cb = CallbackContext(child_ic)
+    try:
+      bq_mod.TraceManager._finish_invocation(None)
+      bq_mod._active_invocation_id_ctx.set(prior_active_inv)
+      bq_mod._root_agent_name_ctx.set("parent_agent")
+      parent_tool_span_id = bq_mod.TraceManager.push_span(parent_cb, "tool")
+
+      bq_mod.TraceManager.ensure_invocation_span(child_cb)
+      frames = bq_mod._parent_invocation_frames_ctx.get()
+      assert len(frames) == 1
+      assert frames[-1].invocation_id == "uninit-parent-inv"
+      assert frames[-1].session_id == "uninit-parent-sess"
+      assert frames[-1].root_agent_name == "parent_agent"
+
+      parent_frame = bq_mod.TraceManager._get_parent_invocation_frame(child_cb)
+      assert parent_frame is not None
+      assert parent_frame.invocation_id == "uninit-parent-inv"
+      envelope = plugin._build_adk_envelope(child_cb, None)
+      assert envelope["parent_invocation_id"] == "uninit-parent-inv"
+      assert envelope["parent_session_id"] == "uninit-parent-sess"
+
+      bq_mod.TraceManager._finish_invocation("uninit-child-inv", child_cb)
+      assert bq_mod._parent_invocation_frames_ctx.get() == ()
+      assert bq_mod._active_invocation_id_ctx.get() == "uninit-parent-inv"
+      restored_records = bq_mod._span_records_ctx.get() or []
+      assert len(restored_records) == 1
+      assert restored_records[-1].span_id == parent_tool_span_id
+      assert restored_records[-1].invocation_id == "uninit-parent-inv"
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_uninitialized_parent_and_child_cover_all_nested_helpers(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Uninitialized parent + child keep parent attribution, trace, and stack."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from opentelemetry import context as otel_context
+    from opentelemetry.sdk import trace as trace_sdk
+
+    bq_mod = bigquery_agent_analytics_plugin
+    provider = trace_sdk.TracerProvider()
+    child_tracer = provider.get_tracer("uninit_parent_child_test")
+
+    parent_ic = _make_nested_test_invocation_context(
+        "uninit-p-inv", "uninit-p-sess", "uninit_parent_agent"
+    )
+    child_ic = _make_nested_test_invocation_context(
+        "uninit-c-inv",
+        "uninit-c-sess",
+        "uninit_child_agent",
+        parent_invocation_id="uninit-p-inv",
+    )
+    child_err_ic = _make_nested_test_invocation_context(
+        "uninit-c-err-inv",
+        "uninit-c-err-sess",
+        "uninit_child_err_agent",
+        parent_invocation_id="uninit-p-inv",
+    )
+    unrelated_ic = _make_nested_test_invocation_context(
+        "unrelated-top-inv", "unrelated-top-sess", "unrelated_top_agent"
+    )
+    parent_cb = CallbackContext(parent_ic)
+    child_cb = CallbackContext(child_ic)
+    unrelated_cb = CallbackContext(unrelated_ic)
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        bq_mod.TraceManager._finish_invocation(None)
+        # Parent never ran ensure_invocation_span: active_inv stays None while
+        # _root_agent_name_ctx holds the parent's root agent and _span_records_ctx
+        # holds only the parent's tool span.
+        bq_mod._active_invocation_id_ctx.set(None)
+        bq_mod._root_agent_name_ctx.set("uninit_parent_agent")
+        parent_tool_span_id = bq_mod.TraceManager.push_span(parent_cb, "tool")
+        parent_trace_id = bq_mod.TraceManager.get_trace_id(parent_cb)
+        assert parent_trace_id is not None
+
+        with child_tracer.start_as_current_span(
+            "child_distinct_ambient", context=otel_context.Context()
+        ) as child_otel_span:
+          child_otel_trace_id = format(
+              child_otel_span.get_span_context().trace_id, "032x"
+          )
+          assert child_otel_trace_id != parent_trace_id
+
+          # 1. _has_active_enclosing_parent with active_inv == None.
+          assert (
+              bq_mod._has_active_enclosing_parent("uninit-c-inv", child_cb)
+              is True
+          )
+          assert (
+              bq_mod._has_active_enclosing_parent(
+                  "unrelated-top-inv", unrelated_cb
+              )
+              is False
+          )
+          assert (
+              bq_mod._has_active_enclosing_parent("uninit-c-inv", None) is False
+          )
+
+          # 2. _resolve_ids with active_inv == None + distinct child OTel span.
+          res_trace_id, res_span_id, res_parent_span_id = plugin._resolve_ids(
+              bq_mod.EventData(), child_cb
+          )
+          assert res_trace_id == parent_trace_id
+          assert res_span_id is None
+          assert res_parent_span_id == parent_tool_span_id
+
+          # 3. _build_adk_envelope with active_inv == None and empty frames.
+          env = plugin._build_adk_envelope(child_cb, None)
+          assert env["parent_invocation_id"] == "uninit-p-inv"
+          assert env["parent_session_id"] == "uninit-p-sess"
+
+          # 4. _enrich_attributes with active_inv == None and parent root cached.
+          enriched = plugin._enrich_attributes(bq_mod.EventData(), child_cb)
+          assert enriched["adk"]["parent_invocation_id"] == "uninit-p-inv"
+          assert enriched["adk"]["parent_session_id"] == "uninit-p-sess"
+          assert enriched["root_agent_name"] == "uninit_child_agent"
+
+          # End-to-end uninitialized child short-circuit + error callbacks (when
+          # an earlier gate plugin short-circuited both on_user_message and
+          # before_run) must keep active_inv == None and preserve the
+          # uninitialized parent's tool span on the stack.
+          sc_event = event_lib.Event(
+              invocation_id=child_ic.invocation_id,
+              author="uninit_child_agent",
+              content=types.Content(
+                  role="model", parts=[types.Part(text="nested short-circuit")]
+              ),
+          )
+          await plugin.on_event_callback(
+              invocation_context=child_ic, event=sc_event
+          )
+          await plugin.after_run_callback(invocation_context=child_ic)
+          assert bq_mod._active_invocation_id_ctx.get() is None
+          assert (
+              bq_mod.TraceManager.get_current_span_id() == parent_tool_span_id
+          )
+
+          await plugin.on_run_error_callback(
+              invocation_context=child_err_ic,
+              error=RuntimeError("early child error"),
+          )
+          assert bq_mod._active_invocation_id_ctx.get() is None
+          assert (
+              bq_mod.TraceManager.get_current_span_id() == parent_tool_span_id
+          )
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+      provider.shutdown()
+
+    assert {r["event_type"] for r in rows} == {
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+        "INVOCATION_ERROR",
+    }
+    for r in rows:
+      assert r["trace_id"] == parent_trace_id
+      assert r["span_id"] is None
+      assert r["parent_span_id"] == parent_tool_span_id
+      attrs = json.loads(r["attributes"])
+      assert attrs["adk"]["parent_invocation_id"] == "uninit-p-inv"
+      assert attrs["adk"]["parent_session_id"] == "uninit-p-sess"
+      expected_root = (
+          "uninit_child_err_agent"
+          if r["invocation_id"] == "uninit-c-err-inv"
+          else "uninit_child_agent"
+      )
+      assert attrs["root_agent_name"] == expected_root
+
+  @pytest.mark.asyncio
+  async def test_abandoned_sibling_followed_by_short_circuited_retry_restores_parent(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Short-circuited retry after abandoned sibling unwinds to parent frame."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    parent_ic = _make_nested_test_invocation_context(
+        "p-sib-inv", "p-sib-sess", "parent_sib_agent"
+    )
+    c1_ic = _make_nested_test_invocation_context(
+        "c1-abandoned-inv",
+        "c1-abandoned-sess",
+        "c1_sib_agent",
+        parent_invocation_id="p-sib-inv",
+    )
+    c2_ic = _make_nested_test_invocation_context(
+        "c2-retry-inv",
+        "c2-retry-sess",
+        "c2_sib_agent",
+        parent_invocation_id="p-sib-inv",
+    )
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        await plugin.before_run_callback(invocation_context=parent_ic)
+        p_tool_span_id = bq_mod.TraceManager.push_span(
+            CallbackContext(parent_ic), "tool"
+        )
+
+        # Sibling c1 enters before_run_callback (suspending parent_ic's frame)
+        # and is then abandoned without running after_run / on_run_error.
+        await plugin.before_run_callback(invocation_context=c1_ic)
+        assert bq_mod._active_invocation_id_ctx.get() == "c1-abandoned-inv"
+        assert len(bq_mod._parent_invocation_frames_ctx.get()) == 1
+
+        # Sibling c2 short-circuits before plugin.before_run_callback, so only
+        # on_event_callback + after_run_callback run for c2_ic.
+        c2_event = event_lib.Event(
+            invocation_id=c2_ic.invocation_id,
+            author="c2_sib_agent",
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="short-circuited c2 reply")],
+            ),
+        )
+        await plugin.on_event_callback(invocation_context=c2_ic, event=c2_event)
+        await plugin.after_run_callback(invocation_context=c2_ic)
+
+        # Parent frame must be restored intact rather than wiped.
+        assert bq_mod._parent_invocation_frames_ctx.get() == ()
+        assert bq_mod._active_invocation_id_ctx.get() == "p-sib-inv"
+        assert bq_mod._root_agent_name_ctx.get() == "parent_sib_agent"
+        assert bq_mod.TraceManager.get_current_span_id() == p_tool_span_id
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+    c2_rows = [r for r in rows if r["invocation_id"] == "c2-retry-inv"]
+    assert {r["event_type"] for r in c2_rows} == {
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+    }
+    for r in c2_rows:
+      adk = json.loads(r["attributes"]).get("adk", {})
+      assert adk.get("parent_invocation_id") == "p-sib-inv"
+      assert adk.get("parent_session_id") == "p-sib-sess"
+      assert r["parent_span_id"] == p_tool_span_id
+
+  @pytest.mark.asyncio
+  async def test_level_two_nested_child_short_circuit_preserves_intermediate_and_root(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """L0 -> L1 -> L2 short-circuit attributes L2 to L1 and keeps L1/L0 intact."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.plugins import base_plugin as base_plugin_lib
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    class _LeafShortCircuitGatePlugin(base_plugin_lib.BasePlugin):
+
+      def __init__(self):
+        super().__init__(name="leaf_short_circuit_gate")
+
+      async def before_run_callback(self, *, invocation_context):
+        if invocation_context.agent.name == "leaf_c2":
+          return types.Content(
+              role="model", parts=[types.Part(text="short-circuited leaf")]
+          )
+        return None
+
+    leaf_c2 = llm_agent.LlmAgent(
+        name="leaf_c2",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="unreachable leaf")]
+                    )
+                )
+            ]
+        ),
+    )
+    mid_c1 = llm_agent.LlmAgent(
+        name="mid_c1",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="leaf_c2",
+                                    args={"request": "ask leaf"},
+                                )
+                            )
+                        ]
+                    )
+                ),
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="mid done")]
+                    )
+                ),
+            ]
+        ),
+        tools=[AgentTool(agent=leaf_c2, include_plugins=True)],
+    )
+    root_p = llm_agent.LlmAgent(
+        name="root_p",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="mid_c1",
+                                    args={"request": "ask mid"},
+                                )
+                            )
+                        ]
+                    )
+                ),
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="root done")]
+                    )
+                ),
+            ]
+        ),
+        tools=[AgentTool(agent=mid_c1, include_plugins=True)],
+    )
+
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      runner = testing_utils.InMemoryRunner(
+          root_agent=root_p,
+          plugins=[_LeafShortCircuitGatePlugin(), plugin],
+      )
+      events = await runner.run_async(testing_utils.UserContent("go 3 levels"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+    p_inv = events[0].invocation_id
+    p_rows = [r for r in rows if r["agent"] == "root_p"]
+    c1_rows = [r for r in rows if r["agent"] == "mid_c1"]
+    c2_rows = [r for r in rows if r["agent"] == "leaf_c2"]
+    assert p_rows and c1_rows and c2_rows
+
+    p_inv_start = next(
+        r for r in p_rows if r["event_type"] == "INVOCATION_STARTING"
+    )
+    p_inv_done = next(
+        r for r in p_rows if r["event_type"] == "INVOCATION_COMPLETED"
+    )
+    p_tool_start = next(r for r in p_rows if r["event_type"] == "TOOL_STARTING")
+    p_tool_done = next(r for r in p_rows if r["event_type"] == "TOOL_COMPLETED")
+    c1_inv_start = next(
+        r for r in c1_rows if r["event_type"] == "INVOCATION_STARTING"
+    )
+    c1_inv_done = next(
+        r for r in c1_rows if r["event_type"] == "INVOCATION_COMPLETED"
+    )
+    c1_tool_start = next(
+        r for r in c1_rows if r["event_type"] == "TOOL_STARTING"
+    )
+    c1_tool_done = next(
+        r for r in c1_rows if r["event_type"] == "TOOL_COMPLETED"
+    )
+
+    p_sess = p_inv_start["session_id"]
+    c1_inv = c1_inv_start["invocation_id"]
+    c1_sess = c1_inv_start["session_id"]
+
+    assert {r["trace_id"] for r in rows} == {p_inv_start["trace_id"]}
+    assert p_tool_done["span_id"] == p_tool_start["span_id"]
+    assert p_inv_done["span_id"] == p_inv_start["span_id"]
+    assert c1_tool_done["span_id"] == c1_tool_start["span_id"]
+    assert c1_inv_done["span_id"] == c1_inv_start["span_id"]
+    assert c1_inv_done["parent_span_id"] == p_tool_start["span_id"]
+
+    for r in p_rows:
+      attrs = json.loads(r["attributes"])
+      adk = attrs.get("adk", {})
+      assert "parent_invocation_id" not in adk
+      assert "parent_session_id" not in adk
+      assert attrs.get("root_agent_name") == "root_p"
+
+    for r in c1_rows:
+      attrs = json.loads(r["attributes"])
+      adk = attrs.get("adk", {})
+      assert adk.get("parent_invocation_id") == p_inv
+      assert adk.get("parent_session_id") == p_sess
+      assert attrs.get("root_agent_name") == "mid_c1"
+
+    c2_types = {r["event_type"] for r in c2_rows}
+    assert "INVOCATION_STARTING" not in c2_types
+    assert {"USER_MESSAGE_RECEIVED", "INVOCATION_COMPLETED"}.issubset(c2_types)
+    for r in c2_rows:
+      attrs = json.loads(r["attributes"])
+      adk = attrs.get("adk", {})
+      assert adk.get("parent_invocation_id") == c1_inv
+      assert adk.get("parent_session_id") == c1_sess
+      assert attrs.get("root_agent_name") == "leaf_c2"
+      assert r["parent_span_id"] == c1_tool_start["span_id"]
+
+  @pytest.mark.asyncio
+  async def test_agent_tool_include_plugins_false_emits_only_parent_rows(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """AgentTool(include_plugins=False) logs only parent rows without child."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    iso_child = llm_agent.LlmAgent(
+        name="iso_child",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="child reply")]
+                    )
+                )
+            ]
+        ),
+    )
+    iso_parent = llm_agent.LlmAgent(
+        name="iso_parent",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="iso_child",
+                                    args={"request": "delegate"},
+                                )
+                            )
+                        ]
+                    )
+                ),
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="parent done")]
+                    )
+                ),
+            ]
+        ),
+        tools=[AgentTool(agent=iso_child, include_plugins=False)],
+    )
+
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      runner = testing_utils.InMemoryRunner(
+          root_agent=iso_parent, plugins=[plugin]
+      )
+      events = await runner.run_async(testing_utils.UserContent("run isolated"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+    p_inv = events[0].invocation_id
+    assert rows
+    assert {r["invocation_id"] for r in rows} == {p_inv}
+    assert {r["agent"] for r in rows} == {"iso_parent"}
+    p_inv_start = next(
+        r for r in rows if r["event_type"] == "INVOCATION_STARTING"
+    )
+    p_inv_done = next(
+        r for r in rows if r["event_type"] == "INVOCATION_COMPLETED"
+    )
+    p_tool_start = next(r for r in rows if r["event_type"] == "TOOL_STARTING")
+    p_tool_done = next(r for r in rows if r["event_type"] == "TOOL_COMPLETED")
+    assert p_tool_done["span_id"] == p_tool_start["span_id"]
+    assert p_inv_done["span_id"] == p_inv_start["span_id"]
+    for r in rows:
+      adk = json.loads(r["attributes"]).get("adk", {})
+      assert "parent_invocation_id" not in adk
+      assert "parent_session_id" not in adk
+
+  @pytest.mark.asyncio
+  async def test_abrupt_nested_exit_unwinds_parent_frame_across_all_eight_callbacks(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Abrupt nested child exit unwinds parent context across all 8 callbacks."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    parent_ctx = _make_nested_test_invocation_context(
+        "unw-p-inv", "unw-p-sess", "unw_parent"
+    )
+    child_ctx = _make_nested_test_invocation_context(
+        "unw-c-inv",
+        "unw-c-sess",
+        "unw_child",
+        parent_invocation_id="unw-p-inv",
+    )
+    parent_cb = CallbackContext(parent_ctx)
+    child_cb = CallbackContext(child_ctx)
+    parent_tool_ctx = tool_context_lib.ToolContext(
+        invocation_context=parent_ctx
+    )
+    dummy_tool = mock.create_autospec(
+        base_tool_lib.BaseTool, instance=True, spec_set=True
+    )
+    type(dummy_tool).name = mock.PropertyMock(return_value="helper_tool")
+    dummy_req = llm_request_lib.LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+    dummy_resp = llm_response_lib.LlmResponse(
+        content=types.Content(role="model", parts=[types.Part(text="ok")])
+    )
+
+    def _seed_abandoned_child():
+      bq_mod.TraceManager._finish_invocation(None)
+      bq_mod.TraceManager.ensure_invocation_span(parent_cb)
+      p_agent_span = bq_mod.TraceManager.push_span(parent_cb, "agent")
+      p_tool_span = bq_mod.TraceManager.push_span(parent_cb, "tool")
+      bq_mod.TraceManager.ensure_invocation_span(child_cb)
+      bq_mod.TraceManager.push_span(child_cb, "agent")
+      assert bq_mod._active_invocation_id_ctx.get() == "unw-c-inv"
+      return p_agent_span, p_tool_span
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        callbacks_to_probe = [
+            lambda: plugin.on_event_callback(
+                invocation_context=parent_ctx,
+                event=event_lib.Event(
+                    invocation_id="unw-p-inv",
+                    author="unw_parent",
+                    content=types.Content(
+                        role="model", parts=[types.Part(text="parent resume")]
+                    ),
+                ),
+            ),
+            lambda: plugin.before_agent_callback(
+                agent=parent_ctx.agent, callback_context=parent_cb
+            ),
+            lambda: plugin.after_agent_callback(
+                agent=parent_ctx.agent, callback_context=parent_cb
+            ),
+            lambda: plugin.on_agent_error_callback(
+                agent=parent_ctx.agent,
+                callback_context=parent_cb,
+                error=RuntimeError("agent err"),
+            ),
+            lambda: plugin.before_model_callback(
+                callback_context=parent_cb, llm_request=dummy_req
+            ),
+            lambda: plugin.after_model_callback(
+                callback_context=parent_cb, llm_response=dummy_resp
+            ),
+            lambda: plugin.on_model_error_callback(
+                callback_context=parent_cb,
+                llm_request=dummy_req,
+                error=RuntimeError("model err"),
+            ),
+            lambda: plugin.before_tool_callback(
+                tool=dummy_tool,
+                tool_args={"q": 1},
+                tool_context=parent_tool_ctx,
+            ),
+        ]
+
+        for invoke_cb in callbacks_to_probe:
+          _seed_abandoned_child()
+          await invoke_cb()
+          assert bq_mod._active_invocation_id_ctx.get() == "unw-p-inv"
+          assert bq_mod._parent_invocation_frames_ctx.get() == ()
+          assert {
+              rec.invocation_id for rec in bq_mod._span_records_ctx.get() or []
+          } == {"unw-p-inv"}
+
+        await plugin.flush()
+        probe_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+        assert len(probe_rows) == 8
+        for row in probe_rows:
+          assert row["invocation_id"] == "unw-p-inv"
+          assert row["span_id"] is not None
+          attrs = json.loads(row["attributes"])
+          assert attrs["root_agent_name"] == "unw_parent"
+          assert "parent_session_id" not in attrs["adk"]
+
+        mock_write_client.append_rows.reset_mock()
+        bq_mod.TraceManager._finish_invocation(None)
+
+        class _CancelledChildAgent(base_agent.BaseAgent):
+
+          async def _run_async_impl(self, ctx):
+            yield event_lib.Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                content=types.Content(
+                    role="model", parts=[types.Part(text="cancelling")]
+                ),
+            )
+            raise asyncio.CancelledError()
+
+        cancelled_tool = AgentTool(
+            agent=_CancelledChildAgent(name="cancelled_child")
+        )
+        fallback_sub = llm_agent.LlmAgent(
+            name="fallback_sub",
+            model=testing_utils.MockModel(
+                responses=[
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[types.Part(text="fallback ok")]
+                        )
+                    )
+                ]
+            ),
+        )
+
+        class _TimeoutFallbackAgent(base_agent.BaseAgent):
+
+          async def _run_async_impl(self, ctx):
+            t_ctx = tool_context_lib.ToolContext(invocation_context=ctx)
+            with pytest.raises(asyncio.CancelledError):
+              await cancelled_tool.run_async(
+                  args={"request": "abort"}, tool_context=t_ctx
+              )
+            assert len(bq_mod._parent_invocation_frames_ctx.get()) == 1
+            async for ev in self.sub_agents[0].run_async(ctx):
+              yield ev
+
+        root = _TimeoutFallbackAgent(
+            name="timeout_root", sub_agents=[fallback_sub]
+        )
+        runner = testing_utils.InMemoryRunner(root_agent=root, plugins=[plugin])
+        events = await runner.run_async(testing_utils.UserContent("go"))
+        await plugin.flush()
+        timeout_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      root_inv = events[0].invocation_id
+      fb_rows = [
+          r
+          for r in timeout_rows
+          if r["invocation_id"] == root_inv and r["agent"] == "fallback_sub"
+      ]
+      assert fb_rows
+      for r in fb_rows:
+        assert r["span_id"] is not None
+        assert r["span_id"] != r["parent_span_id"]
+        assert json.loads(r["attributes"])["root_agent_name"] == "timeout_root"
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_foreign_stack_with_none_active_invocation_prevents_span_theft_and_leak(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Foreign span stack with _active_invocation_id_ctx=None is isolated."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    foreign_ctx = _make_nested_test_invocation_context(
+        "foreign-inv", "foreign-sess", "foreign_root"
+    )
+    curr_ctx = _make_nested_test_invocation_context(
+        "curr-inv", "curr-sess", "curr_root"
+    )
+    foreign_cb = CallbackContext(foreign_ctx)
+    curr_cb = CallbackContext(curr_ctx)
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        bq_mod.TraceManager._finish_invocation(None)
+        foreign_root_span = bq_mod.TraceManager.push_span(
+            foreign_cb, "invocation", trace_id_override="f" * 32
+        )
+        foreign_llm_span = bq_mod.TraceManager.push_span(
+            foreign_cb, "llm_request"
+        )
+        assert bq_mod._active_invocation_id_ctx.get() is None
+
+        assert bq_mod.TraceManager.get_trace_id(curr_cb) == "curr-inv"
+        await plugin.on_event_callback(
+            invocation_context=curr_ctx,
+            event=event_lib.Event(
+                invocation_id="curr-inv",
+                author="curr_root",
+                content=types.Content(
+                    role="model", parts=[types.Part(text="curr answer")]
+                ),
+            ),
+        )
+        assert [r.span_id for r in bq_mod._span_records_ctx.get() or []] == [
+            foreign_root_span,
+            foreign_llm_span,
+        ]
+
+        bq_mod.TraceManager.pop_span(expected_kind="llm_request")
+        assert [r.span_id for r in bq_mod._span_records_ctx.get() or []] == [
+            foreign_root_span
+        ]
+        await plugin.on_run_error_callback(
+            invocation_context=curr_ctx,
+            error=RuntimeError("curr boom"),
+        )
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      assert len(rows) == 2
+      for row in rows:
+        assert row["trace_id"] == "curr-inv"
+        assert row["span_id"] is None
+        assert row["parent_span_id"] is None
+        assert json.loads(row["attributes"])["root_agent_name"] == "curr_root"
+      err_row = next(r for r in rows if r["event_type"] == "INVOCATION_ERROR")
+      assert err_row["latency_ms"] is None
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_programmatic_agent_tool_under_non_tool_span_and_spanless_envelope_fallback(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Programmatic AgentTool under agent span and spanless parent stamp attribution."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    eval_sql = _bigquery_agent_analytics_eval_sql
+
+    child_agent = llm_agent.LlmAgent(
+        name="prog_child",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="prog child done")]
+                    )
+                )
+            ]
+        ),
+    )
+    direct_tool = AgentTool(agent=child_agent, include_plugins=True)
+
+    class _ProgrammaticCallerAgent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        t_ctx = tool_context_lib.ToolContext(invocation_context=ctx)
+        result = await direct_tool.run_async(
+            args={"request": "direct call"}, tool_context=t_ctx
+        )
+        yield event_lib.Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text=f"wrapped:{result}")]
+            ),
+        )
+
+    parent_agent = _ProgrammaticCallerAgent(name="prog_parent")
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        runner = testing_utils.InMemoryRunner(
+            root_agent=parent_agent, plugins=[plugin]
+        )
+        events = await runner.run_async(testing_utils.UserContent("start"))
+
+        spanless_child_ctx = _make_nested_test_invocation_context(
+            "spanless-c-inv",
+            "spanless-c-sess",
+            "prog_child",
+            parent_invocation_id="spanless-p-inv",
+        )
+        envelope = plugin._build_adk_envelope(
+            CallbackContext(spanless_child_ctx), None
+        )
+        assert envelope["parent_invocation_id"] == "spanless-p-inv"
+        assert "parent_session_id" not in envelope
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      p_inv = events[0].invocation_id
+      p_rows = [r for r in rows if r["invocation_id"] == p_inv]
+      c_rows = [r for r in rows if r["invocation_id"] != p_inv]
+      assert p_rows and c_rows
+      p_sess = p_rows[0]["session_id"]
+      p_agent_start = next(
+          r for r in p_rows if r["event_type"] == "AGENT_STARTING"
+      )
+      c_inv_start = next(
+          r for r in c_rows if r["event_type"] == "INVOCATION_STARTING"
+      )
+      assert c_inv_start["parent_span_id"] == p_agent_start["span_id"]
+      assert {r["trace_id"] for r in rows} == {p_agent_start["trace_id"]}
+      for r in c_rows:
+        adk = json.loads(r["attributes"])["adk"]
+        assert adk["parent_session_id"] == p_sess
+        assert adk["parent_invocation_id"] == p_inv
+      for r in p_rows:
+        assert json.loads(r["attributes"])["root_agent_name"] == "prog_parent"
+
+      turn_eval = _EvalViewSqlEvaluator(
+          eval_sql.build_eval_turn_query_sql("p.d.t")
+      )
+      eval_turns = turn_eval.run(rows)
+      assert [t["session_id"] for t in eval_turns] == [p_sess]
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_guarded_agent_and_model_error_callbacks_never_emit_self_loop_span_ids(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Guarded pop_span returning None never sets span_id == parent_span_id."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+
+    top_ctx = _make_nested_test_invocation_context(
+        "grd-top-inv", "grd-top-sess", "grd_top"
+    )
+    nested_ctx = _make_nested_test_invocation_context(
+        "grd-child-inv",
+        "grd-child-sess",
+        "grd_child",
+        parent_invocation_id="grd-top-inv",
+    )
+    top_cb = CallbackContext(top_ctx)
+    nested_cb = CallbackContext(nested_ctx)
+    dummy_req = llm_request_lib.LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        # Top-level: before_agent raised before BQAA pushed "agent" -> stack has
+        # only "invocation".
+        bq_mod.TraceManager._finish_invocation(None)
+        bq_mod.TraceManager.ensure_invocation_span(top_cb)
+        top_inv_span = bq_mod.TraceManager.get_current_span_id()
+        await plugin.on_agent_error_callback(
+            agent=top_ctx.agent,
+            callback_context=top_cb,
+            error=RuntimeError("early before_agent boom"),
+        )
+
+        # Top-level: before_model raised before BQAA pushed "llm_request" ->
+        # stack has ["invocation", "agent"].
+        top_agent_span = bq_mod.TraceManager.push_span(top_cb, "agent")
+        await plugin.on_model_error_callback(
+            callback_context=top_cb,
+            llm_request=dummy_req,
+            error=RuntimeError("early before_model boom"),
+        )
+
+        # Nested inside AgentTool: stack has parent tool suspended and child
+        # ["invocation"] / ["invocation", "agent"].
+        top_tool_span = bq_mod.TraceManager.push_span(top_cb, "tool")
+        bq_mod.TraceManager.ensure_invocation_span(nested_cb)
+        child_inv_span = bq_mod.TraceManager.get_current_span_id()
+        await plugin.on_agent_error_callback(
+            agent=nested_ctx.agent,
+            callback_context=nested_cb,
+            error=RuntimeError("nested early before_agent boom"),
+        )
+        child_agent_span = bq_mod.TraceManager.push_span(nested_cb, "agent")
+        await plugin.on_model_error_callback(
+            callback_context=nested_cb,
+            llm_request=dummy_req,
+            error=RuntimeError("nested early before_model boom"),
+        )
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      assert len(rows) == 4
+      for row in rows:
+        assert row["span_id"] is not None
+        assert row["span_id"] != row["parent_span_id"]
+        assert row["latency_ms"] is None
+
+      assert rows[0]["span_id"] == top_inv_span
+      assert rows[0]["parent_span_id"] is None
+      assert rows[1]["span_id"] == top_agent_span
+      assert rows[1]["parent_span_id"] == top_inv_span
+      assert rows[2]["span_id"] == child_inv_span
+      assert rows[2]["parent_span_id"] == top_tool_span
+      assert rows[3]["span_id"] == child_agent_span
+      assert rows[3]["parent_span_id"] == child_inv_span
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_nested_agent_tool_combined_with_response_text_key_final_tool_and_redaction(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Combined InMemoryRunner + AgentTool + final_response_tool_names + redaction."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    eval_sql = _bigquery_agent_analytics_eval_sql
+
+    def submit_final_response(
+        response: str, confidence: float
+    ) -> dict[str, Any]:
+      return {"submitted": True, "confidence": confidence, "len": len(response)}
+
+    def fetch_child_credentials() -> dict[str, Any]:
+      raise RuntimeError(
+          'api_key="first_word CHILD-LIVE-SECRET Bearer childtok"'
+      )
+
+    child_agent = llm_agent.LlmAgent(
+        name="redacting_child",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                text=json.dumps({
+                                    "response": "Child verified.",
+                                    "access_token": "CHILD-STRUCT-SECRET",
+                                })
+                            )
+                        ]
+                    )
+                ),
+            ]
+        ),
+        tools=[function_tool.FunctionTool(fetch_child_credentials)],
+    )
+    failing_secret_child = llm_agent.LlmAgent(
+        name="failing_secret_child",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="fetch_child_credentials", args={}
+                                )
+                            )
+                        ]
+                    )
+                )
+            ]
+        ),
+        tools=[function_tool.FunctionTool(fetch_child_credentials)],
+    )
+    parent_agent = llm_agent.LlmAgent(
+        name="structured_parent",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="redacting_child",
+                                    args={"request": "check"},
+                                )
+                            )
+                        ]
+                    )
+                ),
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="submit_final_response",
+                                    args={
+                                        "response": "Clean parent answer.",
+                                        "confidence": 0.95,
+                                    },
+                                )
+                            )
+                        ]
+                    )
+                ),
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(parts=[])
+                ),
+            ]
+        ),
+        tools=[
+            AgentTool(agent=child_agent),
+            function_tool.FunctionTool(submit_final_response),
+        ],
+    )
+    config = bq_mod.BigQueryLoggerConfig(
+        response_text_key="response",
+        final_response_tool_names=frozenset({"submit_final_response"}),
+    )
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        runner = testing_utils.InMemoryRunner(
+            root_agent=parent_agent, plugins=[plugin]
+        )
+        events = await runner.run_async(testing_utils.UserContent("audit"))
+
+        err_parent = llm_agent.LlmAgent(
+            name="err_parent",
+            model=testing_utils.MockModel(
+                responses=[
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[
+                                types.Part(
+                                    function_call=types.FunctionCall(
+                                        name="failing_secret_child",
+                                        args={"request": "fail"},
+                                    )
+                                )
+                            ]
+                        )
+                    )
+                ]
+            ),
+            tools=[AgentTool(agent=failing_secret_child)],
+        )
+        err_runner = testing_utils.InMemoryRunner(
+            root_agent=err_parent, plugins=[plugin]
+        )
+        with pytest.raises(RuntimeError):
+          await err_runner.run_async(testing_utils.UserContent("trigger err"))
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      serialized_rows = json.dumps(rows, default=str)
+      assert "CHILD-STRUCT-SECRET" not in serialized_rows
+      assert "CHILD-LIVE-SECRET" not in serialized_rows
+      assert "childtok" not in serialized_rows
+      assert "first_word" not in serialized_rows
+
+      p_inv = events[0].invocation_id
+      p_sess = next(
+          r["session_id"] for r in rows if r["invocation_id"] == p_inv
+      )
+      parent_resp = next(
+          r
+          for r in rows
+          if r["invocation_id"] == p_inv and r["event_type"] == "AGENT_RESPONSE"
+      )
+      assert (
+          json.loads(parent_resp["content"])["text_summary"]
+          == "Clean parent answer."
+      )
+
+      session_eval = _EvalViewSqlEvaluator(
+          eval_sql.build_eval_session_query_sql("p.d.t")
+      )
+      turn_eval = _EvalViewSqlEvaluator(
+          eval_sql.build_eval_turn_query_sql("p.d.t")
+      )
+      eval_sessions = {s["session_id"]: s for s in session_eval.run(rows)}
+      eval_turns = {t["session_id"]: t for t in turn_eval.run(rows)}
+      assert p_sess in eval_sessions
+      assert eval_sessions[p_sess]["eval_ready"] is True
+      assert eval_turns[p_sess]["eval_ready"] is True
+      assert "Clean parent answer." in json.dumps(eval_turns[p_sess]["trace"])
+      child_session_ids = {
+          r["session_id"]
+          for r in rows
+          if "parent_session_id" in json.loads(r["attributes"]).get("adk", {})
+      }
+      assert child_session_ids
+      assert child_session_ids.isdisjoint(eval_sessions)
+      assert child_session_ids.isdisjoint(eval_turns)
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_parallel_agent_tools_partial_failure_isolates_siblings_and_parent(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """One failing parallel AgentTool sibling does not corrupt succeeding sibling."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+
+    class _FailingSibling(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        _ = ctx
+        await asyncio.sleep(0)
+        raise RuntimeError("sibling_fail boom")
+        if False:  # pylint: disable=using-constant-test
+          yield
+
+    ok_sibling = llm_agent.LlmAgent(
+        name="sibling_ok",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="sibling ok done")]
+                    )
+                )
+            ]
+        ),
+    )
+    fail_tool = AgentTool(agent=_FailingSibling(name="sibling_fail"))
+    ok_tool = AgentTool(agent=ok_sibling)
+
+    class _ParallelFanoutParent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        t_fail = tool_context_lib.ToolContext(invocation_context=ctx)
+        t_ok = tool_context_lib.ToolContext(invocation_context=ctx)
+        outcomes = await asyncio.gather(
+            fail_tool.run_async(args={"request": "a"}, tool_context=t_fail),
+            ok_tool.run_async(args={"request": "b"}, tool_context=t_ok),
+            return_exceptions=True,
+        )
+        assert isinstance(outcomes[0], RuntimeError)
+        assert outcomes[1] == "sibling ok done"
+        yield event_lib.Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="recovered after partial")]
+            ),
+        )
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        runner = testing_utils.InMemoryRunner(
+            root_agent=_ParallelFanoutParent(name="fanout_parent"),
+            plugins=[plugin],
+        )
+        events = await runner.run_async(testing_utils.UserContent("fanout"))
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      p_inv = events[0].invocation_id
+      p_sess = next(
+          r["session_id"] for r in rows if r["invocation_id"] == p_inv
+      )
+      err_inv_row = next(
+          r for r in rows if r["event_type"] == "INVOCATION_ERROR"
+      )
+      ok_child_done = next(
+          r
+          for r in rows
+          if r["invocation_id"] != p_inv
+          and r["event_type"] == "INVOCATION_COMPLETED"
+      )
+      parent_done = next(
+          r
+          for r in rows
+          if r["invocation_id"] == p_inv
+          and r["event_type"] == "INVOCATION_COMPLETED"
+      )
+      assert err_inv_row["invocation_id"] != ok_child_done["invocation_id"]
+      for child_row in (err_inv_row, ok_child_done):
+        adk = json.loads(child_row["attributes"])["adk"]
+        assert adk["parent_session_id"] == p_sess
+        assert adk["parent_invocation_id"] == p_inv
+      assert parent_done["span_id"] is not None
+      assert parent_done["parent_span_id"] is None
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_multi_level_l0_l1_l2_unhandled_error_unwinds_all_frames(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Unhandled RuntimeError in L2 propagates cleanly through L1 and L0."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+
+    class _L2BoomAgent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        _ = ctx
+        raise RuntimeError("l2 deep boom")
+        if False:  # pylint: disable=using-constant-test
+          yield
+
+    l1_agent = llm_agent.LlmAgent(
+        name="l1_mid",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="l2_leaf", args={"request": "deep"}
+                                )
+                            )
+                        ]
+                    )
+                )
+            ]
+        ),
+        tools=[AgentTool(agent=_L2BoomAgent(name="l2_leaf"))],
+    )
+    l0_agent = llm_agent.LlmAgent(
+        name="l0_top",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name="l1_mid", args={"request": "mid"}
+                                )
+                            )
+                        ]
+                    )
+                )
+            ]
+        ),
+        tools=[AgentTool(agent=l1_agent)],
+    )
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        runner = testing_utils.InMemoryRunner(
+            root_agent=l0_agent, plugins=[plugin]
+        )
+        with pytest.raises(RuntimeError, match="l2 deep boom"):
+          await runner.run_async(testing_utils.UserContent("go"))
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      assert bq_mod._active_invocation_id_ctx.get() is None
+      assert bq_mod._parent_invocation_frames_ctx.get() == ()
+      assert bq_mod._span_records_ctx.get() == []
+
+      inv_errors = {
+          r["agent"]: r for r in rows if r["event_type"] == "INVOCATION_ERROR"
+      }
+      assert set(inv_errors) == {"l2_leaf", "l1_mid", "l0_top"}
+      l0_row = inv_errors["l0_top"]
+      l1_row = inv_errors["l1_mid"]
+      l2_row = inv_errors["l2_leaf"]
+      assert "parent_session_id" not in json.loads(l0_row["attributes"])["adk"]
+      assert json.loads(l1_row["attributes"])["adk"]["parent_session_id"] == (
+          l0_row["session_id"]
+      )
+      assert json.loads(l2_row["attributes"])["adk"]["parent_session_id"] == (
+          l1_row["session_id"]
+      )
+      assert {r["trace_id"] for r in rows} == {l0_row["trace_id"]}
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_unlinked_agent_tool_clears_root_agent_ctx_without_nulling_tool_completed(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Unlinked inner Runner clearing _root_agent_name_ctx preserves parent root_agent_name."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+
+    inner_agent = llm_agent.LlmAgent(
+        name="unlinked_inner_root",
+        model=testing_utils.MockModel(
+            responses=[
+                testing_utils.LlmResponse(
+                    content=testing_utils.ModelContent(
+                        parts=[types.Part(text="inner unlinked reply")]
+                    )
+                )
+            ]
+        ),
+    )
+
+    class _UnlinkedCustomAgentTool(AgentTool):
+
+      def __init__(self, agent, shared_plugin):
+        super().__init__(agent=agent)
+        self._shared_plugin = shared_plugin
+        self.saw_cleared_root_ctx = False
+
+      async def run_async(self, *, args, tool_context):
+        _ = tool_context
+        inner_runner = testing_utils.InMemoryRunner(
+            root_agent=self.agent, plugins=[self._shared_plugin]
+        )
+        inner_events = await inner_runner.run_async(
+            testing_utils.UserContent(str(args.get("request", "")))
+        )
+        self.saw_cleared_root_ctx = bq_mod._root_agent_name_ctx.get() is None
+        return inner_events[-1].content.parts[0].text
+
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        bq_mod.TraceManager._finish_invocation(None)
+        sub_leaf = base_agent.BaseAgent(name="sub_leaf")
+        root_holder = base_agent.BaseAgent(
+            name="direct_parent_root", sub_agents=[sub_leaf]
+        )
+        _ = root_holder
+        direct_ctx = _make_nested_test_invocation_context(
+            "direct-inv", "direct-sess", "direct_parent_root"
+        )
+        direct_ctx.agent = sub_leaf
+        enriched = plugin._enrich_attributes(
+            bq_mod.EventData(), CallbackContext(direct_ctx)
+        )
+        assert enriched["root_agent_name"] == "direct_parent_root"
+        assert bq_mod._root_agent_name_ctx.get() is None
+
+        mock_cb = mock.MagicMock()
+        mock_enriched = plugin._enrich_attributes(bq_mod.EventData(), mock_cb)
+        assert mock_enriched["root_agent_name"] is None
+        assert bq_mod._root_agent_name_ctx.get() is None
+
+        unlinked_tool = _UnlinkedCustomAgentTool(inner_agent, plugin)
+        parent_agent = llm_agent.LlmAgent(
+            name="unlinked_parent_root",
+            model=testing_utils.MockModel(
+                responses=[
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[
+                                types.Part(
+                                    function_call=types.FunctionCall(
+                                        name="unlinked_inner_root",
+                                        args={"request": "delegate"},
+                                    )
+                                )
+                            ]
+                        )
+                    ),
+                    testing_utils.LlmResponse(
+                        content=testing_utils.ModelContent(
+                            parts=[types.Part(text="parent final answer")]
+                        )
+                    ),
+                ]
+            ),
+            tools=[unlinked_tool],
+        )
+        runner = testing_utils.InMemoryRunner(
+            root_agent=parent_agent, plugins=[plugin]
+        )
+        events = await runner.run_async(testing_utils.UserContent("start"))
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      assert unlinked_tool.saw_cleared_root_ctx is True
+      assert bq_mod._root_agent_name_ctx.get() is None
+
+      p_inv = events[0].invocation_id
+      parent_rows = [r for r in rows if r["invocation_id"] == p_inv]
+      inner_rows = [r for r in rows if r["invocation_id"] != p_inv]
+      assert parent_rows and inner_rows
+
+      p_tool_done = next(
+          r for r in parent_rows if r["event_type"] == "TOOL_COMPLETED"
+      )
+      assert (
+          json.loads(p_tool_done["attributes"])["root_agent_name"]
+          == "unlinked_parent_root"
+      )
+      for r in parent_rows:
+        assert (
+            json.loads(r["attributes"])["root_agent_name"]
+            == "unlinked_parent_root"
+        )
+      for r in inner_rows:
+        assert (
+            json.loads(r["attributes"])["root_agent_name"]
+            == "unlinked_inner_root"
+        )
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+
+class TestResponseTextKeyConfig:
+  """Tests BigQueryLoggerConfig.response_text_key structured unwrapping."""
+
+  @pytest.mark.parametrize("key", [None, "response"])
+  def test_response_text_key_config_accepts_valid(self, key):
+    """Accepts None or non-blank str for response_text_key."""
+    bq_mod = bigquery_agent_analytics_plugin
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        config=bq_mod.BigQueryLoggerConfig(response_text_key=key),
+    )
+    assert plugin.config.response_text_key == key
+
+  @pytest.mark.parametrize("invalid_key", ["", "   ", 123])
+  def test_response_text_key_config_rejects_invalid(self, invalid_key):
+    """Rejects empty, blank, or non-str values for response_text_key."""
+    bq_mod = bigquery_agent_analytics_plugin
+    with pytest.raises(ValueError, match="response_text_key"):
+      bq_mod.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID,
+          DATASET_ID,
+          table_id=TABLE_ID,
+          config=bq_mod.BigQueryLoggerConfig(
+              response_text_key=invalid_key  # type: ignore[arg-type]
+          ),
+      )
+
+  @pytest.mark.asyncio
+  async def test_on_event_json_populates_text_summary_and_eval_sql(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """JSON AGENT_RESPONSE sets text_summary and unwraps in eval turn SQL."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+    eval_sql = _bigquery_agent_analytics_eval_sql
+    raw_json = '{"response": "Hello!", "confidence": 0.95}'
+
+    model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text=raw_json)]
+                )
+            )
+        ]
+    )
+    agent = llm_agent.LlmAgent(name="structured_agent", model=model)
+    config = bq_mod.BigQueryLoggerConfig(response_text_key="response")
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[plugin])
+    try:
+      await runner.run_async(testing_utils.UserContent("hi"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+
+    agent_resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+    content = json.loads(agent_resp["content"])
+    assert content["text_summary"] == "Hello!"
+    assert content["response"] == f"text: {raw_json!r}"
+
+    turn_eval = _EvalViewSqlEvaluator(
+        eval_sql.build_eval_turn_query_sql("p.d.t")
+    )
+    response_rows = turn_eval.run(rows, cte="ResponseEvents")
+    agent_response_rows = [
+        r
+        for r in response_rows
+        if r.get("event_type", "AGENT_RESPONSE") == "AGENT_RESPONSE"
+    ]
+    assert len(agent_response_rows) == 1
+    assert agent_response_rows[0]["response_text"] == "Hello!"
+
+    turn_rows = turn_eval.run(rows)
+    assert len(turn_rows) == 1
+    raw_trace = turn_rows[0]["trace"]
+    trace_obj = (
+        json.loads(raw_trace) if isinstance(raw_trace, str) else raw_trace
+    )
+    all_parts = _collect_eval_trace_parts(trace_obj)
+    assert [{"text": "Hello!"}] in all_parts
+    assert all_parts[-1] == [{"text": "Hello!"}]
+
+  @pytest.mark.asyncio
+  async def test_final_response_tool_populates_text_summary(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """final_response_tool_names extracts text_summary while keeping args."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    config = bq_mod.BigQueryLoggerConfig(
+        final_response_tool_names=frozenset({"submit_final_response"}),
+        response_text_key="answer",
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bq_mod.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "Tool answer", "extra": 1},
+          tool_context=tool_context,
+          result={"status": "SUCCESS"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+    agent_resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+    content = json.loads(agent_resp["content"])
+    assert content["text_summary"] == "Tool answer"
+    assert content["response"] == {"answer": "Tool answer", "extra": 1}
+
+  @pytest.mark.asyncio
+  async def test_response_text_key_truncation_and_redaction(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Extracted text_summary is truncated and redacted safely."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    inv_ctx = _make_nested_test_invocation_context(
+        "trunc-inv", "trunc-sess", "trunc_agent"
+    )
+    long_text = "x" * 60
+    config = bq_mod.BigQueryLoggerConfig(
+        response_text_key="response",
+        max_content_length=20,
+    )
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="trunc_agent",
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text=json.dumps({"response": long_text}))],
+            ),
+        )
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      agent_resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+      content = json.loads(agent_resp["content"])
+      assert agent_resp["is_truncated"] is True
+      assert content["text_summary"].startswith("x" * 20)
+      assert content["text_summary"] != long_text
+
+      bearer_config = bq_mod.BigQueryLoggerConfig(
+          final_response_tool_names=frozenset({"submit_final_response"}),
+          response_text_key="answer",
+      )
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=bearer_config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        mock_tool = mock.create_autospec(
+            base_tool_lib.BaseTool, instance=True, spec_set=True
+        )
+        type(mock_tool).name = mock.PropertyMock(
+            return_value="submit_final_response"
+        )
+        bq_mod.TraceManager.push_span(tool_context)
+        await plugin.after_tool_callback(
+            tool=mock_tool,
+            tool_args={"answer": "Authorization: Bearer super-secret-value"},
+            tool_context=tool_context,
+            result={"status": "SUCCESS"},
+        )
+        await plugin.flush()
+        bearer_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      redacted_resp = next(
+          r for r in bearer_rows if r["event_type"] == "AGENT_RESPONSE"
+      )
+      redacted_content = json.loads(redacted_resp["content"])
+      assert redacted_content["text_summary"] == "Authorization: [REDACTED]"
+      assert "super-secret-value" not in redacted_content["text_summary"]
+      assert (
+          plugin._extract_structured_response_summary(
+              {"answer": "api_key%3Dsuper-secret-value"}
+          )
+          is None
+      )
+      assert (
+          plugin._extract_structured_response_summary(
+              {"answer": "[REDACTED_SENSITIVE_TEXT]"}
+          )
+          is None
+      )
+      assert (
+          plugin._extract_structured_response_summary(
+              {"answer": "[UNPARSEABLE_JSON_BLOB]"}
+          )
+          is None
+      )
+
+      sensitive_key_config = bq_mod.BigQueryLoggerConfig(
+          final_response_tool_names=frozenset({"submit_final_response"}),
+          response_text_key="api_key",
+      )
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=sensitive_key_config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        mock_tool = mock.create_autospec(
+            base_tool_lib.BaseTool, instance=True, spec_set=True
+        )
+        type(mock_tool).name = mock.PropertyMock(
+            return_value="submit_final_response"
+        )
+        bq_mod.TraceManager.push_span(tool_context)
+        await plugin.after_tool_callback(
+            tool=mock_tool,
+            tool_args={"api_key": "super-secret-value"},
+            tool_context=tool_context,
+            result={"status": "SUCCESS"},
+        )
+        sensitive_event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="trunc_agent",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        text=json.dumps({"api_key": "super-secret-value"})
+                    )
+                ],
+            ),
+        )
+        await plugin.on_event_callback(
+            invocation_context=inv_ctx, event=sensitive_event
+        )
+        await plugin.flush()
+        sensitive_rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      sensitive_resps = [
+          r for r in sensitive_rows if r["event_type"] == "AGENT_RESPONSE"
+      ]
+      assert len(sensitive_resps) == 2
+      for resp in sensitive_resps:
+        resp_content = json.loads(resp["content"])
+        assert "text_summary" not in resp_content
+        assert "super-secret-value" not in resp["content"]
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "payload",
+      [
+          '{"other": "Hello!"}',
+          '{"response": 123}',
+          '{"response": {"nested": "v"}}',
+          '{"response": ["a", "b"]}',
+          '{"response": "   "}',
+          "{not-valid-json",
+          "plain text response",
+      ],
+  )
+  async def test_response_text_key_ignores_non_matching_or_invalid_json(
+      self,
+      payload,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """Non-matching, non-str, blank, or invalid JSON omits text_summary."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    inv_ctx = _make_nested_test_invocation_context(
+        "skip-inv", "skip-sess", "skip_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(response_text_key="response")
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="skip_agent",
+            content=types.Content(
+                role="model", parts=[types.Part(text=payload)]
+            ),
+        )
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      agent_resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+      content = json.loads(agent_resp["content"])
+      assert "text_summary" not in content
+      assert content["response"] == f"text: {payload!r}"
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_default_response_text_key_none_preserves_behavior(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Default response_text_key=None never synthesizes text_summary."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    inv_ctx = _make_nested_test_invocation_context(
+        "def-inv", "def-sess", "def_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(
+        final_response_tool_names=frozenset({"submit_final_response"})
+    )
+    raw_json = '{"response": "Hello!"}'
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="def_agent",
+            content=types.Content(
+                role="model", parts=[types.Part(text=raw_json)]
+            ),
+        )
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+
+        mock_tool = mock.create_autospec(
+            base_tool_lib.BaseTool, instance=True, spec_set=True
+        )
+        type(mock_tool).name = mock.PropertyMock(
+            return_value="submit_final_response"
+        )
+        bq_mod.TraceManager.push_span(tool_context)
+        await plugin.after_tool_callback(
+            tool=mock_tool,
+            tool_args={"response": "Hello!"},
+            tool_context=tool_context,
+            result={"status": "SUCCESS"},
+        )
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+      assert len(resp_rows) == 2
+      for row in resp_rows:
+        content = json.loads(row["content"])
+        assert "text_summary" not in content
+      assert (
+          json.loads(resp_rows[0]["content"])["response"]
+          == f"text: {raw_json!r}"
+      )
+      assert json.loads(resp_rows[1]["content"])["response"] == {
+          "response": "Hello!"
+      }
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_response_text_key_with_content_formatter(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """content_formatter runs after response_text_key synthesis."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+
+    def scrub(val):
+      if isinstance(val, str):
+        return val.replace("secret", "[MASKED]")
+      if isinstance(val, dict):
+        return {k: scrub(v) for k, v in val.items()}
+      if isinstance(val, list):
+        return [scrub(v) for v in val]
+      return val
+
+    def mask_secret(content, event_type):
+      _ = event_type
+      return scrub(content)
+
+    inv_ctx = _make_nested_test_invocation_context(
+        "fmt-inv", "fmt-sess", "fmt_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(
+        response_text_key="response",
+        final_response_tool_names=frozenset({"submit_final_response"}),
+        content_formatter=mask_secret,
+    )
+    event = event_lib.Event(
+        invocation_id=inv_ctx.invocation_id,
+        author="fmt_agent",
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text=json.dumps({"response": "Hello secret"}))],
+        ),
+    )
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+
+        mock_tool = mock.create_autospec(
+            base_tool_lib.BaseTool, instance=True, spec_set=True
+        )
+        type(mock_tool).name = mock.PropertyMock(
+            return_value="submit_final_response"
+        )
+        bq_mod.TraceManager.push_span(tool_context)
+        await plugin.after_tool_callback(
+            tool=mock_tool,
+            tool_args={"response": "Tool secret"},
+            tool_context=tool_context,
+            result={"status": "SUCCESS"},
+        )
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+      assert len(resp_rows) == 2
+      assert (
+          json.loads(resp_rows[0]["content"])["text_summary"]
+          == "Hello [MASKED]"
+      )
+      assert (
+          json.loads(resp_rows[1]["content"])["text_summary"] == "Tool [MASKED]"
+      )
+      assert "secret" not in resp_rows[0]["content"]
+      assert "secret" not in resp_rows[1]["content"]
+
+      mock_write_client.append_rows.reset_mock()
+      bq_mod.TraceManager._finish_invocation(None)
+
+      redact_config = bq_mod.BigQueryLoggerConfig(
+          response_text_key="response",
+          content_formatter=lambda content, event_type: "[REDACTED]",
+      )
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=redact_config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+        await plugin.flush()
+        rows2 = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp_rows2 = [r for r in rows2 if r["event_type"] == "AGENT_RESPONSE"]
+      assert len(resp_rows2) == 1
+      assert resp_rows2[0]["content"] == "[REDACTED]"
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_response_text_key_preserves_bracket_led_prose_and_blocks_secrets(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Bracket-led prose survives while malformed/secret blobs fail closed."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    eval_sql = _bigquery_agent_analytics_eval_sql
+    inv_ctx = _make_nested_test_invocation_context(
+        "brk-inv", "brk-sess", "brk_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(
+        response_text_key="response",
+        final_response_tool_names=frozenset({"submit_final_response"}),
+    )
+    cite_text = "[1] See the docs"
+    link_text = "[See the docs](https://example.test/guide)"
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="brk_agent",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        text=json.dumps(
+                            {"response": cite_text, "confidence": 0.9}
+                        )
+                    )
+                ],
+            ),
+        )
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+
+        mock_tool = mock.create_autospec(
+            base_tool_lib.BaseTool, instance=True, spec_set=True
+        )
+        type(mock_tool).name = mock.PropertyMock(
+            return_value="submit_final_response"
+        )
+        bq_mod.TraceManager.push_span(tool_context)
+        await plugin.after_tool_callback(
+            tool=mock_tool,
+            tool_args={"response": link_text, "extra": 1},
+            tool_context=tool_context,
+            result={"status": "SUCCESS"},
+        )
+
+        bad_payload, _, bad_trunc = await plugin.parser.parse({
+            "text_summary": '{"access_token":"MALFORMED-SECRET"',
+            "response": "ok",
+        })
+        assert bad_payload["text_summary"] == "[UNPARSEABLE_JSON_BLOB]"
+        assert bad_trunc is True
+        assert "MALFORMED-SECRET" not in json.dumps(bad_payload)
+
+        bearer_payload, _, bearer_trunc = await plugin.parser.parse({
+            "text_summary": "[WARN] Bearer\tBRACKET-BEARER-SECRET",
+            "response": "ok",
+        })
+        assert bearer_payload["text_summary"] == "[UNPARSEABLE_JSON_BLOB]"
+        assert bearer_trunc is True
+        assert "BRACKET-BEARER-SECRET" not in json.dumps(bearer_payload)
+
+        esc_dq_payload, _, esc_dq_trunc = await plugin.parser.parse({
+            "text_summary": '["{\\"access_token\\": \\"ESCAPED-DQ-SECRET\\"}"',
+            "response": "ok",
+        })
+        assert esc_dq_payload["text_summary"] == "[UNPARSEABLE_JSON_BLOB]"
+        assert esc_dq_trunc is True
+        assert "ESCAPED-DQ-SECRET" not in json.dumps(esc_dq_payload)
+
+        esc_sq_payload, _, esc_sq_trunc = await plugin.parser.parse({
+            "text_summary": (
+                "{\"text\": \"{\\'api_key\\': \\'ESCAPED-SQ-SECRET\\''"
+            ),
+            "response": "ok",
+        })
+        assert esc_sq_payload["text_summary"] == "[UNPARSEABLE_JSON_BLOB]"
+        assert esc_sq_trunc is True
+        assert "ESCAPED-SQ-SECRET" not in json.dumps(esc_sq_payload)
+
+        safe_esc_quote = "[INFO] user said \\\"hello\\\" and \\'world\\'"
+        safe_esc_payload, _, safe_esc_trunc = await plugin.parser.parse({
+            "text_summary": safe_esc_quote,
+            "response": "ok",
+        })
+        assert safe_esc_payload["text_summary"] == safe_esc_quote
+        assert safe_esc_trunc is False
+
+        redacted_payload, _, redacted_trunc = await plugin.parser.parse({
+            "text_summary": "[REDACTED]",
+            "response": "ok",
+        })
+        assert redacted_payload == {
+            "text_summary": "[REDACTED]",
+            "response": "ok",
+        }
+        assert redacted_trunc is False
+
+        short_parser = bq_mod.HybridContentParser(None, "t", "s", max_length=12)
+        sentinel_err_payload, _, sentinel_err_trunc = await short_parser.parse({
+            "text_summary": "[CONTENT_PARSE_FAILED]",
+            "response": "ok",
+        })
+        assert sentinel_err_payload == {
+            "text_summary": "[CONTENT_PARSE_FAILED]",
+            "response": "ok",
+        }
+        assert sentinel_err_trunc is True
+
+        other_payload, _, other_trunc = await plugin.parser.parse(
+            {"other_field": cite_text}
+        )
+        assert other_payload["other_field"] == "[UNPARSEABLE_JSON_BLOB]"
+        assert other_trunc is True
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+      assert len(resp_rows) == 2
+      assert json.loads(resp_rows[0]["content"])["text_summary"] == cite_text
+      assert json.loads(resp_rows[1]["content"])["text_summary"] == link_text
+
+      evaluator = _EvalViewSqlEvaluator(
+          eval_sql.build_eval_turn_query_sql("p.d.t")
+      )
+      evaluated = evaluator.run(resp_rows, cte="ResponseEvents")
+      assert [r["response_text"] for r in evaluated] == [cite_text, link_text]
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("malformed_value", "leaked_tail"),
+      [
+          ('{"access_token": {"value": "LIVE-NESTED-SECRET"}', "LIVE-NESTED"),
+          (
+              '{"password": "correct horse battery staple',
+              "horse battery staple",
+          ),
+      ],
+  )
+  async def test_response_text_key_malformed_json_secret_fails_closed(
+      self,
+      malformed_value,
+      leaked_tail,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Malformed JSON credential values fail closed under response_text_key."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    inv_ctx = _make_nested_test_invocation_context(
+        "mal-inv", "mal-sess", "mal_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(
+        response_text_key="response",
+        final_response_tool_names=frozenset({"submit_final_response"}),
+    )
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="mal_agent",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text=json.dumps({"response": malformed_value}))
+                ],
+            ),
+        )
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+
+        mock_tool = mock.create_autospec(
+            base_tool_lib.BaseTool, instance=True, spec_set=True
+        )
+        type(mock_tool).name = mock.PropertyMock(
+            return_value="submit_final_response"
+        )
+        bq_mod.TraceManager.push_span(tool_context)
+        await plugin.after_tool_callback(
+            tool=mock_tool,
+            tool_args={"response": malformed_value, "extra": 1},
+            tool_context=tool_context,
+            result={"status": "SUCCESS"},
+        )
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+      assert len(resp_rows) == 2
+      for row in resp_rows:
+        content = json.loads(row["content"])
+        assert "text_summary" not in content
+        assert leaked_tail not in row["content"]
+      assert (
+          json.loads(resp_rows[1]["content"])["response"]["response"]
+          == "[UNPARSEABLE_JSON_BLOB]"
+      )
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("raw_summary", "secret_tail"),
+      [
+          ('{"access_token": [REDACTED] "LIVE-SECRET"}', "LIVE-SECRET"),
+          (
+              '{"password": "[REDACTED]" horse battery staple',
+              "horse battery staple",
+          ),
+          (
+              '{"auth": "Bearer [REDACTED]\nBEARER-TAIL-SECRET"}',
+              "BEARER-TAIL-SECRET",
+          ),
+          (
+              '{"auth": "Basic [REDACTED]\nBASIC-TAIL-SECRET"}',
+              "BASIC-TAIL-SECRET",
+          ),
+          (
+              '{"msg": "Authorization: [REDACTED]\nHEADER-TAIL-SECRET"}',
+              "HEADER-TAIL-SECRET",
+          ),
+          (
+              r'{"access\u005ftoken": [REDACTED] "ESCAPED-TAIL-SECRET"}',
+              "ESCAPED-TAIL-SECRET",
+          ),
+          (
+              '["{\\"access_token\\": [REDACTED] \\"ARRAY-TAIL-SECRET\\"}"',
+              "ARRAY-TAIL-SECRET",
+          ),
+          (
+              '[{"msg": "Bearer [REDACTED]\nBEARER-TAIL-SECRET"}',
+              "BEARER-TAIL-SECRET",
+          ),
+          (
+              '["Basic [REDACTED]\nBASIC-TAIL-SECRET"',
+              "BASIC-TAIL-SECRET",
+          ),
+          ("{token=[REDACTED]} retrying", None),
+          ('[INFO] {"token": "[REDACTED]"} retry', None),
+      ],
+  )
+  async def test_parser_text_summary_already_redacted_malformed_json_fails_closed(
+      self,
+      raw_summary,
+      secret_tail,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Already-redacted markers inside malformed JSON stay fail-closed."""
+    _ = mock_write_client
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    config = bq_mod.BigQueryLoggerConfig(response_text_key="response")
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      parsed, _, truncated = await plugin.parser.parse({
+          "text_summary": raw_summary,
+          "response": "ok",
+      })
+      assert parsed["text_summary"] == "[UNPARSEABLE_JSON_BLOB]"
+      assert truncated is True
+      if secret_tail is not None:
+        assert secret_tail not in json.dumps(parsed)
+
+    default_parser = bq_mod.HybridContentParser(
+        offloader=None, trace_id="t", span_id="s", max_length=-1
+    )
+    default_payload, default_parts, default_truncated = (
+        await default_parser.parse(
+            types.Content(parts=[types.Part(text=raw_summary)])
+        )
+    )
+    assert default_payload == {"text_summary": "[UNPARSEABLE_JSON_BLOB]"}
+    assert default_parts[0]["text"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert default_truncated is True
+    if secret_tail is not None:
+      assert secret_tail not in json.dumps(default_payload)
+      assert secret_tail not in json.dumps(default_parts)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "raw_summary",
+      [
+          "[INFO] a basic test",
+          "[INFO] token=[REDACTED] retrying",
+      ],
+  )
+  async def test_parser_text_summary_preserves_safe_and_already_redacted_bracket_prose(
+      self,
+      raw_summary,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Safe and already-redacted bracket prose survive in parser output."""
+    _ = mock_write_client
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    config = bq_mod.BigQueryLoggerConfig(response_text_key="response")
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      parsed, _, truncated = await plugin.parser.parse({
+          "text_summary": raw_summary,
+          "response": "ok",
+      })
+      assert parsed["text_summary"] == raw_summary
+      assert truncated is False
+
+    default_parser = bq_mod.HybridContentParser(
+        offloader=None, trace_id="t", span_id="s", max_length=-1
+    )
+    default_payload, default_parts, default_truncated = (
+        await default_parser.parse(
+            types.Content(parts=[types.Part(text=raw_summary)])
+        )
+    )
+    assert default_payload == {"text_summary": raw_summary}
+    assert default_parts[0]["text"] == raw_summary
+    assert default_truncated is False
+
+  @pytest.mark.parametrize(
+      ("raw_text", "expected_text", "expected_changed"),
+      [
+          ("access_token=[REDACTED]", "access_token=[REDACTED]", False),
+          (
+              "[INFO] token=[REDACTED] retrying",
+              "[INFO] token=[REDACTED] retrying",
+              False,
+          ),
+          (
+              "[INFO] path=/a%20b token=secret",
+              "[INFO] path=/a%20b token=[REDACTED]",
+              True,
+          ),
+          (
+              r"[ERROR] detail=\"foo\" api_key=secret",
+              r"[ERROR] detail=\"foo\" api_key=[REDACTED]",
+              True,
+          ),
+          (
+              "{path=/a%20b token=secret}",
+              "{path=/a%20b token=[REDACTED]}",
+              True,
+          ),
+          (
+              r"{detail=\"foo\", api_key=secret}",
+              r"{detail=\"foo\", api_key=[REDACTED]}",
+              True,
+          ),
+          (
+              r'[INFO] msg="hello \"world\"" api_key=secret',
+              r'[INFO] msg="hello \"world\"" api_key=[REDACTED]',
+              True,
+          ),
+          (
+              r"[ERROR] api_key=\"abc\" path=/a%20b",
+              r"[ERROR] api_key=[REDACTED] path=/a%20b",
+              True,
+          ),
+          (
+              r"msg=\"x\" password=\'abc\'",
+              r"msg=\"x\" password=[REDACTED]",
+              True,
+          ),
+          (
+              "[DEBUG] body=user=bob&password=my%20pass&x=%2F",
+              "[DEBUG] body=user=bob&password=[REDACTED]&x=%2F",
+              True,
+          ),
+          (
+              r"Bearer abc%2Cdef tail\x41",
+              r"Bearer [REDACTED] tail\x41",
+              True,
+          ),
+          (r"token=\"abc\"", "token=[REDACTED]", True),
+      ],
+  )
+  def test_sanitize_sensitive_text_preserves_in_place_redaction_with_escapes(
+      self,
+      raw_text,
+      expected_text,
+      expected_changed,
+  ):
+    """In-place redaction stays intact when container escapes add no markers."""
+    assert bigquery_agent_analytics_plugin._sanitize_sensitive_text(
+        raw_text, -1
+    ) == (expected_text, expected_changed)
+
+  @pytest.mark.parametrize(
+      "raw_text",
+      [
+          r"[ERROR] api_key=\"secret value\"",
+          r"[ERROR] api_key=\'secret value\'",
+          r'[ERROR] api_key=\"secret value"',
+          r'api_key=%22secret value"',
+          r'api_key=\u0022secret value"',
+          r"api_key=%22secret value%22",
+          r"api_key=\u0022secret value\u0022",
+          r"api_key=\x22secret value\x22",
+          r"api_key=%27secret value%27",
+          r'{"note": "ok"} api_key=\"secret value\"',
+      ],
+  )
+  def test_sanitize_sensitive_text_escaped_quoted_secret_fails_closed(
+      self, raw_text
+  ):
+    """Escaped quotes wrapping spaces around secrets fail closed."""
+    sanitized, changed = (
+        bigquery_agent_analytics_plugin._sanitize_sensitive_text(raw_text, -1)
+    )
+    assert sanitized == "[REDACTED_SENSITIVE_TEXT]"
+    assert changed is True
+    assert "secret" not in sanitized
+    assert "value" not in sanitized
+
+  @pytest.mark.parametrize(
+      ("redacted", "reference", "expected"),
+      [
+          ("a=[REDACTED] b", "a=[REDACTED] b", True),
+          ("a=[REDACTED]", 'a="[REDACTED]"', True),
+          ("a=[REDACTED] x", "a=[REDACTED] tail x", True),
+          ('a=[REDACTED] value"', 'a="[REDACTED]"', False),
+          ("a=b", "a=[REDACTED]", False),
+          ("x", "x", True),
+          ("[REDACTED][REDACTED]", "anything", True),
+          ("ab[REDACTED]ba", "aba", False),
+      ],
+  )
+  def test_redaction_covers(self, redacted, reference, expected):
+    """Checks greedy left-to-right ordering of literal chunks between markers."""
+    assert (
+        bigquery_agent_analytics_plugin._redaction_covers(
+            redacted=redacted, reference=reference
+        )
+        is expected
+    )
+
+  def test_redaction_covers_requires_keyword_arguments(self):
+    """Rejects positional arguments so redacted and reference cannot swap."""
+    with pytest.raises(TypeError):
+      bigquery_agent_analytics_plugin._redaction_covers("x", "x")  # type: ignore[misc]
+
+  @pytest.mark.asyncio
+  async def test_default_response_text_key_none_preserves_bracket_log_and_error_redaction(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Default response_text_key=None keeps bracket logs and escaped errors."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    from .. import testing_utils
+
+    bq_mod = bigquery_agent_analytics_plugin
+    bracket_log = "[INFO] token=[REDACTED] retrying"
+    literal_close_secret = r'[ERROR] api_key=\"secret value"'
+    model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text=bracket_log)]
+                )
+            )
+        ]
+    )
+    agent = llm_agent.LlmAgent(name="default_agent", model=model)
+    config = bq_mod.BigQueryLoggerConfig()
+    assert config.response_text_key is None
+    plugin = bq_mod.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[plugin])
+    inv_ctx = _make_nested_test_invocation_context(
+        "def-brk-inv", "def-brk-sess", "default_agent"
+    )
+    try:
+      await runner.run_async(testing_utils.UserContent(bracket_log))
+      escaped_event = event_lib.Event(
+          invocation_id=inv_ctx.invocation_id,
+          author="default_agent",
+          content=types.Content(
+              role="model",
+              parts=[types.Part(text=r"[ERROR] detail=\"foo\" api_key=secret")],
+          ),
+      )
+      await plugin.on_event_callback(
+          invocation_context=inv_ctx, event=escaped_event
+      )
+      literal_close_event = event_lib.Event(
+          invocation_id=inv_ctx.invocation_id,
+          author="default_agent",
+          content=types.Content(
+              role="model",
+              parts=[types.Part(text=literal_close_secret)],
+          ),
+      )
+      await plugin.on_event_callback(
+          invocation_context=inv_ctx, event=literal_close_event
+      )
+      await plugin._log_event(
+          "AGENT_ERROR",
+          bq_mod.CallbackContext(inv_ctx),
+          raw_content={
+              "error_traceback": (
+                  r"Traceback: detail=\"foo\" at /a%20b api_key=secret"
+              )
+          },
+          event_data=bq_mod.EventData(
+              status="ERROR",
+              error_message="[INFO] path=/a%20b token=secret",
+          ),
+      )
+      await plugin._log_event(
+          "AGENT_ERROR",
+          bq_mod.CallbackContext(inv_ctx),
+          raw_content={
+              "error_traceback": r'Traceback: api_key=\"secret value"',
+              "bracket_trace": literal_close_secret,
+          },
+          event_data=bq_mod.EventData(
+              status="ERROR",
+              error_message=literal_close_secret,
+          ),
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+      bq_mod.TraceManager._finish_invocation(None)
+
+    user_msg = next(
+        r for r in rows if r["event_type"] == "USER_MESSAGE_RECEIVED"
+    )
+    assert json.loads(user_msg["content"]) == {"text_summary": bracket_log}
+    assert user_msg["content_parts"][0]["text"] == bracket_log
+    assert user_msg["is_truncated"] is False
+
+    llm_resp = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+    llm_content = json.loads(llm_resp["content"])
+    assert llm_content["response"] == f"text: {bracket_log!r}"
+    assert llm_resp["is_truncated"] is False
+
+    agent_resps = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+    assert len(agent_resps) == 3
+    first_agent_content = json.loads(agent_resps[0]["content"])
+    assert "text_summary" not in first_agent_content
+    assert first_agent_content["response"] == f"text: {bracket_log!r}"
+    assert agent_resps[0]["is_truncated"] is False
+
+    second_agent_content = json.loads(agent_resps[1]["content"])
+    assert "text_summary" not in second_agent_content
+    assert (
+        second_agent_content["response"]
+        == "text: '[ERROR] detail=\\\"foo\\\" api_key=[REDACTED]'"
+    )
+
+    third_agent_content = json.loads(agent_resps[2]["content"])
+    assert third_agent_content == {
+        "response": "text: '[REDACTED_SENSITIVE_TEXT]'"
+    }
+    assert agent_resps[2]["is_truncated"] is True
+    assert "secret" not in json.dumps(agent_resps[2], default=str)
+    assert "value" not in json.dumps(agent_resps[2], default=str)
+
+    err_rows = [r for r in rows if r["event_type"] == "AGENT_ERROR"]
+    assert len(err_rows) == 2
+    assert err_rows[0]["error_message"] == "[INFO] path=/a%20b token=[REDACTED]"
+    assert (
+        json.loads(err_rows[0]["content"])["error_traceback"]
+        == r"Traceback: detail=\"foo\" at /a%20b api_key=[REDACTED]"
+    )
+    assert err_rows[1]["error_message"] == "[REDACTED_SENSITIVE_TEXT]"
+    second_err_content = json.loads(err_rows[1]["content"])
+    assert second_err_content["error_traceback"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert second_err_content["bracket_trace"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert err_rows[1]["is_truncated"] is True
+    assert "secret" not in json.dumps(err_rows[1], default=str)
+    assert "value" not in json.dumps(err_rows[1], default=str)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "escaped_key",
+      [r"access\u005ftoken", "api%5fkey", "TEMP:secret"],
+  )
+  async def test_response_text_key_canonicalizes_escaped_sensitive_key(
+      self,
+      escaped_key,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Escaped sensitive response_text_key names never populate text_summary."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    inv_ctx = _make_nested_test_invocation_context(
+        "esck-inv", "esck-sess", "esck_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(response_text_key=escaped_key)
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        assert (
+            plugin._extract_structured_response_summary(
+                {escaped_key: "ESCAPED-KEY-SECRET"}
+            )
+            is None
+        )
+        assert (
+            plugin._extract_structured_response_summary(
+                json.dumps({escaped_key: "ESCAPED-KEY-SECRET"})
+            )
+            is None
+        )
+        event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="esck_agent",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        text=json.dumps({escaped_key: "ESCAPED-KEY-SECRET"})
+                    )
+                ],
+            ),
+        )
+        await plugin.on_event_callback(invocation_context=inv_ctx, event=event)
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+      assert "text_summary" not in json.loads(resp["content"])
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_response_text_key_bounds_json_inspection_and_short_circuits(
+      self,
+      monkeypatch,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Oversized/deep JSON skips json.loads and prose skips joining."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    inv_ctx = _make_nested_test_invocation_context(
+        "bnd-inv", "bnd-sess", "bnd_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(response_text_key="response")
+    deep_json = '{"a": ' * 1005 + '"ok"' + "}" * 1005
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        with mock.patch.object(
+            bq_mod.json, "loads", wraps=bq_mod.json.loads
+        ) as loads_spy:
+          assert plugin._extract_structured_response_summary(deep_json) is None
+          assert loads_spy.call_count == 0
+
+        with monkeypatch.context() as m:
+          m.setattr(bq_mod, "_MAX_JSON_INSPECT_CHARS", 128)
+          oversized_json = json.dumps({"response": "ok", "pad": "x" * 200})
+          with mock.patch.object(
+              bq_mod.json, "loads", wraps=bq_mod.json.loads
+          ) as loads_spy:
+            assert (
+                plugin._extract_structured_response_summary(oversized_json)
+                is None
+            )
+            assert loads_spy.call_count == 0
+
+        plain_event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="bnd_agent",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="  \ufeff "),
+                    types.Part(text="Hello world"),
+                    types.Part(text='{"response": "ignored"}'),
+                ],
+            ),
+        )
+        with mock.patch.object(
+            plugin,
+            "_extract_structured_response_summary",
+            wraps=plugin._extract_structured_response_summary,
+        ) as extract_spy:
+          await plugin.on_event_callback(
+              invocation_context=inv_ctx, event=plain_event
+          )
+          assert extract_spy.call_count == 0
+
+        json_event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="bnd_agent",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="  \n "),
+                    types.Part(text='{"response": '),
+                    types.Part(text='"Hello"}'),
+                ],
+            ),
+        )
+        await plugin.on_event_callback(
+            invocation_context=inv_ctx, event=json_event
+        )
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+      assert len(resp_rows) == 2
+      assert "text_summary" not in json.loads(resp_rows[0]["content"])
+      assert json.loads(resp_rows[1]["content"])["text_summary"] == "Hello"
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_sanitize_sensitive_text_preserves_escaped_valid_json_and_prose(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """In-place redacted JSON and prose with quote/ASCII escapes stay intact."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    sanitize = bq_mod._sanitize_sensitive_text
+
+    valid_json = '{"response": "He said \\"hello\\"", "token": "SECRET-VAL"}'
+    sanitized_json, changed_json = sanitize(valid_json, -1)
+    assert changed_json is True
+    assert json.loads(sanitized_json) == {
+        "response": 'He said "hello"',
+        "token": "[REDACTED]",
+    }
+
+    msg_with_quote = 'Authorization: Bearer LIVE-SECRET\nuser said \\"hello\\"'
+    assert sanitize(msg_with_quote, -1) == (
+        'Authorization: [REDACTED]\nuser said \\"hello\\"',
+        True,
+    )
+
+    tb_with_pct = (
+        "Traceback: api_key=LIVE-SECRET at "
+        "https://example.test/a%20b (it\\'s broken)"
+    )
+    assert sanitize(tb_with_pct, -1) == (
+        (
+            "Traceback: api_key=[REDACTED] at "
+            "https://example.test/a%20b (it\\'s broken)"
+        ),
+        True,
+    )
+
+    assert sanitize(r'{"access\u005ftoken": [REDACTED] "LIVE-SECRET"}', -1) == (
+        "[REDACTED_SENSITIVE_TEXT]",
+        True,
+    )
+    assert sanitize('{"msg": "api_key%3DSECRET"}', -1) == (
+        "[REDACTED_SENSITIVE_TEXT]",
+        True,
+    )
+
+    inv_ctx = _make_nested_test_invocation_context(
+        "esc-inv", "esc-sess", "esc_agent"
+    )
+    config = bq_mod.BigQueryLoggerConfig(response_text_key="response")
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        resp_event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="esc_agent",
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text=json.dumps({"response": valid_json}))],
+            ),
+        )
+        await plugin.on_event_callback(
+            invocation_context=inv_ctx, event=resp_event
+        )
+        prose_event = event_lib.Event(
+            invocation_id=inv_ctx.invocation_id,
+            author="esc_agent",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text=json.dumps({"response": msg_with_quote}))
+                ],
+            ),
+        )
+        await plugin.on_event_callback(
+            invocation_context=inv_ctx, event=prose_event
+        )
+        await plugin._log_event(
+            "AGENT_ERROR",
+            bq_mod.CallbackContext(inv_ctx),
+            raw_content={"error_traceback": tb_with_pct},
+            event_data=bq_mod.EventData(
+                status="ERROR", error_message=msg_with_quote
+            ),
+        )
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+      assert len(resp_rows) == 2
+      first_content = json.loads(resp_rows[0]["content"])
+      assert json.loads(first_content["text_summary"]) == {
+          "response": 'He said "hello"',
+          "token": "[REDACTED]",
+      }
+      second_content = json.loads(resp_rows[1]["content"])
+      assert (
+          second_content["text_summary"]
+          == 'Authorization: [REDACTED]\nuser said \\"hello\\"'
+      )
+      err_row = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+      assert (
+          err_row["error_message"]
+          == 'Authorization: [REDACTED]\nuser said \\"hello\\"'
+      )
+      assert (
+          json.loads(err_row["content"])["error_traceback"]
+          == "Traceback: api_key=[REDACTED] at "
+          "https://example.test/a%20b (it\\'s broken)"
+      )
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
+
+  @pytest.mark.asyncio
+  async def test_sanitizer_blocks_quote_eating_unclosed_quotes_nested_and_escape_free_containers(
+      self,
+  ):
+    """All 8 sanitizer P0/P2 cases fail closed or redact completely."""
+    bq_mod = bigquery_agent_analytics_plugin
+    sanitize = bq_mod._sanitize_sensitive_text
+    raw_sanitize = bq_mod.HybridContentParser._sanitize_raw_text
+    parser = bq_mod.HybridContentParser(
+        offloader=None, trace_id="t", span_id="s", max_length=-1
+    )
+
+    assert sanitize(
+        'api_key="first_word REAL-SECRET-MIDDLE Bearer tok1"', -1
+    ) == (
+        'api_key="[REDACTED]"',
+        True,
+    )
+    assert raw_sanitize(
+        'api_key="first_word REAL-SECRET-MIDDLE Bearer tok1"'
+    ) == ('api_key="[REDACTED]"', True)
+    assert sanitize(
+        'Authorization: Digest username="u", response="DIGEST-SECRET"', -1
+    ) == ("Authorization: [REDACTED]", True)
+
+    valid_bearer_json, bearer_changed = sanitize('{"msg": "Bearer tok1"}', -1)
+    assert bearer_changed is True
+    assert json.loads(valid_bearer_json) == {"msg": "Bearer [REDACTED]"}
+
+    fail_closed_cases = [
+        ('{"password": "correct horse battery staple', "horse battery staple"),
+        (
+            'Error: password="correct horse battery staple',
+            "horse battery staple",
+        ),
+        (r'password="abc\"', "abc"),
+        (
+            '{"access_token": {"value": "LIVE-NESTED-SECRET"}',
+            "LIVE-NESTED-SECRET",
+        ),
+        (
+            'Debug: access_token={"value": "LIVE-NESTED-SECRET"}',
+            "LIVE-NESTED-SECRET",
+        ),
+        (
+            'Debug: access_token=["LIVE-ARRAY-1", "LIVE-ARRAY-2"]',
+            "LIVE-ARRAY-2",
+        ),
+        (
+            '[{"msg": "Bearer [REDACTED]\nBEARER-TAIL-SECRET"}',
+            "BEARER-TAIL-SECRET",
+        ),
+        (
+            '["Basic [REDACTED]\nBASIC-TAIL-SECRET"',
+            "BASIC-TAIL-SECRET",
+        ),
+        ('{"access_token": [REDACTED] "LIVE-SECRET"}', "LIVE-SECRET"),
+        (
+            '{"password": "[REDACTED]" horse battery staple',
+            "horse battery staple",
+        ),
+        (
+            '{"auth": "Bearer [REDACTED]\nBEARER-TAIL-SECRET"}',
+            "BEARER-TAIL-SECRET",
+        ),
+        ('{"access_token": "LIVE-1" "LIVE-2"}', "LIVE-2"),
+    ]
+    for payload, leaked_fragment in fail_closed_cases:
+      out, changed = sanitize(payload, -1)
+      assert out == "[REDACTED_SENSITIVE_TEXT]", payload
+      assert changed is True, payload
+      assert leaked_fragment not in out
+
+      raw_out, raw_changed = raw_sanitize(payload)
+      assert raw_out in (
+          "[REDACTED_SENSITIVE_TEXT]",
+          "[UNPARSEABLE_JSON_BLOB]",
+      ), payload
+      assert raw_changed is True, payload
+      assert leaked_fragment not in raw_out
+
+    for loss_sentinel in (
+        "[REDACTED_SENSITIVE_TEXT]",
+        "[FORMATTING FAILED]",
+    ):
+      parsed_dict, _, dict_trunc = await parser.parse({
+          "text_summary": loss_sentinel,
+          "response": "ok",
+      })
+      assert parsed_dict == {"text_summary": loss_sentinel, "response": "ok"}
+      assert dict_trunc is True
+
+  @pytest.mark.asyncio
+  async def test_traceback_and_prose_prefixed_malformed_json_containers_fail_closed(
+      self,
+      mock_write_client,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Prefixed/traceback malformed JSON containers fail closed end-to-end."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    bq_mod = bigquery_agent_analytics_plugin
+    sanitize = bq_mod._sanitize_sensitive_text
+    raw_sanitize = bq_mod.HybridContentParser._sanitize_raw_text
+
+    prefixed_fail_closed = [
+        (
+            'Traceback: [{"msg": "Bearer [REDACTED]\nBEARER-TAIL-SECRET"}',
+            "BEARER-TAIL-SECRET",
+        ),
+        (
+            (
+                'Traceback (most recent call last):\n  File "x.py", line'
+                ' 1\nRuntimeError: [{"msg": "Bearer'
+                ' [REDACTED]\nBEARER-TAIL-SECRET"}'
+            ),
+            "BEARER-TAIL-SECRET",
+        ),
+        (
+            'RuntimeError: {"msg": "Bearer [REDACTED]\nLIVE-SECRET"}',
+            "LIVE-SECRET",
+        ),
+        (
+            'Error: {"access_token": [REDACTED] "LIVE-SECRET"}',
+            "LIVE-SECRET",
+        ),
+        (
+            r'Traceback: \u005b\u007b"msg": "Bearer [REDACTED]'
+            '\nESCAPED-BEARER-TAIL"}',
+            "ESCAPED-BEARER-TAIL",
+        ),
+    ]
+    for text_val, leaked_tail in prefixed_fail_closed:
+      out, changed = sanitize(text_val, -1)
+      assert out == "[REDACTED_SENSITIVE_TEXT]", text_val
+      assert changed is True, text_val
+      assert leaked_tail not in out
+
+      raw_out, raw_changed = raw_sanitize(text_val)
+      assert raw_out in (
+          "[REDACTED_SENSITIVE_TEXT]",
+          "[UNPARSEABLE_JSON_BLOB]",
+      ), text_val
+      assert raw_changed is True, text_val
+      assert leaked_tail not in raw_out
+
+    # Safe diagnostic prose and ordinary tracebacks stay preserved.
+    safe_diagnostics = [
+        "[INFO] token=[REDACTED] retrying",
+        'Traceback: api_key="[REDACTED]"',
+        (
+            'Traceback (most recent call last):\n  File "app.py", line 9\n'
+            '    val = headers["x-request-id"]\nRuntimeError: timeout'
+        ),
+    ]
+    for safe_text in safe_diagnostics:
+      assert sanitize(safe_text, -1) == (safe_text, False)
+
+    assert sanitize("{path=/a%20b token=secret}", -1) == (
+        "{path=/a%20b token=[REDACTED]}",
+        True,
+    )
+
+    inv_ctx = _make_nested_test_invocation_context(
+        "tb-mal-inv", "tb-mal-sess", "tb_mal_agent"
+    )
+    cb_ctx = CallbackContext(inv_ctx)
+    try:
+      async with managed_plugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+      ) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        try:
+          raise RuntimeError(
+              '[{"msg": "Bearer [REDACTED]\nBEARER-TAIL-SECRET"}'
+          )
+        except RuntimeError as bad_err:
+          await plugin.on_agent_error_callback(
+              agent=inv_ctx.agent, callback_context=cb_ctx, error=bad_err
+          )
+          await plugin.on_run_error_callback(
+              invocation_context=inv_ctx, error=bad_err
+          )
+
+        try:
+          raise ValueError("ordinary non-secret failure in [worker]")
+        except ValueError as safe_err:
+          await plugin.on_agent_error_callback(
+              agent=inv_ctx.agent, callback_context=cb_ctx, error=safe_err
+          )
+
+        await plugin._log_event(
+            "AGENT_ERROR",
+            cb_ctx,
+            raw_content={"error_traceback": "Traceback: safe frame only"},
+            event_data=bq_mod.EventData(
+                status="ERROR",
+                error_message=r"api_key=\"unclosed secret",
+            ),
+        )
+
+        await plugin.flush()
+        rows = await _get_captured_rows_async(
+            mock_write_client, dummy_arrow_schema
+        )
+
+      assert len(rows) == 4
+      serialized = json.dumps(rows[:2] + [rows[3]], default=str)
+      assert "BEARER-TAIL-SECRET" not in serialized
+      assert "unclosed secret" not in serialized
+      assert "safe frame only" not in serialized
+      for bad_row in (rows[0], rows[1], rows[3]):
+        assert bad_row["error_message"] == "[REDACTED_SENSITIVE_TEXT]"
+        assert bad_row["is_truncated"] is True
+        tb_val = json.loads(bad_row["content"])["error_traceback"]
+        assert tb_val in (
+            "[REDACTED_SENSITIVE_TEXT]",
+            "[UNPARSEABLE_JSON_BLOB]",
+        )
+
+      safe_row = rows[2]
+      assert (
+          safe_row["error_message"] == "ordinary non-secret failure in [worker]"
+      )
+      assert "ordinary non-secret failure in [worker]" in (
+          json.loads(safe_row["content"])["error_traceback"]
+      )
+      assert safe_row["is_truncated"] is False
+    finally:
+      bq_mod.TraceManager._finish_invocation(None)
 
 
 # pylint: enable=protected-access

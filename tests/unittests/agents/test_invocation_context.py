@@ -332,6 +332,25 @@ class TestInvocationContext:
     assert isinstance(ctx._abort_signal, asyncio.Event)
     assert ctx._abort_signal.is_set() is False
 
+  def test_parent_invocation_id_private_attr_and_model_copy(self):
+    """The parent invocation ID is private, excluded from fields, and copied."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_child',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert 'parent_invocation_id' not in InvocationContext.model_fields
+    assert '_parent_invocation_id' not in InvocationContext.model_fields
+    assert not hasattr(ctx, 'parent_invocation_id')
+    assert ctx._parent_invocation_id is None
+
+    ctx._parent_invocation_id = 'inv_parent'
+    shallow_copy = ctx.model_copy()
+    deep_copy = ctx.model_copy(deep=True)
+    assert shallow_copy._parent_invocation_id == 'inv_parent'
+    assert deep_copy._parent_invocation_id == 'inv_parent'
+
   def test_attach_abort_signal(self):
     """Attaching a caller-owned abort signal shares it across model_copy() instances."""
     custom_signal = asyncio.Event()

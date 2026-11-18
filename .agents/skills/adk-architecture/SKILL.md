@@ -72,6 +72,8 @@ code does not. Paths below are relative to `src/google/adk/`.
 | Node spans, `TelemetryContext` | `telemetry/node_tracing.py` |
 | `ResumabilityConfig` | `apps/_configs.py` |
 
-Everything under `workflow/` is a leading-underscore module. Treat those names
-as internal — they can change without a major version bump, so a change there
-is not automatically a breaking change.
+Everything under `workflow/` is a leading-underscore module. Treat the module
+paths, and any name `workflow/__init__.py` does not re-export, as internal —
+they can change without a major version bump. The names it does re-export
+(`BaseNode`, `Workflow`, `START` and the rest of its `__all__`) are public API,
+so a change to them can be a breaking change.

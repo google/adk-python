@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Sequence
 import contextlib
@@ -47,12 +48,18 @@ from ...utils.model_name_utils import is_gemini_model
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-_THINKING_LEVEL_MAP: dict[str, types.ThinkingLevel] = {
-    'minimal': types.ThinkingLevel.MINIMAL,
-    'low': types.ThinkingLevel.LOW,
-    'medium': types.ThinkingLevel.MEDIUM,
-    'high': types.ThinkingLevel.HIGH,
-}
+
+def _thinking_levels_by_name(
+    levels: Iterable[types.ThinkingLevel],
+) -> dict[str, types.ThinkingLevel]:
+  return {
+      level.name.lower(): level
+      for level in levels
+      if level.name != 'THINKING_LEVEL_UNSPECIFIED'
+  }
+
+
+_THINKING_LEVEL_MAP = _thinking_levels_by_name(types.ThinkingLevel)
 
 
 class AdvisorError(RuntimeError):  # pylint: disable=g-bad-exception-name
@@ -140,6 +147,8 @@ class AdvisorResult:
     model_version: Provider-reported model version string, if available.
     usage: Token usage snapshot for the consultation.
     latency_ms: End-to-end wall-clock duration of the consultation in ms.
+    thinking_level: Thinking level sent on the request that produced `text`,
+      or `None` if that request set none.
   """
 
   text: str
@@ -147,6 +156,7 @@ class AdvisorResult:
   model_version: str | None
   usage: AdvisorUsage
   latency_ms: float
+  thinking_level: types.ThinkingLevel | None
 
 
 def resolve_thinking_level(
@@ -155,9 +165,10 @@ def resolve_thinking_level(
   """Maps a user-supplied thinking level to `types.ThinkingLevel`.
 
   Args:
-    level: One of `'minimal'`, `'low'`, `'medium'`, `'high'`
-      (case-insensitive), `'none'` / `'off'` / `''` / `None` to leave thinking
-      unset, or a `types.ThinkingLevel` enum value.
+    level: Case-insensitive name of a `types.ThinkingLevel` member (such as
+      `'minimal'`, `'low'`, `'medium'`, `'high'`, or `'xhigh'` when defined by
+      the installed `google-genai`), `'none'` / `'off'` / `''` / `None` to leave
+      thinking unset, or a `types.ThinkingLevel` enum value.
 
   Returns:
     The corresponding `types.ThinkingLevel`, or `None` if disabled.
@@ -318,14 +329,21 @@ def _record_telemetry(
     elapsed_s: float,
     request: LlmRequest,
     responses: Sequence[LlmResponse],
+    telemetry_config: TelemetryConfig,
     error: Exception | None = None,
 ) -> None:
   """Emits standard ADK OpenTelemetry client duration and token metrics."""
   try:
     # pylint: disable=protected-access
-    if is_gemini_model(request.model) and _genai_instrumentor.records_inference(
-        TelemetryConfig()
-    ):
+    # The instrumentor records Gemini calls itself when it supports the
+    # semconv this request wants.
+    instrumentor_records = is_gemini_model(
+        request.model
+    ) and _genai_instrumentor.records_inference(telemetry_config)
+    emit_inference_tokens = (
+        _genai_instrumentor.should_emit_inference_token_metrics(request.model)
+    )
+    if instrumentor_records and not emit_inference_tokens:
       return
 
     normalized_responses: list[LlmResponse] = []
@@ -351,18 +369,29 @@ def _record_telemetry(
       )
       normalized_responses = [*responses[:-1], tail]
 
-    _metrics.record_client_operation_duration(
-        agent_name=agent_name,
-        elapsed_s=elapsed_s,
-        llm_request=request,
-        responses=normalized_responses,
-        error=error,
-    )
-    if last_usage_meta is not None and normalized_responses:
+    if not instrumentor_records:
+      _metrics.record_client_operation_duration(
+          agent_name=agent_name,
+          elapsed_s=elapsed_s,
+          llm_request=request,
+          responses=normalized_responses,
+          error=error,
+      )
+    if (
+        not instrumentor_records
+        and last_usage_meta is not None
+        and normalized_responses
+    ):
       _metrics.record_client_token_usage(
           agent_name=agent_name,
           llm_request=request,
           responses=normalized_responses,
+      )
+    if emit_inference_tokens:
+      _metrics.record_inference_token_usage(
+          llm_request=request,
+          responses=normalized_responses,
+          error=error,
       )
   except Exception:  # pylint: disable=broad-exception-caught
     logger.debug(
@@ -382,6 +411,7 @@ async def call_advisor(
     timeout_seconds: float | None = None,
     generate_content_config: types.GenerateContentConfig | None = None,
     agent_name: str = 'model_consult',
+    telemetry_config: TelemetryConfig | None = None,
 ) -> AdvisorResult:
   """Executes one non-streaming advisor call and returns its guidance text.
 
@@ -399,10 +429,13 @@ async def call_advisor(
     timeout_seconds: Optional positive wall-clock timeout in seconds.
     generate_content_config: Optional base `GenerateContentConfig` to copy.
     agent_name: Agent attribute recorded on OpenTelemetry client metrics.
+    telemetry_config: The invocation's telemetry config, so its per-request
+      overrides apply to the metrics above. Defaults to the env vars.
 
   Returns:
     An `AdvisorResult` with the advisor's visible response text, model info,
-    token usage, and wall-clock latency in milliseconds.
+    token usage, wall-clock latency in milliseconds, and the thinking level
+    actually sent, which is `None` after a retry without `thinking_config`.
 
   Raises:
     ValueError: If `timeout_seconds` is less than or equal to zero.
@@ -412,6 +445,8 @@ async def call_advisor(
     raise ValueError(
         f'timeout_seconds must be positive; got {timeout_seconds!r}.'
     )
+  if telemetry_config is None:
+    telemetry_config = TelemetryConfig()
 
   req = _build_request(
       llm=llm,
@@ -465,6 +500,7 @@ async def call_advisor(
           elapsed_s=time.perf_counter() - attempt_t0,
           request=req,
           responses=responses,
+          telemetry_config=telemetry_config,
           error=exc,
       )
       if timeout_seconds is not None:
@@ -478,6 +514,7 @@ async def call_advisor(
           elapsed_s=time.perf_counter() - attempt_t0,
           request=req,
           responses=responses,
+          telemetry_config=telemetry_config,
           error=exc,
       )
       raise
@@ -487,6 +524,7 @@ async def call_advisor(
           elapsed_s=time.perf_counter() - attempt_t0,
           request=req,
           responses=responses,
+          telemetry_config=telemetry_config,
           error=exc,
       )
       if can_retry_without_thinking and _is_thinking_config_error(exc):
@@ -514,6 +552,7 @@ async def call_advisor(
       elapsed_s=time.perf_counter() - attempt_t0,
       request=req,
       responses=responses,
+      telemetry_config=telemetry_config,
   )
   latency_ms = (time.perf_counter() - call_t0) * 1000.0
 
@@ -526,7 +565,16 @@ async def call_advisor(
       model_version=model_version,
       usage=usage,
       latency_ms=latency_ms,
+      thinking_level=_sent_thinking_level(req.config.thinking_config),
   )
+
+
+def _sent_thinking_level(
+    thinking_config: types.ThinkingConfig | None,
+) -> types.ThinkingLevel | None:
+  if thinking_config is None:
+    return None
+  return resolve_thinking_level(thinking_config.thinking_level)
 
 
 def _hit_output_cap(

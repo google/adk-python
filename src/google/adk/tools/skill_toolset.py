@@ -79,6 +79,8 @@ _MAX_GENERATED_ARTIFACTS_TOTAL_BYTES = 16 * 1024 * 1024  # 16 MiB total
 _MAX_GENERATED_ARTIFACTS_COUNT = 50  # 50 files max
 # Printed by the skill wrapper after execution; stripped from tool stdout.
 _GENERATED_FILES_MARKER = "__ADK_SKILL_GENERATED_FILES__:"
+# Holds the digest of the skill version written into the environment.
+_SKILL_HASH_MARKER_FILE = ".adk_skill_hash"
 
 # Message used for the "Content Injection" pattern.
 _BINARY_FILE_DETECTED_MSG = (
@@ -2110,8 +2112,24 @@ class RunSkillScriptTool(BaseTool):
       env: BaseEnvironment,
       tool_context: ToolContext,
   ) -> PurePosixPath:
-    # JIT Materialization: Check if the script exists in the environment.
-    # If not, write all skill resources (including scripts) to the environment.
+    """Writes the skill into the environment unless it holds this version.
+
+    The digest of the version last written is kept in a marker file in the
+    skill's folder in the environment, not on the toolset. One toolset can
+    serve several sandboxes, another process can write the same sandbox, and
+    a recreated sandbox starts empty, so the version has to be read from the
+    sandbox itself. The marker is written after every resource, so a failed
+    or partial write is retried by the next run.
+
+    Without `revalidate_skills`, a copy of another version is kept unless it
+    lacks the requested script.
+
+    Only writes. `BaseEnvironment` has no delete, so a resource the new version
+    dropped stays on disk.
+
+    Returns:
+      The path of the script in the environment.
+    """
     skills_folder = self._toolset.skills_folder
     if skills_folder is None:
       raise RuntimeError(
@@ -2125,17 +2143,37 @@ class RunSkillScriptTool(BaseTool):
         (skill_dir / "scripts" / normalized_file).as_posix()
     )
 
+    marker_path = cast(
+        Path,
+        PurePosixPath((skill_dir / _SKILL_HASH_MARKER_FILE).as_posix()),
+    )
+    content_hash = _skill_content_hash(skill)
+    marker: bytes | None
     try:
-      await env.read_file(cast(Path, script_path), ctx=tool_context)
-      script_exists = True
+      marker = await env.read_file(marker_path, ctx=tool_context)
     except FileNotFoundError:
-      script_exists = False
+      marker = None
 
-    if not script_exists:
+    if marker is None:
+      stale = True
+    elif marker.decode("utf-8", errors="replace").strip() == content_hash:
+      stale = False
+    elif self._toolset._revalidate_skills:
+      stale = True
+    else:
+      # Without revalidate_skills the written copy is kept, but a script it
+      # lacks still triggers a write, as before the marker existed.
+      try:
+        await env.read_file(cast(Path, script_path), ctx=tool_context)
+        stale = False
+      except FileNotFoundError:
+        stale = True
+    if stale:
       logger.info(
           "Materializing skill resources for %s in environment", skill.name
       )
       await _write_skill_resources_to_env(skill, skill_dir, env, tool_context)
+      await env.write_file(marker_path, content_hash, ctx=tool_context)
     return script_path
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
@@ -2220,9 +2258,6 @@ class SkillToolset(BaseToolset):
         in ({config.default_mode} | set(config.skill_overrides.values()))
     )
     self._revalidate_skills = config.enabled and config.revalidate_skills
-    # Digest last written into the sandbox, per skill, so a stale skill is
-    # rewritten once rather than every request.
-    self._materialized_skill_hashes: dict[str, str] = {}
 
     skills = skills or []
 
@@ -2307,7 +2342,9 @@ class SkillToolset(BaseToolset):
     if self._skills_folder is not None:
       return self._skills_folder
     if self._env is not None:
-      return self._env.working_dir / "skills"
+      working_dir = _env_utils.working_dir_or_none(self._env)
+      if working_dir is not None:
+        return working_dir / "skills"
     return None
 
   def _has_script_execution(self, context: ReadonlyContext | None) -> bool:
@@ -2803,18 +2840,10 @@ class SkillToolset(BaseToolset):
         t.name for t in self._tools if self._is_tool_selected(t, tool_context)
     }
 
-    # The environment is initialized on the first script run. Until then its
-    # working_dir, and so the default skills folder, may not exist yet.
-    # TODO: Check initialization through a method that takes `ctx`, so a
-    # session-scoped environment can answer from `ctx.state`.
-    if (
-        self._skills_folder is None
-        and self._env is not None
-        and not self._env.is_initialized
-    ):
-      skills_folder = None
-    else:
-      skills_folder = self.skills_folder
+    # None while the environment has no working_dir yet.
+    # TODO: Read the working directory through a method that takes `ctx`, so
+    # a session-scoped environment can answer from `ctx.state`.
+    skills_folder = self.skills_folder
 
     instructions = [
         _build_skill_system_instruction(
@@ -2924,16 +2953,6 @@ class SkillToolset(BaseToolset):
         raise skill
       if skill is None or _skill_content_hash(skill) == loaded_hash:
         continue
-      try:
-        await self._rematerialize_skill(skill, tool_context)
-      except Exception as e:  # pylint: disable=broad-exception-caught
-        # Still worth re-stating the skill; only the sandbox copy is stale.
-        logger.warning(
-            "Could not refresh skill '%s' in the environment: %s",
-            skill_name,
-            e,
-            exc_info=e,
-        )
       logger.info(
           "Skill '%s' changed since it was loaded; re-stating it.", skill_name
       )
@@ -2944,44 +2963,6 @@ class SkillToolset(BaseToolset):
           f" gave you:\n\n{skill.instructions}"
       )
     return instructions
-
-  async def _rematerialize_skill(
-      self, skill: models.Skill, tool_context: ToolContext
-  ) -> None:
-    """Rewrites a changed skill's resources into the environment.
-
-    Scripts are copied into the sandbox on first run and left there, so
-    without this the model would run the old copy of a script it has just been
-    re-briefed on.
-
-    Only writes. `BaseEnvironment` has no delete, so a resource the new version
-    dropped stays on disk; the re-stated instructions no longer mention it.
-
-    Does nothing while the environment is uninitialized: nothing has been
-    copied into it yet, and the first script run writes the current version.
-    This runs while the model request is built, so it must not initialize the
-    environment itself.
-
-    Args:
-      skill: The changed skill to write.
-      tool_context: Context of the request being built, passed to the
-        environment.
-    """
-    env = self._env
-    # TODO: Check initialization through a method that takes `ctx`, so a
-    # session-scoped environment can answer from `ctx.state`.
-    if env is None or not env.is_initialized:
-      return
-    skills_folder = self.skills_folder
-    if skills_folder is None:
-      return
-    content_hash = _skill_content_hash(skill)
-    if self._materialized_skill_hashes.get(skill.name) == content_hash:
-      return
-    await _write_skill_resources_to_env(
-        skill, skills_folder / skill.name, env, tool_context
-    )
-    self._materialized_skill_hashes[skill.name] = content_hash
 
   @override
   async def close(self) -> None:
