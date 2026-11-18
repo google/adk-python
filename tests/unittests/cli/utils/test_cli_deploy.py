@@ -66,6 +66,20 @@ class _Recorder:
     return self.calls[-1][1]
 
 
+def _allow_origins_args(dockerfile_content: str) -> List[str]:
+  """Returns the `--allow_origins` entries of the Dockerfile's exec-form CMD."""
+  cmd_line = next(
+      line
+      for line in dockerfile_content.splitlines()
+      if line.startswith("CMD ")
+  )
+  return [
+      arg
+      for arg in json.loads(cmd_line[len("CMD ") :])
+      if arg.startswith("--allow_origins")
+  ]
+
+
 # Fixtures
 @pytest.fixture(autouse=True)
 def _mute_click(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -521,10 +535,10 @@ def test_to_gke_happy_path(
   ]
   assert creds_args == expected_creds_args
 
-  assert (
-      "--allow_origins=http://localhost:3000,https://my-app.com"
-      in dockerfile_content
-  )
+  assert _allow_origins_args(dockerfile_content) == [
+      "--allow_origins=http://localhost:3000",
+      "--allow_origins=https://my-app.com",
+  ]
 
   apply_args = run_recorder.calls[2][0][0]
   expected_apply_args = [
@@ -2323,6 +2337,57 @@ def test_to_gke_dockerfile_trigger_oidc_options(
 
 
 @pytest.mark.parametrize(
+    "provider, provider_args",
+    [
+        ("cloud_run", ["--project=my-project", "--region=us-central1"]),
+        ("docker", []),
+    ],
+)
+def test_cli_deploy_passes_each_allow_origin_as_its_own_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+    provider: str,
+    provider_args: List[str],
+) -> None:
+  """Every repeated --allow_origins reaches the deployed api_server."""
+  src_dir = agent_dir(False, False)
+  dockerfiles: List[str] = []
+
+  class _FakeDeployer:
+
+    def deploy(self, *, temp_folder: str, **_: Any) -> None:
+      dockerfiles.append((Path(temp_folder) / "Dockerfile").read_text())
+
+  monkeypatch.setattr(
+      cli_deploy.DeployerFactory,
+      "get_deployer",
+      lambda _: _FakeDeployer(),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          provider,
+          *provider_args,
+          f"--temp_folder={tmp_path / 'build'}",
+          "--allow_origins=https://a.example.com",
+          "--allow_origins=regex:https://.*\\.b\\.example\\.com",
+          str(src_dir),
+      ],
+      catch_exceptions=False,
+  )
+
+  assert result.exit_code == 0, result.output
+  assert len(dockerfiles) == 1
+  assert _allow_origins_args(dockerfiles[0]) == [
+      "--allow_origins=https://a.example.com",
+      "--allow_origins=regex:https://.*\\.b\\.example\\.com",
+  ]
+
+
+@pytest.mark.parametrize(
     "adk_version, expect_flag",
     [
         ("2.1.0", False),
@@ -3120,7 +3185,7 @@ def test_render_dockerfile_with_python_version(
       service_options=[],
       trace_to_cloud_option="",
       otel_to_cloud_option="",
-      allow_origins_option="",
+      allow_origins=None,
       adk_version="1.2.0",
       host_option="--host=0.0.0.0",
       a2a_option="",
@@ -3155,7 +3220,7 @@ def test_render_dockerfile_rejects_invalid_python_version(
         service_options=[],
         trace_to_cloud_option="",
         otel_to_cloud_option="",
-        allow_origins_option="",
+        allow_origins=None,
         adk_version="1.2.0",
         host_option="--host=0.0.0.0",
         a2a_option="",
@@ -3557,6 +3622,70 @@ def test_get_extra_packages_copy_keeps_package_with_root_init_on_pythonpath(
 
 
 @pytest.mark.parametrize(
+    "pyproject_content",
+    [
+        "[tool.ruff]\nline-length = 100\n",
+        "",
+        "[tool.ruff\nline-length = ",
+    ],
+    ids=["tool_settings_only", "empty", "unparsable"],
+)
+def test_get_extra_packages_copy_keeps_non_project_folder_on_pythonpath(
+    tmp_path: Path,
+    pyproject_content: str,
+) -> None:
+  """A folder of modules whose pyproject.toml is not a project stays in /app."""
+  shared = tmp_path / "shared"
+  shared.mkdir()
+  (shared / "models.py").write_text("VALUE = 1\n")
+  (shared / "utils.py").write_text("VALUE = 2\n")
+  (shared / "pyproject.toml").write_text(pyproject_content)
+
+  rendered = cli_deploy._get_extra_packages_copy(["shared"], str(tmp_path))
+
+  assert 'COPY --chown=myuser:myuser "shared/" "/app/shared/"' in rendered
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in rendered
+  assert "pip" not in rendered
+  assert "/tmp/extra_packages" not in rendered
+  assert not cli_deploy._get_extra_packages_reinstall(
+      ["shared"], str(tmp_path), has_requirements=True
+  )
+
+
+@pytest.mark.parametrize(
+    "pyproject_content",
+    [
+        '[project]\nname = "shared"\nversion = "0.1.0"\n',
+        '[build-system]\nrequires = ["setuptools"]\n',
+    ],
+    ids=["project", "build_system"],
+)
+def test_get_extra_packages_copy_pip_installs_pyproject_project(
+    tmp_path: Path,
+    pyproject_content: str,
+) -> None:
+  """A pyproject.toml declaring a project or build system is pip-installed."""
+  shared = tmp_path / "shared"
+  (shared / "src" / "shared").mkdir(parents=True)
+  (shared / "pyproject.toml").write_text(pyproject_content)
+
+  rendered = cli_deploy._get_extra_packages_copy(["shared"], str(tmp_path))
+
+  assert (
+      'COPY --chown=myuser:myuser "shared/" "/tmp/extra_packages/shared/"'
+      in rendered
+  )
+  assert "PYTHONPATH" not in rendered
+  assert 'RUN ["pip", "install", "/tmp/extra_packages/shared"]' in rendered
+  assert cli_deploy._get_extra_packages_reinstall(
+      ["shared"], str(tmp_path), has_requirements=True
+  ) == (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/shared"]'
+  )
+
+
+@pytest.mark.parametrize(
     "archive_name",
     ["pkg-0.1.0.tar.gz", "pkg-0.1.0.tgz", "pkg-0.1.0.zip"],
 )
@@ -3599,3 +3728,170 @@ def test_get_extra_packages_copy_rejects_unsafe_basename(
   """Unsafe extra_packages basenames cannot break out of Dockerfile COPY."""
   with pytest.raises(click.ClickException):
     cli_deploy._get_extra_packages_copy([unsafe_base], str(tmp_path))
+
+
+def test_get_extra_packages_reinstall_handles_requirements_and_wheels(
+    tmp_path: Path,
+) -> None:
+  """Wheels reinstall; sdists and projects reinstall with requirements.txt."""
+  (tmp_path / "google_genai-1.38.0-py3-none-any.whl").write_bytes(b"wheel")
+  (tmp_path / "pkg-0.1.0.tar.gz").write_bytes(b"sdist")
+  schemas = tmp_path / "schemas"
+  (schemas / "agent_schemas").mkdir(parents=True)
+  (schemas / "pyproject.toml").write_text(
+      '[project]\nname = "agent-schemas"\nversion = "0.1.0"\n'
+  )
+  common = tmp_path / "common"
+  common.mkdir()
+  (common / "helper.py").write_text("VALUE = 1\n")
+
+  staged = [
+      "google_genai-1.38.0-py3-none-any.whl",
+      "pkg-0.1.0.tar.gz",
+      "schemas",
+      "common",
+  ]
+  copy_rendered = cli_deploy._get_extra_packages_copy(staged, str(tmp_path))
+  assert (
+      'RUN ["pip", "install",'
+      ' "/tmp/extra_packages/google_genai-1.38.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/pkg-0.1.0.tar.gz",'
+      ' "/tmp/extra_packages/schemas"]'
+      in copy_rendered
+  )
+  assert "--force-reinstall" not in copy_rendered
+
+  reinstall_no_reqs = cli_deploy._get_extra_packages_reinstall(
+      staged, str(tmp_path), has_requirements=False
+  )
+  assert reinstall_no_reqs == (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/google_genai-1.38.0-py3-none-any.whl"]'
+  )
+
+  reinstall_with_reqs = cli_deploy._get_extra_packages_reinstall(
+      staged, str(tmp_path), has_requirements=True
+  )
+  assert reinstall_with_reqs == (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/google_genai-1.38.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/pkg-0.1.0.tar.gz",'
+      ' "/tmp/extra_packages/schemas"]'
+  )
+
+  assert not cli_deploy._get_extra_packages_reinstall(
+      ["common"], str(tmp_path), has_requirements=True
+  )
+
+
+def test_extra_packages_resolve_before_and_override_after_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """extra_packages install before requirements.txt and reinstall afterward."""
+  src_dir = agent_dir(True, False)
+  wheel_file = tmp_path / "patched_pkg-1.0.0-py3-none-any.whl"
+  wheel_file.write_bytes(b"fake-wheel-bytes")
+  schemas_dir = tmp_path / "schemas"
+  (schemas_dir / "agent_schemas").mkdir(parents=True)
+  (schemas_dir / "pyproject.toml").write_text(
+      '[project]\nname = "agent-schemas"\nversion = "0.1.0"\n'
+  )
+
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+
+  ae_tmp = src_dir.parent / "ae_tmp"
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="ae_tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(wheel_file), str(schemas_dir)],
+  )
+  ae_dockerfile = (ae_tmp / "Dockerfile").read_text()
+
+  def mock_subprocess_run(*args, **kwargs):
+    del kwargs
+    if args and args[0] and args[0][0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="service/gke-svc created")
+    return types.SimpleNamespace(stdout="")
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+
+  cr_tmp = tmp_path / "cr_tmp"
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="my-gcp-project",
+      region="us-central1",
+      service_name="cr-svc",
+      app_name="agent",
+      temp_folder=str(cr_tmp),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.2.0",
+      extra_packages=[str(wheel_file), str(schemas_dir)],
+  )
+  cr_dockerfile = (cr_tmp / "Dockerfile").read_text()
+
+  gke_tmp = tmp_path / "gke_tmp"
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="my-gcp-project",
+      region="us-central1",
+      cluster_name="my-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(gke_tmp),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      adk_version="1.2.0",
+      extra_packages=[str(wheel_file), str(schemas_dir)],
+  )
+  gke_dockerfile = (gke_tmp / "Dockerfile").read_text()
+
+  extra_install_line = (
+      'RUN ["pip", "install",'
+      ' "/tmp/extra_packages/patched_pkg-1.0.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/schemas"]'
+  )
+  reqs_line = (
+      'RUN ["pip", "install", "-r", "/app/agents/agent/requirements.txt"]'
+  )
+  extra_reinstall_line = (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/patched_pkg-1.0.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/schemas"]'
+  )
+  dev_server_remove_marker = "os.path.join(d, 'dev_server*')"
+  for target_name, content in (
+      ("agent_engine", ae_dockerfile),
+      ("cloud_run", cr_dockerfile),
+      ("gke", gke_dockerfile),
+  ):
+    assert extra_install_line in content, target_name
+    assert reqs_line in content, target_name
+    assert extra_reinstall_line in content, target_name
+    assert dev_server_remove_marker in content, target_name
+    assert (
+        content.index(extra_install_line)
+        < content.index(reqs_line)
+        < content.index(extra_reinstall_line)
+        < content.index(dev_server_remove_marker)
+    ), target_name

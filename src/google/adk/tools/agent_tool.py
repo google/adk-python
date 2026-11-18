@@ -304,12 +304,20 @@ class AgentTool(BaseTool):
         else None
     )
     nested_compaction_config = _nested_compaction_config(invocation_context)
+    # A nested run that shares the caller's plugins records the caller's
+    # invocation, so those plugins can attribute its events to this call.
+    parent_invocation_id = (
+        invocation_context.invocation_id
+        if self.include_plugins and invocation_context is not None
+        else None
+    )
 
     class _NestedRunner(Runner):
       """Runs only the in-flow compaction trigger on the nested session.
 
       Post-invocation compaction is skipped because it would summarize a
-      session the tool is about to discard.
+      session the tool is about to discard. Each invocation context it creates
+      also records ``parent_invocation_id``.
       """
 
       @override
@@ -320,6 +328,9 @@ class AgentTool(BaseTool):
       ) -> InvocationContext:
         ctx = super()._new_invocation_context(session, **kwargs)
         ctx.events_compaction_config = nested_compaction_config
+        ctx._parent_invocation_id = (  # pylint: disable=protected-access
+            parent_invocation_id
+        )
         return ctx
 
       @override

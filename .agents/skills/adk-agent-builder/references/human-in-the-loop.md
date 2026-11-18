@@ -119,11 +119,11 @@ Wire the routes back with `(review, {'rejected': revise, 'approved': publish})`.
 **Replay (the default).** With no `App`, or with `is_resumable=False`, each
 response replays the workflow from `START`. Completed nodes are skipped and
 state is rebuilt from event history, so only the interrupted node actually runs
-again. Fine for a single interrupt; the replay cost grows with the graph.
+again. The replay cost grows with the graph.
 
-**Resumable.** Export an `App` with `is_resumable=True` and the workflow
-checkpoints its progress into `event.actions.agent_state` and resumes at the
-interrupted node instead of replaying.
+**Resumable.** Export an `App` with `is_resumable=True` and the workflow also
+checkpoints its progress into `event.actions.agent_state`. It still resumes by
+the same replay: the checkpoint is written but not read back.
 
 ```python
 root_agent = Workflow(name='my_workflow', edges=[...])
@@ -136,9 +136,7 @@ app = App(
 ```
 
 Export both `root_agent` and `app` from `agent.py` — the loader prefers `app`
-but other tooling looks for `root_agent`. Use resumable mode for multi-step
-interrupts, for `LongRunningFunctionTool`, and for any graph large enough that
-replaying it is wasteful.
+but other tooling looks for `root_agent`.
 
 ## Human-in-the-loop from an LLM agent
 

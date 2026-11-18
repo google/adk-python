@@ -18,8 +18,8 @@ import time
 
 import agent
 from dotenv import load_dotenv
-from google.adk.agents.run_config import RunConfig
 from google.adk.cli.utils import logs
+from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
 from google.adk.runners import InMemoryRunner
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -34,6 +34,7 @@ async def main():
   runner = InMemoryRunner(
       agent=agent.root_agent,
       app_name=app_name,
+      plugins=[SaveFilesAsArtifactsPlugin()],
   )
   session_11 = await runner.session_service.create_session(
       app_name=app_name, user_id=user_id_1
@@ -49,7 +50,7 @@ async def main():
         session_id=session.id,
         new_message=content,
     ):
-      if event.content.parts and event.content.parts[0].text:
+      if event.content and event.content.parts and event.content.parts[0].text:
         print(f"** {event.author}: {event.content.parts[0].text}")
 
   async def run_prompt_bytes(session: Session, new_message: str):
@@ -66,9 +67,8 @@ async def main():
         user_id=user_id_1,
         session_id=session.id,
         new_message=content,
-        run_config=RunConfig(save_input_blobs_as_artifacts=True),
     ):
-      if event.content.parts and event.content.parts[0].text:
+      if event.content and event.content.parts and event.content.parts[0].text:
         print(f"** {event.author}: {event.content.parts[0].text}")
 
   async def check_rolls_in_state(rolls_size: int):

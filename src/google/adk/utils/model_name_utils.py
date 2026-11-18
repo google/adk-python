@@ -151,20 +151,8 @@ def is_gemini_eap_or_2_or_above(model_string: str | None) -> bool:
   if _is_gemini_eap_model(model_string):
     return True
 
-  model_name = extract_model_name(model_string)
-  if not model_name.startswith('gemini-'):
-    return False
-
-  version_string = model_name[len('gemini-') :].split('-', 1)[0]
-  if not version_string:
-    return False
-
-  try:
-    parsed_version = Version(version_string)
-  except InvalidVersion:
-    return False
-
-  return parsed_version.major >= 2
+  major = _gemini_major_version(model_string)
+  return major is not None and major >= 2
 
 
 def _is_gemini_eap_model(model_string: str | None) -> bool:
@@ -195,6 +183,25 @@ def _is_gemini_eap_model(model_string: str | None) -> bool:
   )
 
 
+def _gemini_major_version(model_string: str | None) -> int | None:
+  """Returns the numeric major version of a Gemini model, or None."""
+  if not model_string or not is_gemini_model(model_string):
+    return None
+
+  model_name = extract_model_name(model_string)
+  version_string = model_name[len('gemini-') :].split('-', 1)[0]
+  try:
+    return Version(version_string).major
+  except InvalidVersion:
+    return None
+
+
+def _is_gemini_3_or_newer(model_string: str | None) -> bool:
+  """Whether `model_string` names a Gemini 3.0 or later model."""
+  major = _gemini_major_version(model_string)
+  return major is not None and major >= 3
+
+
 def _supports_builtin_tools_with_function_calling(
     model_string: str | None,
 ) -> bool:
@@ -211,18 +218,7 @@ def _supports_builtin_tools_with_function_calling(
   Returns:
     True if the model is Gemini 3.0 or later, False otherwise.
   """
-  if not model_string:
-    return False
-
-  model_name = extract_model_name(model_string)
-  if not model_name.startswith('gemini-'):
-    return False
-
-  version_string = model_name[len('gemini-') :].split('-', 1)[0]
-  try:
-    return Version(version_string).major >= 3
-  except InvalidVersion:
-    return False
+  return _is_gemini_3_or_newer(model_string)
 
 
 def _is_gemini_3_x_live(model_string: str | None) -> bool:

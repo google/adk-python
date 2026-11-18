@@ -6673,8 +6673,6 @@ class TestRemoteA2aAgentTaskModeOutputUnwrapping:
             assert success_event.output == expected_output
 
   @pytest.mark.asyncio
-
-  @pytest.mark.asyncio
   async def test_finish_task_response_only_uses_final_text(self):
     """Response-only finish_task (no FC args) keeps the remote's text output.
 
@@ -6755,6 +6753,7 @@ class TestRemoteA2aAgentTaskModeOutputUnwrapping:
             assert len(events) >= 1
             assert events[0].output == "17 * 23 = 391"
 
+  @pytest.mark.asyncio
   async def test_output_unwrapping_integration_with_history(self):
     """Test that output unwrapping works when driving real events through the stream.
 
@@ -7371,6 +7370,11 @@ class TestRemoteA2aAgentWorkflowOutput:
           "input-required",
           "auth-required",
           "unknown",
+          "TASK_STATE_SUBMITTED",
+          "TASK_STATE_WORKING",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_AUTH_REQUIRED",
+          "TASK_STATE_UNSPECIFIED",
       ],
   )
   def test_skips_non_final_task_states(self, state):
@@ -7382,6 +7386,23 @@ class TestRemoteA2aAgentWorkflowOutput:
     """
     agent = self._make_agent()
     event = self._make_text_event(text="in-progress chunk", task_state=state)
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
+
+  def test_skips_serialized_unknown_task_state(self):
+    """A2A 1.x drops the default UNSPECIFIED state from the serialized task."""
+    agent = self._make_agent()
+    event = self._make_text_event(text="unknown-state text")
+    task = _compat.make_task(
+        id="t",
+        context_id="c",
+        status=_compat.make_task_status(_compat.TS_UNKNOWN),
+    )
+    event.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": _compat.a2a_to_dict(task)
+    }
     event.node_info.path = self._NODE_PATH
 
     assert agent._promote_response_to_output(event, self._NODE_PATH) is False
@@ -7407,6 +7428,27 @@ class TestRemoteA2aAgentWorkflowOutput:
 
     assert agent._promote_response_to_output(event, self._NODE_PATH) is True
     assert event.output == "message reply"
+
+  @pytest.mark.parametrize("state", ["completed", "TASK_STATE_COMPLETED"])
+  def test_promotes_completed_task_with_error_code(self, state):
+    """A finish-reason code on a completed task does not drop the answer."""
+    agent = self._make_agent()
+    event = self._make_text_event(text="truncated answer", task_state=state)
+    event.error_code = "MAX_TOKENS"
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is True
+    assert event.output == "truncated answer"
+
+  @pytest.mark.parametrize("state", ["failed", "TASK_STATE_FAILED"])
+  def test_skips_failed_task_with_error_code(self, state):
+    agent = self._make_agent()
+    event = self._make_text_event(text="Token limit reached", task_state=state)
+    event.error_code = "MAX_TOKENS"
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
 
   @pytest.mark.asyncio
   async def test_run_impl_promotes_only_first_terminal_event(self):
@@ -9378,6 +9420,89 @@ async def test_after_request_metadata_overrides_are_preserved():
     assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
 
 
+def _failed_task_stream(*, streaming, use_v2, text):
+  """A task that works, then fails: a status update when streamed, the task
+  itself when not."""
+  message = _compat.make_message(
+      message_id="failure",
+      role="agent",
+      parts=[_compat.make_text_part(text)],
+  )
+  if streaming:
+    stream = _bare_task_stream(_compat.TS_FAILED, use_v2=use_v2)
+    status = _compat.make_task_status(_compat.TS_FAILED, message=message)
+    if _compat.IS_A2A_V1:
+      stream[-1].status_update.status.CopyFrom(status)
+    else:
+      stream[-1][0].status = status
+      stream[-1][1].status = status
+    return stream
+  task = _compat.make_task(
+      id="currency-task",
+      context_id="currency-context",
+      status=_compat.make_task_status(_compat.TS_FAILED, message=message),
+      metadata=(
+          {remote_a2a_agent._NEW_A2A_ADK_INTEGRATION_EXTENSION: True}
+          if use_v2
+          else None
+      ),
+  )
+  return [_make_stream_task(task)]
+
+
+@pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_failed_remote_task_in_workflow_is_not_promoted_to_output(
+    use_v2, streaming
+):
+  """A failed task in a workflow node is not promoted to event.output."""
+  from google.adk.apps.app import App
+  from google.adk.workflow._join_node import JoinNode
+  from google.adk.workflow._workflow import Workflow
+  from google.adk.workflow.utils import _rehydration_utils
+
+  from tests.unittests import testing_utils
+
+  agent = RemoteA2aAgent(
+      name="currency",
+      agent_card=create_test_agent_card(name="currency"),
+  )
+
+  async def send_message(client, **kwargs):
+    del client, kwargs
+    for response in _failed_task_stream(
+        streaming=streaming, use_v2=use_v2, text="claude exited with code 1"
+    ):
+      yield response
+
+  workflow = Workflow(
+      name="wf",
+      edges=[("START", agent, JoinNode(name="join"))],
+  )
+  runner = testing_utils.InMemoryRunner(app=App(name="t", root_agent=workflow))
+  with (
+      patch.object(agent, "_ensure_resolved", return_value=object()),
+      patch.object(_compat, "send_message", side_effect=send_message),
+  ):
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+
+  failures = [e for e in events if e.error_code == A2A_TASK_FAILED_ERROR_CODE]
+  assert len(failures) == 1
+  assert failures[0].output is None
+  assert failures[0].node_info.message_as_output is None
+  join_outputs = [
+      e.output
+      for e in events
+      if e.output is not None and "join" in (e.node_info.path or "")
+  ]
+  assert join_outputs == [{"currency": None}]
+  recovered = _rehydration_utils._reconstruct_node_states(
+      events, base_path="wf@1", invocation_id="", group_by_direct_child=True
+  )
+  assert recovered["currency@1"].error_code == A2A_TASK_FAILED_ERROR_CODE
+  assert recovered["currency@1"].output is None
+
+
 @pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "unary"])
 async def test_task_mode_sub_agent_returns_remote_task_output(
     streaming: bool,
@@ -9446,3 +9571,671 @@ async def test_task_mode_sub_agent_returns_remote_task_output(
   ]
   assert len(tool_responses) == 1
   assert tool_responses[0].response == {"result": "42"}
+
+
+def _build_streaming_a2a_script(
+    steps: list[tuple],
+    *,
+    use_v2: bool = False,
+    task_id: str = "specialist-task",
+    context_id: str = "specialist-context",
+    initial_state=None,
+) -> list:
+  """Build SDK-native streaming responses from compact step tuples.
+
+  Supported step tuples:
+  - ``("artifact", artifact_id, [text, ...], append, last_chunk)``
+  - ``("status", state, message_text_or_none)``
+  - ``("task", state, artifact_specs_list)`` where each artifact spec is
+    ``(artifact_id, [text, ...])``
+  """
+  metadata = (
+      {remote_a2a_agent._NEW_A2A_ADK_INTEGRATION_EXTENSION: True}
+      if use_v2
+      else None
+  )
+  start_state = _compat.TS_WORKING if initial_state is None else initial_state
+  running_task = _compat.make_task(
+      id=task_id,
+      context_id=context_id,
+      status=_compat.make_task_status(start_state),
+      metadata=metadata,
+  )
+  responses = [_make_stream_task(copy.deepcopy(running_task))]
+
+  for step in steps:
+    kind = step[0]
+    if kind == "artifact":
+      _, artifact_id, texts, append, last_chunk = step
+      artifact = _compat.make_artifact(
+          artifact_id=artifact_id,
+          parts=[_compat.make_text_part(text) for text in texts],
+      )
+      update = TaskArtifactUpdateEvent(
+          task_id=task_id,
+          context_id=context_id,
+          artifact=artifact,
+          append=append,
+          last_chunk=last_chunk,
+      )
+      if _compat.IS_A2A_V1:
+        from a2a.types import StreamResponse
+
+        responses.append(StreamResponse(artifact_update=update))
+      else:
+        task_artifact = copy.deepcopy(artifact)
+        existing_by_id = {
+            art.artifact_id: idx
+            for idx, art in enumerate(running_task.artifacts or [])
+        }
+        if running_task.artifacts is None:
+          running_task.artifacts = []
+        if append and artifact_id in existing_by_id:
+          idx = existing_by_id[artifact_id]
+          running_task.artifacts[idx].parts.extend(task_artifact.parts)
+        elif artifact_id in existing_by_id:
+          idx = existing_by_id[artifact_id]
+          running_task.artifacts[idx] = task_artifact
+        else:
+          running_task.artifacts.append(task_artifact)
+        responses.append((copy.deepcopy(running_task), copy.deepcopy(update)))
+    elif kind == "status":
+      _, state, msg_text = step
+      status_part = (
+          _compat.make_text_part(msg_text) if msg_text is not None else None
+      )
+      if (
+          status_part is not None
+          and use_v2
+          and state in (_compat.TS_SUBMITTED, _compat.TS_WORKING)
+      ):
+        _compat.set_part_metadata(
+            status_part, {_get_adk_metadata_key("thought"): True}
+        )
+      message = (
+          _compat.make_message(
+              message_id=f"msg-{len(responses)}",
+              role="agent",
+              parts=[status_part],
+          )
+          if status_part is not None
+          else None
+      )
+      status = _compat.make_task_status(state, message=message)
+      update = _compat.make_task_status_update_event(
+          task_id=task_id,
+          context_id=context_id,
+          status=status,
+          final=state not in remote_a2a_agent._UNFINISHED_TASK_STATES,
+      )
+      if _compat.IS_A2A_V1:
+        from a2a.types import StreamResponse
+
+        responses.append(StreamResponse(status_update=update))
+      else:
+        if message is not None:
+          if running_task.history is None:
+            running_task.history = []
+          running_task.history.append(copy.deepcopy(message))
+        running_task.status = copy.deepcopy(status)
+        responses.append((copy.deepcopy(running_task), copy.deepcopy(update)))
+    elif kind == "task":
+      _, state, artifact_specs = step
+      artifacts = [
+          _compat.make_artifact(
+              artifact_id=art_id,
+              parts=[_compat.make_text_part(t) for t in texts],
+          )
+          for art_id, texts in artifact_specs
+      ]
+      snap = _compat.make_task(
+          id=task_id,
+          context_id=context_id,
+          status=_compat.make_task_status(state),
+          artifacts=artifacts or None,
+          metadata=metadata,
+      )
+      running_task = snap
+      responses.append(_make_stream_task(copy.deepcopy(snap)))
+    else:
+      raise ValueError(f"Unknown test stream step: {kind}")
+
+  return responses
+
+
+async def _run_single_streaming_turn(
+    script: list,
+    *,
+    config: A2aRemoteAgentConfig | None = None,
+    mode: str | None = None,
+):
+  """Run one turn through InMemoryRunner against a scripted A2A stream."""
+  from tests.unittests import testing_utils
+
+  kwargs = {"config": config}
+  if mode is not None:
+    kwargs["mode"] = mode
+  agent = RemoteA2aAgent(
+      name="specialist",
+      agent_card=create_test_agent_card(name="specialist"),
+      **kwargs,
+  )
+  runner = testing_utils.InMemoryRunner(root_agent=agent)
+
+  async def send_message(client, **kwargs):
+    del client, kwargs
+    for item in script:
+      yield item
+
+  with (
+      patch.object(agent, "_ensure_resolved", return_value=object()),
+      patch.object(_compat, "send_message", side_effect=send_message),
+  ):
+    events = await runner.run_async("Analyze the quarterly report")
+  return events, runner.session
+
+
+def _persisted_answer_texts(session, author: str) -> list[str]:
+  """Non-thought text persisted for ``author``, one entry per session event."""
+  texts = []
+  for ev in session.events:
+    if ev.author != author or not ev.content or not ev.content.parts:
+      continue
+    text = "".join(p.text for p in ev.content.parts if p.text and not p.thought)
+    if text:
+      texts.append(text)
+  return texts
+
+
+class TestRemoteA2aAgentStreamingAggregation:
+  """Verifies streaming partial artifact aggregation and session persistence."""
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_partial_artifact_stream_without_last_chunk_persists_final_answer(
+      self, use_v2
+  ):
+    """Streamed partial artifact chunks without last_chunk=True emit and persist a final aggregated event."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Quarterly revenue "], False, False),
+            ("status", _compat.TS_WORKING, "Querying regional breakdown..."),
+            ("artifact", "answer-1", ["grew 18% YoY."], True, False),
+            ("status", _compat.TS_WORKING, "Cross-checking totals..."),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, session = await _run_single_streaming_turn(script)
+
+    partial_answer_events = [
+        ev
+        for ev in events
+        if ev.partial is True
+        and ev.content
+        and any(p.text and not p.thought for p in ev.content.parts)
+    ]
+    final_answer_events = [
+        ev
+        for ev in events
+        if not ev.partial
+        and ev.content
+        and any(p.text and not p.thought for p in ev.content.parts)
+    ]
+    assert [ev.content.parts[0].text for ev in partial_answer_events] == [
+        "Quarterly revenue ",
+        "grew 18% YoY.",
+    ]
+    assert len(final_answer_events) == 1
+    assert final_answer_events[0].content.parts[0].text == (
+        "Quarterly revenue grew 18% YoY."
+    )
+    assert final_answer_events[0].is_final_response()
+    assert {ev.id for ev in partial_answer_events} == {
+        final_answer_events[0].id
+    }
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "Quarterly revenue grew 18% YoY."
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_single_partial_artifact_followed_by_working_updates_persists_answer(
+      self, use_v2
+  ):
+    """A single last_chunk=False artifact followed by working status updates and bare completion persists the answer."""
+    steps = [
+        ("artifact", "answer-1", ["The specialist answer is 42."], False, False)
+    ]
+    for idx in range(5):
+      steps.append(("status", _compat.TS_WORKING, f"Step {idx + 1} progress"))
+    steps.append(("status", _compat.TS_COMPLETED, None))
+    script = _build_streaming_a2a_script(steps, use_v2=use_v2)
+
+    events, session = await _run_single_streaming_turn(script)
+
+    assert events[-1].partial is False
+    assert events[-1].content.parts[0].text == "The specialist answer is 42."
+    assert session.events[-1].content.parts[0].text == (
+        "The specialist answer is 42."
+    )
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_delta_artifact_stream_with_append_last_chunk_emits_full_final_event(
+      self, use_v2
+  ):
+    """A delta closing chunk (append=True, last_chunk=True) yields both partial deltas and the full aggregated final event."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Hello, "], False, False),
+            ("artifact", "answer-1", ["world!"], True, True),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, session = await _run_single_streaming_turn(script)
+
+    text_events = [
+        (ev.partial, ev.content.parts[0].text, ev.id)
+        for ev in events
+        if ev.content
+        and ev.content.parts
+        and ev.content.parts[0].text
+        and not ev.content.parts[0].thought
+    ]
+    assert [(partial, text) for partial, text, _ in text_events] == [
+        (True, "Hello, "),
+        (True, "world!"),
+        (False, "Hello, world!"),
+    ]
+    assert len({ev_id for _, _, ev_id in text_events}) == 1
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "Hello, world!"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_empty_last_chunk_marker_closes_buffered_artifact(self, use_v2):
+    """An empty-parts last_chunk=True marker flushes the accumulated partial artifact."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Hello, "], False, False),
+            ("artifact", "answer-1", ["world!"], True, False),
+            ("artifact", "answer-1", [], False, True),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, session = await _run_single_streaming_turn(script)
+
+    final_texts = [
+        ev.content.parts[0].text
+        for ev in events
+        if not ev.partial
+        and ev.content
+        and ev.content.parts
+        and ev.content.parts[0].text
+    ]
+    assert final_texts == ["Hello, world!"]
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "Hello, world!"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_full_replacement_last_chunk_does_not_duplicate_final_event(
+      self, use_v2
+  ):
+    """A full-replacement closing chunk (append=False, last_chunk=True) emits only one non-partial event."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Hello, "], False, False),
+            ("artifact", "answer-1", ["world!"], True, False),
+            ("artifact", "answer-1", ["Hello, world!"], False, True),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, session = await _run_single_streaming_turn(script)
+
+    final_texts = [
+        ev.content.parts[0].text
+        for ev in events
+        if not ev.partial
+        and ev.content
+        and ev.content.parts
+        and ev.content.parts[0].text
+    ]
+    assert final_texts == ["Hello, world!"]
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "Hello, world!"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_partial_chunks_without_append_replace_earlier_chunks(
+      self, use_v2
+  ):
+    """Successive last_chunk=False chunks without append=True replace the artifact, so only the latest chunk is persisted."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Draft answer"], False, False),
+            ("artifact", "answer-1", ["Final answer"], False, False),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, session = await _run_single_streaming_turn(script)
+
+    streamed_texts = [
+        ev.content.parts[0].text
+        for ev in events
+        if ev.partial and ev.content and ev.content.parts
+    ]
+    assert streamed_texts == ["Draft answer", "Final answer"]
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "Final answer"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_working_task_snapshot_between_chunks_persists_answer_once(
+      self, use_v2
+  ):
+    """A full task snapshot streamed mid-turn neither drops nor duplicates the streamed artifact text."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Hello "], False, False),
+            ("artifact", "answer-1", ["world"], True, False),
+            ("task", _compat.TS_WORKING, [("answer-1", ["Hello ", "world"])]),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    _, session = await _run_single_streaming_turn(script)
+
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "Hello world"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_interleaved_multi_artifact_partial_streams_stay_independent(
+      self, use_v2
+  ):
+    """Interleaved partial chunks for distinct artifact_ids flush separately without overwriting each other."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "art-1", ["Alpha "], False, False),
+            ("artifact", "art-2", ["Beta "], False, False),
+            ("artifact", "art-1", ["one"], True, False),
+            ("artifact", "art-2", ["two"], True, False),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    _, session = await _run_single_streaming_turn(script)
+
+    persisted = [
+        (ev.id, ev.content.parts[0].text)
+        for ev in session.events
+        if ev.author == "specialist"
+        and ev.content
+        and ev.content.parts
+        and ev.content.parts[0].text
+    ]
+    assert [text for _, text in persisted] == ["Alpha one", "Beta two"]
+    assert persisted[0][0] != persisted[1][0]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  @pytest.mark.parametrize(
+      "prompt_message", [None, "Please specify target currency"]
+  )
+  async def test_partial_artifact_before_input_required_pause_preserves_answer_and_continuation(
+      self, use_v2, prompt_message
+  ):
+    """Partial artifact content before an input-required pause is persisted while preserving task continuation."""
+    turn1 = _build_streaming_a2a_script(
+        [
+            (
+                "artifact",
+                "answer-1",
+                ["Current USD spot rate is 1.38."],
+                False,
+                False,
+            ),
+            ("status", _compat.TS_INPUT_REQUIRED, prompt_message),
+        ],
+        use_v2=use_v2,
+        task_id="currency-task",
+        context_id="currency-context",
+    )
+    turn2 = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-2", ["13.80 CAD"], False, False),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+        task_id="currency-task",
+        context_id="currency-context",
+    )
+    turn3 = _bare_task_stream(_compat.TS_COMPLETED, use_v2=use_v2)
+
+    requests, _, session = await _run_remote_task_responses(
+        [turn1, turn2, turn3]
+    )
+
+    assert [req.task_id or None for req in requests] == [
+        None,
+        "currency-task",
+        None,
+    ]
+    assert _persisted_answer_texts(session, author="currency") == [
+        "Current USD spot rate is 1.38.",
+        "13.80 CAD",
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_partial_artifact_before_failed_status_does_not_corrupt_failure_event(
+      self, use_v2
+  ):
+    """Partial artifact content flushes before a failed status update without overwriting the failure message."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Partial draft"], False, False),
+            ("status", _compat.TS_FAILED, "Upstream database unavailable"),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, session = await _run_single_streaming_turn(script)
+
+    assert events[-1].error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert "Upstream database unavailable" in (events[-1].error_message or "")
+    assert "Partial draft" not in (events[-1].error_message or "")
+    persisted_non_error_texts = [
+        ev.content.parts[0].text
+        for ev in session.events
+        if ev.author == "specialist"
+        and not ev.error_code
+        and ev.content
+        and ev.content.parts
+    ]
+    assert persisted_non_error_texts == ["Partial draft"]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_agent_tool_returns_aggregated_answer_when_last_chunk_never_set(
+      self, use_v2
+  ):
+    """AgentTool returns the concatenated answer when the remote A2A server never sets last_chunk=True."""
+    from google.adk.sessions import InMemorySessionService
+    from google.adk.tools.agent_tool import AgentTool
+    from google.adk.tools.tool_context import ToolContext
+
+    agent = RemoteA2aAgent(
+        name="currency", agent_card=create_test_agent_card(name="currency")
+    )
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="parent", user_id="user"
+    )
+    ctx = InvocationContext(
+        invocation_id="invocation",
+        session=session,
+        session_service=session_service,
+        agent=agent,
+    )
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Ten "], False, False),
+            ("status", _compat.TS_WORKING, "Fetching exchange rate..."),
+            ("artifact", "answer-1", ["CAD"], True, False),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    async def send_message(client, **kwargs):
+      del client, kwargs
+      for item in script:
+        yield item
+
+    with (
+        patch.object(agent, "_ensure_resolved", return_value=object()),
+        patch.object(_compat, "send_message", side_effect=send_message),
+    ):
+      result = await AgentTool(agent=agent).run_async(
+          args={"request": "Convert ten USD to CAD"},
+          tool_context=ToolContext(ctx),
+      )
+
+    assert result == "Ten CAD"
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_workflow_join_node_receives_aggregated_answer_when_last_chunk_never_set(
+      self, use_v2
+  ):
+    """Workflow JoinNode receives the aggregated specialist answer when last_chunk=True is never sent."""
+    from google.adk.apps.app import App
+    from google.adk.workflow._join_node import JoinNode
+    from google.adk.workflow._workflow import Workflow
+
+    from tests.unittests import testing_utils
+
+    agent = RemoteA2aAgent(
+        name="specialist",
+        agent_card=create_test_agent_card(name="specialist"),
+    )
+    workflow = Workflow(
+        name="wf",
+        edges=[("START", agent, JoinNode(name="join"))],
+    )
+    runner = testing_utils.InMemoryRunner(
+        app=App(name="wf_app", root_agent=workflow)
+    )
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Specialist "], False, False),
+            ("artifact", "answer-1", ["summary"], True, False),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    async def send_message(client, **kwargs):
+      del client, kwargs
+      for item in script:
+        yield item
+
+    with (
+        patch.object(agent, "_ensure_resolved", return_value=object()),
+        patch.object(_compat, "send_message", side_effect=send_message),
+    ):
+      events = await runner.run_async(testing_utils.get_user_content("start"))
+
+    join_outputs = [
+        ev.output
+        for ev in events
+        if isinstance(ev, Event)
+        and ev.output is not None
+        and "join" in (ev.node_info.path or "")
+    ]
+    assert join_outputs == [{"specialist": "Specialist summary"}]
+
+  async def test_after_request_filter_suppressing_partial_chunk_excludes_it_from_final_event(
+      self,
+  ):
+    """A partial chunk dropped by an after_request interceptor is not included in the aggregated final event."""
+
+    async def drop_secret_chunk(ctx, response, event):
+      del ctx, response
+      if (
+          event.partial
+          and event.content
+          and any("SECRET " in (p.text or "") for p in event.content.parts)
+      ):
+        return None
+      return event
+
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Public: "], False, False),
+            ("artifact", "answer-1", ["SECRET "], True, False),
+            ("artifact", "answer-1", ["ok"], True, False),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=True,
+    )
+
+    _, session = await _run_single_streaming_turn(
+        script,
+        config=A2aRemoteAgentConfig(
+            request_interceptors=[
+                RequestInterceptor(after_request=drop_secret_chunk)
+            ]
+        ),
+    )
+
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "Public: ok"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_task_mode_failure_after_partial_artifact_preserves_failure_reason(
+      self, use_v2
+  ):
+    """In task delegation mode, a bare failure after partial chunks reports Unknown error rather than partial text."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Draft output"], False, False),
+            ("status", _compat.TS_FAILED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, _ = await _run_single_streaming_turn(script, mode="task")
+
+    finish_errors = [
+        ev.error_message
+        for ev in events
+        if ev.error_message and "Remote A2A task failed:" in ev.error_message
+    ]
+    assert finish_errors
+    assert all("Draft output" not in msg for msg in finish_errors)
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_completed_task_stream_ending_without_status_update_flushes_partial_artifact(
+      self, use_v2
+  ):
+    """A stream whose task is already completed flushes trailing partial artifact chunks at EOF."""
+    script = _build_streaming_a2a_script(
+        [("artifact", "answer-1", ["EOF answer"], False, False)],
+        use_v2=use_v2,
+        initial_state=_compat.TS_COMPLETED,
+    )
+
+    _, session = await _run_single_streaming_turn(script)
+
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "EOF answer"
+    ]

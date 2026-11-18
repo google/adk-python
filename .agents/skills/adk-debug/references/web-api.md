@@ -32,7 +32,7 @@ Flag | Default | Note
 `--port` | `8000` | Use a second port to run two servers side by side.
 `--host` | `127.0.0.1` | Endpoints are unauthenticated; keep it on loopback.
 `--reload_agents` | off | Re-import agent modules when their files change. This is the one you want while editing an agent.
-`--reload` | **on** | Uvicorn's own source autoreload. Pass `--no-reload` when a restart mid-run is confusing you.
+`--reload` | **on** | Does not restart the server: ADK hands uvicorn an app object, and uvicorn only autoreloads an app given as an import string. Restart it yourself after changing source.
 `-v` / `--log_level` | `INFO` | Logs go to the terminal, not to a file — see `references/logs-and-traces.md`.
 
 `adk api_server` takes the same flags but serves only the production-safe

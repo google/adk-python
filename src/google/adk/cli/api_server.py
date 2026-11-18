@@ -978,9 +978,20 @@ def _setup_instrumentation_lib_if_installed() -> None:
   # Currently the instrumentation lib is in extras dependencies, make sure to
   # warn the user if it's not installed.
   try:
+    from opentelemetry.instrumentation.dependencies import get_dependency_conflicts  # pylint: disable=g-import-not-at-top
     from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 
-    GoogleGenAiSdkInstrumentor().instrument()
+    instrumentor = GoogleGenAiSdkInstrumentor()
+    if conflict := get_dependency_conflicts(
+        instrumentor.instrumentation_dependencies()
+    ):
+      logger.info(
+          "Skipping GoogleGenAiSdkInstrumentor (%s); ADK records telemetry"
+          " spans itself.",
+          conflict,
+      )
+    else:
+      instrumentor.instrument()
   except ImportError:
     logger.warning(
         "Unable to import GoogleGenAiSdkInstrumentor - some"
@@ -1464,12 +1475,8 @@ class ApiServer:
       lifespan: Optional[Lifespan[FastAPI]] = None,
       allow_origins: Optional[list[str]] = None,
       web_assets_dir: Optional[str] = None,
-      setup_observer: Callable[
-          [Observer, "ApiServer"], None
-      ] = lambda o, s: None,
-      tear_down_observer: Callable[
-          [Observer, "ApiServer"], None
-      ] = lambda o, s: None,
+      setup_observer: Callable[[Observer, ApiServer], None] | None = None,
+      tear_down_observer: Callable[[Observer, ApiServer], None] | None = None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
       with_ui: bool = False,
@@ -1489,7 +1496,8 @@ class ApiServer:
         patterns prefixed with 'regex:' (e.g.,
         'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
-      setup_observer: Callback for setting up the file system observer.
+      setup_observer: Callback for setting up the file system observer. No
+        observer is created when it is None.
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
@@ -1509,10 +1517,14 @@ class ApiServer:
     self._session_trace_dict = session_trace_dict
 
     # Set up a file system watcher to detect changes in the agents directory.
-    from watchdog.observers import Observer as PlatformObserver
+    # Only create it when a caller sets it up: the inotify observer opens an
+    # inotify instance and starts a thread as soon as it is constructed.
+    observer: Observer | None = None
+    if setup_observer is not None:
+      from watchdog.observers import Observer as PlatformObserver
 
-    observer = PlatformObserver()
-    setup_observer(observer, self)
+      observer = PlatformObserver()
+      setup_observer(observer, self)
 
     @asynccontextmanager
     async def internal_lifespan(
@@ -1525,7 +1537,8 @@ class ApiServer:
         else:
           yield None
       finally:
-        tear_down_observer(observer, self)
+        if observer is not None and tear_down_observer is not None:
+          tear_down_observer(observer, self)
         # Create tasks for all runner closures to run concurrently
         await cleanup.close_runners(list(self.runner_dict.values()))
 
@@ -1756,8 +1769,8 @@ class ApiServer:
         from google.api_core.client_options import ClientOptions
         from google.api_core.exceptions import GoogleAPICallError
         from google.api_core.exceptions import InvalidArgument
-        from google.cloud.iamconnectorcredentials_v1alpha import FinalizeCredentialsRequest
-        from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient
+        from google.cloud.agentidentitycredentials_v1 import AuthProviderCredentialsServiceClient
+        from google.cloud.agentidentitycredentials_v1 import FinalizeCredentialsRequest
       except ImportError as e:
         raise HTTPException(
             status_code=500,
@@ -1768,13 +1781,13 @@ class ApiServer:
         ) from e
 
       # Optional endpoint override (defaults to the prod
-      # iamconnectorcredentials.googleapis.com when unset). Mirrors the retrieve
-      # client so finalize targets the same service instance; developers do not
-      # normally set this.
+      # agentidentitycredentials.googleapis.com when unset). Mirrors the
+      # retrieve client so finalize targets the same service instance;
+      # developers do not normally set this.
       client_options = None
-      if host := os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST"):
+      if host := os.environ.get("AGENT_IDENTITY_CREDENTIALS_TARGET_HOST"):
         client_options = ClientOptions(api_endpoint=host)
-      client = IAMConnectorCredentialsServiceClient(
+      client = AuthProviderCredentialsServiceClient(
           client_options=client_options, transport="rest"
       )
 
@@ -1794,7 +1807,9 @@ class ApiServer:
         ) from e
 
       finalize_request = FinalizeCredentialsRequest(
-          connector=req.connector_name,
+          auth_provider=req.connector_name.replace(
+              "/connectors/", "/authProviders/"
+          ),
           user_id=req.user_id,
           user_id_validation_state=state_bytes,
           consent_nonce=req.consent_nonce,
@@ -2398,17 +2413,14 @@ class ApiServer:
       try:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
-        logger.debug("Events generated: %s", events)
-        return JSONResponse(
-            content=[
-                _redact_credential_secrets(
-                    event.model_dump(
-                        exclude_none=True, by_alias=True, mode="json"
-                    )
-                )
-                for event in events
-            ]
-        )
+        redacted_events = [
+            _redact_credential_secrets(
+                event.model_dump(exclude_none=True, by_alias=True, mode="json")
+            )
+            for event in events
+        ]
+        logger.debug("Events generated: %s", redacted_events)
+        return JSONResponse(content=redacted_events)
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)

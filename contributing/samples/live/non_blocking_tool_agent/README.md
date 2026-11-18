@@ -4,7 +4,7 @@
 
 This sample provides a minimal agent to demonstrate non-blocking tool execution in ADK Live mode (`adk web` / `run_live`).
 
-When a tool is configured with `behavior` set to `types.Behavior.NON_BLOCKING`, ADK runs it in a background task and the model keeps conversing instead of waiting for the result.
+ADK runs every live tool call in a background task. When a tool is configured with `behavior` set to `types.Behavior.NON_BLOCKING`, the model also keeps conversing instead of waiting for the result.
 
 ## Sample Inputs
 

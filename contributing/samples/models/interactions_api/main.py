@@ -20,6 +20,7 @@ This script tests the following features:
 3. Multi-turn conversations with stateful interactions
 4. Google Search tool (additional coverage)
 5. Custom function tool (get_current_weather)
+6. PDF summarization
 
 NOTE: Code execution via UnsafeLocalCodeExecutor is not compatible with function
 calling mode because the model tries to call a function instead of outputting
@@ -27,7 +28,7 @@ code in markdown.
 
 Run with:
   cd contributing/samples
-  python -m interactions_api_test.main
+  python -m models.interactions_api.main
 """
 
 import argparse
@@ -37,7 +38,6 @@ from pathlib import Path
 import time
 
 from dotenv import load_dotenv
-from google.adk.agents.run_config import RunConfig
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.adk.runners import Runner
@@ -46,8 +46,8 @@ import httpx
 
 from .agent import root_agent
 
-# Load .env from the samples directory (parent of this module's directory)
-_env_path = Path(__file__).parent.parent / ".env"
+# Load .env from the samples directory
+_env_path = Path(__file__).parents[2] / ".env"
 load_dotenv(_env_path)
 
 APP_NAME = "interactions_api_test_app"
@@ -92,7 +92,6 @@ async def call_agent_async(
       user_id=user_id,
       session_id=session_id,
       new_message=content,
-      run_config=RunConfig(save_input_blobs_as_artifacts=False),
   ):
     # Track interaction ID if available
     if event.interaction_id:
@@ -236,9 +235,9 @@ async def test_google_search_tool(runner: Runner, session_id: str):
 async def test_custom_function_tool(runner: Runner, session_id: str):
   """Test the custom function tool alongside google_search.
 
-  The root_agent has both GoogleSearchTool (with bypass_multi_tools_limit=True)
-  and get_current_weather. This tests that function calling tools work with
-  the Interactions API when all tools are function calling types.
+  The root_agent has both the built-in GoogleSearchTool and
+  get_current_weather. This tests that a custom function calling tool works
+  with the Interactions API next to a built-in tool.
   """
   print("\n" + "=" * 60)
   print("TEST 5: Custom Function Tool (get_current_weather)")
@@ -258,7 +257,7 @@ async def test_custom_function_tool(runner: Runner, session_id: str):
       or "partly" in response.lower()
       or "tokyo" in response.lower()
   ), f"Expected weather info for Tokyo in response: {response}"
-  print("PASSED: Custom function tool works with bypass_multi_tools_limit")
+  print("PASSED: Custom function tool works alongside the built-in search tool")
   return interaction_id
 
 
@@ -372,7 +371,7 @@ async def interactive_mode():
   print("\nInteractive mode with Interactions API")
   print("Type 'quit' to exit, 'new' for a new session\n")
 
-  test_agent = agent.root_agent
+  test_agent = root_agent
 
   runner = InMemoryRunner(
       agent=test_agent,
