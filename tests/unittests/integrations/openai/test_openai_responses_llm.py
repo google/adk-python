@@ -174,7 +174,7 @@ def test_request_kwargs_use_responses_api_shape():
   kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
 
   assert kwargs['model'] == 'gpt-4o'
-  assert kwargs['instructions'] == 'You are concise.'
+  assert 'instructions' not in kwargs
   assert kwargs['previous_response_id'] == 'resp_previous'
   assert kwargs['stream'] is False
   # A non-reasoning model keeps temperature / top_p.
@@ -182,6 +182,7 @@ def test_request_kwargs_use_responses_api_shape():
   assert kwargs['top_p'] == 0.9
   assert kwargs['max_output_tokens'] == 128
   assert kwargs['input'] == [
+      {'type': 'message', 'role': 'developer', 'content': 'You are concise.'},
       {
           'type': 'message',
           'role': 'user',
