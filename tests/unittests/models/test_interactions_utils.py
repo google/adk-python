@@ -1389,6 +1389,31 @@ class TestConvertInteractionOutputToParts:
     assert result.code_execution_result.output == 'Error: division by zero'
     assert result.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
 
+  def test_code_execution_result_content_list_output(self):
+    """A content list result keeps its text as output and its media as parts."""
+    # Unvalidated, since google-genai accepts a content list only from 3.0.
+    output = CodeExecutionResultStep.model_construct(
+        type='code_execution_result',
+        call_id='',
+        result=[
+            TextContent(type='text', text='plotted'),
+            ImageContent(
+                type='image',
+                data=base64.b64encode(b'image_bytes').decode('utf-8'),
+                mime_type='image/png',
+            ),
+        ],
+        is_error=False,
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    assert len(result_list) == 2
+    assert result_list[0].code_execution_result.output == 'plotted'
+    assert (
+        result_list[0].code_execution_result.outcome == types.Outcome.OUTCOME_OK
+    )
+    assert result_list[1].inline_data.data == b'image_bytes'
+    assert result_list[1].inline_data.mime_type == 'image/png'
+
   def test_thought_output_without_signature_returns_empty(self):
     """A thought step with no signature contributes no parts."""
     output = ThoughtStep(type='thought')

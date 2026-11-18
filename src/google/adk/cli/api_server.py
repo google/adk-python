@@ -73,7 +73,6 @@ import yaml
 
 from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
-from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import RunConfig
 from ..apps.app import App
 from ..artifacts.base_artifact_service import ArtifactVersion
@@ -978,9 +977,20 @@ def _setup_instrumentation_lib_if_installed() -> None:
   # Currently the instrumentation lib is in extras dependencies, make sure to
   # warn the user if it's not installed.
   try:
+    from opentelemetry.instrumentation.dependencies import get_dependency_conflicts  # pylint: disable=g-import-not-at-top
     from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 
-    GoogleGenAiSdkInstrumentor().instrument()
+    instrumentor = GoogleGenAiSdkInstrumentor()
+    if conflict := get_dependency_conflicts(
+        instrumentor.instrumentation_dependencies()
+    ):
+      logger.info(
+          "Skipping GoogleGenAiSdkInstrumentor (%s); ADK records telemetry"
+          " spans itself.",
+          conflict,
+      )
+    else:
+      instrumentor.instrument()
   except ImportError:
     logger.warning(
         "Unable to import GoogleGenAiSdkInstrumentor - some"
@@ -1857,18 +1867,13 @@ class ApiServer:
         _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
-      if isinstance(root_agent, LlmAgent):
-        return AppInfo(
-            name=app_name,
-            root_agent_name=root_agent.name,
-            description=root_agent.description,
-            language="python",
-            agents=await get_agents_dict(root_agent),
-        )
-      else:
-        raise HTTPException(
-            status_code=400, detail="Root agent is not an LlmAgent"
-        )
+      return AppInfo(
+          name=app_name,
+          root_agent_name=root_agent.name,
+          description=root_agent.description,
+          language="python",
+          agents=await get_agents_dict(root_agent),
+      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
@@ -2402,17 +2407,14 @@ class ApiServer:
       try:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
-        logger.debug("Events generated: %s", events)
-        return JSONResponse(
-            content=[
-                _redact_credential_secrets(
-                    event.model_dump(
-                        exclude_none=True, by_alias=True, mode="json"
-                    )
-                )
-                for event in events
-            ]
-        )
+        redacted_events = [
+            _redact_credential_secrets(
+                event.model_dump(exclude_none=True, by_alias=True, mode="json")
+            )
+            for event in events
+        ]
+        logger.debug("Events generated: %s", redacted_events)
+        return JSONResponse(content=redacted_events)
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)

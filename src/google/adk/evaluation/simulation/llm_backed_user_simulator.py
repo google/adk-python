@@ -28,6 +28,7 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
+from ...utils.model_name_utils import _with_gemini_4_thinking_level
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..conversation_scenarios import ConversationScenario
 from ..evaluator import Evaluator
@@ -42,6 +43,10 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _AUTHOR_USER = "user"
 _STOP_SIGNAL = "</finished>"
+_DEFAULT_THINKING_CONFIG = genai_types.ThinkingConfig(
+    include_thoughts=True,
+    thinking_budget=10240,
+)
 
 
 class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
@@ -67,7 +72,10 @@ class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
               thinking_budget=10240,
           )
       ),
-      description="The configuration for the model.",
+      description=(
+          "The configuration for the model. Its default thinking budget is"
+          " sent as thinking level MEDIUM to Gemini 4 and later models."
+      ),
   )
 
   max_allowed_invocations: int = Field(
@@ -203,7 +211,12 @@ class LlmBackedUserSimulator(UserSimulator):
 
     llm_request = LlmRequest(
         model=self._llm_config.model,
-        config=self._llm_config.model_configuration,
+        config=_with_gemini_4_thinking_level(
+            self._llm_config.model_configuration,
+            model=self._llm_config.model,
+            default_thinking_config=_DEFAULT_THINKING_CONFIG,
+            thinking_level=genai_types.ThinkingLevel.MEDIUM,
+        ),
         contents=[
             genai_types.Content(
                 parts=[

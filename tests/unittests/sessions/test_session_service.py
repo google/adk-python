@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
+import importlib
 import inspect
 import os
 from pathlib import Path
@@ -91,12 +92,16 @@ def get_session_service(
 
 def test_recorded_divergences_name_a_contract_test():
   """A divergence keyed on anything else silently excuses no backend."""
+  contract_tests = {}
+  for module_name in _conformance.CONTRACT_TEST_MODULES:
+    module = importlib.import_module(f'.{module_name}', __package__)
+    contract_tests.update(vars(module))
   for backend in _conformance.BACKENDS:
     for test_name in backend.divergences:
-      test_function = globals().get(test_name)
+      test_function = contract_tests.get(test_name)
       assert test_function is not None, (
           f'{backend.name} records a divergence for {test_name}, which is not'
-          ' a test in this module'
+          ' a contract test'
       )
       parameters = inspect.signature(test_function).parameters
       assert 'session_service' in parameters, (
