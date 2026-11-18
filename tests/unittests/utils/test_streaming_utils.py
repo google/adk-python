@@ -300,6 +300,8 @@ class TestStreamingResponseAggregator:
           ("grounding_progressive", True, "grounding"),
           ("citation_default", False, "citation"),
           ("citation_progressive", True, "citation"),
+          ("url_context_default", False, "url_context"),
+          ("url_context_progressive", True, "url_context"),
       ],
   )
   async def test_close_preserves_metadata(
@@ -367,6 +369,31 @@ class TestStreamingResponseAggregator:
               )
           ]
       )
+    elif metadata_type == "url_context":
+      metadata = types.UrlContextMetadata(
+          url_metadata=[
+              types.UrlMetadata(
+                  retrieved_url="https://example.com/page",
+                  url_retrieval_status=types.UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS,
+              )
+          ]
+      )
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="The page ")]),
+                  url_context_metadata=metadata,
+              )
+          ]
+      )
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="says hi.")]),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
 
     async def run_test():
       async for _ in aggregator.process_response(response1):
@@ -385,6 +412,8 @@ class TestStreamingResponseAggregator:
       elif metadata_type == "citation":
         assert closed_response.citation_metadata is not None
         assert len(closed_response.citation_metadata.citations) == 1
+      elif metadata_type == "url_context":
+        assert closed_response.url_context_metadata == metadata
 
     if use_progressive_sse:
       with temporary_feature_override(

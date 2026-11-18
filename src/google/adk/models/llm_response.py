@@ -68,6 +68,13 @@ class LlmResponse(BaseModel):
   grounding_metadata: types.GroundingMetadata | None = None
   """The grounding metadata of the response."""
 
+  url_context_metadata: types.UrlContextMetadata | None = None
+  """The URLs the url_context tool retrieved, and the status of each retrieval.
+
+  A failed, unsafe or paywalled retrieval is reported here, so a caller can
+  tell whether the model actually read a page it was asked about.
+  """
+
   partial: bool | None = None
   """Marks this response as an incomplete fragment of a larger response.
 
@@ -248,6 +255,7 @@ class LlmResponse(BaseModel):
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
+            url_context_metadata=candidate.url_context_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
             citation_metadata=candidate.citation_metadata,
@@ -260,6 +268,7 @@ class LlmResponse(BaseModel):
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
             citation_metadata=candidate.citation_metadata,
+            url_context_metadata=candidate.url_context_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
             avg_logprobs=candidate.avg_logprobs,
