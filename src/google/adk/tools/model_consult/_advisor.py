@@ -147,6 +147,8 @@ class AdvisorResult:
     model_version: Provider-reported model version string, if available.
     usage: Token usage snapshot for the consultation.
     latency_ms: End-to-end wall-clock duration of the consultation in ms.
+    thinking_level: Thinking level sent on the request that produced `text`,
+      or `None` if that request set none.
   """
 
   text: str
@@ -154,6 +156,7 @@ class AdvisorResult:
   model_version: str | None
   usage: AdvisorUsage
   latency_ms: float
+  thinking_level: types.ThinkingLevel | None
 
 
 def resolve_thinking_level(
@@ -431,7 +434,8 @@ async def call_advisor(
 
   Returns:
     An `AdvisorResult` with the advisor's visible response text, model info,
-    token usage, and wall-clock latency in milliseconds.
+    token usage, wall-clock latency in milliseconds, and the thinking level
+    actually sent, which is `None` after a retry without `thinking_config`.
 
   Raises:
     ValueError: If `timeout_seconds` is less than or equal to zero.
@@ -561,7 +565,16 @@ async def call_advisor(
       model_version=model_version,
       usage=usage,
       latency_ms=latency_ms,
+      thinking_level=_sent_thinking_level(req.config.thinking_config),
   )
+
+
+def _sent_thinking_level(
+    thinking_config: types.ThinkingConfig | None,
+) -> types.ThinkingLevel | None:
+  if thinking_config is None:
+    return None
+  return resolve_thinking_level(thinking_config.thinking_level)
 
 
 def _hit_output_cap(
