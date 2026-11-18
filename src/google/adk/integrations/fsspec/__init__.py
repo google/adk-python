@@ -12,4 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fsspec integrations for ADK."""
+"""Fsspec integrations for ADK.
+
+Artifact storage backed by ``fsspec``-compatible filesystems. Classes that
+require ``fsspec`` are imported lazily so this package can be imported without
+installing ``google-adk[fsspec]``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ...utils import _lazy
+
+if TYPE_CHECKING:
+  from ._fsspec_artifact_service import FsspecArtifactService
+
+_LAZY_MEMBERS: dict[str, str] = {
+    "FsspecArtifactService": "._fsspec_artifact_service",
+}
+__all__ = [
+    "FsspecArtifactService",
+]
+
+__getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)

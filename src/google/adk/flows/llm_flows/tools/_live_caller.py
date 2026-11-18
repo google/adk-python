@@ -12,19 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tool calling for live runs.
-
-Provides both batch (`handle_function_calls_live`) and single-call
-(`_execute_single_prepared_call_live`) tool execution for live runs. It
-dispatches non-blocking tools in the background, cancels running streaming tools
-via `stop_streaming`, fans streaming (async-generator) tool chunks out to the
-`LiveRequestQueue`, and runs every other tool through the same async or
-thread-pool call as a non-live run.
-"""
+"""Tool calling for live runs."""
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import logging
 from typing import Any
@@ -151,6 +144,69 @@ async def _emit_streaming_tool_event(
   )
 
 
+def _pending_response() -> dict[str, str]:
+  """Returns a pending response for a streaming tool call."""
+  return {
+      'status': (
+          'The function is running asynchronously and the results are pending.'
+      )
+  }
+
+
+def _new_input_stream(tool: FunctionTool) -> LiveRequestQueue | None:
+  """Returns a new input stream if the streaming tool takes one, else None."""
+  parameter = inspect.signature(tool.func).parameters.get('input_stream')
+  if parameter is not None and _is_live_request_queue_annotation(parameter):
+    return LiveRequestQueue()
+  return None
+
+
+async def _run_streaming_tool(
+    invocation_context: InvocationContext,
+    tool: FunctionTool,
+    function_args: dict[str, Any],
+    tool_context: ToolContext,
+) -> None:
+  """Calls a streaming tool and sends each result it yields to the model."""
+  live_request_queue = invocation_context.live_request_queue
+  if live_request_queue is None:
+    raise RuntimeError('Streaming tools require a live request queue.')
+
+  res = await _call_tool_async(
+      tool=tool,
+      args=function_args,
+      tool_context=tool_context,
+  )
+  if inspect.isasyncgen(res):
+    async with Aclosing(res) as agen:
+      async for result in agen:
+        if isinstance(result, Event):
+          await _emit_streaming_tool_event(
+              result,
+              tool=tool,
+              tool_context=tool_context,
+              invocation_context=invocation_context,
+          )
+          continue
+
+        updated_content = _build_function_response_content(
+            tool, result, tool_context.function_call_id
+        )
+        live_request_queue.send_content(updated_content, partial=True)
+  else:
+    # `res` is a single terminal payload (e.g. the error dict returned
+    # when confirmation is required/rejected or a mandatory argument is
+    # missing), not a chunk of a stream.
+    # TODO: for the confirmation-required case, hold the call pending
+    # (as long-running tools do) instead of relaying the error. Relaying
+    # it closes the call id with the model, so a later approval would
+    # have to send a second response reusing that same id.
+    updated_content = _build_function_response_content(
+        tool, res, tool_context.function_call_id
+    )
+    live_request_queue.send_content(updated_content, partial=False)
+
+
 async def _process_function_live_helper(
     tool: BaseTool,
     tool_context: ToolContext,
@@ -234,39 +290,9 @@ async def _process_function_live_helper(
         )
         raise RuntimeError('Streaming tools require a live request queue.')
       try:
-        res = await _call_tool_async(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
+        await _run_streaming_tool(
+            invocation_context, tool, function_args, tool_context
         )
-        if inspect.isasyncgen(res):
-          async with Aclosing(res) as agen:
-            async for result in agen:
-              if isinstance(result, Event):
-                await _emit_streaming_tool_event(
-                    result,
-                    tool=tool,
-                    tool_context=tool_context,
-                    invocation_context=invocation_context,
-                )
-                continue
-
-              updated_content = _build_function_response_content(
-                  tool, result, tool_context.function_call_id
-              )
-              live_request_queue.send_content(updated_content, partial=True)
-        else:
-          # `res` is a single terminal payload (e.g. the error dict returned
-          # when confirmation is required/rejected or a mandatory argument is
-          # missing), not a chunk of a stream.
-          # TODO: for the confirmation-required case, hold the call pending
-          # (as long-running tools do) instead of relaying the error. Relaying
-          # it closes the call id with the model, so a later approval would
-          # have to send a second response reusing that same id.
-          updated_content = _build_function_response_content(
-              tool, res, tool_context.function_call_id
-          )
-          live_request_queue.send_content(updated_content, partial=False)
       except asyncio.CancelledError:
         raise
       except Exception:
@@ -300,12 +326,7 @@ async def _process_function_live_helper(
     # create a dedicated LiveRequestQueue that send_to_model copies live
     # requests into. It must exist before the task first runs, since the tool
     # receives it as an argument.
-    sig = inspect.signature(streaming_tool.func)
-    input_stream = None
-    if 'input_stream' in sig.parameters and _is_live_request_queue_annotation(
-        sig.parameters['input_stream']
-    ):
-      input_stream = LiveRequestQueue()
+    input_stream = _new_input_stream(streaming_tool)
     task = asyncio.create_task(
         run_tool_and_update_queue(streaming_tool, function_args, tool_context)
     )
@@ -320,15 +341,7 @@ async def _process_function_live_helper(
             is_generator=True,
         )
     )
-
-    # Immediately return a pending response.
-    # This is required by current live model.
-    function_response = {
-        'status': (
-            'The function is running asynchronously and the results are'
-            ' pending.'
-        )
-    }
+    function_response = _pending_response()
   else:
     # Check if we should run tools in thread pool to avoid blocking event loop
     run_config = invocation_context.run_config
@@ -464,6 +477,136 @@ async def _launch_non_blocking_call_live(
   )
 
 
+def _build_error_response_event(
+    invocation_context: InvocationContext,
+    tool: BaseTool,
+    function_call_id: str,
+    live_session_id: str | None,
+) -> Event:
+  """Builds the response for a live call that failed with an internal error."""
+  return Event(
+      invocation_id=invocation_context.invocation_id,
+      author=_require_agent_name(invocation_context),
+      branch=invocation_context.branch,
+      content=_build_function_response_content(
+          tool,
+          {'error': f'Invoking `{tool.name}()` failed with an internal error.'},
+          function_call_id,
+      ),
+      live_session_id=live_session_id,
+  )
+
+
+def _launch_function_call_live(
+    invocation_context: InvocationContext,
+    function_call: types.FunctionCall,
+    tools_dict: dict[str, BaseTool],
+    agent: LlmAgent,
+    function_response_queue: asyncio.Queue[Event],
+    live_session_id: str | None,
+) -> None:
+  """Runs one live function call in its own background task."""
+  tool_name = function_call.name or ''
+  function_call_id = _require_function_call_id(function_call.id, tool_name)
+
+  async def _background_task() -> None:
+    stream_context: contextvars.Context | None = None
+
+    async def defer_stream() -> dict[str, str]:
+      nonlocal stream_context
+      # Capture the tool's context and span so the stream runs inside them.
+      stream_context = contextvars.copy_context()
+      return _pending_response()
+
+    try:
+      prepared_call = await _prepare_single(
+          invocation_context, function_call, tools_dict, agent
+      )
+      if _is_streaming_tool(prepared_call.tool):
+        function_response_event = await _execute_single_prepared_call(
+            invocation_context, prepared_call, agent, tool_runner=defer_stream
+        )
+      else:
+        function_response_event = await _execute_single_prepared_call_live(
+            invocation_context, prepared_call, agent
+        )
+      if function_response_event:
+        function_response_event.live_session_id = live_session_id
+        function_response_queue.put_nowait(function_response_event)
+      if stream_context is not None:
+        tool = cast('FunctionTool', prepared_call.tool)
+        await asyncio.create_task(
+            _run_streaming_tool(
+                invocation_context,
+                tool,
+                prepared_call.function_args,
+                prepared_call.tool_context,
+            ),
+            context=stream_context,
+        )
+    except Exception:
+      # Avoid crashing stateful live sessions when tools fail. Instead, log and
+      # emit an error response so that the failure isn't silent.
+      logger.exception(
+          'Error running live function call %s (%s)',
+          tool_name,
+          function_call_id,
+      )
+      function_response_queue.put_nowait(
+          _build_error_response_event(
+              invocation_context,
+              tools_dict.get(tool_name)
+              or BaseTool(name=tool_name or '<unnamed>', description=''),
+              function_call_id,
+              live_session_id,
+          )
+      )
+    finally:
+      (invocation_context._active_background_tools or {}).pop(
+          function_call_id, None
+      )
+
+  task = asyncio.create_task(_background_task())
+  tool = tools_dict.get(tool_name)
+  is_streaming = _is_streaming_tool(tool)
+  entry = ActiveBackgroundTool(
+      tool_name=tool_name,
+      function_call_id=function_call_id,
+      task=task,
+      is_generator=is_streaming,
+      input_stream=(
+          _new_input_stream(cast('FunctionTool', tool))
+          if is_streaming
+          else None
+      ),
+  )
+  invocation_context._add_background_tool(entry)
+
+
+def launch_function_calls_live(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    tools_dict: dict[str, BaseTool],
+    function_response_queue: asyncio.Queue[Event],
+) -> None:
+  """Runs each function call of a live event in its own background task.
+
+  Each call puts its function response event on `function_response_queue`
+  when it finishes.
+  """
+  # TODO: support request confirmation in live.
+  agent = _as_llm_agent(invocation_context)
+  for function_call in function_call_event.get_function_calls():
+    _launch_function_call_live(
+        invocation_context,
+        function_call,
+        tools_dict,
+        agent,
+        function_response_queue,
+        function_call_event.live_session_id,
+    )
+
+
 async def _execute_prepared_function_calls_live(
     invocation_context: InvocationContext,
     function_call_event: Event,
@@ -491,7 +634,11 @@ async def handle_function_calls_live(
     function_call_event: Event,
     tools_dict: dict[str, BaseTool],
 ) -> Event | None:
-  """Calls the functions and returns the function response event."""
+  """Calls the functions and returns the function response event.
+
+  This function is deprecated. Live function calls in `run_live` are handled via
+  `launch_function_calls_live` instead.
+  """
   agent = _as_llm_agent(invocation_context)
 
   blocking_calls: list[types.FunctionCall] = []
@@ -513,9 +660,6 @@ async def handle_function_calls_live(
   if not blocking_calls:
     return None
 
-  # TODO: thread a ToolConfirmation dict through here so an approved tool can
-  # be re-executed in live mode. No confirmation ever reaches this path, so a
-  # confirmation-gated tool can only ever be refused, never resumed.
   prepared_calls = await _prepare_function_calls(
       invocation_context,
       blocking_calls,

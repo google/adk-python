@@ -30,8 +30,8 @@ some resolved). The behavior depends on `rerun_on_resume`:
 
 | FRs received | Status | Behavior |
 |---|---|---|
-| Partial | PENDING | Re-execute immediately with partial `resume_inputs`. Node handles remaining interrupts internally (e.g., Workflow dispatches resolved children, keeps unresolved as WAITING). |
-| All | PENDING | Re-execute with all `resume_inputs`. |
+| Partial | RUNNING | Re-execute immediately with partial `resume_inputs`. Node handles remaining interrupts internally (e.g., Workflow dispatches resolved children, keeps unresolved as WAITING). |
+| All | RUNNING | Re-execute with all `resume_inputs`. |
 
 This is critical for Workflow — when one child's FR arrives, it
 re-runs immediately to dispatch that resolved child. It doesn't
@@ -48,7 +48,10 @@ wait for all children's FRs.
 
 A node can produce output AND interrupt in the same execution (e.g.,
 a Workflow where child A completes with output and child B interrupts).
-On resume:
+On resume the scheduler rebuilds both from session events (the `ReplayManager`
+scan, then `check_interception`); no caller under `src/` passes `prior_output`
+or `prior_interrupt_ids`. `NodeRunner` still accepts them, and when they are
+given:
 
 - Some interrupt IDs are resolved (provided in `resume_inputs`)
 - Remaining interrupt IDs carry forward via `prior_interrupt_ids`

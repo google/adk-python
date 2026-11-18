@@ -102,3 +102,81 @@ async def test_simple_prompt_optimizer(
   # 1 initial, 2 iterations, 1 final validation
   assert mock_sampler.sample_and_score.call_count == 4
   assert mock_llm_class.return_value.generate_content_async.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("optimizer_model", "expected_thinking_config"),
+    [
+        (
+            "gemini-4-hydrogen",
+            genai_types.ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=genai_types.ThinkingLevel.HIGH,
+            ),
+        ),
+        (
+            "gemini-2.5-pro",
+            genai_types.ThinkingConfig(
+                include_thoughts=True, thinking_budget=10240
+            ),
+        ),
+        (
+            "claude-sonnet-4-5",
+            genai_types.ThinkingConfig(
+                include_thoughts=True, thinking_budget=10240
+            ),
+        ),
+    ],
+)
+@mock.patch(
+    "google.adk.optimization.simple_prompt_optimizer.LLMRegistry.resolve"
+)
+async def test_default_thinking_config_follows_optimizer_model(
+    mock_llm_resolve: mock.MagicMock,
+    mock_llm_class: mock.MagicMock,
+    mock_sampler: mock.MagicMock,
+    optimizer_model: str,
+    expected_thinking_config: genai_types.ThinkingConfig,
+):
+  """The default thinking budget is sent as level HIGH only to Gemini 4+."""
+  mock_llm_resolve.return_value = mock_llm_class
+  config = SimplePromptOptimizerConfig(
+      optimizer_model=optimizer_model, num_iterations=1, batch_size=2
+  )
+
+  await SimplePromptOptimizer(config).optimize(
+      Agent(name="test_agent", instruction="Initial Prompt"), mock_sampler
+  )
+
+  generate = mock_llm_class.return_value.generate_content_async
+  request = generate.call_args.args[0]
+  assert request.config.thinking_config == expected_thinking_config
+
+
+@mock.patch(
+    "google.adk.optimization.simple_prompt_optimizer.LLMRegistry.resolve"
+)
+async def test_caller_thinking_config_is_sent_as_given_on_gemini_4(
+    mock_llm_resolve: mock.MagicMock,
+    mock_llm_class: mock.MagicMock,
+    mock_sampler: mock.MagicMock,
+):
+  """A caller-set thinking config reaches a Gemini 4 model unchanged."""
+  mock_llm_resolve.return_value = mock_llm_class
+  thinking_config = genai_types.ThinkingConfig(thinking_budget=2048)
+  config = SimplePromptOptimizerConfig(
+      optimizer_model="gemini-4-hydrogen",
+      model_configuration=genai_types.GenerateContentConfig(
+          thinking_config=thinking_config
+      ),
+      num_iterations=1,
+      batch_size=2,
+  )
+
+  await SimplePromptOptimizer(config).optimize(
+      Agent(name="test_agent", instruction="Initial Prompt"), mock_sampler
+  )
+
+  generate = mock_llm_class.return_value.generate_content_async
+  request = generate.call_args.args[0]
+  assert request.config.thinking_config == thinking_config

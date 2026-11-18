@@ -59,6 +59,7 @@ from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import enforce_strict_openai_schema
 from ..utils._schema_utils import lowercase_schema_types
+from ..utils.model_name_utils import _is_gemini_3_or_newer
 from ..utils.model_name_utils import is_gemini_model
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
@@ -4135,7 +4136,7 @@ async def _get_completion_inputs(
           or bool(model_info and model_info.get("supports_adaptive_thinking"))
       )
       is_gemini = is_gemini_model(stripped_lower)
-      is_gemini_3_or_newer = is_gemini and "gemini-3" in stripped_lower
+      is_gemini_3_or_newer = _is_gemini_3_or_newer(stripped_lower)
       effective_max_tokens = generation_params.get("max_completion_tokens")
       if effective_max_tokens is None:
         effective_max_tokens = max_tokens

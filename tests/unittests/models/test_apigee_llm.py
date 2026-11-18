@@ -371,11 +371,17 @@ def test_vertex_model_missing_project_or_location_raises_error(
         'expected_model_id',
     ),
     [
-        ('apigee/gemini-2.5-flash', None, False, None, 'gemini-2.5-flash'),
+        ('apigee/gemini-2.5-flash', None, False, 'v1beta', 'gemini-2.5-flash'),
         ('apigee/gemini-2.5-flash', 'true', True, None, 'gemini-2.5-flash'),
         ('apigee/gemini-2.5-flash', '1', True, None, 'gemini-2.5-flash'),
-        ('apigee/gemini-2.5-flash', 'false', False, None, 'gemini-2.5-flash'),
-        ('apigee/gemini-2.5-flash', '0', False, None, 'gemini-2.5-flash'),
+        (
+            'apigee/gemini-2.5-flash',
+            'false',
+            False,
+            'v1beta',
+            'gemini-2.5-flash',
+        ),
+        ('apigee/gemini-2.5-flash', '0', False, 'v1beta', 'gemini-2.5-flash'),
         (
             'apigee/v1/gemini-2.5-flash',
             None,
@@ -474,6 +480,28 @@ async def test_model_string_parsing_and_client_initialization(
             config=request.config,
         )
     )
+
+
+@pytest.mark.parametrize(
+    ('api_version_env', 'expected_api_version'),
+    [('v1', None), ('beta', 'v1beta')],
+)
+def test_gemini_api_default_yields_to_api_version_env_var(
+    api_version_env: str, expected_api_version: str | None
+) -> None:
+  """Only an unset or beta GOOGLE_GENAI_API_VERSION gets ADK's v1beta."""
+  with (
+      mock.patch.dict(
+          os.environ, {'GOOGLE_GENAI_API_VERSION': api_version_env}, clear=True
+      ),
+      mock.patch('google.genai.Client', autospec=True) as mock_client,
+  ):
+    _ = ApigeeLlm(
+        model='apigee/gemini-2.5-flash', proxy_url=PROXY_URL
+    ).api_client
+
+  http_options = mock_client.call_args.kwargs['http_options']
+  assert http_options.api_version == expected_api_version
 
 
 @pytest.mark.asyncio

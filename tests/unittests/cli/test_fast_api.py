@@ -33,6 +33,7 @@ from google.adk.a2a import _compat
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -70,6 +71,8 @@ from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
 from google.genai import types
@@ -1811,12 +1814,78 @@ def test_get_adk_app_info_llm_agent_with_function_tool(
 
 
 def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
-  """Test retrieving app info when root agent is not an LlmAgent raises 400."""
+  """Test retrieving app info when root agent is a non-LLM BaseAgent."""
   agent = DummyAgent("dummy_agent")
   with patch.object(mock_agent_loader, "load_agent", return_value=agent):
     response = test_app.get("/apps/test_app/app-info")
-    assert response.status_code == 400
-    assert "Root agent is not an LlmAgent" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "test_app"
+    assert data["rootAgentName"] == "dummy_agent"
+    assert data["language"] == "python"
+    assert data["agents"] == {}
+
+
+def test_get_adk_app_info_workflow_root(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is a graph Workflow."""
+
+  def tell_weather(city: str) -> str:
+    """Get the weather for a city."""
+    return f"Sunny in {city}"
+
+  weather_agent = LlmAgent(
+      name="weather_agent",
+      description="Weather agent.",
+      instruction="Tell weather.",
+      model="test_model",
+      tools=[tell_weather],
+  )
+  translate_agent = LlmAgent(
+      name="translate_agent",
+      description="Translate agent.",
+      instruction="Translate to German.",
+      model="test_model",
+  )
+  workflow = Workflow(
+      name="root_agent",
+      description="Weather translation workflow.",
+      edges=[(START, weather_agent, translate_agent)],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=workflow):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "test_app"
+    assert data["rootAgentName"] == "root_agent"
+    assert data["description"] == "Weather translation workflow."
+    assert data["language"] == "python"
+    assert "root_agent" not in data["agents"]
+    assert set(data["agents"]) == {"weather_agent", "translate_agent"}
+    weather_tools = data["agents"]["weather_agent"]["tools"]
+    assert weather_tools[0]["functionDeclarations"][0]["name"] == "tell_weather"
+
+
+def test_get_adk_app_info_sequential_agent_root(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is a SequentialAgent."""
+  writer = LlmAgent(
+      name="writer", description="Writes drafts.", model="test_model"
+  )
+  critic = LlmAgent(
+      name="critic", description="Reviews drafts.", model="test_model"
+  )
+  pipeline = SequentialAgent(
+      name="pipeline",
+      description="Write and review pipeline.",
+      sub_agents=[writer, critic],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=pipeline):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "pipeline"
+    assert data["description"] == "Write and review pipeline."
+    assert "pipeline" not in data["agents"]
+    assert set(data["agents"]) == {"writer", "critic"}
 
 
 def test_get_adk_app_info_unknown_app_returns_404(test_app, mock_agent_loader):
@@ -3845,6 +3914,91 @@ def test_agent_run_redacts_oauth2_client_secret(
       action_auth["rawAuthCredential"]["oauth2"]["clientId"]
       == "public-client-id"
   )
+
+
+def test_agent_run_debug_log_redacts_credential_secrets(
+    test_app, create_test_session, monkeypatch, oauth2_auth_config_dict, caplog
+):
+  """/run must not log secrets its response redacts.
+
+  A JSON-backed session service hands a stored credential back as a plain
+  dict, so `state_delta` carries one whose secrets no `repr=False` covers.
+  """
+  info = create_test_session
+
+  async def run_async_with_auth_request(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="adk_request_credential",
+                        id="adk-req-cred-id",
+                        args={
+                            "functionCallId": "adk-original-fc-id",
+                            "authConfig": oauth2_auth_config_dict,
+                        },
+                    )
+                )
+            ],
+        ),
+        actions=EventActions(
+            state_delta={
+                "temp:my_tool:oauth2:abcd1234": {
+                    "authType": "oauth2",
+                    "oauth2": {
+                        "clientId": "public-client-id",
+                        "accessToken": "access-token-should-not-be-logged",
+                        "refreshToken": "refresh-token-should-not-be-logged",
+                    },
+                }
+            },
+        ),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_auth_request)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+  }
+
+  with caplog.at_level(logging.DEBUG, logger="google_adk.google.adk.cli"):
+    response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+
+  secrets = (
+      "access-token-should-not-be-logged",
+      "refresh-token-should-not-be-logged",
+      "should-never-reach-the-client",
+      "pkce-verifier-should-not-leak-either",
+  )
+  for secret in secrets:
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+  stored = response.json()[0]["actions"]["stateDelta"][
+      "temp:my_tool:oauth2:abcd1234"
+  ]
+  assert "accessToken" not in stored["oauth2"]
+  assert "refreshToken" not in stored["oauth2"]
+  assert stored["oauth2"]["clientId"] == "public-client-id"
+  assert "Events generated:" in caplog.text
 
 
 def test_agent_run_sse_redacts_oauth2_client_secret(
@@ -6361,8 +6515,8 @@ def test_special_agent_allows_own_origin_with_wildcard(
       headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
   )
 
-  assert response.status_code == 400
-  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+  assert response.status_code == 200
+  assert response.json()["rootAgentName"] == "dummy_agent"
 
 
 def test_special_agent_allows_proxied_origin_without_allow_origins(
@@ -6394,8 +6548,8 @@ def test_special_agent_allows_proxied_origin_without_allow_origins(
       },
   )
 
-  assert response.status_code == 400
-  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+  assert response.status_code == 200
+  assert response.json()["rootAgentName"] == "dummy_agent"
 
 
 def test_builder_save_rejects_remote_client(
@@ -6994,6 +7148,21 @@ def test_telemetry_post_endpoint_missing_header(test_app):
   response = test_app.post("/config/telemetry", json={"telemetry": True})
   assert response.status_code == 400
   assert "Forbidden: missing required security header" in response.text
+
+
+def test_telemetry_post_endpoint_rejects_remote_client(
+    remote_builder_test_client,
+):
+  """Any non-browser caller can set the header, so the peer address gates it."""
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    response = remote_builder_test_client.post(
+        "/config/telemetry",
+        json={"telemetry": True},
+        headers={"x-adk-telemetry-request": "true"},
+    )
+
+  assert response.status_code == 403
+  mock_write.assert_not_called()
 
 
 def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
@@ -8622,7 +8791,7 @@ def test_app_info_serves_special_agent_only_on_loopback_dev_server(
   assert "internal special agents" in blocked.json()["detail"]
 
   # Same request on a loopback-bound dev server gets past the guard and is
-  # answered on the merits of the loaded agent (which here is not an LlmAgent).
+  # answered on the merits of the loaded DummyAgent (200 with empty agents).
   dev_client = _create_test_client(
       mock_session_service,
       mock_artifact_service,
@@ -8636,8 +8805,8 @@ def test_app_info_serves_special_agent_only_on_loopback_dev_server(
       "/apps/__internal_assistant/app-info",
       headers={"host": "127.0.0.1:8000"},
   )
-  assert allowed.status_code == 400
-  assert allowed.json()["detail"] == "Root agent is not an LlmAgent"
+  assert allowed.status_code == 200
+  assert allowed.json()["rootAgentName"] == "dummy_agent"
 
 
 @pytest.mark.parametrize("bind_host", ["0.0.0.0", None])
@@ -9091,6 +9260,129 @@ def test_runtime_config_rejects_half_specified_logo(tmp_path):
     get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
 
 
+def test_no_file_observer_without_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """No watchdog observer, and so no inotify instance, without reload_agents."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+    )
+    with client:
+      pass
+
+  mock_observer.assert_not_called()
+
+
+def test_file_observer_started_and_stopped_with_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """reload_agents starts the observer and stops it when the app shuts down."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        reload_agents=True,
+    )
+    observer = mock_observer.return_value
+    observer.start.assert_called_once()
+    observer.stop.assert_not_called()
+    with client:
+      pass
+
+  observer.stop.assert_called_once()
+  observer.join.assert_called_once()
+
+
+def test_api_server_skips_tear_down_observer_without_setup_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """tear_down_observer is not called when setup_observer is None."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  tear_down_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(tear_down_observer=tear_down_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_not_called()
+  tear_down_observer.assert_not_called()
+
+
+def test_api_server_allows_setup_observer_without_tear_down_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Shutting down succeeds when setup_observer is given without tear_down_observer."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  setup_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(setup_observer=setup_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_called_once_with()
+  setup_observer.assert_called_once_with(mock_observer.return_value, api_server)
+
+
 @pytest.mark.parametrize(
     ("url_prefix", "expected_root_path"),
     [
@@ -9236,6 +9528,56 @@ def test_agent_engine_keeps_spans_of_unsampled_platform_traceparent(
   assert response.status_code == 200
   assert [(s.name, s.parent) for s in spans] == [("probe", None)]
   assert spans[0].context.trace_id != 0x385C840E58676FDD
+
+
+@pytest.mark.parametrize(
+    ("conflict", "expected_calls"),
+    [
+        ("google-genai>=1.0.0,<3 vs google-genai 3.3.0", []),
+        (None, [True]),
+    ],
+)
+def test_setup_instrumentation_lib_checks_dependency_conflicts(
+    caplog, conflict, expected_calls
+):
+  """Incompatible google-genai skips instrument() and logs info, not error."""
+  instrument_calls = []
+  checked_deps = []
+
+  class _FakeInstrumentor:
+
+    def instrumentation_dependencies(self):
+      return ["google-genai>=1.0.0,<3"]
+
+    def instrument(self):
+      instrument_calls.append(True)
+
+  def _fake_get_dependency_conflicts(deps):
+    checked_deps.append(list(deps))
+    return conflict
+
+  fake_google_genai = type(sys)("fake_google_genai")
+  fake_google_genai.GoogleGenAiSdkInstrumentor = _FakeInstrumentor
+  fake_deps = type(sys)("fake_deps")
+  fake_deps.get_dependency_conflicts = _fake_get_dependency_conflicts
+
+  with (
+      patch.dict(
+          sys.modules,
+          {
+              "opentelemetry.instrumentation.google_genai": fake_google_genai,
+              "opentelemetry.instrumentation.dependencies": fake_deps,
+          },
+      ),
+      caplog.at_level(logging.INFO),
+  ):
+    api_server_module._setup_instrumentation_lib_if_installed()  # pylint: disable=protected-access
+
+  assert checked_deps == [["google-genai>=1.0.0,<3"]]
+  assert instrument_calls == expected_calls
+  assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+  if conflict:
+    assert "Skipping GoogleGenAiSdkInstrumentor" in caplog.text
 
 
 if __name__ == "__main__":
