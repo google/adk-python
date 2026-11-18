@@ -275,7 +275,8 @@ class Gemini(BaseLlm):
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
       llm_request.config.http_options.headers = merge_tracking_headers(
-          llm_request.config.http_options.headers or {}
+          llm_request.config.http_options.headers or {},
+          exclude_runtime_tag=self._exclude_runtime_tag(),
       )
       _, api_version = self._base_url_and_api_version
       if api_version is None:
@@ -423,6 +424,7 @@ class Gemini(BaseLlm):
         llm_request=llm_request,
         stream=stream,
         service_tier=llm_request.service_tier,
+        exclude_runtime_tag=self._exclude_runtime_tag(),
     ):
       yield llm_response
 
@@ -485,8 +487,15 @@ class Gemini(BaseLlm):
         else GoogleLLMVariant.GEMINI_API
     )
 
+  def _exclude_runtime_tag(self) -> bool:
+    """Returns whether tracking headers must leave out the hosting runtime tag.
+
+    Subclasses whose requests go to a non-Google endpoint return True.
+    """
+    return False
+
   def _tracking_headers(self) -> dict[str, str]:
-    return get_tracking_headers()
+    return get_tracking_headers(exclude_runtime_tag=self._exclude_runtime_tag())
 
   def _configured_api_version(self) -> str | None:
     """Returns the explicitly configured API version, if any.
@@ -579,7 +588,10 @@ class Gemini(BaseLlm):
     for field in ('api_version', 'base_url', 'retry_options'):
       if getattr(http_options, field) is None:
         setattr(http_options, field, getattr(adk_http_options, field))
-    http_options.headers = merge_tracking_headers(http_options.headers or {})
+    http_options.headers = merge_tracking_headers(
+        http_options.headers or {},
+        exclude_runtime_tag=self._exclude_runtime_tag(),
+    )
     return http_options
 
   @contextlib.asynccontextmanager
@@ -673,7 +685,8 @@ class Gemini(BaseLlm):
       live_connect_config = live_connect_config.model_copy(
           update={
               'http_options': merge_tracking_http_options(
-                  http_options.model_copy() if http_options else None
+                  http_options.model_copy() if http_options else None,
+                  exclude_runtime_tag=self._exclude_runtime_tag(),
               )
           }
       )

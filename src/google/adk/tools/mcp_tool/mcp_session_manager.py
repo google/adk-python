@@ -1021,7 +1021,8 @@ class MCPSessionManager:
     """Merges base connection headers with additional headers.
 
     The ADK client tokens are added on top, so that an MCP server sees the
-    traffic as coming from ADK rather than from bare httpx.
+    traffic as coming from ADK rather than from bare httpx. The hosting runtime
+    tag is only added for https Google API servers.
 
     Args:
         additional_headers: Optional headers to merge with connection headers.
@@ -1060,7 +1061,12 @@ class MCPSessionManager:
       }
       base_headers.update(overrides)
 
-    return merge_tracking_headers(base_headers)
+    url = urllib.parse.urlparse(getattr(self._connection_params, 'url', ''))
+    return merge_tracking_headers(
+        base_headers,
+        exclude_runtime_tag=url.scheme != 'https'
+        or not _is_google_api_host(url.hostname),
+    )
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.

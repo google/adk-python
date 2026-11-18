@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from google.adk import version
 from google.adk.integrations.typesafe import _typesafe_classifier
 from google.adk.integrations.typesafe import TypesafeClassifier
 from google.adk.labs.classifiers import Binary
@@ -594,3 +595,14 @@ async def test_user_agent_names_adk_and_the_classifier():
   user_agent = server.requests[0].headers['user-agent'].split(' ')
   assert user_agent[0].startswith('google-adk/')
   assert user_agent[-1] == classifier_client_label('typesafe')
+
+
+async def test_user_agent_has_no_runtime_tag(monkeypatch):
+  """Typesafe is a third party, so the hosting runtime is not sent."""
+  monkeypatch.setenv('GOOGLE_CLOUD_AGENT_ENGINE_ID', 'engine-id')
+  server = _Server(_ok({'urgent': {'type': 'noul', 'noul': 0.5}}))
+
+  await _classifier(server).classify(input='hi', questions={'urgent': _URGENT})
+
+  user_agent = server.requests[0].headers['user-agent'].split(' ')
+  assert user_agent[0] == f'google-adk/{version.__version__}'

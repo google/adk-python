@@ -934,7 +934,9 @@ async def test_call_advisor_enters_client_label_context_with_extra_default_label
   monkeypatch.setattr(
       _client_labels_utils,
       '_get_default_labels',
-      lambda framework_label=None: list(extra_defaults),
+      lambda framework_label=None, *, exclude_runtime_tag=False: list(
+          extra_defaults
+      ),
   )
 
   observed_labels_during_call: list[list[str]] = []
