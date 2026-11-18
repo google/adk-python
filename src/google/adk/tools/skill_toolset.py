@@ -2495,6 +2495,13 @@ class SkillToolset(BaseToolset):
         fut.set_result(skill)
         turn_cache[skill_name] = skill
         return skill
+      except asyncio.CancelledError:
+        # Not an Exception, so it needs its own cleanup: a future left pending
+        # here would block every later lookup in this invocation, including a
+        # resumed run, which reuses the invocation id.
+        fut.cancel()
+        turn_cache.pop(skill_name, None)
+        raise
       except Exception as e:
         fut.set_exception(e)
         fut.exception()

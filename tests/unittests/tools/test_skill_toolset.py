@@ -4433,6 +4433,101 @@ async def test_turn_scoped_skill_cache_concurrency(mock_registry, mock_skill1):
   mock_registry.get_skill.assert_called_once_with(name="skill1")
 
 
+@pytest.mark.asyncio
+async def test_load_skill_fetches_again_after_cancelled_fetch_in_same_turn(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  """A load cancelled mid-fetch does not block a later load in the same turn.
+
+  Setup: the registry's first fetch stalls; later fetches succeed.
+  Act:
+    - Start load_skill and cancel it while the fetch stalls, as a client
+      disconnect does.
+    - Load the same skill again with the same invocation id, as a resumed
+      run does.
+  Assert: the second load returns the skill after a new registry fetch.
+  """
+  fetch_started = asyncio.Event()
+
+  async def get_skill(name):
+    if mock_registry.get_skill.call_count == 1:
+      fetch_started.set()
+      await asyncio.Event().wait()
+    return mock_skill1
+
+  mock_registry.get_skill.side_effect = get_skill
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  tool_context_instance.invocation_id = "resumed-turn"
+  tool_context_instance.state.get.return_value = None
+
+  first_load = asyncio.create_task(
+      load_tool.run_async(
+          args={"skill_name": "skill1"}, tool_context=tool_context_instance
+      )
+  )
+  await fetch_started.wait()
+  first_load.cancel()
+  await asyncio.gather(first_load, return_exceptions=True)
+
+  result = await asyncio.wait_for(
+      load_tool.run_async(
+          args={"skill_name": "skill1"}, tool_context=tool_context_instance
+      ),
+      timeout=5,
+  )
+
+  assert result["skill_name"] == "skill1"
+  assert mock_registry.get_skill.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_load_skill_waiting_on_cancelled_fetch_does_not_hang(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  """A load sharing an in-flight fetch ends when that fetch is cancelled.
+
+  Setup: the registry's fetch stalls.
+  Act: start two loads of the same skill in one turn, so the second waits on
+    the first one's fetch, then cancel only the first.
+  Assert: the second load finishes promptly as cancelled instead of waiting
+    forever.
+  """
+  fetch_started = asyncio.Event()
+
+  async def get_skill(name):
+    fetch_started.set()
+    await asyncio.Event().wait()
+    return mock_skill1
+
+  mock_registry.get_skill.side_effect = get_skill
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  tool_context_instance.invocation_id = "shared-turn"
+  tool_context_instance.state.get.return_value = None
+
+  first_load = asyncio.create_task(
+      load_tool.run_async(
+          args={"skill_name": "skill1"}, tool_context=tool_context_instance
+      )
+  )
+  await fetch_started.wait()
+  second_load = asyncio.create_task(
+      load_tool.run_async(
+          args={"skill_name": "skill1"}, tool_context=tool_context_instance
+      )
+  )
+  await asyncio.sleep(0)
+  first_load.cancel()
+  await asyncio.gather(first_load, return_exceptions=True)
+
+  await asyncio.wait({second_load}, timeout=5)
+
+  assert second_load.done()
+  assert second_load.cancelled()
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+
 def test_skill_toolset_disables_invocation_cache():
   """Verify SkillToolset disables tool invocation caching to allow dynamic tools."""
   toolset = skill_toolset.SkillToolset()
