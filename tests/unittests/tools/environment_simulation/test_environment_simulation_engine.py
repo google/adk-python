@@ -391,12 +391,18 @@ class _RecordingJudge:
 
   def __init__(self):
     self.calls: list[tuple[str, str]] = []
+    self.thinking_configs: dict[
+        tuple[str, str], genai_types.ThinkingConfig | None
+    ] = {}
 
   async def generate_content_async(self, llm_request, stream=False):
     del stream
     prompt = llm_request.contents[0].parts[0].text
     arg_name = re.search(r"Argument: (\S+)", prompt).group(1)
     self.calls.append((llm_request.model, arg_name))
+    self.thinking_configs[(llm_request.model, arg_name)] = (
+        llm_request.config.thinking_config
+    )
     yield LlmResponse(
         content=genai_types.Content(
             role="model", parts=[genai_types.Part(text="YES")]
@@ -495,6 +501,49 @@ class TestEnvironmentSimulationEngineArgsMatcher:
     assert ("model-two", "query") in judge.calls
     assert judge.calls.count(("pinned", "other")) == 2
     assert config.args_matcher.default_matcher.model is None
+
+  async def test_semantic_matcher_uses_gemini_4_thinking_level_for_simulation_model(
+      self, mock_analyzer, monkeypatch
+  ):
+    """Gemini 4 simulation_model switches default matcher thinking to LOW."""
+    del mock_analyzer
+    judge = _RecordingJudge()
+    monkeypatch.setattr(
+        _semantic_arg_matcher.LLMRegistry,
+        "new_llm",
+        staticmethod(lambda model: judge),
+    )
+    config = InjectionConfig(
+        match_args={"query": "a", "pinned_arg": "b"},
+        args_matcher=ToolArgsMatcher(
+            default_matcher=SemanticArgMatcher(),
+            per_arg_matchers={
+                "pinned_arg": SemanticArgMatcher(model="gemini-2.5-flash")
+            },
+        ),
+        injected_response={"injected": True},
+    )
+    engine = EnvironmentSimulationEngine(
+        _semantic_config([config], simulation_model="gemini-4-hydrogen")
+    )
+
+    result = await engine.simulate(
+        _search_tool(), {"query": "x", "pinned_arg": "y"}, MagicMock()
+    )
+
+    assert result == {"injected": True}
+    assert judge.thinking_configs[("gemini-4-hydrogen", "query")] == (
+        genai_types.ThinkingConfig(
+            include_thoughts=False,
+            thinking_level=genai_types.ThinkingLevel.LOW,
+        )
+    )
+    assert judge.thinking_configs[("gemini-2.5-flash", "pinned_arg")] == (
+        genai_types.ThinkingConfig(
+            include_thoughts=False,
+            thinking_budget=512,
+        )
+    )
 
   async def test_unmatched_args_matcher_falls_back_to_mock_strategy(
       self, mock_analyzer

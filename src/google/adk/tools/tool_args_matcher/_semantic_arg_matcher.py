@@ -38,6 +38,7 @@ from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
+from ...utils.model_name_utils import _gemini_major_version
 from ._tool_args_matcher import ArgMatchResult
 from ._tool_args_matcher import BaseArgMatcher
 from ._tool_args_matcher import register_arg_matcher
@@ -114,7 +115,8 @@ class SemanticArgMatcher(BaseArgMatcher):
   )
   """The content generation configuration for the model call.
 
-  Defaults to temperature 0, JSON output and a small thinking budget.
+  Defaults to temperature 0, JSON output and low thinking (thinking level LOW on
+  Gemini 4 and later, or a 512-token thinking budget otherwise).
   """
 
   timeout_seconds: float | None = Field(default=_DEFAULT_TIMEOUT_SECONDS, gt=0)
@@ -173,17 +175,37 @@ class SemanticArgMatcher(BaseArgMatcher):
     return result
 
   @classmethod
+  def _default_thinking_config(
+      cls, model: str | None
+  ) -> genai_types.ThinkingConfig:
+    major = _gemini_major_version(model)
+    if major is not None and major >= 4:
+      return genai_types.ThinkingConfig(
+          include_thoughts=False,
+          thinking_level=genai_types.ThinkingLevel.LOW,
+      )
+    return genai_types.ThinkingConfig(
+        include_thoughts=False,
+        thinking_budget=cls._THINKING_BUDGET,
+    )
+
+  @classmethod
   def _default_generate_content_config(
       cls,
   ) -> genai_types.GenerateContentConfig:
     return genai_types.GenerateContentConfig(
         temperature=0.0,
         response_mime_type='application/json',
-        thinking_config=genai_types.ThinkingConfig(
-            include_thoughts=False,
-            thinking_budget=cls._THINKING_BUDGET,
-        ),
+        thinking_config=cls._default_thinking_config(None),
     )
+
+  def _request_config(
+      self, model_name: str
+  ) -> genai_types.GenerateContentConfig:
+    config = self.generate_content_config.model_copy(deep=True)
+    if config.thinking_config == self._default_thinking_config(None):
+      config.thinking_config = self._default_thinking_config(model_name)
+    return config
 
   @staticmethod
   def _to_prompt_json(value: object) -> str:
@@ -320,7 +342,7 @@ class SemanticArgMatcher(BaseArgMatcher):
                 role='user', parts=[genai_types.Part(text=prompt)]
             )
         ],
-        config=self.generate_content_config.model_copy(deep=True),
+        config=self._request_config(model_name),
     )
     try:
       return await asyncio.wait_for(
