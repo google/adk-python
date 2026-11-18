@@ -59,6 +59,7 @@ from google.adk.a2a.agent.utils import execute_before_request_interceptors
 from google.adk.a2a.converters import event_converter
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from google.adk.agents.context import Context
@@ -9666,6 +9667,16 @@ def _persisted_answer_texts(session, author: str) -> list[str]:
   return texts
 
 
+async def _bracket_answer_text(ctx, response, event):
+  """An after_request interceptor that is not idempotent: it wraps text in <>."""
+  del ctx, response
+  if event.content and event.content.parts:
+    for part in event.content.parts:
+      if part.text and not part.thought:
+        part.text = f"<{part.text}>"
+  return event
+
+
 class TestRemoteA2aAgentStreamingAggregation:
   """Verifies streaming partial artifact aggregation and session persistence."""
 
@@ -10117,6 +10128,189 @@ class TestRemoteA2aAgentStreamingAggregation:
 
     assert _persisted_answer_texts(session, author="specialist") == [
         "Public: ok"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  @pytest.mark.parametrize(
+      "steps, initial_state",
+      [
+          pytest.param(
+              [
+                  ("artifact", "answer-1", ["Hello "], False, False),
+                  ("artifact", "answer-1", ["world"], True, False),
+                  ("status", _compat.TS_COMPLETED, None),
+              ],
+              None,
+              id="closed_by_status",
+          ),
+          pytest.param(
+              [
+                  ("artifact", "answer-1", ["Hello "], False, False),
+                  ("artifact", "answer-1", ["world"], True, True),
+                  ("status", _compat.TS_COMPLETED, None),
+              ],
+              None,
+              id="closed_by_delta_last_chunk",
+          ),
+          pytest.param(
+              [
+                  ("artifact", "answer-1", ["Hello "], False, False),
+                  ("artifact", "answer-1", ["world"], True, False),
+                  ("artifact", "answer-1", [], False, True),
+                  ("status", _compat.TS_COMPLETED, None),
+              ],
+              None,
+              id="closed_by_empty_last_chunk",
+          ),
+          pytest.param(
+              [
+                  ("artifact", "answer-1", ["Hello "], False, False),
+                  ("artifact", "answer-1", ["world"], True, False),
+              ],
+              _compat.TS_COMPLETED,
+              id="closed_by_end_of_stream",
+          ),
+          pytest.param(
+              [
+                  ("artifact", "answer-1", ["Hello "], False, False),
+                  ("artifact", "answer-1", ["Hello world"], False, True),
+                  ("status", _compat.TS_COMPLETED, None),
+              ],
+              None,
+              id="closed_by_full_replacement",
+          ),
+      ],
+  )
+  async def test_rewriting_interceptor_changes_persisted_answer_once(
+      self, steps, initial_state, use_v2
+  ):
+    """A non-idempotent after_request interceptor changes the persisted answer once, however the stream closes."""
+    script = _build_streaming_a2a_script(
+        steps, use_v2=use_v2, initial_state=initial_state
+    )
+
+    _, session = await _run_single_streaming_turn(
+        script,
+        config=A2aRemoteAgentConfig(
+            request_interceptors=[
+                RequestInterceptor(after_request=_bracket_answer_text)
+            ]
+        ),
+    )
+
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "<Hello world>"
+    ]
+
+  @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+  async def test_rewriting_interceptor_still_changes_each_streamed_chunk(
+      self, use_v2
+  ):
+    """The caller still gets every streamed chunk with the after_request interceptor applied."""
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Hello "], False, False),
+            ("artifact", "answer-1", ["world"], True, False),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=use_v2,
+    )
+
+    events, _ = await _run_single_streaming_turn(
+        script,
+        config=A2aRemoteAgentConfig(
+            request_interceptors=[
+                RequestInterceptor(after_request=_bracket_answer_text)
+            ]
+        ),
+    )
+
+    streamed_texts = [
+        ev.content.parts[0].text
+        for ev in events
+        if ev.partial and ev.content and ev.content.parts
+    ]
+    assert streamed_texts == ["<Hello >", "<world>"]
+
+  async def test_rewriting_interceptor_changes_converter_partials_once(self):
+    """Partials streamed by a custom status converter are persisted with the after_request interceptor applied once."""
+
+    def stream_working_text(update, author, ctx, part_converter):
+      event = convert_a2a_status_update_to_event(
+          update, author, ctx, part_converter
+      )
+      if event is not None and update.status.state == _compat.TS_WORKING:
+        for part in event.content.parts:
+          part.thought = False
+        event.partial = True
+      return event
+
+    script = _build_streaming_a2a_script(
+        [
+            ("status", _compat.TS_WORKING, "Hello "),
+            ("status", _compat.TS_WORKING, "world"),
+            ("status", _compat.TS_COMPLETED, None),
+        ],
+        use_v2=True,
+    )
+
+    _, session = await _run_single_streaming_turn(
+        script,
+        config=A2aRemoteAgentConfig(
+            request_interceptors=[
+                RequestInterceptor(after_request=_bracket_answer_text)
+            ],
+            a2a_status_update_converter=stream_working_text,
+        ),
+    )
+
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "<Hello world>"
+    ]
+
+  async def test_rewriting_interceptor_changes_text_flushed_before_finish_task_once(
+      self,
+  ):
+    """In task mode, text still buffered when finish_task arrives is persisted with the after_request interceptor applied once."""
+
+    def finish_on_working_status(update, author, ctx, part_converter):
+      del update, part_converter
+      return Event(
+          author=author,
+          invocation_id=ctx.invocation_id,
+          content=genai_types.Content(
+              role="model",
+              parts=[
+                  genai_types.Part.from_function_response(
+                      name=FINISH_TASK_TOOL_NAME,
+                      response={"result": FINISH_TASK_SUCCESS_RESULT},
+                  )
+              ],
+          ),
+      )
+
+    script = _build_streaming_a2a_script(
+        [
+            ("artifact", "answer-1", ["Hello "], False, False),
+            ("artifact", "answer-1", ["world"], True, False),
+            ("status", _compat.TS_WORKING, "Wrapping up"),
+        ],
+        use_v2=True,
+    )
+
+    _, session = await _run_single_streaming_turn(
+        script,
+        config=A2aRemoteAgentConfig(
+            request_interceptors=[
+                RequestInterceptor(after_request=_bracket_answer_text)
+            ],
+            a2a_status_update_converter=finish_on_working_status,
+        ),
+        mode="task",
+    )
+
+    assert _persisted_answer_texts(session, author="specialist") == [
+        "<Hello world>"
     ]
 
   @pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])

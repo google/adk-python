@@ -917,8 +917,19 @@ class _StreamingArtifactAggregator:
       event: Event,
       *,
       append: bool,
+      received: Event,
   ) -> None:
-    """Records a ``partial=True`` event into ``artifact_id``'s buffer."""
+    """Records a ``partial=True`` chunk into ``artifact_id``'s buffer.
+
+    Args:
+      artifact_id: The artifact the chunk belongs to, or ``""`` if it has none.
+      event: The chunk as emitted to the caller. Without an ``artifact_id``,
+        its id is aligned with the id of the artifact's first chunk.
+      append: Whether the chunk extends the buffer instead of replacing it.
+      received: The same chunk before the ``after_request`` interceptors ran.
+        This is what gets buffered, because the aggregate built from the
+        buffer goes through the interceptors when it is emitted.
+    """
     if not append:
       self._buffers[artifact_id] = _OpenArtifactBuffer(artifact_id)
     buf = self._buffers.setdefault(
@@ -926,7 +937,7 @@ class _StreamingArtifactAggregator:
     )
     if not artifact_id and buf.fallback_event_id is not None:
       event.id = buf.fallback_event_id
-    buf.record_event(event)
+    buf.record_event(received)
     if not buf.has_parts():
       self._buffers.pop(artifact_id, None)
 
@@ -2384,12 +2395,16 @@ class RemoteA2aAgent(BaseAgent):
       return events
 
     if _is_true_flag(event, "partial"):
+      # Interceptors may edit the chunk in place, so copy it first.
+      received = event.model_copy(deep=True)
       intercepted = await self._run_after_request_interceptors(
           ctx, a2a_response, event
       )
       if intercepted is None:
         return events
-      aggregator.record_partial(artifact_id, intercepted, append=is_append)
+      aggregator.record_partial(
+          artifact_id, intercepted, append=is_append, received=received
+      )
       events.append(intercepted)
       return events
 
@@ -2404,7 +2419,9 @@ class RemoteA2aAgent(BaseAgent):
       buf = aggregator.pop_buffer(artifact_id)
       if intercepted_delta is not None:
         if buf is not None:
-          buf.record_event(intercepted_delta)
+          # The interceptors ran on a copy, so ``event`` is still the delta as
+          # received. Only the aggregate below goes through them.
+          buf.record_event(event)
         events.append(intercepted_delta)
       if buf is not None and buf.has_parts():
         buf.apply_to_event(event, ctx)
@@ -2481,6 +2498,8 @@ class RemoteA2aAgent(BaseAgent):
       return events, boundary_event
 
     if event is not None:
+      # Interceptors may edit the event in place, so copy it first.
+      received = event.model_copy(deep=True)
       intercepted = await self._run_after_request_interceptors(
           ctx, a2a_response, event
       )
@@ -2488,7 +2507,9 @@ class RemoteA2aAgent(BaseAgent):
         if _is_true_flag(intercepted, "partial"):
           # A partial produced by a custom converter or interceptor still
           # needs a persisted response at the boundary.
-          aggregator.record_partial("", intercepted, append=True)
+          aggregator.record_partial(
+              "", intercepted, append=True, received=received
+          )
         events.append(intercepted)
     return events, boundary_event
 
