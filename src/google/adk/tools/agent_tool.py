@@ -524,9 +524,10 @@ class AgentTool(BaseTool):
       )
 
     parts_text = (
-        _part_to_text(p)
-        for p in (last_content.parts or []) if not p.thought
-    ) if last_content else []
+        (_part_to_text(p) for p in last_content.parts or [] if not p.thought)
+        if last_content
+        else []
+    )
     merged_text = '\n'.join(t for t in parts_text if t)
     if not merged_text and last_output is not None:
       tool_result = last_output
@@ -540,7 +541,8 @@ class AgentTool(BaseTool):
       output_schema = _get_output_schema(self.agent)
       tool_result = (
           validate_schema(output_schema, merged_text)
-          if output_schema else merged_text
+          if output_schema
+          else merged_text
       )
 
     if self.propagate_grounding_metadata and last_grounding_metadata:
