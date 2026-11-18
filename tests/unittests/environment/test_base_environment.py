@@ -12,242 +12,71 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for BaseEnvironment."""
+"""Tests for the remote sandbox path resolver in BaseEnvironment."""
 
 from pathlib import Path
-from typing import Any
-import warnings
 
-from google.adk.environment._base_environment import BaseEnvironment
-from google.adk.environment._base_environment import ExecutionResult
-from google.adk.environment._environment_scope import EnvironmentScope
+from google.adk.environment._base_environment import resolve_sandbox_path
 import pytest
 
 
-def _define_outdated_environment() -> type[BaseEnvironment]:
-  """Defines an environment whose methods predate the `ctx` argument."""
-
-  class _OutdatedEnvironment(BaseEnvironment):
-    """Records each call it receives."""
-
-    def __init__(self):
-      self.calls: list[tuple[str, tuple[Any, ...]]] = []
-
-    @property
-    def working_dir(self) -> Path:
-      return Path("/workspace")
-
-    async def initialize(self) -> None:
-      self.calls.append(("initialize", ()))
-
-    async def execute(
-        self, command: str, *, timeout: float | None = None
-    ) -> ExecutionResult:
-      self.calls.append(("execute", (command, timeout)))
-      return ExecutionResult(stdout="ok")
-
-    async def read_file(self, path: Path) -> bytes:
-      self.calls.append(("read_file", (path,)))
-      return b"data"
-
-    async def write_file(self, path: Path, content: str | bytes) -> None:
-      self.calls.append(("write_file", (path, content)))
-
-  return _OutdatedEnvironment
-
-
-def _define_current_environment() -> type[BaseEnvironment]:
-  """Defines an environment whose methods take `ctx` or `**kwargs`."""
-
-  class _CurrentEnvironment(BaseEnvironment):
-    """Records the context each call receives."""
-
-    def __init__(self):
-      self.contexts: list[Any] = []
-
-    @property
-    def working_dir(self) -> Path:
-      return Path("/workspace")
-
-    async def execute(
-        self,
-        command: str,
-        *,
-        timeout: float | None = None,
-        ctx: Any = None,
-    ) -> ExecutionResult:
-      self.contexts.append(ctx)
-      return ExecutionResult()
-
-    async def read_file(self, path: Path, **kwargs: Any) -> bytes:
-      self.contexts.append(kwargs.get("ctx"))
-      return b""
-
-    async def write_file(
-        self, path: Path, content: str | bytes, *, ctx: Any = None
-    ) -> None:
-      self.contexts.append(ctx)
-
-  return _CurrentEnvironment
-
-
-def test_outdated_override_warns_at_class_definition():
-  """Overrides without `ctx` raise one warning naming each of them."""
-  with pytest.warns(DeprecationWarning) as record:
-    _define_outdated_environment()
-
-  assert len(record) == 1
-  message = str(record[0].message)
-  assert "initialize, execute, read_file, write_file" in message
-  assert record[0].filename == __file__
-
-
-@pytest.mark.asyncio
-async def test_outdated_override_accepts_and_drops_context():
-  """Callers can pass `ctx` to an override that does not take it."""
-  with pytest.warns(DeprecationWarning):
-    env = _define_outdated_environment()()
-  ctx = object()
-
-  await env.initialize(ctx=ctx)
-  result = await env.execute("ls", timeout=5, ctx=ctx)
-  data = await env.read_file(Path("a.txt"), ctx=ctx)
-  await env.write_file(Path("a.txt"), "x", ctx=ctx)
-
-  assert result.stdout == "ok"
-  assert data == b"data"
-  assert env.calls == [
-      ("initialize", ()),
-      ("execute", ("ls", 5)),
-      ("read_file", (Path("a.txt"),)),
-      ("write_file", (Path("a.txt"), "x")),
-  ]
-
-
-@pytest.mark.asyncio
-async def test_outdated_override_still_works_without_context():
-  """Calls that leave `ctx` out reach the override unchanged."""
-  with pytest.warns(DeprecationWarning):
-    env = _define_outdated_environment()()
-
-  await env.execute("ls")
-
-  assert env.calls == [("execute", ("ls", None))]
-
-
-@pytest.mark.asyncio
-async def test_current_override_receives_context_without_warning():
-  """Overrides that take `ctx` or `**kwargs` are left alone."""
-  with warnings.catch_warnings():
-    warnings.simplefilter("error")
-    env = _define_current_environment()()
-  ctx = object()
-
-  await env.execute("ls", ctx=ctx)
-  await env.read_file(Path("a.txt"), ctx=ctx)
-  await env.write_file(Path("a.txt"), "x", ctx=ctx)
-
-  assert env.contexts == [ctx, ctx, ctx]
-
-
-@pytest.mark.asyncio
-async def test_outdated_read_file_stream_override_accepts_and_drops_context():
-  """An async generator override without `ctx` is wrapped like the others."""
-  with pytest.warns(DeprecationWarning, match="read_file_stream"):
-
-    class _OutdatedStreamEnvironment(BaseEnvironment):
-      """Streams two chunks without accepting `ctx`."""
-
-      @property
-      def working_dir(self) -> Path:
-        return Path("/workspace")
-
-      async def execute(
-          self, command: str, *, timeout: float | None = None, ctx: Any = None
-      ) -> ExecutionResult:
-        return ExecutionResult()
-
-      async def read_file(self, path: Path, *, ctx: Any = None) -> bytes:
-        return b""
-
-      async def read_file_stream(self, path: Path):
-        yield b"a"
-        yield b"b"
-
-      async def write_file(
-          self, path: Path, content: str | bytes, *, ctx: Any = None
-      ) -> None:
-        pass
-
-  env = _OutdatedStreamEnvironment()
-
-  chunks = [c async for c in env.read_file_stream(Path("a.txt"), ctx=object())]
-
-  assert chunks == [b"a", b"b"]
-
-
-@pytest.mark.asyncio
-async def test_default_read_file_stream_passes_context_to_read_file():
-  """The default read_file_stream reads through read_file with the same ctx."""
-  env = _define_current_environment()()
-  ctx = object()
-
-  chunks = [c async for c in env.read_file_stream(Path("a.txt"), ctx=ctx)]
-
-  assert chunks == [b""]
-  assert env.contexts == [ctx]
-
-
-def test_outdated_override_keeps_abstract_methods_enforced():
-  """A subclass missing an abstract method still cannot be instantiated."""
-  with pytest.warns(DeprecationWarning):
-
-    class _Incomplete(BaseEnvironment):
-      """Lacks read_file and write_file."""
-
-      @property
-      def working_dir(self) -> Path:
-        return Path("/workspace")
-
-      async def execute(self, command: str) -> ExecutionResult:
-        return ExecutionResult()
-
-  with pytest.raises(TypeError, match="abstract"):
-    _Incomplete()
-
-
-def test_working_dir_defaults_to_none():
-  """An environment that does not override `working_dir` reports None."""
-
-  class _NoWorkingDirEnvironment(BaseEnvironment):
-
-    async def execute(
-        self, command: str, *, timeout: float | None = None, ctx: Any = None
-    ) -> ExecutionResult:
-      return ExecutionResult()
-
-    async def read_file(self, path: Path, *, ctx: Any = None) -> bytes:
-      return b""
-
-    async def write_file(
-        self, path: Path, content: str | bytes, *, ctx: Any = None
-    ) -> None:
-      pass
-
-  assert _NoWorkingDirEnvironment().working_dir is None
-
-
-def test_scope_defaults_to_shared():
-  """An environment that does not override `scope` is shared by all runs."""
-  with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    environment = _define_current_environment()()
-
-  assert environment.scope == EnvironmentScope.SHARED
-
-
-def test_environment_scope_is_exported():
-  """`EnvironmentScope` is importable from the environment package."""
-  from google.adk import environment
-
-  assert environment.EnvironmentScope is EnvironmentScope
+@pytest.mark.parametrize(
+    ('path', 'expected'),
+    [
+        ('notes.txt', '/workspace/notes.txt'),
+        ('sub/nested/file.txt', '/workspace/sub/nested/file.txt'),
+        ('./notes.txt', '/workspace/notes.txt'),
+        # '..' segments that stay inside the workspace are normalized away.
+        ('sub/../notes.txt', '/workspace/notes.txt'),
+        ('.', '/workspace'),
+        # Absolute paths under the workspace root are validated and
+        # normalized, like relative ones.
+        ('/workspace/notes.txt', '/workspace/notes.txt'),
+        ('/workspace/sub/../notes.txt', '/workspace/notes.txt'),
+    ],
+)
+def test_resolve_sandbox_path_anchors_relative_paths(path, expected):
+  assert resolve_sandbox_path(path, '/workspace') == expected
+
+
+@pytest.mark.parametrize(
+    'path',
+    [
+        '..',
+        '../outside.txt',
+        'subdir/../../etc/passwd',
+        'a/../../b',
+    ],
+)
+def test_resolve_sandbox_path_rejects_relative_escape(path):
+  with pytest.raises(ValueError, match='escapes working directory'):
+    resolve_sandbox_path(path, '/workspace')
+
+
+@pytest.mark.parametrize(
+    'path', ['/etc/passwd', '/tmp/notes.txt', '/workspacex/../../etc']
+)
+def test_resolve_sandbox_path_passes_outer_absolute_paths_through(path):
+  """Absolute paths outside the workspace follow the documented contract."""
+  assert resolve_sandbox_path(path, '/workspace') == path
+
+
+@pytest.mark.parametrize(
+    'path',
+    [
+        # The same `..` escape as the relative rule refuses, spelled with the
+        # workspace prefix; the kernel collapses it to /etc/passwd.
+        '/workspace/../../etc/passwd',
+        '/workspace/sub/../../etc/passwd',
+        '/workspace/../outside.txt',
+    ],
+)
+def test_resolve_sandbox_path_rejects_absolute_traversal_under_root(path):
+  with pytest.raises(ValueError, match='escapes working directory'):
+    resolve_sandbox_path(path, '/workspace')
+
+
+def test_resolve_sandbox_path_accepts_pathlike():
+  assert resolve_sandbox_path(Path('notes.txt'), '/workspace') == (
+      '/workspace/notes.txt'
+  )

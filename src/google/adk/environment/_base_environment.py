@@ -22,7 +22,10 @@ from collections.abc import AsyncGenerator
 import dataclasses
 import functools
 import inspect
+import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import posixpath
 from typing import Any
 from typing import Callable
 from typing import TYPE_CHECKING
@@ -295,3 +298,45 @@ class BaseEnvironment(ABC):
       ctx: Context of the calling agent run, or ``None`` when called
         outside an agent run.
     """
+
+
+def resolve_sandbox_path(
+    path: str | os.PathLike[str], workspace_root: str
+) -> str:
+  """Resolves a file path against a remote sandbox workspace root.
+
+  Relative paths are anchored at ``workspace_root`` and normalized lexically;
+  a relative path whose normalization escapes the root raises ``ValueError``,
+  so model-supplied ``..`` segments cannot reach files outside the workspace.
+  An absolute path passes through unchanged unless it starts with
+  ``workspace_root``: such a path claims to be inside the workspace, so it is
+  validated the same way and a ``..`` traversal spelled in absolute form is
+  refused too. Normalization is lexical only: the filesystem that would
+  resolve symlinks lives inside the sandbox, not in this process.
+
+  Args:
+    path: The model-supplied path to resolve.
+    workspace_root: The absolute workspace root relative paths anchor at.
+
+  Returns:
+    The resolved POSIX path.
+
+  Raises:
+    ValueError: If a relative path escapes ``workspace_root``, or an absolute
+      path under ``workspace_root`` normalizes outside it.
+  """
+  candidate = PurePosixPath(os.fspath(path))
+  if candidate.is_absolute():
+    absolute = str(candidate)
+    if absolute != workspace_root and not absolute.startswith(
+        workspace_root + "/"
+    ):
+      return absolute
+    candidate = PurePosixPath(posixpath.normpath(absolute))
+  else:
+    candidate = PurePosixPath(
+        posixpath.normpath(str(PurePosixPath(workspace_root) / candidate))
+    )
+  if not candidate.is_relative_to(PurePosixPath(workspace_root)):
+    raise ValueError(f"Path escapes working directory: {path}")
+  return str(candidate)
