@@ -14,9 +14,6 @@
 
 import re
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Tuple
 
 from adk_documentation.settings import GITHUB_TOKEN
 from google.adk.runners import Runner
@@ -29,7 +26,7 @@ HEADERS = {
 }
 
 
-def error_response(error_message: str) -> Dict[str, Any]:
+def error_response(error_message: str) -> dict[str, Any]:
   return {"status": "error", "error_message": error_message}
 
 
@@ -37,7 +34,7 @@ def get_request(
     url: str,
     headers: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Executes a GET request."""
   if headers is None:
     headers = HEADERS
@@ -50,7 +47,7 @@ def get_request(
 
 def get_paginated_request(
     url: str, headers: dict[str, Any] | None = None
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
   """Executes GET requests and follows 'next' pagination links to fetch all results."""
   if headers is None:
     headers = HEADERS
@@ -64,13 +61,13 @@ def get_paginated_request(
   return results
 
 
-def post_request(url: str, payload: Any) -> Dict[str, Any]:
+def post_request(url: str, payload: Any) -> dict[str, Any]:
   response = requests.post(url, headers=HEADERS, json=payload, timeout=60)
   response.raise_for_status()
   return response.json()
 
 
-def patch_request(url: str, payload: Any) -> Dict[str, Any]:
+def patch_request(url: str, payload: Any) -> dict[str, Any]:
   response = requests.patch(url, headers=HEADERS, json=payload, timeout=60)
   response.raise_for_status()
   return response.json()
@@ -98,7 +95,7 @@ async def call_agent_async(
   return final_response_text
 
 
-def parse_suggestions(issue_body: str) -> List[Tuple[int, str]]:
+def parse_suggestions(issue_body: str) -> list[tuple[int, str]]:
   """Parse numbered suggestions from issue body.
 
   Supports multiple formats:

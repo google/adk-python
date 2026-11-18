@@ -20,7 +20,6 @@ from typing import Optional
 
 from typing_extensions import override
 
-from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
@@ -240,7 +239,6 @@ Verdict: yes
 """
 
 
-@experimental
 class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
   """An Evaluator for rubric based assessment of the agent's final response using a LLM.
 

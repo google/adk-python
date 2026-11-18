@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
@@ -65,14 +64,14 @@ class MockPlugin(BasePlugin):
 
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     if not self.enable_before_model_callback:
       return None
     return self.before_model_response
 
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     if not self.enable_after_model_callback:
       return None
     return self.after_model_response
@@ -83,7 +82,7 @@ class MockPlugin(BasePlugin):
       callback_context: CallbackContext,
       llm_request: LlmRequest,
       error: Exception,
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     if not self.enable_on_model_error_callback:
       return None
     return self.on_model_error_response
@@ -92,7 +91,7 @@ class MockPlugin(BasePlugin):
 CANONICAL_MODEL_CALLBACK_CONTENT = 'canonical_model_callback_content'
 
 
-def canonical_agent_model_callback(**kwargs) -> Optional[LlmResponse]:
+def canonical_agent_model_callback(**kwargs) -> LlmResponse | None:
   return LlmResponse(
       content=testing_utils.ModelContent(
           [types.Part.from_text(text=CANONICAL_MODEL_CALLBACK_CONTENT)]

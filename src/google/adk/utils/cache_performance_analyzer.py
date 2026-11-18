@@ -21,16 +21,11 @@ history, including hit ratios, cost savings, and cache refresh patterns.
 from __future__ import annotations
 
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import BaseSessionService
-from google.adk.utils.feature_decorator import experimental
 
 
-@experimental
 class CachePerformanceAnalyzer:
   """Analyzes cache performance through event history."""
 
@@ -42,8 +37,8 @@ class CachePerformanceAnalyzer:
       session_id: str,
       user_id: str,
       app_name: str,
-      agent_name: Optional[str] = None,
-  ) -> List[CacheMetadata]:
+      agent_name: str | None = None,
+  ) -> list[CacheMetadata]:
     """Get cache usage history for agent from events.
 
     Args:
@@ -75,7 +70,7 @@ class CachePerformanceAnalyzer:
 
   async def analyze_agent_cache_performance(
       self, session_id: str, user_id: str, app_name: str, agent_name: str
-  ) -> Dict[str, Any]:
+  ) -> dict[str, Any]:
     """Analyze cache performance for agent.
 
     Args:
@@ -148,11 +143,15 @@ class CachePerformanceAnalyzer:
         total_cached_tokens / total_requests if total_requests > 0 else 0.0
     )
 
-    invocations_used = [
-        c.invocations_used
-        for c in cache_history
-        if c.invocations_used is not None
-    ]
+    # Each response carries the cumulative counter for its cache, not an
+    # additional invocation count. Keep one total per cache instance.
+    cache_invocations: dict[str, int] = {}
+    for cache in cache_history:
+      if cache.cache_name is not None and cache.invocations_used is not None:
+        cache_invocations[cache.cache_name] = max(
+            cache_invocations.get(cache.cache_name, 0), cache.invocations_used
+        )
+    invocations_used = list(cache_invocations.values())
     total_invocations = sum(invocations_used)
 
     return {

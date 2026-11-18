@@ -40,16 +40,23 @@ import dataclasses
 import pathlib
 
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
+from google.adk.errors import SessionPersistenceError
+from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
+from google.adk.integrations.mongodb import MongoDbSessionService
 from google.adk.integrations.redis._config import RedisSessionServiceConfig
 from google.adk.integrations.redis._redis_session_service import RedisSessionService
+from google.adk.sessions import BufferedSessionService
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
+from typing_extensions import override
 
+from ..integrations.mongodb._fake_mongo import FakeMongoClient
 from ..integrations.redis._fake_redis import FakeRedisAsync
 
 _MakeService = Callable[
@@ -122,6 +129,84 @@ async def _make_redis(
 
 
 @contextlib.asynccontextmanager
+async def _make_mongodb(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  del tmp_path
+  yield MongoDbSessionService(
+      mongo_client=FakeMongoClient(), database_name='conformance'
+  )
+
+
+@contextlib.asynccontextmanager
+async def _make_buffered_in_memory(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  del tmp_path
+  service = BufferedSessionService(InMemorySessionService())
+  try:
+    yield service
+  finally:
+    await _close_buffered(service)
+
+
+@contextlib.asynccontextmanager
+async def _make_buffered_database(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  # A file rather than an in-memory database: background writes run while the
+  # caller reads, and an in-memory database shares one connection between them.
+  delegate = DatabaseSessionService(
+      f'sqlite+aiosqlite:///{tmp_path / "buffered.db"}'
+  )
+  service = BufferedSessionService(delegate)
+  try:
+    yield service
+  finally:
+    try:
+      await _close_buffered(service)
+    finally:
+      await delegate.close()
+
+
+class _BatchingInMemorySessionService(InMemorySessionService):
+  """An in-memory store that also takes several events in one call."""
+
+  @override
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    return [await self.append_event(session, event) for event in events]
+
+
+@contextlib.asynccontextmanager
+async def _make_buffered_batching(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[BaseSessionService]:
+  del tmp_path
+  service = BufferedSessionService(_BatchingInMemorySessionService())
+  try:
+    yield service
+  finally:
+    await _close_buffered(service)
+
+
+async def _close_buffered(service: BufferedSessionService) -> None:
+  # A contract test may leave a failed write behind on purpose, and the test
+  # itself checks what it expects of it.
+  with contextlib.suppress(SessionPersistenceError):
+    await service.aclose()
+
+
+_BUFFERED_DIVERGENCES = {
+    'test_append_event_to_unknown_session_raises_session_not_found': (
+        'Appends return before the store sees the event, so the missing'
+        ' session is reported later, as a SessionPersistenceError from flush.'
+    ),
+}
+
+
+@contextlib.asynccontextmanager
 async def _make_per_agent_database(
     tmp_path: pathlib.Path,
 ) -> AsyncIterator[BaseSessionService]:
@@ -132,30 +217,51 @@ async def _make_per_agent_database(
     await service.close()
 
 
+CONTRACT_TEST_MODULES = (
+    'test_session_service',
+    'test_session_service_resume',
+)
+
 BACKENDS = [
     _Backend('in_memory', _make_in_memory),
     _Backend('in_memory_light_copy', _make_in_memory_light_copy),
     _Backend('database', _make_database),
     _Backend('sqlite', _make_sqlite),
-    # One more Redis divergence has no contract test to hang an xfail on yet:
-    # it builds its key scan pattern from a truthiness check on the user id, so
-    # an empty one lists every user's sessions.
     _Backend(
         'redis',
         _make_redis,
+    ),
+    _Backend('mongodb', _make_mongodb),
+    _Backend('per_agent_database', _make_per_agent_database),
+    _Backend(
+        'buffered_in_memory',
+        _make_buffered_in_memory,
         divergences={
-            'test_session_last_update_time_updates_on_event': (
-                'Redis stamps the session with the wall clock instead of the'
-                " appended event's timestamp."
-            ),
-            'test_append_event_to_unknown_session_raises_session_not_found': (
-                'Redis writes the session key unconditionally on append, so'
-                ' appending to a session it has never stored creates one'
-                ' instead of raising.'
+            **_BUFFERED_DIVERGENCES,
+            'test_append_event_with_non_serializable_state_delta': (
+                'The test tells in-memory storage apart by its class, and an'
+                ' in-memory store behind BufferedSessionService keeps raw'
+                ' Python values just as in-memory storage does.'
             ),
         },
     ),
-    _Backend('per_agent_database', _make_per_agent_database),
+    _Backend(
+        'buffered_database',
+        _make_buffered_database,
+        divergences=_BUFFERED_DIVERGENCES,
+    ),
+    _Backend(
+        'buffered_batching',
+        _make_buffered_batching,
+        divergences={
+            **_BUFFERED_DIVERGENCES,
+            'test_append_event_with_non_serializable_state_delta': (
+                'The test tells in-memory storage apart by its class, and an'
+                ' in-memory store behind BufferedSessionService keeps raw'
+                ' Python values just as in-memory storage does.'
+            ),
+        },
+    ),
 ]
 
 

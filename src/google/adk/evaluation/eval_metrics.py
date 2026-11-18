@@ -38,6 +38,7 @@ from ..telemetry._token_usage import PROMPT_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from ..telemetry._token_usage import TOOL_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import TOTAL_TOKENS_MEANING
+from ..tools.tool_args_matcher._tool_args_matcher import ToolArgsMatcher
 from .common import EvalBaseModel
 from .eval_case import Invocation
 from .eval_rubrics import Rubric as Rubric
@@ -57,6 +58,8 @@ class EvalStatus(Enum):
 
 class PrebuiltMetrics(Enum):
   TOOL_TRAJECTORY_AVG_SCORE = "tool_trajectory_avg_score"
+
+  TOOL_PARAMETER_MATCH = "tool_parameter_match"
 
   RESPONSE_EVALUATION_SCORE = "response_evaluation_score"
 
@@ -94,8 +97,8 @@ class PrebuiltMetrics(Enum):
   # "inference call" rather than "LLM call", matching the name ADK telemetry
   # publishes this count under. An eval invocation spans a whole turn -- every
   # sub-agent shares the turn's invocation id -- so the quantity lines up with
-  # telemetry's per-turn `adk.invoke_workflow.inference_calls` rather than its
-  # per-agent counterpart.
+  # telemetry's per-turn `adk.experimental.invoke_workflow.inference_calls`
+  # rather than its per-agent counterpart.
   INFERENCE_CALL_COUNT_V1 = "inference_call_count_v1"
 
   TOKEN_USAGE_V1 = "token_usage_v1"
@@ -299,13 +302,65 @@ class ToolTrajectoryCriterion(BaseCriterion):
   @field_validator("match_type", mode="before")
   @classmethod
   def _coerce_match_type(cls, value: object) -> object:
-    if isinstance(value, cls.MatchType):
-      return value
-    if isinstance(value, str):
-      normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
-      if normalized in cls.MatchType.__members__:
-        return cls.MatchType[normalized]
+    return _to_tool_trajectory_match_type(value)
+
+
+def _to_tool_trajectory_match_type(value: object) -> object:
+  """Accepts a `ToolTrajectoryCriterion.MatchType` name in any common spelling.
+
+  Args:
+    value: The raw config value, for example `"IN_ORDER"` or `"in-order"`.
+
+  Returns:
+    The matching `MatchType`, or `value` unchanged for Pydantic to validate.
+  """
+  match_type = ToolTrajectoryCriterion.MatchType
+  if isinstance(value, match_type):
     return value
+  if isinstance(value, str):
+    normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
+    if normalized in match_type.__members__:
+      return match_type[normalized]
+  return value
+
+
+class ToolParameterMatchCriterion(BaseCriterion):
+  """Criterion for scoring the arguments of expected tool calls."""
+
+  args_matcher: Optional[ToolArgsMatcher] = Field(
+      default=None,
+      description=(
+          "How each expected argument is compared with the actual one. When"
+          " not set, arguments must be equal. Each tool call scores the mean"
+          " argument score, so `allowExtraArgs` does not affect this metric."
+          " A custom matcher must be registered with `register_arg_matcher`"
+          " to be named in config."
+      ),
+  )
+
+  match_type: ToolTrajectoryCriterion.MatchType = Field(
+      default=ToolTrajectoryCriterion.MatchType.IN_ORDER,
+      description=(
+          "How expected tool calls are paired with actual calls, using the"
+          " same names as `tool_trajectory_avg_score`. `EXACT` pairs the call"
+          " at each position with the actual call at the same position."
+          " `IN_ORDER` pairs each expected call with the next actual call of"
+          " the same name after the previous pair, allowing other calls in"
+          " between. It pairs by name alone, so unlike"
+          " `tool_trajectory_avg_score` it does not skip a same-name call with"
+          " wrong arguments: a retried call is scored on its first attempt."
+          " `ANY_ORDER` pairs calls of the same name in any order so"
+          " that the total score is as high as possible, scoring every"
+          " same-name pair (`n * m` pairs for a tool expected `n` times and"
+          " called `m` times). A pair whose names differ, or an expected call"
+          " left unpaired, scores 0.0."
+      ),
+  )
+
+  @field_validator("match_type", mode="before")
+  @classmethod
+  def _coerce_match_type(cls, value: object) -> object:
+    return _to_tool_trajectory_match_type(value)
 
 
 class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
@@ -389,6 +444,64 @@ class TokenUsageDetails(EvalBaseModel):
   )
 
 
+class DurationDetails(EvalBaseModel):
+  """Where the seconds behind an `invocation_duration_v1` score went.
+
+  Reported for every eval, with no configuration. The parts partition the turn
+  rather than nest, so they add back up to the total::
+
+      total_seconds
+        model_seconds
+        tool_seconds
+        framework_seconds
+
+  `framework_seconds` is what is left once the turn's model and tool time are
+  taken out -- ADK's own orchestration, plus anything else the turn waited on.
+  It is derived from the other three rather than measured, so the parts always
+  agree with the total.
+
+  The split is measured from the intervals each model call and each tool
+  execution actually occupied, and overlapping intervals count once: tools run
+  concurrently, sub-agents run concurrently within one turn, and an `AgentTool`
+  nests model calls inside a tool. `tool_seconds` therefore excludes time a
+  tool spent awaiting a model, which is reported as model time instead.
+
+  A field is None when the invocation carries no timing -- it was read back
+  from a stored session rather than run by this eval -- meaning the value is
+  unavailable (n/a) rather than zero.
+  """
+
+  total_seconds: Optional[float] = Field(
+      default=None,
+      description="Wall-clock seconds the whole invocation took.",
+  )
+
+  model_seconds: Optional[float] = Field(
+      default=None,
+      description=(
+          "Seconds with at least one model call in flight. Concurrent calls"
+          " count once, so this is time awaited rather than time summed."
+      ),
+  )
+
+  tool_seconds: Optional[float] = Field(
+      default=None,
+      description=(
+          "Seconds inside a tool that were not already spent awaiting a model."
+          " This is the tool's own work -- the function body and whatever it"
+          " calls out to -- not ADK's."
+      ),
+  )
+
+  framework_seconds: Optional[float] = Field(
+      default=None,
+      description=(
+          "Seconds the turn spent neither in a model call nor in a tool, i.e."
+          " ADK's own orchestration. Derived from the other three."
+      ),
+  )
+
+
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
@@ -445,6 +558,14 @@ class EvalMetricResultDetails(EvalBaseModel):
       description=(
           "The per-type token counts behind a token usage score. Populated"
           " only by the token usage metric."
+      ),
+  )
+
+  duration_details: Optional[DurationDetails] = Field(
+      default=None,
+      description=(
+          "Where the seconds behind an invocation duration score went."
+          " Populated only by the invocation duration metric."
       ),
   )
 

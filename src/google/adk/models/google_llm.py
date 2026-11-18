@@ -26,9 +26,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import AsyncIterator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
@@ -44,6 +42,7 @@ from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._google_client_headers import merge_tracking_http_options
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
@@ -131,22 +130,22 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
-  client: Optional[genai.Client] = Field(default=None, exclude=True)
+  client: genai.Client | None = Field(default=None, exclude=True)
   """An optional pre-configured google-genai Client.
 
   When provided, this client will be used for all API calls instead of
   constructing a new one from environment variables or other attributes.
   """
 
-  client_kwargs: Optional[dict[str, Any]] = Field(
+  client_kwargs: dict[str, Any] | None = Field(
       default=None, exclude=True, repr=False
   )
   """Extra arguments to pass to the google.genai.Client constructor."""
 
-  base_url: Optional[str] = None
+  base_url: str | None = None
   """The base URL for the AI platform service endpoint."""
 
-  api_version: Optional[str] = None
+  api_version: str | None = None
   """The API version to use for the AI platform service endpoint.
 
   For the Vertex AI backend the google-genai SDK defaults to ``v1beta1``, which
@@ -167,7 +166,7 @@ class Gemini(BaseLlm):
   ```
   """
 
-  speech_config: Optional[types.SpeechConfig] = None
+  speech_config: types.SpeechConfig | None = None
 
   use_interactions_api: bool = False
   """Whether to use the interactions API for model invocation.
@@ -187,7 +186,7 @@ class Gemini(BaseLlm):
   ```
   """
 
-  retry_options: Optional[types.HttpRetryOptions] = None
+  retry_options: types.HttpRetryOptions | None = None
   """Allow Gemini to retry failed responses.
 
   Sample:
@@ -273,7 +272,7 @@ class Gemini(BaseLlm):
     if llm_request.config:
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
-      llm_request.config.http_options.headers = self._merge_tracking_headers(
+      llm_request.config.http_options.headers = merge_tracking_headers(
           llm_request.config.http_options.headers or {}
       )
       _, api_version = self._base_url_and_api_version
@@ -294,8 +293,14 @@ class Gemini(BaseLlm):
       if logger.isEnabledFor(logging.DEBUG):
         logger.debug(_build_request_log(llm_request))
 
+      from ..telemetry._genai_instrumentor import maybe_without_genai_instrumentation
+
+      api_models = self.api_client.aio.models
+
       if stream:
-        responses = await self.api_client.aio.models.generate_content_stream(
+        responses = await maybe_without_genai_instrumentation(
+            api_models.generate_content_stream
+        )(
             model=model,
             contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
@@ -310,7 +315,11 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         multiple_candidates_logged = False
         last_usage_metadata = None
-        async with Aclosing(responses) as agen:
+        # genai implements generate_content_stream as an async generator.
+        response_stream = cast(
+            AsyncGenerator[types.GenerateContentResponse, None], responses
+        )
+        async with Aclosing(response_stream) as agen:
           async for response in agen:
             if logger.isEnabledFor(logging.DEBUG):
               logger.debug(_build_response_log(response))
@@ -352,7 +361,9 @@ class Gemini(BaseLlm):
           yield close_result
 
       else:
-        response = await self.api_client.aio.models.generate_content(
+        response = await maybe_without_genai_instrumentation(
+            api_models.generate_content
+        )(
             model=model,
             contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
@@ -445,10 +456,9 @@ class Gemini(BaseLlm):
     }
     if api_version:
       kwargs_for_http_options['api_version'] = api_version
+    adk_http_options = types.HttpOptions(**kwargs_for_http_options)
 
-    kwargs: dict[str, Any] = {
-        'http_options': types.HttpOptions(**kwargs_for_http_options),
-    }
+    kwargs: dict[str, Any] = {'http_options': adk_http_options}
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
@@ -457,6 +467,9 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    kwargs['http_options'] = self._with_adk_http_options(
+        kwargs['http_options'], adk_http_options
+    )
 
     return Client(**kwargs)
 
@@ -471,7 +484,7 @@ class Gemini(BaseLlm):
   def _tracking_headers(self) -> dict[str, str]:
     return get_tracking_headers()
 
-  def _configured_api_version(self) -> Optional[str]:
+  def _configured_api_version(self) -> str | None:
     """Returns the explicitly configured API version, if any.
 
     Resolution order:
@@ -487,7 +500,7 @@ class Gemini(BaseLlm):
     return os.environ.get(_API_VERSION_ENV_VARIABLE_NAME) or None
 
   @cached_property
-  def _base_url_and_api_version(self) -> tuple[Optional[str], Optional[str]]:
+  def _base_url_and_api_version(self) -> tuple[str | None, str | None]:
     return _normalize_base_url_and_api_version(self.base_url)
 
   @cached_property
@@ -511,13 +524,12 @@ class Gemini(BaseLlm):
 
     base_url, _ = self._base_url_and_api_version
 
-    kwargs: dict[str, Any] = {
-        'http_options': types.HttpOptions(
-            headers=self._tracking_headers(),
-            api_version=self._live_api_version,
-            base_url=base_url,
-        )
-    }
+    adk_http_options = types.HttpOptions(
+        headers=self._tracking_headers(),
+        api_version=self._live_api_version,
+        base_url=base_url,
+    )
+    kwargs: dict[str, Any] = {'http_options': adk_http_options}
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
@@ -526,8 +538,42 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    kwargs['http_options'] = self._with_adk_http_options(
+        kwargs['http_options'], adk_http_options
+    )
 
     return Client(**kwargs)
+
+  def _with_adk_http_options(
+      self,
+      http_options: types.HttpOptionsOrDict | None,
+      adk_http_options: types.HttpOptions,
+  ) -> types.HttpOptions:
+    """Returns a copy of http_options with ADK's options merged in.
+
+    ``client_kwargs['http_options']`` replaces the http_options ADK builds as a
+    whole, so ADK's tracking headers are merged back in afterwards, and ADK's
+    ``api_version``, ``base_url`` and ``retry_options`` fill the fields the
+    caller left unset. Fields the caller set win.
+
+    Args:
+      http_options: The http_options the client is about to be built with.
+      adk_http_options: The http_options ADK built for the client.
+
+    Returns:
+      A copy of http_options with ADK's options merged in.
+    """
+    if http_options is None:
+      http_options = types.HttpOptions()
+    elif isinstance(http_options, dict):
+      http_options = types.HttpOptions.model_validate(http_options)
+    else:
+      http_options = http_options.model_copy()
+    for field in ('api_version', 'base_url', 'retry_options'):
+      if getattr(http_options, field) is None:
+        setattr(http_options, field, getattr(adk_http_options, field))
+    http_options.headers = merge_tracking_headers(http_options.headers or {})
+    return http_options
 
   @contextlib.asynccontextmanager
   async def connect(
@@ -541,24 +587,6 @@ class Gemini(BaseLlm):
     Yields:
       BaseLlmConnection, the connection to the Gemini model.
     """
-    # add tracking headers to custom headers and set api_version given
-    # the customized http options will override the one set in the api client
-    # constructor
-    if (
-        llm_request.live_connect_config
-        and llm_request.live_connect_config.http_options
-    ):
-      if not llm_request.live_connect_config.http_options.headers:
-        llm_request.live_connect_config.http_options.headers = {}
-      llm_request.live_connect_config.http_options.headers = (
-          self._merge_tracking_headers(
-              llm_request.live_connect_config.http_options.headers
-          )
-      )
-      llm_request.live_connect_config.http_options.api_version = (
-          self._live_api_version
-      )
-
     if self.speech_config is not None:
       llm_request.live_connect_config.speech_config = self.speech_config
 
@@ -617,19 +645,33 @@ class Gemini(BaseLlm):
         len(llm_request.contents or []),
         llm_request.live_connect_config.response_modalities,
     )
-    # Callers may put credentials in per-request headers, so the transport
-    # options never go to the log.
-    logger.debug(
-        'Live connect config: %s',
-        llm_request.live_connect_config.model_copy(
-            update={'http_options': None}
-        ),
-    )
+    if logger.isEnabledFor(logging.DEBUG):
+      # Excludes http_options for the same reason as _build_request_log.
+      logger.debug(
+          'Live connect config: %s',
+          llm_request.live_connect_config.model_dump(
+              exclude_none=True, exclude={'http_options': True}
+          ),
+      )
     model = llm_request.model
     if model is None:
       raise ValueError('Live Gemini requests require a model name.')
+    live_connect_config = llm_request.live_connect_config
+    # ADK adds its tracking headers only to clients it builds, so a
+    # caller-supplied client lacks them. Caller http_options headers replace
+    # the client's headers of the same name, which would drop ADK's tags, so
+    # those need them merged in too.
+    if self.client is not None or live_connect_config.http_options is not None:
+      http_options = live_connect_config.http_options
+      live_connect_config = live_connect_config.model_copy(
+          update={
+              'http_options': merge_tracking_http_options(
+                  http_options.model_copy() if http_options else None
+              )
+          }
+      )
     async with self._live_api_client.aio.live.connect(
-        model=model, config=llm_request.live_connect_config
+        model=model, config=live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(
           live_session,
@@ -650,9 +692,14 @@ class Gemini(BaseLlm):
 
       return wait_5_seconds
 
+    wait_tool = llm_request.tools_dict.get('wait')
     await ComputerUseToolset.adapt_computer_use_tool(
-        'wait', convert_wait_to_wait_5_seconds, llm_request
+        'wait',
+        convert_wait_to_wait_5_seconds,
+        llm_request,
     )
+    if wait_tool is not None and 'wait_5_seconds' in llm_request.tools_dict:
+      llm_request.tools_dict['wait'] = wait_tool
 
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
     from ..tools import load_artifacts_tool  # pylint: disable=import-outside-toplevel
@@ -701,10 +748,6 @@ class Gemini(BaseLlm):
           new_parts.append(part)
         content.parts = new_parts
 
-  def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
-    """Merge tracking headers to the given headers."""
-    return merge_tracking_headers(headers)
-
 
 def _build_function_declaration_log(
     func_decl: types.FunctionDeclaration,
@@ -730,7 +773,7 @@ def _build_function_declaration_log(
 def _build_request_log(req: LlmRequest) -> str:
   # Find which tool contains function_declarations
   function_decls: list[types.FunctionDeclaration] = []
-  function_decl_tool_index: Optional[int] = None
+  function_decl_tool_index: int | None = None
 
   if req.config.tools:
     for idx, tool in enumerate(req.config.tools):
@@ -855,7 +898,7 @@ Raw response:
 
 
 def _remove_display_name_if_present(
-    data_obj: Union[types.Blob, types.FileData, None],
+    data_obj: types.Blob | types.FileData | None,
 ) -> None:
   """Sets display_name to None for the Gemini API (non-Vertex) backend.
 
@@ -867,8 +910,8 @@ def _remove_display_name_if_present(
 
 
 def _normalize_base_url_and_api_version(
-    base_url: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
+    base_url: str | None,
+) -> tuple[str | None, str | None]:
   """Extracts a Google API version suffix from a base URL when present.
 
   Returns:

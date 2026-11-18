@@ -180,23 +180,24 @@ def build_a2a_response_log(
 
   # Build result details based on type
   result_details = []
+  task: A2ATask | None = None
 
   if _is_a2a_client_event(result):
-    result = result[0]
+    task = result[0]
     result_details.extend([
-        f"Task ID: {result.id}",
-        f"Context ID: {result.context_id}",
-        f"Status State: {result.status.state}",
-        f"Status Timestamp: {result.status.timestamp}",
-        f"History Length: {len(result.history) if result.history else 0}",
-        f"Artifacts Count: {len(result.artifacts) if result.artifacts else 0}",
+        f"Task ID: {task.id}",
+        f"Context ID: {task.context_id}",
+        f"Status State: {task.status.state}",
+        f"Status Timestamp: {task.status.timestamp}",
+        f"History Length: {len(task.history) if task.history else 0}",
+        f"Artifacts Count: {len(task.artifacts) if task.artifacts else 0}",
     ])
 
     # Add task metadata if it exists
-    if _compat.meta_to_dict(result.metadata):
+    if _compat.meta_to_dict(task.metadata):
       result_details.append("Task Metadata:")
       metadata_formatted = json.dumps(
-          _compat.meta_to_dict(result.metadata), indent=2
+          _compat.meta_to_dict(task.metadata), indent=2
       ).replace("\n", "\n  ")
       result_details.append(f"  {metadata_formatted}")
 
@@ -240,8 +241,8 @@ def build_a2a_response_log(
   # when a real status message exists, matching 0.3.x (``None`` when unset).
   status_message_section = "None"
   status_message = (
-      _compat.normalize_message(result.status.message)
-      if _is_a2a_task(result)
+      _compat.normalize_message(task.status.message)
+      if task is not None
       else None
   )
   if status_message:
@@ -269,9 +270,9 @@ Message Parts:
 
   # Build history section
   history_section = "No history"
-  if _is_a2a_task(result) and result.history:
+  if task is not None and task.history:
     history_logs = []
-    for i, message in enumerate(result.history):
+    for i, message in enumerate(task.history):
       message_parts_logs = []
       if message.parts:
         for j, part in enumerate(message.parts):

@@ -26,9 +26,6 @@ from google.adk.tools.environment_simulation.tool_connection_map import ToolConn
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types as genai_types
 
-from ...features import experimental
-from ...features import FeatureName
-
 _TOOL_CONNECTION_ANALYSIS_PROMPT_TEMPLATE = """
   You are an expert software architect analyzing a set of tools to understand
   stateful dependencies. Your task is to identify parameters that act as
@@ -74,7 +71,6 @@ _TOOL_CONNECTION_ANALYSIS_PROMPT_TEMPLATE = """
   """
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class ToolConnectionAnalyzer:
   """
   Uses an LLM to analyze stateful connections between tools. For example,

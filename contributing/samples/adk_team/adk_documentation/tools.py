@@ -17,9 +17,6 @@ import os
 import subprocess
 from subprocess import CompletedProcess
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 
 from adk_documentation.settings import GITHUB_BASE_URL
 from adk_documentation.settings import LOCAL_REPOS_DIR_PATH
@@ -31,7 +28,7 @@ from adk_documentation.utils import post_request
 import requests
 
 
-def _resolve_within_repos_dir(path: str) -> Optional[str]:
+def _resolve_within_repos_dir(path: str) -> str | None:
   """Resolves `path` and verifies it stays within LOCAL_REPOS_DIR_PATH.
 
   Returns the resolved absolute path if it is inside the sandbox, else None.
@@ -45,7 +42,7 @@ def _resolve_within_repos_dir(path: str) -> Optional[str]:
 
 def _confine_path(
     path: str, param_name: str
-) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+) -> tuple[str | None, dict[str, Any] | None]:
   """Resolves `path` and verifies it stays within LOCAL_REPOS_DIR_PATH.
 
   The file/search tools are only meant to operate on the repositories cloned
@@ -69,7 +66,7 @@ def _confine_path(
   return safe_path, None
 
 
-def list_releases(repo_owner: str, repo_name: str) -> Dict[str, Any]:
+def list_releases(repo_owner: str, repo_name: str) -> dict[str, Any]:
   """Lists all releases for a repository.
 
   This function retrieves all releases and for each one, returns its ID,
@@ -111,7 +108,7 @@ def list_releases(repo_owner: str, repo_name: str) -> Dict[str, Any]:
 
 def get_changed_files_between_releases(
     repo_owner: str, repo_name: str, start_tag: str, end_tag: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Gets changed files and their modifications between two release tags.
 
   Args:
@@ -158,7 +155,7 @@ def clone_or_pull_repo(
     repo_owner: str,
     repo_name: str,
     local_path: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Clones a GitHub repository to a local folder using owner and repo name.
 
   If the folder already exists and is a valid Git repository, it pulls the
@@ -215,7 +212,7 @@ def clone_or_pull_repo(
   }
 
 
-def read_local_git_repo_file_content(file_path: str) -> Dict[str, Any]:
+def read_local_git_repo_file_content(file_path: str) -> dict[str, Any]:
   """Reads the content of a specified file in a local Git repository.
 
   Args:
@@ -261,7 +258,7 @@ def read_local_git_repo_file_content(file_path: str) -> Dict[str, Any]:
     return error_response(f"An unexpected error occurred: {e}")
 
 
-def list_directory_contents(directory_path: str) -> Dict[str, Any]:
+def list_directory_contents(directory_path: str) -> dict[str, Any]:
   """Recursively lists all files and directories within a specified directory.
 
   Args:
@@ -304,9 +301,9 @@ def list_directory_contents(directory_path: str) -> Dict[str, Any]:
 def search_local_git_repo(
     directory_path: str,
     pattern: str,
-    extensions: Optional[List[str]] = None,
-    ignored_dirs: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    extensions: list[str] | None = None,
+    ignored_dirs: list[str] | None = None,
+) -> dict[str, Any]:
   """Searches a local Git repository for a pattern.
 
   Args:
@@ -365,11 +362,11 @@ def create_pull_request_from_changes(
     repo_name: str,
     local_path: str,
     base_branch: str,
-    changes: Dict[str, str],
+    changes: dict[str, str],
     commit_message: str,
     pr_title: str,
     pr_body: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Creates a new branch, applies file changes, commits, pushes, and creates a PR.
 
   Args:
@@ -455,7 +452,7 @@ def create_pull_request_from_changes(
 
 def get_issue(
     repo_owner: str, repo_name: str, issue_number: int
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Get the details of the specified issue number.
 
   Args:
@@ -481,7 +478,7 @@ def create_issue(
     repo_name: str,
     title: str,
     body: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Create a new issue in the specified repository.
 
   Args:
@@ -508,7 +505,7 @@ def update_issue(
     issue_number: int,
     title: str,
     body: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Update an existing issue in the specified repository.
 
   Args:
@@ -532,7 +529,7 @@ def update_issue(
   return {"status": "success", "issue": response}
 
 
-def _run_git_command(command: List[str], cwd: str) -> CompletedProcess[str]:
+def _run_git_command(command: list[str], cwd: str) -> CompletedProcess[str]:
   """A helper to run a git command and raise an exception on error."""
   base_command = ["git"]
   process = subprocess.run(
@@ -585,8 +582,8 @@ def _get_clone(repo_url: str, repo_path: str) -> str:
 def _git_grep(
     repo_path: str,
     pattern: str,
-    extensions: Optional[List[str]] = None,
-    ignored_dirs: Optional[List[str]] = None,
+    extensions: list[str] | None = None,
+    ignored_dirs: list[str] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
   """Uses 'git grep' to find all matching lines in a Git repository."""
   grep_command = [
@@ -625,7 +622,7 @@ def get_file_diff_for_release(
     start_tag: str,
     end_tag: str,
     file_path: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Gets the diff/patch for a specific file between two release tags.
 
   This is useful for incremental processing where you want to analyze
@@ -673,9 +670,9 @@ def get_changed_files_summary(
     repo_name: str,
     start_tag: str,
     end_tag: str,
-    local_repo_path: Optional[str] = None,
-    path_filter: Optional[str] = None,
-) -> Dict[str, Any]:
+    local_repo_path: str | None = None,
+    path_filter: str | None = None,
+) -> dict[str, Any]:
   """Gets a summary of changed files between two releases without patches.
 
   This function uses local git commands when local_repo_path is provided,
@@ -711,7 +708,7 @@ def get_changed_files_summary(
     changed_files = comparison_data.get("files", [])
 
     # Group files by directory for easier processing
-    files_by_dir: Dict[str, List[Dict[str, Any]]] = {}
+    files_by_dir: dict[str, list[dict[str, Any]]] = {}
     formatted_files = []
 
     for file_data in changed_files:
@@ -762,8 +759,8 @@ def _get_changed_files_from_local_git(
     end_tag: str,
     repo_owner: str,
     repo_name: str,
-    path_filter: Optional[str] = None,
-) -> Dict[str, Any]:
+    path_filter: str | None = None,
+) -> dict[str, Any]:
   """Gets changed files using local git commands (no file limit).
 
   Args:
@@ -806,7 +803,7 @@ def _get_changed_files_from_local_git(
     )
 
     # Parse numstat output (additions, deletions, filename)
-    file_stats: Dict[str, Dict[str, int]] = {}
+    file_stats: dict[str, dict[str, int]] = {}
     for line in numstat_result.stdout.strip().split("\n"):
       if not line:
         continue
@@ -830,7 +827,7 @@ def _get_changed_files_from_local_git(
         "C": "copied",
     }
 
-    files_by_dir: Dict[str, List[Dict[str, Any]]] = {}
+    files_by_dir: dict[str, list[dict[str, Any]]] = {}
     formatted_files = []
 
     for line in diff_result.stdout.strip().split("\n"):

@@ -15,6 +15,9 @@
 import os
 from unittest import mock
 
+from google.adk.telemetry.setup import _get_otel_logs_exporter
+from google.adk.telemetry.setup import _get_otel_metrics_exporter
+from google.adk.telemetry.setup import _get_otel_span_exporter
 from google.adk.telemetry.setup import maybe_set_otel_providers
 import pytest
 
@@ -117,3 +120,53 @@ def test_maybe_set_otel_providers(
   assert trace_provider_mock.call_count == (1 if should_setup_trace else 0)
   assert meter_provider_mock.call_count == (1 if should_setup_metrics else 0)
   assert logs_provider_mock.call_count == (1 if should_setup_logs else 0)
+
+
+@pytest.mark.parametrize(
+    "getter, missing_module",
+    [
+        (
+            _get_otel_span_exporter,
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+        ),
+        (
+            _get_otel_metrics_exporter,
+            "opentelemetry.exporter.otlp.proto.http.metric_exporter",
+        ),
+        (
+            _get_otel_logs_exporter,
+            "opentelemetry.exporter.otlp.proto.http._log_exporter",
+        ),
+    ],
+)
+def test_get_otel_exporter_none_when_package_unavailable(
+    getter, missing_module
+):
+  """A missing opentelemetry-exporter-otlp-proto-http disables the exporter
+  instead of raising ModuleNotFoundError."""
+  # Setting the module to None in sys.modules makes the `from ... import ...`
+  # statement raise ImportError, simulating the package not being installed.
+  with mock.patch.dict("sys.modules", {missing_module: None}):
+    assert getter() is None
+
+
+@pytest.mark.parametrize(
+    "missing_module",
+    [
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+        "opentelemetry.exporter.otlp.proto.http.metric_exporter",
+        "opentelemetry.exporter.otlp.proto.http._log_exporter",
+    ],
+)
+def test_maybe_set_otel_providers_does_not_raise_when_exporter_unavailable(
+    missing_module: str,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_os_environ,  # pylint: disable=unused-argument,redefined-outer-name
+):
+  """maybe_set_otel_providers degrades gracefully when an OTLP exporter package
+  is missing rather than crashing telemetry setup."""
+  monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "some-endpoint")
+
+  with mock.patch.dict("sys.modules", {missing_module: None}):
+    # Should not raise.
+    maybe_set_otel_providers()

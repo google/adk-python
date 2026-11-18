@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
@@ -114,7 +113,7 @@ response_processor = _NlPlanningResponse()
 
 def response_rewriting_planner(
     invocation_context: InvocationContext,
-) -> Optional[BasePlanner]:
+) -> BasePlanner | None:
   """Returns the agent's planner if it rewrites the model response parts."""
   from ....planners.built_in_planner import BuiltInPlanner
 
@@ -130,7 +129,7 @@ def response_rewriting_planner(
 
 def _get_planner(
     invocation_context: InvocationContext,
-) -> Optional[BasePlanner]:
+) -> BasePlanner | None:
   from ....planners.base_planner import BasePlanner
 
   agent = as_llm_agent(invocation_context)

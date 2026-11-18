@@ -19,11 +19,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
-from ..features import experimental
-from ..features import FeatureName
 
-
-@experimental(FeatureName.AGENT_CONFIG)
 class ContextCacheConfig(BaseModel):
   """Configuration for context caching across all agents in an app.
 
@@ -35,10 +31,12 @@ class ContextCacheConfig(BaseModel):
   Context caching can significantly reduce costs and improve response times
   by reusing previously processed context across multiple requests.
 
-  Caching begins on the second turn of a session at the earliest and requires
-  the cacheable prefix to reach the model-specific minimum: 2048 tokens for
-  Gemini 2.5 or 4096 tokens for Gemini 3. Short or single-turn sessions are
-  therefore never cached.
+  Unless an agent provides a pre-created cache via
+  ``LlmAgent.generate_content_config.cached_content``, caching begins on the
+  second turn of a session at the earliest and requires the cacheable prefix
+  to reach the model-specific minimum: 2048 tokens for Gemini 2.5 or 4096
+  tokens for Gemini 3. Short or single-turn sessions are therefore only cached
+  when seeded via ``cached_content``.
 
   Attributes:
       cache_intervals: Maximum number of invocations to reuse the same cache before refreshing it
@@ -74,7 +72,8 @@ class ContextCacheConfig(BaseModel):
           " on the previous request's actual prompt token count, not an"
           " estimate of the current request. Gemini's model-specific minimum"
           " always applies: 2048 tokens for Gemini 2.5 and 4096 tokens for"
-          " Gemini 3. No cache is created on the first request of a session;"
+          " Gemini 3. Unless LlmAgent.generate_content_config.cached_content is"
+          " set, no cache is used on the first request of a session and"
           " caching begins on the second turn once a previous token count is"
           " known. Set this higher to avoid caching small requests where"
           " storage overhead may exceed benefits."

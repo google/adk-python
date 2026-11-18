@@ -14,10 +14,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import threading
+from typing import Any
+from unittest import mock
+
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.integrations.bigquery import BigQueryCredentialsConfig
 from google.adk.integrations.bigquery import BigQueryToolset
 from google.adk.integrations.bigquery.config import BigQueryToolConfig
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_tool import GoogleTool
+from google.adk.tools.tool_context import ToolContext
+from google.auth.credentials import Credentials
+from google.cloud import bigquery
 import pytest
 
 
@@ -132,3 +144,76 @@ async def test_bigquery_toolset_unknown_tool(selected_tools, returned_tools):
   expected_tool_names = set(returned_tools)
   actual_tool_names = set([tool.name for tool in tools])
   assert actual_tool_names == expected_tool_names
+
+
+@pytest.mark.asyncio
+async def test_bigquery_toolset_tools_run_off_event_loop() -> None:
+  """Test that BigQueryToolset tools run off the event loop."""
+  credentials = mock.create_autospec(Credentials, instance=True)
+  toolset = BigQueryToolset()
+  tools = await toolset.get_tools()
+  assert len(tools) == 11
+
+  for tool in tools:
+    assert isinstance(tool, FunctionTool)
+    assert inspect.iscoroutinefunction(tool.func)
+
+  execute_sql_tool = next(t for t in tools if t.name == "execute_sql")
+
+  query_started = threading.Event()
+  query_may_return = threading.Event()
+  ticks = 0
+  loop_ticked = False
+
+  async def count_ticks() -> None:
+    nonlocal ticks
+    while not query_started.is_set() or ticks < 3:
+      ticks += 1
+      await asyncio.sleep(0)
+    query_may_return.set()
+
+  def blocking_query_and_wait(
+      *args: Any, **kwargs: Any
+  ) -> list[dict[str, int]]:
+    nonlocal loop_ticked
+    query_started.set()
+    loop_ticked = query_may_return.wait(timeout=10)
+    return [{"num": 123}]
+
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as client_cls:
+    bq_client = client_cls.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = "SELECT"
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.side_effect = blocking_query_and_wait
+
+    result, _ = await asyncio.gather(
+        execute_sql_tool.run_async(
+            args={
+                "project_id": "my_project",
+                "query": "SELECT 123 AS num",
+                "credentials": credentials,
+            },
+            tool_context=tool_context,
+        ),
+        count_ticks(),
+    )
+
+  assert loop_ticked, "the event loop was blocked for the whole query"
+  assert ticks >= 3
+  assert result == {"status": "SUCCESS", "rows": [{"num": 123}]}
+
+
+@pytest.mark.asyncio
+async def test_bigquery_toolset_declarations_schema_object() -> None:
+  """Test that tool declarations build when JSON schema feature is disabled."""
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    toolset = BigQueryToolset()
+    tools = await toolset.get_tools()
+    for tool in tools:
+      declaration = tool._get_declaration()
+      assert declaration is not None
+      assert declaration.name == tool.name
+      assert declaration.parameters is not None

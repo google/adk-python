@@ -25,19 +25,9 @@ renamed, restructured, or removed in any release.
 
 from __future__ import annotations
 
-ADK_EXPERIMENTAL_SKILL_NAME = 'adk.experimental.skill.name'
-ADK_EXPERIMENTAL_SKILL_DESCRIPTION = 'adk.experimental.skill.description'
-ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS = (
-    'adk.experimental.skill.additional_tools'
-)
-ADK_EXPERIMENTAL_SKILL_SOURCE_URI = 'adk.experimental.skill.source.uri'
-ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH = 'adk.experimental.skill.resource.path'
-ADK_EXPERIMENTAL_SKILL_SCRIPT_PATH = 'adk.experimental.skill.script.path'
+ADK_SKILL_ADDITIONAL_TOOLS = 'adk.skill.additional_tools'
 ADK_EXPERIMENTAL_SKILL_SCRIPT_ENDED_WITH_ERROR = (
     'adk.experimental.skill.script.ended_with_error'
-)
-ADK_EXPERIMENTAL_SKILL_SCRIPT_EXIT_CODE = (
-    'adk.experimental.skill.script.exit_code'
 )
 
 ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT = 'adk.experimental.context_cache.hit'
@@ -49,4 +39,20 @@ ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT = (
 )
 ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED = (
     'adk.experimental.context_cache.invocations_used'
+)
+
+# Names the callback that produced the response the span records.
+ADK_EXPERIMENTAL_RESPONSE_SOURCE = 'adk.experimental.response.source'
+
+ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT = (
+    'adk.experimental.grounding.query_count'
+)
+ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT = (
+    'adk.experimental.grounding.chunk_count'
+)
+ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES = (
+    'adk.experimental.grounding.web_search_queries'
+)
+ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS = (
+    'adk.experimental.grounding.source_uris'
 )

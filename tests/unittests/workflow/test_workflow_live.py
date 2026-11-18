@@ -21,7 +21,6 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_response import LlmResponse
-from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
@@ -31,6 +30,7 @@ from pydantic import Field
 import pytest
 
 from . import testing_utils
+from .workflow_testing_utils import create_runner
 
 # --- Mock Nodes and Agents for Testing Live Mode Design ---
 
@@ -158,7 +158,7 @@ async def test_hybrid_live_non_live_nodes():
   live_queue.send_realtime(types.Blob(data=b"node1_end", mime_type="audio/pcm"))
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  runner = create_runner(app_name=wf.name, node=wf, session_service=ss)
   session = await ss.create_session(app_name=wf.name, user_id="u")
 
   events = []
@@ -258,7 +258,9 @@ async def test_nested_workflow_has_live_node():
   live_queue.send_realtime(types.Blob(data=b"inner_end", mime_type="audio/pcm"))
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=outer_wf.name, node=outer_wf, session_service=ss)
+  runner = create_runner(
+      app_name=outer_wf.name, node=outer_wf, session_service=ss
+  )
   session = await ss.create_session(app_name=outer_wf.name, user_id="u")
 
   events = []
@@ -373,7 +375,7 @@ async def test_nested_live_node_and_outer_live_node():
   live_queue.send_realtime(types.Blob(data=b"inner_end", mime_type="audio/pcm"))
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  runner = create_runner(app_name=wf.name, node=wf, session_service=ss)
   session = await ss.create_session(app_name=wf.name, user_id="u")
 
   events = []
@@ -497,7 +499,7 @@ async def test_dynamic_node_scheduling_of_live_node():
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  runner = create_runner(app_name=wf.name, node=wf, session_service=ss)
   session = await ss.create_session(app_name=wf.name, user_id="u")
 
   events = []
@@ -575,7 +577,7 @@ async def test_live_node_output_passed_to_downstream():
   live_queue.send_realtime(types.Blob(data=b"end_msg", mime_type="audio/pcm"))
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  runner = create_runner(app_name=wf.name, node=wf, session_service=ss)
   session = await ss.create_session(app_name=wf.name, user_id="u")
 
   events = []
@@ -631,7 +633,7 @@ async def test_single_turn_agent_runs_as_non_live_in_live_session():
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  runner = create_runner(app_name=wf.name, node=wf, session_service=ss)
   session = await ss.create_session(app_name=wf.name, user_id="u")
 
   events = []

@@ -1,6 +1,6 @@
 # ADK Pull Request Triaging Assistant
 
-The ADK Pull Request (PR) Triaging Assistant is a Python-based agent designed to help manage and triage GitHub pull requests for the `google/adk-python` repository. It uses a large language model to work out which component an incoming pull request belongs to, and assigns that component's owner as the assignee. It never labels a pull request; the component it picks is only used to look up the owner.
+The ADK Pull Request (PR) Triaging Assistant is a Python-based agent designed to help manage and triage GitHub pull requests for the `google/adk-python` repository. It uses a large language model to work out which component an incoming pull request belongs to, and assigns one of that component's owners as the assignee; when a component has several owners, they take turns by PR number. It never labels a pull request; the component it picks is only used to look up the owner.
 
 This agent can be operated in two distinct modes:
 

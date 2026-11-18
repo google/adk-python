@@ -19,6 +19,7 @@ from __future__ import annotations
 from a2a.types import Artifact
 from a2a.types import TaskArtifactUpdateEvent
 from google.adk.a2a import _compat
+from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
@@ -37,7 +38,6 @@ pytestmark = pytest.mark.skipif(
 
 from .client import create_a2a_client
 from .client import create_client
-from .server import agent_card
 from .server import create_server_app_v1
 
 
@@ -220,6 +220,7 @@ async def _run_client(agent, *, message_text: str = "Hi"):
   )
 
   texts = []
+  responses = []
   artifact_deltas = []
   func_calls = []
   func_responses = []
@@ -232,11 +233,14 @@ async def _run_client(agent, *, message_text: str = "Hi"):
           texts.append(part.text)
         if part.function_response:
           func_responses.append(part.function_response)
+    if event.custom_metadata and A2A_METADATA_PREFIX + "response" in event.custom_metadata:
+      responses.append(event.custom_metadata[A2A_METADATA_PREFIX + "response"])
     func_calls.extend(event.get_function_calls())
     if event.actions and event.actions.artifact_delta:
       artifact_deltas.append(event.actions.artifact_delta)
   return {
       "texts": texts,
+      "responses": responses,
       "artifact_deltas": artifact_deltas,
       "func_calls": func_calls,
       "func_responses": func_responses,
@@ -259,6 +263,29 @@ async def test_non_streaming_round_trip():
   assert len(received_requests) == 1
   assert received_requests[0]["session_id"] is not None
   assert "Hello world" in result["texts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_non_legacy_client_selects_new_executor(streaming):
+  """The 1.x transport negotiates the new executor through the real server."""
+  received_requests = []
+  app = create_server_app_v1(_non_streaming_run_async(received_requests))
+
+  async with app.router.lifespan_context(app):
+    agent = create_client(app, streaming=streaming, use_legacy=False)
+    try:
+      result = await _run_client(agent)
+    finally:
+      await agent.cleanup()
+
+  assert len(received_requests) == 1
+  assert "Hello world" in result["texts"]
+  assert any(
+      response.get("metadata", {}).get(_NEW_A2A_ADK_INTEGRATION_EXTENSION)
+      == {"adk_agent_executor_v2": True}
+      for response in result["responses"]
+  )
 
 
 @pytest.mark.asyncio
@@ -340,6 +367,67 @@ async def test_artifact_producing_agent_round_trip():
 
   assert len(received_requests) == 1
   assert "with artifact" in result["texts"]
+
+
+# -----------------------------------------------------------------------------
+# Session state boundary
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("force_new_version", "use_legacy"),
+    [
+        pytest.param(False, True, id="default_server_default_client"),
+        pytest.param(True, True, id="forced_new_server_default_client"),
+        pytest.param(False, False, id="default_server_non_legacy_client"),
+    ],
+)
+async def test_peer_state_delta_is_logged_and_not_applied(
+    caplog, streaming, force_new_version, use_legacy
+):
+  """A remote output_key never reaches caller state, and the drop is logged.
+
+  Covers both response handlers: a forced-new server marks its responses for
+  ``_handle_a2a_response_v2``, which reads actions from the nested message and
+  artifact metadata, while the default server's responses go through
+  ``_handle_a2a_response``.
+  """
+
+  async def run_async(**kwargs):
+    # What a remote LlmAgent(output_key="findings") emits as its final event.
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(parts=[types.Part(text="the findings")]),
+        actions=EventActions(state_delta={"findings": "the findings"}),
+    )
+
+  app = create_server_app_v1(run_async, force_new_version=force_new_version)
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+
+  texts = []
+  async with app.router.lifespan_context(app):
+    agent = create_client(app, streaming=streaming, use_legacy=use_legacy)
+    client_runner = Runner(
+        app_name="ClientApp", agent=agent, session_service=session_service
+    )
+    with caplog.at_level("WARNING"):
+      async for event in client_runner.run_async(
+          user_id="test_user",
+          session_id="test_session",
+          new_message=types.Content(parts=[types.Part(text="Hi")], role="user"),
+      ):
+        if event.content and event.content.parts:
+          texts.extend(part.text for part in event.content.parts if part.text)
+
+  session = await session_service.get_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  assert "the findings" in texts
+  assert "findings" not in session.state
+  assert "Ignoring a session state delta from a remote A2A peer" in caplog.text
 
 
 # -----------------------------------------------------------------------------

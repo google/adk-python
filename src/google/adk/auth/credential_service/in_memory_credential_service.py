@@ -19,15 +19,13 @@ from typing import Optional
 from typing_extensions import override
 
 from ...agents.callback_context import CallbackContext
-from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
 from .base_credential_service import BaseCredentialService
 
 
-@experimental
 class InMemoryCredentialService(BaseCredentialService):
-  """Class for in memory implementation of credential service(Experimental)"""
+  """Class for in memory implementation of credential service."""
 
   def __init__(self) -> None:
     super().__init__()

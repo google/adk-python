@@ -17,15 +17,13 @@
 import asyncio
 import time
 from typing import Any
-from typing import Dict
-from typing import List
 
 from google.adk.runners import InMemoryRunner
 
 
 async def call_agent_async(
     runner: InMemoryRunner, user_id: str, session_id: str, prompt: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Call agent asynchronously and return response with token usage."""
   from google.genai import types
 
@@ -83,7 +81,7 @@ async def call_agent_async(
   return {"response_text": response_text, "token_usage": token_usage}
 
 
-def get_test_prompts() -> List[str]:
+def get_test_prompts() -> list[str]:
   """Get a standardized set of test prompts for cache analysis experiments.
 
   Designed for consistent behavior:
@@ -138,10 +136,10 @@ async def run_experiment_batch(
     runner: InMemoryRunner,
     user_id: str,
     session_id: str,
-    prompts: List[str],
+    prompts: list[str],
     experiment_name: str,
     request_delay: float = 2.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Run a batch of prompts and collect cache metrics."""
   results = []
 

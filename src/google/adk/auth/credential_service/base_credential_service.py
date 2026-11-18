@@ -17,14 +17,15 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from ...agents.callback_context import CallbackContext
-from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
-from ..auth_tool import AuthConfig
+
+if TYPE_CHECKING:
+  from ..auth_tool import AuthConfig
 
 
-@experimental
 class BaseCredentialService(ABC):
   """Abstract class for Service that loads / saves tool credentials from / to
   the backend credential store."""
@@ -61,6 +62,9 @@ class BaseCredentialService(ABC):
     """
     Saves the exchanged_auth_credential in auth config to the backend credential
     store.
+
+    An exchanged_auth_credential of None means the stored credential must be
+    removed, so that load_credential returns None for that key afterwards.
 
     Args:
         auth_config: The auth config which contains the auth scheme and auth

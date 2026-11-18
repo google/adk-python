@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 from google.adk.events._node_path_builder import _NodePathBuilder
+from google.adk.events._node_path_builder import join_node_path
+from google.adk.events._node_path_builder import parent_node_path
 import pytest
 
 
@@ -100,6 +102,37 @@ def test_parent_returns_none_for_root_path():
   assert path.parent is None
 
 
+@pytest.mark.parametrize(
+    'path', ['', 'wf', 'wf@1', 'wf@1/node@2', 'wf@1/a@1/b@2', '/a', 'a/', '//']
+)
+def test_parent_node_path_matches_parent(path):
+  """parent_node_path returns the string form of the builder's parent."""
+  parent = _NodePathBuilder.from_string(path).parent
+  assert parent_node_path(path) == (str(parent) if parent else '')
+
+
+@pytest.mark.parametrize(
+    ('parent_path', 'node_name', 'run_id'),
+    [
+        ('', 'node', None),
+        ('', 'node', '2'),
+        ('', '', '2'),
+        (None, 'node', '2'),
+        ('wf@1', 'node', None),
+        ('wf@1', 'node', '2'),
+        ('wf@1', '', '2'),
+        ('wf@1/a@1', 'b', '2'),
+        ('wf', 'node', '2'),
+    ],
+)
+def test_join_node_path_matches_append(parent_path, node_name, run_id):
+  """join_node_path returns the string form of the builder's appended child."""
+  appended = _NodePathBuilder.from_string(parent_path or '').append(
+      node_name, run_id
+  )
+  assert join_node_path(parent_path, node_name, run_id) == str(appended)
+
+
 def test_append_adds_segment_with_id():
   """append adds a new segment with the specified name and run ID."""
   path = _NodePathBuilder.from_string('wf@1')
@@ -165,3 +198,44 @@ def test_static_path_strips_run_ids_from_every_segment():
   assert _NodePathBuilder.from_string('wf').static_path == 'wf'
   assert _NodePathBuilder.from_string('wf/node').static_path == 'wf/node'
   assert _NodePathBuilder.from_string('wf@1/node@2').static_path == 'wf/node'
+
+
+def test_includes_node_path_matches_empty_self_and_descendants():
+  """includes_node_path matches empty paths, self, and descendants only."""
+  path = _NodePathBuilder.from_string('wf@1/node_a@1')
+  assert path.includes_node_path(None)
+  assert path.includes_node_path('')
+  assert path.includes_node_path('wf@1/node_a@1')
+  assert path.includes_node_path('wf@1/node_a@1/sub@1')
+  assert not path.includes_node_path('wf@1')
+  assert not path.includes_node_path('wf@1/node_b@1')
+  assert not path.includes_node_path('wf@1/node_a@2')
+
+
+def test_empty_path_has_empty_leaf_and_no_run_id():
+  path = _NodePathBuilder.from_string('')
+  assert path.leaf_segment == ''
+  assert path.node_name == ''
+  assert path.run_id is None
+
+
+def test_leaf_segment_is_last_segment():
+  assert _NodePathBuilder.from_string('wf@1/node@2').leaf_segment == 'node@2'
+
+
+@pytest.mark.parametrize('other', ['wf@1', 'wf@1/node@2'])
+def test_is_descendant_of_is_false_for_same_or_longer_path(other):
+  parent = _NodePathBuilder.from_string('wf@1')
+  assert not parent.is_descendant_of(_NodePathBuilder.from_string(other))
+
+
+@pytest.mark.parametrize(
+    'self_path, descendant', [('wf@1', 'wf@1'), ('wf@1/node@2', 'wf@1')]
+)
+def test_get_direct_child_rejects_path_not_longer_than_self(
+    self_path, descendant
+):
+  with pytest.raises(ValueError, match='not longer than self path'):
+    _NodePathBuilder.from_string(self_path).get_direct_child(
+        _NodePathBuilder.from_string(descendant)
+    )

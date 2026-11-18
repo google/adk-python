@@ -182,14 +182,16 @@ def test_to_agent_engine_respects_multiple_ignore_files(
   (agent_dir / ".gitignore").write_text("ignored_by_git.txt\n")
   (agent_dir / ".ae_ignore").write_text("ignored_by_ae.txt\n")
 
-  # Mock vertexai.Client and other things to avoid network/complex setup. The
-  # created agent engine must expose a realistic resource name so the downstream
-  # console-URL formatting does not choke on a bare Mock.
+  # Mock agentplatform.Client and other things to avoid network/complex setup.
+  # The created agent runtime must expose a realistic resource name so the
+  # downstream console-URL formatting does not choke on a bare Mock.
   mock_client = mock.Mock()
-  mock_client.agent_engines.create.return_value.api_resource.name = (
+  mock_client.runtimes.create.return_value.api_resource.name = (
       "projects/proj/locations/us-central1/reasoningEngines/123"
   )
-  monkeypatch.setattr("vertexai.Client", mock.Mock(return_value=mock_client))
+  monkeypatch.setattr(
+      "agentplatform.Client", mock.Mock(return_value=mock_client)
+  )
   # Mock shutil.rmtree to keep the temp folder for verification
   original_rmtree = shutil.rmtree
 

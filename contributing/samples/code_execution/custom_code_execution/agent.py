@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import base64
-from typing import Optional
 import urllib.request
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -44,7 +43,7 @@ except Exception as e:
 """
 
 
-def _load_font_file(font_url: str, font_filename: str) -> Optional[File]:
+def _load_font_file(font_url: str, font_filename: str) -> File | None:
   """Downloads a font file and returns it as a File object."""
   try:
     with urllib.request.urlopen(font_url) as response:

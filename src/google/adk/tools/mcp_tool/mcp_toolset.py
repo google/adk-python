@@ -40,9 +40,11 @@ from ...auth._auth_headers import build_auth_headers
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import ClientSession as _ClientSession
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import ListResourcesResult
 from ...dependencies._mcp import ListToolsResult
+from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
@@ -61,9 +63,12 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
+# MCPTool stays imported so existing mcp_toolset.MCPTool callers still resolve.
 from .mcp_tool import _dump_mcp_model
+from .mcp_tool import _merge_auth_and_provider_headers
 from .mcp_tool import _RESERVED_TOOL_NAMES
-from .mcp_tool import MCPTool
+from .mcp_tool import MCPTool  # pylint: disable=unused-import  # noqa: F401
+from .mcp_tool import McpTool
 from .mcp_tool import ProgressCallbackFactory
 from .mcp_tool import ProgressFnT
 
@@ -172,7 +177,9 @@ class McpToolset(BaseToolset):
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
-  ):
+      propagate_grounding_metadata: bool = False,
+      message_handler: MessageHandlerFnT | None = None,
+  ) -> None:
     """Initializes the McpToolset.
 
     Args:
@@ -215,7 +222,8 @@ class McpToolset(BaseToolset):
         CallbackContext. The **kwargs parameter allows for future extensibility.
       use_mcp_resources: Whether the agent should have access to MCP resources.
         This will add a `load_mcp_resource` tool to the toolset and include
-        available resources in the agent context. Defaults to False.
+        available resources in the agent context. `tool_filter` selects among
+        the server's tools and does not apply to this tool. Defaults to False.
       sampling_callback: Optional callback to handle sampling requests from the
         MCP server.
       sampling_capabilities: Optional capabilities for sampling.
@@ -224,6 +232,14 @@ class McpToolset(BaseToolset):
         elicitations used for out-of-band flows such as auth challenges.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
+      propagate_grounding_metadata: If True, each listed tool copies
+        ``meta.adk_grounding_metadata`` from the MCP result into
+        ``temp:_adk_grounding_metadata``. Default False.
+      message_handler: Optional async callback for incoming MCP messages,
+        including server notifications. Does not invalidate the tool-list cache.
+        On MCP SDK 1.x it runs inside the session's receive loop, so it must
+        not await requests on this toolset (e.g. ``get_tools()``); offload
+        follow-up work with ``asyncio.create_task(...)``.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -261,10 +277,12 @@ class McpToolset(BaseToolset):
         sampling_callback=self._sampling_callback,
         sampling_capabilities=self._sampling_capabilities,
         elicitation_callback=self._elicitation_callback,
+        message_handler=message_handler,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    self._propagate_grounding_metadata = propagate_grounding_metadata
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
@@ -293,10 +311,9 @@ class McpToolset(BaseToolset):
       return None
 
     credential = None
-    if readonly_context:
-      credential = readonly_context.get_credential(
-          self._auth_config.credential_key
-      )
+    credential_key = self._auth_config.credential_key
+    if readonly_context and credential_key is not None:
+      credential = readonly_context.get_credential(credential_key)
 
     if not credential:
       credential = self._auth_config.exchanged_auth_credential
@@ -350,26 +367,24 @@ class McpToolset(BaseToolset):
     Returns:
         The merged header provider and auth headers, empty if there are none.
     """
-    headers: Dict[str, str] = {}
-
-    # Add headers from header_provider if available
+    provider_headers = None
     if self._header_provider and readonly_context:
-      provider_headers = self._header_provider(readonly_context)
-      if inspect.isawaitable(provider_headers):
-        provider_headers = await provider_headers
-      if provider_headers:
-        headers.update(provider_headers)
+      provided_headers = self._header_provider(readonly_context)
+      provider_headers = (
+          await provided_headers
+          if inspect.isawaitable(provided_headers)
+          else provided_headers
+      )
 
-    # Add auth headers from exchanged credential if available
     auth_headers = self._get_auth_headers(readonly_context)
-    if auth_headers:
-      headers.update(auth_headers)
-
-    return headers
+    return _merge_auth_and_provider_headers(
+        auth_headers=auth_headers,
+        provider_headers=provider_headers,
+    )
 
   async def _execute_with_session(
       self,
-      coroutine_func: Callable[[Any], Awaitable[T]],
+      coroutine_func: Callable[[_ClientSession], Awaitable[T]],
       error_message: str,
       readonly_context: Optional[ReadonlyContext] = None,
       headers: Optional[Dict[str, str]] = None,
@@ -518,7 +533,7 @@ class McpToolset(BaseToolset):
 
     # Apply filtering based on context and tool_filter. This runs on every call
     # even on a cache hit, so only the round trip is skipped.
-    tools = []
+    tools: List[BaseTool] = []
     for tool in mcp_tools:
       # Skip rather than let McpTool raise: one reserved name would otherwise
       # fail the whole listing and take the server's honest tools down with it.
@@ -530,7 +545,7 @@ class McpToolset(BaseToolset):
         )
         continue
 
-      mcp_tool = MCPTool(
+      mcp_tool = McpTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,
           auth_scheme=self._auth_scheme,
@@ -540,6 +555,7 @@ class McpToolset(BaseToolset):
           progress_callback=self._progress_callback
           if hasattr(self, "_progress_callback")
           else None,
+          propagate_grounding_metadata=self._propagate_grounding_metadata,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
@@ -656,6 +672,12 @@ class McpToolset(BaseToolset):
           " loads agent configs it trusts."
       )
 
+    connection_params: Union[
+        StdioServerParameters,
+        StdioConnectionParams,
+        SseConnectionParams,
+        StreamableHTTPConnectionParams,
+    ]
     if mcp_toolset_config.stdio_server_params:
       connection_params = mcp_toolset_config.stdio_server_params
     elif mcp_toolset_config.stdio_connection_params:
@@ -680,7 +702,7 @@ class McpToolset(BaseToolset):
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
     )
 
-  def __getstate__(self):
+  def __getstate__(self) -> dict[str, Any]:
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     # Remove unpicklable file-like objects
@@ -690,7 +712,7 @@ class McpToolset(BaseToolset):
     state["_tool_list_cache"] = collections.OrderedDict()
     return state
 
-  def __setstate__(self, state):
+  def __setstate__(self, state: dict[str, Any]) -> None:
     """Custom unpickling to restore state."""
     self.__dict__.update(state)
     # Default to sys.stderr if _errlog was removed during pickling
@@ -701,7 +723,7 @@ class McpToolset(BaseToolset):
 class MCPToolset(McpToolset):
   """Deprecated name, use `McpToolset` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPToolset class is deprecated, use `McpToolset` instead.",
         DeprecationWarning,
@@ -738,7 +760,7 @@ class McpToolsetConfig(BaseToolConfig):
   use_mcp_resources: bool = False
 
   @model_validator(mode="after")
-  def _check_only_one_params_field(self):
+  def _check_only_one_params_field(self) -> McpToolsetConfig:
     param_fields = [
         self.stdio_server_params,
         self.stdio_connection_params,

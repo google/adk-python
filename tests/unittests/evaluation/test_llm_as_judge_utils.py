@@ -31,6 +31,7 @@ from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.evaluation.llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_tool_declarations_as_json_str
 from google.genai import types as genai_types
+import pytest
 
 
 def test_get_text_from_content_with_none():
@@ -161,6 +162,64 @@ def test_get_text_from_content_with_intermediate_data_full_response():
       )
       == "legacy intro\nfinal answer"
   )
+
+
+@pytest.mark.parametrize(
+    "parts, expected_text",
+    [
+        pytest.param(
+            [
+                genai_types.Part(text="The user said hi.", thought=True),
+                genai_types.Part(text="Hello"),
+            ],
+            "Hello",
+            id="thought-and-answer",
+        ),
+        pytest.param(
+            [genai_types.Part(text="The user said hi.", thought=True)],
+            "",
+            id="thought-only",
+        ),
+    ],
+)
+def test_get_text_from_content_skips_thought_parts(
+    parts: list[genai_types.Part], expected_text: str
+):
+  """Thought parts are left out of the extracted text."""
+  content = genai_types.Content(parts=parts)
+
+  assert get_text_from_content(content) == expected_text
+
+
+def test_get_text_from_content_skips_thought_parts_in_intermediate_responses():
+  """Thought parts of intermediate events are left out of the response text."""
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="user")]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="agent",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(
+                              text="I need to look this up.", thought=True
+                          ),
+                          genai_types.Part(text="Let me check."),
+                      ]
+                  ),
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Done.")]
+      ),
+  )
+
+  text = get_text_from_content(
+      invocation, include_intermediate_responses_in_final=True
+  )
+
+  assert text == "Let me check.\nDone."
 
 
 def test_get_eval_status_with_none_score():

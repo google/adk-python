@@ -14,10 +14,10 @@
 
 import os
 
+from agentplatform.preview import rag
 from dotenv import load_dotenv
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
-from vertexai.preview import rag
 
 load_dotenv()
 

@@ -16,11 +16,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from unittest import mock
 
 from google.adk.events.event import Event
+from google.adk.live import _flow_utils
+from google.adk.live._active_background_tool import ActiveBackgroundTool
 from google.adk.live._flow_utils import handle_control_event_flush
 from google.adk.live._flow_utils import require_live_request_queue
+from google.adk.live._flow_utils import wait_for_tool_calls
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_response import LlmResponse
 import pytest
@@ -45,13 +50,13 @@ def test_require_live_request_queue_raises_when_missing():
 
 
 async def test_handle_control_event_flush_flushes_model_audio_on_interrupt():
-  """Flushes only model audio when the response indicates an interruption."""
+  """Flushes only the model's audio on an interruption."""
   flushed_event = Event(author='model')
-  audio_cache_manager = mock.Mock()
-  audio_cache_manager.flush_caches = mock.AsyncMock(
+  realtime_cache_manager = mock.Mock()
+  realtime_cache_manager.flush_caches = mock.AsyncMock(
       return_value=[flushed_event]
   )
-  flow = mock.Mock(audio_cache_manager=audio_cache_manager)
+  flow = mock.Mock(_realtime_cache_manager=realtime_cache_manager)
   invocation_context = mock.Mock()
   llm_response = LlmResponse(interrupted=True)
 
@@ -60,21 +65,22 @@ async def test_handle_control_event_flush_flushes_model_audio_on_interrupt():
   )
 
   assert events == [flushed_event]
-  audio_cache_manager.flush_caches.assert_awaited_once_with(
+  realtime_cache_manager.flush_caches.assert_awaited_once_with(
       invocation_context,
       flush_user_audio=False,
       flush_model_audio=True,
+      flush_user_visual=False,
   )
 
 
 async def test_handle_control_event_flush_flushes_both_on_turn_complete():
-  """Flushes both user and model audio when the turn completes."""
+  """Flushes the user's audio and frames and the model's audio at a turn's end."""
   flushed_event = Event(author='model')
-  audio_cache_manager = mock.Mock()
-  audio_cache_manager.flush_caches = mock.AsyncMock(
+  realtime_cache_manager = mock.Mock()
+  realtime_cache_manager.flush_caches = mock.AsyncMock(
       return_value=[flushed_event]
   )
-  flow = mock.Mock(audio_cache_manager=audio_cache_manager)
+  flow = mock.Mock(_realtime_cache_manager=realtime_cache_manager)
   invocation_context = mock.Mock()
   llm_response = LlmResponse(turn_complete=True)
 
@@ -83,8 +89,34 @@ async def test_handle_control_event_flush_flushes_both_on_turn_complete():
   )
 
   assert events == [flushed_event]
-  audio_cache_manager.flush_caches.assert_awaited_once_with(
+  realtime_cache_manager.flush_caches.assert_awaited_once_with(
       invocation_context,
       flush_user_audio=True,
       flush_model_audio=True,
+      flush_user_visual=True,
   )
+
+
+async def test_wait_for_tool_calls_logs_calls_still_running(
+    caplog: pytest.LogCaptureFixture,
+):
+  """Logs the calls still running when the wait times out."""
+  task = asyncio.create_task(asyncio.Event().wait())
+  invocation_context = mock.Mock(
+      _active_background_tools={
+          'fc-1': ActiveBackgroundTool(
+              tool_name='lookup', function_call_id='fc-1', task=task
+          )
+      }
+  )
+
+  try:
+    with (
+        mock.patch.object(_flow_utils, '_TOOL_FINISH_TIMEOUT_SECONDS', 0),
+        caplog.at_level(logging.WARNING),
+    ):
+      await wait_for_tool_calls(invocation_context)
+  finally:
+    task.cancel()
+
+  assert 'lookup (fc-1)' in caplog.text

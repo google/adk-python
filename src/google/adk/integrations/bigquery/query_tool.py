@@ -31,6 +31,7 @@ from google.cloud import bigquery
 
 from . import client
 from ...tools.tool_context import ToolContext
+from .._google_sdk import read_api_repr as _read_api_repr
 from .config import BigQueryToolConfig
 from .config import WriteMode
 
@@ -211,6 +212,9 @@ def _execute_sql(
     if settings and settings.application_name:
       bq_job_labels["adk-bigquery-application-name"] = settings.application_name
 
+    # Statement type from a dry run, when the write mode needs one anyway
+    statement_type: Optional[str] = None
+
     if not settings or settings.write_mode == WriteMode.BLOCKED:
       dry_run_query_job = bq_client.query(
           query,
@@ -219,7 +223,8 @@ def _execute_sql(
               dry_run=True, labels=bq_job_labels
           ),
       )
-      if dry_run_query_job.statement_type != "SELECT":
+      statement_type = dry_run_query_job.statement_type
+      if statement_type != "SELECT":
         return {
             "status": "ERROR",
             "error_details": "Read-only mode only supports SELECT statements.",
@@ -246,7 +251,10 @@ def _execute_sql(
                 dry_run=True, create_session=True, labels=bq_job_labels
             ),
         )
-        bq_session_id = session_creator_job.session_info.session_id
+        session_info = session_creator_job.session_info
+        if session_info is None:
+          raise ValueError("BigQuery did not create a session for the query.")
+        bq_session_id = session_info.session_id
         bq_session_dataset_id = session_creator_job.destination.dataset_id
 
         # Remember the BigQuery session info for subsequent queries
@@ -274,7 +282,8 @@ def _execute_sql(
           ),
       )
       # A write runs only where the dry run places it in the session dataset.
-      if dry_run_query_job.statement_type != "SELECT" and not (
+      statement_type = dry_run_query_job.statement_type
+      if statement_type != "SELECT" and not (
           dry_run_query_job.destination
           and dry_run_query_job.destination.dataset_id == bq_session_dataset_id
       ):
@@ -297,7 +306,8 @@ def _execute_sql(
               labels=bq_job_labels,
           ),
       )
-      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+      dry_run_info = _read_api_repr(dry_run_job)
+      return {"status": "SUCCESS", "dry_run_info": dry_run_info}
 
     # Finally execute the query, fetch the result, and return it
     job_config = bigquery.QueryJobConfig(
@@ -306,6 +316,23 @@ def _execute_sql(
     )
     if settings.maximum_bytes_billed:
       job_config.maximum_bytes_billed = settings.maximum_bytes_billed
+    if settings.kms_key_name:
+      if statement_type is None:
+        statement_type = bq_client.query(
+            query,
+            project=project_id,
+            job_config=bigquery.QueryJobConfig(
+                dry_run=True,
+                connection_properties=bq_connection_properties,
+                labels=bq_job_labels,
+            ),
+        ).statement_type
+      # BigQuery rejects a job-level key for DDL, DML and scripts, so only the
+      # results of a SELECT are encrypted with it.
+      if statement_type == "SELECT":
+        job_config.destination_encryption_configuration = (
+            bigquery.EncryptionConfiguration(kms_key_name=settings.kms_key_name)
+        )
     row_iterator = bq_client.query_and_wait(
         query,
         job_config=job_config,
@@ -934,7 +961,7 @@ def forecast(
     timestamp_col: str,
     data_col: str,
     horizon: int = 10,
-    id_cols: Optional[list[str]] = None,
+    id_cols: list[str] | None = None,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
@@ -1332,7 +1359,11 @@ def analyze_contribution(
   try:
     execute_sql_settings = settings
     if execute_sql_settings.write_mode == WriteMode.BLOCKED:
-      raise ValueError("analyze_contribution is not allowed in this session.")
+      raise ValueError(
+          "analyze_contribution is not allowed in this session. To enable"
+          " analyze_contribution, set write_mode to WriteMode.PROTECTED or"
+          " WriteMode.ALLOWED in BigQueryToolConfig."
+      )
     elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
@@ -1374,10 +1405,10 @@ def detect_anomalies(
     history_data: str,
     times_series_timestamp_col: str,
     times_series_data_col: str,
-    horizon: Optional[int] = 1000,
-    target_data: Optional[str] = None,
-    times_series_id_cols: Optional[list[str]] = None,
-    anomaly_prob_threshold: Optional[float] = 0.95,
+    horizon: int | None = 1000,
+    target_data: str | None = None,
+    times_series_id_cols: list[str] | None = None,
+    anomaly_prob_threshold: float | None = 0.95,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
@@ -1503,6 +1534,8 @@ def detect_anomalies(
           }
   """
   try:
+    if horizon is None:
+      raise TypeError("horizon must not be None.")
     horizon = int(horizon)
   except (TypeError, ValueError):
     return {
@@ -1511,6 +1544,8 @@ def detect_anomalies(
     }
 
   try:
+    if anomaly_prob_threshold is None:
+      raise TypeError("anomaly_prob_threshold must not be None.")
     anomaly_prob_threshold = float(anomaly_prob_threshold)
   except (TypeError, ValueError):
     return {
@@ -1625,7 +1660,11 @@ def detect_anomalies(
   try:
     execute_sql_settings = settings
     if execute_sql_settings.write_mode == WriteMode.BLOCKED:
-      raise ValueError("anomaly detection is not allowed in this session.")
+      raise ValueError(
+          "anomaly detection is not allowed in this session. To enable"
+          " anomaly detection, set write_mode to WriteMode.PROTECTED or"
+          " WriteMode.ALLOWED in BigQueryToolConfig."
+      )
     elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
