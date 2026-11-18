@@ -26,6 +26,8 @@ _ADK_LABEL = "google-adk"
 _LANGUAGE_LABEL = "gl-python"
 _AGENT_ENGINE_TELEMETRY_TAG = "remote_reasoning_engine"
 _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME = "GOOGLE_CLOUD_AGENT_ENGINE_ID"
+# Every env var that selects a runtime tag. Tests clear these.
+_RUNTIME_ENV_VARIABLE_NAMES = (_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME,)
 
 
 EVAL_CLIENT_LABEL = f"google-adk-eval/{version.__version__}"
@@ -49,7 +51,9 @@ _LABEL_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def _get_default_labels(framework_label: str | None = None) -> list[str]:
+def _get_default_labels(
+    framework_label: str | None = None, *, exclude_runtime_tag: bool = False
+) -> list[str]:
   """Returns a list of labels that are always added.
 
   Args:
@@ -57,12 +61,16 @@ def _get_default_labels(framework_label: str | None = None) -> list[str]:
       google-adk framework token (e.g. "managed_agent" ->
       "google-adk/<version>+managed_agent"). When provided, it takes precedence
       over the Agent Engine (GOOGLE_CLOUD_AGENT_ENGINE_ID) suffix.
+    exclude_runtime_tag: Whether to leave out the hosting runtime suffix. Pass
+      True for requests that do not go to a Google API endpoint.
   """
   framework_token = f"{_ADK_LABEL}/{version.__version__}"
 
   if framework_label:
     framework_token = f"{framework_token}+{framework_label}"
-  elif os.environ.get(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME):
+  elif not exclude_runtime_tag and os.environ.get(
+      _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
+  ):
     framework_token = f"{framework_token}+{_AGENT_ENGINE_TELEMETRY_TAG}"
 
   language_label = f"{_LANGUAGE_LABEL}/" + sys.version.split()[0]
@@ -88,14 +96,20 @@ def client_label_context(client_label: str) -> Iterator[None]:
     _LABEL_CONTEXT.reset(token)
 
 
-def get_client_labels(framework_label: str | None = None) -> list[str]:
+def get_client_labels(
+    framework_label: str | None = None, *, exclude_runtime_tag: bool = False
+) -> list[str]:
   """Returns the current list of client labels that can be added to HTTP Headers.
 
   Args:
     framework_label: Optional SemVer build-metadata suffix for the google-adk
       framework token (see _get_default_labels).
+    exclude_runtime_tag: Whether to leave out the hosting runtime suffix (see
+      _get_default_labels).
   """
-  labels = _get_default_labels(framework_label=framework_label)
+  labels = _get_default_labels(
+      framework_label=framework_label, exclude_runtime_tag=exclude_runtime_tag
+  )
   current_client_label = _LABEL_CONTEXT.get()
 
   if current_client_label:

@@ -1747,6 +1747,34 @@ def test_live_api_client_properties(gemini_llm):
       assert value in http_options.headers[key]
 
 
+class _NoRuntimeTagGemini(Gemini):
+  """A Gemini subclass that sends to a non-Google endpoint."""
+
+  def _exclude_runtime_tag(self) -> bool:
+    return True
+
+
+_UNTAGGED_TOKEN = f"google-adk/{adk_version.__version__}"
+
+
+def _assert_untagged(headers):
+  assert headers["user-agent"].split()[0] == _UNTAGGED_TOKEN
+  assert headers["x-goog-api-client"].split()[0] == _UNTAGGED_TOKEN
+
+
+def test_exclude_runtime_tag_hook_covers_client_headers(monkeypatch):
+  """_tracking_headers and _with_adk_http_options honor the hook."""
+  monkeypatch.setenv(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME, "engine-id")
+  gemini = _NoRuntimeTagGemini(model="gemini-2.5-flash")
+
+  _assert_untagged(gemini._tracking_headers())
+  merged = gemini._with_adk_http_options(
+      types.HttpOptions(headers={"x-custom": "v"}),
+      types.HttpOptions(headers=gemini._tracking_headers()),
+  )
+  _assert_untagged(merged.headers)
+
+
 class _MockLiveConnect:
 
   async def __aenter__(self):
@@ -3995,6 +4023,49 @@ async def test_interactions_api_forwards_request_service_tier(llm_request):
 
   assert responses[0].content.parts[0].text == "ok"
   assert captured["service_tier"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_exclude_runtime_tag_hook_covers_connect(
+    monkeypatch, llm_request
+):
+  """Live sessions on a caller-supplied client honor the hook."""
+  monkeypatch.setenv(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME, "engine-id")
+  mock_client = mock.MagicMock(spec=Client)
+  mock_client.aio.live.connect.return_value = _MockLiveConnect()
+  gemini = _NoRuntimeTagGemini(model="gemini-2.5-flash", client=mock_client)
+  llm_request.live_connect_config = types.LiveConnectConfig()
+
+  async with gemini.connect(llm_request):
+    config = mock_client.aio.live.connect.call_args.kwargs["config"]
+
+  _assert_untagged(config.http_options.headers)
+
+
+@pytest.mark.asyncio
+async def test_exclude_runtime_tag_hook_covers_interactions(llm_request):
+  """The interactions path is told to leave out the runtime tag."""
+  gemini = _NoRuntimeTagGemini(
+      model="gemini-2.5-flash", use_interactions_api=True
+  )
+  captured = {}
+
+  async def fake_generate(**kwargs):
+    captured.update(kwargs)
+    yield LlmResponse(
+        content=Content(role="model", parts=[Part.from_text(text="ok")])
+    )
+
+  with (
+      mock.patch.object(gemini, "_preprocess_request", new=AsyncMock()),
+      mock.patch(
+          "google.adk.models.interactions_utils.generate_content_via_interactions",
+          new=fake_generate,
+      ),
+  ):
+    _ = [r async for r in gemini.generate_content_async(llm_request)]
+
+  assert captured["exclude_runtime_tag"] is True
 
 
 @pytest.mark.asyncio

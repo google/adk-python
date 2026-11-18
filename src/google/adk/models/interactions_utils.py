@@ -1946,6 +1946,7 @@ async def generate_content_via_interactions(
     stream: bool,
     *,
     service_tier: ServiceTier | str | None = None,
+    exclude_runtime_tag: bool = False,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Generate content using the interactions API.
 
@@ -1962,6 +1963,8 @@ async def generate_content_via_interactions(
     stream: Whether to stream the response.
     service_tier: Optional serving tier. ``deferred`` queues the request to run
       on off-peak capacity and cannot be combined with streaming.
+    exclude_runtime_tag: Whether the tracking headers must leave out the hosting
+      runtime tag. True when api_client targets a non-Google endpoint.
 
   Yields:
     LlmResponse objects converted from interaction responses.
@@ -2039,7 +2042,9 @@ async def generate_content_via_interactions(
   config_headers = None
   if llm_request.config and llm_request.config.http_options:
     config_headers = llm_request.config.http_options.headers
-  extra_headers = merge_tracking_headers(config_headers)
+  extra_headers = merge_tracking_headers(
+      config_headers, exclude_runtime_tag=exclude_runtime_tag
+  )
 
   async for llm_response in _create_interactions(
       api_client,

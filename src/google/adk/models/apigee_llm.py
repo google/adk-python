@@ -247,9 +247,17 @@ class ApigeeLlm(Gemini):
     """Provides the completions HTTP client."""
     return CompletionsHTTPClient(
         base_url=self._require_proxy_url(),
-        headers=merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(
+            self._custom_headers,
+            exclude_runtime_tag=self._exclude_runtime_tag(),
+        ),
         retry_options=self.retry_options,
     )
+
+  @override
+  def _exclude_runtime_tag(self) -> bool:
+    # The proxy URL is the customer's, not a Google API endpoint.
+    return True
 
   def _require_proxy_url(self) -> str:
     if not self._proxy_url:
@@ -306,7 +314,10 @@ class ApigeeLlm(Gemini):
             else _GEMINI_API_VERSION
         ),
         base_url=self._require_proxy_url(),
-        headers=merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(
+            self._custom_headers,
+            exclude_runtime_tag=self._exclude_runtime_tag(),
+        ),
         retry_options=self.retry_options,
     )
 
