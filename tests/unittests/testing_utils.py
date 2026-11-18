@@ -17,6 +17,7 @@ import contextlib
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
+from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
@@ -510,6 +511,14 @@ class MockLlmConnection(BaseLlmConnection):
     pass
 
   async def send_realtime(self, blob: types.Blob):
+    pass
+
+  async def send_context_update(
+      self,
+      *,
+      system_instruction: Optional[str] = None,
+      tools: Optional[types.ToolListUnion] = None,
+  ):
     pass
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:

@@ -42,6 +42,22 @@ def test_get_client_labels_with_agent_engine_id(monkeypatch):
   assert f"gl-python/{sys.version.split()[0]}" == labels[1]
 
 
+def test_get_client_labels_without_runtime_tag(monkeypatch):
+  """exclude_runtime_tag=True drops the Agent Engine suffix."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "test-agent-id")
+  labels = _client_labels_utils.get_client_labels(exclude_runtime_tag=True)
+  assert labels[0] == f"google-adk/{version.__version__}"
+
+
+def test_framework_label_kept_without_runtime_tag(monkeypatch):
+  """exclude_runtime_tag=True still keeps framework_label."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "test-agent-id")
+  labels = _client_labels_utils.get_client_labels(
+      framework_label="managed_agent", exclude_runtime_tag=True
+  )
+  assert labels[0] == f"google-adk/{version.__version__}+managed_agent"
+
+
 def test_get_client_labels_with_context():
   """Test get_client_labels includes label from context."""
   with _client_labels_utils.client_label_context("my-label/1.0"):

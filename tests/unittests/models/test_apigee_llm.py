@@ -23,6 +23,7 @@ from typing import cast
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk import version
 from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
@@ -225,6 +226,37 @@ async def test_generate_content_async_with_custom_headers(
   http_options = kwargs['http_options']
   assert http_options.headers['X-Custom-Header'] == 'custom-value'
   assert 'user-agent' in http_options.headers
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_proxy_requests_get_no_runtime_tag(
+    mock_client_constructor: mock.MagicMock,
+    llm_request: LlmRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Requests through the Apigee proxy carry no hosting runtime tag."""
+  monkeypatch.setenv('GOOGLE_CLOUD_AGENT_ENGINE_ID', 'engine-id')
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse()
+  )
+  mock_client_constructor.return_value = mock_client_instance
+  apigee_llm = ApigeeLlm(model=APIGEE_GEMINI_MODEL_ID, proxy_url=PROXY_URL)
+
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, client_kwargs = mock_client_constructor.call_args
+  _, request_kwargs = mock_client_instance.aio.models.generate_content.call_args
+  completions_client = apigee_llm._completions_http_client  # pylint: disable=protected-access
+  untagged = f'google-adk/{version.__version__}'
+  for headers in (
+      client_kwargs['http_options'].headers,
+      request_kwargs['config'].http_options.headers,
+      completions_client._headers,  # pylint: disable=protected-access
+  ):
+    assert headers['user-agent'].split()[0] == untagged
+    assert headers['x-goog-api-client'].split()[0] == untagged
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,7 @@ pytest.register_assert_rewrite('google.adk.cli.agent_test_runner')
 if sys.version_info[:2] == (3, 15):
   sys.set_lazy_imports_filter(lambda *_: False)
 
+from google.adk.utils import _client_labels_utils
 from google.adk.utils import _gcp_metadata
 from pytest import fixture
 from pytest import FixtureRequest
@@ -139,6 +140,23 @@ def mock_gcp_metadata_off(request):
     _gcp_metadata.get_project_id_from_metadata = orig_get_project_id
     _gcp_metadata._cached_project_id = orig_cached_project_id
     _cloud_sdk.get_application_default_credentials_path = orig_get_adc_path
+
+
+@pytest.fixture(autouse=True)
+def _clear_hosting_runtime_env_vars():
+  """Unsets the env vars ADK reads to tag its hosting runtime.
+
+  Left in place, every tracking header gains a runtime suffix and tests
+  asserting exact header values fail on hosts that set them. Tests that need a
+  runtime set it themselves.
+
+  Like _no_real_gcloud, it uses its own MonkeyPatch so it doesn't change the
+  teardown order of other tests' fixtures.
+  """
+  with pytest.MonkeyPatch.context() as patcher:
+    for name in _client_labels_utils._RUNTIME_ENV_VARIABLE_NAMES:
+      patcher.delenv(name, raising=False)
+    yield
 
 
 _GCLOUD_PROGRAMS = frozenset({'gcloud', 'gcloud.cmd'})
