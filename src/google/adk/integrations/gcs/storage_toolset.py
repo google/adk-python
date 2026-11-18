@@ -21,8 +21,6 @@ from typing_extensions import override
 
 from . import storage_tool
 from ...agents.readonly_context import ReadonlyContext
-from ...features import experimental
-from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
@@ -34,7 +32,6 @@ from .settings import GCSToolSettings
 DEFAULT_GCS_TOOL_NAME_PREFIX = "gcs"
 
 
-@experimental(FeatureName.GCS_TOOLSET)
 class GCSToolset(BaseToolset):
   """GCS Toolset contains tools for interacting with GCS storage.
 

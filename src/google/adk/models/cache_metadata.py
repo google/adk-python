@@ -28,12 +28,15 @@ class CacheMetadata(BaseModel):
   This class stores cache identification, usage tracking, and lifecycle
   information for a particular cache instance. It can be in two states:
 
-  1. Active cache state: cache_name is set, all fields populated
+  1. Active cache state: cache_name is set, all fields populated, except
+     created_at when ADK did not create the cache
   2. Fingerprint-only state: cache_name is None, only fingerprint and
      contents_count are set for prefix matching
 
   Token counts (cached and total) are available in the LlmResponse.usage_metadata
-  and should be accessed from there to avoid duplication.
+  and should be accessed from there to avoid duplication. Cache-creation (write)
+  token counts, when reported by the provider, are available on
+  LlmResponse.cache_creation_token_count.
 
   Attributes:
       cache_name: The full resource name of the cached content (e.g.,
@@ -48,8 +51,9 @@ class CacheMetadata(BaseModel):
       contents_count: Number of contents. When active cache exists, this is
           the count of cached contents. When no active cache exists, this is
           the count of the cacheable content prefix used for fingerprinting.
-      created_at: Unix timestamp when the cache was created. None when
-          no active cache exists.
+      created_at: Unix timestamp when ADK created the cache. None when no
+          active cache exists, or when the active cache was created outside
+          ADK. ADK only deletes caches it created.
   """
 
   model_config = ConfigDict(
@@ -93,12 +97,13 @@ class CacheMetadata(BaseModel):
   created_at: float | None = Field(
       default=None,
       description=(
-          "Unix timestamp when cache was created (None if no active cache)"
+          "Unix timestamp when ADK created the cache (None if no active cache"
+          " or the cache was created outside ADK)"
       ),
   )
 
   @model_validator(mode="after")
-  def _enforce_active_state_invariant(self) -> "CacheMetadata":
+  def _enforce_active_state_invariant(self) -> CacheMetadata:
     active = (self.cache_name, self.expire_time, self.invocations_used)
     if len({f is not None for f in active}) > 1:
       raise ValueError(

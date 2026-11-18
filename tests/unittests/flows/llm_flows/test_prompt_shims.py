@@ -16,13 +16,11 @@
 
 from __future__ import annotations
 
-from google.adk.flows.llm_flows import _output_schema_processor
 from google.adk.flows.llm_flows import identity
 from google.adk.flows.llm_flows import instructions
 from google.adk.flows.llm_flows import prompt
 from google.adk.flows.llm_flows.prompt import _identity as prompt_identity
 from google.adk.flows.llm_flows.prompt import _instructions as prompt_instructions
-from google.adk.flows.llm_flows.prompt import _schema as prompt_schema
 
 
 def test_instructions_shim_reexports():
@@ -53,23 +51,3 @@ def test_identity_shim_reexports():
       is prompt_identity._IdentityLlmRequestProcessor
   )
   assert prompt._identity is prompt_identity
-
-
-def test_output_schema_processor_shim_reexports():
-  assert (
-      _output_schema_processor.request_processor
-      is prompt_schema.request_processor
-  )
-  assert (
-      _output_schema_processor._OutputSchemaRequestProcessor
-      is prompt_schema._OutputSchemaRequestProcessor
-  )
-  assert (
-      _output_schema_processor.create_final_model_response_event
-      is prompt_schema.create_final_model_response_event
-  )
-  assert (
-      _output_schema_processor.get_structured_model_response
-      is prompt_schema.get_structured_model_response
-  )
-  assert prompt._schema is prompt_schema

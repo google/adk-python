@@ -16,6 +16,7 @@
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.genai import types
+import pydantic
 import pytest
 
 
@@ -224,6 +225,30 @@ class TestGenerateContentKwargErrors:
         ValueError, match=r'temperature is a GenerateContentConfig field'
     ):
       ChildAgent(name='test_agent', temperature=0.1)
+
+  @pytest.mark.parametrize(
+      'alias',
+      [
+          'temperature',
+          pydantic.AliasChoices('other', 'temperature'),
+          pydantic.AliasPath('temperature', 'value'),
+      ],
+  )
+  def test_subclass_validation_alias_is_not_a_config_field(self, alias):
+    """A subclass validation alias is an agent field, not a config field."""
+
+    class ChildAgent(LlmAgent):
+      custom_temperature: float = pydantic.Field(
+          default=0.0, validation_alias=alias
+      )
+
+    value: float | dict[str, float] = 0.1
+    if isinstance(alias, pydantic.AliasPath):
+      value = {'value': 0.1}
+    agent = ChildAgent(name='test_agent', temperature=value)
+
+    assert agent.custom_temperature == pytest.approx(0.1)
+    assert agent.generate_content_config is None
 
   def test_typo_and_config_field_named_together(self):
     """A typo arriving with a config field should be named in the same error."""

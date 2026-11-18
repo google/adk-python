@@ -268,6 +268,27 @@ def test_format_auto_rater_prompt_includes_intermediate_when_enabled():
   assert "reference intro\nreference final" in prompt
 
 
+def test_format_auto_rater_prompt_excludes_thought_parts():
+  """Thought parts of either response are not shown to the judge."""
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "candidate text", "reference text"
+  )
+  actual_invocation.final_response.parts.insert(
+      0, genai_types.Part(text="candidate thought", thought=True)
+  )
+  expected_invocation.final_response.parts.insert(
+      0, genai_types.Part(text="reference thought", thought=True)
+  )
+
+  prompt = evaluator.format_auto_rater_prompt(
+      actual_invocation, expected_invocation
+  )
+
+  assert '"Agent response": candidate text,' in prompt
+  assert '"Reference response": reference text,' in prompt
+
+
 def test_convert_auto_rater_response_to_score_valid():
   evaluator = _create_test_evaluator_gemini(threshold=0.8)
   auto_rater_response = """```json
@@ -285,6 +306,34 @@ def test_convert_auto_rater_response_to_score_valid():
   auto_rater_score = evaluator.convert_auto_rater_response_to_score(
       llm_response
   )
+  assert auto_rater_score == AutoRaterScore(score=1.0)
+
+
+def test_convert_auto_rater_response_to_score_ignores_judge_thoughts():
+  """A verdict drafted in the judge's thoughts does not override its answer."""
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  llm_response = LlmResponse(
+      content=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  text='Draft: {"is_the_agent_response_valid": "invalid",',
+                  thought=True,
+              ),
+              genai_types.Part(
+                  text=(
+                      '{"is_the_agent_response_valid": "valid", "reasoning":'
+                      ' "It matches."}'
+                  )
+              ),
+          ],
+          role="model",
+      )
+  )
+
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+
   assert auto_rater_score == AutoRaterScore(score=1.0)
 
 
@@ -334,6 +383,38 @@ def test_convert_auto_rater_response_to_score_missing_key():
       llm_response
   )
   assert auto_rater_score == AutoRaterScore()
+
+
+@pytest.mark.parametrize(
+    "label, expected_score",
+    [
+        ("unknown", None),
+        ("true", 0.0),
+        ("invalid", 0.0),
+        ("false", 1.0),
+        ("valid", 1.0),
+        ("almost", 0.0),
+        ("partially_valid", 0.0),
+        ("partially", 0.0),
+    ],
+)
+def test_alternate_invalidity_label_maps_to_score(label, expected_score):
+  """Alternate judge labels map to inverted scores; unknowns are unscored."""
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  response = LlmResponse(
+      content=genai_types.Content(
+          role="model",
+          parts=[
+              genai_types.Part(
+                  text=f'{{"is_the_agent_response_invalid": "{label}"}}'
+              )
+          ],
+      )
+  )
+
+  result = evaluator.convert_auto_rater_response_to_score(response)
+
+  assert result.score == expected_score
 
 
 def test_aggregate_per_invocation_samples_none_evaluated():

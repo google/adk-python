@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 from typing import AsyncGenerator
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from ....events.event import Event
@@ -99,7 +98,7 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
       invocation_context: InvocationContext,
       agent_name: str,
       current_invocation_id: str,
-  ) -> tuple[Optional[CacheMetadata], Optional[int]]:
+  ) -> tuple[CacheMetadata | None, int | None]:
     """Find cache metadata and previous token count from session events.
 
     Args:

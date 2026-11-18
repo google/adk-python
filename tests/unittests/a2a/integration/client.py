@@ -31,6 +31,7 @@ def create_client(
     app,
     streaming: bool = False,
     mode: Optional[Literal["task"]] = None,
+    use_legacy: bool = False,
 ) -> RemoteA2aAgent:
   """Creates a RemoteA2aAgent connected to the provided FastAPI app.
 
@@ -40,6 +41,8 @@ def create_client(
     mode: The agent's delegation mode. ``"task"`` makes the agent a task-mode
       delegate of a coordinator, which scopes its view of the session to the
       delegation that triggered it.
+    use_legacy: Whether to leave out the new integration extension, as
+      ``RemoteA2aAgent`` does by default.
 
   Returns:
     A RemoteA2aAgent instance.
@@ -56,19 +59,19 @@ def create_client(
   )
   factory = A2AClientFactory(config=client_config)
 
-  # use_legacy=False forces the new implementation
+  # use_legacy=False (the default here) forces the new implementation
   agent = RemoteA2aAgent(
       name="remote_agent",
       agent_card=agent_card,
       a2a_client_factory=factory,
-      use_legacy=False,
+      use_legacy=use_legacy,
       mode=mode,
   )
 
   return agent
 
 
-def create_a2a_client(app, streaming: bool = False):
+def create_a2a_client(app, streaming: bool = False, use_legacy: bool = False):
   """Creates a bare A2A Client connected to the provided FastAPI app.
 
   This is in contrast to create_client, which wraps the a2a_client into a
@@ -77,14 +80,21 @@ def create_a2a_client(app, streaming: bool = False):
   Args:
     app: The FastAPI application (server) to connect to.
     streaming: Whether to enable streaming mode in the client.
+    use_legacy: Whether to leave out the new integration extension, so the
+      server runs its legacy executor.
 
   Returns:
     An A2A Client instance.
   """
+  headers = (
+      {}
+      if use_legacy
+      else {HTTP_EXTENSION_HEADER: _NEW_A2A_ADK_INTEGRATION_EXTENSION}
+  )
   client = httpx.AsyncClient(
       transport=httpx.ASGITransport(app=app),
       base_url="http://test",
-      headers={HTTP_EXTENSION_HEADER: _NEW_A2A_ADK_INTEGRATION_EXTENSION},
+      headers=headers,
   )
 
   client_config = _compat.make_client_config(

@@ -21,6 +21,7 @@ from typing import Optional
 
 from typing_extensions import override
 
+from ..utils.content_utils import extract_text_from_content
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvents
@@ -193,11 +194,9 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     for turn_index, invocation in enumerate(actual_invocations):
       # USER TURN
       if invocation.user_content and invocation.user_content.parts:
-        text_parts = [p.text for p in invocation.user_content.parts if p.text]
-        if text_parts:
-          dialogue_lines.append(
-              f"USER TURN {turn_index + 1}: {' '.join(text_parts)}"
-          )
+        text = extract_text_from_content(invocation.user_content, splitter=" ")
+        if text:
+          dialogue_lines.append(f"USER TURN {turn_index + 1}: {text}")
 
       # INTERMEDIATE TOOL EVENTS
       if isinstance(invocation.intermediate_data, InvocationEvents):
@@ -208,11 +207,9 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
               else f"AGENT ({event.author})"
           )
           if event.content and event.content.parts:
-            text_parts = [p.text for p in event.content.parts if p.text]
-            if text_parts:
-              dialogue_lines.append(
-                  f"{role} TURN {turn_index + 1}: {' '.join(text_parts)}"
-              )
+            text = extract_text_from_content(event.content, splitter=" ")
+            if text:
+              dialogue_lines.append(f"{role} TURN {turn_index + 1}: {text}")
             for p in event.content.parts:
               if p.function_call:
                 args = (
@@ -245,33 +242,44 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
         ):
           agent_name = intermediate_data.invocation_events[0].author
         role = f"AGENT ({agent_name})"
-        text_parts = [p.text for p in invocation.final_response.parts if p.text]
-        if text_parts:
-          dialogue_lines.append(
-              f"{role} TURN {turn_index + 1}: {' '.join(text_parts)}"
-          )
+        text = extract_text_from_content(
+            invocation.final_response, splitter=" "
+        )
+        if text:
+          dialogue_lines.append(f"{role} TURN {turn_index + 1}: {text}")
 
     self._formatted_dialogue = "\n".join(dialogue_lines)
 
     # Grab instructions and tools locally from Invocation
     instructions_parts = []
-    tools_parts = []
+    # Tool lines are de-duplicated per agent, so agents sharing a tool each
+    # still list it.
+    tools_by_agent: dict[str, dict[str, None]] = {}
     for invocation in actual_invocations:
       if invocation.app_details and invocation.app_details.agent_details:
         for agent_id, details in invocation.app_details.agent_details.items():
           instructions_parts.append(
               f"Agent {agent_id} Instructions:\n{details.instructions}"
           )
-          tools_parts.append(f"Agent: {agent_id}")
+          agent_tools = tools_by_agent.setdefault(agent_id, {})
           if details.tool_declarations:
             for tool in details.tool_declarations:
-              for func in tool.function_declarations:
-                tools_parts.append(f"- {func.name}: {func.description}")
+              for func in tool.function_declarations or []:
+                agent_tools[f"- {func.name}: {func.description}"] = None
+              # Built-in tools such as google_search carry no function
+              # declarations; name them so the judge still sees them.
+              for field_name in tool.model_dump(exclude_none=True):
+                if field_name != "function_declarations":
+                  agent_tools[f"- {field_name} (built-in)"] = None
 
     self._formatted_instructions = "\n\n".join(
         dict.fromkeys(instructions_parts)
     )
-    self._formatted_tools = "\n".join(dict.fromkeys(tools_parts))
+    self._formatted_tools = "\n".join(
+        line
+        for agent_id, agent_tools in tools_by_agent.items()
+        for line in (f"Agent: {agent_id}", *agent_tools)
+    )
 
   @override
   async def evaluate_invocations(

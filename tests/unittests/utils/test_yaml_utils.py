@@ -15,7 +15,6 @@
 """Tests for YAML utility functions."""
 
 from pathlib import Path
-from typing import Optional
 
 from google.adk.utils.yaml_utils import dump_pydantic_to_yaml
 from google.adk.utils.yaml_utils import load_yaml_file
@@ -31,9 +30,9 @@ class SimpleModel(BaseModel):
   name: str
   age: int
   active: bool
-  finish_reason: Optional[types.FinishReason] = None
-  multiline_text: Optional[str] = None
-  items: Optional[list[str]] = None
+  finish_reason: types.FinishReason | None = None
+  multiline_text: str | None = None
+  items: list[str] | None = None
 
 
 def test_yaml_file_generation(tmp_path: Path):

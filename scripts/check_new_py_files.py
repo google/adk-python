@@ -22,7 +22,14 @@ ADK conventions enforced for newly-added Python files:
    See .agents/skills/adk-style/references/visibility.md.
 2. Unit guide requirement: Newly-added Python files under src/google/adk/ must
    have a corresponding unit guide in docs/guides/ (unless exempt or tagged with
-   NO_UNIT_GUIDE / SKIP_UNIT_GUIDE in the commit message or environment).
+   NO_UNIT_GUIDE / SKIP_UNIT_GUIDE in the commit message or environment). A
+   module that no package __init__.py imports from or names is internal and
+   needs no guide. A page that documents several units counts for each of
+   them: a module also passes when every name the package exports from it is
+   documented by a guide page in its own docs/guides/ directory, or by the
+   index.md of a directory above that. A page documents a name in a heading,
+   the first cell of a table row, or a code example; a mention in prose does
+   not count.
    See .agents/skills/adk-unit-guide/SKILL.md.
 
 Either rule can be switched off on its own, with --no-prefix-check and
@@ -33,7 +40,7 @@ waives one must not quietly disable the other.
 Modes for finding added files:
 - Baseline Diff Mode (CI):
     python scripts/check_new_py_files.py --baseline-dir /path/to/origin-main
-- VCS Detection Mode (Local / Pre-commit):
+- Git Detection Mode (Local / Pre-commit):
     python scripts/check_new_py_files.py
 - Explicit File List:
     python scripts/check_new_py_files.py file1.py file2.py
@@ -52,7 +59,9 @@ gate a change passes --baseline-dir or --added-files-from and never sees it.
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
+import importlib.util
 import os
 import re
 import shutil
@@ -63,32 +72,29 @@ import traceback
 _PACKAGE_RELPATH = os.path.join('src', 'google', 'adk')
 _DOCS_GUIDES_RELPATH = os.path.join('docs', 'guides')
 
-# The package's import path, i.e. _PACKAGE_RELPATH without the src/ root that
-# only this checkout uses. A repository laying the package out differently
-# still ends its path to it with these components.
-_PACKAGE_IMPORT_PATH = 'google/adk'
-
 _EXIT_OK = 0
 _EXIT_VIOLATIONS = 1
 _EXIT_SETUP_ERROR = 2
 _EXIT_INDETERMINATE = 3
 
-# The newest revision this checkout shares with the server, as a Mercurial
-# revset: everything after it is the change under construction. Revisions the
-# server already has are in the public phase and local work is draft, so this
-# is the base the change sits on; with no local commits it evaluates to '.'.
-_SYNCED_BASE = 'last(public() & ::.)'
-
-# The local commits themselves, as a Mercurial revset: the ones after
-# `_SYNCED_BASE`, i.e. the work the change is made of. Used to read the commit
-# messages over the same range the added-file scan covers.
-_LOCAL_COMMITS = 'draft() & ::.'
-
-# The commit range a git checkout's HEAD covers when nothing is staged. On a
+# The commit range a git work tree's HEAD covers when nothing is staged. On a
 # pull request this is the base branch to the merge commit, i.e. the pull
 # request's own commits, which is both the file set to check and the place a
 # NO_UNIT_GUIDE waiver would be written.
 _GIT_HEAD_RANGE = 'HEAD~1..HEAD'
+
+# Entries that bring a genuinely new path into the tree.
+#
+# Renames are included because renaming a private module to a public one
+# creates a name no rule has ever been applied to. They are asked for
+# separately from plain adds, with --name-status, because only the ones that
+# change the file's *name* qualify: moving `runners.py` to another directory
+# keeps a public name that was already accepted, and treating that as new
+# would fail it against a prefix rule that has no waiver. When rename
+# detection is off the same change arrives as an add plus a delete, which the
+# add filter covers.
+_GIT_ADD_FILTER = '--diff-filter=A'
+_GIT_RENAME_FILTER = '--diff-filter=R'
 
 # The unit guide waiver, as it appears in a commit message: its own line, in
 # `KEY=<reason>` form, flush left and with no space before the `=`. Matching
@@ -98,7 +104,14 @@ _GIT_HEAD_RANGE = 'HEAD~1..HEAD'
 # one a tag parser accepts: waiving locally on a line that the surrounding
 # tooling would not read as a tag is how an author ends up believing they are
 # covered when they are not.
-_NO_UNIT_GUIDE_TAG = re.compile(r'^(?:NO|SKIP)_UNIT_GUIDE=', re.MULTILINE)
+#
+# The tag has to carry a reason, so it has to reach a non-space character. A
+# bare `NO_UNIT_GUIDE=` would otherwise waive every file the change adds while
+# recording nothing a reviewer can weigh, which is the opposite of what the tag
+# exists for.
+_NO_UNIT_GUIDE_TAG = re.compile(
+    r'^(?:NO|SKIP)_UNIT_GUIDE=[ \t]*\S', re.MULTILINE
+)
 
 _PREFIX_VIOLATION_LINE = (
     "Error: New Python file '{path}' must have a '_' prefix.\n"
@@ -112,11 +125,42 @@ _GUIDE_VIOLATION_LINE = (
     "Error: New Python file '{path}' requires a unit guide in docs/guides/.\n"
     "Expected guide at 'docs/guides/{expected}/index.md' or"
     " 'docs/guides/{expected}.md'.\n"
+    '{shared_page}'
     'If a unit guide is not required for this file, explain why with a'
-    " 'NO_UNIT_GUIDE=<reason>' tag in your commit message, or by setting"
-    " NO_UNIT_GUIDE='<reason>' in the environment where this check runs.\n"
+    " 'NO_UNIT_GUIDE=<reason>' tag in the commit message of the change that"
+    ' adds it. Where no message can be read, as when the change is only'
+    ' staged or the tree is not a git work tree, set the tag in the'
+    ' environment instead; for a staged change, that is'
+    " NO_UNIT_GUIDE='<reason>' git commit.\n"
     'See .agents/skills/adk-unit-guide/SKILL.md for details on creating unit'
     ' guides.'
+)
+
+# Fills {shared_page} above when the package says which names it exports from
+# the file: a page that documents several units can then cover it, and the
+# names it still lacks tell the author exactly what to write, and where on the
+# page writing it counts.
+_GUIDE_SHARED_PAGE_LINE = (
+    'A page that documents several units also counts, once it documents every'
+    ' name the package exports from this file in a heading, the first cell of'
+    " a table row, or a code example. No page under 'docs/guides/{scope}/',"
+    ' or index.md above it, documents: {names}.\n'
+)
+
+# Fills {shared_page} when an __init__.py takes the module whole, so the
+# exported names are not all listed and no shared page can be checked.
+_GUIDE_WHOLE_MODULE_LINE = (
+    "A page under 'docs/guides/{scope}/', or index.md above it, covers"
+    ' this file only once every __init__.py imports its exports by name'
+    ' instead of taking the module whole.\n'
+)
+
+# Fills {shared_page} when the package names the module only in a string,
+# outside a lazy-import table, without saying what it exports.
+_GUIDE_UNNAMED_MODULE_LINE = (
+    'The package names this module only in a string, without saying what it'
+    " exports, so no page under 'docs/guides/{scope}/', or index.md above"
+    ' it, can cover it.\n'
 )
 
 # Subtrees that may exist in the working tree but are intentionally absent from
@@ -207,194 +251,244 @@ def _run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
     return -1, ''
 
 
-def get_vcs_added_files(root: str = '.') -> set[str] | None:
-  """Detects added files using local VCS (git, jj, hg, g4, p4).
+def _is_private_name(path: str) -> bool:
+  """Whether `path`'s basename is private by the '_' prefix convention."""
+  return os.path.basename(path).startswith('_')
+
+
+def _package_relative(repo_relative: str) -> str | None:
+  """Returns a path relative to the package, or None if it lies outside it.
+
+  Args:
+    repo_relative: A path as git reports it, e.g. `src/google/adk/a/b.py`.
+
+  Returns:
+    The package-relative form, or None when the path is not library source
+    these rules cover.
+  """
+  prefix = _PACKAGE_RELPATH.replace(os.sep, '/') + '/'
+  path = repo_relative.replace(os.sep, '/')
+  if not path.startswith(prefix) or not path.endswith('.py'):
+    return None
+  rel = path[len(prefix) :]
+  return rel if _keep_relative_path(rel) else None
+
+
+def _rename_exposes_a_new_name(source: str, destination: str) -> bool:
+  """Whether a rename produces a name neither rule has judged before.
+
+  The two rules do not cover the same files, so "was the source already
+  judged" has to be asked once per rule. A move out of `cli/` is judged by
+  the prefix rule at both ends but meets the unit guide rule only on arrival,
+  and a `.pyi` renamed to `.py` was never library source at all.
+
+  Args:
+    source: The rename's source, as git reports it.
+    destination: The rename's destination, as git reports it.
+
+  Returns:
+    True when the destination carries a name that has not been held to a rule
+    it is now subject to.
+  """
+  source_rel = _package_relative(source)
+  if source_rel is None:
+    # Never library source, so nothing has ever looked at this name.
+    return True
+  destination_rel = _package_relative(destination)
+  if destination_rel is None:
+    # Leaving the library; the destination is not ours to judge.
+    return False
+
+  # The prefix rule covers both ends, so it matters only when visibility
+  # changes.
+  if _is_private_name(source_rel) and not _is_private_name(destination_rel):
+    return True
+  # The guide rule does not cover every file, so leaving an exemption puts a
+  # name under it for the first time.
+  was_exempt = is_exempt_from_unit_guide(
+      source_rel, os.path.basename(source_rel)
+  )
+  now_exempt = is_exempt_from_unit_guide(
+      destination_rel, os.path.basename(destination_rel)
+  )
+  return was_exempt and not now_exempt
+
+
+def _git_renamed_to_new_names(base_cmd: list[str], root: str) -> set[str]:
+  """Returns rename destinations that newly expose a public name.
+
+  A rename needs judging when it produces a name nothing has judged before.
+  Relocating `runners.py`, or renaming it to `runner.py`, carries a public
+  name that was accepted when the file was created; re-judging either would
+  fail an ordinary refactor against the prefix rule, which has no waiver.
+  Two cases do need it: renaming `_runners.py` to `runners.py`, which puts a
+  module on the public surface, and moving a file in from `tests/` or
+  anywhere else these rules never covered, whose name has never been held to
+  them whatever it happens to be.
+
+  Args:
+    base_cmd: The git diff invocation to extend, e.g. `['git', 'diff']`.
+    root: The root directory of the repository.
+
+  Returns:
+    The destination paths worth checking. Empty when git reports no renames.
+  """
+  _, out = _run_cmd(base_cmd + ['--name-status', _GIT_RENAME_FILTER], cwd=root)
+  renamed: set[str] = set()
+  for line in out.splitlines():
+    # `R100\told/path\tnew/path`, with the similarity score on the status.
+    parts = line.split('\t')
+    if len(parts) != 3 or not parts[0].startswith('R'):
+      continue
+    _, source, destination = parts
+    source, destination = source.strip(), destination.strip()
+    if _rename_exposes_a_new_name(source, destination):
+      renamed.add(destination)
+  return renamed
+
+
+def _git_added_paths(base_cmd: list[str], root: str) -> set[str]:
+  """Returns the paths a git diff brings into the tree under a new name.
+
+  Args:
+    base_cmd: The git diff invocation to extend, e.g. `['git', 'diff']`.
+    root: The root directory of the repository.
+
+  Returns:
+    Plain additions, plus renames that change the file's name.
+  """
+  _, out = _run_cmd(base_cmd + ['--name-only', _GIT_ADD_FILTER], cwd=root)
+  added = {f for f in out.splitlines() if f.strip()}
+  return added | _git_renamed_to_new_names(base_cmd, root)
+
+
+def _git_is_mid_commit(root: str) -> bool | None:
+  """Reports whether a change is staged and not yet committed.
+
+  Both the added-file scan and the waiver scan branch on this, and they must
+  branch on it together: the index and HEAD describe different changes, so
+  reading files from one and the waiver from the other lets a tag written for
+  the previous commit apply to this one.
 
   Args:
     root: The root directory of the repository.
 
   Returns:
-    A set of added file paths if a supported VCS is detected, or None if no
-    supported VCS was detected.
+    True when anything at all is staged. Asking whether any *addition* is
+    staged would send a commit that adds nothing down the HEAD~1..HEAD path,
+    where it would be judged on what the previous commit added. None when git
+    could not say, as with an unreadable index: treating that as "nothing is
+    staged" sent the scan to HEAD~1..HEAD, which reports what the previous
+    commit added and passes a staged file nobody looked at.
   """
-  # 1. git
-  if shutil.which('git'):
-    code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
-    if code == 0:
-      _, staged = _run_cmd(
-          ['git', 'diff', '--cached', '--name-only', '--diff-filter=A'],
-          cwd=root,
-      )
-      if staged:
-        return {f for f in staged.splitlines() if f.strip()}
-      range_code, head_diff = _run_cmd(
-          ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', '--diff-filter=A'],
-          cwd=root,
-      )
-      if range_code != 0:
-        # HEAD~1 is unreachable, as in a depth-1 clone. The range resolved to
-        # nothing rather than to an empty diff, so the added files are unknown
-        # and saying "none" here would be a clean bill of health nobody earned.
-        # Say why here: the caller only learns that nothing could be resolved,
-        # and "no version control is active" would be the wrong diagnosis when
-        # git is active and it is the range that failed.
-        print(
-            f'git is active but {_GIT_HEAD_RANGE} does not resolve, so what'
-            ' this change adds cannot be read from it. A shallow clone does'
-            ' this; fetch enough history for HEAD to have a parent.',
-            file=sys.stderr,
-        )
-        return None
-      if head_diff:
-        return {f for f in head_diff.splitlines() if f.strip()}
-      return set()
+  code, staged_any = _run_cmd(
+      ['git', 'diff', '--cached', '--name-only'], cwd=root
+  )
+  if code != 0:
+    return None
+  return bool(staged_any.strip())
 
-  # 2. jj
-  if shutil.which('jj'):
-    code, jj_root = _run_cmd(['jj', 'root'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['jj', 'diff', '--summary'], cwd=root)
-      added = set()
-      for line in out.splitlines():
-        if line.startswith('A '):
-          parts = line.split(maxsplit=1)
-          if len(parts) == 2:
-            p = parts[1].strip()
-            if jj_root and not os.path.isabs(p):
-              p = os.path.join(jj_root, p)
-            added.add(p)
-      return added
 
-  # 3. hg
-  if shutil.which('hg'):
-    code, hg_root = _run_cmd(['hg', 'root'], cwd=root)
-    if code == 0:
-      # A bare `hg status --added` reports only files added and not yet
-      # committed, so it goes empty the moment the change is committed or
-      # amended -- which is the usual state of a checkout by the time anyone
-      # runs this. Diff against the last synced revision instead, so the file
-      # set is the change's own content whether or not it is committed.
-      # `_SYNCED_BASE` degrades to '.' in a checkout with no local commits,
-      # where it reports the same thing a bare status does.
-      code, out = _run_cmd(
-          ['hg', 'status', '--added', '--no-status', '--rev', _SYNCED_BASE],
-          cwd=root,
-      )
-      if code != 0:
-        # A repository whose phases do not distinguish local work this way.
-        _, out = _run_cmd(['hg', 'status', '--added', '--no-status'], cwd=root)
-      return {
-          os.path.join(hg_root, f.strip())
-          if (hg_root and not os.path.isabs(f.strip()))
-          else f.strip()
-          for f in out.splitlines()
-          if f.strip()
-      }
+def _in_git_work_tree(root: str) -> bool:
+  """Whether git is installed and root lies inside a git work tree."""
+  if not shutil.which('git'):
+    return False
+  # The exit status alone is not enough: inside the .git directory itself the
+  # command succeeds and prints `false`.
+  code, out = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
+  return code == 0 and out == 'true'
 
-  # 4. g4
-  if shutil.which('g4'):
-    code, _ = _run_cmd(['g4', 'info'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['g4', 'opened'], cwd=root)
-      added = set()
-      for line in out.splitlines():
-        if ' - add ' in line:
-          depot_file = line.split(' - add ')[0].split('#')[0].strip()
-          added.add(depot_file)
-      return added
 
-  # 5. p4
-  if shutil.which('p4'):
-    code, _ = _run_cmd(['p4', 'info'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['p4', 'opened'], cwd=root)
-      added = set()
-      for line in out.splitlines():
-        if ' - add ' in line:
-          depot_file = line.split(' - add ')[0].split('#')[0].strip()
-          added.add(depot_file)
-      return added
+def get_git_added_files(root: str = '.') -> set[str] | None:
+  """Detects the files a change adds, using git.
 
-  return None
+  The change is what is staged, when anything is, and otherwise the range
+  HEAD~1..HEAD, which on a pull request covers the contributor's commits. A
+  rename counts only when it exposes a name no rule has judged.
+
+  Args:
+    root: The root directory of the repository.
+
+  Returns:
+    The added file paths, or None when git is not installed, root is not in a
+    git work tree, or git could not say what the change adds.
+  """
+  if not _in_git_work_tree(root):
+    return None
+  mid_commit = _git_is_mid_commit(root)
+  if mid_commit is None:
+    print(
+        'This is a git work tree, but its index cannot be read, so whether'
+        ' this change is staged or committed is unknown, and so is what it'
+        ' adds.',
+        file=sys.stderr,
+    )
+    return None
+  if mid_commit:
+    return _git_added_paths(['git', 'diff', '--cached'], root)
+  range_code, head_diff = _run_cmd(
+      ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', _GIT_ADD_FILTER],
+      cwd=root,
+  )
+  if range_code != 0:
+    # HEAD~1 is unreachable, as in a depth-1 clone. The range resolved to
+    # nothing rather than to an empty diff, so the added files are unknown and
+    # saying "none" here would be a clean bill of health nobody earned. Say why
+    # here: the caller only learns that nothing could be resolved, and would
+    # otherwise leave "not a git work tree" as the likeliest reading when it is
+    # the range that failed.
+    print(
+        f'This is a git work tree, but {_GIT_HEAD_RANGE} does not resolve, so'
+        ' what this change adds cannot be read from it. A shallow clone does'
+        ' this; fetch enough history for HEAD to have a parent.',
+        file=sys.stderr,
+    )
+    return None
+  added = {f for f in head_diff.splitlines() if f.strip()}
+  return added | _git_renamed_to_new_names(
+      ['git', 'diff', _GIT_HEAD_RANGE], root
+  )
 
 
 def get_commit_message(root: str = '.') -> str:
-  """Retrieves commit message or description from VCS."""
-  # 1. git
-  if shutil.which('git'):
-    code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
-    if code == 0:
-      _, msg = _run_cmd(['git', 'log', '-1', '--pretty=%B'], cwd=root)
-      # On a pull request, HEAD is a merge commit whose own message is
-      # generated by CI and can hold no waiver. The commits being merged are
-      # the ones the contributor wrote, so read the same range the added-file
-      # scan falls back to. Empty when HEAD~1 is unreachable.
-      _, range_msg = _run_cmd(
-          ['git', 'log', _GIT_HEAD_RANGE, '--pretty=%B'], cwd=root
-      )
-      if range_msg:
-        msg = f'{msg}\n{range_msg}'
-      _, git_dir = _run_cmd(['git', 'rev-parse', '--git-dir'], cwd=root)
-      if git_dir:
-        editmsg_path = (
-            os.path.join(root, git_dir, 'COMMIT_EDITMSG')
-            if not os.path.isabs(git_dir)
-            else os.path.join(git_dir, 'COMMIT_EDITMSG')
-        )
-        if os.path.isfile(editmsg_path):
-          try:
-            with open(editmsg_path, 'r', encoding='utf-8') as f:
-              msg = f'{msg} {f.read()}'
-          except OSError:
-            pass
-      return msg
+  """Retrieves the commit messages to search for a waiver, using git.
 
-  # 2. jj
-  if shutil.which('jj'):
-    code, _ = _run_cmd(['jj', 'root'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(
-          ['jj', 'log', '-r', '@', '--no-graph', '-T', 'description'], cwd=root
-      )
-      return out
+  Args:
+    root: The root directory of the repository.
 
-  # 3. hg
-  if shutil.which('hg'):
-    code, _ = _run_cmd(['hg', 'root'], cwd=root)
-    if code == 0:
-      # Every local commit, not just the tip. The added-file scan above spans
-      # the whole range back to the last synced revision, so reading only the
-      # tip's message would let one commit on top bury a waiver written in the
-      # commit that actually adds the file -- and would let an unrelated tip
-      # message waive the whole range.
-      code, out = _run_cmd(
-          ['hg', 'log', '-r', _LOCAL_COMMITS, '--template', '{desc}\n'],
-          cwd=root,
-      )
-      if code != 0:
-        _, out = _run_cmd(
-            ['hg', 'log', '-r', '.', '--template', '{desc}'], cwd=root
-        )
-      return out
-
-  # 4. g4
-  if shutil.which('g4'):
-    code, _ = _run_cmd(['g4', 'info'], cwd=root)
-    if code == 0:
-      code, out = _run_cmd(['g4', 'change', '-o'], cwd=root)
-      if code == 0 and out:
-        return out
-      _, out = _run_cmd(['g4', 'describe'], cwd=root)
-      return out
-
-  # 5. p4
-  if shutil.which('p4'):
-    code, _ = _run_cmd(['p4', 'info'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['p4', 'change', '-o'], cwd=root)
-      return out
-
-  return ''
+  Returns:
+    The messages to search for a waiver tag, or '' when none can be read.
+  """
+  if not _in_git_work_tree(root):
+    return ''
+  if _git_is_mid_commit(root) is not False:
+    # The change is staged, so the commit carrying it does not exist yet and
+    # its message is nowhere to be read: a pre-commit hook runs before git
+    # records what the author typed, and HEAD still describes the previous
+    # change. Returning HEAD's message here is what let a waiver written for an
+    # earlier commit silently cover this one. Waiving the change being
+    # committed goes through the environment instead --
+    # `NO_UNIT_GUIDE='<reason>' git commit ...` -- which has_no_unit_guide_tag
+    # honours and the violation text advertises. None lands here too: a waiver
+    # that cannot be attributed to a change must not be applied to one.
+    return ''
+  _, msg = _run_cmd(['git', 'log', '-1', '--pretty=%B'], cwd=root)
+  # On a pull request, HEAD is a merge commit whose own message is generated by
+  # CI and can hold no waiver. The commits being merged are the ones the
+  # contributor wrote, so read the same range the added-file scan falls back
+  # to. Empty when HEAD~1 is unreachable.
+  _, range_msg = _run_cmd(
+      ['git', 'log', _GIT_HEAD_RANGE, '--pretty=%B'], cwd=root
+  )
+  if range_msg:
+    msg = f'{msg}\n{range_msg}'
+  # COMMIT_EDITMSG is deliberately not consulted. It was read here to catch the
+  # message of the commit being made, which it never held: git writes it only
+  # after the pre-commit hook has run, so during that hook it carries the
+  # previous commit's message, or the message of an attempt some hook rejected.
+  # Both are messages written for another change, and neither can be told from
+  # a current one by inspection.
+  return msg
 
 
 def is_exempt_from_unit_guide(rel_path: str, filename: str) -> bool:
@@ -406,37 +500,396 @@ def is_exempt_from_unit_guide(rel_path: str, filename: str) -> bool:
   return False
 
 
+# A module name as a lazy-import table writes it: '.mod', '..pkg.mod' or 'mod'.
+_MODULE_NAME_STRING = re.compile(r'^\.*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$')
+
+_ABSOLUTE_PACKAGE = 'google.adk'
+
+
+def _resolve_module(package: list[str], name: str) -> list[str] | None:
+  """Resolves a module name to path components relative to the package root.
+
+  Args:
+    package: The importing package's components, empty for the package root.
+    name: The module name as written, leading dots included.
+
+  Returns:
+    The components, empty for the package root itself, or None when the name
+    lies outside the package.
+  """
+  try:
+    absolute = importlib.util.resolve_name(
+        name, '.'.join([_ABSOLUTE_PACKAGE, *package])
+    )
+  except ImportError:
+    return None
+  if absolute == _ABSOLUTE_PACKAGE:
+    return []
+  if not absolute.startswith(_ABSOLUTE_PACKAGE + '.'):
+    return None
+  return absolute[len(_ABSOLUTE_PACKAGE) + 1 :].split('.')
+
+
+def _lazy_import_target(package: list[str], name: str) -> list[str] | None:
+  """Resolves a module name the way a lazy-import table writes it.
+
+  Args:
+    package: The importing package's components, empty for the package root.
+    name: The string as written: '.mod', '..pkg.mod', 'mod', or an absolute
+      'google.adk.pkg.mod'.
+
+  Returns:
+    The module's components relative to the package root, or None when the
+    string is not a module name or names one outside the package.
+  """
+  if not _MODULE_NAME_STRING.match(name):
+    return None
+  if not name.startswith(('.', _ABSOLUTE_PACKAGE + '.')):
+    # A bare name in a lazy-import table is joined onto the package's name.
+    name = '.' + name
+  return _resolve_module(package, name)
+
+
+# Stands in for the names of an import that takes a module whole: a star
+# import, `from . import _mod`, or `import`. The package then exports names no
+# import lists, so no guide page can be shown to document them all. No Python
+# name is spelled this way, and merging name sets by union keeps it, so an
+# __init__.py that names one export cannot hide another that takes them all.
+_UNLISTED_NAMES = '*'
+
+
+def _modules_named_in_init(
+    tree: ast.AST, package: list[str]
+) -> dict[str, set[str]]:
+  """Returns the modules one __init__.py imports or names, with their names.
+
+  Args:
+    tree: The parsed __init__.py.
+    package: The package's components, empty for the package root.
+
+  Returns:
+    Package-relative module path -> the names the package exports from that
+    module. A `_`-prefixed name is private to `__init__.py` and is skipped. An
+    import that takes the module whole adds `_UNLISTED_NAMES` rather than
+    names. The set is empty when only a string names the module outside a
+    lazy-import table, which marks it exported without saying what it exports.
+  """
+  named: dict[str, set[str]] = {}
+
+  def note(target: list[str] | None, *names: str) -> None:
+    if not target:
+      return
+    public = [name for name in names if not name.startswith('_')]
+    if public or not names:
+      named.setdefault('/'.join(target), set()).update(public)
+
+  for node in ast.walk(tree):
+    if isinstance(node, ast.ImportFrom):
+      target = _resolve_module(package, '.' * node.level + (node.module or ''))
+      if target is None:
+        continue
+      for alias in node.names:
+        if alias.name == '*':
+          note(target, _UNLISTED_NAMES)
+          continue
+        # `from . import _mod` imports the module itself, and with it every
+        # name the module holds, even with `as _mod`.
+        note(target + [alias.name], _UNLISTED_NAMES)
+        if not (alias.asname and alias.asname.startswith('_')):
+          note(target, alias.asname or alias.name)
+    elif isinstance(node, ast.Import):
+      for alias in node.names:
+        note(_resolve_module(package, alias.name), _UNLISTED_NAMES)
+    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+      note(_lazy_import_target(package, node.value))
+    elif isinstance(node, ast.Dict):
+      # A lazy-import table maps each name the package exports to the module
+      # holding it, as a module string or a tuple that holds one. The tuples
+      # differ in shape: tools writes (module, attribute) and models writes
+      # (patterns, module), so the module is the first string in the tuple
+      # rather than its first item. The walk also reaches those strings as
+      # constants, which marks the module exported; this adds the names.
+      for key, value in zip(node.keys, node.values):
+        items = value.elts if isinstance(value, ast.Tuple) else [value]
+        module = next(
+            (
+                item.value
+                for item in items
+                if isinstance(item, ast.Constant)
+                and isinstance(item.value, str)
+            ),
+            None,
+        )
+        if (
+            isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and module is not None
+        ):
+          note(_lazy_import_target(package, module), key.value)
+  return named
+
+
+def _raise_walk_error(error: OSError) -> None:
+  raise error
+
+
+def _reexported_modules(repo_root: str) -> dict[str, set[str]] | None:
+  """Returns the modules that some package __init__.py imports from or names.
+
+  An import counts wherever it sits, including under `if TYPE_CHECKING:` and
+  inside a lazy `__getattr__`, and so does a string naming a module, which is
+  how a lazy-import table refers to one.
+
+  Args:
+    repo_root: The root directory of the repository.
+
+  Returns:
+    Package-relative module paths without their extension, e.g.
+    `agents/_llm_agent`, each mapped to the names the package exports from it
+    across every __init__.py. The set holds `_UNLISTED_NAMES` when any import
+    takes the module whole, and is empty when no import says. None when the
+    package or some __init__.py cannot be read: what it exports is then
+    unknown, so no module can be shown to be internal.
+  """
+  package_root = os.path.join(repo_root, _PACKAGE_RELPATH)
+  named: dict[str, set[str]] = {}
+  try:
+    for dirpath, dirnames, filenames in os.walk(
+        package_root, onerror=_raise_walk_error, followlinks=True
+    ):
+      rel_dir = os.path.relpath(dirpath, package_root).replace(os.sep, '/')
+      package = [] if rel_dir == '.' else rel_dir.split('/')
+      if package and not _keep_relative_path(f'{rel_dir}/__init__.py'):
+        dirnames[:] = []
+        continue
+      if '__init__.py' not in filenames:
+        continue
+      init_path = os.path.join(dirpath, '__init__.py')
+      with open(init_path, 'r', encoding='utf-8') as f:
+        tree = ast.parse(f.read(), filename=init_path)
+      for module, names in _modules_named_in_init(tree, package).items():
+        # A union, so a star import in one __init__.py still counts after
+        # another names a single export from the same module.
+        named.setdefault(module, set()).update(names)
+  except (OSError, SyntaxError, ValueError) as e:
+    print(
+        f'Warning: the package __init__.py files cannot all be read ({e}),'
+        ' so every new module is held to the unit guide rule.',
+        file=sys.stderr,
+    )
+    return None
+  return named
+
+
+def _guide_pages_near(docs_guides_dir: str, rel_dir: str) -> list[str]:
+  """Lists the guide pages that may document a module in `rel_dir`.
+
+  Those are every page in the module's own directory under docs/guides/ and
+  below it, plus the index.md of each directory above that one. The guides
+  root itself is left out: its README.md is the table of contents, which names
+  nearly every unit without documenting any of them.
+
+  Args:
+    docs_guides_dir: The absolute path of docs/guides/.
+    rel_dir: The module's directory relative to the package root, e.g.
+      `integrations/mongodb`. Never empty, since a module at the package root
+      has no directory of its own to search.
+
+  Returns:
+    The absolute paths of the pages that exist.
+  """
+  parts = rel_dir.split('/')
+  module_dir = os.path.join(docs_guides_dir, *parts)
+  pages: list[str] = []
+  for dirpath, _, filenames in os.walk(module_dir):
+    pages.extend(
+        os.path.join(dirpath, name)
+        for name in filenames
+        if name.endswith('.md')
+    )
+  for depth in range(len(parts) - 1, 0, -1):
+    index = os.path.join(docs_guides_dir, *parts[:depth], 'index.md')
+    if os.path.isfile(index):
+      pages.append(index)
+  return pages
+
+
+# A fenced code block opens and closes with a run of three or more backticks or
+# tildes. What follows the opening run is the block's info string.
+_FENCE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+_HEADING = re.compile(r'^ {0,3}#{1,6}(?:\s|$)')
+# The pipes between the cells of a table row. An escaped `\|` is a pipe inside
+# a cell, as in a `str \| None` type.
+_TABLE_CELL_SEPARATOR = re.compile(r'(?<!\\)\|')
+
+
+def _documenting_text(page: str) -> list[str]:
+  """Picks out the parts of a guide page that can document a name.
+
+  A guide documents a unit by giving it a heading, a row of a table, or a code
+  example. A mention in prose or in another table column only refers to the
+  unit: the invocation_context guide names `SequentialAgent` once, to say what
+  ending an invocation does not stop, and documents nothing about it.
+
+  Args:
+    page: The page's Markdown.
+
+  Returns:
+    Each heading, the first cell of each table row, which holds what the row
+    describes, and each line of fenced code.
+  """
+  snippets: list[str] = []
+  fence = ''
+  for line in page.splitlines():
+    marker = _FENCE.match(line)
+    if fence:
+      if (
+          marker
+          and marker.group(1)[0] == fence[0]
+          and len(marker.group(1)) >= len(fence)
+          and not marker.group(2).strip()
+      ):
+        fence = ''
+      else:
+        snippets.append(line)
+      continue
+    # A backtick fence's info string cannot hold a backtick. That keeps an
+    # inline span such as ```` ```tool_code ```` at the start of a line from
+    # opening a block, which would count every later mention on the page as
+    # code until the next fence.
+    if marker and not (marker.group(1)[0] == '`' and '`' in marker.group(2)):
+      fence = marker.group(1)
+      continue
+    stripped = line.strip()
+    if _HEADING.match(line):
+      snippets.append(stripped)
+    elif stripped.startswith('|'):
+      snippets.append(_TABLE_CELL_SEPARATOR.split(stripped)[1])
+  return snippets
+
+
+def _names_missing_from_guides(
+    docs_guides_dir: str, rel_dir: str, names: set[str]
+) -> list[str]:
+  """Returns the names that no guide page near `rel_dir` documents.
+
+  A page documents a name where a heading, the first cell of a table row, or
+  a line of a code example names it as a whole word, so `RunResultV2` does not
+  document `RunResult`. A page that cannot be read documents nothing.
+
+  Args:
+    docs_guides_dir: The absolute path of docs/guides/.
+    rel_dir: The module's directory relative to the package root.
+    names: The names the package exports from the module.
+
+  Returns:
+    The names no page documents, sorted.
+  """
+  snippets: list[str] = []
+  for page in _guide_pages_near(docs_guides_dir, rel_dir):
+    try:
+      with open(page, 'r', encoding='utf-8') as f:
+        snippets.extend(_documenting_text(f.read()))
+    except (OSError, ValueError):
+      continue
+  return sorted(
+      name
+      for name in names
+      if not any(
+          re.search(rf'\b{re.escape(name)}\b', text) for text in snippets
+      )
+  )
+
+
 def has_no_unit_guide_tag(commit_msg: str) -> bool:
-  """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message."""
-  if os.environ.get('NO_UNIT_GUIDE') or os.environ.get('SKIP_UNIT_GUIDE'):
-    return True
+  """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message.
+
+  A reason is required in either channel, so a variable holding only whitespace
+  waives nothing, the same way a bare tag in a message does not.
+  """
+  for name in ('NO_UNIT_GUIDE', 'SKIP_UNIT_GUIDE'):
+    if os.environ.get(name, '').strip():
+      return True
   return bool(_NO_UNIT_GUIDE_TAG.search(commit_msg))
 
 
-def _depot_path_to_abs(depot_path: str, adk_real_root: str) -> str:
-  """Locates a depot-style path inside the package being checked.
+def _subpackage_renames(package_dir: str) -> dict[str, str]:
+  """Maps a subpackage's real directory to the name the source tree gives it.
 
-  A depot path names a file by its position in the repository the VCS serves,
-  which shares no prefix with the checkout on disk. What the two do share is
-  the package itself, so the split point is the last occurrence of the import
-  path. Keying on that rather than on a repository prefix keeps any particular
-  repository layout out of this script.
+  A checkout can expose a subpackage through a symlink whose name differs from
+  the directory it points at. Which of the two names a path arrives wearing
+  depends only on how it was given -- a path relative to the checkout keeps the
+  link's name, while an absolute path into the linked directory, which only an
+  explicit file list supplies, carries the directory's -- so without this the
+  same file demands its guide in two different directories.
 
   Args:
-    depot_path: A path of the form `//<repo>/<...>/<module>.py`.
-    adk_real_root: Absolute, symlink-resolved path of the package root.
+    package_dir: The checkout's own `src/google/adk`, symlinks unresolved.
 
   Returns:
-    The absolute path of the matching file, or the depot path resolved as-is
-    when it does not run through the package. The caller drops anything that
-    does not land inside the package.
+    Real directory path -> source-tree name, for each renamed subpackage.
   """
-  clean_path = depot_path.lstrip('/')
-  marker = f'{_PACKAGE_IMPORT_PATH}/'
-  if marker in clean_path:
-    rel_to_package = clean_path.rsplit(marker, 1)[1]
-    return os.path.realpath(os.path.join(adk_real_root, rel_to_package))
-  return os.path.realpath(clean_path)
+  # The whole walk is guarded, not just the listing: is_dir() follows the
+  # link, so a symlink loop or an unreadable target raises here rather than at
+  # the scandir. Letting that escape would turn a checkout oddity into a
+  # failed check.
+  renames: dict[str, str] = {}
+  try:
+    for entry in os.scandir(package_dir):
+      if not entry.is_symlink() or not entry.is_dir():
+        continue
+      target = os.path.realpath(entry.path)
+      if os.path.basename(target) != entry.name:
+        renames[target] = entry.name
+  except OSError:
+    return {}
+  return renames
+
+
+def _apply_subpackage_rename(
+    rel_to_adk: str, abs_file: str, renames: dict[str, str]
+) -> str:
+  """Restores the source-tree name of a path that resolved through a symlink.
+
+  Args:
+    rel_to_adk: The package-relative path, possibly wearing the real name.
+    abs_file: The same file, resolved.
+    renames: The mapping from `_subpackage_renames`.
+
+  Returns:
+    `rel_to_adk` with its leading component put back to the name the source
+    tree uses, or unchanged when no rename applies.
+  """
+  if not renames:
+    return rel_to_adk
+  first, sep, rest = rel_to_adk.partition('/')
+  if not sep:
+    return rel_to_adk
+  # Match on the resolved directory rather than on the name, so that two
+  # subpackages sharing a basename cannot be confused for one another.
+  subpackage_real = abs_file[: -(len(rest) + 1)] if rest else abs_file
+  renamed = renames.get(os.path.normpath(subpackage_real))
+  return f'{renamed}/{rest}' if renamed else rel_to_adk
+
+
+def _keep_relative_path(rel_to_adk: str) -> bool:
+  """Whether a package-relative path names a file these rules apply to.
+
+  Args:
+    rel_to_adk: A path relative to the package root, e.g. `agents/_agent.py`.
+
+  Returns:
+    False for a path under an ignored prefix, or under a top-level directory
+    that holds no library source.
+  """
+  full_rel = os.path.join('src', 'google', 'adk', rel_to_adk).replace(
+      os.sep, '/'
+  )
+  if not _should_check(full_rel):
+    return False
+  # Anchored at the package root: a nested directory that happens to carry an
+  # excluded name still holds source to check.
+  return rel_to_adk.split('/')[0] not in _EXCLUDE_DIR_NAMES
 
 
 def _normalize_and_filter_files(
@@ -445,7 +898,7 @@ def _normalize_and_filter_files(
   """Normalizes added files and filters to relevant Python source files.
 
   Handles both standard layout (src/google/adk/) and symlinked package
-  structures where subpackages point to an upstream source tree.
+  structures where subpackages link to a source tree kept elsewhere.
 
   Args:
     raw_files: The set of raw file paths to normalize and filter.
@@ -468,32 +921,44 @@ def _normalize_and_filter_files(
   else:
     adk_real_root = package_real_dir
 
+  renames = _subpackage_renames(package_dir)
+
   results: list[tuple[str, str, str]] = []
   for raw_file in sorted(raw_files):
     if not raw_file or not raw_file.endswith('.py'):
       continue
 
-    # Handle depot-style paths (e.g. //depot/.../agents/_agent.py), which the
-    # Perforce-style branches of get_vcs_added_files report.
-    if raw_file.startswith('//'):
-      abs_file = _depot_path_to_abs(raw_file, adk_real_root)
-    elif os.path.isabs(raw_file):
+    if os.path.isabs(raw_file):
       abs_file = os.path.realpath(raw_file)
     else:
       abs_file = os.path.realpath(os.path.join(repo_root, raw_file))
 
-    # Check whether the file belongs to the package in either internal or
-    # external layout.
+    # Before resolving anything, see whether the path already sits under the
+    # checkout's own src/google/adk. A subpackage exposed there through a
+    # symlink named differently from its directory would otherwise resolve
+    # through the link and come back wearing the directory's name, so the
+    # guide would be demanded at a directory the source tree does not have.
+    # Keeping the unresolved form makes the source-tree name win.
+    lexical = os.path.abspath(os.path.join(repo_root, raw_file))
+    if lexical.startswith(package_dir + os.sep):
+      rel_to_adk = os.path.relpath(lexical, package_dir).replace(os.sep, '/')
+      if _keep_relative_path(rel_to_adk):
+        results.append((raw_file, rel_to_adk, os.path.basename(lexical)))
+      continue
+
+    # Check whether the file belongs to the package, both when the checkout
+    # holds the package itself and when it exposes it through symlinks.
     #
-    # The checkout's own src/google/adk comes first, and must: internally it
-    # sits *inside* the package it points into, so both prefixes match a file
-    # under it and matching the outer one first mislabels the file. A path
-    # there resolves out to the package only through a subpackage symlink, so
-    # a file in a subpackage the checkout has no symlink for -- a subpackage
-    # the change is adding -- stays put and relativizes against the package
-    # root as `<checkout>/src/google/adk/<...>`. That starts with an excluded
-    # directory name, so the file was dropped and a change adding a new
-    # subpackage passed both rules without being examined.
+    # The checkout's own src/google/adk comes first, and must: a checkout that
+    # exposes the package through symlinks can sit *inside* the package it
+    # points into, so both prefixes match a file under it and matching the
+    # outer one first mislabels the file. A path there resolves out to the
+    # package only through a subpackage symlink, so a file in a subpackage the
+    # checkout has no symlink for -- a subpackage the change is adding -- stays
+    # put and relativizes against the package root as
+    # `<checkout>/src/google/adk/<...>`. That starts with an excluded directory
+    # name, so the file was dropped and a change adding a new subpackage passed
+    # both rules without being examined.
     if abs_file.startswith(package_real_dir + os.sep):
       rel_to_adk = os.path.relpath(abs_file, package_real_dir).replace(
           os.sep, '/'
@@ -503,15 +968,11 @@ def _normalize_and_filter_files(
     else:
       continue
 
-    # Check ignored prefixes and exclude directories
-    full_rel = os.path.join('src', 'google', 'adk', rel_to_adk).replace(
-        os.sep, '/'
-    )
-    if not _should_check(full_rel):
-      continue
+    # These two branches reached the file through its real location, so a
+    # renamed subpackage arrives under the name the source tree does not use.
+    rel_to_adk = _apply_subpackage_rename(rel_to_adk, abs_file, renames)
 
-    # Check excluded subdirectories, anchored at the package root.
-    if rel_to_adk.split('/')[0] in _EXCLUDE_DIR_NAMES:
+    if not _keep_relative_path(rel_to_adk):
       continue
 
     filename = os.path.basename(abs_file)
@@ -544,13 +1005,19 @@ def check_files(
     A tuple of (prefix_violations, guide_violations).
   """
   prefix_violations: list[str] = []
-  guide_violations: list[tuple[str, str]] = []  # (path, expected_guide_dir)
+  # (path, expected_guide_dir, shared_page_note)
+  guide_violations: list[tuple[str, str, str]] = []
 
   docs_guides_dir = os.path.join(
       os.path.abspath(repo_root), _DOCS_GUIDES_RELPATH
   )
   skip_guide = skip_unit_guide or (
       not ignore_waiver and has_no_unit_guide_tag(commit_msg)
+  )
+  reexported = (
+      _reexported_modules(repo_root)
+      if files_to_check and not skip_guide
+      else None
   )
 
   for display_path, rel_to_adk, filename in files_to_check:
@@ -559,7 +1026,11 @@ def check_files(
       prefix_violations.append(display_path)
 
     # 2. Unit guide check
-    if not skip_guide and not is_exempt_from_unit_guide(rel_to_adk, filename):
+    if (
+        not skip_guide
+        and not is_exempt_from_unit_guide(rel_to_adk, filename)
+        and (reexported is None or rel_to_adk[:-3] in reexported)
+    ):
       rel_dir = os.path.dirname(rel_to_adk)
       name_no_ext = filename[:-3]  # strip .py
       # One underscore, not all of them: '__thing.py' is the private form of
@@ -582,20 +1053,54 @@ def check_files(
           guide_found = True
           break
 
+      # A page that documents several units, such as a topic overview or the
+      # guide of the class a helper serves, covers this module once it
+      # documents everything the package exports from it. That needs the
+      # whole list: after a star import anywhere, even one alongside an
+      # import that names a single export, some exported names are not known,
+      # so there is nothing to check a page against. A module at the package
+      # root has no guide directory of its own to search.
+      shared_page = ''
+      exported = (
+          reexported.get(rel_to_adk[:-3]) if reexported is not None else None
+      )
+      if (
+          not guide_found
+          and exported is not None
+          and rel_dir
+          and rel_dir != '.'
+      ):
+        if exported and _UNLISTED_NAMES not in exported:
+          missing = _names_missing_from_guides(
+              docs_guides_dir, rel_dir, exported
+          )
+          if not missing:
+            guide_found = True
+          else:
+            shared_page = _GUIDE_SHARED_PAGE_LINE.format(
+                scope=rel_dir, names=', '.join(missing)
+            )
+        elif exported:
+          shared_page = _GUIDE_WHOLE_MODULE_LINE.format(scope=rel_dir)
+        else:
+          shared_page = _GUIDE_UNNAMED_MODULE_LINE.format(scope=rel_dir)
+
       if not guide_found:
         expected = (
             f'{rel_dir}/{name_no_prefix}'
             if (rel_dir and rel_dir != '.')
             else name_no_prefix
         )
-        guide_violations.append((display_path, expected))
+        guide_violations.append((display_path, expected, shared_page))
 
   rendered_prefix_errors = [
       _PREFIX_VIOLATION_LINE.format(path=p) for p in prefix_violations
   ]
   rendered_guide_errors = [
-      _GUIDE_VIOLATION_LINE.format(path=p, expected=exp)
-      for p, exp in guide_violations
+      _GUIDE_VIOLATION_LINE.format(
+          path=p, expected=exp, shared_page=shared_page
+      )
+      for p, exp, shared_page in guide_violations
   ]
   return rendered_prefix_errors, rendered_guide_errors
 
@@ -611,7 +1116,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       '--baseline-dir',
       help=(
           'Baseline source tree to diff against (an origin/main checkout). If'
-          ' omitted, detects added files via local VCS.'
+          ' omitted, detects added files via git.'
       ),
   )
   parser.add_argument(
@@ -680,9 +1185,9 @@ def main(argv: list[str]) -> int:
     )
     return _EXIT_SETUP_ERROR
 
-  # Only a VCS can supply a commit message, so this is '' when checking an
-  # exported tree that has none. NO_UNIT_GUIDE comes from the environment
-  # there instead -- see _GUIDE_VIOLATION_LINE.
+  # Only git can supply a commit message, so this is '' when checking a tree
+  # that is not a git work tree. NO_UNIT_GUIDE comes from the environment there
+  # instead -- see _GUIDE_VIOLATION_LINE.
   commit_msg = get_commit_message(repo_root)
   if args.added_files_from:
     if not os.path.isfile(args.added_files_from):
@@ -705,20 +1210,41 @@ def main(argv: list[str]) -> int:
       return _EXIT_SETUP_ERROR
     raw_added_files = added_py_files_from_baseline(repo_root, args.baseline_dir)
   else:
-    vcs_added = get_vcs_added_files(repo_root)
-    if vcs_added is None:
+    git_added = get_git_added_files(repo_root)
+    if git_added is None:
       print(
           'Could not determine the added files: no --baseline-dir or'
-          ' --added-files-from was given, and no version control in'
-          f' {os.path.abspath(repo_root)} could report them -- either none of'
-          ' git/jj/hg/g4/p4 is active there, or the one that is could not'
-          ' resolve what this change added (see above).\n'
+          ' --added-files-from was given, and git could not report them for'
+          f' {os.path.abspath(repo_root)}: either git is not installed, the'
+          ' directory is not in a git work tree, or git could not resolve what'
+          ' this change added (see any message above).\n'
           'This is not a clean bill of health -- nothing was checked. Pass'
           ' --baseline-dir or --added-files-from to say what to check.',
           file=sys.stderr,
       )
       return _EXIT_INDETERMINATE
-    raw_added_files = vcs_added
+    raw_added_files = git_added
+
+  # A `//`-prefixed .py name with nothing on disk behind it is a depot-style
+  # path from a version control server, and this script has no way to place it
+  # in the package. Checking the rest of the list without it would pass a file
+  # nobody looked at, so refuse the list. A `//` name that does exist -- POSIX
+  # allows the doubled slash, and Windows writes UNC paths that way -- is an
+  # ordinary path and is checked.
+  depot_style_paths = sorted(
+      p
+      for p in raw_added_files
+      if p.startswith('//') and p.endswith('.py') and not os.path.exists(p)
+  )
+  if depot_style_paths:
+    print(
+        'Error: these look like depot-style paths rather than files in this'
+        ' checkout, so they cannot be checked: '
+        + ', '.join(depot_style_paths)
+        + '\nPass the paths of the files in the checkout instead.',
+        file=sys.stderr,
+    )
+    return _EXIT_SETUP_ERROR
 
   filtered_files = _normalize_and_filter_files(raw_added_files, repo_root)
 

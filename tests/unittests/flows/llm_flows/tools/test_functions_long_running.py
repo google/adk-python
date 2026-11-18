@@ -20,6 +20,12 @@ from google.genai.types import Part
 from .... import testing_utils
 
 
+def _with_call_id(part: Part, call_id: str) -> Part:
+  copied = part.model_copy(deep=True)
+  copied.function_response.id = call_id
+  return copied
+
+
 def test_async_function():
   responses = [
       Part.from_function_call(name='increase_by_one', args={'x': 1}),
@@ -83,12 +89,17 @@ def test_async_function():
       ('root_agent', 'response1'),
   ]
   assert events[0].long_running_tool_ids
+  tool_call_id = next(iter(events[0].long_running_tool_ids))
 
   # Updates with another pending progress.
   still_waiting_response = Part.from_function_response(
       name='increase_by_one', response={'status': 'still waiting'}
   )
-  events = runner.run(testing_utils.UserContent(still_waiting_response))
+  events = runner.run(
+      testing_utils.UserContent(
+          _with_call_id(still_waiting_response, tool_call_id)
+      )
+  )
   # We have one new request.
   assert len(mockModel.requests) == 3
   assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
@@ -103,7 +114,9 @@ def test_async_function():
   result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
-  events = runner.run(testing_utils.UserContent(result_response))
+  events = runner.run(
+      testing_utils.UserContent(_with_call_id(result_response, tool_call_id))
+  )
   # We have one new request.
   assert len(mockModel.requests) == 4
   assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
@@ -118,7 +131,11 @@ def test_async_function():
   another_result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 3}
   )
-  events = runner.run(testing_utils.UserContent(another_result_response))
+  events = runner.run(
+      testing_utils.UserContent(
+          _with_call_id(another_result_response, tool_call_id)
+      )
+  )
   # We have one new request.
   assert len(mockModel.requests) == 5
   assert testing_utils.simplify_contents(mockModel.requests[4].contents) == [
@@ -195,12 +212,17 @@ def test_async_function_with_none_response():
       ),
       ('root_agent', 'response1'),
   ]
+  tool_call_id = next(iter(events[0].long_running_tool_ids))
 
   # Updates with another pending progress.
   still_waiting_response = Part.from_function_response(
       name='increase_by_one', response={'status': 'still waiting'}
   )
-  events = runner.run(testing_utils.UserContent(still_waiting_response))
+  events = runner.run(
+      testing_utils.UserContent(
+          _with_call_id(still_waiting_response, tool_call_id)
+      )
+  )
   # We have one new request.
   assert len(mockModel.requests) == 3
   assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
@@ -215,7 +237,9 @@ def test_async_function_with_none_response():
   result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
-  events = runner.run(testing_utils.UserContent(result_response))
+  events = runner.run(
+      testing_utils.UserContent(_with_call_id(result_response, tool_call_id))
+  )
   # We have one new request.
   assert len(mockModel.requests) == 4
   assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
@@ -230,7 +254,11 @@ def test_async_function_with_none_response():
   another_result_response = Part.from_function_response(
       name='increase_by_one', response={'result': 3}
   )
-  events = runner.run(testing_utils.UserContent(another_result_response))
+  events = runner.run(
+      testing_utils.UserContent(
+          _with_call_id(another_result_response, tool_call_id)
+      )
+  )
   # We have one new request.
   assert len(mockModel.requests) == 5
   assert testing_utils.simplify_contents(mockModel.requests[4].contents) == [

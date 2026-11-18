@@ -34,7 +34,6 @@ import os
 from typing import Any
 from typing import get_args as get_literals
 from typing import Literal
-from typing import Optional
 from typing import TypeAlias
 
 from pydantic import BaseModel
@@ -43,6 +42,9 @@ from pydantic import field_validator
 from pydantic import PrivateAttr
 from pydantic import StrictBool
 from typing_extensions import TypeIs
+
+from ._schema_version import resolve_schema_version
+from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -71,8 +73,10 @@ _ExperimentalFeature: TypeAlias = Literal[
     'skills',
     'workflow',
     'context_cache',
+    'grounding',
     'mcp',
     'token_usage',
+    'compaction',
 ]
 
 # Stores unrecognized experimental features to warn only once per feature
@@ -222,12 +226,12 @@ class TelemetryConfig(BaseModel):
 
   model_config = ConfigDict(frozen=True, extra='forbid')
 
-  genai_semconv_stability_opt_in: Optional[
-      Literal['stable', 'experimental']
-  ] = None
-  capture_message_content: Optional[ContentCapturingMode] = None
-  adk_experimental_telemetry_opt_in: Optional[StrictBool] = None
-  experimental_features_opt_in: Optional[frozenset[str]] = None
+  genai_semconv_stability_opt_in: Literal['stable', 'experimental'] | None = (
+      None
+  )
+  capture_message_content: ContentCapturingMode | None = None
+  adk_experimental_telemetry_opt_in: StrictBool | None = None
+  experimental_features_opt_in: frozenset[str] | None = None
 
   _env_experimental_genai_semconv: bool = PrivateAttr()
   _env_content_capturing_mode: ContentCapturingMode = PrivateAttr()
@@ -235,6 +239,7 @@ class TelemetryConfig(BaseModel):
   _env_emit_experimental_telemetry: bool = PrivateAttr()
   _env_enabled_experimental_features: frozenset[str] = PrivateAttr()
   _env_ignore_per_request: bool = PrivateAttr()
+  _env_schema_version: int = PrivateAttr()
 
   def model_post_init(self, context: Any, /) -> None:
     """Resolves the env-backed answers now, rather than on first read."""
@@ -247,6 +252,7 @@ class TelemetryConfig(BaseModel):
         _read_enabled_experimental_features()
     )
     self._env_ignore_per_request = _read_ignore_per_request()
+    self._env_schema_version = resolve_schema_version()
 
   def __eq__(self, other: object) -> bool:
     """Compares the fields, ignoring the env fallbacks cached beside them."""
@@ -279,14 +285,17 @@ class TelemetryConfig(BaseModel):
     """Whether to emit experimental GenAI semconv attributes.
 
     Precedence: admin lock > ``genai_semconv_stability_opt_in`` >
-    ``OTEL_SEMCONV_STABILITY_OPT_IN`` env var > ``False``.
+    ``OTEL_SEMCONV_STABILITY_OPT_IN`` env var > schema default (experimental
+    on v2, stable on v1).
     """
     if (
         not self._ignore_per_request
         and self.genai_semconv_stability_opt_in is not None
     ):
       return self.genai_semconv_stability_opt_in == 'experimental'
-    return self._env_experimental_genai_semconv
+    if self._env_experimental_genai_semconv:
+      return True
+    return self._env_schema_version >= SCHEMA_VERSION_SEMCONV_ALIGNED
 
   @property
   def resolved_content_capturing_mode(self) -> ContentCapturingMode:
@@ -324,7 +333,7 @@ class TelemetryConfig(BaseModel):
 
   @property
   def should_add_content_to_experimental_spans(self) -> bool:
-    """Whether content goes on the experimental inference span.
+    """Whether content goes on semconv spans (inference, and v2 tool spans).
 
     OTel-spec routing: true for the span-bearing modes (``SPAN_ONLY`` /
     ``SPAN_AND_EVENT``). Distinct from the legacy ADK knob in

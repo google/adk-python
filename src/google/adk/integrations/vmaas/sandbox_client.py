@@ -23,15 +23,14 @@ from __future__ import annotations
 import base64
 import logging
 from typing import Any
+from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
-from ...features import experimental
-from ...features import FeatureName
 from ...utils import _json_utils
 
 if TYPE_CHECKING:
-  import vertexai
+  import agentplatform
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -100,21 +99,21 @@ _MODIFIER_MAP = {
 }
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class SandboxClient:
   """Client for interacting with Vertex AI Computer Use Sandbox via SDK."""
 
   def __init__(
       self,
-      vertexai_client: "vertexai.Client",
+      vertexai_client: "agentplatform.Client",
       sandbox: Any,
       access_token: str,
   ):
     """Initialize the sandbox client.
 
     Args:
-      vertexai_client: The Vertex AI client instance.
-      sandbox: The sandbox object from vertexai SDK (SandboxEnvironment).
+      vertexai_client: The Agent Platform client instance.
+      sandbox: The sandbox object from the agentplatform SDK
+        (SandboxEnvironment).
       access_token: The access token for authenticating with the sandbox.
     """
     self._client = vertexai_client
@@ -131,8 +130,12 @@ class SandboxClient:
       The parsed JSON response as a dict.
     """
     if hasattr(response, "body") and response.body:
-      return _json_utils.safe_json_loads(
-          response.body, context="sandbox response"
+      # The sandbox service answers every command with a JSON object.
+      return cast(
+          dict[str, Any],
+          _json_utils.safe_json_loads(
+              response.body, context="sandbox response"
+          ),
       )
     return {}
 
@@ -167,7 +170,7 @@ class SandboxClient:
     request_dict = {"command": command, "params": params}
 
     response = await asyncio.to_thread(
-        self._client.agent_engines.sandboxes.send_command,
+        self._client.sandboxes.send_command,
         http_method="POST",
         path="cdp",
         access_token=self._access_token,
@@ -199,7 +202,7 @@ class SandboxClient:
     try:
       request_dict = {"commands": commands, "stop_on_error": stop_on_error}
       response = await asyncio.to_thread(
-          self._client.agent_engines.sandboxes.send_command,
+          self._client.sandboxes.send_command,
           http_method="POST",
           path="cdps",
           access_token=self._access_token,
@@ -207,7 +210,8 @@ class SandboxClient:
           request_dict=request_dict,
       )
       parsed = self._parse_response(response)
-      return parsed.get("results", [])
+      # The batch endpoint reports one result object per command.
+      return cast(list[dict[str, Any]], parsed.get("results", []))
     except Exception as e:
       # Batch endpoint not available, fall back to sequential
       if "404" in str(e) or "not found" in str(e).lower():
@@ -216,7 +220,7 @@ class SandboxClient:
         logger.warning("Batch CDP failed: %s, falling back to sequential", e)
 
     # Sequential fallback
-    results = []
+    results: list[dict[str, Any]] = []
     for cmd in commands:
       try:
         result = await self.make_cdp_request(
@@ -287,7 +291,7 @@ class SandboxClient:
     for attempt in range(max_retries):
       try:
         response = await asyncio.to_thread(
-            self._client.agent_engines.sandboxes.send_command,
+            self._client.sandboxes.send_command,
             http_method="GET",
             path="tabs",
             access_token=self._access_token,
@@ -301,7 +305,8 @@ class SandboxClient:
 
         for tab in parsed.get("all_tabs", []):
           if tab.get("id") == active_tab_id:
-            return tab.get("url")
+            # The tabs endpoint reports each tab's URL as a string.
+            return cast("str | None", tab.get("url"))
 
         return None
       except Exception as e:
@@ -667,7 +672,7 @@ class SandboxClient:
 
     try:
       response = await asyncio.to_thread(
-          self._client.agent_engines.sandboxes.send_command,
+          self._client.sandboxes.send_command,
           http_method="GET",
           path="",
           access_token=self._access_token,

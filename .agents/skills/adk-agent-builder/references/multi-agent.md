@@ -26,7 +26,7 @@ writer = Agent(
 )
 
 root_agent = Agent(
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     name='coordinator',
     instruction='Delegate research to the researcher and writing to the writer.',
     sub_agents=[researcher, writer],
@@ -99,7 +99,7 @@ root_agent = LoopAgent(
 
 The built-in default when no agent in the chain sets `model=` is
 `LlmAgent.DEFAULT_MODEL`, currently `'gemini-3.5-flash'`. Override the default
-process-wide with `LlmAgent.set_default_model('gemini-2.5-pro')`.
+process-wide with `LlmAgent.set_default_model('gemini-3.1-pro-preview')`.
 
 Non-Gemini models go through LiteLLM, with the provider as a prefix:
 

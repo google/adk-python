@@ -15,8 +15,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
-from typing import Union
+from typing import Any
+from typing import TYPE_CHECKING
 
 from google.genai import types
 from pydantic import BaseModel
@@ -30,10 +30,14 @@ from ..utils._schema_utils import SchemaType
 from ._service_tier import ServiceTier
 from .cache_metadata import CacheMetadata
 
+if TYPE_CHECKING:
+  from google.genai import Client
+  from google.genai._api_client import BaseApiClient
+
 
 def _find_tool_with_function_declarations(
     llm_request: LlmRequest,
-) -> Optional[types.Tool]:
+) -> types.Tool | None:
   """Find an existing Tool with function_declarations in the LlmRequest."""
   # TODO: add individual tool with declaration and merge in google_llm.py
   if not llm_request.config or not llm_request.config.tools:
@@ -66,7 +70,7 @@ class LlmRequest(BaseModel):
   model_config = ConfigDict(arbitrary_types_allowed=True)
   """The pydantic model config."""
 
-  model: Optional[str] = None
+  model: str | None = None
   """The model name."""
 
   contents: list[types.Content] = Field(default_factory=list)
@@ -85,16 +89,16 @@ class LlmRequest(BaseModel):
   tools_dict: dict[str, BaseTool] = Field(default_factory=dict, exclude=True)
   """The tools dictionary."""
 
-  cache_config: Optional[ContextCacheConfig] = None
+  cache_config: ContextCacheConfig | None = None
   """Context cache configuration for this request."""
 
-  cache_metadata: Optional[CacheMetadata] = None
+  cache_metadata: CacheMetadata | None = None
   """Cache metadata from previous requests, used for cache management."""
 
-  cacheable_contents_token_count: Optional[int] = None
+  cacheable_contents_token_count: int | None = None
   """Token count from previous request's prompt, used for cache size validation."""
 
-  previous_interaction_id: Optional[str] = None
+  previous_interaction_id: str | None = None
   """The ID of the previous interaction for stateful conversations.
 
   When using the interactions API, this ID is used to chain interactions
@@ -102,7 +106,7 @@ class LlmRequest(BaseModel):
   the full history.
   """
 
-  service_tier: Optional[ServiceTier | str] = None
+  service_tier: ServiceTier | str | None = None
   """Serving tier for this request, copied from `RunConfig.service_tier`.
 
   Set only for models on the interactions API, which is the only path with a
@@ -147,7 +151,7 @@ class LlmRequest(BaseModel):
     self._dynamic_instructions.extend(instructions)
 
   def append_instructions(
-      self, instructions: Union[list[str], types.Content]
+      self, instructions: list[str] | types.Content
   ) -> list[types.Content]:
     """Appends instructions to the system instruction.
 
@@ -382,9 +386,9 @@ class LlmRequest(BaseModel):
 
   def set_output_schema(
       self,
-      output_schema: Optional[SchemaType] = None,
+      output_schema: SchemaType | None = None,
       *,
-      base_model: Optional[SchemaType] = None,
+      base_model: SchemaType | None = None,
   ) -> None:
     """Sets the output schema for the request.
 
@@ -407,3 +411,46 @@ class LlmRequest(BaseModel):
 
     self.config.response_schema = schema
     self.config.response_mime_type = "application/json"
+
+  def to_generate_content_body(
+      self,
+      *,
+      vertexai: bool | None = None,
+      api_client: Client | BaseApiClient | None = None,
+  ) -> dict[str, Any]:
+    """Returns this request as a ``generateContent`` request body.
+
+    ``config`` is one flat namespace, but its fields go to three different
+    places on the wire. Some sit at the top level, most belong inside
+    ``generationConfig``, and a few are consumed by the client library and
+    rejected by the endpoint. Getting that split wrong does not raise: bury
+    ``tools`` in ``generationConfig`` and the call returns 200 with no function
+    call in it, because none was ever offered.
+
+    Custom ``BaseLlm`` implementations that build their own request body should
+    use this rather than flattening ``config`` by hand.
+
+    Args:
+      vertexai: Whether the body is bound for Vertex AI rather than the Gemini
+        Developer API. Defaults to the backend ADK is configured for, which is
+        the Gemini Developer API unless ``GOOGLE_GENAI_USE_ENTERPRISE`` (or the
+        deprecated ``GOOGLE_GENAI_USE_VERTEXAI``) is enabled. Ignored when
+        ``api_client`` is given.
+      api_client: A genai ``Client`` or ``BaseApiClient``, if the caller has
+        one. Needed on Vertex AI to expand a short ``cached_content`` name.
+
+    Returns:
+      A JSON-serializable dict ready to send as the request body.
+
+    Raises:
+      ValueError: If a config field is not valid for the target API, or if
+        ``cached_content`` is a short name on Vertex AI and no ``api_client``
+        is given.
+    """
+    # Imported here rather than at module scope: this pulls in google.genai's
+    # model converters, which nothing else in this module needs.
+    from ._generate_content_body import to_generate_content_body
+
+    return to_generate_content_body(
+        self, vertexai=vertexai, api_client=api_client
+    )

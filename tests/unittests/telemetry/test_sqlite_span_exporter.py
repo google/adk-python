@@ -16,13 +16,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
+from google.adk.telemetry.sqlite_span_exporter import _apply_migrations
 from google.adk.telemetry.sqlite_span_exporter import SqliteSpanExporter
+from opentelemetry.sdk.trace import Event
 from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import SpanContext
+from opentelemetry.trace import SpanKind
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
+import pytest
 
 
 def _create_span(
@@ -32,6 +41,7 @@ def _create_span(
     parent_span_id: int | None = None,
     name: str = "test_span",
     attributes: dict | None = None,
+    kind: SpanKind = SpanKind.INTERNAL,
     start_time: int = 1000,
     end_time: int = 2000,
 ) -> ReadableSpan:
@@ -58,6 +68,7 @@ def _create_span(
       name=name,
       context=context,
       parent=parent,
+      kind=kind,
       attributes=attributes or {},
       start_time=start_time,
       end_time=end_time,
@@ -225,6 +236,185 @@ def test_round_trip_preserves_span_attributes(tmp_path):
   assert retrieved.start_time == 1000000
   assert retrieved.end_time == 2000000
   assert retrieved.attributes == original_attributes
+
+
+def test_span_kinds_survive_exporter_restart(tmp_path: Path) -> None:
+  db_path = tmp_path / "test.db"
+  kinds = [
+      SpanKind.CLIENT,
+      SpanKind.SERVER,
+      SpanKind.PRODUCER,
+      SpanKind.CONSUMER,
+  ]
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  spans = [
+      _create_span(
+          span_id=index + 1,
+          kind=kind,
+          attributes={"gen_ai.conversation.id": "session-kind"},
+          start_time=index,
+      )
+      for index, kind in enumerate(kinds)
+  ]
+  assert exporter.export(spans) == SpanExportResult.SUCCESS
+  exporter.shutdown()
+
+  reopened = SqliteSpanExporter(db_path=str(db_path))
+  try:
+    restored = reopened.get_all_spans_for_session("session-kind")
+    assert [(span.context.span_id, span.kind) for span in restored] == [
+        (index + 1, kind) for index, kind in enumerate(kinds)
+    ]
+  finally:
+    reopened.shutdown()
+
+
+def test_legacy_database_retains_spans_and_accepts_new_kinds(
+    tmp_path: Path,
+) -> None:
+  db_path = tmp_path / "legacy.db"
+  with sqlite3.connect(db_path) as conn:
+    conn.execute("""
+        CREATE TABLE spans (
+          span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL,
+          parent_span_id TEXT, name TEXT NOT NULL,
+          start_time_unix_nano INTEGER, end_time_unix_nano INTEGER,
+          session_id TEXT, invocation_id TEXT, attributes_json TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO spans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "0000000000000001",
+            "000000000000000000000000000def45",
+            None,
+            "legacy_operation",
+            1000,
+            2000,
+            "session-legacy",
+            None,
+            '{"gen_ai.conversation.id": "session-legacy"}',
+        ),
+    )
+
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  try:
+    assert (
+        exporter.export([
+            _create_span(
+                span_id=2,
+                name="new_operation",
+                kind=SpanKind.CLIENT,
+                attributes={"gen_ai.conversation.id": "session-legacy"},
+                start_time=3000,
+            )
+        ])
+        == SpanExportResult.SUCCESS
+    )
+    restored = exporter.get_all_spans_for_session("session-legacy")
+    assert [(span.name, span.kind) for span in restored] == [
+        ("legacy_operation", SpanKind.INTERNAL),
+        ("new_operation", SpanKind.CLIENT),
+    ]
+  finally:
+    exporter.shutdown()
+
+
+def test_database_from_newer_schema_version_is_not_downgraded(
+    tmp_path: Path,
+) -> None:
+  db_path = tmp_path / "newer.db"
+  SqliteSpanExporter(db_path=str(db_path)).shutdown()
+  with sqlite3.connect(db_path) as conn:
+    conn.execute("PRAGMA user_version = 99")
+
+  SqliteSpanExporter(db_path=str(db_path)).shutdown()
+
+  with sqlite3.connect(db_path) as conn:
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 99
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> list[str]:
+  return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def test_failing_migration_rolls_back_and_can_be_retried(
+    tmp_path: Path,
+) -> None:
+  conn = sqlite3.connect(tmp_path / "migrations.db")
+  try:
+    create = ("CREATE TABLE t (a TEXT)",)
+    _apply_migrations(conn, [create])
+
+    with pytest.raises(sqlite3.OperationalError):
+      _apply_migrations(
+          conn,
+          [
+              create,
+              ("ALTER TABLE t ADD COLUMN b TEXT", "SELECT * FROM missing"),
+          ],
+      )
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert _column_names(conn, "t") == ["a"]
+
+    _apply_migrations(conn, [create, ("ALTER TABLE t ADD COLUMN b TEXT",)])
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert _column_names(conn, "t") == ["a", "b"]
+  finally:
+    conn.close()
+
+
+def test_apply_migrations_skips_entries_already_applied(tmp_path: Path) -> None:
+  conn = sqlite3.connect(tmp_path / "migrations.db")
+  try:
+    conn.execute("CREATE TABLE t (a TEXT)")
+    conn.execute("PRAGMA user_version = 1")
+
+    # Entry 0 would fail if re-run because the table already exists.
+    _apply_migrations(
+        conn,
+        [("CREATE TABLE t (a TEXT)",), ("ALTER TABLE t ADD COLUMN b TEXT",)],
+    )
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert _column_names(conn, "t") == ["a", "b"]
+  finally:
+    conn.close()
+
+
+def test_current_database_opens_while_another_writer_holds_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  db_path = tmp_path / "locked.db"
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  assert (
+      exporter.export(
+          [_create_span(attributes={"gen_ai.conversation.id": "session-lock"})]
+      )
+      == SpanExportResult.SUCCESS
+  )
+  exporter.shutdown()
+  monkeypatch.setattr(
+      "google.adk.telemetry.sqlite_span_exporter._DEFAULT_TIMEOUT_SECONDS",
+      0.1,
+  )
+
+  writer = sqlite3.connect(db_path, isolation_level=None)
+  try:
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("UPDATE spans SET name = 'uncommitted'")
+
+    reopened = SqliteSpanExporter(db_path=str(db_path))
+    try:
+      restored = reopened.get_all_spans_for_session("session-lock")
+      assert [span.name for span in restored] == ["test_span"]
+    finally:
+      reopened.shutdown()
+  finally:
+    writer.rollback()
+    writer.close()
 
 
 def test_spans_with_parent_context_exported_correctly(tmp_path):
@@ -460,3 +650,218 @@ def test_get_spans_ordered_by_start_time(tmp_path):
   assert result[0].context.span_id == 0x100
   assert result[1].context.span_id == 0x200
   assert result[2].context.span_id == 0x300
+
+
+def test_round_trip_preserves_error_status_and_events(tmp_path):
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  context = SpanContext(
+      trace_id=0xDEF45,
+      span_id=0xABC12,
+      is_remote=False,
+      trace_flags=TraceFlags(TraceFlags.SAMPLED),
+      trace_state=TraceState(),
+  )
+  span = ReadableSpan(
+      name="failing_tool",
+      context=context,
+      attributes={"gcp.vertex.agent.session_id": "s1"},
+      start_time=1000,
+      end_time=2000,
+      status=Status(StatusCode.ERROR, "ValueError: boom"),
+      events=[
+          Event(
+              name="exception",
+              attributes={
+                  "exception.type": "ValueError",
+                  "exception.message": "boom",
+              },
+              timestamp=1500,
+          )
+      ],
+  )
+
+  assert exporter.export([span]) == SpanExportResult.SUCCESS
+  (restored,) = exporter.get_all_spans_for_session("s1")
+
+  assert restored.status.status_code is StatusCode.ERROR
+  assert restored.status.description == "ValueError: boom"
+  assert len(restored.events) == 1
+  event = restored.events[0]
+  assert event.name == "exception"
+  assert event.timestamp == 1500
+  assert dict(event.attributes) == {
+      "exception.type": "ValueError",
+      "exception.message": "boom",
+  }
+
+
+def test_exception_raised_inside_a_real_span_is_read_back(tmp_path):
+  """The case from the issue: a run that fails must not read back as clean."""
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  provider = TracerProvider()
+  provider.add_span_processor(SimpleSpanProcessor(exporter))
+  tracer = provider.get_tracer(__name__)
+
+  try:
+    with tracer.start_as_current_span(
+        "run", attributes={"gcp.vertex.agent.session_id": "s1"}
+    ):
+      raise ValueError("boom")
+  except ValueError:
+    pass
+
+  (restored,) = exporter.get_all_spans_for_session("s1")
+
+  assert restored.status.status_code is StatusCode.ERROR
+  assert "boom" in (restored.status.description or "")
+  assert [event.name for event in restored.events] == ["exception"]
+  assert restored.events[0].attributes["exception.type"] == "ValueError"
+
+
+def test_span_without_status_or_events_reads_back_unset_and_empty(tmp_path):
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  exporter.export(
+      [_create_span(attributes={"gcp.vertex.agent.session_id": "s1"})]
+  )
+
+  (restored,) = exporter.get_all_spans_for_session("s1")
+
+  assert restored.status.status_code is StatusCode.UNSET
+  assert list(restored.events) == []
+
+
+@pytest.mark.parametrize("user_version", [0, 2])
+def test_database_from_older_version_gains_the_new_columns(
+    tmp_path: Path, user_version: int
+) -> None:
+  """A file written before status and events were stored keeps working."""
+  db_path = tmp_path / "old.db"
+  conn = sqlite3.connect(db_path)
+  conn.execute("""
+      CREATE TABLE spans (
+        span_id TEXT PRIMARY KEY,
+        trace_id TEXT NOT NULL,
+        parent_span_id TEXT,
+        name TEXT NOT NULL,
+        start_time_unix_nano INTEGER,
+        end_time_unix_nano INTEGER,
+        session_id TEXT,
+        invocation_id TEXT,
+        attributes_json TEXT
+      )
+      """)
+  if user_version == 2:
+    conn.execute(
+        "ALTER TABLE spans ADD COLUMN kind TEXT NOT NULL DEFAULT 'INTERNAL'"
+    )
+    conn.execute("PRAGMA user_version = 2")
+  conn.execute(
+      "INSERT INTO spans (span_id, trace_id, name, start_time_unix_nano,"
+      " end_time_unix_nano, session_id, attributes_json)"
+      " VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ("00000000000abc12", "0" * 27 + "def45", "old", 1, 2, "s1", "{}"),
+  )
+  conn.commit()
+  conn.close()
+
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  try:
+    assert (
+        exporter.export([
+            _create_span(
+                span_id=0x999,
+                name="new",
+                attributes={"gcp.vertex.agent.session_id": "s1"},
+                start_time=5,
+            )
+        ])
+        == SpanExportResult.SUCCESS
+    )
+
+    old, new = exporter.get_all_spans_for_session("s1")
+    assert (old.name, new.name) == ("old", "new")
+    assert old.kind is SpanKind.INTERNAL
+    assert old.status.status_code is StatusCode.UNSET
+    assert list(old.events) == []
+  finally:
+    exporter.shutdown()
+
+  with sqlite3.connect(db_path) as conn:
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert _column_names(conn, "spans")[-4:] == [
+        "kind",
+        "status_code",
+        "status_description",
+        "events_json",
+    ]
+
+
+def test_corrupt_stored_status_and_events_read_back_as_defaults(tmp_path):
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  conn = exporter._get_connection()
+  rows = [
+      ("0000000000000001", "BOGUS", "not json"),
+      ("0000000000000002", None, "{}"),
+      (
+          "0000000000000003",
+          "OK",
+          (
+              '[null, {"name": 1}, {"name": "e", "attributes": "x",'
+              ' "timestamp": 5}, {"name": "no_ts"}, {"name": "null_ts",'
+              ' "timestamp": null}, {"name": "str_ts", "timestamp": "5"},'
+              ' {"name": "bool_ts", "timestamp": true}]'
+          ),
+      ),
+  ]
+  for span_id, status_code, events_json in rows:
+    conn.execute(
+        "INSERT INTO spans (span_id, trace_id, name, session_id,"
+        " start_time_unix_nano, status_code, status_description, events_json)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            span_id,
+            "0" * 27 + "def45",
+            "corrupt",
+            "s1",
+            int(span_id, 16),
+            status_code,
+            "ignored",
+            events_json,
+        ),
+    )
+  conn.commit()
+
+  first, second, third = exporter.get_all_spans_for_session("s1")
+
+  assert first.status.status_code is StatusCode.UNSET
+  assert list(first.events) == []
+  assert second.status.status_code is StatusCode.UNSET
+  assert list(second.events) == []
+  assert third.status.status_code is StatusCode.OK
+  assert third.status.description is None
+  assert [event.name for event in third.events] == ["e"]
+  assert third.events[0].attributes is None
+  assert third.events[0].timestamp == 5
+
+
+def test_unserializable_event_attributes_do_not_fail_export(tmp_path):
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  span = ReadableSpan(
+      name="op",
+      context=SpanContext(
+          trace_id=0xDEF45,
+          span_id=0xABC12,
+          is_remote=False,
+          trace_flags=TraceFlags(TraceFlags.SAMPLED),
+          trace_state=TraceState(),
+      ),
+      attributes={"gcp.vertex.agent.session_id": "s1"},
+      start_time=1000,
+      end_time=2000,
+      events=[Event(name="bad", attributes={"k": {(1, 2): "tuple key"}})],
+  )
+
+  assert exporter.export([span]) == SpanExportResult.SUCCESS
+  (restored,) = exporter.get_all_spans_for_session("s1")
+  assert restored.name == "op"
+  assert list(restored.events) == []

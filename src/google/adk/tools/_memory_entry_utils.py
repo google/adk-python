@@ -22,9 +22,11 @@ if TYPE_CHECKING:
 
 
 def extract_text(memory: MemoryEntry, splitter: str = ' ') -> str:
-  """Extracts the text from the memory entry."""
+  """Extracts text from the memory entry, excluding thought parts."""
   if not memory.content.parts:
     return ''
-  return splitter.join(
-      [part.text for part in memory.content.parts if part.text]
-  )
+  return splitter.join([
+      part.text
+      for part in memory.content.parts
+      if part.text and not part.thought
+  ])

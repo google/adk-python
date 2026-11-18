@@ -19,7 +19,6 @@ in session state.
 """
 
 import logging
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
@@ -34,9 +33,9 @@ async def assert_session_values(
     ctx: CallbackContext,
     title: str,
     *,
-    keys_in_ctx_session: Optional[list[str]] = None,
-    keys_in_service_session: Optional[list[str]] = None,
-    keys_not_in_service_session: Optional[list[str]] = None,
+    keys_in_ctx_session: list[str] | None = None,
+    keys_in_service_session: list[str] | None = None,
+    keys_not_in_service_session: list[str] | None = None,
 ):
   session_in_ctx = ctx._invocation_context.session
   session_in_service = (
@@ -78,7 +77,7 @@ async def assert_session_values(
 
 async def before_agent_callback(
     callback_context: CallbackContext,
-) -> Optional[types.Content]:
+) -> types.Content | None:
   if 'before_agent_callback_state_key' in callback_context.state:
     return types.ModelContent('Sorry, I can only reply once.')
 

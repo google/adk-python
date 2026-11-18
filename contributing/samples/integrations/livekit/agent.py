@@ -73,9 +73,7 @@ async def check_prime(nums: list[int]) -> str:
 
 root_agent = Agent(
     # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
-    model='gemini-live-2.5-flash-native-audio',  # Vertex
-    # Find supported models in Gemini API here: https://ai.google.dev/gemini-api/docs/models
-    # model='gemini-2.5-flash-native-audio-preview-12-2025',  # Gemini API
+    model='gemini-3.8-live',
     name='roll_dice_agent',
     description=(
         'hello world agent that can roll a dice of 6 sides and check prime'

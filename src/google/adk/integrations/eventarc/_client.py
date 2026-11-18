@@ -26,6 +26,8 @@ import typing
 
 from google.api_core.gapic_v1 import client_info
 
+from ...utils._event_loop_cache import _PerLoopCache
+
 if typing.TYPE_CHECKING:
   from google.cloud import eventarc_publishing_v1  # type: ignore
   from google.cloud.eventarc_publishing_v1 import PublisherAsyncClient  # type: ignore
@@ -50,9 +52,12 @@ except ImportError:
 _CACHE_TTL = 1800  # 30 minutes
 _CACHE_MAX_SIZE = 10
 
-_publisher_client_cache: collections.OrderedDict[
-    tuple[str | None, str, int, str], tuple[PublisherAsyncClient, float]
-] = collections.OrderedDict()
+_CacheKey = tuple[str | None, str, int, str]
+_CacheEntry = tuple[PublisherAsyncClient, float]
+
+_publisher_client_cache: _PerLoopCache[
+    collections.OrderedDict[_CacheKey, _CacheEntry]
+] = _PerLoopCache()
 _publisher_client_lock = threading.Lock()
 
 
@@ -76,13 +81,57 @@ def _get_credential_id(credentials: typing.Any) -> str:
   ):
     return "ComputeEngineCredentials"
 
+  module_name = getattr(credentials.__class__, "__module__", "")
+
+  # Impersonated credentials act as the target service account, but the source
+  # principal, scopes, delegates, and subject also determine what the
+  # credential asserts.
+  if module_name == "google.auth.impersonated_credentials":
+    target = getattr(credentials, "service_account_email", None)
+    source = getattr(credentials, "_source_credentials", None)
+    if target is not None and source is not None:
+      scopes = tuple(getattr(credentials, "_target_scopes", None) or ())
+      delegates = tuple(getattr(credentials, "_delegates", None) or ())
+      subject = getattr(credentials, "_subject", None)
+      return (
+          f"Impersonated:{target}:{_get_credential_id(source)}"
+          f":{scopes}:{delegates}:{subject}"
+      )
+    return str(id(credentials))
+
+  # Handle external account credentials (Workload Identity, Pluggable, etc.)
+  # before service_account_email because WIF credentials with SA impersonation
+  # also expose service_account_email.
+  if getattr(credentials, "_audience", None) is not None:
+    audience = credentials._audience
+    source = getattr(credentials, "_credential_source", None)
+    supplier = getattr(credentials, "_subject_token_supplier", None) or getattr(
+        credentials, "_aws_security_credentials_supplier", None
+    )
+    sa_email = getattr(credentials, "service_account_email", None)
+    scopes = tuple(getattr(credentials, "_scopes", None) or ())
+
+    if source is not None:
+      if isinstance(source, dict):
+        source_str = str(sorted(source.items()))
+      else:
+        source_str = str(source)
+      return f"ExternalAccount:{audience}:{source_str}:{sa_email}:{scopes}"
+    elif supplier is not None:
+      return (
+          f"ExternalAccount:{audience}:supplier:{id(supplier)}"
+          f":{sa_email}:{scopes}"
+      )
+    return str(id(credentials))
+
   sa_email = getattr(credentials, "service_account_email", None)
   if sa_email is not None:
-    # This covers both standard ServiceAccountCredentials and ImpersonatedCredentials
-    return str(sa_email)
+    # This covers standard ServiceAccountCredentials.
+    scopes = tuple(getattr(credentials, "_scopes", None) or ())
+    subject = getattr(credentials, "_subject", None)
+    return f"{sa_email}:{scopes}:{subject}"
 
   # Handle User Credentials (like local ADC) using refresh token hash
-  module_name = getattr(credentials.__class__, "__module__", "")
   if (
       module_name.startswith("google.oauth2.credentials")
       and getattr(credentials, "refresh_token", None) is not None
@@ -104,21 +153,6 @@ def _get_credential_id(credentials: typing.Any) -> str:
         boundary_str = str(boundary_json)
       return f"Downscoped:{source_id}:{boundary_str}"
 
-  # Handle external account credentials (Workload Identity, Pluggable, etc.)
-  if getattr(credentials, "_audience", None) is not None:
-    audience = credentials._audience
-    source = getattr(credentials, "_credential_source", None)
-    supplier = getattr(credentials, "_subject_token_supplier", None)
-
-    if source is not None:
-      if isinstance(source, dict):
-        source_str = str(sorted(source.items()))
-      else:
-        source_str = str(source)
-      return f"ExternalAccount:{audience}:{source_str}"
-    elif supplier is not None:
-      return f"ExternalAccount:{audience}:supplier:{id(supplier)}"
-
   return str(id(credentials))
 
 
@@ -130,7 +164,7 @@ def _get_cache_key(
     credentials: typing.Any,
     final_user_agent: str,
     project_id: str | None = None,
-) -> tuple[str | None, str, int, str]:
+) -> _CacheKey:
   """Generates a deterministic cache key for the publisher client connection pool."""
   cred_id = _get_credential_id(credentials)
   return (project_id, final_user_agent, os.getpid(), cred_id)
@@ -142,10 +176,11 @@ async def get_publisher_client(
     user_agent: str | None = None,
     project_id: str | None = None,
 ) -> PublisherAsyncClient:
-  """Gets or creates a publisher client for Eventarc."""
+  """Gets or creates the running loop's Eventarc publisher client."""
   if eventarc_publishing_v1 is None:
     raise RuntimeError("google-cloud-eventarc-publishing is not installed")
 
+  loop_cache = _publisher_client_cache.get(collections.OrderedDict)
   final_user_agent = _get_final_user_agent(user_agent)
   cache_key = _get_cache_key(
       credentials=credentials,
@@ -155,29 +190,25 @@ async def get_publisher_client(
   current_time = time.time()
   old_client_to_close = None
   with _publisher_client_lock:
-    client_entry = _publisher_client_cache.get(cache_key)
+    client_entry = loop_cache.get(cache_key)
     if client_entry is not None:
       client, expiration = client_entry
       if expiration > current_time:
-        _publisher_client_cache.move_to_end(cache_key)
+        loop_cache.move_to_end(cache_key)
         return client
-      else:
-        _publisher_client_cache.pop(cache_key, None)
+      loop_cache.pop(cache_key, None)
 
     info = client_info.ClientInfo(user_agent=final_user_agent)  # type: ignore[no-untyped-call]
 
-    client = typing.cast(
-        PublisherAsyncClient,
-        eventarc_publishing_v1.PublisherAsyncClient(
-            credentials=credentials,
-            client_info=info,
-        ),
+    client = eventarc_publishing_v1.PublisherAsyncClient(
+        credentials=credentials,
+        client_info=info,
     )
 
-    if len(_publisher_client_cache) >= _CACHE_MAX_SIZE:
-      _, (old_client_to_close, _) = _publisher_client_cache.popitem(last=False)
+    if len(loop_cache) >= _CACHE_MAX_SIZE:
+      _, (old_client_to_close, _) = loop_cache.popitem(last=False)
 
-    _publisher_client_cache[cache_key] = (client, current_time + _CACHE_TTL)
+    loop_cache[cache_key] = (client, current_time + _CACHE_TTL)
 
   if old_client_to_close is not None:
     await _close_client(old_client_to_close)
@@ -191,7 +222,8 @@ async def remove_publisher_client(
     user_agent: str | None = None,
     project_id: str | None = None,
 ) -> None:
-  """Removes a publisher client from the cache."""
+  """Removes a publisher client from the running event loop's cache."""
+  loop_cache = _publisher_client_cache.get(collections.OrderedDict)
   final_user_agent = _get_final_user_agent(user_agent)
   cache_key = _get_cache_key(
       credentials=credentials,
@@ -200,15 +232,16 @@ async def remove_publisher_client(
   )
 
   with _publisher_client_lock:
-    entry = _publisher_client_cache.pop(cache_key, None)
+    entry = loop_cache.pop(cache_key, None)
   if entry is not None:
     await _close_client(entry[0])
 
 
 async def cleanup_clients() -> None:
-  """Cleans up all cached publisher clients."""
+  """Cleans up cached publisher clients for the running event loop."""
+  loop_cache = _publisher_client_cache.get(collections.OrderedDict)
   with _publisher_client_lock:
-    clients = list(_publisher_client_cache.values())
-    _publisher_client_cache.clear()
+    clients = list(loop_cache.values())
+    loop_cache.clear()
   for client, _ in clients:
     await _close_client(client)

@@ -16,6 +16,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import re
 from typing import Any
 from typing import cast
 from typing import Protocol
@@ -24,6 +25,9 @@ from google.auth.credentials import Credentials
 from google.cloud import spanner_admin_instance_v1
 from google.cloud.spanner_admin_database_v1 import DatabaseAdminAsyncClient
 from google.cloud.spanner_admin_instance_v1 import InstanceAdminAsyncClient
+
+# The database id grammar the Spanner CreateDatabase API documents.
+_DATABASE_ID_RE = re.compile(r"[a-z][a-z0-9_-]{0,28}[a-z0-9]")
 
 
 class _AsyncOperation(Protocol):
@@ -364,7 +368,8 @@ async def create_database(
   Args:
       project_id: The Google Cloud project id.
       instance_id: The Spanner instance id.
-      database_id: The Spanner database id.
+      database_id: The Spanner database id. Must match
+        [a-z][a-z0-9_-]*[a-z0-9] and be 2-30 characters long.
       credentials: The credentials to use for the request.
 
   Returns:
@@ -379,6 +384,12 @@ async def create_database(
       }
   """
   try:
+    if not _DATABASE_ID_RE.fullmatch(database_id):
+      raise ValueError(
+          f"Invalid Spanner database id: {database_id!r}. A database id must"
+          " match [a-z][a-z0-9_-]*[a-z0-9] and be 2-30 characters long."
+      )
+
     async with DatabaseAdminAsyncClient(
         credentials=credentials
     ) as database_admin_api:

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 
 from google.adk.evaluation.app_details import AgentDetails
@@ -26,6 +27,7 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.hallucinations_v1 import _parse_sentences
 from google.adk.evaluation.hallucinations_v1 import _parse_validation_results
 from google.adk.evaluation.hallucinations_v1 import HallucinationsV1Evaluator
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
 import pytest
 
@@ -36,8 +38,9 @@ def mock_llm_registry(mocker):
   MockLLMRegistry = mocker.patch(
       "google.adk.evaluation.hallucinations_v1.LLMRegistry"
   )
-  MockLLMRegistry.return_value.resolve.return_value = mocker.MagicMock()
-  yield
+  mock_llm_cls = mocker.MagicMock()
+  MockLLMRegistry.return_value.resolve.return_value = mock_llm_cls
+  yield mock_llm_cls.return_value
 
 
 @pytest.fixture
@@ -244,6 +247,232 @@ contradicting_excerpt: null
     score, _ = await metric._evaluate_nl_response("nl", "ctx")
     assert score is None
 
+  async def _score_validator_reply(self, metric, mocker, validator_text):
+    """Scores a two-sentence response against a scripted validator reply."""
+    seg_response = self._create_genai_response(
+        "<sentence>S1.</sentence><sentence>S2.</sentence>", mocker
+    )
+    val_response = self._create_genai_response(validator_text, mocker)
+
+    async def seg_gen():
+      yield seg_response
+
+    async def val_gen():
+      yield val_response
+
+    metric._judge_model.generate_content_async = mocker.MagicMock(
+        side_effect=[seg_gen(), val_gen()]
+    )
+    score, _ = await metric._evaluate_nl_response("nl", "ctx")
+    return score
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_scores_every_labelled_sentence(
+      self, hallucinations_metric, mocker
+  ):
+    """A complete reply is averaged over all sentences."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: contradictory
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score == 0.5
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_accepts_backticked_labels(
+      self, hallucinations_metric, mocker
+  ):
+    """Labels echoed in backticks, as the prompt lists them, are counted."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: `supported`
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: `contradictory`
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score == 0.5
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_sentence_omitted(
+      self, hallucinations_metric, mocker
+  ):
+    """A sentence the validator leaves out does not drop out of the score."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_a_label_is_unusable(
+      self, hallucinations_metric, mocker
+  ):
+    """One unusable label makes the response unscored, not a 1.0."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: false
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_blocks_merge(
+      self, hallucinations_metric, mocker
+  ):
+    """A block missing its last line must not swallow the next block."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+
+sentence: S2.
+label: contradictory
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: e2
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_with_extra_block(
+      self, hallucinations_metric, mocker
+  ):
+    """An extra block with an unusable label cannot stand in for a sentence."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S1 again.
+label: false
+rationale: r2
+supporting_excerpt: null
+contradicting_excerpt: null
+
+sentence: S2.
+label: supported
+rationale: r3
+supporting_excerpt: e3
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_not_scored_when_a_sentence_repeats(
+      self, hallucinations_metric, mocker, caplog
+  ):
+    """A block repeating one sentence cannot stand in for an omitted one."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+""",
+    )
+    assert score is None
+    assert "block 1 does not echo sentence 1" in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_matches_sentences_with_tags_and_quotes(
+      self, hallucinations_metric, mocker
+  ):
+    """An echo keeping the sentence tags or adding quotes still matches."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence: <sentence>S1.</sentence>
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: "S2."
+label: supported
+rationale: r2
+supporting_excerpt: e2
+contradicting_excerpt: null
+""",
+    )
+    assert score == 1.0
+
+  @pytest.mark.asyncio
+  async def test_evaluate_nl_response_matches_sentences_ignoring_whitespace(
+      self, hallucinations_metric, mocker
+  ):
+    """An echo differing only in case and spacing still matches."""
+    score = await self._score_validator_reply(
+        hallucinations_metric,
+        mocker,
+        """sentence:   s1.
+label: supported
+rationale: r1
+supporting_excerpt: e1
+contradicting_excerpt: null
+
+sentence: S2.
+label: supported
+rationale: r2
+supporting_excerpt: e2
+contradicting_excerpt: null
+""",
+    )
+    assert score == 1.0
+
 
 @pytest.fixture
 def create_context_data():
@@ -362,6 +591,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -414,6 +646,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -457,6 +692,130 @@ tool_outputs:
 ]
     """
     assert context.strip() == expected_context.strip()
+
+  def test_create_context_for_step_includes_grounding_metadata(
+      self,
+      hallucinations_metric: HallucinationsV1Evaluator,
+      create_context_data: tuple[AppDetails, list[InvocationEvent], Invocation],
+  ) -> None:
+    """Sentences grounded only via grounding_metadata must reach the judge."""
+    app_details, events, invocation = create_context_data
+    grounding_event = InvocationEvent(
+        author="root",
+        content=None,
+        grounding_metadata=genai_types.GroundingMetadata(
+            web_search_queries=["recent AI news"]
+        ),
+    )
+    context = hallucinations_metric._create_context_for_step(
+        app_details, invocation, events + [grounding_event]
+    )
+    grounding_section = context.split("Grounding metadata:\n")[1].split(
+        "\n\ntool_calls:"
+    )[0]
+    parsed = json.loads(grounding_section)
+    assert parsed["grounding_metadata"][0]["author"] == "root"
+    assert parsed["grounding_metadata"][0]["grounding_metadata"][
+        "web_search_queries"
+    ] == ["recent AI news"]
+
+  def test_get_steps_to_evaluate_includes_intermediate_grounding_metadata(
+      self, hallucinations_metric: HallucinationsV1Evaluator
+  ) -> None:
+    """Intermediate NL steps include their own event's grounding_metadata."""
+    invocation = Invocation(
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="What's new in AI?")]
+        ),
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(
+                    author="search_agent",
+                    content=genai_types.Content(
+                        parts=[
+                            genai_types.Part(text="Grounded sub-agent step.")
+                        ]
+                    ),
+                    grounding_metadata=genai_types.GroundingMetadata(
+                        web_search_queries=["recent AI news"]
+                    ),
+                ),
+            ]
+        ),
+        final_response=genai_types.Content(
+            parts=[genai_types.Part(text="Final response.")]
+        ),
+    )
+    steps = hallucinations_metric._get_steps_to_evaluate(invocation)
+    assert len(steps) == 2
+    assert steps[0].nl_response == "Grounded sub-agent step."
+    assert "recent AI news" in steps[0].context
+    assert "Grounded sub-agent step." not in steps[0].context
+    assert steps[1].nl_response == "Final response."
+    assert "recent AI news" in steps[1].context
+    assert "Grounded sub-agent step." in steps[1].context
+
+  def test_create_context_for_step_skips_thought_parts(
+      self,
+      hallucinations_metric: HallucinationsV1Evaluator,
+      create_context_data: tuple[AppDetails, list[InvocationEvent], Invocation],
+  ) -> None:
+    """Thought parts of earlier events are not shown to the judge as context."""
+    app_details, events, invocation = create_context_data
+    thought_event = InvocationEvent(
+        author="root",
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(text="tool1 looks reliable.", thought=True),
+                genai_types.Part(text="tool1 answered."),
+            ]
+        ),
+    )
+
+    context = hallucinations_metric._create_context_for_step(
+        app_details, invocation, events + [thought_event]
+    )
+
+    assert "tool1 answered." in context
+    assert "tool1 looks reliable." not in context
+
+  def test_get_steps_to_evaluate_skips_thought_parts(
+      self, hallucinations_metric: HallucinationsV1Evaluator
+  ) -> None:
+    """Thought parts are not evaluated as NL responses."""
+    invocation = Invocation(
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="What's new in AI?")]
+        ),
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(
+                    author="root",
+                    content=genai_types.Content(
+                        parts=[
+                            genai_types.Part(
+                                text="I should search first.", thought=True
+                            ),
+                            genai_types.Part(text="Let me search."),
+                        ]
+                    ),
+                ),
+            ]
+        ),
+        final_response=genai_types.Content(
+            parts=[
+                genai_types.Part(text="Summarize the results.", thought=True),
+                genai_types.Part(text="Final response."),
+            ]
+        ),
+    )
+
+    steps = hallucinations_metric._get_steps_to_evaluate(invocation)
+
+    assert [step.nl_response for step in steps] == [
+        "Let me search.",
+        "Final response.",
+    ]
 
 
 @pytest.fixture
@@ -623,7 +982,10 @@ Tool definitions:
     ],
     "agent2": []
   }
-}"""
+}
+
+Grounding metadata:
+No grounding metadata was provided."""
     expected_context5 = R"""Developer instructions:
 root:
 Root agent instructions.
@@ -661,6 +1023,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -738,6 +1103,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -871,6 +1239,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -1080,6 +1451,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -1124,6 +1498,9 @@ Tool definitions:
     ]
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 tool_calls:
 [
@@ -1242,6 +1619,9 @@ Tool definitions:
     ]
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 tool_calls:
 [
@@ -1572,7 +1952,379 @@ async def test_evaluate_invocations_partial_failure(
       [actual_invocation], [expected_invocation]
   )
 
-  assert result.overall_score == 0.8
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert len(result.per_invocation_results) == 1
   per_invocation_result = result.per_invocation_results[0]
-  assert per_invocation_result.score == 0.8
+  assert per_invocation_result.score is None
+  assert per_invocation_result.eval_status == EvalStatus.NOT_EVALUATED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_unscored_step_still_fails_invocation(
+    hallucinations_metric, mocker
+):
+  metric = hallucinations_metric
+  app_details = AppDetails(
+      agent_details={
+          "root": AgentDetails(
+              name="root",
+              instructions="Root agent instructions.",
+              tool_declarations=[],
+          ),
+      },
+  )
+  actual_invocation = Invocation(
+      app_details=app_details,
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User query.")]
+      ),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text=text)]
+                  ),
+              )
+              for text in ("Unscored response.", "Hallucinated response.")
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Hallucinated final response.")]
+      ),
+  )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    if nl_response == "Unscored response.":
+      return None, "some error during evaluation"
+    return 0.0, "[]"
+
+  mocker.patch.object(
+      metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
+  )
+  result = await metric.evaluate_invocations([actual_invocation])
+
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.score == pytest.approx(1 / 3)
+  assert per_invocation_result.eval_status == EvalStatus.FAILED
+  assert result.overall_score == pytest.approx(1 / 3)
+  assert result.overall_eval_status == EvalStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_unscored_invocation_leaves_case_unscored(
+    hallucinations_metric, mocker
+):
+  metric = hallucinations_metric
+  app_details = AppDetails(
+      agent_details={
+          "root": AgentDetails(
+              name="root",
+              instructions="Root agent instructions.",
+              tool_declarations=[],
+          ),
+      },
+  )
+
+  def make_invocation(final_text):
+    return Invocation(
+        app_details=app_details,
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="User query.")]
+        ),
+        final_response=(
+            genai_types.Content(parts=[genai_types.Part(text=final_text)])
+            if final_text
+            else None
+        ),
+    )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    if nl_response == "Good response.":
+      return 1.0, "[]"
+    if nl_response == "Hallucinated response.":
+      return 0.0, "[]"
+    return None, "some error during evaluation"
+
+  mocker.patch.object(
+      metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
+  )
+
+  result = await metric.evaluate_invocations([
+      make_invocation("Good response."),
+      make_invocation("Bad response."),
+  ])
+  assert result.per_invocation_results[0].score == 1.0
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+
+  # The case still fails when it would with the unscored response at 1.0.
+  result = await metric.evaluate_invocations([
+      make_invocation("Hallucinated response."),
+      make_invocation("Hallucinated response."),
+      make_invocation("Bad response."),
+  ])
+  assert result.per_invocation_results[2].score is None
+  assert result.overall_score == pytest.approx(1 / 3)
+  assert result.overall_eval_status == EvalStatus.FAILED
+
+  # An invocation with no response to judge does not unscore the case.
+  result = await metric.evaluate_invocations([
+      make_invocation("Good response."),
+      make_invocation(None),
+  ])
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_judge_model_config",
+    [
+        None,
+        genai_types.GenerateContentConfig(temperature=0.3),
+    ],
+    ids=["default_config", "user_supplied_config"],
+)
+async def test_evaluate_nl_response_judge_request_disables_afc(
+    mock_llm_registry, user_judge_model_config, mocker
+):
+  # Both the segmenter and validator judge requests must disable google-genai's
+  # automatic function calling regardless of whether the caller supplied a
+  # judge_model_config, since the judge never calls tools and leaving AFC on
+  # only produces a spurious per-request warning on every eval run.
+  del mock_llm_registry  # fixture only needed for its side effect.
+  judge_model_options = JudgeModelOptions(
+      judge_model="gemini-2.5-flash",
+      judge_model_config=user_judge_model_config,
+      num_samples=1,
+  )
+  criterion = HallucinationsCriterion(
+      threshold=0.5,
+      judge_model_options=judge_model_options,
+      evaluate_intermediate_nl_responses=True,
+  )
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1", threshold=0.5, criterion=criterion
+      )
+  )
+
+  captured_requests = []
+
+  async def mock_generate(llm_request):
+    captured_requests.append(llm_request)
+    response = mocker.MagicMock()
+    response.content = genai_types.Content(
+        parts=[genai_types.Part(text="<sentence>s</sentence>")]
+    )
+    yield response
+
+  metric._judge_model.generate_content_async = mock_generate
+  await metric._evaluate_nl_response("nl", "ctx")
+
+  # Both the segmenter and validator should have been called.
+  assert len(captured_requests) == 2
+  for request in captured_requests:
+    assert request.config.automatic_function_calling is not None
+    assert request.config.automatic_function_calling.disable is True
+
+
+async def test_evaluate_invocations_runs_judge_calls_up_to_parallelism_limit(
+    mock_llm_registry,
+):
+  """Judge calls run concurrently, never more than parallelism_limit at once.
+
+  Setup: parallelism_limit=3 and four single-response invocations. Each judge
+    call holds its slot until three calls are in flight.
+  Act: Evaluate the invocations.
+  Assert: The most judge calls in flight at once is three.
+  """
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1",
+          threshold=0.5,
+          criterion=HallucinationsCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash", parallelism_limit=3
+              ),
+          ),
+      )
+  )
+  in_flight = 0
+  max_in_flight = 0
+  all_slots_filled = asyncio.Event()
+
+  async def mock_generate(llm_request):
+    del llm_request
+    nonlocal in_flight, max_in_flight
+    in_flight += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    if in_flight == 3:
+      all_slots_filled.set()
+    try:
+      await asyncio.wait_for(all_slots_filled.wait(), timeout=1.0)
+      # Yield so a call beyond the limit, if unbounded, would start now.
+      await asyncio.sleep(0.01)
+      yield LlmResponse(
+          content=genai_types.Content(
+              parts=[genai_types.Part(text="<sentence>s</sentence>")]
+          )
+      )
+    finally:
+      in_flight -= 1
+
+  mock_llm_registry.generate_content_async = mock_generate
+  invocations = [
+      Invocation(
+          invocation_id=f"inv_{i}",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text=f"answer {i}")]
+          ),
+      )
+      for i in range(4)
+  ]
+
+  await metric.evaluate_invocations(invocations)
+
+  assert max_in_flight == 3
+
+
+async def test_evaluate_invocations_keeps_input_order_on_out_of_order_finish(
+    mock_llm_registry,
+):
+  """Results keep input order when a later invocation finishes first.
+
+  Setup: parallelism_limit=3 and three single-sentence invocations. The first
+    invocation's validator call waits until the other two validators finish.
+    The first answer is supported; the other two are contradictory.
+  Act: Evaluate the invocations.
+  Assert: The first invocation finished last, yet results are in input order,
+    each with its own score.
+  """
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1",
+          threshold=0.5,
+          criterion=HallucinationsCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash", parallelism_limit=3
+              ),
+          ),
+      )
+  )
+  labels = {
+      "answer_alpha": "supported",
+      "answer_bravo": "contradictory",
+      "answer_charlie": "contradictory",
+  }
+  finished = []
+  others_finished = asyncio.Event()
+
+  async def mock_generate(llm_request):
+    prompt = llm_request.contents[0].parts[0].text
+    sentence = next(s for s in labels if s in prompt)
+    if "**Your Sentence Segmentation Output:**" in prompt:
+      text = f"<sentence>{sentence}</sentence>"
+    else:
+      if sentence == "answer_alpha":
+        await asyncio.wait_for(others_finished.wait(), timeout=1.0)
+      finished.append(sentence)
+      if len(finished) == 2:
+        others_finished.set()
+      text = (
+          f"sentence: {sentence}\n"
+          f"label: {labels[sentence]}\n"
+          "rationale: test rationale\n"
+          "supporting_excerpt: excerpt\n"
+          "contradicting_excerpt: null"
+      )
+    yield LlmResponse(
+        content=genai_types.Content(parts=[genai_types.Part(text=text)])
+    )
+
+  mock_llm_registry.generate_content_async = mock_generate
+  invocations = [
+      Invocation(
+          invocation_id=sentence,
+          user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text=sentence)]
+          ),
+      )
+      for sentence in labels
+  ]
+
+  result = await metric.evaluate_invocations(invocations)
+
+  assert finished[-1] == "answer_alpha"
+  assert [
+      r.actual_invocation.invocation_id for r in result.per_invocation_results
+  ] == ["answer_alpha", "answer_bravo", "answer_charlie"]
+  assert [r.score for r in result.per_invocation_results] == [1.0, 0.0, 0.0]
+
+
+async def test_evaluate_invocations_cancels_in_flight_judge_calls_on_error(
+    mock_llm_registry, mocker
+):
+  """An invocation that raises cancels judge calls still in flight.
+
+  Setup: parallelism_limit=2. The first invocation's judge call blocks, and
+    collecting the steps of the second invocation raises.
+  Act: Evaluate the invocations.
+  Assert: The error propagates and the blocked judge call was cancelled.
+  """
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1",
+          threshold=0.5,
+          criterion=HallucinationsCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash", parallelism_limit=2
+              ),
+          ),
+      )
+  )
+  cancelled = False
+
+  async def mock_generate(llm_request):
+    del llm_request
+    nonlocal cancelled
+    try:
+      await asyncio.wait_for(asyncio.Event().wait(), timeout=2.0)
+      yield LlmResponse()
+    except asyncio.CancelledError:
+      cancelled = True
+      raise
+
+  mock_llm_registry.generate_content_async = mock_generate
+  get_steps_to_evaluate = metric._get_steps_to_evaluate
+
+  def get_steps_or_raise(actual):
+    if actual.invocation_id == "broken":
+      raise RuntimeError("bad invocation")
+    return get_steps_to_evaluate(actual)
+
+  mocker.patch.object(
+      metric, "_get_steps_to_evaluate", side_effect=get_steps_or_raise
+  )
+  invocations = [
+      Invocation(
+          invocation_id=invocation_id,
+          user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="answer")]
+          ),
+      )
+      for invocation_id in ["blocked", "broken"]
+  ]
+
+  with pytest.raises(RuntimeError, match="bad invocation"):
+    await metric.evaluate_invocations(invocations)
+
+  assert cancelled

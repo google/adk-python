@@ -14,19 +14,22 @@
 
 from __future__ import annotations
 
-import json
 from typing import Optional
 
-from google.api_core.gapic_v1 import client_info
 from google.auth import default as default_service_credential
-from google.cloud import secretmanager
-from google.oauth2 import credentials as user_credentials
-from google.oauth2 import service_account
 
 from ... import version
 from ...utils import _mtls_utils
+from .._google_sdk import create_gapic_client_info as _create_gapic_client_info
+from .._google_sdk import create_user_credentials as _create_user_credentials
+from .._google_sdk import load_service_account_credentials as _load_service_account_credentials
 
 USER_AGENT = f"google-adk/{version.__version__}"
+
+_SECRET_MANAGER_REQUIRED = (
+    "Secret Manager support requires google-cloud-secret-manager. "
+    "Install it with: pip install 'google-adk[gcp]'."
+)
 
 _DEFAULT_REGIONAL_ENDPOINT_TEMPLATE = (
     "secretmanager.{location}.rep.googleapis.com"
@@ -70,12 +73,18 @@ class SecretManagerClient:
           Manager service. If not provided, the global endpoint is used.
 
     Raises:
+        ImportError: If `google-cloud-secret-manager` is not installed.
         ValueError: If both `service_account_json` and `auth_token` are
             provided, if `service_account_json` is not valid JSON, or if
             neither is provided and Application Default Credentials cannot be
             resolved.
         google.auth.exceptions.GoogleAuthError: If authentication fails.
     """
+    try:
+      from google.cloud import secretmanager  # pylint: disable=g-import-not-at-top
+    except ImportError as e:
+      raise ImportError(_SECRET_MANAGER_REQUIRED) from e
+
     if service_account_json and auth_token:
       raise ValueError(
           "Must provide either 'service_account_json' or 'auth_token', not"
@@ -83,14 +92,9 @@ class SecretManagerClient:
       )
 
     if service_account_json:
-      try:
-        credentials = service_account.Credentials.from_service_account_info(
-            json.loads(service_account_json)
-        )
-      except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid service account JSON: {e}") from e
+      credentials = _load_service_account_credentials(service_account_json)
     elif auth_token:
-      credentials = user_credentials.Credentials(token=auth_token)
+      credentials = _create_user_credentials(token=auth_token)
     else:
       try:
         credentials, _ = default_service_credential(
@@ -123,7 +127,7 @@ class SecretManagerClient:
     self._client = secretmanager.SecretManagerServiceClient(
         credentials=self._credentials,
         client_options=client_options,
-        client_info=client_info.ClientInfo(user_agent=USER_AGENT),
+        client_info=_create_gapic_client_info(user_agent=USER_AGENT),
     )
 
   def get_secret(self, resource_name: str) -> str:

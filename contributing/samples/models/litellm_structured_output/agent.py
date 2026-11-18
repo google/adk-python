@@ -36,7 +36,7 @@ class CitySummary(BaseModel):
 
 root_agent = Agent(
     name="litellm_structured_output_agent",
-    model=LiteLlm(model="gemini-2.5-flash"),
+    model=LiteLlm(model="gemini/gemini-2.5-flash"),
     description="Generates structured travel recommendations for a given city.",
     instruction="""
 Produce a JSON object that follows the CitySummary schema.

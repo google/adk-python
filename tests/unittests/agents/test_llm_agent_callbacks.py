@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
@@ -86,11 +85,11 @@ class MockAsyncAfterModelCallback(BaseModel):
     )
 
 
-def noop_callback(**kwargs) -> Optional[LlmResponse]:
+def noop_callback(**kwargs) -> LlmResponse | None:
   pass
 
 
-async def async_noop_callback(**kwargs) -> Optional[LlmResponse]:
+async def async_noop_callback(**kwargs) -> LlmResponse | None:
   pass
 
 

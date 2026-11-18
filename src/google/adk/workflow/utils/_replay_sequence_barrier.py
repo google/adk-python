@@ -24,10 +24,19 @@ from .._errors import WorkflowInvariantError
 class ReplaySequenceBarrier:
   """Unified chronological sequence barrier to ensure deterministic replay ordering."""
 
-  def __init__(self, sequence: list[str], timeout_sec: float = 15.0) -> None:
+  def __init__(
+      self,
+      sequence: list[str],
+      timeout_sec: float = 15.0,
+      *,
+      pending: frozenset[str] = frozenset(),
+  ) -> None:
     self.sequence = sequence
     self.timeout_sec = timeout_sec
+    # Keys placed by an interrupt rather than a recorded result.
+    self.pending = pending
     self.current_index = 0
+    self._completed: set[str] = set()
     self.events = {key: asyncio.Event() for key in sequence}
     if sequence:
       self.events[sequence[0]].set()
@@ -51,11 +60,13 @@ class ReplaySequenceBarrier:
         ) from e
 
   def check_and_advance(self, key: str) -> None:
-    """Advance the sequence if the key matches the current expected execution."""
-    if self.current_index < len(self.sequence):
-      expected_key = self.sequence[self.current_index]
-      if key == expected_key:
-        self.current_index += 1
-        if self.current_index < len(self.sequence):
-          next_key = self.sequence[self.current_index]
-          self.events[next_key].set()
+    """Advance the sequence through all completed keys at the head."""
+    self._completed.add(key)
+    while (
+        self.current_index < len(self.sequence)
+        and self.sequence[self.current_index] in self._completed
+    ):
+      self.current_index += 1
+      if self.current_index < len(self.sequence):
+        next_key = self.sequence[self.current_index]
+        self.events[next_key].set()

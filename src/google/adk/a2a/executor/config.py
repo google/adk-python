@@ -36,7 +36,6 @@ from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.request_converter import A2ARequestToAgentRunRequestConverter
 from ..converters.request_converter import convert_a2a_request_to_agent_run_request
-from ..experimental import a2a_experimental
 from .executor_context import ExecutorContext
 
 
@@ -80,7 +79,6 @@ class ExecuteInterceptor:
   """
 
 
-@a2a_experimental
 class A2aAgentExecutorConfig(BaseModel):
   """Configuration for the A2aAgentExecutor."""
 

@@ -261,6 +261,40 @@ async def test_langgraph_agent_runs_real_compiled_state_graph():
   assert observed_messages[0].content == "test system prompt"
 
 
+@pytest.mark.asyncio
+async def test_langgraph_agent_reads_text_from_content_blocks():
+  """A reply whose content is a list of blocks yields its text."""
+
+  def respond(state: MessagesState) -> dict[str, list[AIMessage]]:
+    del state
+    return {
+        "messages": [
+            AIMessage(
+                content=[
+                    {"type": "reasoning", "reasoning": "thinking"},
+                    {"type": "text", "text": "Sunny today."},
+                ]
+            )
+        ]
+    }
+
+  graph_builder = StateGraph(MessagesState)
+  graph_builder.add_node("respond", respond)
+  graph_builder.set_entry_point("respond")
+  graph_builder.set_finish_point("respond")
+  agent = LangGraphAgent(name="weather_agent", graph=graph_builder.compile())
+
+  events = [
+      event
+      async for event in agent.run_async(
+          _make_parent_context("test_app", "test_user", "session-id")
+      )
+  ]
+
+  assert len(events) == 1
+  assert events[0].content.parts[0].text == "Sunny today."
+
+
 def test_get_thread_id_is_stable_across_processes():
   """A literal digest also rejects a swap to a per-process-salted hash."""
   assert (

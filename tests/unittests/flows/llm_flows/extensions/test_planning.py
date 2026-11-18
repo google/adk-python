@@ -14,8 +14,6 @@
 
 """Unit tests for NL planning logic."""
 
-from typing import List
-from typing import Optional
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -147,8 +145,8 @@ class OverriddenBuiltInPlanner(BuiltInPlanner):
   def process_planning_response(
       self,
       callback_context: CallbackContext,
-      response_parts: List[types.Part],
-  ) -> Optional[List[types.Part]]:
+      response_parts: list[types.Part],
+  ) -> list[types.Part] | None:
     self.process_planning_response_called = True
     self.received_parts = response_parts
     return response_parts
@@ -229,14 +227,14 @@ class CustomPlanner(BasePlanner):
       self,
       readonly_context: ReadonlyContext,
       llm_request: LlmRequest,
-  ) -> Optional[str]:
+  ) -> str | None:
     return 'Custom instruction'
 
   def process_planning_response(
       self,
       callback_context: CallbackContext,
-      response_parts: List[types.Part],
-  ) -> Optional[List[types.Part]]:
+      response_parts: list[types.Part],
+  ) -> list[types.Part] | None:
     return response_parts
 
 

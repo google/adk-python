@@ -26,6 +26,8 @@ from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_TOOL_CALL
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
 from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
@@ -223,6 +225,66 @@ class TestConvertA2aPartToGenaiPart:
     assert result.function_response.response == {
         "result": "success",
         "data": [1, 2, 3],
+    }
+
+  def test_convert_data_part_tool_call(self):
+    """Test conversion of A2A DataPart with tool call metadata."""
+    # Arrange
+    tool_call_data = {
+        "id": "tc_1",
+        "tool_type": "GOOGLE_SEARCH_WEB",
+        "args": {"queries": ["weather today"]},
+    }
+    a2a_part = _compat.make_data_part(
+        data=tool_call_data,
+        metadata={
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_TOOL_CALL,
+        },
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, genai_types.Part)
+    assert result.tool_call is not None
+    assert result.tool_call.id == "tc_1"
+    assert result.tool_call.tool_type == genai_types.ToolType.GOOGLE_SEARCH_WEB
+    assert result.tool_call.args == {"queries": ["weather today"]}
+
+  def test_convert_data_part_tool_response(self):
+    """Test conversion of A2A DataPart with tool response metadata."""
+    # Arrange
+    tool_response_data = {
+        "id": "tc_1",
+        "tool_type": "GOOGLE_SEARCH_WEB",
+        "response": {"search_suggestions": ["weather forecast"]},
+    }
+    a2a_part = _compat.make_data_part(
+        data=tool_response_data,
+        metadata={
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE,
+        },
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, genai_types.Part)
+    assert result.tool_response is not None
+    assert result.tool_response.id == "tc_1"
+    assert (
+        result.tool_response.tool_type == genai_types.ToolType.GOOGLE_SEARCH_WEB
+    )
+    assert result.tool_response.response == {
+        "search_suggestions": ["weather forecast"]
     }
 
   @pytest.mark.parametrize(
@@ -429,6 +491,54 @@ class TestConvertA2aPartToGenaiPartApiVariant:
 
     assert result is not None
     assert result.function_response is not None
+    assert result.part_metadata is None
+
+  def test_tool_call_metadata_suppressed_in_vertex_mode(self):
+    """Tool call data parts suppress part_metadata in Vertex mode."""
+    a2a_part = _compat.make_data_part(
+        data={"id": "tc_1", "tool_type": "GOOGLE_SEARCH_WEB"},
+        metadata={
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_TOOL_CALL,
+            "custom": "value",
+        },
+    )
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.VERTEX_AI,
+    ):
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.tool_call is not None
+    assert result.part_metadata is None
+
+  def test_tool_response_metadata_suppressed_in_vertex_mode(self):
+    """Tool response data parts suppress part_metadata in Vertex mode."""
+    a2a_part = _compat.make_data_part(
+        data={
+            "id": "tc_1",
+            "tool_type": "GOOGLE_SEARCH_WEB",
+            "response": {"ok": True},
+        },
+        metadata={
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE,
+            "custom": "value",
+        },
+    )
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.VERTEX_AI,
+    ):
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.tool_response is not None
     assert result.part_metadata is None
 
   def test_file_with_uri_metadata_suppressed_in_vertex_mode(self):
@@ -758,6 +868,66 @@ class TestConvertGenaiPartToA2aPart:
         == A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
     )
 
+  def test_convert_tool_call_part(self):
+    """Test conversion of GenAI tool_call Part to A2A Part."""
+    # Arrange
+    tool_call = genai_types.ToolCall(
+        id="tc_1",
+        tool_type=genai_types.ToolType.GOOGLE_SEARCH_WEB,
+        args={"queries": ["weather today"]},
+    )
+    genai_part = genai_types.Part(tool_call=tool_call)
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, a2a_types.Part)
+    assert _compat.is_data_part(result)
+    expected_data = tool_call.model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
+    assert _normalize_numbers(
+        _compat.data_part_dict(result)
+    ) == _normalize_numbers(expected_data)
+    assert (
+        _compat.part_metadata(result)[
+            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+        ]
+        == A2A_DATA_PART_METADATA_TYPE_TOOL_CALL
+    )
+
+  def test_convert_tool_response_part(self):
+    """Test conversion of GenAI tool_response Part to A2A Part."""
+    # Arrange
+    tool_response = genai_types.ToolResponse(
+        id="tc_1",
+        tool_type=genai_types.ToolType.GOOGLE_SEARCH_WEB,
+        response={"search_suggestions": ["weather forecast"]},
+    )
+    genai_part = genai_types.Part(tool_response=tool_response)
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, a2a_types.Part)
+    assert _compat.is_data_part(result)
+    expected_data = tool_response.model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
+    assert _normalize_numbers(
+        _compat.data_part_dict(result)
+    ) == _normalize_numbers(expected_data)
+    assert (
+        _compat.part_metadata(result)[
+            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+        ]
+        == A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE
+    )
+
   def test_convert_unsupported_part(self):
     """Test handling of unsupported GenAI Part types."""
     # Arrange - Create a GenAI Part with no recognized fields
@@ -970,6 +1140,50 @@ class TestRoundTripConversions:
     )
     assert result_genai_part.executable_code.code == executable_code.code
 
+  def test_tool_call_round_trip(self):
+    """Test round-trip conversion for tool call parts."""
+    # Arrange
+    tool_call = genai_types.ToolCall(
+        id="tc_1",
+        tool_type=genai_types.ToolType.GOOGLE_SEARCH_WEB,
+        args={"queries": ["weather today"]},
+    )
+    genai_part = genai_types.Part(tool_call=tool_call)
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.tool_call is not None
+    assert result_genai_part.tool_call.id == tool_call.id
+    assert result_genai_part.tool_call.tool_type == tool_call.tool_type
+    assert result_genai_part.tool_call.args == tool_call.args
+
+  def test_tool_response_round_trip(self):
+    """Test round-trip conversion for tool response parts."""
+    # Arrange
+    tool_response = genai_types.ToolResponse(
+        id="tc_1",
+        tool_type=genai_types.ToolType.GOOGLE_SEARCH_WEB,
+        response={"search_suggestions": ["weather forecast"]},
+    )
+    genai_part = genai_types.Part(tool_response=tool_response)
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.tool_response is not None
+    assert result_genai_part.tool_response.id == tool_response.id
+    assert result_genai_part.tool_response.tool_type == tool_response.tool_type
+    assert result_genai_part.tool_response.response == tool_response.response
+
   def test_data_part_round_trip(self):
     """Test round-trip conversion for data parts."""
     # Arrange
@@ -1133,6 +1347,8 @@ class TestNewConstants:
         == "code_execution_result"
     )
     assert A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE == "executable_code"
+    assert A2A_DATA_PART_METADATA_TYPE_TOOL_CALL == "tool_call"
+    assert A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE == "tool_response"
 
   def test_convert_a2a_data_part_with_code_execution_result_metadata(self):
     """Test conversion of A2A DataPart with code execution result metadata."""
@@ -1383,6 +1599,72 @@ class TestThoughtSignaturePreservation:
     assert result.function_call.name == "invalid_sig_tool"
     # thought_signature should be None due to decode failure
     assert result.thought_signature is None
+
+  def test_tool_call_with_thought_signature_round_trip(self):
+    """Test thought_signature is preserved in tool_call GenAI -> A2A -> GenAI round trip."""
+    # Arrange
+    original_signature = b"tool_call_signature_bytes"
+    tool_call = genai_types.ToolCall(
+        id="tc_1",
+        tool_type=genai_types.ToolType.GOOGLE_SEARCH_WEB,
+        args={"queries": ["weather today"]},
+    )
+    original_part = genai_types.Part(
+        tool_call=tool_call,
+        thought_signature=original_signature,
+    )
+
+    # Act - Convert GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(original_part)
+    restored_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert a2a_part is not None
+    metadata = _compat.part_metadata(a2a_part)
+    thought_sig_key = _get_adk_metadata_key("thought_signature")
+    assert thought_sig_key in metadata
+    assert base64.b64decode(metadata[thought_sig_key]) == original_signature
+    assert restored_part is not None
+    assert restored_part.tool_call is not None
+    assert restored_part.tool_call.id == "tc_1"
+    assert (
+        restored_part.tool_call.tool_type
+        == genai_types.ToolType.GOOGLE_SEARCH_WEB
+    )
+    assert restored_part.thought_signature == original_signature
+
+  def test_tool_response_with_thought_signature_round_trip(self):
+    """Test thought_signature is preserved in tool_response GenAI -> A2A -> GenAI round trip."""
+    # Arrange
+    original_signature = b"tool_response_signature_bytes"
+    tool_response = genai_types.ToolResponse(
+        id="tc_1",
+        tool_type=genai_types.ToolType.GOOGLE_SEARCH_WEB,
+        response={"search_suggestions": ["weather forecast"]},
+    )
+    original_part = genai_types.Part(
+        tool_response=tool_response,
+        thought_signature=original_signature,
+    )
+
+    # Act - Convert GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(original_part)
+    restored_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert a2a_part is not None
+    metadata = _compat.part_metadata(a2a_part)
+    thought_sig_key = _get_adk_metadata_key("thought_signature")
+    assert thought_sig_key in metadata
+    assert base64.b64decode(metadata[thought_sig_key]) == original_signature
+    assert restored_part is not None
+    assert restored_part.tool_response is not None
+    assert restored_part.tool_response.id == "tc_1"
+    assert (
+        restored_part.tool_response.tool_type
+        == genai_types.ToolType.GOOGLE_SEARCH_WEB
+    )
+    assert restored_part.thought_signature == original_signature
 
 
 class TestMediaControlFieldPreservation:

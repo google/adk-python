@@ -18,8 +18,6 @@ This sample shows how CrewaiTool correctly passes arbitrary parameters
 through **kwargs, which is a common pattern in CrewAI tools.
 """
 
-from typing import Optional
-
 from crewai.tools import BaseTool
 from google.adk import Agent
 from google.adk.integrations.crewai import CrewaiTool
@@ -31,13 +29,13 @@ class SearchInput(BaseModel):
   """Input schema for the search tool."""
 
   query: str = Field(..., description="The search query string")
-  category: Optional[str] = Field(
+  category: str | None = Field(
       None, description="Filter by category (e.g., 'technology', 'science')"
   )
-  date_range: Optional[str] = Field(
+  date_range: str | None = Field(
       None, description="Filter by date range (e.g., 'last_week', '2024')"
   )
-  limit: Optional[int] = Field(
+  limit: int | None = Field(
       None, description="Limit the number of results (e.g., 10, 20)"
   )
 

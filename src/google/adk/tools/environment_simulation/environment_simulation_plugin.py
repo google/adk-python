@@ -23,11 +23,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
 from google.adk.tools.tool_context import ToolContext
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class EnvironmentSimulationPlugin(BasePlugin):
   """ADK Plugin for EnvironmentSimulation."""
 

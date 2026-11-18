@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from a2a.types import Artifact
+from a2a.types import TaskArtifactUpdateEvent
 from google.adk.a2a import _compat
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
@@ -35,7 +37,6 @@ pytestmark = pytest.mark.skipif(
 
 from .client import create_a2a_client
 from .client import create_client
-from .server import agent_card
 from .server import create_server_app_v1
 
 
@@ -338,6 +339,67 @@ async def test_artifact_producing_agent_round_trip():
 
   assert len(received_requests) == 1
   assert "with artifact" in result["texts"]
+
+
+# -----------------------------------------------------------------------------
+# Session state boundary
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("force_new_version", "use_legacy"),
+    [
+        pytest.param(False, True, id="default_server_default_client"),
+        pytest.param(True, True, id="forced_new_server_default_client"),
+        pytest.param(False, False, id="default_server_non_legacy_client"),
+    ],
+)
+async def test_peer_state_delta_is_logged_and_not_applied(
+    caplog, streaming, force_new_version, use_legacy
+):
+  """A remote output_key never reaches caller state, and the drop is logged.
+
+  Covers both response handlers: a forced-new server marks its responses for
+  ``_handle_a2a_response_v2``, which reads actions from the nested message and
+  artifact metadata, while the default server's responses go through
+  ``_handle_a2a_response``.
+  """
+
+  async def run_async(**kwargs):
+    # What a remote LlmAgent(output_key="findings") emits as its final event.
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(parts=[types.Part(text="the findings")]),
+        actions=EventActions(state_delta={"findings": "the findings"}),
+    )
+
+  app = create_server_app_v1(run_async, force_new_version=force_new_version)
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+
+  texts = []
+  async with app.router.lifespan_context(app):
+    agent = create_client(app, streaming=streaming, use_legacy=use_legacy)
+    client_runner = Runner(
+        app_name="ClientApp", agent=agent, session_service=session_service
+    )
+    with caplog.at_level("WARNING"):
+      async for event in client_runner.run_async(
+          user_id="test_user",
+          session_id="test_session",
+          new_message=types.Content(parts=[types.Part(text="Hi")], role="user"),
+      ):
+        if event.content and event.content.parts:
+          texts.extend(part.text for part in event.content.parts if part.text)
+
+  session = await session_service.get_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  assert "the findings" in texts
+  assert "findings" not in session.state
+  assert "Ignoring a session state delta from a remote A2A peer" in caplog.text
 
 
 # -----------------------------------------------------------------------------
@@ -651,6 +713,44 @@ async def test_streaming_artifacts_are_aggregated_into_single_task():
   # Both recorded artifacts are present (plus any text-carrying artifact).
   artifact_names = {a.name for a in task.artifacts}
   assert {"file1", "file2"}.issubset(artifact_names)
+
+
+@pytest.mark.asyncio
+async def test_answer_sent_only_as_artifact_completes_the_task():
+  """A run whose answer never reaches a status message still completes."""
+
+  def answer_as_artifact(event, invocation_context, task_id, context_id, _):
+    return [
+        TaskArtifactUpdateEvent(
+            task_id=task_id,
+            context_id=context_id,
+            artifact=Artifact(
+                artifact_id="answer",
+                parts=[_compat.make_text_part("Hello world")],
+            ),
+            last_chunk=True,
+        )
+    ]
+
+  app = create_server_app_v1(
+      _non_streaming_run_async([]),
+      config=A2aAgentExecutorConfig(event_converter=answer_as_artifact),
+  )
+
+  async with app.router.lifespan_context(app):
+    a2a_client = create_a2a_client(app, streaming=True, use_legacy=True)
+    request = _compat.make_message(
+        message_id="test_message_id",
+        role=_compat.ROLE_USER,
+        parts=[_compat.make_text_part("Hi")],
+    )
+    events = []
+    normalize = _compat.make_stream_normalizer()
+    async for item in _compat.send_message(a2a_client, request=request):
+      events.append(normalize(item))
+
+  final_task, _ = events[-1]
+  assert final_task.status.state == _compat.TS_COMPLETED
 
 
 @pytest.mark.asyncio

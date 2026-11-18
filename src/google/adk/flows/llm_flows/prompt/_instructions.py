@@ -67,8 +67,8 @@ def _label_dynamic_instruction(instruction: str) -> str:
 
 
 async def _process_agent_instruction(
-    agent: 'LlmAgent',
-    invocation_context: 'InvocationContext',
+    agent: LlmAgent,
+    invocation_context: InvocationContext,
 ) -> str:
   """Process agent instruction with state injection.
 
@@ -94,8 +94,8 @@ async def _process_agent_instruction(
 
 
 async def _build_instructions(
-    invocation_context: 'InvocationContext',
-    llm_request: 'LlmRequest',
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
 ) -> None:
   """Build and append instructions to the LLM request.
 

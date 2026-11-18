@@ -18,9 +18,6 @@ from datetime import timezone
 import logging
 import threading
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 
 from adk_stale_agent.settings import GITHUB_TOKEN
 from adk_stale_agent.settings import STALE_HOURS_THRESHOLD
@@ -96,7 +93,7 @@ _session.headers.update({
 })
 
 
-def get_request(url: str, params: Optional[Dict[str, Any]] = None) -> Any:
+def get_request(url: str, params: dict[str, Any] | None = None) -> Any:
   """
   Sends a GET request to the GitHub API with automatic retries.
 
@@ -184,7 +181,7 @@ def delete_request(url: str) -> Any:
     raise
 
 
-def error_response(error_message: str) -> Dict[str, Any]:
+def error_response(error_message: str) -> dict[str, Any]:
   """
   Creates a standardized error response dictionary for tool outputs.
 
@@ -198,8 +195,8 @@ def error_response(error_message: str) -> Dict[str, Any]:
 
 
 def get_old_open_issue_numbers(
-    owner: str, repo: str, days_old: Optional[float] = None
-) -> List[int]:
+    owner: str, repo: str, days_old: float | None = None
+) -> list[int]:
   """
   Finds open issues older than the specified threshold using server-side filtering.
 

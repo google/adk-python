@@ -13,13 +13,13 @@
 # limitations under the License.
 
 import os
-from typing import Optional
 from unittest import mock
 
 from google.adk.telemetry import _agent_engine
 from google.adk.telemetry import google_cloud
 from google.adk.telemetry._agent_engine import telemetry_user_agent_headers
 from google.adk.telemetry._agent_engine_metric_exporter import MIN_EXPORT_INTERVAL_MS
+from google.adk.telemetry._gcp_resource import _Project
 from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_LOGS_ENDPOINT
 from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_METRICS_ENDPOINT
 from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT
@@ -43,6 +43,28 @@ from opentelemetry.sdk._logs._internal import LogRecord
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_fetch_project():
+  """Keeps the Resource Manager lookup off the network in every test."""
+
+  def fake_fetch_project(project: str | None, credentials=None) -> _Project:
+    """Mirrors the real contract: what went in comes back, the rest is faked."""
+    del credentials  # The real lookup keys its memo on the project alone.
+    if not project:
+      return _Project(id="", number="")
+    if project.isdecimal():
+      return _Project(id=f"{project}-id", number=project)
+    return _Project(id=project, number=f"{project}-number")
+
+  with mock.patch.object(
+      google_cloud,
+      "_fetch_project",
+      autospec=True,
+      side_effect=fake_fetch_project,
+  ) as fetch_project:
+    yield fetch_project
 
 
 @pytest.mark.parametrize("enable_cloud_tracing", [True, False])
@@ -94,13 +116,47 @@ def test_get_gcp_exporters(
   assert len(otel_hooks.log_record_processors) == (
       1 if enable_cloud_logging else 0
   )
+  # A service-account key file has requires_scopes=True and no scopes; the
+  # scope must be requested explicitly or its token refresh fails with
+  # invalid_scope.
+  auth_mock.assert_called_once_with(scopes=[google_cloud._CLOUD_PLATFORM_SCOPE])
+
+
+def test_get_gcp_span_exporter_none_when_otlp_unavailable():
+  """A missing OTLP exporter package disables cloud tracing instead of
+  raising."""
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+  # Setting the module to None in sys.modules makes the `from ... import ...`
+  # statement raise ImportError, simulating the package not being installed.
+  with mock.patch.dict(
+      "sys.modules",
+      {"opentelemetry.exporter.otlp.proto.http.trace_exporter": None},
+  ):
+    assert _get_gcp_span_exporter(credentials) is None
+
+
+def test_get_gcp_logs_exporter_none_when_otlp_unavailable():
+  """A missing OTLP exporter package disables cloud logging instead of
+  raising."""
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+  # Setting the module to None in sys.modules makes the `from ... import ...`
+  # statement raise ImportError, simulating the package not being installed.
+  with mock.patch.dict(
+      "sys.modules",
+      {"opentelemetry.exporter.otlp.proto.http._log_exporter": None},
+  ):
+    assert _get_gcp_logs_exporter(credentials, "project-id") is None
 
 
 @pytest.mark.parametrize("project_id_in_arg", ["project_id_in_arg", None])
 @pytest.mark.parametrize("project_id_on_env", ["project_id_on_env", None])
 def test_get_gcp_resource(
-    project_id_in_arg: Optional[str],
-    project_id_on_env: Optional[str],
+    project_id_in_arg: str | None,
+    project_id_on_env: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ):
   # Arrange.
@@ -432,9 +488,8 @@ def test_get_gcp_otlp_metric_exporter_uses_default_credentials(
   credentials = mock.create_autospec(
       google.auth.credentials.Credentials, instance=True
   )
-  monkeypatch.setattr(
-      "google.auth.default", lambda: (credentials, "project-id")
-  )
+  auth_default = mock.MagicMock(return_value=(credentials, "project-id"))
+  monkeypatch.setattr("google.auth.default", auth_default)
   session = mock.MagicMock(name="session")
   monkeypatch.setattr(
       "google.auth.transport.requests.AuthorizedSession",
@@ -451,6 +506,12 @@ def test_get_gcp_otlp_metric_exporter_uses_default_credentials(
   )
 
   assert _get_gcp_otlp_metric_exporter() is exporter
+  # A service-account key file has requires_scopes=True and no scopes; the
+  # scope must be requested explicitly or its token refresh fails with
+  # invalid_scope.
+  auth_default.assert_called_once_with(
+      scopes=[google_cloud._CLOUD_PLATFORM_SCOPE]
+  )
 
 
 def test_get_gcp_metrics_exporter_wraps_otlp_in_periodic_reader(
@@ -505,7 +566,9 @@ def test_agent_engine_uses_only_request_driven_reader(
   """On Agent Engine there must be exactly one metric reader: two exporters
   would double-report every point."""
   monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
-  monkeypatch.setattr("google.auth.default", lambda: ("", "project-id"))
+  monkeypatch.setattr(
+      "google.auth.default", lambda **kwargs: ("", "project-id")
+  )
   fake_state = mock.MagicMock(name="metrics_state")
   monkeypatch.setattr(
       "google.adk.telemetry.google_cloud._get_agent_engine_metrics_setup",
@@ -630,8 +693,8 @@ def _emit_record(processor, record: ReadWriteLogRecord) -> ReadWriteLogRecord:
     ],
 )
 def test_logs_exporter_falls_back_to_default_log_name(
-    agent_engine_id: Optional[str],
-    log_name_env: Optional[str],
+    agent_engine_id: str | None,
+    log_name_env: str | None,
     expected_default: str,
     monkeypatch: pytest.MonkeyPatch,
 ):

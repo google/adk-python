@@ -31,7 +31,6 @@ Endpoints:
 import secrets
 import time
 from typing import Dict
-from typing import Optional
 
 from fastapi import FastAPI
 from fastapi import Form
@@ -65,8 +64,8 @@ class TokenResponse(BaseModel):
   access_token: str
   token_type: str = "Bearer"
   expires_in: int = 3600
-  refresh_token: Optional[str] = None
-  scope: Optional[str] = None
+  refresh_token: str | None = None
+  scope: str | None = None
 
 
 @app.get("/.well-known/openid-configuration")

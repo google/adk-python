@@ -24,7 +24,7 @@ Initialize the service to manage persistent sessions in a Firestore database.
 Create a session to begin tracking a user interaction history.
 
 ```python
-from google.adk.integrations.firestore.firestore_session_service import FirestoreSessionService
+from google.adk.integrations.firestore import FirestoreSessionService
 from google.adk.events.event import Event
 
 # Initialize the session service with default settings

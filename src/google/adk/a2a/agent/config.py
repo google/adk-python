@@ -21,6 +21,7 @@ from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import cast
+from typing import Literal
 
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Message as A2AMessage
@@ -138,8 +139,13 @@ class A2aRemoteAgentConfig(BaseModel):
   card_request_interceptors: list[CardRequestInterceptor] | None = None
   """Interceptors that inject headers into the remote agent card fetch."""
 
-  forward_session_id_as_context_id: bool = False
-  """Whether to forward the local session ID as context_id when no context_id is present."""
+  forward_session_id_as_context_id: bool | Literal["namespaced"] = False
+  """Whether to forward or derive context_id from the local session.
+
+  When no context_id is present, ``True`` forwards the raw local session ID,
+  while ``"namespaced"`` derives a SHA-256 digest of the app name, user ID, and
+  session ID so distinct local users or apps never share a remote context.
+  """
 
   def __deepcopy__(
       self, memo: dict[int, Any] | None = None
@@ -149,7 +155,7 @@ class A2aRemoteAgentConfig(BaseModel):
     cls = self.__class__
     copied_values: dict[str, Any] = {}
     for k, v in self.__dict__.items():
-      if not k.startswith('_'):
+      if not k.startswith("_"):
         if callable(v):
           copied_values[k] = v
         else:

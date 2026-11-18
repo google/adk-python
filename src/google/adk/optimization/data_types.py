@@ -28,7 +28,6 @@ class SamplingResult(BaseModel):
   """Base class for evaluation results of the candidate agent on the batch of examples."""
 
   scores: dict[str, float] = Field(
-      required=True,
       description=(
           "A map from example UID to the agent's overall score on that example."
           " (higher is better)."
@@ -50,7 +49,6 @@ class AgentWithScores(BaseModel):
   """
 
   optimized_agent: Agent = Field(
-      required=True,
       description="The optimized agent.",
   )
 
@@ -67,7 +65,6 @@ class OptimizerResult(BaseModel, Generic[AgentWithScoresT]):
   """Base class for optimizer final results."""
 
   optimized_agents: list[AgentWithScoresT] = Field(
-      required=True,
       description=(
           "A list of optimized agents which cannot be considered strictly"
           " better than one another (see"

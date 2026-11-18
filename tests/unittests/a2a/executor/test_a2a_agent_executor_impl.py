@@ -35,8 +35,12 @@ from google.adk.events.event import Event
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.adk.utils._error_reporting import ENV_DEBUG_ERRORS
 from google.genai.types import Content
 import pytest
+
+_SECRET_ERROR = "Test error: [Errno 2] No such file: '/home/victim/.adk/key'"
+"""An exception message shaped like the ones that leak host detail."""
 
 
 def _assert_final(event):
@@ -50,6 +54,11 @@ def _assert_final(event):
     assert not hasattr(event, "final")
   else:
     assert event.final is True
+
+
+def _part_text(part):
+  """Return a text part's text, version-correctly."""
+  return part.text if _compat.IS_A2A_V1 else part.root.text
 
 
 def _final_events(call_args_list):
@@ -490,7 +499,7 @@ class TestA2aAgentExecutor:
     self.mock_context.task_id = "test-task-id"
     self.mock_context.current_task = None
 
-    self.mock_request_converter.side_effect = Exception("Test error")
+    self.mock_request_converter.side_effect = Exception(_SECRET_ERROR)
 
     # Execute (should not raise since we catch the exception)
     await self.executor.execute(self.mock_context, self.mock_event_queue)
@@ -499,11 +508,28 @@ class TestA2aAgentExecutor:
     failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert failure_event.status.state == _compat.TS_FAILED
     _assert_final(failure_event)
-    _failure_part = failure_event.status.message.parts[0]
-    if _compat.IS_A2A_V1:
-      assert "Test error" in _failure_part.text
-    else:
-      assert "Test error" in _failure_part.root.text
+    # The A2A peer is untrusted, so it gets a correlation id for the logged
+    # exception rather than the exception text itself.
+    text = _part_text(failure_event.status.message.parts[0])
+    assert _SECRET_ERROR not in text
+    assert "/home/victim" not in text
+    assert "error_id" in text
+
+  @pytest.mark.asyncio
+  async def test_execute_exception_detail_gated_by_debug_flag(
+      self, monkeypatch
+  ):
+    """ADK_DEBUG_ERRORS puts the exception text back for local debugging."""
+    monkeypatch.setenv(ENV_DEBUG_ERRORS, "1")
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.current_task = None
+
+    self.mock_request_converter.side_effect = Exception(_SECRET_ERROR)
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
+    assert _SECRET_ERROR in _part_text(failure_event.status.message.parts[0])
 
   @pytest.mark.asyncio
   async def test_handle_request_with_non_working_state(self):
