@@ -16,15 +16,12 @@ from __future__ import annotations
 
 from typing import Annotated
 from typing import Any
-from typing import Union
 
 from pydantic import Discriminator
 from pydantic import RootModel
 from pydantic import Tag
 from typing_extensions import deprecated
 
-from ..features import experimental
-from ..features import FeatureName
 from .base_agent_config import BaseAgentConfig
 from .llm_agent_config import LlmAgentConfig
 from .loop_agent_config import LoopAgentConfig
@@ -56,13 +53,11 @@ def agent_config_discriminator(v: Any) -> str:
 
 # A discriminated union of all possible agent configurations.
 ConfigsUnion = Annotated[
-    Union[
-        Annotated[LlmAgentConfig, Tag("LlmAgent")],
-        Annotated[LoopAgentConfig, Tag("LoopAgent")],
-        Annotated[ParallelAgentConfig, Tag("ParallelAgent")],
-        Annotated[SequentialAgentConfig, Tag("SequentialAgent")],
-        Annotated[BaseAgentConfig, Tag("BaseAgent")],
-    ],
+    Annotated[LlmAgentConfig, Tag("LlmAgent")]
+    | Annotated[LoopAgentConfig, Tag("LoopAgent")]
+    | Annotated[ParallelAgentConfig, Tag("ParallelAgent")]
+    | Annotated[SequentialAgentConfig, Tag("SequentialAgent")]
+    | Annotated[BaseAgentConfig, Tag("BaseAgent")],
     Discriminator(agent_config_discriminator),
 ]
 
@@ -74,6 +69,5 @@ ConfigsUnion = Annotated[
     "Config is now loaded via reflection so the separate config class is no "
     "longer needed."
 )
-@experimental(FeatureName.AGENT_CONFIG)
 class AgentConfig(RootModel[ConfigsUnion]):
   """The config for the YAML schema to create an agent."""

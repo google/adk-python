@@ -22,13 +22,18 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import TYPE_CHECKING
+from typing import Union
 
 from .path_normalizer import sanitize_generated_file_path
+
+if TYPE_CHECKING:
+  from ....sessions.state import State
 
 
 def resolve_file_path(
     file_path: str,
-    session_state: Optional[Dict[str, Any]] = None,
+    session_state: Optional[Union[Dict[str, Any], State]] = None,
     working_directory: Optional[str] = None,
 ) -> Path:
   """Resolve a file path using root directory from session state.
@@ -83,7 +88,7 @@ def resolve_file_path(
 
 def resolve_file_paths(
     file_paths: List[str],
-    session_state: Optional[Dict[str, Any]] = None,
+    session_state: Optional[Union[Dict[str, Any], State]] = None,
     working_directory: Optional[str] = None,
 ) -> List[Path]:
   """Resolve multiple file paths using root directory from session state.

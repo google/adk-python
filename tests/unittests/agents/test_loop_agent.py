@@ -336,3 +336,31 @@ async def test_run_async_with_pause_preserves_sub_agent_state(
 def test_deprecation_mentions_sub_agent_limitation():
   with pytest.warns(DeprecationWarning, match='sub-agent'):
     LoopAgent(name='deprecated_loop', sub_agents=[])
+
+
+@pytest.mark.asyncio
+async def test_non_resumable_loop_agent_stops_immediately_on_pause_event(
+    request: pytest.FixtureRequest,
+):
+  """A non-resumable LoopAgent stops at the first event that pauses it."""
+  agent_1 = _TestingAgent(name=f'{request.function.__name__}_agent_1')
+  agent_2 = _TestingAgent(name=f'{request.function.__name__}_agent_2')
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_loop_agent',
+      max_iterations=3,
+      sub_agents=[agent_1, agent_2],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent, resumable=False
+  )
+
+  with patch.object(
+      InvocationContext,
+      'should_pause_invocation',
+      side_effect=lambda event: event.author == agent_1.name,
+  ):
+    events = [e async for e in loop_agent.run_async(parent_ctx)]
+
+  assert testing_utils.simplify_resumable_app_events(events) == [
+      (agent_1.name, f'Hello, async {agent_1.name}!'),
+  ]

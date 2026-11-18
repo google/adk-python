@@ -18,11 +18,7 @@ from typing import List
 
 from pydantic import BaseModel
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class StatefulParameter(BaseModel):
   """Represents a stateful parameter and its connections."""
 
@@ -36,7 +32,6 @@ class StatefulParameter(BaseModel):
   """A list of tools that use this parameter as input."""
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class ToolConnectionMap(BaseModel):
   """Represents the map of tool connections."""
 

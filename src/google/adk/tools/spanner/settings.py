@@ -22,9 +22,6 @@ from pydantic import BaseModel
 from pydantic import model_validator
 from typing_extensions import Self
 
-from ...features import experimental
-from ...features import FeatureName
-
 # Vector similarity search nearest neighbors search algorithms.
 EXACT_NEAREST_NEIGHBORS: Final = "EXACT_NEAREST_NEIGHBORS"
 APPROXIMATE_NEAREST_NEIGHBORS: Final = "APPROXIMATE_NEAREST_NEIGHBORS"
@@ -248,7 +245,6 @@ class SpannerVectorStoreSettings(BaseModel):
     return self
 
 
-@experimental(FeatureName.SPANNER_TOOL_SETTINGS)
 class SpannerToolSettings(BaseModel):
   """Settings for Spanner tools."""
 

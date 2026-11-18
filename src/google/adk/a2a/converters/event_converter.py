@@ -31,9 +31,9 @@ from google.genai import types as genai_types
 
 from .. import _compat
 from ...agents.invocation_context import InvocationContext
+from ...events._internal_metadata import public_metadata
 from ...events.event import Event
-from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ..experimental import a2a_experimental
+from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
@@ -42,6 +42,9 @@ from .part_converter import convert_a2a_part_to_genai_part
 from .part_converter import convert_genai_part_to_a2a_part
 from .part_converter import GenAIPartToA2APartConverter
 from .utils import _get_adk_metadata_key
+from .utils import _is_failed_status
+from .utils import A2A_TASK_FAILED_ERROR_CODE
+from .utils import A2A_TASK_FAILED_ERROR_MESSAGE
 
 # Constants
 
@@ -50,6 +53,24 @@ DEFAULT_ERROR_MESSAGE = "An error occurred during processing"
 
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _extract_text_from_event(event: Event) -> str:
+  """Returns the text content of an ADK event, or an empty string."""
+  if event.content and event.content.parts:
+    return "".join(part.text or "" for part in event.content.parts if part.text)
+  return ""
+
+
+def _mark_a2a_task_failed(event: Event) -> Event:
+  """Marks an event produced from a failed A2A task."""
+  if not event.error_code:
+    event.error_code = A2A_TASK_FAILED_ERROR_CODE
+  if not event.error_message:
+    event.error_message = (
+        _extract_text_from_event(event) or A2A_TASK_FAILED_ERROR_MESSAGE
+    )
+  return event
 
 
 AdkEventToA2AEventsConverter = Callable[
@@ -140,7 +161,10 @@ def _get_context_metadata(
     optional_fields = [
         ("branch", event.branch),
         ("grounding_metadata", event.grounding_metadata),
-        ("custom_metadata", event.custom_metadata),
+        (
+            "custom_metadata",
+            public_metadata(event.custom_metadata),
+        ),
         ("usage_metadata", event.usage_metadata),
         ("error_code", event.error_code),
         ("actions", event.actions),
@@ -230,10 +254,15 @@ def convert_a2a_task_to_event(
     # Extract message from task status or history
     message = None
     if a2a_task.artifacts:
+      # A task carries one artifact per non-partial event the remote agent
+      # produced, so reading only the last one drops every earlier output.
+      # to_adk_event.convert_a2a_task_to_event flattens them the same way.
       message = Message(
           message_id="",
           role=_compat.ROLE_AGENT,
-          parts=a2a_task.artifacts[-1].parts,
+          parts=[
+              part for artifact in a2a_task.artifacts for part in artifact.parts
+          ],
       )
     elif (
         a2a_task.status
@@ -250,7 +279,7 @@ def convert_a2a_task_to_event(
       if agent_messages:
         message = agent_messages[-1]
 
-    # Convert message if available
+    # Convert message if available; otherwise create a minimal event.
     if message:
       try:
         event: Event = convert_a2a_message_to_event(
@@ -267,28 +296,30 @@ def convert_a2a_task_to_event(
             and event.content.parts
         ):
           event.actions.skip_summarization = True
-        return event
       except Exception as e:
         logger.error("Failed to convert A2A task message to event: %s", e)
         raise RuntimeError(f"Failed to convert task message: {e}") from e
+    else:
+      event = Event(
+          invocation_id=(
+              invocation_context.invocation_id
+              if invocation_context
+              else platform_uuid.new_uuid()
+          ),
+          author=author or "a2a agent",
+          branch=invocation_context.branch if invocation_context else None,
+      )
 
-    # Create minimal event if no message is available
-    return Event(
-        invocation_id=(
-            invocation_context.invocation_id
-            if invocation_context
-            else platform_uuid.new_uuid()
-        ),
-        author=author or "a2a agent",
-        branch=invocation_context.branch if invocation_context else None,
-    )
+    if _is_failed_status(a2a_task.status):
+      event = _mark_a2a_task_failed(event)
+
+    return event
 
   except Exception as e:
     logger.error("Failed to convert A2A task to event: %s", e)
     raise
 
 
-@a2a_experimental
 def convert_a2a_message_to_event(
     a2a_message: Message,
     author: Optional[str] = None,
@@ -393,7 +424,6 @@ def convert_a2a_message_to_event(
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
-@a2a_experimental
 def convert_event_to_a2a_message(
     event: Event,
     invocation_context: InvocationContext | None = None,
@@ -546,7 +576,6 @@ def _create_status_update_event(
   )
 
 
-@a2a_experimental
 def convert_event_to_a2a_events(
     event: Event,
     invocation_context: InvocationContext,

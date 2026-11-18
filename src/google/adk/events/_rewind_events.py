@@ -19,6 +19,11 @@ from __future__ import annotations
 from .event import Event
 
 
+def get_active_events(events: list[Event]) -> list[Event]:
+  """Returns the chronological subset of events that survive all rewinds."""
+  return _apply_rewinds(events)
+
+
 def _apply_rewinds(events: list[Event]) -> list[Event]:
   """Returns ``events`` with rewound invocations removed.
 
@@ -38,6 +43,13 @@ def _apply_rewinds(events: list[Event]) -> list[Event]:
   Returns:
     The chronological subset of ``events`` that survives all rewinds.
   """
+  # Fast path: a history with no rewind is already live; skip the backward
+  # walk.
+  if not any(
+      e.actions and e.actions.rewind_before_invocation_id for e in events
+  ):
+    return list(events)
+
   first_idx_by_inv: dict[str, int] | None = None
   kept: list[Event] = []
   i = len(events) - 1

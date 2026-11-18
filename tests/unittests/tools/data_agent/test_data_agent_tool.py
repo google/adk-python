@@ -31,7 +31,7 @@ def test_list_accessible_data_agents_success(mock_get_session):
   mock_session = mock.MagicMock()
   mock_response = mock.Mock()
   mock_response.json.return_value = {"dataAgents": ["agent1", "agent2"]}
-  mock_response.raise_for_status.return_value = None
+  mock_response.ok = True
   mock_session.get.return_value = mock_response
   mock_get_session.return_value = (
       mock_session,
@@ -287,7 +287,7 @@ def test_list_accessible_data_agents_regional(mock_get_session):
   mock_session = mock.MagicMock()
   mock_response = mock.Mock()
   mock_response.json.return_value = {"dataAgents": ["agent_eu"]}
-  mock_response.raise_for_status.return_value = None
+  mock_response.ok = True
   mock_session.get.return_value = mock_response
   mock_get_session.return_value = (
       mock_session,
@@ -319,7 +319,7 @@ def test_list_accessible_data_agents_explicit_location(mock_get_session):
   mock_session = mock.MagicMock()
   mock_response = mock.Mock()
   mock_response.json.return_value = {"dataAgents": ["agent_us"]}
-  mock_response.raise_for_status.return_value = None
+  mock_response.ok = True
   mock_session.get.return_value = mock_response
   mock_get_session.return_value = (
       mock_session,
@@ -1344,3 +1344,970 @@ async def test_update_data_agent_endpoint_matches_resource_name(
   )
   assert result["status"] == "SUCCESS"
   mock_get_session.assert_called_once_with(mock_creds, location="us")
+
+
+def _make_mock_page_response(body: object) -> mock.Mock:
+  resp = mock.Mock()
+  resp.ok = True
+  resp.status_code = 200
+  resp.text = ""
+  resp.json.return_value = body
+  return resp
+
+
+def _make_mock_error_response(status_code: int, text: str) -> mock.Mock:
+  resp = mock.Mock()
+  resp.ok = False
+  resp.status_code = status_code
+  resp.text = text
+  # An error response must never be parsed as a page; fail loudly if it is.
+  resp.json.side_effect = AssertionError("error response should not be parsed")
+  return resp
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_drains_all_pages(mock_get_session):
+  """Tests that omitting page_size and page_token drains all pages."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+
+  def make_agents(start: int, count: int) -> list[dict[str, str]]:
+    return [
+        {"name": f"projects/p/locations/global/dataAgents/agent-{start + i}"}
+        for i in range(count)
+    ]
+
+  mock_session.get.side_effect = [
+      _make_mock_page_response(
+          {"dataAgents": make_agents(0, 100), "nextPageToken": "page-2"}
+      ),
+      _make_mock_page_response(
+          {"dataAgents": make_agents(100, 100), "nextPageToken": "page-3"}
+      ),
+      _make_mock_page_response({"dataAgents": make_agents(200, 50)}),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "SUCCESS"
+  assert len(result["response"]) == 250
+  assert (
+      result["response"][0]["name"]
+      == "projects/p/locations/global/dataAgents/agent-0"
+  )
+  assert (
+      result["response"][249]["name"]
+      == "projects/p/locations/global/dataAgents/agent-249"
+  )
+  assert "nextPageToken" not in result
+  assert mock_session.get.call_count == 3
+  assert "params" not in mock_session.get.call_args_list[0].kwargs
+  assert mock_session.get.call_args_list[1].kwargs["params"] == {
+      "pageToken": "page-2"
+  }
+  assert mock_session.get.call_args_list[2].kwargs["params"] == {
+      "pageToken": "page-3"
+  }
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_empty(mock_get_session):
+  """Tests default auto-drain when the API returns an empty object."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.return_value = _make_mock_page_response({})
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result == {"status": "SUCCESS", "response": []}
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_stops_at_max_data_agents(
+    mock_get_session,
+):
+  """Tests default auto-drain stops at _MAX_AUTO_DATA_AGENTS and keeps nextPageToken."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  call_count = 0
+
+  def get_side_effect(*args, **kwargs):
+    del args, kwargs
+    nonlocal call_count
+    call_count += 1
+    agents = [
+        {"name": f"agent-{(call_count - 1) * 500 + i}"} for i in range(500)
+    ]
+    return _make_mock_page_response(
+        {"dataAgents": agents, "nextPageToken": f"page-{call_count}"}
+    )
+
+  mock_session.get.side_effect = get_side_effect
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "SUCCESS"
+  assert call_count == 2
+  assert len(result["response"]) == data_agent_tool._MAX_AUTO_DATA_AGENTS
+  assert result["nextPageToken"] == "page-2"
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_exact_limit_on_final_page(
+    mock_get_session,
+):
+  """Tests landing on _MAX_AUTO_DATA_AGENTS on the final page omits nextPageToken."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_page_response({
+          "dataAgents": [{"name": f"agent-{i}"} for i in range(500)],
+          "nextPageToken": "page-2",
+      }),
+      _make_mock_page_response({
+          "dataAgents": [{"name": f"agent-{500 + i}"} for i in range(500)],
+      }),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "SUCCESS"
+  assert len(result["response"]) == data_agent_tool._MAX_AUTO_DATA_AGENTS
+  assert "nextPageToken" not in result
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_stops_at_max_pages(
+    mock_get_session,
+):
+  """Tests default auto-drain stops at _MAX_AUTO_PAGES and preserves nextPageToken."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  call_count = 0
+
+  def get_side_effect(*args, **kwargs):
+    del args, kwargs
+    nonlocal call_count
+    call_count += 1
+    return _make_mock_page_response({
+        "dataAgents": [{"name": f"agent-{call_count}"}],
+        "nextPageToken": f"page-{call_count}",
+    })
+
+  mock_session.get.side_effect = get_side_effect
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "SUCCESS"
+  assert call_count == data_agent_tool._MAX_AUTO_PAGES
+  assert len(result["response"]) == data_agent_tool._MAX_AUTO_PAGES
+  assert result["nextPageToken"] == f"page-{data_agent_tool._MAX_AUTO_PAGES}"
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_stops_on_repeated_token(
+    mock_get_session,
+):
+  """Tests auto-drain flags an incomplete list if the page token repeats."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_page_response({
+          "dataAgents": [{"name": "agent-1"}],
+          "nextPageToken": "stuck-token",
+      }),
+      _make_mock_page_response({
+          "dataAgents": [{"name": "agent-2"}],
+          "nextPageToken": "stuck-token",
+      }),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "SUCCESS"
+  assert mock_session.get.call_count == 2
+  assert len(result["response"]) == 2
+  # The stuck token is dropped because resuming from it cannot advance, but the
+  # truncation must still be visible to the caller.
+  assert "nextPageToken" not in result
+  assert "incomplete" in result["paginationWarning"]
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_midway_failure(
+    mock_get_session, mock_sleep
+):
+  """Tests midway page failure returns ERROR rather than partial data agents."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  # The first page succeeds; every later attempt returns a real 500, so the
+  # retries are exhausted and the whole call fails.
+  mock_session.get.side_effect = [
+      _make_mock_page_response(
+          {"dataAgents": [{"name": "agent-1"}], "nextPageToken": "page-2"}
+      ),
+  ] + [
+      _make_mock_error_response(500, "Internal Server Error")
+      for _ in range(data_agent_tool._MAX_PAGE_ATTEMPTS)
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "ERROR"
+  assert "500 Internal Server Error" in result["error_details"]
+  assert "response" not in result
+  assert mock_session.get.call_count == 1 + data_agent_tool._MAX_PAGE_ATTEMPTS
+  assert mock_sleep.call_count == data_agent_tool._MAX_PAGE_ATTEMPTS - 1
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_default_keeps_unknown_fields(
+    mock_get_session,
+):
+  """Tests extra top-level fields (such as unreachable) are merged across pages."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_page_response({
+          "dataAgents": [{"name": "agent-1"}],
+          "nextPageToken": "page-2",
+          "unreachable": ["us-central1"],
+          "firstPageExtra": "kept",
+          "scalarExtra": "from-page-1",
+      }),
+      _make_mock_page_response({
+          "dataAgents": [{"name": "agent-2"}],
+          "unreachable": ["europe-west1"],
+          "scalarExtra": "from-page-2",
+      }),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [{"name": "agent-1"}, {"name": "agent-2"}]
+  assert result["unreachable"] == ["us-central1", "europe-west1"]
+  assert result["firstPageExtra"] == "kept"
+  assert result["scalarExtra"] == "from-page-2"
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_preserves_aggregated_list_and_reserved_keys(
+    mock_get_session,
+):
+  """Tests aggregated list extras survive non-list later values and reserved keys are protected."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_page_response({
+          "dataAgents": [{"name": "agent-1"}],
+          "nextPageToken": "page-2",
+          "unreachable": ["us-central1"],
+          "scalarToList": "initial-scalar",
+          "scalarWithNoneNext": "kept-when-none",
+          "status": "UPSTREAM_OVERRIDE_ATTEMPT",
+          "response": "UPSTREAM_OVERRIDE_ATTEMPT",
+      }),
+      _make_mock_page_response({
+          "dataAgents": [{"name": "agent-2"}],
+          "unreachable": "bad-non-list",
+          "scalarToList": ["converted-to-list"],
+          "scalarWithNoneNext": None,
+      }),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [{"name": "agent-1"}, {"name": "agent-2"}]
+  assert result["unreachable"] == ["us-central1"]
+  assert result["scalarToList"] == ["converted-to-list"]
+  assert result["scalarWithNoneNext"] == "kept-when-none"
+
+
+@pytest.mark.parametrize(
+    "malformed_body,expected_msg",
+    [
+        ([1, 2, 3], "response is not a JSON object"),
+        ({"dataAgents": "not-an-array"}, "invalid 'dataAgents' field"),
+        (
+            {"dataAgents": [], "nextPageToken": 123},
+            "invalid 'nextPageToken' field",
+        ),
+    ],
+)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_rejects_malformed_body(
+    mock_get_session, malformed_body, expected_msg
+):
+  """Tests malformed API response bodies return ERROR with descriptive details."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.return_value = _make_mock_page_response(malformed_body)
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "ERROR"
+  assert expected_msg in result["error_details"]
+
+
+@pytest.mark.parametrize(
+    "page_size,page_token,expected_params",
+    [
+        (25, None, {"pageSize": 25}),
+        (None, "tok-2", {"pageToken": "tok-2"}),
+        (25, "tok-2", {"pageSize": 25, "pageToken": "tok-2"}),
+    ],
+)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_manual_pagination(
+    mock_get_session, page_size, page_token, expected_params
+):
+  """Tests manual pagination fetches a single page and preserves nextPageToken."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.return_value = _make_mock_page_response({
+      "dataAgents": [{"name": "agent-1"}],
+      "nextPageToken": "tok-next",
+      "unreachable": ["us-east1"],
+  })
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project",
+      mock_creds,
+      page_size=page_size,
+      page_token=page_token,
+  )
+  assert result["status"] == "SUCCESS"
+  assert mock_session.get.call_count == 1
+  assert mock_session.get.call_args.kwargs["params"] == expected_params
+  assert result["response"] == [{"name": "agent-1"}]
+  assert result["nextPageToken"] == "tok-next"
+  assert result["unreachable"] == ["us-east1"]
+
+
+@pytest.mark.parametrize(
+    "page_size,page_token,expected_error",
+    [
+        (0, None, "'page_size' must be positive, got 0"),
+        (-5, None, "'page_size' must be positive, got -5"),
+        (
+            "ten",
+            None,
+            "Invalid type for 'page_size': expected integer, got str",
+        ),
+        (
+            True,
+            None,
+            "Invalid type for 'page_size': expected integer, got bool",
+        ),
+        (
+            None,
+            123,
+            "Invalid type for 'page_token': expected string, got int",
+        ),
+    ],
+)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_invalid_pagination_params(
+    mock_get_session, page_size, page_token, expected_error
+):
+  """Tests invalid page_size or page_token are rejected before any HTTP call."""
+  mock_creds = mock.Mock()
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project",
+      mock_creds,
+      page_size=page_size,
+      page_token=page_token,
+  )
+  assert result["status"] == "ERROR"
+  assert expected_error in result["error_details"]
+  mock_get_session.assert_not_called()
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_first_page_timeout_surfaces_guidance(
+    mock_get_session,
+):
+  """Tests timeout on the first page surfaces manual pagination guidance."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = requests.Timeout("read timed out")
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "ERROR"
+  assert (
+      "set 'page_size' and 'page_token' to page through them instead"
+      in result["error_details"]
+  )
+  assert "read timed out" in result["error_details"]
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_later_page_timeout_returns_partial(
+    mock_get_session,
+):
+  """Tests timeout on a subsequent page keeps the pages already fetched."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_page_response(
+          {"dataAgents": [{"name": "agent-1"}], "nextPageToken": "page-2"}
+      ),
+      requests.Timeout("read timed out on page 2"),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  # Page 1 already succeeded, so discarding it would lose real data. The token
+  # for the page that failed is handed back so the caller can resume.
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [{"name": "agent-1"}]
+  assert result["nextPageToken"] == "page-2"
+  assert "incomplete" in result["paginationWarning"]
+  assert "read timed out on page 2" in result["paginationWarning"]
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_connection_error_does_not_claim_timeout(
+    mock_get_session, mock_sleep
+):
+  """Tests non-timeout connection error returns the underlying error without timeout guidance."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = requests.ConnectionError("connection refused")
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "ERROR"
+  assert "connection refused" in result["error_details"]
+  assert "set 'page_size' and 'page_token'" not in result["error_details"]
+  # A connection error is retryable, so every attempt is spent before failing.
+  assert mock_session.get.call_count == data_agent_tool._MAX_PAGE_ATTEMPTS
+  assert mock_sleep.call_count == data_agent_tool._MAX_PAGE_ATTEMPTS - 1
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_deadline_exceeded_returns_partial(
+    mock_get_session,
+):
+  """Tests exceeding _MAX_AUTO_DURATION_SECONDS keeps the pages already fetched."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  clock = _FakeClock()
+
+  def get_and_advance_clock(*args, **kwargs):
+    del args, kwargs
+    clock.now += data_agent_tool._MAX_AUTO_DURATION_SECONDS + 1.0
+    return _make_mock_page_response(
+        {"dataAgents": [{"name": "agent-1"}], "nextPageToken": "page-2"}
+    )
+
+  mock_session.get.side_effect = get_and_advance_clock
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  with mock.patch.object(
+      data_agent_tool.time, "monotonic", side_effect=clock.monotonic
+  ):
+    result = data_agent_tool.list_accessible_data_agents(
+        "test-project", mock_creds
+    )
+
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [{"name": "agent-1"}]
+  assert result["nextPageToken"] == "page-2"
+  assert "incomplete" in result["paginationWarning"]
+
+
+def test_list_accessible_data_agents_exposes_pagination_parameters():
+  """Tests list_accessible_data_agents exposes optional page_size and page_token."""
+  sig = inspect.signature(data_agent_tool.list_accessible_data_agents)
+  for param_name in ("page_size", "page_token"):
+    assert param_name in sig.parameters
+    param = sig.parameters[param_name]
+    assert param.kind == inspect.Parameter.KEYWORD_ONLY
+    assert param.default is None
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_non_ok_status_includes_body(
+    mock_get_session, mock_sleep
+):
+  """Tests a non-retryable HTTP status fails at once and reports the body."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.return_value = _make_mock_error_response(
+      403, "caller lacks permission"
+  )
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "ERROR"
+  assert "403" in result["error_details"]
+  assert "caller lacks permission" in result["error_details"]
+  assert mock_session.get.call_count == 1
+  mock_sleep.assert_not_called()
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_retries_transient_status(
+    mock_get_session, mock_sleep
+):
+  """Tests a transient 503 is retried and the drain still succeeds."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_error_response(503, "try again"),
+      _make_mock_page_response({"dataAgents": [{"name": "agent-1"}]}),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [{"name": "agent-1"}]
+  assert mock_session.get.call_count == 2
+  mock_sleep.assert_called_once_with(
+      data_agent_tool._PAGE_RETRY_BACKOFF_SECONDS
+  )
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_gives_up_after_max_attempts(
+    mock_get_session, mock_sleep
+):
+  """Tests a persistent 503 stops after _MAX_PAGE_ATTEMPTS and reports it."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.return_value = _make_mock_error_response(503, "still down")
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "ERROR"
+  assert "503" in result["error_details"]
+  assert mock_session.get.call_count == data_agent_tool._MAX_PAGE_ATTEMPTS
+  assert mock_sleep.call_count == data_agent_tool._MAX_PAGE_ATTEMPTS - 1
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_retries_connect_timeout(
+    mock_get_session, mock_sleep
+):
+  """Tests ConnectTimeout is retried rather than treated as a read timeout.
+
+  ConnectTimeout inherits from both ConnectionError and Timeout; the connection
+  was never established, so it must take the retry path instead of immediately
+  surfacing the manual pagination guidance.
+  """
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      requests.ConnectTimeout("connect timed out"),
+      _make_mock_page_response({"dataAgents": [{"name": "agent-1"}]}),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [{"name": "agent-1"}]
+  assert mock_session.get.call_count == 2
+  mock_sleep.assert_called_once()
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_connect_timeout_exhausted_keeps_guidance(
+    mock_get_session, mock_sleep
+):
+  """Tests exhausted ConnectTimeout retries still surface timeout guidance.
+
+  Retrying must not downgrade the error: a timeout that survives every attempt
+  still means the caller should switch to manual pagination.
+  """
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = requests.ConnectTimeout("connect timed out")
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  assert result["status"] == "ERROR"
+  assert (
+      "set 'page_size' and 'page_token' to page through them instead"
+      in result["error_details"]
+  )
+  assert "connect timed out" in result["error_details"]
+  assert mock_session.get.call_count == data_agent_tool._MAX_PAGE_ATTEMPTS
+  assert mock_sleep.call_count == data_agent_tool._MAX_PAGE_ATTEMPTS - 1
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_stops_retrying_when_budget_is_low(
+    mock_get_session, mock_sleep
+):
+  """Tests a retry is skipped when too little of the time budget is left."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  clock = _FakeClock()
+
+  def get_and_burn_budget(*args, **kwargs):
+    del args, kwargs
+    # Leave less than one full request timeout in the budget.
+    clock.now = data_agent_tool._MAX_AUTO_DURATION_SECONDS - 1.0
+    return _make_mock_error_response(503, "still down")
+
+  mock_session.get.side_effect = get_and_burn_budget
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  with mock.patch.object(
+      data_agent_tool.time, "monotonic", side_effect=clock.monotonic
+  ):
+    result = data_agent_tool.list_accessible_data_agents(
+        "test-project", mock_creds
+    )
+
+  assert result["status"] == "ERROR"
+  assert "503" in result["error_details"]
+  assert mock_session.get.call_count == 1
+  mock_sleep.assert_not_called()
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_empty_page_token_is_manual(
+    mock_get_session,
+):
+  """Tests page_token="" asks for the first page instead of draining."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.return_value = _make_mock_page_response(
+      {"dataAgents": [{"name": "agent-1"}], "nextPageToken": "page-2"}
+  )
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds, page_token=""
+  )
+
+  # The idiomatic manual loop seeds its token with "". Treating that as "unset"
+  # would silently drain every page on the caller's very first call.
+  assert result["status"] == "SUCCESS"
+  assert mock_session.get.call_count == 1
+  # An empty token contributes no query parameters at all, so `params` is never
+  # passed to session.get.
+  assert "params" not in mock_session.get.call_args.kwargs
+  assert result["response"] == [{"name": "agent-1"}]
+  assert result["nextPageToken"] == "page-2"
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_first_page_deadline_is_an_error(
+    mock_get_session, mock_sleep
+):
+  """Tests a first-page timeout errors rather than reporting an empty list."""
+  del mock_sleep
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  clock = _FakeClock()
+
+  def get_and_burn_budget(*args, **kwargs):
+    del args, kwargs
+    clock.now += data_agent_tool._MAX_AUTO_DURATION_SECONDS + 1.0
+    raise requests.ConnectTimeout("connect timed out on page 1")
+
+  mock_session.get.side_effect = get_and_burn_budget
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  with mock.patch.object(
+      data_agent_tool.time, "monotonic", side_effect=clock.monotonic
+  ):
+    result = data_agent_tool.list_accessible_data_agents(
+        "test-project", mock_creds
+    )
+
+  # No page ever succeeded, so there is nothing to degrade to. Reporting
+  # SUCCESS with an empty response would claim the project has no data agents.
+  assert result["status"] == "ERROR"
+  assert "response" not in result
+  # Pin the failure to the timeout path: without this, any unrelated exception
+  # caught by the broad handler would satisfy the assertions above.
+  assert "timed out" in result["error_details"]
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_empty_first_page_keeps_resume_token(
+    mock_get_session,
+):
+  """Tests a timeout after an empty-but-tokened page still returns the token."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_page_response({"dataAgents": [], "nextPageToken": "page-2"}),
+      requests.Timeout("read timed out on page 2"),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  # A page did succeed, it just held no agents. Keying the guard off an empty
+  # list rather than off pages fetched would throw away a usable resume token.
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == []
+  assert result["nextPageToken"] == "page-2"
+  assert "incomplete" in result["paginationWarning"]
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_stops_on_cycled_token(mock_get_session):
+  """Tests a token cycle longer than one step is detected."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_session.get.side_effect = [
+      _make_mock_page_response(
+          {"dataAgents": [{"name": "agent-1"}], "nextPageToken": "tok-a"}
+      ),
+      _make_mock_page_response(
+          {"dataAgents": [{"name": "agent-2"}], "nextPageToken": "tok-b"}
+      ),
+      _make_mock_page_response(
+          {"dataAgents": [{"name": "agent-3"}], "nextPageToken": "tok-a"}
+      ),
+  ]
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+
+  # Comparing only against the immediately preceding token would miss this
+  # A -> B -> A loop and keep replaying pages until a cap tripped, silently
+  # duplicating agents in a SUCCESS response.
+  assert result["status"] == "SUCCESS"
+  assert mock_session.get.call_count == 3
+  assert len(result["response"]) == 3
+  assert "nextPageToken" not in result
+  assert "incomplete" in result["paginationWarning"]
+
+
+@mock.patch.object(data_agent_tool.time, "sleep", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_retries_after_a_full_timeout_attempt(
+    mock_get_session, mock_sleep
+):
+  """Tests the time budget leaves room to retry a maximally slow attempt."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  clock = _FakeClock()
+  responses = [
+      _make_mock_error_response(503, "temporarily down"),
+      _make_mock_page_response({"dataAgents": [{"name": "agent-1"}]}),
+  ]
+
+  def get_and_burn_a_full_timeout(*args, **kwargs):
+    del args, kwargs
+    # Absolute, NOT relative to _MAX_AUTO_DURATION_SECONDS: the point of this
+    # test is to fail if that budget is ever lowered to the point where an
+    # attempt which uses its whole request timeout can no longer be retried.
+    clock.now += 30.0
+    return responses.pop(0)
+
+  mock_session.get.side_effect = get_and_burn_a_full_timeout
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+
+  with mock.patch.object(
+      data_agent_tool.time, "monotonic", side_effect=clock.monotonic
+  ):
+    result = data_agent_tool.list_accessible_data_agents(
+        "test-project", mock_creds
+    )
+
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [{"name": "agent-1"}]
+  assert mock_session.get.call_count == 2
+  assert mock_sleep.call_count == 1

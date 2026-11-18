@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import Invocation
@@ -30,8 +28,8 @@ from google.adk.evaluation.evaluator import PerInvocationResult
 def tool_trajectory_length_match(
     eval_metric: EvalMetric,
     actual_invocations: list[Invocation],
-    expected_invocations: Optional[list[Invocation]] = None,
-    conversation_scenario: Optional[ConversationScenario] = None,
+    expected_invocations: list[Invocation] | None = None,
+    conversation_scenario: ConversationScenario | None = None,
 ) -> EvaluationResult:
   """Scores 1.0 per invocation when actual and expected tool counts match."""
   del eval_metric

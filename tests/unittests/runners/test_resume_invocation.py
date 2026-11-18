@@ -329,6 +329,74 @@ async def test_resume_any_invocation():
 
 
 @pytest.mark.asyncio
+async def test_resume_runs_only_the_parallel_call_that_never_ran():
+  """The client answers one of two parallel calls that never ran, then resumes."""
+  runs = []
+  crash = True
+
+  def ask() -> str:
+    runs.append("ask")
+    return "asked"
+
+  def fetch() -> str:
+    runs.append("fetch")
+    return "fetched"
+
+  def crash_before_tools(tool, args, tool_context):
+    if crash:
+      raise RuntimeError("process stopped before the tools ran")
+    return None
+
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=LlmAgent(
+              name="root_agent",
+              model=testing_utils.MockModel.create(
+                  responses=[
+                      [
+                          Part.from_function_call(name="ask", args={}),
+                          Part.from_function_call(name="fetch", args={}),
+                      ],
+                      "done",
+                  ]
+              ),
+              tools=[ask, fetch],
+              before_tool_callback=crash_before_tools,
+          ),
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
+  with pytest.raises(RuntimeError):
+    await runner.run_async("test user query")
+  crash = False
+  ask_call = next(
+      fc
+      for event in runner.session.events
+      for fc in event.get_function_calls()
+      if fc.name == "ask"
+  )
+
+  events = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          Part(
+              function_response=FunctionResponse(
+                  id=ask_call.id, name="ask", response={"result": "client"}
+              )
+          )
+      )
+  )
+
+  assert runs == ["fetch"]
+  assert any(
+      part.text == "done"
+      for event in events
+      if event.content
+      for part in event.content.parts or []
+  )
+
+
+@pytest.mark.asyncio
 async def test_resumable_parallel_agent_escalation_short_circuits_persisted_run():
   """Runner persists fast+escalating events and marks the parent run complete."""
 

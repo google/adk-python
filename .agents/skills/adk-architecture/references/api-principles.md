@@ -18,6 +18,9 @@ The public API surface of ADK includes:
 - ADK adheres to Semantic Versioning 2.0.0.
 - Any change that forces a developer to alter their existing code to upgrade is a **breaking change** and necessitates a MAJOR version bump.
 - Avoid breaking changes whenever possible by using optional parameters and deprecation cycles.
+- **Session, Artifact, and Memory Service Changes**:
+  Adding any new field to `Session`, `ArtifactVersion`, `MemoryEntry`, or to their associated service base classes (`BaseSessionService`, `BaseArtifactService`, `BaseMemoryService`) and database schemas is strictly considered a **breaking change** (even if the new field is optional or provides a default value).
+  - *Rationale*: There are numerous downstream implementations and custom subclasses across diverse storage backends (e.g. relational databases, key-value stores, document databases, external cloud backends). Downstream storage implementations do not automatically persist, deserialize, or round-trip fields they were not compiled or migrated to handle, leading to silent state loss or deserialization errors when sessions or memories are reloaded.
 
 ### 2. Self-Containment
 - Each package should be as self-contained as possible to reduce coupling.

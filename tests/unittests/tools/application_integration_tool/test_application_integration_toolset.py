@@ -22,6 +22,7 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
+from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
 from google.adk.tools.openapi_tool.auth.auth_helpers import dict_to_auth_scheme
 from google.adk.tools.openapi_tool.openapi_spec_parser import rest_api_tool
@@ -739,3 +740,141 @@ async def test_get_tools_uses_exchanged_auth_credential_when_available(
   assert tools[0] is not original_tool
   assert tools[0]._auth_credential == exchanged_auth_credential
   assert original_tool._auth_credential == raw_auth_credential
+
+
+@pytest.mark.asyncio
+async def test_connection_disambiguates_colliding_truncated_entity_tool_names(
+    project,
+    location,
+    connection_details,
+):
+  """Entity tools sharing a >60-char prefix get distinct synchronized names."""
+  long_prefix = "enterprise_resource_planning_connector_prod_us_central1"
+  entity_schema = {"type": "object", "properties": {"id": {"type": "string"}}}
+
+  with (
+      mock.patch.object(
+          ConnectionsClient,
+          "get_connection_details",
+          return_value=connection_details,
+      ),
+      mock.patch.object(
+          ConnectionsClient,
+          "get_entity_schema_and_operations",
+          return_value=(entity_schema, ["LIST"]),
+      ),
+  ):
+    toolset = ApplicationIntegrationToolset(
+        project,
+        location,
+        connection="test-connection",
+        entity_operations={
+            "CustomerAccount": ["LIST"],
+            "CustomerInvoice": ["LIST"],
+        },
+        tool_name_prefix=long_prefix,
+    )
+
+  tools = await toolset.get_tools()
+
+  assert [t.name for t in tools] == [
+      "enterprise_resource_planning_connector_prod_us_central1_list",
+      "enterprise_resource_planning_connector_prod_us_central1_li_2",
+  ]
+  assert all(len(t.name) <= 60 for t in tools)
+  assert [t._rest_api_tool.name for t in tools] == [t.name for t in tools]
+  assert [t._get_declaration().name for t in tools] == [t.name for t in tools]
+  assert [t._entity for t in tools] == ["CustomerAccount", "CustomerInvoice"]
+
+
+@pytest.mark.asyncio
+async def test_connection_disambiguates_colliding_snake_case_action_tool_names(
+    project,
+    location,
+    connection_details_auth_override_enabled,
+):
+  """Colliding action names skip reserved `_N` suffixes and survive cloning."""
+  action_schemas = {
+      "GetUser": {
+          "inputSchema": {"type": "object", "properties": {}},
+          "outputSchema": {"type": "object", "properties": {}},
+          "description": "Gets a user.",
+          "displayName": "GetUser",
+      },
+      "get_user": {
+          "inputSchema": {"type": "object", "properties": {}},
+          "outputSchema": {"type": "object", "properties": {}},
+          "description": "Gets a user by snake case action.",
+          "displayName": "get_user",
+      },
+      "get_user_2": {
+          "inputSchema": {"type": "object", "properties": {}},
+          "outputSchema": {"type": "object", "properties": {}},
+          "description": "Gets a user v2.",
+          "displayName": "get_user_2",
+      },
+  }
+  oauth2_scheme = dict_to_auth_scheme({
+      "type": "oauth2",
+      "flows": {
+          "authorizationCode": {
+              "authorizationUrl": "https://test-url/o/oauth2/auth",
+              "tokenUrl": "https://test-url/token",
+              "scopes": {"https://test-url/auth/test-scope": "test scope"},
+          }
+      },
+  })
+  raw_auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+      ),
+  )
+
+  with (
+      mock.patch.object(
+          ConnectionsClient,
+          "get_connection_details",
+          return_value=connection_details_auth_override_enabled,
+      ),
+      mock.patch.object(
+          ConnectionsClient,
+          "get_action_schema",
+          side_effect=lambda action: action_schemas[action],
+      ),
+  ):
+    toolset = ApplicationIntegrationToolset(
+        project,
+        location,
+        connection="test-connection",
+        actions=["GetUser", "get_user", "get_user_2"],
+        auth_scheme=oauth2_scheme,
+        auth_credential=raw_auth_credential,
+    )
+
+  exchanged_auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+          access_token="exchanged-access-token",
+      ),
+  )
+  toolset._auth_config.exchanged_auth_credential = exchanged_auth_credential
+
+  tools = await toolset.get_tools()
+
+  assert [t.name for t in tools] == ["get_user", "get_user_3", "get_user_2"]
+  assert [t._rest_api_tool.name for t in tools] == [
+      "get_user",
+      "get_user_3",
+      "get_user_2",
+  ]
+  assert [t._get_declaration().name for t in tools] == [
+      "get_user",
+      "get_user_3",
+      "get_user_2",
+  ]
+  assert [t._action for t in tools] == ["GetUser", "get_user", "get_user_2"]
+  assert all(t._auth_credential == exchanged_auth_credential for t in tools)

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 from google.adk import Agent
 from google.adk import Event
@@ -31,7 +30,7 @@ class TimeOffDecision(BaseModel):
   """The structured response we expect back from the human manager."""
 
   approved: bool = Field(description="Whether the time off is approved.")
-  approved_days: Optional[int] = Field(
+  approved_days: int | None = Field(
       default=None, description="Number of days approved."
   )
 

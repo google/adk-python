@@ -23,13 +23,11 @@ import logging
 import time
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 
 from ..agents.context_cache_config import ContextCacheConfig
-from ..utils.feature_decorator import experimental
 from .cache_metadata import CacheMetadata
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -45,7 +43,7 @@ if TYPE_CHECKING:
   from google.genai import Client
 
 
-def _minimum_cache_tokens(model: Optional[str]) -> Optional[int]:
+def _minimum_cache_tokens(model: str | None) -> int | None:
   """Return the explicit-cache token floor for a named Gemini model."""
   model_name = (model or "").rsplit("/", maxsplit=1)[-1]
   if model_name.startswith("gemini-2.5-"):
@@ -80,7 +78,6 @@ def _content_union_character_count(value: types.ContentUnion) -> int:
   return len(str(value))
 
 
-@experimental
 class GeminiContextCacheManager:
   """Manages context cache lifecycle for Gemini models.
 
@@ -99,7 +96,7 @@ class GeminiContextCacheManager:
 
   async def handle_context_caching(
       self, llm_request: LlmRequest
-  ) -> Optional[CacheMetadata]:
+  ) -> CacheMetadata | None:
     """Handle context caching for Gemini models.
 
     Validates existing cache or creates a new one if needed. Applies
@@ -140,8 +137,11 @@ class GeminiContextCacheManager:
         # Invalid cache - clean it up and check if we should create new one
         old_cache_metadata = llm_request.cache_metadata
 
-        # Only cleanup if there's an active cache
-        if old_cache_metadata.cache_name is not None:
+        # Only cleanup an active cache that this manager created
+        if (
+            old_cache_metadata.cache_name is not None
+            and old_cache_metadata.created_at is not None
+        ):
           logger.debug(
               "Cache is invalid, cleaning up: %s",
               old_cache_metadata.cache_name,
@@ -188,6 +188,8 @@ class GeminiContextCacheManager:
               "(contents_count=%d)",
               cache_contents_count,
           )
+          if llm_request.config:
+            llm_request.config.cached_content = None
           return CacheMetadata(
               fingerprint=current_fingerprint,
               contents_count=cache_contents_count,
@@ -205,13 +207,35 @@ class GeminiContextCacheManager:
         fingerprint = self._generate_cache_fingerprint(
             llm_request, cache_contents_count
         )
+        if llm_request.config:
+          llm_request.config.cached_content = None
         return CacheMetadata(
             fingerprint=fingerprint,
             contents_count=cache_contents_count,
         )
 
-    # No existing cache metadata - return fingerprint-only metadata
-    # We don't create cache without previous fingerprint to match
+    # No existing cache metadata - check for a pre-created cached_content seed
+    if llm_request.config and llm_request.config.cached_content:
+      cache_name = llm_request.config.cached_content
+      logger.info(
+          "Attaching pre-created context cache on initial request: %s",
+          cache_name,
+      )
+      cache_config = _require_cache_config(llm_request)
+      # Seed cache covers static instructions/tools (0 dynamic contents)
+      fingerprint = self._generate_cache_fingerprint(llm_request, 0)
+      self._apply_cache_to_request(llm_request, cache_name, 0)
+      return CacheMetadata(
+          cache_name=cache_name,
+          expire_time=time.time() + cache_config.ttl_seconds,
+          fingerprint=fingerprint,
+          invocations_used=1,
+          contents_count=0,
+          # This manager did not create the cache, so it never deletes it.
+          created_at=None,
+      )
+
+    # We don't create a dynamic session cache without a previous fingerprint
     logger.debug(
         "No existing cache metadata, creating fingerprint-only metadata"
     )
@@ -281,6 +305,18 @@ class GeminiContextCacheManager:
     if cache_name is None or expire_time is None or invocations_used is None:
       return False
     cache_config = _require_cache_config(llm_request)
+
+    # Check if an externally created seed cache was changed or unset
+    current_seed = (
+        llm_request.config.cached_content if llm_request.config else None
+    )
+    if cache_metadata.created_at is None and current_seed != cache_name:
+      logger.debug(
+          "Seed cache changed or unset (was %s, now %s)",
+          cache_name,
+          current_seed,
+      )
+      return False
 
     # Check if cache has expired
     if time.time() >= expire_time:
@@ -385,7 +421,7 @@ class GeminiContextCacheManager:
 
   async def _create_new_cache_with_contents(
       self, llm_request: LlmRequest, cache_contents_count: int
-  ) -> Optional[CacheMetadata]:
+  ) -> CacheMetadata | None:
     """Create a new cache with specified number of contents.
 
     Args:
@@ -463,7 +499,7 @@ class GeminiContextCacheManager:
   def _estimate_request_tokens(
       self,
       llm_request: LlmRequest,
-      cache_contents_count: Optional[int] = None,
+      cache_contents_count: int | None = None,
   ) -> int:
     """Estimate token count for the request (or its cacheable prefix).
 
@@ -596,10 +632,11 @@ class GeminiContextCacheManager:
       span.set_attribute("model", model)
       span.set_attribute("ttl_seconds", cache_request_config.ttl_seconds)
 
+      # Credentials can live in per-request headers, so they stay out of logs.
       logger.debug(
           "Creating cache with model %s and config: %s",
           model,
-          cache_config,
+          cache_config.model_copy(update={"http_options": None}),
       )
       cached_content = await self.genai_client.aio.caches.create(
           model=model,

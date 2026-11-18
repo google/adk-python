@@ -20,6 +20,11 @@ agent = Workflow(
 )
 ```
 
+A workflow may have at most one terminal node that produces output. Left as
+terminals, these three fail the run with `WorkflowConfigurationError` when two
+of them return a value, so follow a fan-out with a `JoinNode` or a shared
+successor.
+
 ## Fan-in: `JoinNode`
 
 A `JoinNode` waits for every predecessor, then fires once with all their outputs
@@ -42,11 +47,6 @@ def final_processor(node_input: dict) -> str:
   # {'analyze_text': ..., 'translate_text': ..., 'summarize_text': ...}
   return f"Combined: {node_input['analyze_text']}"
 ```
-
-While waiting, the join holds partial inputs in session state. If a predecessor
-is an `LlmAgent` without `output_schema`, what it holds is a `types.Content`,
-which a database-backed session service cannot serialize — set `output_schema`
-on every LLM agent feeding a join.
 
 ## Multi-trigger: fan-out into one shared successor
 
@@ -122,8 +122,9 @@ agent = Workflow(
 ### Do not put `parallel_worker=True` on a fan-out branch
 
 Fan-out edges already run their targets concurrently. Adding the flag makes the
-branch expect a list and iterate it; handed a single value it iterates once, and
-handed `None` it emits nothing — so a downstream join waits forever.
+branch expect a list and iterate it; handed a single value (or `None`) it runs
+once and emits a one-element list, so the downstream node receives `[result]`
+where it expected `result`.
 
 ## Diamond
 

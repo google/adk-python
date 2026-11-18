@@ -32,7 +32,6 @@ import logging
 import pickle
 from typing import Any
 from typing import cast
-from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
@@ -71,7 +70,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _TRUNCATION_SUFFIX = "...[truncated]"
 
 
-def _truncate_str(value: Optional[str], max_length: int) -> Optional[str]:
+def _truncate_str(value: str | None, max_length: int) -> str | None:
   """Truncates a string to fit within *max_length* characters.
 
   Old databases may still carry ``VARCHAR(N)`` columns that were never
@@ -166,8 +165,15 @@ class StorageSession(Base):
   create_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
+  # No `onupdate=func.now()` here: `DatabaseSessionService.append_event`
+  # always sets this column explicitly. An `onupdate` default would only
+  # fire when SQLAlchemy considers the column unchanged (the new event's
+  # timestamp equals the one already stored) but another column, such as
+  # `state`, did change -- writing the database's own clock over the
+  # explicit value and desynchronizing the in-memory revision marker read
+  # before commit from what is actually in storage.
   update_time: Mapped[datetime] = mapped_column(
-      PreciseTimestamp, default=func.now(), onupdate=func.now()
+      PreciseTimestamp, default=func.now()
   )
 
   storage_events: Mapped[list[StorageEvent]] = relationship(

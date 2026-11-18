@@ -13,8 +13,6 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Dict
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
@@ -62,7 +60,7 @@ class MockPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> dict | None:
     if not self.enable_before_tool_callback:
       return None
     return self.before_tool_response
@@ -74,7 +72,7 @@ class MockPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       result: dict,
-  ) -> Optional[dict]:
+  ) -> dict | None:
     if not self.enable_after_tool_callback:
       return None
     return self.after_tool_response
@@ -86,7 +84,7 @@ class MockPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> dict | None:
     if not self.enable_on_tool_error_callback:
       return None
     return self.on_tool_error_response
@@ -94,7 +92,7 @@ class MockPlugin(BasePlugin):
 
 @pytest.fixture
 def mock_tool():
-  def simple_fn(**kwargs) -> Dict[str, Any]:
+  def simple_fn(**kwargs) -> dict[str, Any]:
     return {"initial": "response"}
 
   return FunctionTool(simple_fn)
@@ -102,7 +100,7 @@ def mock_tool():
 
 @pytest.fixture
 def mock_error_tool():
-  def raise_error_fn(**kwargs) -> Dict[str, Any]:
+  def raise_error_fn(**kwargs) -> dict[str, Any]:
     raise mock_error
 
   return FunctionTool(raise_error_fn)
@@ -113,7 +111,7 @@ def mock_plugin():
   return MockPlugin()
 
 
-async def invoke_tool_with_plugin(mock_tool, mock_plugin) -> Optional[Event]:
+async def invoke_tool_with_plugin(mock_tool, mock_plugin) -> Event | None:
   """Invokes a tool with a plugin."""
   model = testing_utils.MockModel.create(responses=[])
   agent = Agent(
@@ -186,9 +184,7 @@ async def test_async_on_tool_error_fallback_to_runner(
   assert exc_info.value == mock_error
 
 
-async def invoke_tool_with_plugin_live(
-    mock_tool, mock_plugin
-) -> Optional[Event]:
+async def invoke_tool_with_plugin_live(mock_tool, mock_plugin) -> Event | None:
   """Invokes a tool with a plugin using the live path."""
   model = testing_utils.MockModel.create(responses=[])
   agent = Agent(
@@ -341,7 +337,7 @@ async def test_live_plugin_after_tool_callback_takes_priority(
 
 async def _invoke_hallucinated_tool(
     mock_tool, mock_plugin, handler
-) -> Optional[Event]:
+) -> Event | None:
   """Invokes a hallucinated tool with a plugin using the specified handler."""
   model = testing_utils.MockModel.create(responses=[])
   agent = Agent(

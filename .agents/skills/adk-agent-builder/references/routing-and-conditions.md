@@ -25,9 +25,10 @@ agent = Workflow(
 )
 ```
 
-The three-tuple form `(classify, handle_success, 'success')` does the same thing
-one target at a time. Reach for it only when a single edge must match several
-routes (see below), since the dict form maps one route to one target.
+There is no `(source, target, route)` tuple form — a tuple is always a chain of
+nodes. The explicit form is `Edge(from_node=..., to_node=..., route=...)`.
+Reach for it only when a single edge must match several routes (see below),
+since the dict form maps one route to one target.
 
 ## Sequence shorthand
 
@@ -79,13 +80,20 @@ it its own edge.
 
 ## One edge, several routes
 
-Passing a list matches any value in it:
+Passing a list to `Edge(route=...)` matches any value in it. `Edge` takes node
+objects, not raw functions, so wrap them with `node()` and use the same objects
+in every edge:
 
 ```python
+from google.adk.workflow import Edge, node
+
+classifier = node(classify)
+handler_a = node(handle_a)
+
 edges = [
     ('START', classifier),
     (classifier, {'route_z': handler_b}),
-    (classifier, handler_a, ['route_x', 'route_y']),
+    Edge(from_node=classifier, to_node=handler_a, route=['route_x', 'route_y']),
 ]
 ```
 
@@ -106,6 +114,10 @@ agent = Workflow(
     ],
 )
 ```
+
+A workflow may have at most one terminal node that produces output. If both
+branches here return a value the run fails with `WorkflowConfigurationError`;
+send them on to a `JoinNode` or a shared successor.
 
 ## Self-loop
 
@@ -147,9 +159,10 @@ edges = [
   rejected at construction time, because nothing could ever break out of it.
 - **Edges leaving `START` may not carry a route.** `START` never runs, so it
   never emits one.
-- **No two edges may share a source and a target**, even with different routes.
-  To reach one destination from both a named route and `__DEFAULT__`, point the
-  default at a thin wrapper function.
+- **No two edges between the same source and target may share a route value**,
+  and an unrouted edge cannot be combined with a routed one between that pair.
+  Different routes to one target are allowed, so a named route and
+  `__DEFAULT__` can both point at the same node.
 
 ## Unrouted edges always fire
 

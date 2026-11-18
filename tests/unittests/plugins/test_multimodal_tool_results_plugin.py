@@ -307,6 +307,30 @@ async def test_empty_contents_leaves_saved_parts_pending(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "retention,state_key",
+    [
+        ("session", _CURRENT_TURN_PARTS_ID),
+        ("next_model_call", PARTS_RETURNED_BY_TOOLS_ID),
+    ],
+)
+async def test_last_content_without_parts_gets_the_saved_parts(
+    retention, state_key
+):
+  """A last content carrying no parts is given the saved parts, not rejected."""
+  plugin = MultimodalToolResultsPlugin(retention=retention)
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = {state_key: [types.Part(text="p")]}
+  llm_request = LlmRequest(contents=[types.Content(role="user")])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts == [types.Part(text="p")]
+
+
+@pytest.mark.asyncio
 async def test_session_retention_reattaches_parts_across_turns():
   """Verify that saved parts survive a real turn boundary in session retention mode.
 
@@ -374,6 +398,47 @@ async def test_session_retention_reattaches_parts_across_turns():
   # and file_part should have been replaced (not accumulated).
   assert another_file_part in mock_model.requests[3].contents[-1].parts
   assert file_part not in mock_model.requests[3].contents[-1].parts
+
+
+@pytest.mark.asyncio
+async def test_session_retention_sends_media_the_framework_carries_once():
+  """Media reaches the model exactly once under session retention as well."""
+  media_part = types.Part(
+      inline_data=types.Blob(data=b"chart", mime_type="image/png")
+  )
+
+  def draw_chart() -> types.Part:
+    return media_part
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name="draw_chart", args={}),
+          "Here is the chart.",
+      ]
+  )
+  agent = Agent(name="root_agent", model=mock_model, tools=[draw_chart])
+  runner = testing_utils.InMemoryRunner(
+      agent, plugins=[MultimodalToolResultsPlugin(retention="session")]
+  )
+
+  await runner.run_async("Please draw a chart")
+
+  sent = []
+  for content in mock_model.requests[1].contents:
+    sent.extend(content.parts)
+  # The function response carries the bytes...
+  carried = []
+  for part in sent:
+    if part.function_response:
+      carried.extend(
+          response_part
+          for response_part in part.function_response.parts or []
+          if response_part.inline_data
+          and response_part.inline_data.data == b"chart"
+      )
+  assert len(carried) == 1
+  # ...so the plugin must not append a second copy alongside it.
+  assert [part for part in sent if part.inline_data] == []
 
 
 @pytest.mark.asyncio
@@ -506,32 +571,27 @@ async def test_session_retention_accumulates_parts_within_same_invocation(
 
 
 @pytest.mark.asyncio
-async def test_session_retention_skips_binary_parts(
+async def test_session_retention_leaves_media_to_the_framework(
     mock_tool: BaseTool,
     tool_context: ToolContext,
 ):
-  """Verify that session retention skips binary parts (inline_data) and keeps them as temp."""
+  """A part holding media travels in the function response under session retention too."""
   plugin = MultimodalToolResultsPlugin(retention="session")
   binary_part = types.Part.from_bytes(
       data=b"fake image data", mime_type="image/png"
   )
-  parts = [binary_part]
 
   await plugin.after_tool_callback(
       tool=mock_tool,
       tool_args={},
       tool_context=tool_context,
-      result=parts,
+      result=[binary_part],
   )
 
-  # Should not be in session state
+  # It survives neither across turns nor into the current one.
   assert SESSION_PARTS_RETURNED_BY_TOOLS_ID not in tool_context.state
+  assert _CURRENT_TURN_PARTS_ID not in tool_context.state
 
-  # Should be in temp state
-  assert _CURRENT_TURN_PARTS_ID in tool_context.state
-  assert tool_context.state[_CURRENT_TURN_PARTS_ID] == parts
-
-  # Verify before_model_callback attaches it
   callback_context = Mock(spec=CallbackContext)
   callback_context.state = tool_context.state
   llm_request = LlmRequest(contents=[types.Content(parts=[])])
@@ -540,9 +600,45 @@ async def test_session_retention_skips_binary_parts(
       callback_context=callback_context, llm_request=llm_request
   )
 
-  restored_part = llm_request.contents[-1].parts[0]
-  assert restored_part == binary_part
-  # Temp state should be cleared
+  assert llm_request.contents[-1].parts == []
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        types.Part(inline_data=types.Blob(data=b"x", mime_type=None)),
+        types.Part(inline_data=types.Blob(data=None, mime_type="image/png")),
+    ],
+)
+@pytest.mark.asyncio
+async def test_session_retention_keeps_media_the_framework_cannot_carry(
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+    part: types.Part,
+):
+  """Media the function response cannot carry is still one-shot, not dropped."""
+  plugin = MultimodalToolResultsPlugin(retention="session")
+
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[part],
+  )
+
+  # One-shot: it is attached to the next request but not retained for later.
+  assert SESSION_PARTS_RETURNED_BY_TOOLS_ID not in tool_context.state
+  assert tool_context.state[_CURRENT_TURN_PARTS_ID] == [part]
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  llm_request = LlmRequest(contents=[types.Content(parts=[])])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts == [part]
   assert tool_context.state[_CURRENT_TURN_PARTS_ID] == []
 
 
@@ -576,11 +672,9 @@ async def test_session_retention_mixed_parts(
   assert len(session_stored) == 1
   assert session_stored[0] == file_part.model_dump(mode="json")
 
-  # all parts should be in current turn state (preserving order)
+  # binary_part is left to the function response; file_part stays
   assert _CURRENT_TURN_PARTS_ID in tool_context.state
-  temp_stored = tool_context.state[_CURRENT_TURN_PARTS_ID]
-  assert len(temp_stored) == 2
-  assert temp_stored == parts
+  assert tool_context.state[_CURRENT_TURN_PARTS_ID] == [file_part]
 
   # Verify before_model_callback
   callback_context = Mock(spec=CallbackContext)
@@ -591,10 +685,7 @@ async def test_session_retention_mixed_parts(
       callback_context=callback_context, llm_request=llm_request
   )
 
-  restored_parts = llm_request.contents[-1].parts
-  assert len(restored_parts) == 2
-  # Order: original order preserved
-  assert restored_parts == [file_part, binary_part]
+  assert llm_request.contents[-1].parts == [file_part]
 
   # Temp state should be cleared, session state remains
   assert tool_context.state[_CURRENT_TURN_PARTS_ID] == []
@@ -649,8 +740,8 @@ async def test_session_retention_retains_across_turns_when_intermediate_turn_onl
   assert tool_context.state[SESSION_PARTS_RETURNED_BY_TOOLS_ID] == [
       file_part.model_dump(mode="json")
   ]
-  # binary_part should be in temp state
-  assert tool_context.state[_CURRENT_TURN_PARTS_ID] == [binary_part]
+  # binary_part is left to the function response, so nothing is saved for it
+  assert _CURRENT_TURN_PARTS_ID not in tool_context.state
 
 
 def test_invalid_retention_raises_value_error():

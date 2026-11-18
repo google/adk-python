@@ -28,6 +28,14 @@ BASIC_OUTPUT = [
 
 BASIC_EXAMPLE = example.Example(input=BASIC_INPUT, output=BASIC_OUTPUT)
 
+# Models that take the plain code fence; the rest take tool_code / tool_outputs.
+_PLAIN_FENCE_MODELS = (
+    None,
+    "gemini-2.5-flash",
+    "gemini-3.5-flash",
+    "google.gemini-2.5-flash",
+)
+
 
 def test_convert_examples_handles_content_without_parts():
   """SDK Content instances may omit parts without breaking prompt rendering."""
@@ -82,7 +90,13 @@ class MockExampleProvider(base_example_provider.BaseExampleProvider):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_text_only_example_conversion(model):
   """Tests converting a text-only Example object to a string for use in a system instruction."""
@@ -105,7 +119,13 @@ def test_text_only_example_conversion(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_multi_part_text_example_conversion(model):
   """Tests converting an Example object with multiple text Parts to a string for use in a system instruction."""
@@ -140,7 +160,13 @@ def test_multi_part_text_example_conversion(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_example_conversion_prefix_insertion(model):
   """Tests if user and model prefixes are properly alternated when converting an Example object to text for use in a system instruction."""
@@ -172,7 +198,13 @@ def test_example_conversion_prefix_insertion(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_example_conversion_output_clumping(model):
   """Tests whether user and model inputs are properly clumped when converting an Example object to text for use in a system instruction."""
@@ -204,7 +236,13 @@ def test_example_conversion_output_clumping(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_empty_examples_list_conversion(model):
   """Tests Example conversion to text if the examples list is empty."""
@@ -220,7 +258,13 @@ def test_empty_examples_list_conversion(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_example_conversion_with_function_call(model):
   """Tests converting an Example object containing a function call to a string for use in a system instruction."""
@@ -235,10 +279,9 @@ def test_example_conversion_with_function_call(model):
   ]
   test_example = example.Example(input=BASIC_INPUT, output=output_content)
 
-  gemini2 = model is None or "gemini-2" in model
   prefix = (
       example_util._FUNCTION_PREFIX
-      if gemini2
+      if model in _PLAIN_FENCE_MODELS
       else example_util._FUNCTION_CALL_PREFIX
   )
 
@@ -263,7 +306,13 @@ def test_example_conversion_with_function_call(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_example_conversion_with_function_response(model):
   """Tests converting an Example object containing a function response to a string for use in a system instruction."""
@@ -279,10 +328,9 @@ def test_example_conversion_with_function_response(model):
   ]
   test_example = example.Example(input=BASIC_INPUT, output=output_content)
 
-  gemini2 = model is None or "gemini-2" in model
   prefix = (
       example_util._FUNCTION_PREFIX
-      if gemini2
+      if model in _PLAIN_FENCE_MODELS
       else example_util._FUNCTION_RESPONSE_PREFIX
   )
 
@@ -307,7 +355,13 @@ def test_example_conversion_with_function_response(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_example_conversion_with_function_call_response(model):
   """Tests converting an Example object containing a function call and response to a string for use in a system instruction."""
@@ -330,15 +384,14 @@ def test_example_conversion_with_function_call_response(model):
   ]
   test_example = example.Example(input=BASIC_INPUT, output=output_content)
 
-  gemini2 = model is None or "gemini-2" in model
   response_prefix = (
       example_util._FUNCTION_PREFIX
-      if gemini2
+      if model in _PLAIN_FENCE_MODELS
       else example_util._FUNCTION_RESPONSE_PREFIX
   )
   call_prefix = (
       example_util._FUNCTION_PREFIX
-      if gemini2
+      if model in _PLAIN_FENCE_MODELS
       else example_util._FUNCTION_CALL_PREFIX
   )
 
@@ -366,7 +419,13 @@ def test_example_conversion_with_function_call_response(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_example_conversion_with_text_and_function_call_response(model):
   """Tests converting an Example object containing text, a function call, and a function response to a string for use in a system instruction."""
@@ -390,15 +449,14 @@ def test_example_conversion_with_text_and_function_call_response(model):
   ]
   test_example = example.Example(input=BASIC_INPUT, output=output_content)
 
-  gemini2 = model is None or "gemini-2" in model
   response_prefix = (
       example_util._FUNCTION_PREFIX
-      if gemini2
+      if model in _PLAIN_FENCE_MODELS
       else example_util._FUNCTION_RESPONSE_PREFIX
   )
   call_prefix = (
       example_util._FUNCTION_PREFIX
-      if gemini2
+      if model in _PLAIN_FENCE_MODELS
       else example_util._FUNCTION_CALL_PREFIX
   )
 
@@ -427,7 +485,13 @@ def test_example_conversion_with_text_and_function_call_response(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_building_si_from_list(model):
   """Tests building System Information from a list of examples."""
@@ -450,7 +514,13 @@ def test_building_si_from_list(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-2.5-flash", "llama3_vertex_agent", None],
+    [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "google.gemini-2.5-flash",
+        "llama3_vertex_agent",
+        None,
+    ],
 )
 def test_building_si_from_base_example_provider(model):
   """Tests building System Information from an example provider."""

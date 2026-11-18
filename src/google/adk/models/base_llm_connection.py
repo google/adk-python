@@ -21,6 +21,14 @@ from google.genai import types
 
 from .llm_response import LlmResponse
 
+RealtimeInput = (
+    types.Blob
+    | types.ActivityStart
+    | types.ActivityEnd
+    | types.LiveClientRealtimeInput
+)
+"""Inputs the live flow passes to `BaseLlmConnection.send_realtime`."""
+
 
 class BaseLlmConnection:
   """The base class for a live model connection."""

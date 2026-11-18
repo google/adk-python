@@ -28,7 +28,6 @@ from google.adk.auth.auth_schemes import OAuthGrantType
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.oauth2_credential_util import create_oauth2_session
 from google.adk.auth.oauth2_credential_util import update_credential_with_tokens
-from google.adk.utils.feature_decorator import experimental
 from typing_extensions import override
 
 from .base_credential_exchanger import BaseCredentialExchanger
@@ -45,7 +44,6 @@ except ImportError:
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
 class OAuth2CredentialExchanger(BaseCredentialExchanger):
   """Exchanges OAuth2 credentials from authorization responses."""
 

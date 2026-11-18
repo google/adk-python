@@ -15,9 +15,6 @@
 from enum import Enum
 from functools import partial
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
@@ -39,37 +36,37 @@ class CallbackType(Enum):
 
 class AsyncBeforeToolCallback:
 
-  def __init__(self, mock_response: Dict[str, Any]):
+  def __init__(self, mock_response: dict[str, Any]):
     self.mock_response = mock_response
 
   async def __call__(
       self,
       tool: FunctionTool,
-      args: Dict[str, Any],
+      args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[Dict[str, Any]]:
+  ) -> dict[str, Any] | None:
     return self.mock_response
 
 
 class AsyncAfterToolCallback:
 
-  def __init__(self, mock_response: Dict[str, Any]):
+  def __init__(self, mock_response: dict[str, Any]):
     self.mock_response = mock_response
 
   async def __call__(
       self,
       tool: FunctionTool,
-      args: Dict[str, Any],
+      args: dict[str, Any],
       tool_context: ToolContext,
-      tool_response: Dict[str, Any],
-  ) -> Optional[Dict[str, Any]]:
+      tool_response: dict[str, Any],
+  ) -> dict[str, Any] | None:
     return self.mock_response
 
 
 async def invoke_tool_with_callbacks(
     before_cb=None, after_cb=None
-) -> Optional[Event]:
-  def simple_fn(**kwargs) -> Dict[str, Any]:
+) -> Event | None:
+  def simple_fn(**kwargs) -> dict[str, Any]:
     return {"initial": "response"}
 
   tool = FunctionTool(simple_fn)
@@ -122,38 +119,38 @@ async def test_async_after_tool_callback():
 
 def mock_async_before_cb_side_effect(
     tool: FunctionTool,
-    args: Dict[str, Any],
+    args: dict[str, Any],
     tool_context: ToolContext,
-    ret_value: Optional[Dict[str, Any]] = None,
+    ret_value: dict[str, Any] | None = None,
 ):
   return ret_value
 
 
 def mock_sync_before_cb_side_effect(
     tool: FunctionTool,
-    args: Dict[str, Any],
+    args: dict[str, Any],
     tool_context: ToolContext,
-    ret_value: Optional[Dict[str, Any]] = None,
+    ret_value: dict[str, Any] | None = None,
 ):
   return ret_value
 
 
 async def mock_async_after_cb_side_effect(
     tool: FunctionTool,
-    args: Dict[str, Any],
+    args: dict[str, Any],
     tool_context: ToolContext,
-    tool_response: Dict[str, Any],
-    ret_value: Optional[Dict[str, Any]] = None,
+    tool_response: dict[str, Any],
+    ret_value: dict[str, Any] | None = None,
 ):
   return ret_value
 
 
 def mock_sync_after_cb_side_effect(
     tool: FunctionTool,
-    args: Dict[str, Any],
+    args: dict[str, Any],
     tool_context: ToolContext,
-    tool_response: Dict[str, Any],
-    ret_value: Optional[Dict[str, Any]] = None,
+    tool_response: dict[str, Any],
+    ret_value: dict[str, Any] | None = None,
 ):
   return ret_value
 
@@ -216,9 +213,9 @@ CALLBACK_PARAMS = [
 )
 @pytest.mark.asyncio
 async def test_before_tool_callbacks_chain(
-    callbacks: List[tuple[Optional[Dict[str, Any]], int]],
-    expected_response: Dict[str, Any],
-    expected_calls: List[int],
+    callbacks: list[tuple[dict[str, Any] | None, int]],
+    expected_response: dict[str, Any],
+    expected_calls: list[int],
 ):
   mock_before_cbs = []
   for response, callback_type in callbacks:
@@ -266,9 +263,9 @@ async def test_before_tool_callbacks_chain(
 )
 @pytest.mark.asyncio
 async def test_after_tool_callbacks_chain(
-    callbacks: List[tuple[Optional[Dict[str, Any]], int]],
-    expected_response: Dict[str, Any],
-    expected_calls: List[int],
+    callbacks: list[tuple[dict[str, Any] | None, int]],
+    expected_response: dict[str, Any],
+    expected_calls: list[int],
 ):
   mock_after_cbs = []
   for response, callback_type in callbacks:

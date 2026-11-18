@@ -7,12 +7,12 @@
 - **Context** — one per node execution. Holds per-node results (output, route,
   interrupt IDs) and is the API surface node code actually touches.
 
-Every Context references the same InvocationContext (`_invocation_context`).
+Every Context references an InvocationContext (`_invocation_context`).
 Service access (artifacts, memory, auth) is delegated through it.
 
 ```text
 Root Context                      ← created by Runner from the InvocationContext
-└── Context [runner.node]         ← the root node (e.g., Workflow)
+└── Context [runner.agent]        ← the root node (e.g., Workflow)
     ├── Context [child_a]         ← child node A
     └── Context [child_b]         ← child node B
         └── Context [grandchild]  ← nested child
@@ -40,16 +40,16 @@ so the Context tree mirrors the node execution tree.
 `NodeRunner._create_child_context()` builds the child from the parent. The
 child inherits:
 
-- `_invocation_context` — the same object, so session and services are shared
-  (copied with `model_copy` when the child runs on a sub-branch)
+- `_invocation_context` — a shallow `model_copy` of the parent's, so session and
+  services are shared while `branch` can differ per child
 - `node_path` — parent path plus `name@run_id`
 - `run_id` — a sequential counter string per node path, reused on resume
 - `event_author`
 - the enclosing Workflow's dynamic-node scheduler
 
 The child does not inherit output, route or interrupt IDs — those are
-per-execution results and start empty, unless a resume carries them forward via
-`prior_output` / `prior_interrupt_ids`.
+per-execution results and start empty. `NodeRunner` can preset them from
+`prior_output` / `prior_interrupt_ids`, but no caller under `src/` passes them.
 
 ## Node result properties
 

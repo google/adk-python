@@ -23,8 +23,7 @@ import sys
 from types import UnionType
 import typing
 from typing import Any
-from typing import List
-from typing import Optional
+from typing import NoReturn
 from typing import TYPE_CHECKING
 import warnings
 
@@ -32,8 +31,6 @@ from google.genai import types
 from pydantic import BaseModel
 import yaml
 
-from ..features import experimental
-from ..features import FeatureName
 from ..tools.tool_configs import ToolConfig
 from .base_agent import BaseAgent
 from .common_configs import AgentRefConfig
@@ -218,6 +215,11 @@ class _AgentConfigMapper:
     resolved_tools = []
     for tool_config in tool_configs:
       if "." not in tool_config.name:
+        if _ENFORCE_DENYLIST and tool_config.name.startswith("_"):
+          raise ValueError(
+              f"Blocked module reference: {tool_config.name!r}. Agent"
+              " configurations cannot reference private ADK symbols."
+          )
         # ADK built-in tools
         module = importlib.import_module("google.adk.tools")
         obj = getattr(module, tool_config.name)
@@ -252,7 +254,7 @@ class _AgentConfigMapper:
     """Resolve edges to support agent references and graph chains."""
     from ..workflow._graph import Edge
 
-    processed_edges: List[Any] = []
+    processed_edges: list[Any] = []
     for edge_item in value:
       if isinstance(edge_item, list):
         # A chain of elements in YAML: [START, node1, node2, ...] -> tuple(...)
@@ -446,7 +448,7 @@ class _AgentConfigMapper:
   def map(
       self,
       data: dict[str, Any],
-      agent_class: Optional[type[Any]] = None,
+      agent_class: type[Any] | None = None,
   ) -> dict[str, Any]:
     """Map configuration dictionary to constructor keyword arguments."""
     # Reset first: `deferred_fields` is per-call state kept on the mapper, and
@@ -700,7 +702,6 @@ def _config_as_model(
   return config_data
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def from_config(config_path: str) -> BaseNode:
   """Build agent or workflow node from a YAML config file path.
 
@@ -729,8 +730,7 @@ def from_config(config_path: str) -> BaseNode:
         f"Invalid agent config in {abs_path!r}. Expected a dictionary."
     )
 
-  if _ENFORCE_YAML_KEY_DENYLIST:
-    _check_config_for_blocked_keys(config_data, abs_path)
+  _enforce_yaml_key_denylist(config_data, abs_path)
 
   agent_class_name = config_data.get("agent_class", "LlmAgent")
   agent_class = _resolve_agent_class(agent_class_name)
@@ -824,20 +824,104 @@ def _set_enforce_yaml_key_denylist(value: bool) -> None:
   _ENFORCE_YAML_KEY_DENYLIST = value
 
 
-def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
-  """Recursively check if the configuration contains any blocked keys."""
+def _enforce_yaml_key_denylist(data: Any, filename: str) -> None:
+  if _ENFORCE_YAML_KEY_DENYLIST:
+    _check_config_for_blocked_keys(data, filename)
+
+
+def _validate_mcp_toolset_args(args: Any) -> None:
+  """Validates McpToolset args without resolving a code reference."""
+  from ..tools.mcp_tool.mcp_toolset import McpToolsetConfig
+
+  McpToolsetConfig.model_validate(args)
+
+
+# Entries in this set must be built-in tools whose validator treats the
+# YAML input as data only. The name is matched literally; it is never
+# imported or otherwise resolved from the configuration.
+_MCP_TOOLSET_NAMES = frozenset({
+    "MCPToolset",
+    "McpToolset",
+    "google.adk.tools.MCPToolset",
+    "google.adk.tools.McpToolset",
+    "google.adk.tools.mcp_tool.MCPToolset",
+    "google.adk.tools.mcp_tool.McpToolset",
+    "google.adk.tools.mcp_tool.mcp_toolset.MCPToolset",
+    "google.adk.tools.mcp_tool.mcp_toolset.McpToolset",
+})
+_BUILTIN_LLM_AGENT_NAMES = frozenset({
+    "Agent",
+    "LlmAgent",
+    "google.adk.agents.Agent",
+    "google.adk.agents.LlmAgent",
+    "google.adk.agents.llm_agent.Agent",
+    "google.adk.agents.llm_agent.LlmAgent",
+})
+
+
+def _raise_blocked_key(key: str, filename: str) -> NoReturn:
+  raise ValueError(
+      f"Blocked key {key!r} found in {filename!r}. "
+      f"The '{key}' field is not allowed in agent configurations "
+      "because it can execute arbitrary code."
+  )
+
+
+def _check_node_for_blocked_keys(node: Any, filename: str) -> None:
+  """Recursively checks a non-tool configuration node for blocked keys."""
   if isinstance(node, dict):
     for key, value in node.items():
       if key in _BLOCKED_YAML_KEYS:
-        raise ValueError(
-            f"Blocked key {key!r} found in {filename!r}. "
-            f"The '{key}' field is not allowed in agent configurations "
-            "because it can execute arbitrary code."
-        )
-      _check_config_for_blocked_keys(value, filename)
+        _raise_blocked_key(key, filename)
+      _check_node_for_blocked_keys(value, filename)
   elif isinstance(node, list):
     for item in node:
-      _check_config_for_blocked_keys(item, filename)
+      _check_node_for_blocked_keys(item, filename)
+
+
+def _check_tool_configs_for_blocked_keys(
+    tools: list[Any], filename: str
+) -> None:
+  """Checks tool configs, allowing args only for registered built-ins."""
+  for tool in tools:
+    if not isinstance(tool, dict):
+      _check_node_for_blocked_keys(tool, filename)
+      continue
+
+    tool_name = tool.get("name")
+    is_mcp_toolset = (
+        isinstance(tool_name, str) and tool_name in _MCP_TOOLSET_NAMES
+    )
+    for key, value in tool.items():
+      if key not in _BLOCKED_YAML_KEYS:
+        _check_node_for_blocked_keys(value, filename)
+        continue
+      if not is_mcp_toolset:
+        _raise_blocked_key(key, filename)
+      try:
+        _validate_mcp_toolset_args(value)
+      except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"Invalid {key!r} for safe built-in tool {tool_name!r} "
+            f"in {filename!r}."
+        ) from e
+
+
+def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
+  """Checks blocked keys with a narrow exception for safe built-in tools."""
+  if not isinstance(node, dict):
+    _check_node_for_blocked_keys(node, filename)
+    return
+
+  agent_class = node.get("agent_class", "LlmAgent")
+  is_builtin_llm_agent = (
+      isinstance(agent_class, str) and agent_class in _BUILTIN_LLM_AGENT_NAMES
+  )
+  for key, value in node.items():
+    if key == "tools" and is_builtin_llm_agent and isinstance(value, list):
+      _check_tool_configs_for_blocked_keys(value, filename)
+    else:
+      _check_node_for_blocked_keys({key: value}, filename)
 
 
 _ENFORCE_DENYLIST = True
@@ -939,7 +1023,20 @@ _BLOCKED_MODULES = frozenset({
     # requiring no other preconditions.
     "ruamel",
     "yaml",
+    # Core ADK dependencies with process, import, or file-mutation entry points.
+    "anyio",
+    "click",
+    "dotenv",
+    "graphviz",
+    "uvicorn",
+    "watchdog",
 })
+
+_BLOCKED_MODULE_PREFIXES = (
+    "google.adk.cli",
+    "pydantic._internal",
+    "pydantic.v1",
+)
 
 
 def _validate_module_reference(fully_qualified_name: str) -> None:
@@ -950,13 +1047,14 @@ def _validate_module_reference(fully_qualified_name: str) -> None:
       ``"my_package.my_module.my_func"``).
 
   Raises:
-    ValueError: If the top-level module is part of the Python standard library
-      or is in ``_BLOCKED_MODULES``.
+    ValueError: If the reference targets the Python standard library, a module
+      in ``_BLOCKED_MODULES``, ``_BLOCKED_MODULE_PREFIXES``, or a private
+      symbol under ``google.adk``.
   """
   if not _ENFORCE_DENYLIST:
     return
-  # Extract the top-level package from the fully-qualified name.
-  top_module = fully_qualified_name.split(".")[0]
+  parts = fully_qualified_name.split(".")
+  top_module = parts[0]
   if top_module in _BLOCKED_MODULES or top_module in _STDLIB_MODULES:
     raise ValueError(
         f"Blocked module reference: {fully_qualified_name!r}. Agent "
@@ -965,6 +1063,22 @@ def _validate_module_reference(fully_qualified_name: str) -> None:
         "execute arbitrary code. Reference your own agent package, "
         "'google.adk', or a third-party package instead."
     )
+  if any(
+      fully_qualified_name == prefix
+      or fully_qualified_name.startswith(f"{prefix}.")
+      for prefix in _BLOCKED_MODULE_PREFIXES
+  ):
+    raise ValueError(
+        f"Blocked module reference: {fully_qualified_name!r}. Agent"
+        " configurations cannot import CLI or library-internal modules."
+    )
+  if parts[:2] == ["google", "adk"] and any(
+      segment.startswith("_") for segment in parts[2:]
+  ):
+    raise ValueError(
+        f"Blocked module reference: {fully_qualified_name!r}. Agent"
+        " configurations cannot reference private ADK modules or symbols."
+    )
 
 
 def _set_enforce_denylist(value: bool) -> None:
@@ -972,7 +1086,6 @@ def _set_enforce_denylist(value: bool) -> None:
   _ENFORCE_DENYLIST = value
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
@@ -983,7 +1096,6 @@ def resolve_fully_qualified_name(name: str) -> Any:
     raise ValueError(f"Invalid fully qualified name: {name}") from e
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def resolve_agent_reference(
     ref_config: AgentRefConfig, referencing_agent_config_abs_path: str
 ) -> BaseNode:
@@ -1062,7 +1174,6 @@ def _resolve_agent_code_reference(code: str) -> BaseNode:
   return obj
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def resolve_code_reference(code_config: CodeConfig) -> Any:
   """Resolve a code reference to actual Python object.
 
@@ -1108,8 +1219,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     raise ValueError(f"Invalid fully qualified name: {code_config.name}") from e
 
 
-@experimental(FeatureName.AGENT_CONFIG)
-def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
+def resolve_callbacks(callbacks_config: list[CodeConfig]) -> Any:
   """Resolve callbacks from configuration.
 
   Args:

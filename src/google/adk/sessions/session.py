@@ -15,14 +15,20 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_serializer
 from pydantic import PrivateAttr
+from pydantic import SerializerFunctionWrapHandler
+from pydantic_core import PydanticSerializationError
 
 from ..events.event import Event
+from ..events.event_actions import _coerce_non_utf8_bytes
+from ..utils import _model_copy
 
 
 class Session(BaseModel):
@@ -35,6 +41,8 @@ class Session(BaseModel):
       populate_by_name=True,
   )
   """The pydantic model config."""
+
+  __deepcopy__ = _model_copy.deep_copy_model
 
   id: str = Field(
       description="Unique identifier of the session.",
@@ -53,6 +61,16 @@ class Session(BaseModel):
       description="Current persisted session state.",
       examples=[{"locale": "en-US"}],
   )
+
+  @field_serializer("state", mode="wrap")  # type: ignore[misc, untyped-decorator]
+  def _serialize_state(
+      self, value: dict[str, Any], handler: SerializerFunctionWrapHandler
+  ) -> dict[str, Any]:
+    try:
+      return cast(dict[str, Any], handler(value))
+    except (PydanticSerializationError, UnicodeDecodeError):
+      return cast(dict[str, Any], handler(_coerce_non_utf8_bytes(value)))
+
   events: list[Event] = Field(
       default_factory=list,
       description=(

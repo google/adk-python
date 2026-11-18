@@ -678,13 +678,16 @@ def set_operation_details_attributes_from_response(
       _build_response_common_attributes(llm_response)
   )
   response_attributes = _build_response_operation_details(llm_response)
-  # A turn arriving as several responses is reported as all of them rather than
-  # whichever came last, one message each, as
-  # opentelemetry-instrumentation-google-genai reports a stream too.
+  # Several responses for one call are chunks no aggregator assembled
+  # (`partial` unset), so they extend one message. Parts are appended rather
+  # than text-joined: thought and answer text are both `text` parts here.
   recorded = operation_details_attributes.get(GEN_AI_OUTPUT_MESSAGES)
   arrived = response_attributes.get(GEN_AI_OUTPUT_MESSAGES)
   if isinstance(recorded, list) and isinstance(arrived, list):
-    response_attributes[GEN_AI_OUTPUT_MESSAGES] = recorded + arrived
+    parts = [*recorded[0]['parts'], *arrived[0]['parts']]
+    response_attributes[GEN_AI_OUTPUT_MESSAGES] = [
+        {**arrived[0], 'parts': parts}
+    ]
   operation_details_attributes.update(response_attributes)
 
 

@@ -129,18 +129,49 @@ class TestMakeJsonSafeState:
 
   def test_serializes_rich_values_faithfully_without_warning(self, caplog):
     """Values pydantic can serialize are kept, and nothing is logged."""
-    with caplog.at_level(logging.WARNING):
-      state = make_json_safe_state({"when": datetime.datetime(2026, 1, 1)})
 
-    assert state == {"when": "2026-01-01T00:00:00"}
+    class _BinaryPayload(BaseModel):
+      raw: bytes = b"\x89PNG\r\n\x1a\n"
+
+    with caplog.at_level(logging.WARNING):
+      state = make_json_safe_state({
+          "when": datetime.datetime(2026, 1, 1),
+          "utf8_bytes": b"hello",
+          "screenshot": b"\x89PNG\r\n\x1a\n",
+          "high_bytes": b"\xfb\xff\xfe",
+          "nested": _BinaryPayload(),
+      })
+
+    assert state == {
+        "when": "2026-01-01T00:00:00",
+        "utf8_bytes": "hello",
+        "screenshot": "iVBORw0KGgo=",
+        "high_bytes": "+//+",
+        "nested": {"raw": "iVBORw0KGgo="},
+    }
+    assert not caplog.records
+
+  def test_serializes_bytes_as_base64_without_warning(self, caplog):
+    """Valid UTF-8 bytes stay decoded; non-UTF-8 bytes are base64-encoded."""
+    with caplog.at_level(logging.WARNING):
+      state = make_json_safe_state(
+          {"text": b"hi", "blob": b"\x89PNG\r\n\x1a\n"}
+      )
+
+    assert state == {"text": "hi", "blob": "iVBORw0KGgo="}
     assert not caplog.records
 
   def test_degrades_unserializable_values_and_warns(self, caplog):
     """A value pydantic cannot serialize degrades to a repr and is logged."""
     with caplog.at_level(logging.WARNING):
-      state = make_json_safe_state({"callback": lambda: 1, "turn": 3})
+      state = make_json_safe_state({
+          "callback": lambda: 1,
+          "screenshot": b"\x89PNG\r\n\x1a\n",
+          "turn": 3,
+      })
 
     assert state["turn"] == 3
+    assert state["screenshot"] == "iVBORw0KGgo="
     assert isinstance(state["callback"], str)
     assert len(caplog.records) == 1
     assert caplog.records[0].exc_info is not None

@@ -21,9 +21,6 @@ that exceeds 2048 tokens to meet both implicit and explicit cache requirements.
 import random
 import time
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 
 from dotenv import load_dotenv
 from google.adk import Agent
@@ -36,7 +33,7 @@ load_dotenv()
 
 def analyze_data_patterns(
     data: str, analysis_type: str = "comprehensive"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Analyze data patterns and provide insights.
 
   This tool performs comprehensive data analysis including statistical analysis,
@@ -88,10 +85,10 @@ def analyze_data_patterns(
 
 def research_literature(
     topic: str,
-    sources: Optional[List[str]] = None,
+    sources: list[str] | None = None,
     depth: str = "comprehensive",
     time_range: str = "recent",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Research academic and professional literature on specified topics.
 
   This tool performs comprehensive literature research across multiple academic
@@ -172,9 +169,9 @@ def research_literature(
 def generate_test_scenarios(
     system_type: str,
     complexity: str = "medium",
-    coverage: Optional[List[str]] = None,
-    constraints: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    coverage: list[str] | None = None,
+    constraints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
   """Generate comprehensive test scenarios for system validation.
 
   This tool creates detailed test scenarios, test cases, and validation protocols
@@ -267,10 +264,10 @@ def generate_test_scenarios(
 
 def optimize_system_performance(
     system_type: str,
-    current_metrics: Dict[str, Any],
-    target_improvements: Dict[str, Any],
-    constraints: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    current_metrics: dict[str, Any],
+    target_improvements: dict[str, Any],
+    constraints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
   """Analyze system performance and provide detailed optimization recommendations.
 
   This tool performs comprehensive system performance analysis including bottleneck
@@ -364,11 +361,11 @@ def optimize_system_performance(
 
 
 def analyze_security_vulnerabilities(
-    system_components: List[str],
+    system_components: list[str],
     security_scope: str = "comprehensive",
-    compliance_frameworks: Optional[List[str]] = None,
+    compliance_frameworks: list[str] | None = None,
     threat_model: str = "enterprise",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Perform comprehensive security vulnerability analysis and risk assessment.
 
   This tool conducts detailed security analysis including vulnerability identification,
@@ -454,10 +451,10 @@ def analyze_security_vulnerabilities(
 
 def design_scalability_architecture(
     current_architecture: str,
-    expected_growth: Dict[str, Any],
-    scalability_requirements: Dict[str, Any],
-    technology_preferences: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    expected_growth: dict[str, Any],
+    scalability_requirements: dict[str, Any],
+    technology_preferences: list[str] | None = None,
+) -> dict[str, Any]:
   """Design comprehensive scalability architecture for anticipated growth.
 
   This tool analyzes current system architecture and designs scalable solutions
@@ -558,10 +555,10 @@ def design_scalability_architecture(
 
 def benchmark_performance(
     system_name: str,
-    metrics: Optional[List[str]] = None,
+    metrics: list[str] | None = None,
     duration: str = "standard",
     load_profile: str = "realistic",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Perform comprehensive performance benchmarking and analysis.
 
   This tool conducts detailed performance benchmarking across multiple dimensions

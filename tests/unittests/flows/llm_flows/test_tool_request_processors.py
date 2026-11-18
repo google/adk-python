@@ -15,7 +15,6 @@
 """Tests for `BaseLlmFlow.tool_request_processors`."""
 
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
@@ -42,7 +41,7 @@ class _ToolsDictProbe(BaseLlmRequestProcessor):
   """Records the tool names visible to it at the point where it runs."""
 
   def __init__(self) -> None:
-    self.seen_tool_names: Optional[list[str]] = None
+    self.seen_tool_names: list[str] | None = None
 
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

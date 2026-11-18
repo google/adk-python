@@ -14,7 +14,7 @@
 
 """An ADK agent powered by an OpenAI model on the OpenAI API.
 
-This is the canonical case for the labs ``OpenAILlm`` model: talk to the
+This is the canonical case for the ``OpenAILlm`` model: talk to the
 default OpenAI host with an ``OPENAI_API_KEY``. No LiteLLM in between.
 
 ``agent.py`` builds ``OpenAILlm(model=...)`` and lets it read ``OPENAI_API_KEY``
@@ -34,7 +34,7 @@ from google.adk.models.base_llm import BaseLlm
 
 def _build_model() -> BaseLlm:
   """Builds the OpenAI model lazily (optional openai dependency)."""
-  from google.adk.labs.openai import OpenAILlm
+  from google.adk.integrations.openai import OpenAILlm
 
   # With api_key unset, the default client reads OPENAI_API_KEY, and base_url
   # falls back to OPENAI_BASE_URL (or the SDK default) the same way. A missing

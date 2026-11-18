@@ -14,7 +14,7 @@ from google.adk.workflow import FunctionNode, RetryConfig, node
 
 | Parameter name | Bound to |
 |---|---|
-| `ctx` | the workflow `Context` |
+| `ctx`, or any parameter annotated `Context` | the workflow `Context` |
 | `node_input` | the predecessor node's output |
 | anything else | `ctx.state[param_name]`, falling back to the default |
 
@@ -44,7 +44,8 @@ uses when a node is exposed as an agent's tool.
 ## Return values
 
 A plain return is wrapped in `Event(output=...)`. Returning `None` emits no
-event, so no downstream node fires.
+output event; the node still completes, so downstream nodes fire with
+`node_input=None`.
 
 ```python
 def process(node_input: str) -> str:
@@ -57,7 +58,7 @@ async def fetch_data(node_input: str) -> dict:
 
 def maybe_output(node_input: str) -> str | None:
   if not node_input:
-    return None  # downstream stays idle
+    return None  # downstream still fires, with node_input=None
   return f'Got: {node_input}'
 ```
 
@@ -80,7 +81,7 @@ the annotation, so the annotation is both documentation and a coercion rule:
 | a `BaseModel` subclass | `dict` | validated model instance |
 | `list[Model]`, `dict[K, Model]` | nested dicts | recursively converted |
 | `str` (including `str \| None`) | `types.Content` | concatenated text of the text parts |
-| anything else | any | validated by `TypeAdapter`, `TypeError` on mismatch |
+| anything else | any | validated by `TypeAdapter`, `pydantic.ValidationError` on mismatch |
 
 The `types.Content` to `str` rule drops non-text parts (inline data, file data,
 executable code) and logs a warning when it does.
@@ -96,8 +97,8 @@ def process_order(node_input: Order) -> str:
   return f'Order: {node_input.quantity}x {node_input.item}'
 ```
 
-A union annotation (`list | dict`) accepts anything — the adapter is satisfied
-by any member, so wrong types reach the body. Use `isinstance` checks inside the
+A union annotation (`list | dict`) is satisfied by any member and raises
+`pydantic.ValidationError` when none matches. Use `isinstance` checks inside the
 function when a union is unavoidable.
 
 ## What `node_input` will actually be
@@ -111,7 +112,7 @@ function when a union is unavoidable.
 | `JoinNode` | `dict[str, Any]` keyed by predecessor node name |
 | a `parallel_worker=True` node | `list` of per-item results |
 | `START` without `input_schema` | `types.Content` (the user's message) |
-| `START` with `input_schema` | the parsed schema type |
+| `START` with `input_schema` | the validated value; a `BaseModel` schema arrives as a `dict` unless the parameter is annotated with the model |
 
 ## Explicit `FunctionNode`
 
@@ -152,7 +153,8 @@ worker = node(some_func, parallel_worker=True)
 ```
 
 Accepted keywords: `name`, `rerun_on_resume`, `retry_config`, `timeout`,
-`parallel_worker`, `max_parallel_workers`, `auth_config`, `parameter_binding`.
+`parallel_worker`, `max_parallel_workers`, `auth_config`,
+`require_confirmation`, `parameter_binding`.
 
 ## Routing and state from a node
 
@@ -164,6 +166,25 @@ def classify(node_input: str):
 
 def update_counter(node_input: str):
   return Event(output=node_input, state={'last_input': node_input})
+```
+
+## Requiring confirmation before a node runs
+
+`require_confirmation` pauses the workflow with an `adk_request_input`
+interrupt (`wf_tool_confirmation:{node_path}`) before the function runs. It
+accepts a `bool` or a sync/async predicate callable receiving the function's
+bound arguments (plus `ctx` or `node_input` if declared). `@node` automatically
+defaults `rerun_on_resume=True` when `require_confirmation` is set.
+
+```python
+@node(require_confirmation=True)
+def delete_file(path: str) -> str:
+  return f'Deleted {path}'
+
+
+@node(require_confirmation=lambda amount: amount > 1000)
+def transfer_funds(amount: int) -> str:
+  return f'Transferred {amount}'
 ```
 
 ## Requiring authentication before a node runs
