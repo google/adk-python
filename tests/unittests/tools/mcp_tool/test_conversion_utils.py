@@ -198,6 +198,63 @@ class TestAdkToMcpToolType:
     assert result.description == "Gets the current time"
     assert field(result, "inputSchema") == {"type": "object", "properties": {}}
 
+  @pytest.mark.parametrize(
+      ("declaration_kwargs", "expected"),
+      [
+          (
+              {"parameters": types.Schema()},
+              {"type": "object", "properties": {}},
+          ),
+          (
+              {"parameters": types.Schema(type=types.Type.OBJECT)},
+              {"type": "object", "properties": {}},
+          ),
+          (
+              {
+                  "parameters_json_schema": {
+                      "properties": {"query": {"type": "string"}},
+                      "required": ["query"],
+                  }
+              },
+              {
+                  "type": "object",
+                  "properties": {"query": {"type": "string"}},
+                  "required": ["query"],
+              },
+          ),
+          (
+              {
+                  "parameters_json_schema": {
+                      "type": "object",
+                      "anyOf": [
+                          {"required": ["record_id"]},
+                          {"required": ["name"]},
+                      ],
+                  }
+              },
+              {
+                  "type": "object",
+                  "properties": {},
+                  "anyOf": [
+                      {"required": ["record_id"]},
+                      {"required": ["name"]},
+                  ],
+              },
+          ),
+      ],
+      ids=["schema_empty", "schema_object", "json_no_type", "json_root_any_of"],
+  )
+  def test_root_schema_defaults_to_object(self, declaration_kwargs, expected):
+    """Root schemas missing "type" or "properties" get the MCP object default."""
+    mock_tool = mock.Mock(spec=BaseTool)
+    mock_tool.name = "lookup"
+    mock_tool.description = "Looks up a record"
+    mock_tool._get_declaration.return_value = types.FunctionDeclaration(
+        name="lookup", description="Looks up a record", **declaration_kwargs
+    )
+
+    assert field(adk_to_mcp_tool_type(mock_tool), "inputSchema") == expected
+
   def test_tool_prefers_json_schema_over_parameters(self):
     """Test that parameters_json_schema is preferred over parameters."""
     mock_tool = mock.Mock(spec=BaseTool)
