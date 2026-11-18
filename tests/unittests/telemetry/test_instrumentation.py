@@ -55,6 +55,7 @@ from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 from opentelemetry.trace import StatusCode
 import pytest
 
+from ..testing_utils import MockModel
 from .functional.scenarios.telemetry_setup import install_telemetry
 
 
@@ -2353,6 +2354,46 @@ async def test_inference_span_ends_at_the_finish_reason_not_at_teardown(
       call_llm.get_span_context().span_id
   )
   assert spans["generate_content some-model"].end_time == ended_at
+
+
+@pytest.mark.asyncio
+async def test_operation_duration_excludes_the_tool_if_span_is_sampled_out(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A sampled-out span has no end time, so the call ends at its finish reason.
+
+  Ending it at teardown would bill the tool the model asked for to the model.
+  """
+  sampled_out_tracer = TracerProvider(sampler=ALWAYS_OFF).get_tracer(__name__)
+  monkeypatch.setattr(
+      tracing.tracer,
+      "start_as_current_span",
+      sampled_out_tracer.start_as_current_span,
+  )
+  tool_seconds = 0.2
+
+  async def slow_tool() -> dict[str, bool]:
+    """Takes `tool_seconds`."""
+    await asyncio.sleep(tool_seconds)
+    return {"ok": True}
+
+  function_call = types.Part(
+      function_call=types.FunctionCall(name="slow_tool", args={})
+  )
+  model = MockModel.create(
+      responses=[
+          _llm_response(
+              content=types.Content(role="model", parts=[function_call])
+          ),
+          _llm_response(),
+      ]
+  )
+  agent = LlmAgent(name="root_agent", model=model, tools=[slow_tool])
+
+  await _run_once(InMemoryRunner(app_name="test_app", agent=agent))
+
+  ((_, model_seconds),) = telemetry.points("gen_ai.client.operation.duration")
+  assert model_seconds < tool_seconds
 
 
 @pytest.mark.asyncio

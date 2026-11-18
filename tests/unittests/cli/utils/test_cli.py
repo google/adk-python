@@ -40,8 +40,10 @@ from google.adk.cli.utils.local_storage import PerAgentFileArtifactService
 from google.adk.cli.utils.service_factory import create_artifact_service_from_options
 from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
+from google.adk.events.request_input import RequestInput
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.workflow.utils import _workflow_hitl_utils
 import pytest
 from watchdog.events import FileClosedNoWriteEvent
 from watchdog.events import FileModifiedEvent
@@ -1203,3 +1205,43 @@ async def test_run_cli_reload_agents_save_session_prompts(
   )
 
   assert session_file.exists()
+
+
+@pytest.mark.parametrize(
+    "response_schema, user_input, expected",
+    [
+        (str, "94103", "94103"),
+        (str, "true", "true"),
+        (str | None, "null", "null"),
+        (str | int, "42", 42),
+        (int, "42", 42),
+        (None, "42", 42),
+    ],
+)
+@pytest.mark.asyncio
+async def test_prompt_for_request_input_keeps_text_for_string_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    response_schema: Any,
+    user_input: str,
+    expected: Any,
+) -> None:
+  """Typed input stays text for a string-only schema, else is JSON-parsed."""
+  # Restore the real genai Part/Content that the autouse fixture fakes.
+  monkeypatch.undo()
+  event = _workflow_hitl_utils.create_request_input_event(
+      RequestInput(
+          interrupt_id="ask1",
+          message="Zip code?",
+          response_schema=response_schema,
+      )
+  )
+  fc = event.content.parts[0].function_call
+
+  async def read_line(_: str) -> str:
+    return user_input
+
+  content = await cli._prompt_for_function_call(
+      fc.id, fc.name, fc.args, read_line
+  )
+
+  assert content.parts[0].function_response.response == {"result": expected}

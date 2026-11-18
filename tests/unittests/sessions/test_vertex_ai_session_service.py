@@ -2160,3 +2160,39 @@ async def test_append_event_does_not_retry_on_non_429_client_error(
     assert exc_info.value.code == 400
     assert mock_api_client_instance.sessions.events.append.call_count == 1
     mock_sleep.assert_not_called()
+
+
+def test_get_api_client_attaches_tracking_headers():
+  """Tests that get_api_client attaches tracking headers."""
+  # pylint: disable=protected-access
+  session_service = mock_vertex_ai_session_service()
+  with mock.patch('agentplatform.Client') as mock_client:
+    _ = session_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']
+
+
+def test_get_api_client_merges_tracking_headers_with_http_options_override():
+  """Tests that get_api_client merges tracking headers with options override."""
+  # pylint: disable=protected-access
+  session_service = mock_vertex_ai_session_service()
+  with (
+      mock.patch.object(
+          session_service,
+          '_api_client_http_options_override',
+          return_value=genai_types.HttpOptions(base_url='https://example.com'),
+      ),
+      mock.patch('agentplatform.Client') as mock_client,
+  ):
+    _ = session_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert http_options.base_url == 'https://example.com'
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']

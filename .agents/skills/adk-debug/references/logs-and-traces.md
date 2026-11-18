@@ -45,11 +45,19 @@ The session response is a list of spans, each with `name`, `span_id`,
 `trace_id`, `parent_span_id`, `start_time`, `end_time`, and `attributes`.
 Spans are kept in memory by the running server, so restarting it loses them.
 
+`call_llm` and the `gcp.vertex.agent.llm_request`, `.llm_response`,
+`.tool_call_args`, `.tool_response` and `.session_id` attributes below exist
+only under telemetry schema 1, and the default is 2: start the server with
+`ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN=1 adk web {agents_dir}` to get them.
+Under 2, look at the `generate_content {model}` span's `logs` entry
+`gen_ai.client.inference.operation.details`: it holds `gen_ai.input.messages`,
+`gen_ai.system_instructions` and `gen_ai.tool.definitions`, but no `config`.
+
 Span name | What it covers
 --- | ---
 `call_llm` | One model call, including the `before_model` / `after_model` callbacks.
 `execute_tool (merged)` | A batch of tool calls dispatched from one model response.
-`generate_content {model}` | The underlying GenAI SDK call, when the OTel GenAI instrumentation is active.
+`generate_content {model}` | The model call itself, recorded by ADK or, when it is installed, by the OTel GenAI instrumentation.
 
 ## Reading what the model actually received
 
@@ -79,7 +87,7 @@ Variable | Effect
 --- | ---
 `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | Whether prompts and responses are written onto the legacy `gcp.vertex.agent.*` span attributes. Defaults to `true`; set `false` to strip content.
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | OTel-spec content capture for the GenAI semantic-convention spans and log records.
-`ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN` | Pins the telemetry schema to `1` (default off Agent Engine) or `2`. Under `2` the `invocation` span becomes `invoke_workflow` and `call_llm` goes away, so check this first if the span names above are missing.
+`ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN` | Selects the telemetry schema: `2` is the default, `1` is the legacy one. Under `2` the `invocation` span becomes `invoke_workflow` and `call_llm` goes away, so check this first if the span names above are missing.
 `GOOGLE_CLOUD_PROJECT` | Required by `adk web --trace_to_cloud`; without it the server logs a warning and exports nothing.
 
 `--trace_to_cloud` only exports traces. `--otel_to_cloud` is the newer flag and

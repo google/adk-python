@@ -20,6 +20,7 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 from enum import Enum
 import inspect
@@ -34,8 +35,11 @@ from typing import get_origin
 from typing import Union
 
 from google.genai import types
+from pydantic import AliasChoices
+from pydantic import AliasPath
 from pydantic import BaseModel
 from pydantic import TypeAdapter
+from pydantic.fields import FieldInfo
 from typing_extensions import Annotated
 
 from . import _json_utils
@@ -427,7 +431,8 @@ def validate_node_data(
     return val
 
   def _validate_python_object(val: Any) -> Any:
-    validated: Any = TypeAdapter(schema).validate_python(val)
+    # by_name accepts data a model dumped by field name, e.g. AgentTool input.
+    validated: Any = TypeAdapter(schema).validate_python(val, by_name=True)
     return _to_serializable(validated)
 
   if isinstance(data, types.Content):
@@ -690,3 +695,25 @@ def preprocess_args(
             converted_args[param_name] = converted_list
 
   return converted_args
+
+
+def top_level_input_keys(fields: Mapping[str, FieldInfo]) -> set[str]:
+  """Returns the top-level input keys that a model's fields consume."""
+  keys = set(fields)
+  for f in fields.values():
+    if f.alias:
+      keys.add(f.alias)
+    # A validation alias may consume an entire top-level input container.
+    validation_alias = f.validation_alias
+    if isinstance(validation_alias, str):
+      keys.add(validation_alias)
+    elif isinstance(validation_alias, (AliasChoices, AliasPath)):
+      alias_paths = (
+          [validation_alias.path]
+          if isinstance(validation_alias, AliasPath)
+          else validation_alias.convert_to_aliases()
+      )
+      for alias_path in alias_paths:
+        if alias_path and isinstance(alias_path[0], str):
+          keys.add(alias_path[0])
+  return keys

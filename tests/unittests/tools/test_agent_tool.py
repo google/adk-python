@@ -54,6 +54,9 @@ from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
+from pydantic.alias_generators import to_camel
 import pytest
 from pytest import mark
 
@@ -859,6 +862,88 @@ def test_custom_schema(env_variables):
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+class _AliasGeneratorInput(BaseModel):
+  model_config = ConfigDict(alias_generator=to_camel)
+  city_name: str
+
+
+class _ValidationAliasInput(BaseModel):
+  city_name: str = Field(validation_alias='cityName')
+
+
+class _SerializeByAliasInput(BaseModel):
+  model_config = ConfigDict(serialize_by_alias=True)
+  city_name: str = Field(serialization_alias='cityName')
+
+
+class _NestedAliasInput(BaseModel):
+  trip: _AliasGeneratorInput
+
+
+def _run_tool_agent(input_schema, args):
+  tool_agent_model = testing_utils.MockModel.create(responses=['sunny'])
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+      input_schema=input_schema,
+  )
+  function_call = Part.from_function_call(name='tool_agent', args=args)
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[function_call, 'done']),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  events = testing_utils.simplify_events(
+      testing_utils.InMemoryRunner(root_agent).run('test1')
+  )
+  assert events == [
+      ('root_agent', function_call),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='tool_agent', response={'result': 'sunny'}
+          ),
+      ),
+      ('root_agent', 'done'),
+  ]
+  return testing_utils.simplify_contents(tool_agent_model.requests[0].contents)
+
+
+@mark.parametrize(
+    'input_schema, args, expected',
+    [
+        (_ValidationAliasInput, {'cityName': 'Paris'}, '{"city_name":"Paris"}'),
+        (
+            _SerializeByAliasInput,
+            {'city_name': 'Paris'},
+            '{"city_name":"Paris"}',
+        ),
+        (
+            _NestedAliasInput,
+            {'trip': {'cityName': 'Paris'}},
+            '{"trip":{"city_name":"Paris"}}',
+        ),
+    ],
+)
+def test_input_schema_with_aliases(input_schema, args, expected):
+  """Tests that an aliased input_schema reaches the agent by field name."""
+
+  assert _run_tool_agent(input_schema, args) == [('user', expected)]
+
+
+def test_input_schema_sends_defaults_and_drops_none_defaults():
+  """Tests that aliased defaults are sent and None defaults are dropped."""
+
+  class TripInput(BaseModel):
+    city: str
+    num_days: int = Field(default=3, validation_alias='numDays')
+    hotel: str = None
+
+  assert _run_tool_agent(TripInput, {'city': 'Paris'}) == [
+      ('user', '{"city":"Paris","num_days":3}')
+  ]
 
 
 @mark.parametrize('skip_summarization', [False, True])
@@ -3373,3 +3458,88 @@ async def test_agent_tool_closes_runner_when_nested_run_raises(
     await task
 
   assert toolset.close_calls == 1
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('include_plugins', 'expect_parent_id'),
+    [
+        (True, True),
+        (False, False),
+    ],
+)
+async def test_agent_tool_sets_parent_invocation_id_only_when_sharing_plugins(
+    include_plugins: bool,
+    expect_parent_id: bool,
+):
+  """Stamps caller invocation_id onto child ctx only when include_plugins=True."""
+  root_inv_ids: list[str] = []
+  root_parent_ids: list[str | None] = []
+  child_inv_ids: dict[str, str] = {}
+  child_parent_ids: dict[str, str | None] = {}
+
+  def record_root_ctx(callback_context: CallbackContext):
+    root_inv_ids.append(callback_context._invocation_context.invocation_id)
+    root_parent_ids.append(
+        callback_context._invocation_context._parent_invocation_id
+    )
+
+  def record_child_ctx(callback_context: CallbackContext):
+    agent_name = callback_context.agent_name
+    child_inv_ids[agent_name] = (
+        callback_context._invocation_context.invocation_id
+    )
+    child_parent_ids[agent_name] = (
+        callback_context._invocation_context._parent_invocation_id
+    )
+
+  leaf_agent = Agent(
+      name='leaf_child',
+      model=testing_utils.MockModel.create(responses=['leaf_done']),
+      before_agent_callback=record_child_ctx,
+  )
+  seq_child = SequentialAgent(
+      name='seq_child',
+      sub_agents=[leaf_agent],
+      before_agent_callback=record_child_ctx,
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='seq_child', args={'request': 'run'}),
+          'root_done',
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      tools=[AgentTool(agent=seq_child, include_plugins=include_plugins)],
+      before_agent_callback=record_root_ctx,
+  )
+
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      memory_service=InMemoryMemoryService(),
+  )
+  session = await runner.session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  async for _ in runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=testing_utils.get_user_content('hello'),
+  ):
+    pass
+
+  assert len(root_inv_ids) == 1
+  assert root_parent_ids == [None]
+  assert set(child_parent_ids) == {'seq_child', 'leaf_child'}
+  assert child_inv_ids['seq_child'] == child_inv_ids['leaf_child']
+  assert child_inv_ids['seq_child'] != root_inv_ids[0]
+  expected = root_inv_ids[0] if expect_parent_id else None
+  assert child_parent_ids == {
+      'seq_child': expected,
+      'leaf_child': expected,
+  }

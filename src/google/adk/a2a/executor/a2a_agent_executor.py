@@ -34,6 +34,7 @@ from typing_extensions import override
 
 from .. import _compat
 from ...events.event import Event
+from ...utils._error_reporting import report_error
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
@@ -160,7 +161,15 @@ class A2aAgentExecutor(AgentExecutor):
     try:
       await self._handle_request(context, event_queue)
     except Exception as e:
-      logger.error('Error handling A2A request: %s', e, exc_info=True)
+      # The peer that sent this request is not trusted with the exception text:
+      # it names absolute paths, installed modules and echoed payloads. The
+      # traceback is logged here, the peer gets the correlation id for it.
+      failure_text = report_error(
+          logger,
+          e,
+          summary='Agent execution failed.',
+          log_message='Error handling A2A request',
+      )
       # Publish failure event
       try:
         await event_queue.enqueue_event(
@@ -172,7 +181,7 @@ class A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=platform_uuid.new_uuid(),
                         role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
+                        parts=[_compat.make_text_part(failure_text)],
                     ),
                 ),
                 final=True,

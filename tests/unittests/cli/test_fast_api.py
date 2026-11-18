@@ -37,6 +37,7 @@ from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.auth_credential import _redact_credential_secrets
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
@@ -854,6 +855,218 @@ def test_api_server_get_runner_async_rejects_internal_special_agent_name(
       "Access to internal special agents is disabled in API server mode"
       in exc_info.value.detail
   )
+
+
+_NO_EVAL_SETS_MANAGER = "Eval sets manager is not configured"
+_NO_EVAL_SET_RESULTS_MANAGER = "Eval set results manager is not configured"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "detail"),
+    [
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets",
+            {"eval_set": {"eval_set_id": "s", "eval_cases": []}},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        ("GET", "/dev/apps/test_app/eval-sets", None, _NO_EVAL_SETS_MANAGER),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/add-session",
+            {"eval_id": "e", "session_id": "session", "user_id": "user"},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_sets/s/evals",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "PUT",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            {"eval_id": "e", "conversation": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "DELETE",
+            "/dev/apps/test_app/eval-sets/s/eval-cases/e",
+            None,
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "POST",
+            "/dev/apps/test_app/eval-sets/s/run",
+            {"eval_ids": [], "eval_metrics": []},
+            _NO_EVAL_SETS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval_results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results/r",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+        (
+            "GET",
+            "/dev/apps/test_app/eval-results",
+            None,
+            _NO_EVAL_SET_RESULTS_MANAGER,
+        ),
+    ],
+)
+async def test_eval_endpoints_without_eval_managers_return_500(
+    method,
+    path,
+    body,
+    detail,
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+
+  await mock_session_service.create_session(
+      app_name="test_app", user_id="user", session_id="session"
+  )
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.request(method, path, json=body)
+
+  assert response.status_code == 500
+  assert response.json() == {"detail": detail}
+
+
+def test_run_eval_without_eval_set_results_manager_succeeds(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set("test_app", "s")
+  dev_server = DevServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=eval_sets_manager,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+  response = client.post(
+      "/dev/apps/test_app/eval-sets/s/run",
+      json={"eval_ids": [], "eval_metrics": []},
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {"runEvalResults": []}
+
+
+@pytest.fixture
+def workflow_root_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+):
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  workflow = Workflow(name="wf", edges=[(START, BaseNode(name="leaf"))])
+
+  class WorkflowLoader(BaseAgentLoader):
+
+    def load_agent(self, agent_name: str) -> Workflow:
+      return workflow
+
+    def list_agents(self) -> list[str]:
+      return ["wf_app"]
+
+  dev_server = DevServer(
+      agent_loader=WorkflowLoader(),
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=None,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  return TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+
+def test_app_graph_for_workflow_root_is_empty(workflow_root_client):
+  """A Workflow root gets an empty app graph instead of a 500."""
+  response = workflow_root_client.get("/dev/apps/wf_app/graph")
+
+  assert response.status_code == 200
+  assert response.json() == {}
+
+
+async def test_event_graph_for_workflow_root_is_empty(
+    workflow_root_client, mock_session_service
+):
+  """A Workflow root gets an empty event graph instead of a 500."""
+  session = await mock_session_service.create_session(
+      app_name="wf_app", user_id="user"
+  )
+  event = Event(author="leaf", invocation_id="invocation_id")
+  await mock_session_service.append_event(session=session, event=event)
+
+  response = workflow_root_client.get(
+      f"/dev/apps/wf_app/users/user/sessions/{session.id}/events/"
+      f"{event.id}/graph"
+  )
+
+  assert response.status_code == 200
+  assert response.json() == {}
 
 
 @pytest.mark.parametrize(
@@ -3634,6 +3847,91 @@ def test_agent_run_redacts_oauth2_client_secret(
   )
 
 
+def test_agent_run_debug_log_redacts_credential_secrets(
+    test_app, create_test_session, monkeypatch, oauth2_auth_config_dict, caplog
+):
+  """/run must not log secrets its response redacts.
+
+  A JSON-backed session service hands a stored credential back as a plain
+  dict, so `state_delta` carries one whose secrets no `repr=False` covers.
+  """
+  info = create_test_session
+
+  async def run_async_with_auth_request(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="adk_request_credential",
+                        id="adk-req-cred-id",
+                        args={
+                            "functionCallId": "adk-original-fc-id",
+                            "authConfig": oauth2_auth_config_dict,
+                        },
+                    )
+                )
+            ],
+        ),
+        actions=EventActions(
+            state_delta={
+                "temp:my_tool:oauth2:abcd1234": {
+                    "authType": "oauth2",
+                    "oauth2": {
+                        "clientId": "public-client-id",
+                        "accessToken": "access-token-should-not-be-logged",
+                        "refreshToken": "refresh-token-should-not-be-logged",
+                    },
+                }
+            },
+        ),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_auth_request)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+  }
+
+  with caplog.at_level(logging.DEBUG, logger="google_adk.google.adk.cli"):
+    response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+
+  secrets = (
+      "access-token-should-not-be-logged",
+      "refresh-token-should-not-be-logged",
+      "should-never-reach-the-client",
+      "pkce-verifier-should-not-leak-either",
+  )
+  for secret in secrets:
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+  stored = response.json()[0]["actions"]["stateDelta"][
+      "temp:my_tool:oauth2:abcd1234"
+  ]
+  assert "accessToken" not in stored["oauth2"]
+  assert "refreshToken" not in stored["oauth2"]
+  assert stored["oauth2"]["clientId"] == "public-client-id"
+  assert "Events generated:" in caplog.text
+
+
 def test_agent_run_sse_redacts_oauth2_client_secret(
     test_app, create_test_session, monkeypatch, oauth2_auth_config_dict
 ):
@@ -5369,7 +5667,7 @@ def test_save_artifact_returns_400_on_validation_error(
 def test_save_artifact_returns_500_on_unexpected_error(
     test_app, create_test_session, mock_artifact_service
 ):
-  """Test save artifact endpoint surfaces unexpected errors as HTTP 500."""
+  """Test save artifact endpoint reports unexpected errors as HTTP 500."""
   info = create_test_session
   url = (
       f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
@@ -5382,12 +5680,12 @@ def test_save_artifact_returns_500_on_unexpected_error(
   }
 
   mock_artifact_service.save_artifact_side_effect = RuntimeError(
-      "unexpected failure"
+      "bucket my-bucket object a/b.txt agent@example.iam.gserviceaccount.com"
   )
 
   response = test_app.post(url, json=payload)
   assert response.status_code == 500
-  assert response.json()["detail"] == "unexpected failure"
+  assert response.json()["detail"] == "Failed to save artifact"
 
 
 def test_get_artifact_version_metadata(
@@ -6783,6 +7081,21 @@ def test_telemetry_post_endpoint_missing_header(test_app):
   assert "Forbidden: missing required security header" in response.text
 
 
+def test_telemetry_post_endpoint_rejects_remote_client(
+    remote_builder_test_client,
+):
+  """Any non-browser caller can set the header, so the peer address gates it."""
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    response = remote_builder_test_client.post(
+        "/config/telemetry",
+        json={"telemetry": True},
+        headers={"x-adk-telemetry-request": "true"},
+    )
+
+  assert response.status_code == 403
+  mock_write.assert_not_called()
+
+
 def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
   """A service-account key file ADC has requires_scopes=True and no scopes,
 
@@ -7843,11 +8156,18 @@ def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
 #################################################
 
 
-def test_finalize_agent_identity_credentials_success(test_app):
+@pytest.mark.parametrize(
+    "connector_name",
+    [
+        "projects/p/locations/l/connectors/c",
+        "projects/p/locations/l/authProviders/c",
+    ],
+)
+def test_finalize_agent_identity_credentials_success(test_app, connector_name):
   """Test successful credential finalization and Base64 padding decoding."""
   import base64
 
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   raw_bytes = b"test-validation-state-bytes"
   # Unpadded url-safe base64 string
@@ -7855,12 +8175,12 @@ def test_finalize_agent_identity_credentials_success(test_app):
 
   with (
       patch.object(
-          iamconnectorcredentials_v1alpha,
-          "IAMConnectorCredentialsServiceClient",
+          agentidentitycredentials_v1,
+          "AuthProviderCredentialsServiceClient",
           autospec=True,
       ) as mock_client_cls,
       patch.object(
-          iamconnectorcredentials_v1alpha,
+          agentidentitycredentials_v1,
           "FinalizeCredentialsRequest",
           autospec=True,
       ) as mock_req_cls,
@@ -7871,7 +8191,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     response = test_app.post(
         "/agent-identity/finalize",
         json={
-            "connector_name": "projects/p/locations/l/connectors/c",
+            "connector_name": connector_name,
             "user_id": "user-123",
             "user_id_validation_state": b64_str,
             "consent_nonce": "nonce-456",
@@ -7881,7 +8201,7 @@ def test_finalize_agent_identity_credentials_success(test_app):
     assert response.json() == {"status": "ok"}
 
     mock_req_cls.assert_called_once_with(
-        connector="projects/p/locations/l/connectors/c",
+        auth_provider="projects/p/locations/l/authProviders/c",
         user_id="user-123",
         user_id_validation_state=raw_bytes,
         consent_nonce="nonce-456",
@@ -7892,11 +8212,11 @@ def test_finalize_agent_identity_credentials_success(test_app):
 @pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
 def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ):
     response = test_app.post(
@@ -7915,9 +8235,9 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
 
 
 def test_finalize_agent_identity_credentials_missing_dependency(test_app):
-  """Test error handling when google-cloud-iamconnectorcredentials is not installed."""
+  """Test error handling when google-cloud-agentidentitycredentials is not installed."""
   with patch.dict(
-      "sys.modules", {"google.cloud.iamconnectorcredentials_v1alpha": None}
+      "sys.modules", {"google.cloud.agentidentitycredentials_v1": None}
   ):
     response = test_app.post(
         "/agent-identity/finalize",
@@ -7934,11 +8254,11 @@ def test_finalize_agent_identity_credentials_missing_dependency(test_app):
 
 def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
   """Test backend InvalidArgument API error handling (400 response)."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -7961,14 +8281,14 @@ def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
 
 def test_finalize_agent_identity_credentials_api_call_error(test_app):
   """Test backend GoogleAPICallError error handling with status code propagation."""
-  from google.cloud import iamconnectorcredentials_v1alpha
+  from google.cloud import agentidentitycredentials_v1
 
   err = GoogleAPICallError("Permission denied")
   err.code = 403
 
   with patch.object(
-      iamconnectorcredentials_v1alpha,
-      "IAMConnectorCredentialsServiceClient",
+      agentidentitycredentials_v1,
+      "AuthProviderCredentialsServiceClient",
       autospec=True,
   ) as mock_client_cls:
     mock_client = mock_client_cls.return_value
@@ -8871,6 +9191,129 @@ def test_runtime_config_rejects_half_specified_logo(tmp_path):
     get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
 
 
+def test_no_file_observer_without_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """No watchdog observer, and so no inotify instance, without reload_agents."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+    )
+    with client:
+      pass
+
+  mock_observer.assert_not_called()
+
+
+def test_file_observer_started_and_stopped_with_reload_agents(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """reload_agents starts the observer and stops it when the app shuts down."""
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        reload_agents=True,
+    )
+    observer = mock_observer.return_value
+    observer.start.assert_called_once()
+    observer.stop.assert_not_called()
+    with client:
+      pass
+
+  observer.stop.assert_called_once()
+  observer.join.assert_called_once()
+
+
+def test_api_server_skips_tear_down_observer_without_setup_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """tear_down_observer is not called when setup_observer is None."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  tear_down_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(tear_down_observer=tear_down_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_not_called()
+  tear_down_observer.assert_not_called()
+
+
+def test_api_server_allows_setup_observer_without_tear_down_observer(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Shutting down succeeds when setup_observer is given without tear_down_observer."""
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  setup_observer = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with patch("watchdog.observers.Observer", autospec=True) as mock_observer:
+    app = api_server.get_fast_api_app(setup_observer=setup_observer)
+    with TestClient(app):
+      pass
+
+  mock_observer.assert_called_once_with()
+  setup_observer.assert_called_once_with(mock_observer.return_value, api_server)
+
+
 @pytest.mark.parametrize(
     ("url_prefix", "expected_root_path"),
     [
@@ -8970,6 +9413,102 @@ def test_context_propagation_middleware_extracts_w3c_traceparent_and_baggage(
       (f"{s.context.trace_id:032x}", s.parent and f"{s.parent.span_id:016x}")
       for s in roots
   ] == [("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")]
+
+
+def test_agent_engine_keeps_spans_of_unsampled_platform_traceparent(
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """On Agent Engine an unsampled platform traceparent does not drop spans."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "123")
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  exporter = InMemorySpanExporter()
+  trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exporter))
+
+  @client.app.get("/_test_trace_context")
+  async def _probe():
+    with trace.get_tracer(__name__).start_as_current_span("probe"):
+      pass
+    return {"ok": True}
+
+  try:
+    response = client.get(
+        "/_test_trace_context",
+        headers={
+            "traceparent": (
+                "00-0000000000000000385c840e58676fdd-00f067aa0ba902b7-00"
+            ),
+        },
+    )
+    spans = exporter.get_finished_spans()
+  finally:
+    exporter.shutdown()
+
+  assert response.status_code == 200
+  assert [(s.name, s.parent) for s in spans] == [("probe", None)]
+  assert spans[0].context.trace_id != 0x385C840E58676FDD
+
+
+@pytest.mark.parametrize(
+    ("conflict", "expected_calls"),
+    [
+        ("google-genai>=1.0.0,<3 vs google-genai 3.3.0", []),
+        (None, [True]),
+    ],
+)
+def test_setup_instrumentation_lib_checks_dependency_conflicts(
+    caplog, conflict, expected_calls
+):
+  """Incompatible google-genai skips instrument() and logs info, not error."""
+  instrument_calls = []
+  checked_deps = []
+
+  class _FakeInstrumentor:
+
+    def instrumentation_dependencies(self):
+      return ["google-genai>=1.0.0,<3"]
+
+    def instrument(self):
+      instrument_calls.append(True)
+
+  def _fake_get_dependency_conflicts(deps):
+    checked_deps.append(list(deps))
+    return conflict
+
+  fake_google_genai = type(sys)("fake_google_genai")
+  fake_google_genai.GoogleGenAiSdkInstrumentor = _FakeInstrumentor
+  fake_deps = type(sys)("fake_deps")
+  fake_deps.get_dependency_conflicts = _fake_get_dependency_conflicts
+
+  with (
+      patch.dict(
+          sys.modules,
+          {
+              "opentelemetry.instrumentation.google_genai": fake_google_genai,
+              "opentelemetry.instrumentation.dependencies": fake_deps,
+          },
+      ),
+      caplog.at_level(logging.INFO),
+  ):
+    api_server_module._setup_instrumentation_lib_if_installed()  # pylint: disable=protected-access
+
+  assert checked_deps == [["google-genai>=1.0.0,<3"]]
+  assert instrument_calls == expected_calls
+  assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+  if conflict:
+    assert "Skipping GoogleGenAiSdkInstrumentor" in caplog.text
 
 
 if __name__ == "__main__":

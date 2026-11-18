@@ -93,7 +93,7 @@ A successful consultation returns the following dictionary structure:
 | `model`                     | `str \| BaseLlm`                      | `'gemini-3.1-pro-preview'` | Advisor model name resolved through ADK's model registry, or a pre-configured `BaseLlm` instance.                                                                                |
 | `max_uses`                  | `int \| None`                         | `None`                     | Maximum successful consultations per user turn. `None` means no per-turn cap.                                                                                                    |
 | `session_max_uses`          | `int \| None`                         | `None`                     | Maximum successful consultations across the entire session. `None` means no session-wide cap.                                                                                    |
-| `thinking_level`            | `str \| types.ThinkingLevel \| None`  | `'high'`                   | Reasoning effort for the advisor model: `'minimal'`, `'low'`, `'medium'`, `'high'`, a `types.ThinkingLevel` enum value, or `'off'`, `'none'`, or `None` to leave thinking unset. |
+| `thinking_level`            | `str \| types.ThinkingLevel \| None`  | `'high'`                   | Reasoning effort for the advisor model: the case-insensitive name of any specified `types.ThinkingLevel` level, such as `'minimal'`, `'low'`, `'medium'`, `'high'`, or `'xhigh'` when the installed `google-genai` defines it, a `types.ThinkingLevel` enum value, or `'off'`, `'none'`, or `None` to leave thinking unset. |
 | `max_output_tokens`         | `int \| None`                         | `None`                     | Optional cap on advisor output tokens, covering both visible output and thinking tokens on reasoning models.                                                                     |
 | `timeout_seconds`           | `float \| None`                       | `None`                     | Per-call wall-clock timeout in seconds. `None` means no tool-level timeout.                                                                                                      |
 | `context_config`            | `ModelConsultContextConfig \| None`   | `None`                     | Controls how session history is packaged and bounded for the advisor.                                                                                                            |
@@ -109,7 +109,14 @@ A successful consultation returns the following dictionary structure:
 
 `max_uses`, `session_max_uses`, `max_output_tokens`, and `timeout_seconds` enforce positive caps when set. Passing `0` or a negative number raises `ValueError` at construction time. Only successful advisor calls with `"status": "ok"` consume consultation budget; failed calls return `"status": "error"` without incrementing either counter. Call `has_remaining_budget(context)` with a `ToolContext` or `CallbackContext` to check whether at least one consultation remains in the current turn and session.
 
-`thinking_level` accepts `'minimal'`, `'low'`, `'medium'`, `'high'`, `'off'`, `'none'`, `''`, `None`, or a `types.ThinkingLevel` enum value. Passing `'off'`, `'none'`, `''`, or `None` leaves the advisor's thinking configuration unset. If the target advisor model rejects the thinking configuration as unsupported, `ModelConsultTool` automatically retries the call once without it.
+`thinking_level` accepts the case-insensitive name of any specified
+`types.ThinkingLevel` level that the installed `google-genai` defines, such as
+`'minimal'`, `'low'`, `'medium'`, `'high'`, or `'xhigh'`, a
+`types.ThinkingLevel` enum value, or
+`'off'`, `'none'`, `''`, or `None`. Passing `'off'`, `'none'`, `''`, or `None`
+leaves the advisor's thinking configuration unset. If the target advisor model
+rejects the thinking configuration as unsupported, `ModelConsultTool`
+automatically retries the call once without it.
 
 `max_output_tokens` caps the advisor's total generated tokens, including reasoning tokens on thinking models. If generation stops at `max_output_tokens` after producing partial text, `ModelConsultTool` appends a notice to the returned guidance; if thinking consumes the entire cap before any visible text is emitted, the call returns `"status": "error"`. Setting different values on `max_output_tokens` and `generate_content_config.max_output_tokens` raises `ValueError` at construction time.
 

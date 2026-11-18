@@ -31,7 +31,6 @@ from ....models.llm_request import LlmRequest
 from ....tools.base_toolset import BaseToolset
 from ....tools.tool_context import ToolContext
 from .._base_llm_processor import BaseLlmRequestProcessor
-from ._live_caller import _is_non_blocking_tool
 from ._live_caller import _is_streaming_tool
 
 if TYPE_CHECKING:
@@ -118,7 +117,7 @@ async def process_agent_tools(
       )
 
   if invocation_context.live_request_queue is not None:
-    mark_live_async_tools_non_blocking(llm_request)
+    _mark_live_function_declaration_behavior(llm_request)
 
   # Reuse this exact, current-step resolution in after-model processing. Tool
   # sets can change between model steps, so the cache is refreshed each time.
@@ -127,12 +126,8 @@ async def process_agent_tools(
   ]
 
 
-def mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
-  """Marks live streaming and response-scheduling tools as NON_BLOCKING.
-
-  These tools emit asynchronous FunctionResponses, which the Live API only
-  accepts for NON_BLOCKING declarations.
-  """
+def _mark_live_function_declaration_behavior(llm_request: LlmRequest) -> None:
+  """Sets behavior for live tools in the LLM request."""
   if not llm_request.config.tools:
     return
   for gemini_tool in llm_request.config.tools:
@@ -145,10 +140,12 @@ def mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
       tool = llm_request.tools_dict.get(declaration_name)
       if tool is None:
         continue
-      if _is_streaming_tool(tool) or _is_non_blocking_tool(tool):
+      if _is_streaming_tool(tool):
         declaration.behavior = types.Behavior.NON_BLOCKING
-      elif tool.behavior is types.Behavior.BLOCKING:
+      elif tool.behavior is not None:
         declaration.behavior = tool.behavior
+      elif tool.response_scheduling is not None:
+        declaration.behavior = types.Behavior.NON_BLOCKING
 
 
 class _AgentToolsLlmRequestProcessor(BaseLlmRequestProcessor):

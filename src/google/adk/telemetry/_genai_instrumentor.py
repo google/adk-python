@@ -39,7 +39,7 @@ _MODULE_PATH = "opentelemetry/instrumentation/google_genai"
 # The newest google-genai instrumentor release verified not to record the
 # gen_ai.client.inference.* token metrics, so ADK can record them alongside it
 # without double counting.
-_LAST_INSTRUMENTOR_WITHOUT_INFERENCE_TOKEN_METRICS = Version("0.7b1")
+_LAST_INSTRUMENTOR_WITHOUT_INFERENCE_TOKEN_METRICS = Version("0.7b2")
 
 
 def _is_instrumentor_code(function: object) -> bool:

@@ -525,6 +525,88 @@ def test_evaluate_invocations_invocation_events_format_mismatch(
   assert result.overall_eval_status == EvalStatus.FAILED
 
 
+@pytest.mark.parametrize(
+    "match_type",
+    [
+        ToolTrajectoryCriterion.MatchType.EXACT,
+        ToolTrajectoryCriterion.MatchType.IN_ORDER,
+        ToolTrajectoryCriterion.MatchType.ANY_ORDER,
+    ],
+)
+@pytest.mark.parametrize(
+    ("actual_args", "expected_args"),
+    [(None, {}), ({}, None)],
+    ids=["actual_args_none", "expected_args_none"],
+)
+def test_call_without_args_matches_whether_args_is_none_or_empty(
+    match_type, actual_args, expected_args
+):
+  """A call with no arguments matches whether its `args` is None or empty.
+
+  Both forms occur for the same call: an eval case written as
+  `{"name": "get_current_time"}` loads with `args` None, while several model
+  integrations record the call with `args={}`.
+  """
+  evaluator = TrajectoryEvaluator(
+      eval_metric=EvalMetric(
+          metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+          criterion=ToolTrajectoryCriterion(
+              threshold=1.0, match_type=match_type
+          ),
+      )
+  )
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="get_current_time", args=actual_args
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="get_current_time", args=expected_args
+              )
+          ]
+      ),
+  )
+
+  result = evaluator.evaluate_invocations([actual], [expected])
+
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_call_without_args_does_not_match_call_with_args(
+    evaluator: TrajectoryEvaluator,
+):
+  """An expected call whose `args` is None still requires no arguments."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="search", args={"query": "adk"})
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[genai_types.FunctionCall(name="search")]
+      ),
+  )
+
+  result = evaluator.evaluate_invocations([actual], [expected])
+
+  assert result.overall_score == 0.0
+  assert result.overall_eval_status == EvalStatus.FAILED
+
+
 # --- ignore_args tests ---
 
 

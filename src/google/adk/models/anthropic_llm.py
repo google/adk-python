@@ -473,6 +473,31 @@ def _truncated_tool_use_response(
   )
 
 
+def _empty_response_error(
+    *,
+    stop_reason: anthropic_types.StopReason | None,
+    finish_reason: types.FinishReason | None,
+    parts: list[types.Part],
+) -> tuple[types.FinishReason | None, str | None]:
+  """Returns the error code and message for a non-STOP turn with no content.
+
+  Only non-thought text or a function call counts as content.
+  """
+  if (
+      any(
+          not part.thought and (part.text or part.function_call)
+          for part in parts
+      )
+      or finish_reason is None
+      or finish_reason == types.FinishReason.STOP
+  ):
+    return None, None
+  return finish_reason, (
+      f"Claude stopped with {finish_reason.value} ({stop_reason!r}) and no"
+      " content."
+  )
+
+
 def _is_image_part(part: types.Part) -> bool:
   inline_data = part.inline_data
   return bool(
@@ -672,7 +697,7 @@ def _part_to_message_block(
     sanitizer: _ToolUseIdSanitizer,
     downloads: dict[str, bytes],
 ) -> _MessageBlockParam:
-  if part.thought and part.text:
+  if part.thought and part.text is not None:
     signature = ""
     if part.thought_signature:
       signature = part.thought_signature.decode("utf-8")
@@ -1058,6 +1083,12 @@ def message_to_generate_content_response(
     )
 
   parts = [content_block_to_part(cb) for cb in message.content]
+  finish_reason = to_google_genai_finish_reason(message.stop_reason)
+  error_code, error_message = _empty_response_error(
+      stop_reason=message.stop_reason,
+      finish_reason=finish_reason,
+      parts=parts,
+  )
   return LlmResponse(
       content=types.Content(
           role="model",
@@ -1065,7 +1096,9 @@ def message_to_generate_content_response(
       ),
       usage_metadata=usage_metadata,
       cache_creation_token_count=cache_creation,
-      finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      finish_reason=finish_reason,
+      error_code=error_code,
+      error_message=error_message,
       model_version=message.model,
   )
 
@@ -1304,6 +1337,33 @@ def _apply_cache_breakpoints(
   return system
 
 
+def _ensure_messages_end_with_user(
+    messages: list[anthropic_types.MessageParam],
+) -> None:
+  """Appends a user turn when the conversation does not end on one.
+
+  Claude treats a final assistant message as prefill: Claude 4.6 and later
+  reject it with a 400, and older models continue the previous reply instead
+  of answering again. The texts match `BaseLlm._maybe_append_user_content`,
+  which the other model classes call on `llm_request.contents`. This runs on
+  the converted messages instead, so that a turn dropped for having no content
+  is accounted for and the synthetic turn stays outside the cached prefix.
+  """
+  if messages and messages[-1]["role"] == "user":
+    return
+  if messages:
+    text = (
+        "Continue processing previous requests as instructed."
+        " Exit or provide a summary if no more outputs are needed."
+    )
+  else:
+    text = "Handle the requests as specified in the System Instruction."
+  messages.append({
+      "role": "user",
+      "content": [anthropic_types.TextBlockParam(type="text", text=text)],
+  })
+
+
 class AnthropicLlm(BaseLlm):
   """Integration with Claude models via the Anthropic API.
 
@@ -1378,6 +1438,9 @@ class AnthropicLlm(BaseLlm):
           messages=messages,
           tools=tools,
       )
+
+    # After the cache breakpoints, so the synthetic turn is never cached.
+    _ensure_messages_end_with_user(messages)
 
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
@@ -1796,11 +1859,19 @@ class AnthropicLlm(BaseLlm):
         function_call.id = tool_acc.id
         all_parts.append(part)
 
+    finish_reason = to_google_genai_finish_reason(stop_reason)
+    error_code, error_message = _empty_response_error(
+        stop_reason=stop_reason,
+        finish_reason=finish_reason,
+        parts=all_parts,
+    )
     final_response = LlmResponse(
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
         cache_creation_token_count=cache_creation_tokens,
-        finish_reason=to_google_genai_finish_reason(stop_reason),
+        finish_reason=finish_reason,
+        error_code=error_code,
+        error_message=error_message,
         model_version=model_version,
         partial=False,
     )

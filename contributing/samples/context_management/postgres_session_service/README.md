@@ -79,7 +79,7 @@ pip install google-adk asyncpg greenlet
 
 ### Connection URL Format
 
-```python
+```text
 postgresql+asyncpg://username:password@host:port/database
 ```
 

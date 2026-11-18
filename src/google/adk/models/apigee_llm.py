@@ -18,12 +18,14 @@ import asyncio
 import atexit
 import base64
 import collections.abc
+import copy
 import enum
 from functools import cached_property
 from functools import partial
 import json
 import logging
 import os
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
@@ -37,10 +39,13 @@ import httpx
 import tenacity
 from typing_extensions import override
 
+from ..integrations.openai import _openai_common
 from ..utils import _json_utils
 from ..utils import streaming_utils
 from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
+from ..utils._schema_utils import schema_to_json_schema
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -738,7 +743,13 @@ class CompletionsHTTPClient:
     if config.top_p is not None:
       payload['top_p'] = config.top_p
     if config.max_output_tokens is not None:
-      payload['max_tokens'] = config.max_output_tokens
+      token_limit_key = (
+          'max_completion_tokens'
+          if _openai_common.is_reasoning_model(payload['model'])
+          else 'max_tokens'
+      )
+      payload[token_limit_key] = config.max_output_tokens
+    _openai_common.strip_unsupported_sampling_params(payload, payload['model'])
     if config.stop_sequences:
       payload['stop'] = config.stop_sequences
     if config.frequency_penalty is not None:
@@ -754,10 +765,32 @@ class CompletionsHTTPClient:
       if config.logprobs is not None:
         payload['top_logprobs'] = config.logprobs
 
-    if config.response_json_schema:
+    response_schema = config.response_json_schema
+    if response_schema is None:
+      response_schema = config.response_schema
+    if response_schema is not None:
+      if (
+          isinstance(response_schema, dict)
+          and isinstance(response_schema.get('name'), str)
+          and isinstance(response_schema.get('schema'), dict)
+      ):
+        json_schema = response_schema
+      else:
+        if isinstance(response_schema, types.Schema):
+          schema_dict = response_schema.model_dump(
+              by_alias=True, exclude_none=True, mode='json'
+          )
+        else:
+          schema_dict = copy.deepcopy(schema_to_json_schema(response_schema))
+        lowercase_schema_types(schema_dict)
+        title = schema_dict.get('title')
+        name = title if isinstance(title, str) and title else 'response'
+        name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)[:64]
+        # No 'strict': strict mode rejects non-object roots and defaults.
+        json_schema = {'name': name, 'schema': schema_dict}
       payload['response_format'] = {
           'type': 'json_schema',
-          'json_schema': config.response_json_schema,
+          'json_schema': json_schema,
       }
     elif config.response_mime_type == 'application/json':
       payload['response_format'] = {'type': 'json_object'}

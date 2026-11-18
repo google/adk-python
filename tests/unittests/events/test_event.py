@@ -598,6 +598,53 @@ class TestConvenienceKwargsMerge:
     assert event.custom_route == 'custom_target'
     assert event.actions.route is None
 
+  @pytest.mark.parametrize(
+      'keyword', ['message', 'state', 'route', 'node_path']
+  )
+  @pytest.mark.parametrize(
+      'alias_kind', ['string', 'choices', 'path', 'choices_with_path']
+  )
+  def test_subclass_validation_alias_takes_the_convenience_kwarg(
+      self, keyword, alias_kind
+  ):
+    """Subclass input aliases receive their data without convenience routing."""
+    alias: str | pydantic.AliasChoices | pydantic.AliasPath = keyword
+    value: str | dict[str, str] = 'custom_value'
+    if alias_kind == 'choices':
+      alias = pydantic.AliasChoices('other', keyword)
+    elif alias_kind == 'path':
+      alias = pydantic.AliasPath(keyword, 'value')
+      value = {'value': value}
+    elif alias_kind == 'choices_with_path':
+      alias = pydantic.AliasChoices(
+          'other', pydantic.AliasPath(keyword, 'value')
+      )
+      value = {'value': value}
+
+    class _AliasedEvent(Event):
+      custom_value: str = pydantic.Field(validation_alias=alias)
+
+    event = _AliasedEvent(**{keyword: value})
+
+    assert event.custom_value == 'custom_value'
+    assert event.content is None
+    assert event.actions.state_delta == {}
+    assert event.actions.route is None
+    assert event.node_info.path == ''
+
+  def test_nested_validation_alias_does_not_take_top_level_route(self):
+    """A nested alias leaf does not shadow an unrelated convenience kwarg."""
+
+    class _AliasedEvent(Event):
+      custom_value: str = pydantic.Field(
+          validation_alias=pydantic.AliasPath('payload', 'route')
+      )
+
+    event = _AliasedEvent(payload={'route': 'custom_value'}, route='next')
+
+    assert event.custom_value == 'custom_value'
+    assert event.actions.route == 'next'
+
 
 @pytest.mark.parametrize(
     'path, name, run_id, parent_run_id',

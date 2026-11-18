@@ -16,6 +16,7 @@ import sys
 
 from google.adk import version
 from google.adk.utils import _google_client_headers
+from google.genai import types
 import httpx
 import pytest
 
@@ -190,4 +191,48 @@ def test_merge_tracking_headers_with_framework_label_preserves_custom_headers():
       "x-goog-api-client": expected,
       "user-agent": expected,
       "x-custom": "v",
+  }
+
+
+def test_merge_tracking_http_options_none():
+  """merge_tracking_http_options creates HttpOptions when input is None."""
+  http_options = _google_client_headers.merge_tracking_http_options(None)
+  assert isinstance(http_options, types.HttpOptions)
+  assert http_options.headers == {
+      "x-goog-api-client": _EXPECTED_BASE_HEADER,
+      "user-agent": _EXPECTED_BASE_HEADER,
+  }
+
+
+def test_merge_tracking_http_options_preserves_http_options():
+  """merge_tracking_http_options merges headers into an HttpOptions instance."""
+  options = types.HttpOptions(
+      base_url="https://example.com",
+      headers={"x-custom": "value"},
+  )
+  http_options = _google_client_headers.merge_tracking_http_options(options)
+  assert isinstance(http_options, types.HttpOptions)
+  assert http_options.base_url == "https://example.com"
+  assert http_options.headers == {
+      "x-goog-api-client": _EXPECTED_BASE_HEADER,
+      "user-agent": _EXPECTED_BASE_HEADER,
+      "x-custom": "value",
+  }
+
+
+def test_merge_tracking_http_options_preserves_dict():
+  """merge_tracking_http_options merges headers into an HttpOptionsDict."""
+  options_dict: types.HttpOptionsDict = {
+      "base_url": "https://example.com",
+      "headers": {"x-custom": "value"},
+  }
+  http_options = _google_client_headers.merge_tracking_http_options(
+      options_dict
+  )
+  assert isinstance(http_options, dict)
+  assert http_options["base_url"] == "https://example.com"
+  assert http_options["headers"] == {
+      "x-goog-api-client": _EXPECTED_BASE_HEADER,
+      "user-agent": _EXPECTED_BASE_HEADER,
+      "x-custom": "value",
   }

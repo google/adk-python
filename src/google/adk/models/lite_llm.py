@@ -62,6 +62,7 @@ from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import enforce_strict_openai_schema
 from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
+from ..utils.model_name_utils import _is_gemini_3_or_newer
 from ..utils.model_name_utils import is_gemini_model
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
@@ -1026,7 +1027,9 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
-_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset(
+    {"openai", "azure", "lm_studio", "vertex_ai"}
+)
 
 
 def _is_gemma4_model(
@@ -1043,8 +1046,9 @@ def _is_gemma4_model(
   results.
 
   OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
-  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
-  excluded.
+  "lm_studio/google/gemma-4-e4b", or Vertex AI Model Garden MaaS
+  "vertex_ai/google/gemma-4-26b-a4b-it-maas") require the standard role='tool'
+  and are excluded.
 
   Args:
     model: The model name to check.
@@ -1681,8 +1685,9 @@ async def _content_to_message_param(
       )
       # gemma4 requires role='tool_responses' for recognizing function_response
       # parts as responses from the tool call, except on OpenAI-compatible
-      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
-      # role. Earlier Gemma versions before version 4 do not support tool use.
+      # endpoints (openai, azure, lm_studio, vertex_ai) which require the
+      # standard 'tool' role. Earlier Gemma versions before version 4 do not
+      # support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
           "tool_responses"
           if _is_gemma4_model(
@@ -4211,7 +4216,7 @@ async def _get_completion_inputs(
           or bool(model_info and model_info.get("supports_adaptive_thinking"))
       )
       is_gemini = is_gemini_model(stripped_lower)
-      is_gemini_3_or_newer = is_gemini and "gemini-3" in stripped_lower
+      is_gemini_3_or_newer = _is_gemini_3_or_newer(stripped_lower)
       effective_max_tokens = generation_params.get("max_completion_tokens")
       if effective_max_tokens is None:
         effective_max_tokens = max_tokens

@@ -217,6 +217,27 @@ async def test_sequential_two_nodes():
 
 
 @pytest.mark.asyncio
+async def test_event_validation_alias_does_not_route_workflow():
+  """A custom event's aliased data does not become a workflow route."""
+
+  class _DomainEvent(Event):
+    destination: str = Field(validation_alias='route')
+
+  async def emit_event():
+    yield _DomainEvent(route='domain_destination', output='ready')
+
+  def consume(node_input: str) -> str:
+    return f'{node_input} processed'
+
+  wf = Workflow(name='wf', edges=[(START, emit_event, consume)])
+
+  events, _, _ = await _run_workflow(wf)
+
+  assert ('consume', 'ready processed') in _output_by_node(events)
+  assert all(event.actions.route is None for event in events)
+
+
+@pytest.mark.asyncio
 async def test_finished_turn_frees_its_session_without_gc():
   """A turn's session copy is freed by reference counting once the turn ends."""
   seen_sessions = []

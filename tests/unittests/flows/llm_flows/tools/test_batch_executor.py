@@ -582,9 +582,10 @@ async def test_handle_function_calls_live_compat_wrapper() -> None:
       new_callable=mock.AsyncMock,
       return_value=mock_result,
   ) as mock_handle:
-    res = await _batch_tool_executor.handle_function_calls_live(
-        mock_context, mock_event, mock_tools
-    )
+    with pytest.warns(DeprecationWarning, match='handle_function_calls_live'):
+      res = await _batch_tool_executor.handle_function_calls_live(
+          mock_context, mock_event, mock_tools
+      )
     assert res is mock_result
     mock_handle.assert_awaited_once_with(
         invocation_context=mock_context,

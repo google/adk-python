@@ -14,7 +14,7 @@
 --
 -- Shared CTE chain of the BigQuery Agent Analytics eval session and eval turn
 -- views.  It rebuilds the events of each session or turn into an AgentData
--- trace and the metrics beside it; the view templates continue it.
+-- trace and the metrics beside it; the query templates continue it.
 --
 -- Substitution contract: strip this header (everything up to the first blank
 -- line), then replace each placeholder named below, a name in single braces,
@@ -40,6 +40,31 @@
 -- {scope_columns}
 --     session_id for one trace per session, or session_id, invocation_id for
 --     one trace per turn.
+-- {raw_where_clause}
+--     Empty, or a trusted condition that narrows the events table's rows
+--     that every CTE reads.  The template puts it right after the last
+--     filter, so it starts with a newline and has this shape, with the closing
+--     parenthesis on a line of its own so that a trailing line comment in the
+--     condition cannot swallow it:
+--
+--       AND (
+--         condition
+--       )
+--
+--     The condition:
+--     * is SQL: bind its values as query parameters that the running job
+--       supplies, and never splice in untrusted text;
+--     * must keep every event of each session or turn to read: its lower
+--       bound is no later than the first event of any such session, and its
+--       upper bound is after the last event of those sessions plus the delay
+--       before the plugin's writes are readable, or the session or turn comes
+--       out partial;
+--     * never filters on a column that varies within a session, such as agent
+--       or event_type.
+--     A lookback on timestamp, one that starts well before the window to
+--     read, lets BigQuery prune the table's partitions.  To pick the sessions
+--     or turns of a time window, keep this lookback wide and filter the
+--     output columns with the where_clause of the query templates instead.
 --
 -- Truncated content: a row that has is_truncated set lacks part of its
 -- payload.  When the row puts an event in the trace, has_truncated_content
@@ -51,6 +76,13 @@
 -- column of the views holds the other conditions of eval_ready, such as
 -- has_user_message and is_complete, so a truncated turn may also be
 -- unfinished or lack user text.
+--
+-- Nested sub-agent sessions: an AgentTool call runs its sub-agent in a
+-- throwaway child session whose rows carry attributes.adk.parent_session_id.
+-- SessionEvents excludes those child-session rows because the parent
+-- session's trace already records the AgentTool call and response as a tool
+-- step.  Rows without that field, or from tables where attributes is
+-- withheld, evaluate to NULL and are kept.
 --
 -- Versioning: the _v1 in the file name is the version of this contract.  A
 -- backward-compatible fix, which keeps the placeholders and the output
@@ -79,7 +111,20 @@ WITH
       `{full_table_id}`
     WHERE
       session_id IS NOT NULL
-      AND invocation_id IS NOT NULL
+      AND invocation_id IS NOT NULL{raw_where_clause}
+  ),
+  -- Keeps only top-level session events, excluding throwaway in-memory
+  -- sessions created by nested AgentTool calls (which carry
+  -- attributes.adk.parent_session_id and already appear as tool calls inside
+  -- their parent session's trace).  Rows without that field, or from tables
+  -- that withhold attributes, evaluate to NULL and are kept.
+  SessionEvents AS (
+    SELECT
+      *
+    FROM
+      RawEvents
+    WHERE
+      JSON_VALUE(attributes, '$.adk.parent_session_id') IS NULL
   ),
   -- Each event with the fields that later steps read parsed out of its JSON
   -- payload: its author, the tool name and args, whether the tool is a
@@ -154,6 +199,10 @@ WITH
           )
         )
       ) AS is_function_response,
+      -- Keep sentinels on $.text_summary and $.response in TypedEvents so
+      -- COALESCE fails closed instead of falling back to $.response.
+      -- ResponseEvents maps those sentinels to NULL, while top-level string
+      -- content excludes them directly below.
       IF(
         event_type = 'AGENT_RESPONSE',
         COALESCE(
@@ -163,11 +212,30 @@ WITH
             JSON_VALUE(content, '$.text_summary'),
             NULL
           ),
-          NULLIF(JSON_VALUE(content, '$.response'), ''),
+          IF(
+            TRIM(JSON_VALUE(content, '$.response')) != '',
+            JSON_VALUE(content, '$.response'),
+            NULL
+          ),
           IF(
             JSON_TYPE(JSON_QUERY(content, '$.response'))
               IN ('object', 'array'),
             TO_JSON_STRING(JSON_QUERY(content, '$.response')),
+            NULL
+          ),
+          IF(
+            JSON_TYPE(content) = 'string'
+              AND TRIM(JSON_VALUE(content, '$')) != ''
+              AND JSON_VALUE(content, '$') NOT IN (
+                '[FORMATTER_FAILED]',
+                '[FORMATTING FAILED]',
+                '[REDACTED]',
+                '[CONTENT_PARSE_FAILED]',
+                '[UNPARSEABLE_JSON_BLOB]',
+                '[UNSUPPORTED_OBJECT]',
+                '[REDACTED_SENSITIVE_TEXT]'
+              ),
+            JSON_VALUE(content, '$'),
             NULL
           )
         ),
@@ -187,7 +255,7 @@ WITH
         AS usage_completion,
       SAFE_CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms
     FROM
-      RawEvents
+      SessionEvents
   ),
   -- Marks the real tool calls, the calls of tools other than the framework
   -- tools, and unwraps the text of each model response.  It also counts the
@@ -224,16 +292,38 @@ WITH
           REGEXP_CONTAINS(formatted_response, r"(?s)^text: '.*'$")
           AND NOT REGEXP_CONTAINS(
             formatted_response,
-            r' [|] (?:call: |resp: |Executable code |Code execution result )'
+            r"' [|] (?:call: |resp: |Executable code |Code execution result )"
           )
-          AND NOT REGEXP_CONTAINS(formatted_response, r' [|] other(?: [|] |$)')
-          THEN NULLIF(
+          AND NOT REGEXP_CONTAINS(
+            formatted_response, r"' [|] other(?: [|] |$)"
+          )
+          THEN IF(
+            TRIM(
+              REGEXP_REPLACE(
+                REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
+                r"' [|] text: '",
+                CHR(10)
+              )
+            ) != ''
+              AND REGEXP_REPLACE(
+                REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
+                r"' [|] text: '",
+                CHR(10)
+              ) NOT IN (
+                '[FORMATTER_FAILED]',
+                '[FORMATTING FAILED]',
+                '[REDACTED]',
+                '[CONTENT_PARSE_FAILED]',
+                '[UNPARSEABLE_JSON_BLOB]',
+                '[UNSUPPORTED_OBJECT]',
+                '[REDACTED_SENSITIVE_TEXT]'
+              ),
             REGEXP_REPLACE(
               REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
               r"' [|] text: '",
               CHR(10)
             ),
-            ''
+            NULL
           )
         WHEN
           NOT REGEXP_CONTAINS(
@@ -243,7 +333,17 @@ WITH
           AND NOT REGEXP_CONTAINS(
             formatted_response, r"^(?:None$|text: '|other(?: [|] |$))"
           )
-          THEN NULLIF(formatted_response, '')
+          AND TRIM(formatted_response) != ''
+          AND formatted_response NOT IN (
+            '[FORMATTER_FAILED]',
+            '[FORMATTING FAILED]',
+            '[REDACTED]',
+            '[CONTENT_PARSE_FAILED]',
+            '[UNPARSEABLE_JSON_BLOB]',
+            '[UNSUPPORTED_OBJECT]',
+            '[REDACTED_SENSITIVE_TEXT]'
+          )
+          THEN formatted_response
         ELSE NULL
       END AS response_text
     FROM
@@ -657,7 +757,7 @@ WITH
         NULL
       ) AS tool_declarations
     FROM
-      RawEvents
+      SessionEvents
     WHERE
       agent IS NOT NULL
   ),
@@ -738,7 +838,7 @@ WITH
         LIMIT 1
       )[SAFE_OFFSET(0)] AS logged_system_prompt
     FROM
-      RawEvents
+      SessionEvents
     WHERE
       event_type = 'LLM_REQUEST'
       AND agent IS NOT NULL
