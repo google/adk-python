@@ -44,16 +44,13 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-<<<<<<< HEAD
 from google.adk.tools.function_tool import FunctionTool
-=======
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.utils._error_reporting import ENV_DEBUG_ERRORS
 from google.adk.workflow import BaseNode
 from google.adk.workflow import RetryConfig
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
->>>>>>> audit-20261118
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -1589,7 +1586,6 @@ class TestA2aAgentExecutor:
       assert part_dict.response == {"result": "Task completed."}
 
   @pytest.mark.asyncio
-<<<<<<< HEAD
   async def test_handle_request_sends_long_running_call_once(self) -> None:
     """A require_confirmation call must reach the queue exactly once.
 
@@ -1660,7 +1656,8 @@ class TestA2aAgentExecutor:
     final_events = _final_events(event_queue.enqueue_event.call_args_list)
     assert len(final_events) >= 1
     assert final_events[-1].status.state == _compat.TS_INPUT_REQUIRED
-=======
+
+  @pytest.mark.asyncio
   @pytest.mark.parametrize("force_new_version", [False, True])
   @pytest.mark.parametrize(
       "cancel_mode", ["same", "tapped", "separate", "transport"]
@@ -2171,4 +2168,3 @@ async def test_task_fails_on_interceptor_failure_for_non_error_event() -> None:
   events = await _execute(force_new_version=False, agent=root, config=config)
 
   assert events[-1].status.state == _compat.TS_FAILED
->>>>>>> audit-20261118
