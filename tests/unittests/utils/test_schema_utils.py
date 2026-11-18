@@ -267,6 +267,38 @@ class TestValidateSchema:
     with pytest.raises(jsonschema.ValidationError):
       validate_schema(schema, '{"a": 1}')
 
+  @pytest.mark.parametrize(
+      ("schema", "payload", "expected"),
+      [
+          (types.Schema(type="STRING", nullable=True), "null", None),
+          (types.Schema(type="STRING", nullable=True), '"value"', "value"),
+          (
+              types.Schema(
+                  type="OBJECT",
+                  properties={"a": types.Schema(type="STRING", nullable=True)},
+                  required=["a"],
+              ),
+              '{"a": null}',
+              {"a": None},
+          ),
+          (
+              types.Schema(
+                  type="ARRAY",
+                  items=types.Schema(type="INTEGER", nullable=True),
+              ),
+              "[null, 1]",
+              [None, 1],
+          ),
+          (
+              types.Schema(any_of=[types.Schema(type="STRING")], nullable=True),
+              "null",
+              None,
+          ),
+      ],
+  )
+  def test_types_schema_preserves_nullable(self, schema, payload, expected):
+    assert validate_schema(schema, payload) == expected
+
   def test_types_schema_any_of_rejects_invalid_value(self):
     """Test that types.Schema's any_of (aliased to anyOf) is enforced."""
     schema = types.Schema(

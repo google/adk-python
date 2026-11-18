@@ -308,6 +308,27 @@ def _strip_json_code_fence(json_text: str) -> str:
   return json_text
 
 
+def _expand_nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+  """Translates Gemini nullable subschemas without touching literal values."""
+  for key in ("properties", "defs", "$defs"):
+    if isinstance(children := schema.get(key), dict):
+      for name, child in children.items():
+        if isinstance(child, dict):
+          children[name] = _expand_nullable_schema(child)
+  for key in ("items", "additionalProperties"):
+    if isinstance(child := schema.get(key), dict):
+      schema[key] = _expand_nullable_schema(child)
+  for key in ("anyOf", "allOf", "oneOf"):
+    if isinstance(children := schema.get(key), list):
+      schema[key] = [
+          _expand_nullable_schema(child) if isinstance(child, dict) else child
+          for child in children
+      ]
+  if schema.pop("nullable", False):
+    return {"anyOf": [schema, {"type": "null"}]}
+  return schema
+
+
 def validate_schema(schema: SchemaType, json_text: str) -> Any:
   """Validate JSON text against a schema and return the result.
 
@@ -353,6 +374,7 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     )
     if not isinstance(schema, dict):
       lowercase_schema_types(json_schema)
+      json_schema = _expand_nullable_schema(json_schema)
     jsonschema.validate(instance=parsed, schema=json_schema)
     return parsed
   else:
