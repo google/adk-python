@@ -39,6 +39,7 @@ from typing_extensions import override
 from google import genai
 
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._gcp_metadata import _get_enterprise_setting
 from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
@@ -64,6 +65,7 @@ _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
 _API_VERSION_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_API_VERSION'
+_GEMINI_API_VERSION = 'v1beta'
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -152,8 +154,8 @@ class Gemini(BaseLlm):
   exposes the latest preview features. Production deployments that require a
   stable, SLA-eligible endpoint can set this to ``v1`` to use the GA Vertex AI
   API. When unset, the ``GOOGLE_GENAI_API_VERSION`` environment variable is
-  consulted, and finally the SDK's own default is used so existing behavior is
-  unchanged.
+  consulted, and finally the Gemini API uses ``v1beta`` and Vertex AI the SDK's
+  own default.
 
   An API version embedded in the ``base_url`` path (e.g. a trailing ``/v1``)
   takes precedence over this field.
@@ -467,6 +469,8 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    if api_version is None and not _get_enterprise_setting(kwargs):
+      adk_http_options.api_version = _GEMINI_API_VERSION
     kwargs['http_options'] = self._with_adk_http_options(
         kwargs['http_options'], adk_http_options
     )
@@ -489,15 +493,18 @@ class Gemini(BaseLlm):
 
     Resolution order:
       1. The ``api_version`` field set on this instance.
-      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable.
+      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable. Its ``beta``
+         value asks for each backend's beta version, which is what an unset
+         version gets, so it counts as unset.
 
-    Returns ``None`` when neither is set, in which case the google-genai SDK's
-    own default (``v1beta1`` for Vertex AI) applies, preserving existing
-    behavior.
+    Returns ``None`` when neither is set.
     """
     if self.api_version:
       return self.api_version
-    return os.environ.get(_API_VERSION_ENV_VARIABLE_NAME) or None
+    env_api_version = os.environ.get(_API_VERSION_ENV_VARIABLE_NAME)
+    if env_api_version == 'beta':
+      return None
+    return env_api_version or None
 
   @cached_property
   def _base_url_and_api_version(self) -> tuple[str | None, str | None]:

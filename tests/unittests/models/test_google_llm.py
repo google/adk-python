@@ -828,21 +828,64 @@ def test_api_client_preserves_custom_base_url_path():
   assert client._api_client._http_options.base_url == (
       "https://proxy.example.com/gemini/v1alpha"
   )
-  # Non-Google base URLs aren't normalized, so the SDK's default api_version
+  # Non-Google base URLs aren't normalized, so the Gemini API default
   # ("v1beta") applies even though the URL path looks like a version suffix.
   assert client._api_client._http_options.api_version == "v1beta"
 
 
-def test_api_client_default_api_version_unchanged(monkeypatch):
-  """Without configuration, ADK does not force an api_version (SDK default)."""
+def test_api_client_sets_gemini_api_default_version(monkeypatch):
+  """Without configuration, ADK asks for v1beta whatever the SDK defaults to."""
   monkeypatch.delenv("GOOGLE_GENAI_API_VERSION", raising=False)
   model = Gemini(model="gemini-2.5-flash")
 
-  # ADK leaves api_version unset so the google-genai SDK applies its own
-  # default (v1beta1 for Vertex AI), preserving existing behavior.
-  assert model._base_url_and_api_version == (None, None)
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+
+  assert mock_client.call_args.kwargs["http_options"].api_version == "v1beta"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "client_kwargs", "enterprise_env"),
+    [
+        ("gemini-2.5-flash", None, "1"),
+        ("gemini-2.5-flash", {"enterprise": True}, "0"),
+        ("gemini-2.5-flash", {"vertexai": True}, "0"),
+        (
+            "projects/p/locations/l/publishers/google/models/gemini-2.5-flash",
+            None,
+            "0",
+        ),
+    ],
+)
+def test_api_client_leaves_vertex_ai_version_to_sdk(
+    monkeypatch, model_name, client_kwargs, enterprise_env
+):
+  """However Vertex AI is selected, ADK leaves its version to the SDK."""
+  monkeypatch.delenv("GOOGLE_GENAI_API_VERSION", raising=False)
+  monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", enterprise_env)
+  model = Gemini(model=model_name, client_kwargs=client_kwargs)
+
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+
+  assert mock_client.call_args.kwargs["http_options"].api_version is None
+
+
+@pytest.mark.parametrize(
+    ("enterprise_env", "expected_api_version"),
+    [("0", "v1beta"), ("1", "v1beta1")],
+)
+def test_api_client_beta_env_var_selects_the_backend_beta_version(
+    monkeypatch, enterprise_env, expected_api_version
+):
+  """GOOGLE_GENAI_API_VERSION=beta means v1beta or v1beta1, not a path."""
+  monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", enterprise_env)
+  monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "beta")
+  model = Gemini(model="gemini-2.5-flash")
+
   client = model.api_client
-  assert client._api_client._http_options.api_version == "v1beta"
+
+  assert client._api_client._http_options.api_version == expected_api_version
 
 
 def test_api_client_uses_api_version_field():
