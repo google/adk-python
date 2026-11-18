@@ -1704,21 +1704,114 @@ def test_live_api_client_properties(gemini_llm):
       assert value in http_options.headers[key]
 
 
+class _MockLiveConnect:
+
+  async def __aenter__(self):
+    return mock.AsyncMock()
+
+  async def __aexit__(self, *args):
+    pass
+
+
 @pytest.mark.asyncio
-async def test_connect_rejects_live_connect_config_http_options(
+async def test_connect_caller_client_sends_tracking_headers(llm_request):
+  """A client ADK did not build gets ADK's tracking headers per session."""
+  mock_client = mock.MagicMock(spec=Client)
+  mock_client.aio.live.connect.return_value = _MockLiveConnect()
+  gemini = Gemini(model="gemini-2.5-flash", client=mock_client)
+  llm_request.live_connect_config = types.LiveConnectConfig()
+
+  async with gemini.connect(llm_request):
+    config = mock_client.aio.live.connect.call_args.kwargs["config"]
+  mock_client.aio.live.connect.return_value = _MockLiveConnect()
+  async with gemini.connect(llm_request):
+    reconnect_config = mock_client.aio.live.connect.call_args.kwargs["config"]
+
+  assert config.http_options.headers == get_tracking_headers()
+  assert reconnect_config.http_options.headers == get_tracking_headers()
+  assert llm_request.live_connect_config.http_options is None
+
+
+@pytest.mark.asyncio
+async def test_connect_merges_tracking_headers_into_live_http_options(
     gemini_llm, llm_request
 ):
-  """google-genai only takes Live API http_options on the client."""
+  """Caller http_options are sent with ADK's tracking tags put first."""
+  caller_http_options = types.HttpOptions(
+      api_version="v1alpha",
+      headers={"x-custom": "v", "X-Goog-Api-Client": "my-app/1.0"},
+  )
   llm_request.live_connect_config = types.LiveConnectConfig(
-      http_options=types.HttpOptions(headers={"custom-live-header": "v"})
+      http_options=caller_http_options
   )
 
   with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
-    with pytest.raises(ValueError, match="client_kwargs"):
+    mock_live_client.aio.live.connect.return_value = _MockLiveConnect()
+    async with gemini_llm.connect(llm_request):
+      config = mock_live_client.aio.live.connect.call_args.kwargs["config"]
+
+  adk_value = get_tracking_headers()["x-goog-api-client"]
+  assert config.http_options.api_version == "v1alpha"
+  assert config.http_options.headers == {
+      "x-custom": "v",
+      "x-goog-api-client": f"{adk_value} my-app/1.0",
+      "user-agent": adk_value,
+  }
+  assert caller_http_options.headers == {
+      "x-custom": "v",
+      "X-Goog-Api-Client": "my-app/1.0",
+  }
+
+
+@pytest.mark.asyncio
+async def test_connect_debug_log_omits_live_http_options(
+    gemini_llm, llm_request, caplog
+):
+  """Caller http_options headers can hold credentials, so they are not logged."""
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      http_options=types.HttpOptions(
+          headers={"Authorization": "Bearer secret-token"}
+      )
+  )
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+    mock_live_client.aio.live.connect.return_value = _MockLiveConnect()
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       async with gemini_llm.connect(llm_request):
         pass
 
-  mock_live_client.aio.live.connect.assert_not_called()
+  assert "Live connect config" in caplog.text
+  assert "secret-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connect_caller_client_handshake_carries_tracking_headers(
+    llm_request,
+):
+  """The live WebSocket handshake of a caller-built client is tagged once."""
+  client = Client(
+      api_key="test-api-key",
+      http_options=types.HttpOptions(headers={"user-agent": "my-app/1.0"}),
+  )
+  gemini = Gemini(model="gemini-2.5-flash", client=client)
+  llm_request.live_connect_config = types.LiveConnectConfig()
+  handshake_headers = {}
+
+  def record_handshake(uri, additional_headers=None, **kwargs):
+    del uri, kwargs  # Unused.
+    handshake_headers.update(additional_headers)
+    raise ConnectionError("live handshake recorded")
+
+  with mock.patch("google.genai.live.ws_connect", record_handshake):
+    with pytest.raises(ConnectionError):
+      async with gemini.connect(llm_request):
+        pass
+
+  adk_label = f"google-adk/{adk_version.__version__}"
+  for name in ("x-goog-api-client", "user-agent"):
+    tags = handshake_headers[name].split(" ")
+    assert tags.count(adk_label) == 1, handshake_headers[name]
+    assert tags[0].startswith("google-genai-sdk/"), handshake_headers[name]
 
 
 @pytest.mark.asyncio

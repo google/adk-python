@@ -94,31 +94,6 @@ def _session() -> Session:
   )
 
 
-class _StallingClose:
-  """An aclose() that parks mid-flight so a cancellation can race it."""
-
-  def __init__(self):
-    self.started = asyncio.Event()
-    self.release = asyncio.Event()
-    self.completed = False
-
-  async def aclose(self) -> None:
-    self.started.set()
-    await self.release.wait()
-    self.completed = True
-
-
-async def _cancel_while_closing(task: asyncio.Task, close: _StallingClose):
-  task.cancel()
-  await close.started.wait()
-  # Second cancellation, delivered while the close is still suspended.
-  task.cancel()
-  close.release.set()
-  with pytest.raises(asyncio.CancelledError):
-    await task
-  await asyncio.sleep(0)
-
-
 @pytest.fixture(name="temp_dir")
 def _temp_dir(tmp_path, monkeypatch):
   """Redirects NamedTemporaryFile so a leaked transcript is observable."""
@@ -221,7 +196,6 @@ async def test_search_memory_scopes_retrieval_to_tenant_files(mocker):
       fake_client.rag.list_files.call_args_list[1].kwargs["config"].page_token
       == "page-2"
   )
-  fake_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -248,8 +222,6 @@ async def test_search_memory_skips_retrieval_without_tenant_files(mocker):
 
   assert response.memories == []
   fake_client.rag.retrieve_contexts.assert_not_awaited()
-  # The early return still leaves through the finally that closes the client.
-  fake_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -354,7 +326,6 @@ async def test_search_memory_rejects_ambiguous_legacy_display_names(mocker):
 
   texts = [memory.content.parts[0].text for memory in response.memories]
   assert texts == ["NORMAL_ALICE_MEMORY", "LEGACY_ALICE_MEMORY"]
-  fake_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -364,7 +335,7 @@ async def test_add_and_search_memory_uses_unambiguous_display_names(
   memory_service = VertexAiRagMemoryService(rag_corpus="unused")
 
   fake_client = _unlistable_client(mocker)
-  mocker.patch(
+  client_cls = mocker.patch(
       "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
   )
 
@@ -387,7 +358,8 @@ async def test_add_and_search_memory_uses_unambiguous_display_names(
   assert [memory.content.parts[0].text for memory in response.memories] == [
       "sensitive memory"
   ]
-  assert fake_client.aclose.await_count == 2
+  client_cls.assert_called_once()
+  fake_client.aclose.assert_not_awaited()
   assert not list(temp_dir.iterdir())
 
 
@@ -404,7 +376,6 @@ async def test_add_session_upload_does_not_block_event_loop(mocker, temp_dir):
     await allow_upload_to_finish.wait()
 
   fake_client = mocker.Mock()
-  fake_client.aclose = mocker.AsyncMock()
   fake_client.rag.upload_file = mocker.AsyncMock(side_effect=upload_file)
   mocker.patch(
       "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
@@ -435,7 +406,6 @@ async def test_add_session_cleans_temp_file_after_partial_upload_failure(
       raise RuntimeError("upload failed")
 
   fake_client = mocker.Mock()
-  fake_client.aclose = mocker.AsyncMock()
   fake_client.rag.upload_file = mocker.AsyncMock(side_effect=upload_file)
   mocker.patch(
       "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
@@ -452,7 +422,6 @@ async def test_add_session_cleans_temp_file_after_partial_upload_failure(
 
   assert attempted_corpora == ["first", "second"]
   assert not list(temp_dir.iterdir())
-  fake_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -492,7 +461,6 @@ async def test_add_session_cleans_temp_file_when_cancelled(mocker, temp_dir):
     await asyncio.Event().wait()
 
   fake_client = mocker.Mock()
-  fake_client.aclose = mocker.AsyncMock()
   fake_client.rag.upload_file = mocker.AsyncMock(side_effect=upload_file)
   mocker.patch(
       "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
@@ -508,80 +476,59 @@ async def test_add_session_cleans_temp_file_when_cancelled(mocker, temp_dir):
     await add_session
 
   assert not list(temp_dir.iterdir())
-  fake_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_add_session_cleans_temp_file_when_close_fails(mocker, temp_dir):
-  fake_client = mocker.Mock()
-  fake_client.aclose = mocker.AsyncMock(
-      side_effect=RuntimeError("close failed")
+async def test_searches_reuse_one_client_per_event_loop(mocker):
+  """A client per call would reload credentials and refetch a token."""
+  fake_client = _unlistable_client(mocker)
+  fake_client.rag.retrieve_contexts.return_value = SimpleNamespace(
+      contexts=SimpleNamespace(contexts=[])
   )
-  fake_client.rag.upload_file = mocker.AsyncMock()
-  mocker.patch(
+  client_cls = mocker.patch(
       "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
   )
+  memory_service = VertexAiRagMemoryService(
+      rag_corpus="corpus", project="test-project", location="us-central1"
+  )
+
+  for _ in range(5):
+    await memory_service.search_memory(
+        app_name="demo", user_id="alice", query="q"
+    )
+
+  client_cls.assert_called_once_with(
+      project="test-project", location="us-central1"
+  )
+  assert fake_client.rag.retrieve_contexts.await_count == 5
+  fake_client.aclose.assert_not_awaited()
+
+
+def test_each_event_loop_gets_its_own_client(mocker):
+  clients = []
+
+  def build(**_kwargs):
+    fake_client = _unlistable_client(mocker)
+    fake_client.rag.retrieve_contexts.return_value = SimpleNamespace(
+        contexts=SimpleNamespace(contexts=[])
+    )
+    clients.append(fake_client)
+    return mocker.Mock(aio=fake_client)
+
+  mocker.patch("agentplatform.Client", side_effect=build)
   memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
 
-  with pytest.raises(RuntimeError, match="close failed"):
-    await memory_service.add_session_to_memory(_session())
+  async def search_twice():
+    for _ in range(2):
+      await memory_service.search_memory(
+          app_name="demo", user_id="alice", query="q"
+      )
 
-  assert not list(temp_dir.iterdir())
+  asyncio.run(search_twice())
+  asyncio.run(search_twice())
 
-
-@pytest.mark.asyncio
-async def test_add_session_finishes_close_cancelled_mid_flight(
-    mocker, temp_dir
-):
-  upload_started = asyncio.Event()
-  close = _StallingClose()
-
-  async def upload_file(**_kwargs: object) -> None:
-    upload_started.set()
-    await asyncio.Event().wait()
-
-  fake_client = mocker.Mock()
-  fake_client.aclose = close.aclose
-  fake_client.rag.upload_file = upload_file
-  mocker.patch(
-      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
-  )
-  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
-  add_session = asyncio.create_task(
-      memory_service.add_session_to_memory(_session())
-  )
-  await upload_started.wait()
-
-  await _cancel_while_closing(add_session, close)
-
-  assert close.completed
-  assert not list(temp_dir.iterdir())
-
-
-@pytest.mark.asyncio
-async def test_search_memory_finishes_close_cancelled_mid_flight(mocker):
-  retrieve_started = asyncio.Event()
-  close = _StallingClose()
-
-  async def retrieve_contexts(**_kwargs: object) -> None:
-    retrieve_started.set()
-    await asyncio.Event().wait()
-
-  fake_client = mocker.Mock()
-  fake_client.aclose = close.aclose
-  fake_client.rag.retrieve_contexts = retrieve_contexts
-  mocker.patch(
-      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
-  )
-  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
-  search = asyncio.create_task(
-      memory_service.search_memory(app_name="demo", user_id="alice", query="q")
-  )
-  await retrieve_started.wait()
-
-  await _cancel_while_closing(search, close)
-
-  assert close.completed
+  assert len(clients) == 2
+  assert [c.rag.retrieve_contexts.await_count for c in clients] == [2, 2]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # ADK exceptions
 
-`google.adk.errors` holds the seven exception types ADK raises on its own behalf
+`google.adk.errors` holds the eight exception types ADK raises on its own behalf
 rather than passing along from a dependency. They come from four parts of the
 framework: the session services, the artifact services, the evaluation
 subsystem, and tool code.
@@ -9,35 +9,36 @@ subsystem, and tool code.
 
 Most of the failures you see from ADK come from somewhere else, whether that is
 a `ValidationError` from Pydantic, an `APIError` from the GenAI SDK, or a
-`ModuleNotFoundError` from an extra you have not installed. The seven types in
+`ModuleNotFoundError` from an extra you have not installed. The eight types in
 `google.adk.errors` are the ones ADK defines itself, and each of them marks a
 place where the framework has a specific condition to report and expects you to
 be able to do something about it.
 
 Three facts shape how you work with them, and all three catch people out.
 
-*   **There is no common base class.** These seven do not descend from a shared
+*   **There is no common base class.** These eight do not descend from a shared
     `AdkError`, so there is no single `except` clause that means "an ADK error".
-    Four of them subclass `ValueError` and three subclass `Exception` directly.
+    Four of them subclass `ValueError` and four subclass `Exception` directly.
 *   **Four of them subclass `ValueError`.** If you already have an
     `except ValueError` anywhere near session or artifact code, it is catching
     `StaleSessionError`, `SessionNotFoundError`, `InvocationNotFoundError` and
     `InputValidationError` right now, almost certainly without you intending it
     to. That inheritance is deliberate backward compatibility, and of
-    everything these seven types do it is the most likely to cost you data.
-*   **Only two are re-exported from the package.** You can write
-    `from google.adk.errors import StaleSessionError` or
-    `from google.adk.errors import InvocationNotFoundError`, and the other five
-    have to be reached by module path. `StaleSessionError` and
-    `InvocationNotFoundError` have no public module of their own, so the package
-    import is the only route to them.
+    everything these eight types do it is the most likely to cost you data.
+*   **Only three are re-exported from the package.** You can write
+    `from google.adk.errors import StaleSessionError`,
+    `from google.adk.errors import InvocationNotFoundError`, or
+    `from google.adk.errors import SessionPersistenceError`, and the other five
+    have to be reached by module path. Those three have no public module of
+    their own, so the package import is the only route to them.
 
-## The seven exceptions
+## The eight exceptions
 
 | Exception | Base | Import from |
 | :--- | :--- | :--- |
 | `StaleSessionError` | `ValueError` | `google.adk.errors` |
 | `SessionNotFoundError` | `ValueError` | `google.adk.errors.session_not_found_error` |
+| `SessionPersistenceError` | `Exception` | `google.adk.errors` |
 | `InvocationNotFoundError` | `NotFoundError`, `ValueError` | `google.adk.errors` |
 | `InputValidationError` | `ValueError` | `google.adk.errors.input_validation_error` |
 | `AlreadyExistsError` | `Exception` | `google.adk.errors.already_exists_error` |
@@ -81,6 +82,23 @@ error to HTTP 404.
 
 One thing to watch for is that `get_session` does *not* raise it. A missing
 session comes back from there as `None`.
+
+### `SessionPersistenceError`
+
+**Raised by** `BufferedSessionService` once a buffered write of a session has
+run out of retries: on the session's next `append_event`, `flush_session`, or
+`delete_session`, and on a `flush` or `aclose` of the whole service.
+
+**Means** that write, and the session's later buffered writes, are not in the
+store, although the session object still holds them. `__cause__` holds the
+error of the last attempt.
+
+**Catch it** where you can recover the conversation. Read the session again
+with `get_session` and continue from that copy, because an append to the old
+session object raises this error again. Check
+`isinstance(err.__cause__, StaleSessionError)` when you need to handle a stale
+session conflict separately from a storage failure. `delete_session` keeps the
+session when it raises this error, so that you can retry the delete.
 
 ### `InvocationNotFoundError`
 
@@ -239,7 +257,8 @@ ADK types above it. Python takes the first clause that matches, so a broad one
 placed first hides every narrower one below it.
 
 The mistake in the other direction is worth knowing about too. Because
-`AlreadyExistsError`, `NotFoundError` and `ToolExecutionError` derive from
+`AlreadyExistsError`, `NotFoundError`, `SessionPersistenceError` and
+`ToolExecutionError` derive from
 `Exception` and *not* from `ValueError`, an `except ValueError` wrapped around
 session creation or an eval-set lookup catches nothing whatsoever, and the
 exception sails straight past it.
@@ -249,24 +268,26 @@ exception sails straight past it.
 *   **No shared base class.** You cannot write one `except` for "any ADK error",
     and adding a base class later would itself be a breaking change for anyone
     relying on the current ones.
-*   **The package re-exports only `StaleSessionError` and `InvocationNotFoundError`.**
-    The other five need their module path, which means a longer import and a
-    path with no obvious guarantee of stability.
+*   **The package re-exports only `StaleSessionError`, `InvocationNotFoundError`
+    and `SessionPersistenceError`.** The other five need their module path,
+    which means a longer import and a path with no obvious guarantee of
+    stability.
 *   **The constructors are inconsistent.** `NotFoundError`,
     `AlreadyExistsError`, `InvocationNotFoundError` and `InputValidationError`
     take an optional message with a sensible default and expose it as `.message`.
     `ToolExecutionError` also exposes `.message`, but requires it.
     `SessionNotFoundError` has a default of its own but exposes no `.message`.
-    `StaleSessionError` defines no constructor at all, so
-    `str(StaleSessionError())` is the empty string while every other
+    `StaleSessionError` and `SessionPersistenceError` define no constructor at
+    all, so `str(StaleSessionError())` is the empty string while every other
     default-constructed type here gives you a sentence.
 *   **`NotFoundError` is named more generally than it behaves.** Outside of its
     `InvocationNotFoundError` subclass raised by session rewinds, it belongs to
     the evaluation subsystem, and a missing session or file raises something
     else entirely.
 *   **Nothing carries structured detail.** Apart from `ToolExecutionError` and
-    its `error_type`, you get no error code, no offending identifier, and no
-    cause field. The message string is all there is.
+    its `error_type`, and the chained `__cause__` of `SessionPersistenceError`,
+    you get no error code, no offending identifier, and no cause field. The
+    message string is all there is.
 
 ## Related guides
 
@@ -275,6 +296,9 @@ exception sails straight past it.
     `StaleSessionError`.
 *   `DatabaseSessionService`
     explains the revision checking behind `StaleSessionError`.
+*   [BufferedSessionService](../sessions/buffered_session_service/index.md)
+    explains when buffered writes fail and how `SessionPersistenceError`
+    reports them.
 *   [BaseArtifactService](../artifacts/artifact_service/index.md) has the
     identifier and payload rules that raise `InputValidationError`.
 *   [Runner and InMemoryRunner](../runners/runner/index.md) documents

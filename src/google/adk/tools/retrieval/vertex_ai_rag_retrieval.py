@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 import logging
 import os
@@ -27,6 +26,7 @@ from google.genai import types
 from typing_extensions import override
 
 from ...models.llm_request import LlmRequest
+from ...utils._event_loop_cache import per_loop_value
 from ...utils.model_name_utils import is_gemini_model
 from ...utils.model_name_utils import is_gemini_model_id_check_disabled
 from ..tool_context import ToolContext
@@ -192,19 +192,20 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
 
     project, location = self._project_and_location()
 
-    client = agentplatform.Client(project=project, location=location).aio
-    try:
-      response = await client.rag.retrieve_contexts(
-          vertex_rag_store=self._retrieval_store(),
-          query=agentplatform_types.RagQuery(
-              text=query,
-              similarity_top_k=self.vertex_rag_store.similarity_top_k,
-          ),
-      )
-    finally:
-      # Shielded so a cancellation racing the close cannot leak the underlying
-      # HTTP session.
-      await asyncio.shield(client.aclose())
+    clients: dict[tuple[str | None, str | None], agentplatform.AsyncClient] = (
+        per_loop_value(self, "_api_clients_per_loop", dict)
+    )
+    client = clients.get((project, location))
+    if client is None:
+      client = agentplatform.Client(project=project, location=location).aio
+      clients[(project, location)] = client
+    response = await client.rag.retrieve_contexts(
+        vertex_rag_store=self._retrieval_store(),
+        query=agentplatform_types.RagQuery(
+            text=query,
+            similarity_top_k=self.vertex_rag_store.similarity_top_k,
+        ),
+    )
 
     logger.debug("RAG raw response: %s", response)
 

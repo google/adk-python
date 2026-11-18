@@ -444,8 +444,10 @@ class CredentialManager:
     # and only implements the synchronous exchange_credential().
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
       return (
-          exchanger.exchange_credential(
-              self._auth_config.auth_scheme, credential
+          await asyncio.to_thread(
+              exchanger.exchange_credential,
+              self._auth_config.auth_scheme,
+              credential,
           ),
           True,
       )

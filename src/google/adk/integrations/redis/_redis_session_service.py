@@ -276,16 +276,16 @@ class RedisSessionService(BaseSessionService):
     session.state = self._merge_state(app_state, user_state, session.state)
 
     if config:
+      if config.after_timestamp is not None:
+        session.events = [
+            e for e in session.events if e.timestamp >= config.after_timestamp
+        ]
       if config.num_recent_events is not None:
         session.events = (
             session.events[-config.num_recent_events :]
             if config.num_recent_events
             else []
         )
-      if config.after_timestamp is not None:
-        session.events = [
-            e for e in session.events if e.timestamp >= config.after_timestamp
-        ]
     return session
 
   async def list_sessions(

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.1](https://github.com/google/adk-python/compare/v2.14.0...v2.14.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **tracing:** turn off FastAPI's native tracing on Agent Engine ([87e5399](https://github.com/google/adk-python/commit/87e53990addc68f59c45538fe17b21e4783e1c96))
+
 ## [2.14.0](https://github.com/google/adk-python/compare/v2.13.0...v2.14.0) (2026-11-04)
 
 

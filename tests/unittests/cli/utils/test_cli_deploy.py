@@ -381,6 +381,50 @@ def test_to_agent_engine_raises_when_explicit_config_file_missing(
   assert expected_abs in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "cli_display_name, config_display_name, expected_display_name",
+    [
+        ("", "Name From Config", "Name From Config"),
+        ("Name From CLI", "Name From Config", "Name From CLI"),
+        ("", None, "agent"),
+        ("", "", "agent"),
+    ],
+)
+def test_to_agent_engine_display_name_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    cli_display_name: str,
+    config_display_name: str | None,
+    expected_display_name: str,
+) -> None:
+  """--display_name wins over the config file, which wins over the folder."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  config: Dict[str, Any] = {}
+  if config_display_name is not None:
+    config["display_name"] = config_display_name
+  (src_dir / ".agent_engine_config.json").write_text(json.dumps(config))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name=cli_display_name,
+      adk_version="1.2.0",
+  )
+
+  assert len(captured) == 1
+  assert captured[0]["display_name"] == expected_display_name
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_gke_happy_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -3555,3 +3599,170 @@ def test_get_extra_packages_copy_rejects_unsafe_basename(
   """Unsafe extra_packages basenames cannot break out of Dockerfile COPY."""
   with pytest.raises(click.ClickException):
     cli_deploy._get_extra_packages_copy([unsafe_base], str(tmp_path))
+
+
+def test_get_extra_packages_reinstall_handles_requirements_and_wheels(
+    tmp_path: Path,
+) -> None:
+  """Wheels reinstall; sdists and projects reinstall with requirements.txt."""
+  (tmp_path / "google_genai-1.38.0-py3-none-any.whl").write_bytes(b"wheel")
+  (tmp_path / "pkg-0.1.0.tar.gz").write_bytes(b"sdist")
+  schemas = tmp_path / "schemas"
+  (schemas / "agent_schemas").mkdir(parents=True)
+  (schemas / "pyproject.toml").write_text(
+      '[project]\nname = "agent-schemas"\nversion = "0.1.0"\n'
+  )
+  common = tmp_path / "common"
+  common.mkdir()
+  (common / "helper.py").write_text("VALUE = 1\n")
+
+  staged = [
+      "google_genai-1.38.0-py3-none-any.whl",
+      "pkg-0.1.0.tar.gz",
+      "schemas",
+      "common",
+  ]
+  copy_rendered = cli_deploy._get_extra_packages_copy(staged, str(tmp_path))
+  assert (
+      'RUN ["pip", "install",'
+      ' "/tmp/extra_packages/google_genai-1.38.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/pkg-0.1.0.tar.gz",'
+      ' "/tmp/extra_packages/schemas"]'
+      in copy_rendered
+  )
+  assert "--force-reinstall" not in copy_rendered
+
+  reinstall_no_reqs = cli_deploy._get_extra_packages_reinstall(
+      staged, str(tmp_path), has_requirements=False
+  )
+  assert reinstall_no_reqs == (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/google_genai-1.38.0-py3-none-any.whl"]'
+  )
+
+  reinstall_with_reqs = cli_deploy._get_extra_packages_reinstall(
+      staged, str(tmp_path), has_requirements=True
+  )
+  assert reinstall_with_reqs == (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/google_genai-1.38.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/pkg-0.1.0.tar.gz",'
+      ' "/tmp/extra_packages/schemas"]'
+  )
+
+  assert not cli_deploy._get_extra_packages_reinstall(
+      ["common"], str(tmp_path), has_requirements=True
+  )
+
+
+def test_extra_packages_resolve_before_and_override_after_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """extra_packages install before requirements.txt and reinstall afterward."""
+  src_dir = agent_dir(True, False)
+  wheel_file = tmp_path / "patched_pkg-1.0.0-py3-none-any.whl"
+  wheel_file.write_bytes(b"fake-wheel-bytes")
+  schemas_dir = tmp_path / "schemas"
+  (schemas_dir / "agent_schemas").mkdir(parents=True)
+  (schemas_dir / "pyproject.toml").write_text(
+      '[project]\nname = "agent-schemas"\nversion = "0.1.0"\n'
+  )
+
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+
+  ae_tmp = src_dir.parent / "ae_tmp"
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="ae_tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(wheel_file), str(schemas_dir)],
+  )
+  ae_dockerfile = (ae_tmp / "Dockerfile").read_text()
+
+  def mock_subprocess_run(*args, **kwargs):
+    del kwargs
+    if args and args[0] and args[0][0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="service/gke-svc created")
+    return types.SimpleNamespace(stdout="")
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+
+  cr_tmp = tmp_path / "cr_tmp"
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="my-gcp-project",
+      region="us-central1",
+      service_name="cr-svc",
+      app_name="agent",
+      temp_folder=str(cr_tmp),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.2.0",
+      extra_packages=[str(wheel_file), str(schemas_dir)],
+  )
+  cr_dockerfile = (cr_tmp / "Dockerfile").read_text()
+
+  gke_tmp = tmp_path / "gke_tmp"
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="my-gcp-project",
+      region="us-central1",
+      cluster_name="my-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(gke_tmp),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      adk_version="1.2.0",
+      extra_packages=[str(wheel_file), str(schemas_dir)],
+  )
+  gke_dockerfile = (gke_tmp / "Dockerfile").read_text()
+
+  extra_install_line = (
+      'RUN ["pip", "install",'
+      ' "/tmp/extra_packages/patched_pkg-1.0.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/schemas"]'
+  )
+  reqs_line = (
+      'RUN ["pip", "install", "-r", "/app/agents/agent/requirements.txt"]'
+  )
+  extra_reinstall_line = (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/patched_pkg-1.0.0-py3-none-any.whl",'
+      ' "/tmp/extra_packages/schemas"]'
+  )
+  dev_server_remove_marker = "os.path.join(d, 'dev_server*')"
+  for target_name, content in (
+      ("agent_engine", ae_dockerfile),
+      ("cloud_run", cr_dockerfile),
+      ("gke", gke_dockerfile),
+  ):
+    assert extra_install_line in content, target_name
+    assert reqs_line in content, target_name
+    assert extra_reinstall_line in content, target_name
+    assert dev_server_remove_marker in content, target_name
+    assert (
+        content.index(extra_install_line)
+        < content.index(reqs_line)
+        < content.index(extra_reinstall_line)
+        < content.index(dev_server_remove_marker)
+    ), target_name

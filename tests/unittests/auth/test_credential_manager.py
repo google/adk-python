@@ -1937,6 +1937,37 @@ class TestCredentialManager:
       assert was_exchanged is True
 
   @pytest.mark.asyncio
+  async def test_exchange_credentials_service_account_keeps_loop_running(
+      self, service_account_credential, oauth2_auth_scheme
+  ):
+    """The blocking service account exchange runs off the event loop."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = oauth2_auth_scheme
+    manager = CredentialManager(auth_config)
+    loop_ran = threading.Event()
+    loop_ran_during_exchange = []
+    exchanged_credential = Mock(spec=AuthCredential)
+
+    def exchange_credential(*_):
+      loop_ran_during_exchange.append(loop_ran.wait(timeout=5))
+      return exchanged_credential
+
+    asyncio.get_running_loop().call_soon(loop_ran.set)
+    with patch.object(
+        ServiceAccountCredentialExchanger,
+        "exchange_credential",
+        side_effect=exchange_credential,
+        autospec=True,
+    ):
+      result, was_exchanged = await manager._exchange_credential(
+          service_account_credential
+      )
+
+    assert loop_ran_during_exchange == [True]
+    assert result == exchanged_credential
+    assert was_exchanged
+
+  @pytest.mark.asyncio
   async def test_exchange_credential_no_exchanger(self):
     """Test _exchange_credential with credential that has no exchanger."""
     mock_credential = Mock(spec=AuthCredential)

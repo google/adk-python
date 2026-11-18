@@ -781,15 +781,21 @@ _AGENT_ENGINE_CLASS_METHODS = [
             'Deprecated. Use async_stream_query instead.\n\n        Streams'
             ' responses from the ADK application in response to a message.\n\n '
             '       Args:\n            message (Union[str, Dict[str, Any]]):\n '
-            '               Required. The message to stream responses for.\n   '
-            '         user_id (str):\n                Required. The ID of the'
-            ' user.\n            session_id (str):\n                Optional.'
-            ' The ID of the session. If not provided, a new\n               '
-            ' session will be created for the user.\n            run_config'
-            ' (Optional[Dict[str, Any]]):\n                Optional. The run'
-            ' config to use for the query. If you want to\n                pass'
-            ' in a `run_config` pydantic object, you can pass in a dict\n      '
-            '          representing it as'
+            '               Required. The message to stream responses for.'
+            ' Either a text\n                string or a dictionary'
+            ' representing a\n                `google.genai.types.Content`'
+            ' object (for example,\n               '
+            ' `content.model_dump(exclude_none=True, mode="json")` for\n       '
+            '         multimodal inputs; raw `types.Content` or'
+            ' `list[types.Part]`\n                instances are not'
+            ' supported).\n            user_id (str):\n               '
+            ' Required. The ID of the user.\n            session_id (str):\n   '
+            '             Optional. The ID of the session. If not provided, a'
+            ' new\n                session will be created for the user.\n     '
+            '       run_config (Optional[Dict[str, Any]]):\n               '
+            ' Optional. The run config to use for the query. If you want to\n  '
+            '              pass in a `run_config` pydantic object, you can pass'
+            ' in a dict\n                representing it as'
             ' `run_config.model_dump(mode="json")`.\n            **kwargs'
             ' (dict[str, Any]):\n                Optional. Additional keyword'
             ' arguments to pass to the\n                runner.\n\n       '
@@ -817,28 +823,34 @@ _AGENT_ENGINE_CLASS_METHODS = [
         'name': 'async_stream_query',
         'description': (
             'Streams responses asynchronously from the ADK application.\n\n    '
-            '    Args:\n            message (str):\n                Required.'
-            ' The message to stream responses for.\n            user_id'
-            ' (str):\n                Required. The ID of the user.\n          '
-            '  session_id (str):\n                Optional. The ID of the'
-            ' session. If not provided, a new\n                session will be'
-            ' created for the user. If this is specified, then\n               '
-            ' `session_events` will be ignored.\n            session_events'
-            ' (Optional[List[Dict[str, Any]]]):\n                Optional. The'
-            ' session events to use for the query. This will be\n             '
-            '   used to initialize the session if `session_id` is not'
-            ' provided.\n            run_config (Optional[Dict[str,'
-            ' Any]]):\n                Optional. The run config to use for the'
-            ' query. If you want to\n                pass in a `run_config`'
-            ' pydantic object, you can pass in a dict\n               '
-            ' representing it as `run_config.model_dump(mode="json")`.\n       '
-            '     **kwargs (dict[str, Any]):\n                Optional.'
-            ' Additional keyword arguments to pass to the\n               '
-            ' runner.\n\n        Yields:\n            Event dictionaries'
-            ' asynchronously.\n\n        Raises:\n            TypeError: If'
-            ' message is not a string or a dictionary representing\n           '
-            ' a Content object.\n            ValueError: If both session_id and'
-            ' session_events are specified.\n        '
+            '    Args:\n            message (Union[str, Dict[str, Any]]):\n    '
+            '            Required. The message to stream responses for. Either'
+            ' a text\n                string or a dictionary representing a\n  '
+            '              `google.genai.types.Content` object (for example,\n '
+            '               `content.model_dump(exclude_none=True,'
+            ' mode="json")` for\n                multimodal inputs; raw'
+            ' `types.Content` or `list[types.Part]`\n                instances'
+            ' are not supported).\n            user_id (str):\n               '
+            ' Required. The ID of the user.\n            session_id (str):\n   '
+            '             Optional. The ID of the session. If not provided, a'
+            ' new\n                session will be created for the user. If'
+            ' this is specified, then\n                `session_events` will be'
+            ' ignored.\n            session_events (Optional[List[Dict[str,'
+            ' Any]]]):\n                Optional. The session events to use for'
+            ' the query. This will be\n                used to initialize the'
+            ' session if `session_id` is not provided.\n            run_config'
+            ' (Optional[Dict[str, Any]]):\n                Optional. The run'
+            ' config to use for the query. If you want to\n                pass'
+            ' in a `run_config` pydantic object, you can pass in a dict\n      '
+            '          representing it as'
+            ' `run_config.model_dump(mode="json")`.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                runner.\n\n       '
+            ' Yields:\n            Event dictionaries asynchronously.\n\n      '
+            '  Raises:\n            TypeError: If message is not a string or a'
+            ' dictionary representing\n                a Content object.\n     '
+            '       ValueError: If both session_id and session_events are'
+            ' specified.\n        '
         ),
         'parameters': {
             'properties': {
@@ -1245,6 +1257,68 @@ def _get_extra_packages_copy(
   return '\n'.join(copy_lines)
 
 
+def _get_extra_packages_reinstall(
+    staged_extra_packages: Sequence[str],
+    build_context: str,
+    *,
+    has_requirements: bool,
+) -> str:
+  """Returns the post-requirements `pip install` override line, if needed.
+
+  `_get_extra_packages_copy` installs extra packages before `requirements.txt`
+  so dependencies shipped only via `--extra_packages` are already in
+  site-packages when `requirements.txt` resolves. Two cases still require a
+  `--force-reinstall --no-deps` pass afterward:
+
+  * `pip` skips a local `.whl` when the same version is already installed (for
+    example from `install_adk`), unlike a local directory or sdist which `pip`
+    marks `should_reinstall`.
+  * When `requirements.txt` is present, `pip install -r requirements.txt` runs
+    after `_get_extra_packages_copy` and can overwrite an extra package with a
+    pinned or upgraded version from the index.
+
+  Args:
+    staged_extra_packages: Basenames returned by `_stage_extra_packages`.
+    build_context: The folder the entries were staged into.
+    has_requirements: Whether `requirements.txt` is installed in the image.
+
+  Returns:
+    A `RUN` instruction in exec form, or an empty string when nothing needs to
+    be reinstalled.
+  """
+  if not staged_extra_packages:
+    return ''
+  reinstall_targets: list[str] = []
+  for base in staged_extra_packages:
+    _validate_extra_package_name(base)
+    staged_path = os.path.join(build_context, base)
+    if os.path.isdir(staged_path):
+      if not has_requirements:
+        continue
+      has_build_file = os.path.isfile(
+          os.path.join(staged_path, 'pyproject.toml')
+      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
+      has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
+      if has_build_file and not has_root_init:
+        reinstall_targets.append(f'/tmp/extra_packages/{base}')
+    elif base.endswith('.whl') or (
+        has_requirements and base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES)
+    ):
+      reinstall_targets.append(f'/tmp/extra_packages/{base}')
+  if not reinstall_targets:
+    return ''
+  return _to_exec_form(
+      'RUN',
+      [
+          'pip',
+          'install',
+          '--force-reinstall',
+          '--no-deps',
+          *reinstall_targets,
+      ],
+  )
+
+
 def run(
     *,
     agent_folder: str,
@@ -1403,6 +1477,11 @@ def run(
         express_mode_option='',
         extra_packages_copy=_get_extra_packages_copy(
             staged_extra_packages, temp_folder
+        ),
+        reinstall_extra_packages=_get_extra_packages_reinstall(
+            staged_extra_packages,
+            temp_folder,
+            has_requirements=os.path.exists(requirements_txt_path),
         ),
         extra_env_vars='',
         python_version=python_version,
@@ -1575,6 +1654,13 @@ def to_agent_engine(
   - .env (optional, for environment variables)
   - ... (other required source files)
 
+  Once deployed, the runtime exposes query methods such as `async_stream_query`
+  and `stream_query`. Pass text queries as a `str`, or multimodal queries as a
+  JSON-serializable `dict` representing `google.genai.types.Content` (for
+  example, `content = types.Content(role='user', parts=[...])` serialized with
+  `content.model_dump(exclude_none=True, mode='json')`; raw `types.Content` or
+  `list[types.Part]` instances are not supported).
+
   Args:
     agent_folder (str): The folder (absolute path) containing the agent source
       code.
@@ -1659,7 +1745,6 @@ def to_agent_engine(
   # source copied; the config-file value is resolved once the file is read.
   if python_version is not None:
     python_version = _validate_python_version(python_version)
-  display_name = display_name or app_name
   parent_folder = os.path.dirname(os.path.normpath(agent_folder))
   if adk_app_object:
     warnings.warn(
@@ -1746,6 +1831,8 @@ def to_agent_engine(
             f' {display_name}'
         )
       agent_config['display_name'] = display_name
+    elif not agent_config.get('display_name'):
+      agent_config['display_name'] = app_name
     if description:
       if 'description' in agent_config:
         click.echo(
@@ -2023,6 +2110,11 @@ def to_agent_engine(
           extra_packages_copy=_get_extra_packages_copy(
               staged_extra_packages, temp_folder_path
           ),
+          reinstall_extra_packages=_get_extra_packages_reinstall(
+              staged_extra_packages,
+              temp_folder_path,
+              has_requirements=os.path.exists(requirements_txt_path),
+          ),
           extra_env_vars=extra_env_vars,
           python_version=python_version,
       )
@@ -2231,6 +2323,11 @@ def to_gke(
         express_mode_option='',
         extra_packages_copy=_get_extra_packages_copy(
             staged_extra_packages, temp_folder
+        ),
+        reinstall_extra_packages=_get_extra_packages_reinstall(
+            staged_extra_packages,
+            temp_folder,
+            has_requirements=os.path.exists(requirements_txt_path),
         ),
         extra_env_vars='',
         python_version=python_version,
