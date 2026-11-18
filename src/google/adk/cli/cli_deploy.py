@@ -24,6 +24,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tomllib
 import traceback
 from typing import Any
 from typing import Callable
@@ -1186,6 +1187,23 @@ _INSTALLABLE_ARCHIVE_SUFFIXES: Final[tuple[str, ...]] = (
 )
 
 
+def _is_installable_project(path: str) -> bool:
+  """Returns whether a directory is a Python project that pip can install.
+
+  A directory is a project when it has a `setup.py`, or a `pyproject.toml`
+  that declares `[build-system]` or `[project]`. A `pyproject.toml` that only
+  holds tool settings, or cannot be parsed, does not make it one.
+  """
+  if os.path.isfile(os.path.join(path, 'setup.py')):
+    return True
+  try:
+    with open(os.path.join(path, 'pyproject.toml'), 'rb') as f:
+      pyproject = tomllib.load(f)
+  except (OSError, ValueError):
+    return False
+  return 'build-system' in pyproject or 'project' in pyproject
+
+
 def _get_extra_packages_copy(
     staged_extra_packages: Sequence[str], build_context: str
 ) -> str:
@@ -1194,13 +1212,14 @@ def _get_extra_packages_copy(
   Each staged entry is handled one of two ways:
 
   * An installable distribution (a file ending in one of
-    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a directory containing
-    `pyproject.toml` or `setup.py` without a root `__init__.py`) is copied to
+    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a project directory without a root
+    `__init__.py`, see `_is_installable_project`) is copied to
     `/tmp/extra_packages/<base>` and installed with `pip install`, so its
     modules land in site-packages together with the dependencies it declares.
   * Anything else (a plain module, a folder of modules, or a package folder
-    with a root `__init__.py` that may also carry a `pyproject.toml` for tool
-    config) is copied to `/app/<base>` and `/app` is added to PYTHONPATH.
+    with a root `__init__.py`, either of which may carry a `pyproject.toml`
+    for tool config) is copied to `/app/<base>` and `/app` is added to
+    PYTHONPATH.
 
   Installable entries are deliberately kept out of `/app`: a flat-layout
   package such as `my_pkg/pyproject.toml` + `my_pkg/my_pkg/__init__.py` copied
@@ -1225,11 +1244,8 @@ def _get_extra_packages_copy(
     _validate_extra_package_name(base)
     staged_path = os.path.join(build_context, base)
     if os.path.isdir(staged_path):
-      has_build_file = os.path.isfile(
-          os.path.join(staged_path, 'pyproject.toml')
-      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
       has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
-      if has_build_file and not has_root_init:
+      if _is_installable_project(staged_path) and not has_root_init:
         copy_lines.append(
             f'COPY --chown=myuser:myuser "{base}/"'
             f' "/tmp/extra_packages/{base}/"'
@@ -1295,11 +1311,8 @@ def _get_extra_packages_reinstall(
     if os.path.isdir(staged_path):
       if not has_requirements:
         continue
-      has_build_file = os.path.isfile(
-          os.path.join(staged_path, 'pyproject.toml')
-      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
       has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
-      if has_build_file and not has_root_init:
+      if _is_installable_project(staged_path) and not has_root_init:
         reinstall_targets.append(f'/tmp/extra_packages/{base}')
     elif base.endswith('.whl') or (
         has_requirements and base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES)
@@ -1390,10 +1403,11 @@ def run(
       execution.
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A wheel, source archive, or
-      a project directory containing `pyproject.toml` or `setup.py` (without a
-      root `__init__.py`) is installed with pip; any other entry is copied to
-      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
-      resolved against the current working directory.
+      a project directory (`setup.py`, or `pyproject.toml` declaring
+      `[project]` or `[build-system]`, without a root `__init__.py`) is
+      installed with pip; any other entry is copied to `/app/<basename>` and
+      `/app` is added to PYTHONPATH. A relative path is resolved against the
+      current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
@@ -1435,9 +1449,6 @@ def run(
     # create Dockerfile
     click.echo('Creating Dockerfile...')
     host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
     a2a_option = '--a2a' if a2a else ''
     trigger_sources_option = (
         f'--trigger_sources={trigger_sources}' if trigger_sources else ''
@@ -1466,7 +1477,7 @@ def run(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
@@ -1716,10 +1727,10 @@ def to_agent_engine(
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
       paths to stage alongside the agent and make importable in the image. A
-      wheel, source archive, or a project directory containing `pyproject.toml`
-      or `setup.py` (without a root `__init__.py`) is installed with pip; any
-      other entry is copied to `/app/<basename>` and `/app` is added to
-      PYTHONPATH.
+      wheel, source archive, or a project directory (`setup.py`, or
+      `pyproject.toml` declaring `[project]` or `[build-system]`, without a
+      root `__init__.py`) is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH.
     worker_pool (str): Optional. Full Cloud Build private worker pool resource
       name
       (`projects/{project}/locations/{location}/workerPools/{pool}`).
@@ -2092,7 +2103,7 @@ def to_agent_engine(
           ),
           trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
           otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-          allow_origins_option='',  # Not supported for now.
+          allow_origins=None,  # Not supported for now.
           adk_version=adk_version,
           host_option='--host=0.0.0.0',
           a2a_option='--a2a',
@@ -2226,10 +2237,11 @@ def to_gke(
     service_type: The Kubernetes Service type (default: ClusterIP).
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A wheel, source archive, or
-      a project directory containing `pyproject.toml` or `setup.py` (without a
-      root `__init__.py`) is installed with pip; any other entry is copied to
-      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
-      resolved against the current working directory.
+      a project directory (`setup.py`, or `pyproject.toml` declaring
+      `[project]` or `[build-system]`, without a root `__init__.py`) is
+      installed with pip; any other entry is copied to `/app/<basename>` and
+      `/app` is added to PYTHONPATH. A relative path is resolved against the
+      current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
@@ -2278,10 +2290,6 @@ def to_gke(
     )
     click.secho('✅ Environment prepared.', fg='green')
 
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
-
     # create Dockerfile
     click.secho('\nSTEP 2: Generating deployment files...', bold=True)
     click.echo('  - Creating Dockerfile...')
@@ -2310,7 +2318,7 @@ def to_gke(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',

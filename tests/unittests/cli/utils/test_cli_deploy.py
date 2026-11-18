@@ -66,6 +66,20 @@ class _Recorder:
     return self.calls[-1][1]
 
 
+def _allow_origins_args(dockerfile_content: str) -> List[str]:
+  """Returns the `--allow_origins` entries of the Dockerfile's exec-form CMD."""
+  cmd_line = next(
+      line
+      for line in dockerfile_content.splitlines()
+      if line.startswith("CMD ")
+  )
+  return [
+      arg
+      for arg in json.loads(cmd_line[len("CMD ") :])
+      if arg.startswith("--allow_origins")
+  ]
+
+
 # Fixtures
 @pytest.fixture(autouse=True)
 def _mute_click(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -521,10 +535,10 @@ def test_to_gke_happy_path(
   ]
   assert creds_args == expected_creds_args
 
-  assert (
-      "--allow_origins=http://localhost:3000,https://my-app.com"
-      in dockerfile_content
-  )
+  assert _allow_origins_args(dockerfile_content) == [
+      "--allow_origins=http://localhost:3000",
+      "--allow_origins=https://my-app.com",
+  ]
 
   apply_args = run_recorder.calls[2][0][0]
   expected_apply_args = [
@@ -2323,6 +2337,57 @@ def test_to_gke_dockerfile_trigger_oidc_options(
 
 
 @pytest.mark.parametrize(
+    "provider, provider_args",
+    [
+        ("cloud_run", ["--project=my-project", "--region=us-central1"]),
+        ("docker", []),
+    ],
+)
+def test_cli_deploy_passes_each_allow_origin_as_its_own_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+    provider: str,
+    provider_args: List[str],
+) -> None:
+  """Every repeated --allow_origins reaches the deployed api_server."""
+  src_dir = agent_dir(False, False)
+  dockerfiles: List[str] = []
+
+  class _FakeDeployer:
+
+    def deploy(self, *, temp_folder: str, **_: Any) -> None:
+      dockerfiles.append((Path(temp_folder) / "Dockerfile").read_text())
+
+  monkeypatch.setattr(
+      cli_deploy.DeployerFactory,
+      "get_deployer",
+      lambda _: _FakeDeployer(),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          provider,
+          *provider_args,
+          f"--temp_folder={tmp_path / 'build'}",
+          "--allow_origins=https://a.example.com",
+          "--allow_origins=regex:https://.*\\.b\\.example\\.com",
+          str(src_dir),
+      ],
+      catch_exceptions=False,
+  )
+
+  assert result.exit_code == 0, result.output
+  assert len(dockerfiles) == 1
+  assert _allow_origins_args(dockerfiles[0]) == [
+      "--allow_origins=https://a.example.com",
+      "--allow_origins=regex:https://.*\\.b\\.example\\.com",
+  ]
+
+
+@pytest.mark.parametrize(
     "adk_version, expect_flag",
     [
         ("2.1.0", False),
@@ -3120,7 +3185,7 @@ def test_render_dockerfile_with_python_version(
       service_options=[],
       trace_to_cloud_option="",
       otel_to_cloud_option="",
-      allow_origins_option="",
+      allow_origins=None,
       adk_version="1.2.0",
       host_option="--host=0.0.0.0",
       a2a_option="",
@@ -3155,7 +3220,7 @@ def test_render_dockerfile_rejects_invalid_python_version(
         service_options=[],
         trace_to_cloud_option="",
         otel_to_cloud_option="",
-        allow_origins_option="",
+        allow_origins=None,
         adk_version="1.2.0",
         host_option="--host=0.0.0.0",
         a2a_option="",
@@ -3554,6 +3619,70 @@ def test_get_extra_packages_copy_keeps_package_with_root_init_on_pythonpath(
   assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in rendered
   assert "pip" not in rendered
   assert "/tmp/extra_packages" not in rendered
+
+
+@pytest.mark.parametrize(
+    "pyproject_content",
+    [
+        "[tool.ruff]\nline-length = 100\n",
+        "",
+        "[tool.ruff\nline-length = ",
+    ],
+    ids=["tool_settings_only", "empty", "unparsable"],
+)
+def test_get_extra_packages_copy_keeps_non_project_folder_on_pythonpath(
+    tmp_path: Path,
+    pyproject_content: str,
+) -> None:
+  """A folder of modules whose pyproject.toml is not a project stays in /app."""
+  shared = tmp_path / "shared"
+  shared.mkdir()
+  (shared / "models.py").write_text("VALUE = 1\n")
+  (shared / "utils.py").write_text("VALUE = 2\n")
+  (shared / "pyproject.toml").write_text(pyproject_content)
+
+  rendered = cli_deploy._get_extra_packages_copy(["shared"], str(tmp_path))
+
+  assert 'COPY --chown=myuser:myuser "shared/" "/app/shared/"' in rendered
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in rendered
+  assert "pip" not in rendered
+  assert "/tmp/extra_packages" not in rendered
+  assert not cli_deploy._get_extra_packages_reinstall(
+      ["shared"], str(tmp_path), has_requirements=True
+  )
+
+
+@pytest.mark.parametrize(
+    "pyproject_content",
+    [
+        '[project]\nname = "shared"\nversion = "0.1.0"\n',
+        '[build-system]\nrequires = ["setuptools"]\n',
+    ],
+    ids=["project", "build_system"],
+)
+def test_get_extra_packages_copy_pip_installs_pyproject_project(
+    tmp_path: Path,
+    pyproject_content: str,
+) -> None:
+  """A pyproject.toml declaring a project or build system is pip-installed."""
+  shared = tmp_path / "shared"
+  (shared / "src" / "shared").mkdir(parents=True)
+  (shared / "pyproject.toml").write_text(pyproject_content)
+
+  rendered = cli_deploy._get_extra_packages_copy(["shared"], str(tmp_path))
+
+  assert (
+      'COPY --chown=myuser:myuser "shared/" "/tmp/extra_packages/shared/"'
+      in rendered
+  )
+  assert "PYTHONPATH" not in rendered
+  assert 'RUN ["pip", "install", "/tmp/extra_packages/shared"]' in rendered
+  assert cli_deploy._get_extra_packages_reinstall(
+      ["shared"], str(tmp_path), has_requirements=True
+  ) == (
+      'RUN ["pip", "install", "--force-reinstall", "--no-deps",'
+      ' "/tmp/extra_packages/shared"]'
+  )
 
 
 @pytest.mark.parametrize(

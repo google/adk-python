@@ -33,13 +33,11 @@ from typing import Union
 import weakref
 
 from google.genai import types
-from packaging.version import InvalidVersion
-from packaging.version import Version
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...models.llm_request import LlmRequest
-from ...utils.model_name_utils import extract_model_name
+from ...utils.model_name_utils import _gemini_major_version
 from .._url_validator import _is_blocked_hostname
 from .._url_validator import _parse_request_target
 from .._url_validator import _resolve_direct_addresses
@@ -133,20 +131,6 @@ def _expand_local_exclusions(excluded_names: Iterable[str]) -> set[str]:
   return expanded
 
 
-def _parse_gemini_major_version(model_string: Optional[str]) -> Optional[int]:
-  """Returns the major version of a `gemini-*` model, or None if unparseable."""
-  if not model_string:
-    return None
-  model_name = extract_model_name(model_string)
-  if not model_name.startswith("gemini-"):
-    return None
-  version_part = model_name[len("gemini-") :].split("-", 1)[0]
-  try:
-    return Version(version_part).major
-  except InvalidVersion:
-    return None
-
-
 def _is_legacy_gemini_model(model_string: Optional[str]) -> bool:
   """Returns True if model_string is explicitly a Gemini 1.x or 2.x model.
 
@@ -156,7 +140,7 @@ def _is_legacy_gemini_model(model_string: Optional[str]) -> bool:
       `gemini-flash-latest`, EAP models, or custom/tuned Vertex AI endpoint
       resource paths) default to False (the modern Gemini 3.x action schema).
   """
-  major = _parse_gemini_major_version(model_string)
+  major = _gemini_major_version(model_string)
   return major is not None and major < 3
 
 
@@ -195,7 +179,7 @@ def _resolve_excluded_predefined_functions_for_model(
       resolved.extend(mapped_names)
     else:
       resolved.append(name)
-  major = _parse_gemini_major_version(model)
+  major = _gemini_major_version(model)
   if major is not None and major >= 3:
     resolved.extend(unimplemented_modern_actions)
   deduped = list(dict.fromkeys(resolved))

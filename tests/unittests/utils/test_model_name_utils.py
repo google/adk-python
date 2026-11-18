@@ -15,6 +15,8 @@
 """Tests for model name utility functions."""
 
 from google.adk.models.llm_request import LlmRequest
+from google.adk.utils.model_name_utils import _gemini_major_version
+from google.adk.utils.model_name_utils import _is_gemini_3_or_newer
 from google.adk.utils.model_name_utils import _is_gemini_3_x_live
 from google.adk.utils.model_name_utils import _is_managed_agent
 from google.adk.utils.model_name_utils import _supports_builtin_tools_with_function_calling
@@ -482,6 +484,80 @@ class TestSupportsBuiltinToolsWithFunctionCalling:
   )
   def test_older_or_non_gemini_models_are_not_supported(self, model_string):
     assert _supports_builtin_tools_with_function_calling(model_string) is False
+
+
+class TestIsGemini3OrNewer:
+  """Test the _gemini_major_version and _is_gemini_3_or_newer helpers."""
+
+  @pytest.mark.parametrize(
+      ('model_string', 'expected_major'),
+      [
+          ('gemini-3-flash-preview', 3),
+          ('gemini-3.0-flash', 3),
+          ('gemini-3.5-flash', 3),
+          ('gemini-4-hydrogen', 4),
+          ('gemini-4-carbon', 4),
+          ('gemini-4.0-pro', 4),
+          ('gemini-5-pro', 5),
+          ('gemini/gemini-4-hydrogen', 4),
+          ('vertex_ai/gemini-4-hydrogen', 4),
+          ('openrouter/google/gemini-4-hydrogen', 4),
+          ('openrouter/google/gemini-4-hydrogen:online', 4),
+          ('litellm_proxy/vertex_ai/gemini-4-hydrogen', 4),
+          (
+              'projects/my-project/locations/global/publishers/google/models/gemini-4-hydrogen',
+              4,
+          ),
+          (
+              'vertex_ai/projects/my-project/locations/global/publishers/google/models/gemini-4-hydrogen',
+              4,
+          ),
+          ('models/gemini-4-hydrogen', 4),
+          ('apigee/vertex_ai/v1beta/gemini-4-hydrogen', 4),
+      ],
+  )
+  def test_gemini_3_and_later_models(
+      self, model_string: str, expected_major: int
+  ):
+    """Classifies Gemini 3.0 and later models across provider/path shapes."""
+    assert _gemini_major_version(model_string) == expected_major
+    assert _is_gemini_3_or_newer(model_string)
+
+  @pytest.mark.parametrize(
+      ('model_string', 'expected_major'),
+      [
+          ('gemini-1.0-pro', 1),
+          ('gemini-1.5-pro', 1),
+          ('gemini-2.0-flash', 2),
+          ('gemini-2.5-flash', 2),
+          ('gemini/gemini-2.5-flash', 2),
+          ('vertex_ai/gemini-2.5-flash', 2),
+          ('openrouter/google/gemini-2.5-pro:online', 2),
+          (
+              'projects/my-project/locations/us-central1/publishers/google/models/gemini-2.5-flash',
+              2,
+          ),
+          ('gemini-flash-latest', None),
+          ('gemini-pro', None),
+          ('gemini-early-exp', None),
+          ('gemini-flash-early-exp', None),
+          ('gemini-exp-1206', None),
+          ('gemini-live-2.5-flash-native-audio', None),
+          ('gemini-', None),
+          ('gemini-3.', None),
+          ('claude-sonnet-4-5', None),
+          ('openai/gpt-4o', None),
+          ('ollama/gemma4:e2b', None),
+          ('', None),
+          (None, None),
+      ],
+  )
+  def test_older_unversioned_or_non_gemini_models(
+      self, model_string: str | None, expected_major: int | None
+  ):
+    """Rejects pre-3.0, unversioned, and non-Gemini model strings."""
+    assert _gemini_major_version(model_string) == expected_major
+    assert not _is_gemini_3_or_newer(model_string)
 
 
 class TestIsManagedAgent:

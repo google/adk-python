@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import abc
+import collections
 from collections.abc import Mapping
+import concurrent.futures
 import dataclasses
 import datetime
 import logging
@@ -25,6 +27,7 @@ from typing import Any
 from typing import ClassVar
 from typing import Optional
 from typing import TYPE_CHECKING
+import urllib.parse
 
 from typing_extensions import override
 
@@ -40,6 +43,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _DEFAULT_MIME_TYPE = "application/octet-stream"
 _GCS_PROTOCOLS = frozenset({"gs", "gcs"})
 _LOCAL_PROTOCOLS = frozenset({"file", "local"})
+_S3_PROTOCOLS = frozenset({"s3", "s3a"})
 _RAPID_PRECONDITION_ERROR_NAMES = frozenset({
     "FailedPrecondition",
     "PreconditionFailed",
@@ -55,6 +59,8 @@ _RAPID_SETXATTRS_RESERVED_KEYS = frozenset({
     "fixed_key_metadata",
     "timeout",
 })
+# Concurrent HeadObject calls when listing S3 versions.
+_S3_MAX_HEAD_WORKERS = 8
 
 # Custom-metadata keys written by GcsArtifactService on save. They must stay
 # identical so that objects written by either service are readable by both.
@@ -74,6 +80,14 @@ _INTERNAL_METADATA_KEYS = frozenset({
     _ADK_FILE_MIME_TYPE_METADATA_KEY,
     _LEGACY_FILE_URI_METADATA_KEY,
 })
+# Maps ADK's keys as s3fs returns them (lowercased, "_" as "-") back.
+_S3_INTERNAL_METADATA_KEYS = {
+    key.lower().replace("_", "-"): key for key in _INTERNAL_METADATA_KEYS
+}
+# Printable ASCII except "%", left as is when percent-encoding ADK's own values.
+_S3_SAFE_METADATA_CHARS = "".join(
+    chr(code) for code in range(0x20, 0x7F) if chr(code) != "%"
+)
 
 
 def _user_metadata(
@@ -184,20 +198,24 @@ class _BackendAdapter(abc.ABC):
   @staticmethod
   def for_filesystem(fs: fsspec.AbstractFileSystem) -> _BackendAdapter:
     """Returns the backend adapter matching ``fs``'s protocol."""
-    if not _GCS_PROTOCOLS.isdisjoint(_fs_protocols(fs)):
+    protocols = _fs_protocols(fs)
+    if not _GCS_PROTOCOLS.isdisjoint(protocols):
       return _GcsBackendAdapter(fs)
+    if not _S3_PROTOCOLS.isdisjoint(protocols):
+      return _S3BackendAdapter(fs)
     return _GenericBackendAdapter(fs)
 
   def read_metadata(self, key: str) -> Optional[_ObjectMetadata]:
     """Reads and normalizes metadata for a single file object at ``key``."""
     self._fs.invalidate_cache(key)
+    # ``from_info`` may send its own request (S3), which can race a delete.
     try:
       info = self._fs.info(key)
+      if info.get("type", "file") != "file":
+        return None
+      return self.from_info(key, info)
     except (FileNotFoundError, NotADirectoryError):
       return None
-    if info.get("type", "file") != "file":
-      return None
-    return self.from_info(key, info)
 
   def from_info(self, key: str, info: Mapping[str, Any]) -> _ObjectMetadata:
     """Normalizes an ``info()`` / ``find(detail=True)`` dict for ``key``."""
@@ -338,6 +356,129 @@ class _GcsBackendAdapter(_BackendAdapter):
           exc_info=True,
       )
     self._fs.invalidate_cache(key)
+
+
+class _S3BackendAdapter(_BackendAdapter):
+  """Reads and writes object metadata on Amazon S3 (``s3fs``).
+
+  ``s3fs`` leaves user metadata out of ``info()`` and listings, so it is read
+  with ``fs.metadata()`` (``HeadObject``). Keys come back lowercased with ``_``
+  turned into ``-``. ADK's own keys are mapped back, caller keys are not.
+
+  S3 metadata must be ASCII. ADK's own values, such as display names and file
+  URIs, are percent-encoded so they round-trip. Caller metadata must be ASCII,
+  and caller keys that would read back as ADK's own keys or as each other are
+  rejected.
+
+  Reading one version takes two HeadObject requests, ``info()`` for content
+  type and time and ``metadata()`` for user metadata, because s3fs returns them
+  separately.
+
+  Exclusive create uses ``pipe_file(mode="create")``, which s3fs sends as
+  ``IfNoneMatch="*"``. s3fs only guarantees this on AWS S3 with botocore newer
+  than 1.35.20. An endpoint that ignores the header overwrites the object, so
+  concurrent saves could replace the same version. A 409
+  ``ConditionalRequestConflict`` from a concurrent conditional write is retried
+  at the next version, like ``FileExistsError``.
+  """
+
+  stores_custom_metadata = True
+
+  @override
+  def from_info(self, key: str, info: Mapping[str, Any]) -> _ObjectMetadata:
+    raw_metadata = {}
+    for s3_key, value in (self._fs.metadata(key) or {}).items():
+      name = _S3_INTERNAL_METADATA_KEYS.get(s3_key, s3_key)
+      if name in _INTERNAL_METADATA_KEYS:
+        value = urllib.parse.unquote(value)
+      raw_metadata[name] = value
+    return _ObjectMetadata(
+        raw_metadata=raw_metadata,
+        content_type=info.get("ContentType") or info.get("contentType") or None,
+        create_time=_parse_timestamp(info),
+    )
+
+  @override
+  def read_listing_metadata(
+      self, entries: Mapping[str, Mapping[str, Any]]
+  ) -> dict[str, _ObjectMetadata]:
+    keys = list(entries)
+    if not keys:
+      return {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(keys), _S3_MAX_HEAD_WORKERS)
+    ) as pool:
+      results = list(pool.map(self.read_metadata, keys))
+    return {
+        key: metadata
+        for key, metadata in zip(keys, results)
+        if metadata is not None
+    }
+
+  @override
+  def create_object(
+      self,
+      key: str,
+      data: bytes,
+      *,
+      content_type: Optional[str],
+      metadata: Mapping[str, str],
+  ) -> None:
+    metadata = {
+        name: (
+            urllib.parse.quote(value, safe=_S3_SAFE_METADATA_CHARS)
+            if name in _INTERNAL_METADATA_KEYS
+            else value
+        )
+        for name, value in metadata.items()
+    }
+    self._validate_metadata(metadata)
+    write_kwargs: dict[str, Any] = {"mode": "create"}
+    if content_type is not None:
+      write_kwargs["ContentType"] = content_type
+    if metadata:
+      write_kwargs["Metadata"] = dict(metadata)
+    try:
+      self._fs.pipe_file(key, data, **write_kwargs)
+    except OSError as exc:
+      # s3fs maps 412 PreconditionFailed to FileExistsError but leaves 409
+      # ConditionalRequestConflict as a generic OSError.
+      response = getattr(exc.__cause__, "response", None) or {}
+      if response.get("Error", {}).get("Code") == "ConditionalRequestConflict":
+        raise FileExistsError(key) from exc
+      raise
+
+  @staticmethod
+  def _validate_metadata(metadata: Mapping[str, str]) -> None:
+    """Rejects metadata that S3 cannot store or would read back differently."""
+    for key, value in metadata.items():
+      # botocore raises ParamValidationError on non-ASCII metadata.
+      if not (key.isascii() and value.isascii()):
+        raise InputValidationError(
+            "custom_metadata keys and values must be ASCII on S3, got"
+            f" {key!r}: {value!r}."
+        )
+    s3_keys = {key: key.lower().replace("_", "-") for key in metadata}
+    reserved = sorted(
+        key
+        for key, s3_key in s3_keys.items()
+        if key not in _INTERNAL_METADATA_KEYS
+        and s3_key in _S3_INTERNAL_METADATA_KEYS
+    )
+    if reserved:
+      raise InputValidationError(
+          "custom_metadata keys would read back as ADK keys on S3:"
+          f" {', '.join(reserved)}."
+      )
+    counts = collections.Counter(s3_keys.values())
+    merged = sorted(
+        key for key, s3_key in s3_keys.items() if counts[s3_key] > 1
+    )
+    if merged:
+      raise InputValidationError(
+          "custom_metadata keys would read back as the same key on S3:"
+          f" {', '.join(merged)}."
+      )
 
 
 class _GenericBackendAdapter(_BackendAdapter):
