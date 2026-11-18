@@ -30,8 +30,18 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 class JoinNode(BaseNode):
-  """A node that waits for all specified predecessors to trigger it before
-  outputting."""
+  """Waits for every predecessor, then emits their outputs keyed by name.
+
+  The predecessors are the nodes with an edge into the join, such as ``a``
+  and ``b`` in ``((a, b), join, c)``. The output is a dict that maps each
+  predecessor's name to its latest output.
+
+  In a loop, each firing waits for the predecessors inside the loop to run
+  again: those the join can reach by following edges, including routes the
+  run never takes, so the steps of an outer loop count as inside too. A
+  predecessor the join cannot reach, such as a setup step that runs once
+  before the loop starts, keeps counting in later iterations.
+  """
 
   @property
   @override

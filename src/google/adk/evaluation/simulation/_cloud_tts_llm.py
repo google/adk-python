@@ -26,6 +26,7 @@ import os
 from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import google.api_core.exceptions
 from google.genai import types as genai_types
@@ -35,6 +36,9 @@ from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ..constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+if TYPE_CHECKING:
+  import enum
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -178,12 +182,13 @@ class _CloudTTSLlm(BaseLlm):
     voice_name, language_code = self._extract_voice_config(llm_request)
 
     # Map encoding string to the Cloud TTS enum.
+    audio_encoding_type: type[enum.Enum] = cloud_tts.AudioEncoding
     try:
-      audio_encoding_enum = cloud_tts.AudioEncoding[self.audio_encoding]
+      audio_encoding_enum = audio_encoding_type[self.audio_encoding]
     except KeyError as exc:
       raise ValueError(
           f"Unsupported audio_encoding: '{self.audio_encoding}'."
-          f" Supported: {[e.name for e in cloud_tts.AudioEncoding]}"
+          f" Supported: {[e.name for e in audio_encoding_type]}"
       ) from exc
 
     # Build voice selection params.

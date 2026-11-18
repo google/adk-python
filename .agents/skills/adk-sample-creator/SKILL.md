@@ -15,7 +15,7 @@ description: >-
 # ADK Sample Creator
 
 Creates samples under `contributing/samples/`. These are deliberately minimal
-agents that each exercise one or two features — distinct from the `adk-samples`
+agents that each exercise one or two features — distinct from the `adk-recipes`
 repository, which hosts full end-to-end applications.
 
 Read the `adk-style` skill first for ADK 2.0 conventions if you have not
@@ -132,7 +132,9 @@ static one.
 
     ```python
     @node(rerun_on_resume=True)
-    async def orchestrate(ctx: Context, node_input: str) -> str:
+    async def orchestrate(
+        ctx: Context, node_input: str
+    ) -> AsyncGenerator[Event | str, None]:
       yield Event(state={"topic": node_input})
 
       while True:

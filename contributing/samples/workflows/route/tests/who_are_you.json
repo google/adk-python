@@ -47,15 +47,16 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-3",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/classify_input@1"
         ],
         "path": "root_agent@1/classify_input@1"
+      },
+      "output": {
+        "category": "question"
       }
     },
     {
@@ -79,7 +80,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-5",
       "invocationId": "i-1",
       "nodeInfo": {

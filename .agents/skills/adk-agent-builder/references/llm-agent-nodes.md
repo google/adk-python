@@ -15,13 +15,13 @@ There is no wrapper class to import or subclass — the wrapping is internal.
 ```python
 writer = LlmAgent(
     name='writer',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction="Write a short story based on the user's prompt.",
 )
 
 reviewer = LlmAgent(
     name='reviewer',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Review the following story and provide feedback.',
 )
 
@@ -43,7 +43,7 @@ class CodeOutput(BaseModel):
 
 writer = LlmAgent(
     name='writer',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction="Write code. Return JSON with 'code' and 'language'.",
     output_schema=CodeOutput,
 )
@@ -53,18 +53,17 @@ def process_code(node_input: dict) -> str:
   return node_input['code']
 ```
 
-Set `output_schema` whenever the downstream node needs fields rather than prose,
-and always when the agent feeds a `JoinNode` — the join parks partial results in
-session state, and a raw `types.Content` there breaks a database-backed session
-service.
+Set `output_schema` whenever the downstream node needs fields rather than prose.
 
 ### Do not assert on `event.output` for an LLM agent's own event
 
-The wrapper sets `event.output` internally, but the runner clears it on a copy
-before the event reaches your loop, so the same text is not rendered twice.
-`event.output` is therefore `None` when you read the agent's own event out of
-`runner.run_async(...)`. Assert on the downstream node's output, on
-`session.state[output_key]`, or on `event.content.parts[*].text` instead.
+For an agent without `output_schema`, the wrapper sets `event.output`
+internally, but the runner clears it on a copy before the event reaches your
+loop, so the same text is not rendered twice. `event.output` is therefore `None`
+when you read that agent's own event out of `runner.run_async(...)`; only an
+agent with `output_schema` keeps the validated dict there. Assert on the
+downstream node's output, on `session.state[output_key]`, or on
+`event.content.parts[*].text` instead.
 
 ## Auto-wrapping defaults
 
@@ -76,7 +75,7 @@ each other's turns. Change the behavior on the agent, not on the wrapper:
 # single_turn (the default here): isolated, no session history
 classifier = LlmAgent(
     name='classifier',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Classify the input as positive, negative, or neutral.',
     output_schema=ClassificationResult,
 )
@@ -84,7 +83,7 @@ classifier = LlmAgent(
 # task: multi-turn within the delegated task, supports human-in-the-loop
 task_agent = LlmAgent(
     name='task_agent',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     mode='task',
     instruction='Process the request.',
 )
@@ -109,7 +108,7 @@ def build_instruction(ctx: ReadonlyContext) -> str:
 
 agent = LlmAgent(
     name='coordinator',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction=build_instruction,
 )
 ```
@@ -122,7 +121,7 @@ instruction template or a state-bound function parameter can read it:
 ```python
 agent = LlmAgent(
     name='writer',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Write a draft.',
     output_key='draft',  # lands in state['draft']
 )
@@ -136,7 +135,7 @@ you want for a classifier or extractor that should judge only the current input:
 ```python
 agent = LlmAgent(
     name='stateless',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Process this input independently.',
     include_contents='none',
 )
@@ -152,7 +151,7 @@ def search_database(query: str) -> str:
 
 agent = LlmAgent(
     name='assistant',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Help the user with their request.',
     tools=[search_database],
 )
@@ -164,14 +163,15 @@ instances, and `BaseToolset` instances.
 ## Generation config
 
 Model-level knobs go in `generate_content_config`. Instructions, tools, and
-response schema do **not** — set those as agent fields, or they are ignored.
+response schema do **not** — set those as agent fields, or the constructor
+raises `ValueError`.
 
 ```python
 from google.genai import types
 
 agent = LlmAgent(
     name='creative',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Write creative stories.',
     generate_content_config=types.GenerateContentConfig(
         temperature=0.9,
@@ -189,14 +189,14 @@ about their `description` fields:
 ```python
 specialist = LlmAgent(
     name='specialist',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     description='Handles specialized requests.',
     instruction='Answer specialized questions.',
 )
 
 coordinator = LlmAgent(
     name='coordinator',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Route requests to the specialist when needed.',
     sub_agents=[specialist],
 )

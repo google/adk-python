@@ -22,8 +22,6 @@ from pathlib import PureWindowsPath
 import shutil
 import tempfile
 from typing import Any
-from typing import Optional
-from typing import Union
 
 from google.genai import types
 from pydantic import alias_generators
@@ -49,16 +47,20 @@ def _iter_artifact_dirs(root: Path) -> list[Path]:
   artifact_dirs: list[Path] = []
   for dirpath, dirnames, _ in os.walk(root):
     current = Path(dirpath)
-    if (current / "versions").exists():
-      artifact_dirs.append(current)
+    if (current / _VERSIONS_DIRNAME).exists():
+      # A save rejected or killed before its first version was published
+      # leaves a versions directory with no published version; there is no
+      # artifact there to list.
+      if _list_versions_on_disk(current):
+        artifact_dirs.append(current)
       # An artifact directory doubles as the parent of anything nested under
       # it ("doc" and "doc/nested"), so keep walking, skipping only the
       # stored versions of this artifact.
-      dirnames[:] = [name for name in dirnames if name != "versions"]
+      dirnames[:] = [name for name in dirnames if name != _VERSIONS_DIRNAME]
   return artifact_dirs
 
 
-def _read_bytes_if_present(path: Path) -> Optional[bytes]:
+def _read_bytes_if_present(path: Path) -> bytes | None:
   """Reads a binary payload from disk.
 
   The read is attempted directly instead of being guarded by an `exists()`
@@ -80,8 +82,8 @@ def _read_bytes_if_present(path: Path) -> Optional[bytes]:
     return None
 
 
-def _read_text_if_present(path: Path) -> Optional[str]:
-  """Reads a UTF-8 text payload from disk.
+def _read_text_if_present(path: Path) -> str | None:
+  """Reads a UTF-8 text payload with its original line endings.
 
   Args:
     path: Location of the payload.
@@ -90,10 +92,10 @@ def _read_text_if_present(path: Path) -> Optional[str]:
     The decoded file contents, or None if it is not a readable file.
   """
   try:
-    return path.read_text(encoding="utf-8")
+    return path.read_bytes().decode("utf-8")
   except FileNotFoundError:
     return None
-  except OSError as exc:
+  except (OSError, UnicodeDecodeError) as exc:
     logger.warning("Unreadable artifact payload at %s: %s", path, exc)
     return None
 
@@ -127,13 +129,21 @@ _USER_NAMESPACE_PREFIX = "user:"
 # document. Callers may not use the name for that reason.
 _METADATA_FILENAME = "metadata.json"
 
+# Directory that holds an artifact's versioned payloads. An artifact path
+# containing this component would nest a second version store inside the
+# first, which makes the parent look like an artifact to directory
+# discovery and hides the real one. Callers may not use the name.
+_VERSIONS_DIRNAME = "versions"
+
 
 def _is_reserved_artifact_name(name: str) -> bool:
   """Checks whether an artifact directory name collides with the metadata doc.
 
   Compared caselessly because the collision is decided by the filesystem, and
   the case-insensitive ones ADK supports (APFS, NTFS) resolve `Metadata.json`
-  and `metadata.json` to the same file.
+  and `metadata.json` to the same file. Trailing dots and spaces are stripped
+  because Win32 removes them from path components, colliding with the reserved
+  name on disk.
 
   Args:
     name: The final path segment of the artifact directory.
@@ -141,7 +151,7 @@ def _is_reserved_artifact_name(name: str) -> bool:
   Returns:
     True if the name is reserved for internal use.
   """
-  return name.casefold() == _METADATA_FILENAME.casefold()
+  return name.rstrip(" .").casefold() == _METADATA_FILENAME.casefold()
 
 
 def _file_has_user_namespace(filename: str) -> bool:
@@ -236,7 +246,7 @@ def _resolve_scoped_artifact_path(
   return candidate, relative
 
 
-def _is_user_scoped(session_id: Optional[str], filename: str) -> bool:
+def _is_user_scoped(session_id: str | None, filename: str) -> bool:
   """Determines whether artifacts should be stored in the user namespace."""
   return session_id is None or _file_has_user_namespace(filename)
 
@@ -254,7 +264,7 @@ def _session_artifacts_dir(base_root: Path, session_id: str) -> Path:
 
 def _versions_dir(artifact_dir: Path) -> Path:
   """Returns the directory that contains versioned payloads."""
-  return artifact_dir / "versions"
+  return artifact_dir / _VERSIONS_DIRNAME
 
 
 def _metadata_path(artifact_dir: Path, version: int) -> Path:
@@ -339,7 +349,7 @@ class FileArtifactVersion(ArtifactVersion):
   file_name: str = Field(
       description="Original filename supplied by the caller."
   )
-  display_name: Optional[str] = Field(
+  display_name: str | None = Field(
       default=None,
       description=(
           "User-facing filename from inline_data.display_name when persisted."
@@ -401,7 +411,7 @@ class FileArtifactService(BaseArtifactService):
   def _scope_root(
       self,
       base_root: Path,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
   ) -> Path:
     """Returns the directory that represents the artifact scope."""
@@ -417,21 +427,21 @@ class FileArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
-  ) -> Path:
-    """Builds the directory that stores an artifact for an app."""
+  ) -> tuple[Path, Path]:
+    """Returns the absolute artifact directory and its relative path."""
     base_root = self._base_root(app_name, user_id)
     return _resolve_scoped_artifact_path(
         self._scope_root(base_root, session_id, filename), filename
-    )[0]
+    )
 
   def _build_artifact_version(
       self,
       *,
       artifact_dir: Path,
       version: int,
-      metadata: Optional[FileArtifactVersion],
+      metadata: FileArtifactVersion | None,
   ) -> ArtifactVersion:
     """Creates an ArtifactVersion payload using on-disk metadata."""
     # Always recomputed from the storage layout rather than read back from the
@@ -451,9 +461,7 @@ class FileArtifactService(BaseArtifactService):
         else platform_time.get_time(),
     )
 
-  def _latest_metadata(
-      self, artifact_dir: Path
-  ) -> Optional[FileArtifactVersion]:
+  def _latest_metadata(self, artifact_dir: Path) -> FileArtifactVersion | None:
     """Loads metadata for the most recent version."""
     versions = _list_versions_on_disk(artifact_dir)
     if not versions:
@@ -467,9 +475,9 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      artifact: types.Part | dict[str, Any],
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     """Persists an artifact to disk.
 
@@ -477,7 +485,9 @@ class FileArtifactService(BaseArtifactService):
     (``"images/photo.png"``), or explicitly user-scoped
     (``"user:shared/diagram.png"``). All values are interpreted relative to the
     computed scope root; absolute paths or inputs that traverse outside that
-    root (for example ``"../../secret.txt"``) raise ``ValueError``.
+    root (for example ``"../../secret.txt"``) raise ``ValueError``. The final
+    name ``metadata.json`` and any ``versions`` path component are reserved for
+    the service's storage layout and are rejected in any casing.
     """
     return await asyncio.to_thread(
         self._save_artifact_sync,
@@ -494,13 +504,13 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      session_id: Optional[str],
-      custom_metadata: Optional[dict[str, Any]],
+      artifact: types.Part | dict[str, Any],
+      session_id: str | None,
+      custom_metadata: dict[str, Any] | None,
   ) -> int:
     """Saves an artifact to disk and returns its version."""
     artifact = ensure_part(artifact)
-    artifact_dir = self._artifact_dir(
+    artifact_dir, relative = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -516,6 +526,15 @@ class FileArtifactService(BaseArtifactService):
           " is stored under the artifact's own name and would overwrite the"
           " metadata document."
       )
+    if any(
+        part.rstrip(" .").casefold() == _VERSIONS_DIRNAME
+        for part in relative.parts
+    ):
+      raise InputValidationError(
+          f"Artifact filename {filename!r} is reserved: an artifact path may"
+          f" not contain a {_VERSIONS_DIRNAME!r} component (in any casing)"
+          " because that directory stores artifact versions."
+      )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     next_version, staging_dir, version_dir = _reserve_version_dir(artifact_dir)
@@ -528,7 +547,7 @@ class FileArtifactService(BaseArtifactService):
     # truncated -- is indistinguishable from a valid one on the read path, so
     # any failure discards the whole staging directory instead of publishing it.
     try:
-      display_name: Optional[str] = None
+      display_name: str | None = None
       if artifact.inline_data:
         data = artifact.inline_data.data
         if data is None:
@@ -541,7 +560,7 @@ class FileArtifactService(BaseArtifactService):
         )
         display_name = artifact.inline_data.display_name
       elif artifact.text is not None:
-        content_path.write_text(artifact.text, encoding="utf-8")
+        content_path.write_bytes(artifact.text.encode("utf-8"))
         mime_type = None
       else:
         raise InputValidationError(
@@ -578,9 +597,9 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[types.Part]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> types.Part | None:
     return await asyncio.to_thread(
         self._load_artifact_sync,
         app_name,
@@ -595,11 +614,11 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
-      version: Optional[int],
-  ) -> Optional[types.Part]:
+      session_id: str | None,
+      version: int | None,
+  ) -> types.Part | None:
     """Loads an artifact from disk."""
-    artifact_dir = self._artifact_dir(
+    artifact_dir, _ = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -639,13 +658,16 @@ class FileArtifactService(BaseArtifactService):
             "Binary artifact %s missing at %s", filename, content_path
         )
         return None
-      return types.Part(
+      artifact = types.Part(
           inline_data=types.Blob(
               mime_type=mime_type,
               data=data,
               display_name=metadata.display_name if metadata else None,
           )
       )
+      if artifact_util._is_rewind_tombstone(artifact):
+        return None
+      return artifact
 
     text = _read_text_if_present(content_path)
     if text is None:
@@ -659,7 +681,7 @@ class FileArtifactService(BaseArtifactService):
       *,
       app_name: str,
       user_id: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[str]:
     """Lists artifact filenames for the given session/user.
 
@@ -677,7 +699,7 @@ class FileArtifactService(BaseArtifactService):
       self,
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
   ) -> list[str]:
     filenames: set[str] = set()
     base_root = self._base_root(app_name, user_id)
@@ -710,7 +732,7 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> None:
     """Deletes an artifact.
 
@@ -734,9 +756,11 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
+      session_id: str | None,
   ) -> None:
-    artifact_dir = self._artifact_dir(app_name, user_id, session_id, filename)
+    artifact_dir, _ = self._artifact_dir(
+        app_name, user_id, session_id, filename
+    )
     versions_dir = _versions_dir(artifact_dir)
     if not versions_dir.exists():
       return
@@ -757,7 +781,7 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[int]:
     """Lists all versions stored for an artifact."""
     return await asyncio.to_thread(
@@ -773,9 +797,9 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
+      session_id: str | None,
   ) -> list[int]:
-    artifact_dir = self._artifact_dir(
+    artifact_dir, _ = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -790,7 +814,7 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[ArtifactVersion]:
     """Lists metadata for each artifact version on disk."""
     return await asyncio.to_thread(
@@ -806,9 +830,9 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
+      session_id: str | None,
   ) -> list[ArtifactVersion]:
-    artifact_dir = self._artifact_dir(
+    artifact_dir, _ = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -835,9 +859,9 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     """Gets metadata for a specific artifact version."""
     return await asyncio.to_thread(
         self._get_artifact_version_sync,
@@ -853,10 +877,10 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str],
-      version: Optional[int],
-  ) -> Optional[ArtifactVersion]:
-    artifact_dir = self._artifact_dir(
+      session_id: str | None,
+      version: int | None,
+  ) -> ArtifactVersion | None:
+    artifact_dir, _ = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -885,11 +909,11 @@ def _write_metadata(
     path: Path,
     *,
     filename: str,
-    mime_type: Optional[str],
+    mime_type: str | None,
     version: int,
     canonical_uri: str,
-    custom_metadata: Optional[dict[str, Any]],
-    display_name: Optional[str] = None,
+    custom_metadata: dict[str, Any] | None,
+    display_name: str | None = None,
 ) -> None:
   """Persists metadata describing an artifact version."""
   metadata = FileArtifactVersion(
@@ -923,7 +947,7 @@ def _write_metadata(
     raise
 
 
-def _read_metadata(path: Path) -> Optional[FileArtifactVersion]:
+def _read_metadata(path: Path) -> FileArtifactVersion | None:
   """Loads a metadata payload from disk.
 
   The path is derived from a caller-supplied filename, so it can be made to
@@ -941,7 +965,7 @@ def _read_metadata(path: Path) -> Optional[FileArtifactVersion]:
     raw = path.read_text(encoding="utf-8")
   except FileNotFoundError:
     return None
-  except OSError as exc:
+  except (OSError, UnicodeDecodeError) as exc:
     logger.warning("Unreadable metadata at %s: %s", path, exc)
     return None
   try:

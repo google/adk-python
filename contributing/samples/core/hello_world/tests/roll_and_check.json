@@ -134,5 +134,10 @@
         "path": "hello_world_agent@1"
       }
     }
-  ]
+  ],
+  "mocks": {
+    "random.randint": [
+      2
+    ]
+  }
 }

@@ -83,7 +83,8 @@ variable, the harness executes it against the Gemini API.
 -   The root agent is the first agent that appears in no other agent's
     `sub_agents`, so multi-agent snippets resolve correctly whatever order the
     agents are defined in.
--   An `App` must have been constructed with a `root_agent` or the run fails.
+-   An `App` must have been constructed with a `root_agent` or the snippet fails
+    to load.
 -   The prompt sent is `"Test input topic"`. Override it by defining a
     module-level `test_input` string in the snippet.
 
@@ -124,9 +125,9 @@ work around any of these.
     first fence carrying no language tag, so a bare fence used as content inside
     a snippet truncates it. A tagged fence (for example ` ```bash `) is kept as
     literal content and is safe.
--   **Module-level `asyncio.run()`** collides with the harness's own event loop
-    and reports as a run failure. Snippets should keep top-level async calls
-    behind `if __name__ == "__main__":`.
+-   **Module-level `asyncio.run()`** executes while the snippet loads, so an
+    error inside it reports as a load failure. Snippets should keep top-level
+    async calls behind `if __name__ == "__main__":`.
 
 ## Reporting back to the user
 

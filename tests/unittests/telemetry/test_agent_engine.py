@@ -39,6 +39,7 @@ from google.adk.telemetry._agent_engine import get_propagated_context
 from google.adk.telemetry._agent_engine import TopSpanProcessor
 from opentelemetry import baggage
 from opentelemetry import context
+from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
@@ -173,6 +174,154 @@ def test_first_span_is_parentless_when_header_is_rejected():
   assert spans[_TOP_SPAN].parent is None
   assert spans[_TOP_SPAN].attributes[_SUPPORT_ID_ATTRIBUTE] == _SUPPORT_ID_VALUE
   assert _SUPPORT_ID_ATTRIBUTE not in spans[_CHILD_SPAN].attributes
+
+
+def test_standard_traceparent_extracts_parent_span_and_tracestate(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Standard W3C traceparent and tracestate are extracted without AE header."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  ctx = get_propagated_context(
+      _request(**{
+          _TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT,
+          "tracestate": "congo=t61rcWkgMzE",
+      })
+  )
+  spans = _record_spans(ctx)
+
+  assert spans[_TOP_SPAN].context.trace_id == int(_TRACE_ID_HEX, 16)
+  assert spans[_TOP_SPAN].parent.span_id == int(_REMOTE_SPAN_ID_HEX, 16)
+  assert spans[_TOP_SPAN].parent.trace_state["congo"] == "t61rcWkgMzE"
+  assert (
+      spans[_TOP_SPAN].attributes[_SUPPORT_ID_ATTRIBUTE]
+      == _WELL_FORMED_TRACEPARENT
+  )
+  assert _SUPPORT_ID_ATTRIBUTE not in spans[_CHILD_SPAN].attributes
+
+
+def test_standard_traceparent_not_extracted_as_parent_on_agent_engine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """On Agent Engine, traceparent is only supportID, not parent span context."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "123")
+  ctx = get_propagated_context(
+      _request(**{_TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT})
+  )
+  spans = _record_spans(ctx)
+
+  assert _TRACEPARENT_HEADER not in baggage.get_all(context=ctx)
+  assert spans[_TOP_SPAN].parent is None
+  assert (
+      spans[_TOP_SPAN].attributes[_SUPPORT_ID_ATTRIBUTE]
+      == _WELL_FORMED_TRACEPARENT
+  )
+  assert _SUPPORT_ID_ATTRIBUTE not in spans[_CHILD_SPAN].attributes
+
+
+def test_standard_traceparent_does_not_reparent_upstream_server_span(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """An HTTP server span opened upstream (e.g. by FastAPI) stays the parent."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  server_span = TracerProvider().get_tracer("test").start_span("GET /run")
+  token = context.attach(otel_trace.set_span_in_context(server_span))
+  try:
+    ctx = get_propagated_context(
+        _request(**{_TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT})
+    )
+  finally:
+    context.detach(token)
+
+  assert otel_trace.get_current_span(ctx) is server_span
+
+
+def test_ae_traceparent_takes_precedence_over_standard_traceparent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Google-Agent-Engine-Traceparent takes precedence when both are valid."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  other_trace_id = "11111111111111111111111111111111"
+  other_span_id = "2222222222222222"
+  other_traceparent = f"00-{other_trace_id}-{other_span_id}-01"
+  spans = _record_spans(
+      get_propagated_context(
+          _request(**{
+              _AE_TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT,
+              _TRACEPARENT_HEADER: other_traceparent,
+          })
+      )
+  )
+
+  assert spans[_TOP_SPAN].context.trace_id == int(_TRACE_ID_HEX, 16)
+  assert spans[_TOP_SPAN].parent.span_id == int(_REMOTE_SPAN_ID_HEX, 16)
+  assert spans[_TOP_SPAN].attributes[_SUPPORT_ID_ATTRIBUTE] == other_traceparent
+
+
+def test_w3c_baggage_header_is_extracted():
+  """Inbound W3C baggage entries are extracted alongside traceparent."""
+  ctx = get_propagated_context(
+      _request(**{
+          _TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT,
+          "baggage": "tenant_id=acme,env=prod",
+      })
+  )
+
+  assert baggage.get_baggage("tenant_id", context=ctx) == "acme"
+  assert baggage.get_baggage("env", context=ctx) == "prod"
+
+
+def test_w3c_baggage_does_not_clobber_internal_traceparent_keys(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Inbound baggage cannot overwrite traceparent or google_traceparent."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  ctx_with_header = get_propagated_context(
+      _request(**{
+          _TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT,
+          "baggage": (
+              "tenant_id=acme,traceparent=spoofed,google_traceparent=spoofed"
+          ),
+      })
+  )
+  ctx_without_header = get_propagated_context(
+      _request(
+          baggage=(
+              "tenant_id=acme,traceparent=spoofed,google_traceparent=spoofed"
+          )
+      )
+  )
+
+  assert (
+      baggage.get_baggage("traceparent", context=ctx_with_header)
+      == _WELL_FORMED_TRACEPARENT
+  )
+  assert (
+      baggage.get_baggage("google_traceparent", context=ctx_with_header)
+      == _WELL_FORMED_TRACEPARENT
+  )
+  assert baggage.get_baggage("traceparent", context=ctx_without_header) is None
+  assert (
+      baggage.get_baggage("google_traceparent", context=ctx_without_header)
+      is None
+  )
+  assert baggage.get_baggage("tenant_id", context=ctx_without_header) == "acme"
+
+
+def test_reserved_baggage_from_upstream_extraction_is_dropped():
+  """Caller baggage already in the context cannot set internal keys."""
+  token = context.attach(
+      baggage.set_baggage(
+          "google_traceparent",
+          "spoofed",
+          context=baggage.set_baggage("traceparent", "spoofed"),
+      )
+  )
+  try:
+    ctx = get_propagated_context(_request())
+  finally:
+    context.detach(token)
+
+  assert baggage.get_all(context=ctx) == {}
 
 
 class _SpyReader:

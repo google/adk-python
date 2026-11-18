@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 from unittest import mock
 
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
@@ -137,6 +136,36 @@ async def test_send_history(gemini_connection, mock_gemini_session):
   assert 'turns' in call_args
   assert call_args['turns'] == history
   assert call_args['turn_complete'] is False  # Last message is from model
+
+
+@pytest.mark.asyncio
+async def test_send_history_filters_out_adk_live_artifact_parts(
+    gemini_connection, mock_gemini_session
+):
+  """Internal `_adk_live` artifact references are not replayed."""
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='Hello')]),
+      types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri='artifact://app/u/s/_adk_live/media_1.zip#0',
+                      mime_type='application/zip',
+                  )
+              )
+          ],
+      ),
+      types.Content(
+          role='model', parts=[types.Part.from_text(text='I saw that.')]
+      ),
+  ]
+
+  await gemini_connection.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=[history[0], history[2]], turn_complete=False
+  )
 
 
 @pytest.mark.asyncio
@@ -2041,7 +2070,7 @@ async def test_receive_populates_turn_complete_reason(
 
 
 def _create_turn_complete_message(
-    interaction_status: Optional[types.InteractionStatus],
+    interaction_status: types.InteractionStatus | None,
 ) -> mock.Mock:
   """Creates a turn_complete message carrying the given interaction status.
 

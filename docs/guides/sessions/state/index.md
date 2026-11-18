@@ -105,8 +105,11 @@ empty user scope.
 
 ## How a write becomes durable
 
-1.  `ctx.state["k"] = v` writes to the session's value dict and to
-    `event.actions.state_delta` at the same time.
+1.  `ctx.state["k"] = v` and `ctx.state.update(...)` write to the session's
+    value dict and to `event.actions.state_delta` at the same time. Mutating a
+    `dict` or `list` read from `ctx.state` in place, such as
+    `ctx.state["tags"].append("urgent")`, is also tracked against a snapshot
+    taken on read and promoted into the delta when `ctx.state.has_delta()` runs.
 2.  The agent yields the event, and the runner hands it to the session
     service's `append_event`.
 3.  `append_event` copies `temp:`-prefixed keys onto the in-memory session
@@ -182,10 +185,11 @@ verbatim so the model provider can cache it, and no substitution happens there.
     outright and are not even visible on the returned session.
 *   **Dropping the prefix on read.** The stored key is `home_city`, but every
     read goes through `state["user:home_city"]`.
-*   **Treating `State` as a dict.** It implements `__getitem__`,
-    `__setitem__`, `__contains__`, `get`, `setdefault`, `update`, and
-    `to_dict`. It has no `keys`, `items`, `pop`, iteration, or `del`, so
-    iterate over `state.to_dict()` instead.
+*   **Treating `State` as a full `dict`.** It implements `__getitem__`,
+    `__setitem__`, `__contains__`, `__iter__`, `get`, `setdefault`, `update`,
+    `has_delta`, and `to_dict`. Iterating keys with `for key in state:` works
+    directly, but `State` has no `keys`, `values`, `items`, `pop`, or `del`, so
+    use `state.to_dict().items()` when you need key-value pairs.
 *   **Trying to delete a key.** Setting a key to `None` in a delta stores
     `None`; the key stays present and `"k" in state` remains true.
 
@@ -196,9 +200,13 @@ verbatim so the model provider can cache it, and no substitution happens there.
     stores. `VertexAiSessionService` forwards the delta to the Agent Engine
     API without splitting it, and its `get_user_state` raises
     `NotImplementedError`, so do not assume cross-session sharing there.
-*   **A declared `state_schema` does not cover prefixed keys.** Validation is
+*   **A declared `state_schema` validates top-level unprefixed assignments only.**
+    Assigning an undeclared unprefixed key or a value of the wrong type via
+    `state[k] = v` or `state.update(...)` raises `StateSchemaError`, a
+    `TypeError` subclass exported from `google.adk.sessions`. Validation is
     skipped for any key containing `:`, so a typo in an `app:` or `user:` key
-    is never caught.
+    is never caught, and in-place writes into a `dict` or `list` read from
+    `state` reach the delta without re-running schema validation.
 *   **No atomic read-modify-write.** Two invocations that read the same key and
     write it back will not see each other; the last event appended wins.
 

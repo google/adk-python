@@ -27,6 +27,7 @@ from pydantic import Field
 
 from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_case import Invocation
+from .eval_config import MultiRunConfig
 from .eval_metrics import EvalMetric
 from .eval_result import EvalCaseResult
 
@@ -41,6 +42,12 @@ class EvaluateConfig(BaseModel):
 
   eval_metrics: list[EvalMetric] = Field(
       description="""The list of metrics to be used in Eval.""",
+  )
+
+  multi_run_config: Optional[MultiRunConfig] = Field(
+      default=None,
+      description="""Optional configuration for aggregating results across
+multiple runs of each eval case.""",
   )
 
   parallelism: int = Field(
@@ -67,6 +74,18 @@ class InferenceConfig(BaseModel):
       default=None,
       description="""Labels with user-defined metadata to break down billed
 charges.""",
+  )
+
+  num_runs: int = Field(
+      default=1,
+      ge=1,
+      description="""Number of times each eval case should be run. Values greater
+than 1 reduce nondeterminism: the eval case is inferenced `num_runs` times
+(through the same parallelism pool) and every run is returned as its own
+InferenceResult, labeled with `repetition_index`.
+
+When greater than 1, a `session_input.session_id` pinned by the eval case is
+ignored, with a warning, so that each run starts from a fresh session.""",
   )
 
   parallelism: int = Field(
@@ -169,6 +188,13 @@ class InferenceResult(BaseModel):
   error_message: Optional[str] = Field(
       default=None,
       description="""Error message if the inference failed.""",
+  )
+
+  repetition_index: Optional[int] = Field(
+      default=None,
+      description="""0-based index of the run that produced this result, among
+the `InferenceConfig.num_runs` runs of the same eval case. None if the producer
+did not record it.""",
   )
 
 

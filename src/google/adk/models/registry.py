@@ -22,7 +22,6 @@ import logging
 import re
 from typing import cast
 from typing import TYPE_CHECKING
-from typing import Union
 
 if TYPE_CHECKING:
   from .base_llm import BaseLlm
@@ -31,7 +30,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 _LazyEntry = tuple[str, str]
-_llm_registry_dict: dict[str, Union[type['BaseLlm'], _LazyEntry]] = {}
+_llm_registry_dict: dict[str, type[BaseLlm] | _LazyEntry] = {}
 
 
 def _resolve_litellm_provider(model: str) -> type[BaseLlm] | None:
@@ -200,13 +199,18 @@ class LLMRegistry:
           '\nInstall it with: pip install google-adk[extensions]'
           '\nOr: pip install anthropic>=0.43.0'
       )
+    elif re.fullmatch(r'gpt-.*|o\d+-.*', model):
+      error_msg += (
+          '\n\nOpenAI models require the openai package.'
+          '\nInstall it with: pip install google-adk[openai]'
+          '\nOr: pip install openai>=2.20'
+      )
     elif '/' in model:
       # Any model with provider/model format likely needs LiteLLM
       error_msg += (
           '\n\nProvider-style models (e.g., "provider/model-name") require'
           ' the litellm package.'
           '\nInstall it with: pip install google-adk[extensions]'
-          '\nOr: pip install litellm>=1.75.5'
           '\n\nSupported providers include: openai, groq, anthropic, and 100+'
           ' others.'
           '\nSee https://docs.litellm.ai/docs/providers for a full list.'

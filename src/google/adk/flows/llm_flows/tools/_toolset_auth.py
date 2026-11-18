@@ -24,7 +24,6 @@ from typing_extensions import override
 
 from ....agents.callback_context import CallbackContext
 from ....agents.invocation_context import InvocationContext
-from ....auth.auth_tool import AuthConfig
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....tools.base_toolset import BaseToolset
@@ -35,6 +34,7 @@ from ._functions import build_auth_request_event
 
 if TYPE_CHECKING:
   from ....agents.llm_agent import LlmAgent
+  from ....auth.auth_tool import AuthConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 

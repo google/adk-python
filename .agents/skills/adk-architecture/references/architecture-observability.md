@@ -5,7 +5,7 @@ Node tracing lives in `telemetry/node_tracing.py`. Spans are **scope-based**:
 manager, so the span closes on the way out even if the node raises.
 
 ```python
-async with node_tracing.start_as_current_node_span(parent_ctx, node) as tel_ctx:
+async with node_tracing.start_as_current_node_span(parent_ctx, node, ctx) as tel_ctx:
   ctx._telemetry_context = tel_ctx
   await self._execute_node(ctx, node_input)
 ```
@@ -52,6 +52,7 @@ semconv release yet.
 | `gen_ai.workflow.name` | workflow | the workflow's `name`, when non-empty |
 | `gen_ai.workflow.nested` | workflow | `True` only for a nested workflow; the entrypoint workflow omits the attribute entirely |
 | `gcp.vertex.agent.associated_event_ids` | all | IDs collected via `tel_ctx.add_event()`, stamped on span close when non-empty and the span is recording |
+| `adk.experimental.response.source` | `execute_tool`, `call_llm` | Callback provenance when a callback or plugin answered or replaced the result and `ADK_EXPERIMENTAL_TELEMETRY=true` is set (`"before_tool_callback"`, `"after_tool_callback"`, `"on_tool_error_callback"` on `execute_tool`; `"before_model_callback"`, `"on_model_error_callback"` on `call_llm`); omitted when the tool or model itself answered |
 
 Nesting is detected through an OTel context key set by the first workflow in
 the invocation. Because the key rides on the propagated `otel_context`, an

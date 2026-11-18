@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import abc
 from typing import Any
-from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -33,19 +32,19 @@ class GetSessionConfig(BaseModel):
   Attributes:
     num_recent_events: The limit of recent events to get for the session.
       Optional: if None, the filter is not applied; if greater than 0, returns
-        at most given number of recent events; if 0, no events are returned;
-        if negative, a ValueError is raised.
+        at most given number of recent events; if 0, no events are returned; if
+        negative, a ValueError is raised.
     after_timestamp: The earliest timestamp of events to get for the session.
       Optional: if None, the filter is not applied; otherwise, returns events
         with timestamp >= the given time.
   """
 
-  num_recent_events: Optional[int] = None
-  after_timestamp: Optional[float] = None
+  num_recent_events: int | None = None
+  after_timestamp: float | None = None
 
   @field_validator('num_recent_events')
   @classmethod
-  def _validate_num_recent_events(cls, value: Optional[int]) -> Optional[int]:
+  def _validate_num_recent_events(cls, value: int | None) -> int | None:
     if value is not None and value < 0:
       raise ValueError('num_recent_events must be greater than or equal to 0.')
     return value
@@ -72,8 +71,8 @@ class BaseSessionService(abc.ABC):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     """Creates a new session.
 
@@ -95,13 +94,13 @@ class BaseSessionService(abc.ABC):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     """Gets a session."""
 
   @abc.abstractmethod
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     """Lists all the sessions for a user.
 
@@ -179,6 +178,31 @@ class BaseSessionService(abc.ABC):
     event = self._trim_temp_delta_state(event)
     return self._commit_event_to_session(session, event)
 
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    """Appends events to a session object, in order.
+
+    The default calls `append_event` for each event. A service that overrides
+    this method must store all of the events or none of them, in order, with
+    the same effect on `session` and the store as calling `append_event` for
+    each event, so `BufferedSessionService` can send a session's queued events
+    in one call.
+
+    Args:
+      session: The session to append events to.
+      events: The events to append, in order.
+
+    Returns:
+      The processed events in order, matching what `append_event` returns for
+      each event.
+
+    Raises:
+      StaleSessionError: When a persistent implementation detects that the
+        supplied session has been superseded by a newer stored revision.
+    """
+    return [await self.append_event(session, event) for event in events]
+
   def _commit_event_to_session(self, session: Session, event: Event) -> Event:
     """Applies non-temp state delta and appends the event to the in-memory session."""
     self._update_session_state(session, event)
@@ -191,6 +215,16 @@ class BaseSessionService(abc.ABC):
     For non-buffering implementations, this can be a no-op.
     """
     pass
+
+  async def flush_session(
+      self, *, app_name: str, user_id: str, session_id: str
+  ) -> None:
+    """Flushes any buffered events for one session.
+
+    The default calls `flush()`. A buffering implementation can override this to
+    wait only for the named session's writes.
+    """
+    await self.flush()
 
   def _apply_temp_state(self, session: Session, event: Event) -> None:
     """Applies temp-scoped state delta to the in-memory session state.

@@ -32,7 +32,6 @@
                   },
                   "credentialKey": "weather_api_key",
                   "rawAuthCredential": {
-                    "apiKey": "placeholder",
                     "authType": "apiKey"
                   }
                 },

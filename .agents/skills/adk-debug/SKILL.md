@@ -25,7 +25,8 @@ trace endpoints that expose the exact LLM request.
 
 1. Reproduce headlessly: `adk run --jsonl {agent_dir} "{query}"`. Without
    `--jsonl`, `adk run` prints only text parts — tool calls and tool errors are
-   invisible.
+   invisible. The first two stdout lines are log-setup notices, not JSON; keep
+   the events with `grep '^{'`.
 2. Read the log file. `adk run` writes to `/tmp/agents_log/agent.latest.log` and
    nothing to the terminal; `adk web` does the opposite. See
    [logs-and-traces.md](references/logs-and-traces.md).
@@ -35,7 +36,7 @@ trace endpoints that expose the exact LLM request.
    `author`, `branch`, `nodeInfo.path`, and `actions` —
    [event-flow.md](references/event-flow.md).
 5. If the model itself misbehaved, read what it actually received from the
-   `call_llm` span rather than guessing from the agent definition —
+   trace rather than guessing from the agent definition —
    [logs-and-traces.md](references/logs-and-traces.md).
 
 ## References
@@ -44,7 +45,7 @@ trace endpoints that expose the exact LLM request.
   multi-turn and human-in-the-loop resume, exit codes, driving a `Runner` from
   Python.
 - [web-api.md](references/web-api.md) — starting `adk web`, listing and reading
-  sessions over HTTP, posting test messages to `/run_sse`.
+  sessions over HTTP, posting test messages to `/run` or `/run_sse`.
 - [logs-and-traces.md](references/logs-and-traces.md) — log levels and where
   each command writes them, the trace endpoints, span attributes, and the env
   vars that control whether prompts appear in spans.

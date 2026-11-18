@@ -57,6 +57,11 @@ Passing both `message` and `content` raises `ValueError`.
 - **Signals resolve by later events, not by edits.** To decide whether a
   request is pending or resolved, look for the matching later event (the
   function response), not a flag flipped on the original.
-- **Beware stateful flags on events.** Background compaction may rewrite or
-  drop aged events, so a transient status stored on one can survive or vanish
-  in ways you did not intend.
+- **Aborted invocations seal dangling calls.** When an invocation is cancelled
+  via `abort_signal`, the runner appends a terminal event with
+  `error_code='INVOCATION_ABORTED'` carrying synthetic `FunctionResponse`
+  parts for any unclosed `FunctionCall`s so later turns see a balanced log.
+- **Beware stateful flags on events.** Compaction appends a summary event and
+  the model then sees that summary in place of the aged events it covers (the
+  raw events stay in the session), so a transient status stored on one can
+  vanish from the model's view in ways you did not intend.

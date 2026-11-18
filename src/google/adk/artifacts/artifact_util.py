@@ -137,6 +137,42 @@ def is_artifact_ref(artifact: types.Part) -> bool:
   )
 
 
+_REWIND_TOMBSTONE = types.Part(
+    inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
+)
+
+
+def _new_rewind_tombstone() -> types.Part:
+  """Returns the part a session rewind saves to remove an artifact.
+
+  A rewind cannot delete an artifact that did not exist at the rewind point,
+  because the versions saved after that point stay in its history. It saves
+  this part as a new version instead, and every artifact service loads a
+  version holding it as absent.
+
+  An empty ``application/octet-stream`` payload is the marker, so an artifact
+  saved with exactly that content also loads as absent. A narrower marker would
+  avoid that, but sessions rewound before now already store this one.
+
+  Returns:
+      A new marker part, safe for the caller to store or modify.
+  """
+  return _REWIND_TOMBSTONE.model_copy(deep=True)
+
+
+def _is_rewind_tombstone(artifact: types.Part) -> bool:
+  """Checks if an artifact part is the marker a session rewind saves.
+
+  Args:
+      artifact: The artifact part to check.
+
+  Returns:
+      True if the part equals the marker from ``_new_rewind_tombstone``, False
+      otherwise.
+  """
+  return artifact == _REWIND_TOMBSTONE
+
+
 def validate_artifact_reference_scope(
     *,
     app_name: str,
@@ -249,7 +285,7 @@ def validate_path_segment(value: str, field_name: str) -> None:
       is an absolute path / starts with a slash, is drive-qualified, or contains
       slashes along with reserved path segments.
   """
-  if not value:
+  if not value or (isinstance(value, str) and not value.strip()):
     raise input_validation_error.InputValidationError(
         f"{field_name} must not be empty."
     )

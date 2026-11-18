@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import logging
 import signal
 import sys
 from unittest import mock
@@ -109,10 +110,76 @@ class TestValidateCommand:
     assert bash_tool._validate_command("echo hello | grep h", policy) is None
     assert bash_tool._validate_command("ls ; rm -rf /", policy) is None
 
+  def test_empty_allowlist_blocks_everything(self, workspace):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=())
+    assert bash_tool._validate_command("ls", policy) is not None
+    assert "<none>" in bash_tool._validate_command("ls", policy)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    assert "Allowed: commands matching prefixes: <none>." in tool.description
+
   def test_restricted_policy_allows_prefixes(self):
     policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))
     assert bash_tool._validate_command("ls -la", policy) is None
     assert bash_tool._validate_command("cat file.txt", policy) is None
+
+  def test_restricted_policy_blocks_prefix_bypasses(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))
+    assert bash_tool._validate_command("lsof -i", policy) is not None
+    assert bash_tool._validate_command("lscpu", policy) is not None
+    assert bash_tool._validate_command("catfish", policy) is not None
+
+  def test_restricted_policy_blocks_planted_executables(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls",))
+    assert bash_tool._validate_command("./ls", policy) is not None
+    assert bash_tool._validate_command("/tmp/payload/ls", policy) is not None
+    assert bash_tool._validate_command("/bin/ls", policy) is not None
+
+  def test_restricted_policy_allows_path_entries(self):
+    policy = bash_tool.BashToolPolicy(
+        allowed_command_prefixes=("/bin/ls", "/usr/bin/unbuffer /bin/cat")
+    )
+    assert bash_tool._validate_command("/bin/ls -la", policy) is None
+    assert (
+        bash_tool._validate_command("/usr/bin/unbuffer /bin/cat f", policy)
+        is None
+    )
+    assert bash_tool._validate_command("/bin/lsof", policy) is not None
+    assert bash_tool._validate_command("ls", policy) is not None
+    assert (
+        bash_tool._validate_command("/usr/bin/unbuffer sh", policy) is not None
+    )
+
+  def test_restricted_policy_ignores_entry_padding(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls ", "cat "))
+    assert bash_tool._validate_command("ls", policy) is None
+    assert bash_tool._validate_command("cat file.txt", policy) is None
+    assert bash_tool._validate_command("lsof", policy) is not None
+
+  def test_restricted_policy_supports_multi_token_entries(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("git status",))
+    assert bash_tool._validate_command("git status --short", policy) is None
+    assert bash_tool._validate_command("git statuses", policy) is not None
+    assert bash_tool._validate_command("git push", policy) is not None
+
+  def test_empty_prefix_entry_is_ignored(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("", "   "))
+    assert bash_tool._validate_command("ls", policy) is not None
+
+  def test_unparsable_prefix_entry_is_ignored_with_warning(self, caplog):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      policy = bash_tool.BashToolPolicy(
+          allowed_command_prefixes=("git commit -m 'unterminated", "ls")
+      )
+    assert "Ignoring unparsable allowed_command_prefixes entry" in caplog.text
+    assert bash_tool._validate_command("git status", policy) is not None
+    assert bash_tool._validate_command("ls -la", policy) is None
+
+  def test_unparsable_command_is_blocked(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls",))
+    assert (
+        bash_tool._validate_command("ls 'unterminated", policy)
+        == "Unable to parse command."
+    )
 
   def test_restricted_policy_blocks_others(self):
     policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))
@@ -267,12 +334,26 @@ class TestExecuteBashTool:
     assert "error" in result
     assert "required" in result["error"].lower()
 
+  @pytest.mark.parametrize(
+      "memory_bytes, file_size_bytes, child_processes",
+      [
+          (100 * 1024 * 1024, 50 * 1024 * 1024, 10),
+          (0, 0, 0),
+      ],
+  )
   @pytest.mark.asyncio
-  async def test_resource_limits_set(self, workspace, tool_context_confirmed):
+  async def test_resource_limits_set(
+      self,
+      workspace,
+      tool_context_confirmed,
+      memory_bytes,
+      file_size_bytes,
+      child_processes,
+  ):
     policy = bash_tool.BashToolPolicy(
-        max_memory_bytes=100 * 1024 * 1024,
-        max_file_size_bytes=50 * 1024 * 1024,
-        max_child_processes=10,
+        max_memory_bytes=memory_bytes,
+        max_file_size_bytes=file_size_bytes,
+        max_child_processes=child_processes,
     )
     tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
     mock_process = mock.AsyncMock()
@@ -293,8 +374,26 @@ class TestExecuteBashTool:
         preexec_fn()
         mock_setrlimit.assert_any_call(resource.RLIMIT_CORE, (0, 0))
         mock_setrlimit.assert_any_call(
-            resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024)
+            resource.RLIMIT_AS, (memory_bytes, memory_bytes)
         )
         mock_setrlimit.assert_any_call(
-            resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024)
+            resource.RLIMIT_FSIZE, (file_size_bytes, file_size_bytes)
         )
+        mock_setrlimit.assert_any_call(
+            resource.RLIMIT_NPROC, (child_processes, child_processes)
+        )
+
+  @pytest.mark.asyncio
+  async def test_zero_file_size_limit_blocks_file_writes(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_file_size_bytes=0)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+
+    result = await tool.run_async(
+        args={"command": "dd if=/dev/zero of=out.bin bs=1024 count=4"},
+        tool_context=tool_context_confirmed,
+    )
+
+    assert result["returncode"] != 0
+    assert (workspace / "out.bin").stat().st_size == 0

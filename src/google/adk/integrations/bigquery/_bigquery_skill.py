@@ -17,27 +17,50 @@
 from __future__ import annotations
 
 import pathlib
+from typing import Literal
 
 from ...skills import load_skill_from_dir
 from ...skills import Skill
 
-_SKILL_DIR = pathlib.Path(__file__).parent / "skills" / "bigquery-ai-ml"
+_SKILLS_BASE_DIR = pathlib.Path(__file__).parent / "skills"
+_AVAILABLE_SKILLS: tuple[Literal["bigquery-ai-ml", "bigquery-graph"], ...] = (
+    "bigquery-ai-ml",
+    "bigquery-graph",
+)
 
 
-def get_bigquery_skill() -> Skill:
-  """Returns the pre-packaged BigQuery data analysis skill.
+def get_bigquery_skill(
+    skill_name: Literal["bigquery-ai-ml", "bigquery-graph"] = "bigquery-ai-ml",
+) -> Skill:
+  """Returns a pre-packaged BigQuery skill by name.
 
-  This skill follows the agentskills.io specification and
-  provides curated instructions for BigQuery data analysis.
-  Use it with SkillToolset alongside BigQueryToolset:
+  These skills follow the agentskills.io specification and provide curated
+  instructions for BigQuery AI/ML functions and Graph Query Language (GQL) or
+  SQL/PGQ queries. Use them with SkillToolset alongside BigQueryToolset:
 
     from google.adk.integrations.bigquery import BigQueryToolset
     from google.adk.integrations.bigquery import get_bigquery_skill
     from google.adk.tools.skill_toolset import SkillToolset
 
-    bq_skill = get_bigquery_skill()
-    toolset = SkillToolset(skills=[bq_skill])
+    bq_skill = get_bigquery_skill("bigquery-ai-ml")
+    graph_skill = get_bigquery_skill("bigquery-graph")
+    toolset = SkillToolset(skills=[bq_skill, graph_skill])
     bigquery_toolset = BigQueryToolset(...)
     agent = LlmAgent(tools=[bigquery_toolset, toolset])
+
+  Args:
+    skill_name: Name of the built-in BigQuery skill to load. Supported values
+      are ``"bigquery-ai-ml"`` (default) and ``"bigquery-graph"``.
+
+  Returns:
+    The loaded BigQuery ``Skill`` instance.
+
+  Raises:
+    ValueError: If ``skill_name`` is not a recognized built-in BigQuery skill.
   """
-  return load_skill_from_dir(_SKILL_DIR)
+  if skill_name not in _AVAILABLE_SKILLS:
+    available = ", ".join(repr(s) for s in _AVAILABLE_SKILLS)
+    raise ValueError(
+        f"Unknown BigQuery skill {skill_name!r}. Available skills: {available}."
+    )
+  return load_skill_from_dir(_SKILLS_BASE_DIR / skill_name)

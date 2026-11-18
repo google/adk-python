@@ -81,6 +81,15 @@ class _PerLoopCache(Generic[_T]):
         weakref.WeakKeyDictionary()
     )
 
+  def __reduce__(self) -> tuple[type[_PerLoopCache[Any]], tuple[()]]:
+    """Copies and pickles as an empty cache.
+
+    Every cached value belongs to an event loop in this process, so none can
+    be carried into a copy. The owner's copy builds its own on first read,
+    which keeps an owner copyable and picklable after it has been used.
+    """
+    return (_PerLoopCache, ())
+
   def get(self, build: Callable[[], _T]) -> _T:
     """Returns the value for the running loop, calling ``build`` on a miss."""
     try:

@@ -20,18 +20,32 @@ import contextvars
 import gc
 import threading
 import time
+from typing import Any
+from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import ToolThreadPoolConfig
+from google.adk.apps.app import App
+from google.adk.events.event import Event
+from google.adk.flows.llm_flows import functions
 from google.adk.flows.llm_flows.functions import _call_tool_in_thread_pool
 from google.adk.flows.llm_flows.functions import _get_tool_thread_pool
 from google.adk.flows.llm_flows.functions import _is_sync_tool
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.runners import InMemoryRunner
+from google.adk.tools._node_tool import NodeTool
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._sync_runner import _SYNC_CALLABLE_RUNNER
+from google.adk.workflow import node
+from google.adk.workflow import START
+from google.adk.workflow._function_node import FunctionNode
+from google.adk.workflow._workflow import Workflow
+from google.genai import types
 from pydantic import BaseModel
 import pytest
 
@@ -41,8 +55,6 @@ from .... import testing_utils
 @pytest.fixture(autouse=True)
 def cleanup_thread_pools():
   yield
-  from google.adk.flows.llm_flows import functions
-
   # Shutdown all pools
   for pools in list(functions._TOOL_THREAD_POOLS.values()):
     for pool in pools.values():
@@ -92,6 +104,57 @@ class TestIsSyncTool:
     """Test that a tool without func attribute returns False."""
     tool = BaseTool(name='test', description='test tool')
     assert _is_sync_tool(tool) is False
+
+  def test_sync_function_node_tool_is_sync(self):
+    """NodeTool wrapping a sync FunctionNode is detected as sync."""
+
+    def sync_fn(x: int) -> int:
+      return x + 1
+
+    tool = NodeTool(node=FunctionNode(func=sync_fn, name='sync_fn'))
+    assert _is_sync_tool(tool) is True
+
+  def test_sync_generator_function_node_tool_is_sync(self):
+    """NodeTool wrapping a sync generator FunctionNode is detected as sync."""
+
+    def sync_gen_fn(x: int):
+      yield x + 1
+
+    tool = NodeTool(node=FunctionNode(func=sync_gen_fn, name='sync_gen_fn'))
+    assert _is_sync_tool(tool) is True
+
+  def test_async_function_node_tool_is_not_sync(self):
+    """NodeTool wrapping an async FunctionNode is detected as not sync."""
+
+    async def async_fn(x: int) -> int:
+      return x + 1
+
+    tool = NodeTool(node=FunctionNode(func=async_fn, name='async_fn'))
+    assert _is_sync_tool(tool) is False
+
+  def test_async_generator_function_node_tool_is_not_sync(self):
+    """NodeTool wrapping an async generator FunctionNode is not sync."""
+
+    async def async_gen_fn(x: int):
+      yield x + 1
+
+    tool = NodeTool(node=FunctionNode(func=async_gen_fn, name='async_gen_fn'))
+    assert _is_sync_tool(tool) is False
+
+  def test_workflow_node_tool_is_sync(self):
+    """NodeTool wrapping a Workflow is detected as sync."""
+
+    class _WfInput(BaseModel):
+      query: str
+
+    def step_fn() -> str:
+      return 'done'
+
+    wf = Workflow(
+        name='wf_tool', input_schema=_WfInput, edges=[(START, step_fn)]
+    )
+    tool = NodeTool(node=wf)
+    assert _is_sync_tool(tool) is True
 
 
 class TestGetToolThreadPool:
@@ -513,7 +576,7 @@ class TestCallToolInThreadPool:
   async def test_sync_tool_falsy_return_executes_exactly_once(
       self, return_value, use_implicit_return
   ):
-    """FunctionTools returning None or other falsy values must execute exactly once.
+    """FunctionTools returning None or falsy values must execute once.
 
     Previously, a None return was mistaken for the internal sentinel used to
     signal 'non-FunctionTool, fall back to run_async', causing a second
@@ -1010,3 +1073,508 @@ class TestToolThreadPoolConfig:
     """Test that negative max_workers is rejected."""
     with pytest.raises(ValueError):
       ToolThreadPoolConfig(max_workers=-1)
+
+
+class TestNodeAndGeneratorThreadPoolExecution:
+  """Tests for NodeTool and generator tools with the thread pool."""
+
+  @pytest.mark.asyncio
+  async def test_sync_node_tool_runs_callable_on_thread_pool(self):
+    """NodeTool wrapping a sync FunctionNode runs on adk_tool_executor."""
+    worker_thread_name = None
+
+    def sync_node_fn(x: int) -> dict[str, int]:
+      nonlocal worker_thread_name
+      worker_thread_name = threading.current_thread().name
+      return {'doubled': x * 2}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_node_fn, name='double_it'))
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    invocation_context._enqueue_event = mock.AsyncMock()
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_node_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 21}, tool_context)
+
+    assert result == {'doubled': 42}
+    assert worker_thread_name is not None
+    assert worker_thread_name.startswith('adk_tool_executor')
+
+  @pytest.mark.asyncio
+  async def test_sync_generator_node_tool_runs_iterations_on_thread_pool(self):
+    """Sync generator FunctionNode steps run on one dedicated thread."""
+    worker_threads: list[str] = []
+
+    def sync_gen_fn(x: int):
+      worker_threads.append(threading.current_thread().name)
+      yield Event(message='progress 1')
+      worker_threads.append(threading.current_thread().name)
+      yield {'final': x + 10}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_gen_fn, name='gen_it'))
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    invocation_context._enqueue_event = mock.AsyncMock()
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_gen_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 5}, tool_context)
+
+    assert result == {'final': 15}
+    assert len(worker_threads) == 2
+    assert len(set(worker_threads)) == 1
+    assert worker_threads[0].startswith(
+        'adk_sync_generator_for_adk_tool_executor'
+    )
+
+  @pytest.mark.asyncio
+  async def test_async_node_tool_runs_on_caller_loop_without_pool(self):
+    """NodeTool wrapping an async node runs on the caller loop without pool."""
+    caller_loop = asyncio.get_running_loop()
+    enqueued_loops: list[asyncio.AbstractEventLoop] = []
+    runners_seen: list[object] = []
+
+    async def async_node_fn(x: int):
+      runners_seen.append(_SYNC_CALLABLE_RUNNER.get())
+      yield Event(message='progress')
+      yield {'doubled': x * 2}
+
+    node_tool = NodeTool(
+        node=FunctionNode(func=async_node_fn, name='double_async')
+    )
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+
+    async def record_enqueue(event: Event) -> None:
+      del event
+      enqueued_loops.append(asyncio.get_running_loop())
+
+    object.__setattr__(invocation_context, '_enqueue_event', record_enqueue)
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_async_node_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 4}, tool_context)
+
+    assert result == {'doubled': 8}
+    assert runners_seen == [None]
+    assert enqueued_loops
+    assert all(loop is caller_loop for loop in enqueued_loops)
+
+  @pytest.mark.asyncio
+  async def test_sync_node_tool_runs_on_thread_pool_via_prepared_call_async(
+      self,
+  ):
+    """Prepared tool call runs a sync FunctionNode on adk_tool_executor."""
+    worker_thread_name = None
+
+    def sync_node_fn(x: int) -> dict[str, int]:
+      nonlocal worker_thread_name
+      worker_thread_name = threading.current_thread().name
+      return {'doubled': x * 2}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_node_fn, name='double_it'))
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(name='double_it', args={'x': 21}),
+            'done',
+        ]
+    )
+    agent = Agent(name='test_agent', model=mock_model, tools=[node_tool])
+    runner = testing_utils.TestInMemoryRunner(agent)
+
+    events = await runner.run_async_with_new_session(
+        'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    assert worker_thread_name is not None
+    assert worker_thread_name.startswith('adk_tool_executor')
+    fn_responses = [
+        part.function_response
+        for event in events
+        if event.content and event.content.parts
+        for part in event.content.parts
+        if part.function_response is not None
+    ]
+    assert len(fn_responses) == 1
+    assert fn_responses[0].response == {'doubled': 42}
+
+  @pytest.mark.asyncio
+  async def test_sync_gen_node_tool_runs_on_pool_via_prepared_call_async(self):
+    """Prepared tool call runs a sync generator node on its dedicated thread."""
+    worker_threads: list[str] = []
+
+    def sync_gen_fn(x: int):
+      worker_threads.append(threading.current_thread().name)
+      yield Event(message='progress 1')
+      worker_threads.append(threading.current_thread().name)
+      yield {'final': x + 10}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_gen_fn, name='gen_it'))
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(name='gen_it', args={'x': 5}),
+            'done',
+        ]
+    )
+    agent = Agent(name='test_agent', model=mock_model, tools=[node_tool])
+    runner = testing_utils.TestInMemoryRunner(agent)
+
+    events = await runner.run_async_with_new_session(
+        'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    assert len(worker_threads) == 2
+    assert len(set(worker_threads)) == 1
+    assert worker_threads[0].startswith(
+        'adk_sync_generator_for_adk_tool_executor'
+    )
+    fn_responses = [
+        part.function_response
+        for event in events
+        if event.content and event.content.parts
+        for part in event.content.parts
+        if part.function_response is not None
+    ]
+    assert len(fn_responses) == 1
+    assert fn_responses[0].response == {'final': 15}
+
+  @pytest.mark.asyncio
+  async def test_async_node_tool_runs_on_caller_loop_via_prepared_call_async(
+      self,
+  ):
+    """Prepared tool call keeps an async FunctionNode on the caller loop."""
+    caller_loop = asyncio.get_running_loop()
+    seen_loops: list[asyncio.AbstractEventLoop] = []
+    runners_seen: list[object] = []
+
+    async def async_node_fn(x: int):
+      seen_loops.append(asyncio.get_running_loop())
+      runners_seen.append(_SYNC_CALLABLE_RUNNER.get())
+      yield Event(message='progress')
+      yield {'doubled': x * 2}
+
+    node_tool = NodeTool(
+        node=FunctionNode(func=async_node_fn, name='double_async')
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(name='double_async', args={'x': 4}),
+            'done',
+        ]
+    )
+    agent = Agent(name='test_agent', model=mock_model, tools=[node_tool])
+    runner = testing_utils.TestInMemoryRunner(agent)
+
+    events = await runner.run_async_with_new_session(
+        'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    assert seen_loops == [caller_loop]
+    assert runners_seen == [None]
+    fn_responses = [
+        part.function_response
+        for event in events
+        if event.content and event.content.parts
+        for part in event.content.parts
+        if part.function_response is not None
+    ]
+    assert len(fn_responses) == 1
+    assert fn_responses[0].response == {'doubled': 8}
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_tool_runs_sync_nodes_on_thread_pool(self):
+    """NodeTool wrapping a Workflow runs sync nodes on adk_tool_executor."""
+
+    class _WfInput(BaseModel):
+      x: int
+
+    worker_thread_name = None
+
+    def sync_step(node_input: _WfInput) -> dict[str, int]:
+      nonlocal worker_thread_name
+      worker_thread_name = threading.current_thread().name
+      return {'tripled': node_input.x * 3}
+
+    wf = Workflow(
+        name='triple_wf',
+        input_schema=_WfInput,
+        edges=[(START, sync_step)],
+    )
+    node_tool = NodeTool(node=wf)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    invocation_context._enqueue_event = mock.AsyncMock()
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_wf_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 7}, tool_context)
+
+    assert result == {'tripled': 21}
+    assert worker_thread_name is not None
+    assert worker_thread_name.startswith('adk_tool_executor')
+
+
+class TestWorkflowDirectThreadPoolExecution:
+  """Tests for tool_thread_pool_config in direct Workflow execution."""
+
+  @pytest.mark.asyncio
+  async def test_workflow_runs_sync_function_and_tool_nodes_on_thread_pool(
+      self,
+  ):
+    """Standalone Workflow runs sync nodes and tools on adk_tool_executor."""
+    caller_thread = threading.get_ident()
+    barrier = threading.Barrier(2, timeout=5)
+    recorded_threads: dict[str, object] = {}
+    callback_threads: list[int] = []
+    async_runners_seen: list[object] = []
+
+    class _RecordingPlugin(BasePlugin):
+
+      def __init__(self):
+        super().__init__(name='recording_plugin')
+
+      async def before_tool_callback(self, *, tool, tool_args, tool_context):
+        del tool, tool_args, tool_context
+        callback_threads.append(threading.get_ident())
+        return None
+
+      async def after_tool_callback(
+          self, *, tool, tool_args, tool_context, result
+      ):
+        del tool, tool_args, tool_context, result
+        callback_threads.append(threading.get_ident())
+        return None
+
+    def parallel_sync_a() -> None:
+      barrier.wait()
+      recorded_threads['sync_a'] = threading.current_thread().name
+
+    def parallel_sync_b() -> None:
+      barrier.wait()
+      recorded_threads['sync_b'] = threading.current_thread().name
+
+    def sync_gen_step():
+      recorded_threads['sync_gen'] = threading.current_thread().name
+      yield Event(message='gen_progress')
+
+    def sync_tool_fn() -> dict[str, str]:
+      recorded_threads['sync_tool'] = threading.current_thread().name
+      return {'tool': 'ok'}
+
+    async def async_step() -> None:
+      recorded_threads['async_step'] = threading.get_ident()
+      async_runners_seen.append(_SYNC_CALLABLE_RUNNER.get())
+
+    async def async_tool_fn() -> None:
+      recorded_threads['async_tool'] = threading.get_ident()
+      async_runners_seen.append(_SYNC_CALLABLE_RUNNER.get())
+
+    branches = [
+        parallel_sync_a,
+        parallel_sync_b,
+        sync_gen_step,
+        FunctionTool(sync_tool_fn),
+        async_step,
+        FunctionTool(async_tool_fn),
+    ]
+    wf = Workflow(
+        name='direct_pool_wf',
+        edges=[(START, branches)],
+    )
+    runner = InMemoryRunner(
+        app=App(
+            name='direct_pool_app',
+            root_agent=wf,
+            plugins=[_RecordingPlugin()],
+        )
+    )
+
+    await runner.run_debug(
+        '{}',
+        run_config=RunConfig(
+            tool_thread_pool_config=ToolThreadPoolConfig(max_workers=2)
+        ),
+        quiet=True,
+    )
+
+    assert recorded_threads['sync_a'].startswith('adk_tool_executor')
+    assert recorded_threads['sync_b'].startswith('adk_tool_executor')
+    assert recorded_threads['sync_gen'].startswith(
+        'adk_sync_generator_for_adk_tool_executor'
+    )
+    assert recorded_threads['sync_tool'].startswith('adk_tool_executor')
+    assert recorded_threads['async_step'] == caller_thread
+    assert recorded_threads['async_tool'] == caller_thread
+    assert async_runners_seen == [None, None]
+    assert callback_threads == [caller_thread] * 4
+
+  @pytest.mark.asyncio
+  async def test_confirmation_predicates_run_on_pool_in_workflow_and_agent(
+      self,
+  ):
+    """Sync require_confirmation runs on adk_tool_executor in all paths."""
+    predicate_threads: dict[str, str] = {}
+
+    def node_pred() -> bool:
+      predicate_threads['fn_node'] = threading.current_thread().name
+      return True
+
+    @node(require_confirmation=node_pred)
+    def gated_node() -> str:
+      return 'ran'
+
+    def tool_node_pred() -> bool:
+      predicate_threads['tool_node'] = threading.current_thread().name
+      return True
+
+    def agent_tool_pred() -> bool:
+      predicate_threads['agent_tool'] = threading.current_thread().name
+      return True
+
+    def tool_node_op() -> dict[str, str]:
+      return {'status': 'ok'}
+
+    def guarded_op() -> dict[str, str]:
+      return {'status': 'ok'}
+
+    wf = Workflow(
+        name='confirm_wf',
+        edges=[(
+            START,
+            [
+                gated_node,
+                FunctionTool(tool_node_op, require_confirmation=tool_node_pred),
+            ],
+        )],
+    )
+    wf_runner = InMemoryRunner(agent=wf)
+    await wf_runner.run_debug(
+        '{}',
+        run_config=RunConfig(tool_thread_pool_config=ToolThreadPoolConfig()),
+        quiet=True,
+    )
+
+    agent = Agent(
+        name='confirm_agent',
+        model=testing_utils.MockModel.create(
+            responses=[
+                types.Part.from_function_call(name='guarded_op', args={}),
+                'paused',
+            ]
+        ),
+        tools=[
+            FunctionTool(
+                func=guarded_op,
+                require_confirmation=agent_tool_pred,
+            )
+        ],
+    )
+    agent_runner = testing_utils.TestInMemoryRunner(agent)
+    await agent_runner.run_async_with_new_session(
+        'check', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    assert predicate_threads['fn_node'].startswith('adk_tool_executor')
+    assert predicate_threads['tool_node'].startswith('adk_tool_executor')
+    assert predicate_threads['agent_tool'].startswith('adk_tool_executor')
+
+  @pytest.mark.asyncio
+  async def test_custom_run_async_override_uses_pool_in_agent_and_workflow(
+      self,
+  ):
+    """Custom FunctionTool.run_async overrides use pool in Agent & Workflow."""
+    seen_threads: dict[str, str] = {}
+
+    def sync_helper(label: str) -> dict[str, str]:
+      seen_threads[label] = threading.current_thread().name
+      return {'ran': label}
+
+    class _CustomRunAsyncTool(FunctionTool):
+
+      def __init__(self, label: str):
+        async def placeholder() -> dict[str, str]:
+          return {}
+
+        placeholder.__name__ = f'custom_tool_{label}'
+        super().__init__(placeholder)
+        self._label = label
+
+      async def run_async(
+          self, *, args: dict[str, Any], tool_context: ToolContext
+      ) -> Any:
+        del args, tool_context
+        return await self._invoke_callable(sync_helper, {'label': self._label})
+
+    agent = Agent(
+        name='custom_tool_agent',
+        model=testing_utils.MockModel.create(
+            responses=[
+                types.Part.from_function_call(
+                    name='custom_tool_agent', args={}
+                ),
+                'done',
+            ]
+        ),
+        tools=[_CustomRunAsyncTool('agent')],
+    )
+    agent_runner = testing_utils.TestInMemoryRunner(agent)
+    await agent_runner.run_async_with_new_session(
+        'run', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    wf = Workflow(
+        name='custom_tool_wf',
+        edges=[(START, _CustomRunAsyncTool('workflow'))],
+    )
+    wf_runner = InMemoryRunner(agent=wf)
+    await wf_runner.run_debug(
+        '{}',
+        run_config=RunConfig(tool_thread_pool_config=ToolThreadPoolConfig()),
+        quiet=True,
+    )
+
+    assert seen_threads['agent'].startswith('adk_tool_executor')
+    assert seen_threads['workflow'].startswith('adk_tool_executor')
+
+  @pytest.mark.asyncio
+  async def test_workflow_runs_sync_nodes_inline_when_pool_unconfigured(self):
+    """Sync nodes and tools stay inline when tool_thread_pool_config is None."""
+    caller_thread = threading.get_ident()
+    seen_threads: list[int] = []
+
+    def sync_step() -> None:
+      seen_threads.append(threading.get_ident())
+
+    def sync_tool() -> dict[str, str]:
+      seen_threads.append(threading.get_ident())
+      return {'ok': '1'}
+
+    wf = Workflow(
+        name='inline_wf',
+        edges=[(START, sync_step, FunctionTool(sync_tool))],
+    )
+    runner = InMemoryRunner(agent=wf)
+    await runner.run_debug('{}', run_config=RunConfig(), quiet=True)
+
+    assert seen_threads == [caller_thread, caller_thread]

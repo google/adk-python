@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
 
 from google.genai import types
 from pydantic import BaseModel
@@ -32,13 +31,13 @@ class MemoryEntry(BaseModel):
   custom_metadata: dict[str, Any] = Field(default_factory=dict)
   """Optional custom metadata associated with the memory."""
 
-  id: Optional[str] = None
+  id: str | None = None
   """The unique identifier of the memory."""
 
-  author: Optional[str] = None
+  author: str | None = None
   """The author of the memory."""
 
-  timestamp: Optional[str] = None
+  timestamp: str | None = None
   """The timestamp when the original content of this memory happened.
 
   This string will be forwarded to LLM. Preferred format is ISO 8601 format.

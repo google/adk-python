@@ -73,11 +73,14 @@
       "id": "e-4",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/evaluate_headline@1"
         ],
         "path": "root_agent@1/evaluate_headline@1"
+      },
+      "output": {
+        "feedback": "To make this headline more tech-focused, consider incorporating elements like AI for plant recognition, robotics in gardening, biotechnology in horticulture, or data analytics related to flower cultivation and sales. For example, 'AI-Driven Botany: The Tech Unlocking Petal Power' or 'Smart Gardens: Engineering the Timeless Allure of Flowers'.",
+        "grade": "unrelated"
       }
     },
     {
@@ -134,11 +137,14 @@
       "id": "e-7",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/evaluate_headline@2"
         ],
         "path": "root_agent@1/evaluate_headline@2"
+      },
+      "output": {
+        "feedback": "This headline is strongly tech-related, explicitly mentioning 'AI-Powered' and 'Tech Revolution'. It effectively combines a traditional field (floriculture) with advanced technology.",
+        "grade": "tech-related"
       }
     },
     {
