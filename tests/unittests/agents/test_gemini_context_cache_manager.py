@@ -488,6 +488,127 @@ class TestGeminiContextCacheManager:
     assert result is None
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
+  async def test_large_trailing_tool_result_does_not_pass_cache_size_gate(
+      self,
+  ):
+    """A large uncached tool result does not make a tiny prefix cacheable.
+
+    Setup: a user message and a function call, followed by a large function
+      response. The response is the last user batch, so only the first two
+      contents are cacheable, and they are far below Gemini's minimum.
+    Act: handle caching with fingerprint metadata from the previous turn and
+      a previous-prompt token count that the large response dominates.
+    Assert: no cache is created.
+    """
+    self.manager.genai_client.aio.caches.create = AsyncMock()
+    contents = [
+        types.Content(role="user", parts=[types.Part(text="Summarize doc x")]),
+        types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="fetch_doc", args={"doc": "x"}
+                    )
+                )
+            ],
+        ),
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name="fetch_doc",
+                        response={"result": "lorem ipsum " * 10_000},
+                    )
+                )
+            ],
+        ),
+    ]
+    llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction="You are a helpful assistant.",
+        ),
+        cache_config=self.cache_config,
+    )
+    llm_request.cacheable_contents_token_count = 30_000
+    llm_request.cache_metadata = CacheMetadata(
+        fingerprint=self.manager._generate_cache_fingerprint(llm_request, 2),
+        contents_count=2,
+    )
+
+    result = await self.manager.handle_context_caching(llm_request)
+
+    assert result is not None
+    assert result.cache_name is None
+    self.manager.genai_client.aio.caches.create.assert_not_called()
+
+  async def test_large_cached_tool_result_passes_cache_size_gate(self):
+    """A large tool result inside the cacheable prefix lets the cache be made.
+
+    Setup: a function call and its large response, a model answer, then a
+      long user follow-up. Everything before the follow-up is cacheable, and
+      the tool result makes that prefix far larger than Gemini's minimum.
+    Act: handle caching with fingerprint metadata from the previous turn and
+      a previous-prompt token count that the large response dominates.
+    Assert: a cache holding the prefix is created.
+    """
+    cached_content = AsyncMock()
+    cached_content.name = "cachedContents/tool-prefix"
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=cached_content
+    )
+    contents = [
+        types.Content(role="user", parts=[types.Part(text="Summarize doc x")]),
+        types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="fetch_doc", args={"doc": "x"}
+                    )
+                )
+            ],
+        ),
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name="fetch_doc",
+                        response={"result": "lorem ipsum " * 10_000},
+                    )
+                )
+            ],
+        ),
+        types.Content(role="model", parts=[types.Part(text="Here it is.")]),
+        types.Content(
+            role="user", parts=[types.Part(text="Now explain it. " * 125)]
+        ),
+    ]
+    llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction="You are a helpful assistant.",
+        ),
+        cache_config=self.cache_config,
+    )
+    llm_request.cacheable_contents_token_count = 30_500
+    llm_request.cache_metadata = CacheMetadata(
+        fingerprint=self.manager._generate_cache_fingerprint(llm_request, 4),
+        contents_count=4,
+    )
+
+    result = await self.manager.handle_context_caching(llm_request)
+
+    assert result is not None
+    assert result.cache_name == "cachedContents/tool-prefix"
+    assert result.contents_count == 4
+    self.manager.genai_client.aio.caches.create.assert_awaited_once()
+
   async def test_completed_turn_grows_cacheable_prefix(self):
     """A completed turn becomes part of the next explicit cache."""
     first_user = types.Content(
