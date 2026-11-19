@@ -100,6 +100,43 @@ class TestToolConnectionAnalyzerAnalyze:
     assert parameter.creating_tools == ["create_ticket"]
     assert parameter.consuming_tools == ["get_ticket"]
 
+  async def test_thought_parts_are_ignored_when_parsing(self):
+    """Thought text returned with include_thoughts must not break parsing."""
+    response_text = (
+        '{"stateful_parameters": [{"parameter_name": "ticket_id",'
+        ' "creating_tools": ["create_ticket"], "consuming_tools":'
+        ' ["get_ticket"]}]}'
+    )
+
+    async def fake_generate_content_async(request):
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(text="Let me think about this.", thought=True),
+                  types.Part(text=response_text),
+              ],
+          )
+      )
+
+    mock_llm = MagicMock()
+    mock_llm.generate_content_async = fake_generate_content_async
+    with patch.object(
+        tool_connection_analyzer, "LLMRegistry", autospec=True
+    ) as mock_registry:
+      mock_registry.return_value.resolve.return_value = MagicMock(
+          return_value=mock_llm
+      )
+      analyzer = ToolConnectionAnalyzer(
+          llm_name="fake-model",
+          llm_config=types.GenerateContentConfig(),
+      )
+
+    result = await analyzer.analyze([_make_tool("create_ticket")])
+
+    assert len(result.stateful_parameters) == 1
+    assert result.stateful_parameters[0].parameter_name == "ticket_id"
+
   async def test_fenced_json_is_stripped_before_parsing(self):
     """A response wrapped in a Markdown code fence is parsed correctly."""
     response_text = (
