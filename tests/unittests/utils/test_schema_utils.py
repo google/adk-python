@@ -19,6 +19,9 @@ import inspect
 import signal
 import time
 from typing import Annotated
+from datetime import date, datetime
+from decimal import Decimal
+from uuid import UUID
 from typing import Any
 from typing import Optional
 
@@ -302,6 +305,31 @@ class TestValidateSchema:
 
 class TestValidateNodeData:
   """Tests for validate_node_data function."""
+
+  def test_basemodel_values_are_dumped_in_json_mode(self):
+    """Node payloads stay JSON serializable after schema validation."""
+
+    class EventInput(BaseModel):
+      day: date
+      at: datetime
+      amount: Decimal
+      event_id: UUID
+
+    value = {
+        "day": "2026-10-17",
+        "at": "2026-10-17T12:34:56",
+        "amount": "12.50",
+        "event_id": "12345678-1234-5678-1234-567812345678",
+    }
+
+    result = validate_node_data(EventInput, value)
+
+    assert result == {
+        "day": "2026-10-17",
+        "at": "2026-10-17T12:34:56",
+        "amount": "12.50",
+        "event_id": "12345678-1234-5678-1234-567812345678",
+    }
 
   @pytest.mark.parametrize("with_media", [False, True])
   @pytest.mark.parametrize("preserve_content", [False, True])
