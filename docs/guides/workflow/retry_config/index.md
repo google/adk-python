@@ -103,7 +103,7 @@ inner = Workflow(
 )
 ```
 
-A retried sub-workflow does not redo work it already finished. Children that produced an output or a state change are replayed from the session's events, so only the failed node and whatever follows it run again. A child that produced neither leaves nothing to replay and runs again on every attempt, so give a side-effecting node an output or a state change if repeating it would be harmful.
+A retried sub-workflow does not redo work it already finished. Finished children are replayed from the session's events, so only the failed node and whatever follows it run again. This includes a child that finished without an output or a state change: ADK records that it finished, so its side effects are not repeated.
 
 Setting `RetryConfig` on the node that can fail is still the narrower option, and it retries just that node rather than the whole sub-workflow.
 
@@ -124,7 +124,6 @@ test_retry_config = RetryConfig(
 
 - **The attempt counter does not survive an interrupt.** It is **not** persisted. If the workflow is interrupted, whether by a human-in-the-loop input downstream or by the application restarting, and is later resumed, a node that has to run again starts counting from 1 with its full budget of attempts back.
 - **Retries are local to the node.** They happen inside that node's execution and nowhere else. Once a node has used up its attempts it enters the `FAILED` state, and the workflow execution fails with it, or follows whatever error handling you have configured.
-- **A retried `Workflow` runs some finished children again.** A child that produced no output and no state change runs again, because the replay has no record that it completed. See [Retrying a nested workflow](#retrying-a-nested-workflow).
 - **A cancelled child can be replayed as finished.** A child that was cancelled right after it emitted an event without an output, such as a progress message, looks finished to the replay. The retry then hands back no output for it instead of running it again. A parallel worker item that is cancelled because another item failed is the usual case.
 
 ## Related samples
