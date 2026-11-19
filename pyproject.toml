@@ -286,6 +286,11 @@ optional-dependencies.gcp = [
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "python-dateutil>=2.9.0.post0,<3",
 ]
+optional-dependencies.google-chat = [
+  # GoogleChatRunner serves its endpoint and calls the Chat API with aiohttp.
+  # See the mcp extra for why 3.14.2 is excluded.
+  "aiohttp!=3.14.2",
+]
 optional-dependencies.livekit = [
   "livekit>=1,<2",     # The media SDK (rtc rooms/tracks), not the agent framework.
   "livekit-api>=1,<2", # Server API; only the call transfer tool needs it.

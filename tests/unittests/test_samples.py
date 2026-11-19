@@ -135,6 +135,9 @@ SKIP_LOAD = {
     ),
     "multimodal/computer_use": "needs the playwright package",
     "integrations/gepa": "experiment package, exposes no root_agent",
+    "integrations/google_chat_agent": (
+        "builds its agent inside main(), no module-level root_agent"
+    ),
     "integrations/slack_agent": (
         "builds its agent inside main(), no module-level root_agent"
     ),
