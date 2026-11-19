@@ -20,6 +20,7 @@ import warnings
 
 from google.adk.environment._base_environment import BaseEnvironment
 from google.adk.environment._base_environment import ExecutionResult
+from google.adk.environment._environment_scope import EnvironmentScope
 import pytest
 
 
@@ -213,3 +214,40 @@ def test_outdated_override_keeps_abstract_methods_enforced():
 
   with pytest.raises(TypeError, match="abstract"):
     _Incomplete()
+
+
+def test_working_dir_defaults_to_none():
+  """An environment that does not override `working_dir` reports None."""
+
+  class _NoWorkingDirEnvironment(BaseEnvironment):
+
+    async def execute(
+        self, command: str, *, timeout: float | None = None, ctx: Any = None
+    ) -> ExecutionResult:
+      return ExecutionResult()
+
+    async def read_file(self, path: Path, *, ctx: Any = None) -> bytes:
+      return b""
+
+    async def write_file(
+        self, path: Path, content: str | bytes, *, ctx: Any = None
+    ) -> None:
+      pass
+
+  assert _NoWorkingDirEnvironment().working_dir is None
+
+
+def test_scope_defaults_to_shared():
+  """An environment that does not override `scope` is shared by all runs."""
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    environment = _define_current_environment()()
+
+  assert environment.scope == EnvironmentScope.SHARED
+
+
+def test_environment_scope_is_exported():
+  """`EnvironmentScope` is importable from the environment package."""
+  from google.adk import environment
+
+  assert environment.EnvironmentScope is EnvironmentScope

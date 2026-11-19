@@ -492,3 +492,104 @@ def test_get_all_usage_metadata():
       ),
   )
   assert get_all_usage_metadata(inv_events) == [usage1, usage2]
+
+
+@pytest.mark.parametrize(
+    'client_call_name',
+    ['adk_request_confirmation', 'adk_request_credential'],
+)
+def test_get_all_tool_calls_excludes_client_function_calls(client_call_name):
+  """Framework-emitted client calls are not model tool calls."""
+  invocation_events = InvocationEvents(
+      invocation_events=[
+          InvocationEvent(
+              author='agent',
+              content=genai_types.Content(
+                  parts=[
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(
+                              id='1', name='cancel_order', args={}
+                          )
+                      ),
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(
+                              id='2', name=client_call_name, args={}
+                          )
+                      ),
+                  ]
+              ),
+          ),
+          InvocationEvent(
+              author='user',
+              content=genai_types.Content(
+                  parts=[
+                      genai_types.Part(
+                          function_response=genai_types.FunctionResponse(
+                              id='1', name='cancel_order', response={}
+                          )
+                      ),
+                      genai_types.Part(
+                          function_response=genai_types.FunctionResponse(
+                              id='2', name=client_call_name, response={}
+                          )
+                      ),
+                  ]
+              ),
+          ),
+      ]
+  )
+
+  assert [c.name for c in get_all_tool_calls(invocation_events)] == [
+      'cancel_order'
+  ]
+  assert [r.name for r in get_all_tool_responses(invocation_events)] == [
+      'cancel_order'
+  ]
+
+
+def test_get_all_tool_calls_excludes_client_calls_in_intermediate_data():
+  """Client calls recorded in IntermediateData are excluded too."""
+  intermediate_data = IntermediateData(
+      tool_uses=[
+          genai_types.FunctionCall(id='1', name='cancel_order', args={}),
+          genai_types.FunctionCall(
+              id='2', name='adk_request_confirmation', args={}
+          ),
+      ],
+      tool_responses=[
+          genai_types.FunctionResponse(
+              id='1', name='cancel_order', response={}
+          ),
+          genai_types.FunctionResponse(
+              id='2', name='adk_request_confirmation', response={}
+          ),
+      ],
+  )
+
+  assert [c.name for c in get_all_tool_calls(intermediate_data)] == [
+      'cancel_order'
+  ]
+  assert [r.name for r in get_all_tool_responses(intermediate_data)] == [
+      'cancel_order'
+  ]
+
+
+def test_get_all_tool_calls_keeps_model_chosen_request_input():
+  """The model-chosen request_input tool is a real tool call."""
+  intermediate_data = IntermediateData(
+      tool_uses=[
+          genai_types.FunctionCall(id='1', name='adk_request_input', args={}),
+      ],
+      tool_responses=[
+          genai_types.FunctionResponse(
+              id='1', name='adk_request_input', response={}
+          ),
+      ],
+  )
+
+  assert [c.name for c in get_all_tool_calls(intermediate_data)] == [
+      'adk_request_input'
+  ]
+  assert [r.name for r in get_all_tool_responses(intermediate_data)] == [
+      'adk_request_input'
+  ]

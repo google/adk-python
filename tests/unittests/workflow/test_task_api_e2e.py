@@ -37,6 +37,7 @@ from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
@@ -402,6 +403,174 @@ async def test_chat_root_with_nested_task_delegation(
   assert any("Top-level done." in t for t in _get_text_responses(events))
 
 
+class _AfterAgentRecorder(BasePlugin):
+  """Records which agents' plugin after_agent_callback ran."""
+
+  def __init__(self, calls: list[str]):
+    super().__init__(name="after_agent_recorder")
+    self.calls = calls
+
+  async def after_agent_callback(self, *, agent, callback_context):
+    self.calls.append(f"plugin:{agent.name}")
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_task_agent_runs_after_agent_callbacks_when_finished(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """A delegated task agent runs its after callbacks after finish_task."""
+  calls: list[str] = []
+
+  def after_agent(callback_context):
+    calls.append(f"agent:{callback_context.agent_name}")
+
+  child = LlmAgent(
+      name="child",
+      model=testing_utils.MockModel.create(
+          responses=[_finish_part({"result": "done"})]
+      ),
+      mode="task",
+      after_agent_callback=after_agent,
+  )
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[_delegate_part("child", "do the thing"), "All done."]
+      ),
+      sub_agents=[child],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=root,
+      plugins=[_AfterAgentRecorder(calls)],
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  assert calls.count("agent:child") == 1
+  assert calls.count("plugin:child") == 1
+  child_results = [
+      fr.response
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == "child"
+  ]
+  assert child_results == [{"result": "done"}]
+  assert any("All done." in t for t in _get_text_responses(events))
+
+
+@pytest.mark.asyncio
+async def test_task_node_runs_plugin_after_agent_callback(
+    request: pytest.FixtureRequest,
+):
+  """A task-mode workflow node runs plugin after callbacks when it finishes."""
+  calls: list[str] = []
+  task = _make_task_agent(
+      name="task", responses=[_finish_part({"result": "done"})]
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name="wf", edges=[(START, task)]),
+      plugins=[_AfterAgentRecorder(calls)],
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  assert calls.count("plugin:task") == 1
+  assert {"result": "done"} in [e.output for e in events if e.output]
+
+
+@pytest.mark.asyncio
+async def test_task_agent_finish_with_sibling_confirmation_returns_result(
+    request: pytest.FixtureRequest,
+):
+  """A sibling tool's confirmation request does not pause a finished task."""
+  confirmation_tool = FunctionTool(
+      func=_confirmed_task_step,
+      require_confirmation=True,
+  )
+  child = _make_task_agent(
+      name="child",
+      responses=[[
+          types.Part.from_function_call(name=confirmation_tool.name, args={}),
+          _finish_part({"result": "done"}),
+      ]],
+  )
+  child.tools.append(confirmation_tool)
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[_delegate_part("child", "do the thing"), "All done."]
+      ),
+      sub_agents=[child],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  child_results = [
+      fr.response
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == "child"
+  ]
+  assert child_results == [{"result": "done"}]
+  assert any("All done." in t for t in _get_text_responses(events))
+
+
+@pytest.mark.asyncio
+async def test_task_agent_finish_with_transfer_runs_target_once(
+    request: pytest.FixtureRequest,
+):
+  """A transfer sent alongside finish_task runs the target only once."""
+  helper = LlmAgent(
+      name="helper",
+      model=testing_utils.MockModel.create(
+          responses=["helper reply", "helper reply again"]
+      ),
+  )
+  child = _make_task_agent(
+      name="child",
+      responses=[[
+          types.Part.from_function_call(
+              name="transfer_to_agent", args={"agent_name": "helper"}
+          ),
+          _finish_part({"result": "done"}),
+      ]],
+      sub_agents=[helper],
+  )
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[_delegate_part("child", "do the thing"), "All done."]
+      ),
+      sub_agents=[child],
+  )
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  helper_texts = [
+      t
+      for e in events
+      if e.author == "helper"
+      for t in _get_text_responses([e])
+  ]
+  assert helper_texts == ["helper reply"]
+
+
 @pytest.mark.asyncio
 async def test_task_agent_delegation_in_same_turn_as_finish_task(
     request: pytest.FixtureRequest,
@@ -458,6 +627,13 @@ async def test_task_agent_delegation_in_same_turn_as_finish_task(
       {"result": "Task completed."},
       {"result": "Task completed."},
   ]
+  (rejected_event,) = [
+      e
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == "finish_task" and "error" in fr.response
+  ]
+  assert not rejected_event.is_final_response()
   child_results = [
       fr.response
       for e in events

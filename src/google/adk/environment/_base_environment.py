@@ -28,6 +28,8 @@ from typing import Callable
 from typing import TYPE_CHECKING
 import warnings
 
+from ._environment_scope import EnvironmentScope
+
 if TYPE_CHECKING:
   from ..agents.context import Context
 
@@ -113,9 +115,6 @@ class BaseEnvironment(ABC):
   ``write_file``, so an implementation can key its resources off the
   session or user, read and write session state, or request credentials.
   ``ctx`` is ``None`` when the environment is used outside an agent run.
-  The toolsets currently call ``initialize`` while building the model
-  request rather than from a tool call, so state written through its
-  ``ctx`` is not saved and ``ctx.request_credential`` raises there.
   """
 
   _is_initialized: bool = False
@@ -154,11 +153,43 @@ class BaseEnvironment(ABC):
   def is_initialized(self, value: bool) -> None:
     self._is_initialized = value
 
+  @property
+  def scope(self) -> EnvironmentScope:
+    """Which agent runs share one resource of this environment.
+
+    The environment and skill toolsets run ``initialize`` one call at a time
+    within a scope: for the whole environment with ``SHARED``, per user with
+    ``USER`` and per session with ``SESSION``. An environment that keeps a
+    resource per user or per session overrides this to say so, which lets
+    other users or sessions initialize at the same time. Such an environment
+    must make ``initialize`` safe to run concurrently for different users or
+    sessions, including from different threads. With every scope, a toolset
+    closes the environment only while no ``initialize`` call is running.
+
+    The toolsets serialize these calls within one process. When the agent
+    runs as several instances, calls that reach different instances are not
+    serialized.
+
+    The value must not change during the life of the environment. The
+    default implementation returns ``SHARED``.
+    """
+    return EnvironmentScope.SHARED
+
   async def initialize(self, *, ctx: Context | None = None) -> None:
     """Initialize the environment (e.g. create working directory).
 
     Called before first use. The default implementation is a
     no-op. Sub-classes should ensure this method is idempotent.
+
+    The environment and skill toolsets call it before every tool call
+    that uses the environment, with that call's ``ctx``, so it should
+    return quickly once the environment is set up. An environment that
+    keeps resources per session, such as a sandbox whose name it stores
+    in ``ctx.state``, looks them up here and creates them when missing;
+    ``is_initialized`` describes only the environment as a whole.
+
+    An exception raised here is raised from the tool call that triggered
+    it, so it reaches ``on_tool_error_callback``.
 
     Args:
       ctx: Context of the agent run that triggered initialization, or
@@ -174,9 +205,18 @@ class BaseEnvironment(ABC):
     """
 
   @property
-  @abstractmethod
-  def working_dir(self) -> Path:
-    """The absolute path to the environment's working directory."""
+  def working_dir(self) -> Path | None:
+    """The absolute path to the environment's working directory.
+
+    ``None`` when the environment does not know its working directory yet,
+    for example a temporary directory that ``initialize`` creates. An
+    environment whose working directory is a fixed path returns it before
+    ``initialize``. The default implementation returns ``None``.
+
+    The property takes no context, so an environment with a ``USER`` or
+    ``SESSION`` scope uses the same path in each of its resources.
+    """
+    return None
 
   @abstractmethod
   async def execute(

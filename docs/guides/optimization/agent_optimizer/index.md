@@ -170,7 +170,8 @@ The module list also contains `GEPARootAgentPromptOptimizer`, which is the
 earlier, narrower version of the same thing: it evolves the root instruction
 only and ignores skills entirely. Its configuration is otherwise identical apart
 from two defaults, `gemini-2.5-flash` and a thinking *budget* rather than a
-thinking *level*. Prefer `GEPARootAgentOptimizer`, which does everything it does.
+thinking *level*; on Gemini 4 and later it sends level `HIGH` instead of the
+budget. Prefer `GEPARootAgentOptimizer`, which does everything it does.
 
 `GEPARootAgentOptimizer` is decorated `@experimental`, so constructing it emits
 a `UserWarning` reading `[EXPERIMENTAL] GEPARootAgentOptimizer: ...`. The
@@ -215,13 +216,15 @@ judged on.
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `optimizer_model` | `str` | `"gemini-2.5-flash"` | Model that rewrites the prompt. Not the agent's own model. |
-| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 | Generation config for the optimizer model. |
+| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 (thinking level `HIGH` on Gemini 4 and later) | Generation config for the optimizer model. |
 | `num_iterations` | `int` | `10` | Candidate prompts to try. |
 | `batch_size` | `int` | `5` | Training examples scored per candidate. |
 
 `optimizer_model` names the model doing the rewriting, and it is independent of
 whatever model the agent under optimization runs on. The default enables
 thinking with a budget of 10240 tokens, because the rewrite is a reasoning task.
+Gemini 4 and later models get thinking level `HIGH` in place of that budget,
+unless you set a different thinking config.
 
 `batch_size` trades cost against signal. Every candidate costs `batch_size`
 agent runs, so a run costs roughly `(num_iterations + 1) * batch_size` training
@@ -336,9 +339,6 @@ awaits the coroutine.
     crossing the threshold.
 *   **No sample in this repository uses these classes.** The GEPA sample linked
     below calls the third-party `gepa` package directly instead.
-*   **Importing `data_types` emits Pydantic deprecation warnings.** The models
-    pass a `required=True` keyword that Pydantic v2 no longer recognizes. The
-    fields are required regardless; the warning is noise.
 
 ## Related samples
 

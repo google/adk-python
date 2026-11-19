@@ -32,7 +32,7 @@ from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.core._utils import as_llm_agent as _as_llm_agent
 from ..flows.llm_flows.core._utils import require_run_config as _require_run_config
-from ..flows.llm_flows.tools import _functions as functions
+from ..flows.llm_flows.tools import _live_caller
 from ..models.base_llm_connection import BaseLlmConnection
 from ..models.google_llm import Gemini
 from ..models.llm_request import LlmRequest
@@ -51,6 +51,7 @@ from ._flow_utils import handle_control_event_flush as handle_control_event_flus
 from ._flow_utils import require_live_request_queue as require_live_request_queue
 from ._flow_utils import run_config_for_new_live_session
 from ._flow_utils import stop_background_tool_tasks as stop_background_tool_tasks
+from ._flow_utils import wait_for_tool_calls
 
 if TYPE_CHECKING:
   from ..agents.llm_agent import LlmAgent
@@ -467,19 +468,70 @@ async def postprocess_live_flow(
     for event in flushed_events:
       yield event
 
-  # Handles function calls.
-  if model_response_event.get_function_calls():
-    # handle_function_calls_live returns None when every call is deferred
-    # (e.g. all long-running), so guard before yielding to avoid emitting a
-    # None event into the live stream.
-    if function_response_event := await functions.handle_function_calls_live(
-        invocation_context, model_response_event, llm_request.tools_dict
-    ):
-      # TODO: emit the confirmation request event here, the way
-      # `_postprocess_handle_function_calls_async` does. Without it the live
-      # client never receives an `adk_request_confirmation` function call, so
-      # it has no call id to approve or reject against.
-      yield function_response_event
+
+async def _merge_function_responses(
+    model_events: AsyncGenerator[Event, None],
+    function_response_queue: asyncio.Queue[Event],
+) -> AsyncGenerator[Event, None]:
+  """Merges model events and function responses into a single stream."""
+  merged: asyncio.Queue[Optional[tuple[Event, asyncio.Event]]] = asyncio.Queue()
+
+  async def pump_model_events() -> None:
+    async with Aclosing(model_events) as agen:
+      async for event in agen:
+        handled = asyncio.Event()
+        merged.put_nowait((event, handled))
+        await handled.wait()
+
+  async def pump_function_responses() -> None:
+    while True:
+      result = await function_response_queue.get()
+      handled = asyncio.Event()
+      merged.put_nowait((result, handled))
+      try:
+        await handled.wait()
+      finally:
+        if not handled.is_set():
+          # Re-queue the result at the front to keep the finish order.
+          rest = []
+          while not function_response_queue.empty():
+            rest.append(function_response_queue.get_nowait())
+          function_response_queue.put_nowait(result)
+          for item in rest:
+            function_response_queue.put_nowait(item)
+
+  model_pump = asyncio.create_task(pump_model_events())
+  function_response_pump = asyncio.create_task(pump_function_responses())
+
+  # Wake the merge when the connection closes.
+  model_pump.add_done_callback(lambda _: merged.put_nowait(None))
+  try:
+    while True:
+      entry = await merged.get()
+      if entry is None or model_pump.done():
+        # The connection closed.
+        break
+      item, handled = entry
+      try:
+        yield item
+      finally:
+        # The item has been sent to the flow.
+        handled.set()
+      # Run the model pump to check if it closed.
+      await asyncio.sleep(0)
+    if model_pump.exception() is None:
+      # Flush the function responses after the connection closes cleanly.
+      function_response_pump.cancel()
+      await asyncio.gather(function_response_pump, return_exceptions=True)
+      while not function_response_queue.empty():
+        yield function_response_queue.get_nowait()
+    await model_pump  # Raise model pump errors.
+  finally:
+    model_pump.cancel()
+    function_response_pump.cancel()
+    await asyncio.gather(
+        model_pump, function_response_pump, return_exceptions=True
+    )
 
 
 async def run_live_flow(
@@ -487,6 +539,13 @@ async def run_live_flow(
     invocation_context: InvocationContext,
 ) -> AsyncGenerator[Event, None]:
   """Runs the flow using live api."""
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  async def finish_in_flight_calls() -> AsyncGenerator[Event, None]:
+    await wait_for_tool_calls(invocation_context)
+    while not function_response_queue.empty():
+      yield function_response_queue.get_nowait()
+
   try:
     from google.genai import errors
 
@@ -638,11 +697,14 @@ async def run_live_flow(
           reconnect_mode = None
           try:
             async with Aclosing(
-                receive_from_model(
-                    flow,
-                    llm_connection,
-                    invocation_context,
-                    llm_request,
+                _merge_function_responses(
+                    receive_from_model(
+                        flow,
+                        llm_connection,
+                        invocation_context,
+                        llm_request,
+                    ),
+                    function_response_queue,
                 )
             ) as agen:
               async for event in agen:
@@ -657,6 +719,13 @@ async def run_live_flow(
                     'Receive new event: %s, author: %s', event.id, event.author
                 )
                 yield event
+                if event.get_function_calls():
+                  _live_caller.launch_function_calls_live(
+                      invocation_context,
+                      event,
+                      llm_request.tools_dict,
+                      function_response_queue,
+                  )
                 # send back the function response to models
                 if event.get_function_responses():
                   logger.debug(
@@ -678,23 +747,20 @@ async def run_live_flow(
                 # we ensure that only child agent processes its own function
                 # responses after the transfer.
                 #
-                # The transfer is gated on the `transfer_to_agent` action
-                # rather than on the position of the `transfer_to_agent`
-                # function response: the model may issue the transfer alongside
-                # other function calls, whose responses are merged into a
-                # single event in call order, so the transfer response is not
-                # necessarily `parts[0]`. Gating on the action matches
-                # `_postprocess_handle_function_calls_async`, and also covers
-                # tools that request a transfer by setting the action directly
-                # instead of calling `transfer_to_agent`.
+                # Transfer is gated on the `transfer_to_agent` action. This
+                # matches `_postprocess_handle_function_calls_async`, and lets
+                # tools transfer by setting the action directly.
                 transfer_to_agent = event.actions.transfer_to_agent
                 if transfer_to_agent:
+                  await agen.aclose()  # Stops the model pump before handoff.
                   # Stop background tools before the transfer delay so:
                   # 1. In-flight responses are not forwarded to the parent agent
                   #    during the delay while the request queue drains.
                   # 2. Function responses are not sent to the sub-agent after
                   #    the transfer occurs.
                   await stop_background_tool_tasks(invocation_context)
+                  while not function_response_queue.empty():
+                    yield function_response_queue.get_nowait()
                   await asyncio.sleep(DEFAULT_TRANSFER_AGENT_DELAY)
                   # cancel the tasks that belongs to the closed connection.
                   send_task.cancel()
@@ -721,18 +787,18 @@ async def run_live_flow(
                   ) as child_agen:
                     async for item in child_agen:
                       yield item
-                # `task_completed` is an ordinary tool, so the model may call
-                # it alongside others. Their responses are merged into a single
-                # event in call order, so scan every response rather than only
-                # `parts[0]`. Unlike agent transfer there is no corresponding
-                # action to key off, since `task_completed` only signals
-                # completion through its function response.
+                  return
+                # Unlike agent transfer, `task_completed` doesn't have a
+                # matching event action. Match the response by name instead.
                 if any(
                     function_response.name == 'task_completed'
                     for function_response in event.get_function_responses()
                 ):
                   # this is used for sequential agent to signal the end of the agent.
+                  await agen.aclose()  # Stops the model pump before the delay.
                   await asyncio.sleep(DEFAULT_TASK_COMPLETION_DELAY)
+                  while not function_response_queue.empty():
+                    yield function_response_queue.get_nowait()
                   # cancel the tasks that belongs to the closed connection.
                   send_task.cancel()
                   return
@@ -750,6 +816,9 @@ async def run_live_flow(
 
           if reconnect_mode == _ReconnectMode.RESTART:
             logger.info('Restarting live session.')
+            await stop_background_tool_tasks(invocation_context)
+            while not function_response_queue.empty():
+              yield function_response_queue.get_nowait()
             restart_context = invocation_context.model_copy()
             restart_context.live_session_resumption_handle = None
             if restart_context.run_config:
@@ -760,6 +829,8 @@ async def run_live_flow(
               async for item in agen:
                 yield item
             return
+        async for event in finish_in_flight_calls():
+          yield event
         break
       except (ConnectionClosed, ConnectionClosedOK) as e:
         # A client-initiated close rules out reconnecting: the `close=True`
@@ -787,6 +858,8 @@ async def run_live_flow(
         # finish normally.
         if isinstance(e, ConnectionClosedOK):
           logger.info('Connection closed normally: %s.', e)
+          async for event in finish_in_flight_calls():
+            yield event
           return
         logger.error('Connection closed: %s.', e)
         raise
@@ -817,6 +890,8 @@ async def run_live_flow(
           # finish normally.
           if e.code == 1000:
             logger.info('Live session closed normally: %s.', e)
+            async for event in finish_in_flight_calls():
+              yield event
             return
 
         logger.error('APIError in live flow: %s', e)
@@ -826,5 +901,9 @@ async def run_live_flow(
             'An unexpected error occurred in live flow: %s', e, exc_info=True
         )
         raise
+  except Exception:
+    while not function_response_queue.empty():
+      yield function_response_queue.get_nowait()
+    raise
   finally:
     await stop_background_tool_tasks(invocation_context)

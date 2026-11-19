@@ -26,6 +26,7 @@ from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ..base_tool import BaseTool
+from ._utils import ensure_initialized
 
 if TYPE_CHECKING:
   from ..tool_context import ToolContext
@@ -77,6 +78,7 @@ class WriteFileTool(BaseTool):
     content = args.get('content', '')
     if not path:
       return {'status': 'error', 'error': '`path` is required.'}
+    await ensure_initialized(self._environment, tool_context)
     try:
       await self._environment.write_file(path, content, ctx=tool_context)
     except Exception as e:
