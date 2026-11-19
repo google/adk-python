@@ -87,7 +87,11 @@ class LlmAudioUserSimulatorConfig(BaseUserSimulatorConfig):
               thinking_budget=10240,
           )
       ),
-      description="The configuration for the text-generation model.",
+      description=(
+          "The configuration for the text-generation model. Its default"
+          " thinking budget is sent as thinking level MEDIUM to Gemini 4 and"
+          " later models."
+      ),
   )
 
   max_allowed_invocations: int = Field(

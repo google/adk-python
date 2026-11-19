@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+from contextlib import asynccontextmanager
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -37,6 +38,7 @@ from google.adk.events.event import Event
 from google.adk.flows.llm_flows import base_llm_flow
 from google.adk.flows.llm_flows import functions
 from google.adk.live import _flow_utils
+from google.adk.live import _live_llm_flow
 from google.adk.live import LiveRequestQueue
 from google.adk.live._active_background_tool import ActiveBackgroundTool
 from google.adk.live._active_streaming_tool import ActiveStreamingTool
@@ -47,6 +49,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
+from websockets.exceptions import ConnectionClosed
 
 from .. import testing_utils
 
@@ -724,6 +727,483 @@ async def test_handoff_stops_streaming_tools_before_the_transfer_delay():
   assert (
       'late_stream' not in forwarded
   ), "the handing-off agent's streaming tool yielded during the transfer delay"
+
+
+@pytest.mark.asyncio
+async def test_restart_stops_tools_before_the_restarted_session_connects():
+  """A tool running at a restart is cancelled before the session reconnects."""
+  started = asyncio.Event()
+  cancelled = asyncio.Event()
+  restarted = asyncio.Event()
+  cancelled_before_restart = False
+
+  async def slow_lookup() -> str:
+    started.set()
+    try:
+      await asyncio.Event().wait()
+    except asyncio.CancelledError:
+      cancelled.set()
+      raise
+    return 'late'
+
+  original_connect = testing_utils.MockModel.connect
+  connects = 0
+
+  @asynccontextmanager
+  async def _connect(
+      self: testing_utils.MockModel, llm_request: Any
+  ) -> AsyncGenerator[Any, None]:
+    nonlocal connects, cancelled_before_restart
+    connects += 1
+    if connects > 1:
+      cancelled_before_restart = cancelled.is_set()
+      restarted.set()
+      # One response, so the turn sees an event and can stop.
+      yield testing_utils.MockLlmConnection([
+          LlmResponse(
+              content=types.Content(
+                  role='model', parts=[types.Part.from_text(text='restarted')]
+              )
+          )
+      ])
+      return
+    async with original_connect(self, llm_request) as connection:
+      yield connection
+
+  original_receive = _live_llm_flow.receive_from_model
+
+  async def _receive_then_restart(
+      *args: Any, **kwargs: Any
+  ) -> AsyncGenerator[Event, None]:
+    async with aclosing(original_receive(*args, **kwargs)) as agen:
+      async for event in agen:
+        yield event
+        if event.get_function_calls():
+          # Restart only once the tool is running, so it is in flight.
+          await started.wait()
+          yield _flow_utils._ReconnectSentinel(
+              mode=_flow_utils._ReconnectMode.RESTART
+          )
+          return
+
+  with (
+      mock.patch.object(testing_utils.MockModel, 'connect', _connect),
+      mock.patch.object(
+          _live_llm_flow, 'receive_from_model', _receive_then_restart
+      ),
+  ):
+    await _run_live_turn(
+        [slow_lookup],
+        calls=['slow_lookup'],
+        stop_when=lambda _: restarted.is_set(),
+    )
+
+  assert restarted.is_set(), 'the live session did not restart'
+  assert (
+      cancelled_before_restart
+  ), 'the tool was not cancelled before the restarted session connected'
+
+
+@pytest.mark.asyncio
+async def test_handoff_stops_reading_the_parent_model(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The parent's receive stream is not read while the sub agent runs."""
+  monkeypatch.setattr(_live_llm_flow, 'DEFAULT_TRANSFER_AGENT_DELAY', 0)
+  sub_agent_running = asyncio.Event()
+  parent_read = asyncio.Event()
+
+  def report() -> str:
+    """The sub agent's own tool, proving it took over the queue."""
+    return 'sub agent is live'
+
+  sub_agent = Agent(
+      name='sub_agent',
+      model=testing_utils.MockModel.create([_call('report')]),
+      tools=[report],
+  )
+  transfer = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(
+                  name='transfer_to_agent', args={'agent_name': 'sub_agent'}
+              )
+          ],
+      ),
+      turn_complete=False,
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([transfer]),
+      sub_agents=[sub_agent],
+  )
+
+  class _ParentConnection(testing_utils.MockLlmConnection):
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      yield transfer
+      # The parent model sends another event once the sub agent is running.
+      await sub_agent_running.wait()
+      parent_read.set()
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='parent')]
+          )
+      )
+      await self._closed.wait()
+
+  original_connect = testing_utils.MockModel.connect
+
+  @asynccontextmanager
+  async def _connect(
+      self: testing_utils.MockModel, llm_request: Any
+  ) -> AsyncGenerator[Any, None]:
+    if self is root_agent.model:
+      yield _ParentConnection([])
+      return
+    sub_agent_running.set()
+    async with original_connect(self, llm_request) as connection:
+      yield connection
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(
+      app_name='app', agent=root_agent, session_service=session_service
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.author == 'sub_agent' and event.get_function_responses():
+          return
+
+  monkeypatch.setattr(testing_utils.MockModel, 'connect', _connect)
+  await asyncio.wait_for(_consume(), timeout=5.0)
+
+  assert sub_agent_running.is_set()
+  assert (
+      not parent_read.is_set()
+  ), "the parent's receive stream was read while the sub agent ran"
+
+
+def _blocked_lookup() -> tuple[Callable[..., Any], Callable[..., Any]]:
+  """A `lookup` tool that blocks, and a coroutine that lets it finish."""
+  release = asyncio.Event()
+  lookup_task: asyncio.Task[Any] | None = None
+
+  async def lookup() -> str:
+    nonlocal lookup_task
+    lookup_task = asyncio.current_task()
+    await release.wait()
+    return 'found'
+
+  async def finish_lookup() -> None:
+    release.set()
+    if lookup_task is not None:
+      await lookup_task
+
+  return lookup, finish_lookup
+
+
+@pytest.mark.asyncio
+async def test_handoff_saves_responses_of_finished_calls(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A call finishing at a handoff still has its response saved."""
+  lookup, finish_lookup = _blocked_lookup()
+  original_stop = _live_llm_flow.stop_background_tool_tasks
+
+  async def stop(invocation_context: InvocationContext) -> None:
+    # The flow has stopped taking responses, so only the drain can save it.
+    await finish_lookup()
+    await original_stop(invocation_context)
+
+  monkeypatch.setattr(_live_llm_flow, 'stop_background_tool_tasks', stop)
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(
+      app_name='app',
+      agent=_late_tool_agents(lookup, 'lookup'),
+      session_service=session_service,
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+  names: list[str] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        names.extend(r.name for r in event.get_function_responses())
+        if event.author == 'sub_agent' and event.get_function_responses():
+          return
+
+  await asyncio.wait_for(_consume(), timeout=5.0)
+
+  assert names == ['transfer_to_agent', 'lookup', 'report']
+
+
+@pytest.mark.asyncio
+async def test_task_completed_saves_responses_of_finished_calls(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A call finishing at `task_completed` still has its response saved."""
+  lookup, finish_lookup = _blocked_lookup()
+  original_sleep = asyncio.sleep
+
+  async def sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+    # The flow has stopped taking responses, so only the drain can save it.
+    if delay == _live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY:
+      await finish_lookup()
+    await original_sleep(delay, *args, **kwargs)
+
+  monkeypatch.setattr(_live_llm_flow.asyncio, 'sleep', sleep)
+
+  def task_completed() -> str:
+    return _task_completed()
+
+  events, ended = await _run_live_turn(
+      [lookup, task_completed], calls=['lookup', 'task_completed']
+  )
+
+  assert ended
+  assert [r.name for e in events for r in e.get_function_responses()] == [
+      'task_completed',
+      'lookup',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_task_completed_stops_reading_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The receive stream is not read during the task completion delay."""
+  monkeypatch.setattr(_live_llm_flow, 'DEFAULT_TASK_COMPLETION_DELAY', 0.05)
+  delaying = asyncio.Event()
+  read_during_delay = False
+  original_sleep = asyncio.sleep
+
+  async def sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+    if delay == _live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY:
+      delaying.set()
+    await original_sleep(delay, *args, **kwargs)
+
+  class _Connection(testing_utils.MockLlmConnection):
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      nonlocal read_during_delay
+      yield _call('task_completed')
+      await delaying.wait()
+      read_during_delay = True
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='late')]
+          )
+      )
+      await self._closed.wait()
+
+  @asynccontextmanager
+  async def _connect(*args: Any, **kwargs: Any) -> AsyncGenerator[Any, None]:
+    yield _Connection([])
+
+  monkeypatch.setattr(_live_llm_flow.asyncio, 'sleep', sleep)
+  monkeypatch.setattr(testing_utils.MockModel, 'connect', _connect)
+
+  def task_completed() -> str:
+    return _task_completed()
+
+  _, ended = await _run_live_turn([task_completed], calls=[])
+
+  assert ended
+  assert delaying.is_set()
+  assert not read_during_delay, 'the receive stream was read during the delay'
+
+
+@pytest.mark.asyncio
+async def test_tool_call_finishes_when_the_live_run_ends():
+  """A tool call still running when the run ends finishes and is saved."""
+  waiting = asyncio.Event()
+  cancelled = asyncio.Event()
+
+  async def slow_lookup() -> str:
+    try:
+      # Finish only once the ended run is waiting for this call.
+      await waiting.wait()
+    except asyncio.CancelledError:
+      cancelled.set()
+      raise
+    return 'done'
+
+  original_wait = _live_llm_flow.wait_for_tool_calls
+
+  async def _wait_for_tool_calls(*args: Any, **kwargs: Any) -> None:
+    waiting.set()
+    await original_wait(*args, **kwargs)
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([_call('slow_lookup')]),
+      tools=[slow_lookup],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=agent, session_service=session_service)
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+
+  events: list[Event] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        events.append(event)
+        if event.get_function_calls():
+          live_request_queue.close()
+
+  with mock.patch.object(
+      _live_llm_flow, 'wait_for_tool_calls', _wait_for_tool_calls
+  ):
+    await asyncio.wait_for(_consume(), timeout=5.0)
+
+  assert not cancelled.is_set()
+  assert [
+      response.name
+      for event in events
+      for response in event.get_function_responses()
+  ] == ['slow_lookup']
+
+
+@pytest.mark.asyncio
+async def test_connection_error_saves_responses_of_finished_calls(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A call that finished before the connection drops has its response saved."""
+  lookup, finish_lookup = _blocked_lookup()
+
+  class _Connection(testing_utils.MockLlmConnection):
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      yield _call('lookup')
+      # The flow has stopped taking responses, so only the drain can save it.
+      await finish_lookup()
+      raise ConnectionClosed(None, None)
+
+  @asynccontextmanager
+  async def _connect(*args: Any, **kwargs: Any) -> AsyncGenerator[Any, None]:
+    yield _Connection([])
+
+  monkeypatch.setattr(testing_utils.MockModel, 'connect', _connect)
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([]),
+      tools=[lookup],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=agent, session_service=session_service)
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+  names: list[str] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        names.extend(r.name for r in event.get_function_responses())
+
+  with pytest.raises(ConnectionClosed):
+    await asyncio.wait_for(_consume(), timeout=5.0)
+
+  assert names == ['lookup']
+
+
+@pytest.mark.asyncio
+async def test_model_event_arrives_while_a_tool_call_runs():
+  """The model keeps streaming while a default tool call runs."""
+  release = asyncio.Event()
+
+  async def slow_lookup() -> str:
+    await release.wait()
+    return 'found'
+
+  text = LlmResponse(
+      content=types.Content(
+          role='model', parts=[types.Part.from_text(text='still here')]
+      )
+  )
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([_call('slow_lookup'), text]),
+      tools=[slow_lookup],
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=agent, session_service=session_service)
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+  seen: list[str] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.get_function_calls():
+          seen.append('call')
+        elif event.get_function_responses():
+          seen.append('response')
+          return
+        elif event.content and event.content.parts[0].text == 'still here':
+          seen.append('text')
+          release.set()
+
+  await asyncio.wait_for(_consume(), timeout=5.0)
+
+  assert seen == ['call', 'text', 'response']
 
 
 @pytest.mark.asyncio
