@@ -410,6 +410,130 @@ def test_semantic_default_generate_content_config_is_deterministic():
   assert SemanticArgMatcher().generate_content_config.temperature == 0.0
 
 
+@pytest.mark.parametrize(
+    'model',
+    [
+        'gemini-4-hydrogen',
+        'gemini-4-carbon',
+        'gemini-4.0-pro',
+        'gemini-5-pro',
+        'projects/my-project/locations/global/publishers/google/models/gemini-4-hydrogen',
+        'models/gemini-4-hydrogen',
+        'vertex_ai/gemini-4-hydrogen',
+    ],
+)
+async def test_semantic_default_config_uses_thinking_level_on_gemini_4_and_later(
+    judge_factory, model: str
+):
+  """Gemini 4+ matchers without a caller config use ThinkingLevel.LOW."""
+  judge = _FakeJudge('YES')
+  judge_factory(judge)
+  matcher = SemanticArgMatcher(model=model)
+
+  await _match_one(matcher, 'a', 'b')
+
+  expected_thinking = genai_types.ThinkingConfig(
+      include_thoughts=False,
+      thinking_level=genai_types.ThinkingLevel.LOW,
+  )
+  assert judge.requests[0].config.thinking_config == expected_thinking
+  assert judge.requests[0].config.thinking_config.thinking_budget is None
+
+
+@pytest.mark.parametrize(
+    'model',
+    [
+        None,
+        'gemini-2.5-flash',
+        'gemini-2.5-pro',
+        'gemini-3.0-flash',
+        'gemini-3.5-flash',
+        'gemini-flash-latest',
+        'openai/gpt-4o',
+    ],
+)
+async def test_semantic_default_config_keeps_thinking_budget_on_pre_4_and_other_models(
+    judge_factory, model: str | None
+):
+  """Gemini 2.5, Gemini 3.x, unversioned and non-Gemini models keep budget 512."""
+  judge = _FakeJudge('YES')
+  judge_factory(judge)
+  matcher = SemanticArgMatcher(model=model)
+
+  await _match_one(matcher, 'a', 'b')
+
+  expected_thinking = genai_types.ThinkingConfig(
+      include_thoughts=False,
+      thinking_budget=512,
+  )
+  assert judge.requests[0].config.thinking_config == expected_thinking
+  assert judge.requests[0].config.thinking_config.thinking_level is None
+
+
+@pytest.mark.parametrize(
+    'make_matcher',
+    [
+        lambda: SemanticArgMatcher().model_copy(
+            update={'model': 'gemini-4-hydrogen'}, deep=True
+        ),
+        lambda: SemanticArgMatcher.model_validate(
+            SemanticArgMatcher(model='gemini-4-hydrogen').model_dump()
+        ),
+    ],
+    ids=['model_copy', 'dump_and_validate'],
+)
+async def test_semantic_copied_or_reloaded_matcher_uses_gemini_4_thinking_level(
+    judge_factory, make_matcher
+):
+  """A default config that was copied or reloaded still gets LOW on Gemini 4."""
+  judge = _FakeJudge('YES')
+  judge_factory(judge)
+  matcher = make_matcher()
+
+  await _match_one(matcher, 'a', 'b')
+
+  assert judge.requests[0].config.thinking_config == genai_types.ThinkingConfig(
+      include_thoughts=False,
+      thinking_level=genai_types.ThinkingLevel.LOW,
+  )
+
+
+async def test_semantic_preserves_caller_supplied_generate_content_config_on_gemini_4(
+    judge_factory,
+):
+  """A caller-supplied generate_content_config is sent as given on Gemini 4."""
+  judge = _FakeJudge('YES')
+  judge_factory(judge)
+  caller_config = genai_types.GenerateContentConfig(temperature=0.4)
+  matcher = SemanticArgMatcher(
+      model='gemini-4-hydrogen',
+      generate_content_config=caller_config,
+  )
+
+  await _match_one(matcher, 'a', 'b')
+
+  assert judge.requests[0].config == caller_config
+  assert judge.requests[0].config.thinking_config is None
+
+
+async def test_semantic_keeps_thinking_config_changed_after_construction(
+    judge_factory,
+):
+  """A thinking config set on the default config is sent as given."""
+  judge = _FakeJudge('YES')
+  judge_factory(judge)
+  matcher = SemanticArgMatcher(model='gemini-4-hydrogen')
+  matcher.generate_content_config.thinking_config = genai_types.ThinkingConfig(
+      thinking_level=genai_types.ThinkingLevel.HIGH
+  )
+
+  await _match_one(matcher, 'a', 'b')
+
+  assert judge.requests[0].config.thinking_config == genai_types.ThinkingConfig(
+      thinking_level=genai_types.ThinkingLevel.HIGH
+  )
+
+
 def test_semantic_is_not_deterministic():
   """The semantic matcher runs after deterministic matchers."""
   assert not SemanticArgMatcher.is_deterministic

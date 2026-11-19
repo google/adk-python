@@ -112,8 +112,8 @@ automatically — there is no reason to import it in agent code.
 | `BasePlugin` | `from google.adk.plugins.base_plugin import BasePlugin` |
 
 `DatabaseSessionService` needs the `db` extra; importing it without
-`sqlalchemy` installed raises a "missing extra" error rather than
-`ImportError`.
+`sqlalchemy` installed raises an `ImportError` whose message names the
+missing extra.
 
 ## Live streaming
 

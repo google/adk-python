@@ -1389,6 +1389,31 @@ class TestConvertInteractionOutputToParts:
     assert result.code_execution_result.output == 'Error: division by zero'
     assert result.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
 
+  def test_code_execution_result_content_list_output(self):
+    """A content list result keeps its text as output and its media as parts."""
+    # Unvalidated, since google-genai accepts a content list only from 3.0.
+    output = CodeExecutionResultStep.model_construct(
+        type='code_execution_result',
+        call_id='',
+        result=[
+            TextContent(type='text', text='plotted'),
+            ImageContent(
+                type='image',
+                data=base64.b64encode(b'image_bytes').decode('utf-8'),
+                mime_type='image/png',
+            ),
+        ],
+        is_error=False,
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    assert len(result_list) == 2
+    assert result_list[0].code_execution_result.output == 'plotted'
+    assert (
+        result_list[0].code_execution_result.outcome == types.Outcome.OUTCOME_OK
+    )
+    assert result_list[1].inline_data.data == b'image_bytes'
+    assert result_list[1].inline_data.mime_type == 'image/png'
+
   def test_thought_output_without_signature_returns_empty(self):
     """A thought step with no signature contributes no parts."""
     output = ThoughtStep(type='thought')
@@ -3728,6 +3753,28 @@ async def test_generate_content_via_interactions_non_streaming_yields_single_res
   assert len(responses) == 1
   assert responses[0].interaction_id == 'interaction_ns'
   assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+
+@pytest.mark.parametrize('exclude_runtime_tag', [False, True])
+async def test_generate_content_via_interactions_runtime_tag(
+    monkeypatch, exclude_runtime_tag
+):
+  """exclude_runtime_tag reaches the headers sent to interactions.create."""
+  monkeypatch.setenv('GOOGLE_CLOUD_AGENT_ENGINE_ID', 'engine-id')
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+  await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client,
+          _build_llm_request(),
+          stream=False,
+          exclude_runtime_tag=exclude_runtime_tag,
+      )
+  )
+
+  headers = api_client.create_calls[0]['extra_headers']
+  token = headers['user-agent'].split()[0]
+  assert token.endswith('+remote_reasoning_engine') is not exclude_runtime_tag
 
 
 class TestServiceTier:

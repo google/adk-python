@@ -47,6 +47,7 @@ from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
 from ..utils.env_utils import is_enterprise_mode_enabled
+from .google_llm import _GEMINI_API_VERSION
 from .google_llm import Gemini
 from .llm_response import LlmResponse
 
@@ -246,9 +247,17 @@ class ApigeeLlm(Gemini):
     """Provides the completions HTTP client."""
     return CompletionsHTTPClient(
         base_url=self._require_proxy_url(),
-        headers=merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(
+            self._custom_headers,
+            exclude_runtime_tag=self._exclude_runtime_tag(),
+        ),
         retry_options=self.retry_options,
     )
+
+  @override
+  def _exclude_runtime_tag(self) -> bool:
+    # The proxy URL is the customer's, not a Google API endpoint.
+    return True
 
   def _require_proxy_url(self) -> str:
     if not self._proxy_url:
@@ -298,9 +307,17 @@ class ApigeeLlm(Gemini):
     from google.genai import Client
 
     http_options = types.HttpOptions(
-        api_version=self._api_version or None,
+        api_version=self._api_version
+        or (
+            None
+            if self._isvertexai or self._configured_api_version()
+            else _GEMINI_API_VERSION
+        ),
         base_url=self._require_proxy_url(),
-        headers=merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(
+            self._custom_headers,
+            exclude_runtime_tag=self._exclude_runtime_tag(),
+        ),
         retry_options=self.retry_options,
     )
 

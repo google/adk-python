@@ -238,7 +238,8 @@ def test_to_cloud_run_happy_path(
   else:
     assert "# No requirements.txt found." in dockerfile_content
 
-  assert "--allow_origins=http://localhost:3000,https://my-app.com" in cmd_argv
+  assert "--allow_origins=http://localhost:3000" in cmd_argv
+  assert "--allow_origins=https://my-app.com" in cmd_argv
 
   assert len(run_recorder.calls) == 1
   gcloud_args = run_recorder.get_last_call_args()[0]
@@ -857,7 +858,7 @@ def test_render_dockerfile_rejects_malicious_app_name(
         service_options=[],
         trace_to_cloud_option="",
         otel_to_cloud_option="",
-        allow_origins_option="",
+        allow_origins=None,
         adk_version="1.3.0",
         host_option="--host=0.0.0.0",
         a2a_option="",
@@ -888,7 +889,7 @@ def test_render_dockerfile_rejects_injected_instructions(
       "service_options": [],
       "trace_to_cloud_option": "",
       "otel_to_cloud_option": "",
-      "allow_origins_option": "",
+      "allow_origins": None,
       "adk_version": "1.3.0",
       "host_option": "--host=0.0.0.0",
       "a2a_option": "",
@@ -999,7 +1000,7 @@ def test_dockerfile_run_and_cmd_use_exec_form() -> None:
       ],
       trace_to_cloud_option="--trace_to_cloud",
       otel_to_cloud_option="--otel_to_cloud",
-      allow_origins_option="--allow_origins=https://example.com",
+      allow_origins=["https://example.com"],
       adk_version="1.3.0",
       host_option="--host=0.0.0.0",
       a2a_option="--a2a",
