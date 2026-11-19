@@ -44,7 +44,7 @@ session_service = RedisSessionService(config=config)
 # 2. Define your agent
 agent = Agent(
     name="assistant",
-    instructions="You are a helpful AI assistant.",
+    instruction="You are a helpful AI assistant.",
 )
 
 # 3. Create the Runner with app_name and session_service
