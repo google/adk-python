@@ -150,9 +150,10 @@ When the wrapped store overrides `BaseSessionService.append_events(session,
 events)`, the writer sends a session's queued events in one call, up to
 `max_batch_events` per call. An override must store all of the events or none of
 them, in order, with the same effect on `session` and the store as calling
-`append_event` for each event. The base method appends events one at a time, and
-ADK's built-in session services keep it, so for them each event is sent in its
-own `append_event` call.
+`append_event` for each event. `SqliteSessionService` overrides it and stores a
+batch in one transaction, with one stale-session check. The base method appends
+events one at a time, and other built-in session services keep it, so for
+them each event is sent in its own `append_event` call.
 
 `max_write_delay` holds back the first queued write of a session so that nearby
 events join it in one `append_events` call. A flush or read that waits on the

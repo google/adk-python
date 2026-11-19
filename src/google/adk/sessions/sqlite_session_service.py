@@ -462,13 +462,55 @@ class SqliteSessionService(BaseSessionService):
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event
+    return (await self.append_events(session, [event]))[0]
 
-    # Apply temp state to in-memory session before trimming, so that
-    # subsequent agents within the same invocation can read temp values.
-    self._apply_temp_state(session, event)
-    # Trim temp state before persisting
-    event = self._trim_temp_delta_state(event)
-    event_timestamp = event.timestamp
+  @override
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    """Appends events to a session in one transaction.
+
+    Has the same effect on `session` and the store as calling `append_event`
+    for each event, but checks for a stale session once and commits once, so
+    the events are stored all or none. Partial events are returned unchanged
+    and not stored, as `append_event` does.
+
+    Raises:
+      StaleSessionError: The session was modified in storage since it was
+        loaded. No event is stored.
+      SessionNotFoundError: The session does not exist.
+    """
+    processed: list[Event] = []
+    for event in events:
+      if not event.partial:
+        # Apply temp state to in-memory session before trimming, so that
+        # subsequent agents within the same invocation can read temp values.
+        self._apply_temp_state(session, event)
+        # Trim temp state before persisting
+        event = self._trim_temp_delta_state(event)
+      processed.append(event)
+    to_store = [event for event in processed if not event.partial]
+    if not to_store:
+      return processed
+
+    # Merged in order, as one append per event would.
+    state_deltas: dict[str, dict[str, Any]] = {
+        "app": {},
+        "user": {},
+        "session": {},
+    }
+    for event in to_store:
+      event_deltas = _session_util.extract_json_safe_state_delta(
+          event.actions.state_delta if event.actions.state_delta else {}
+      )
+      for scope, delta in event_deltas.items():
+        state_deltas[scope].update(delta)
+
+    app_state_delta = state_deltas["app"]
+    user_state_delta = state_deltas["user"]
+    session_state_delta = state_deltas["session"]
+
+    last_event_timestamp = to_store[-1].timestamp
 
     async with self._get_db_connection() as db:
       try:
@@ -490,61 +532,55 @@ class SqliteSessionService(BaseSessionService):
                 " Please check if it is a stale session."
             )
 
-        # Apply state delta if present
         has_session_state_delta = False
-        if event.actions.state_delta:
-          state_deltas = _session_util.extract_json_safe_state_delta(
-              event.actions.state_delta
+        if app_state_delta:
+          await self._upsert_app_state(
+              db, session.app_name, app_state_delta, last_event_timestamp
           )
-          app_state_delta = state_deltas["app"]
-          user_state_delta = state_deltas["user"]
-          session_state_delta = state_deltas["session"]
+        if user_state_delta:
+          await self._upsert_user_state(
+              db,
+              session.app_name,
+              session.user_id,
+              user_state_delta,
+              last_event_timestamp,
+          )
+        if session_state_delta:
+          await self._update_session_state_in_db(
+              db,
+              session.app_name,
+              session.user_id,
+              session.id,
+              session_state_delta,
+              last_event_timestamp,
+          )
+          has_session_state_delta = True
 
-          if app_state_delta:
-            await self._upsert_app_state(
-                db, session.app_name, app_state_delta, event_timestamp
-            )
-          if user_state_delta:
-            await self._upsert_user_state(
-                db,
-                session.app_name,
-                session.user_id,
-                user_state_delta,
-                event_timestamp,
-            )
-          if session_state_delta:
-            await self._update_session_state_in_db(
-                db,
-                session.app_name,
-                session.user_id,
-                session.id,
-                session_state_delta,
-                event_timestamp,
-            )
-            has_session_state_delta = True
-
-        # Insert event and update session timestamp
-        await db.execute(
+        # Insert events into events table
+        await db.executemany(
             """
             INSERT INTO events (id, app_name, user_id, session_id, invocation_id, timestamp, event_data)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                event.id,
-                session.app_name,
-                session.user_id,
-                session.id,
-                event.invocation_id,
-                event.timestamp,
-                event.model_dump_json(exclude_none=True),
-            ),
+            [
+                (
+                    event.id,
+                    session.app_name,
+                    session.user_id,
+                    session.id,
+                    event.invocation_id,
+                    event.timestamp,
+                    event.model_dump_json(exclude_none=True),
+                )
+                for event in to_store
+            ],
         )
         if not has_session_state_delta:
           await db.execute(
               "UPDATE sessions SET update_time=? WHERE app_name=? AND user_id=?"
               " AND id=?",
               (
-                  event_timestamp,
+                  last_event_timestamp,
                   session.app_name,
                   session.user_id,
                   session.id,
@@ -555,11 +591,13 @@ class SqliteSessionService(BaseSessionService):
         await db.rollback()
         raise
 
-      # Update timestamp based on event time
-      session.last_update_time = event_timestamp
+      # Update timestamp based on last stored event time
+      session.last_update_time = last_event_timestamp
 
     # Also update the in-memory session
-    return self._commit_event_to_session(session, event)
+    for event in to_store:
+      self._commit_event_to_session(session, event)
+    return processed
 
   async def close(self) -> None:
     """Closes any persistent resources."""
