@@ -29,6 +29,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import _flow_utils
 from google.adk.live import _live_llm_flow
 from google.adk.live._active_background_tool import ActiveBackgroundTool
 from google.adk.live._active_streaming_tool import ActiveStreamingTool
@@ -1315,3 +1316,189 @@ async def test_merge_requeues_waiting_responses_when_flow_closes_merged_stream(
       'response-b',
       'response-c',
   ]
+
+
+_ALREADY_CONNECTED_1008 = (
+    'BidiGenerateContent session is already connected to an existing client'
+)
+
+
+@pytest.fixture
+def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.setattr(_live_llm_flow, '_reconnect_delay', lambda attempt: 0)
+
+
+async def _run_live_with_failures(
+    failures: list[Exception],
+    handles: list[str | None],
+    *,
+    keep_handle: bool = True,
+    fail_on_connect: bool = False,
+    queue: LiveRequestQueue | None = None,
+) -> None:
+  """Runs a live session whose connections fail with `failures`, in order.
+
+  The first connection offers a resumption handle (unless `keep_handle` is
+  false) and raises its failure from `receive`. Later ones raise theirs from
+  `receive`, or from `connect` when `fail_on_connect` is set, without
+  delivering anything. The connection after the last failure ends cleanly.
+  The handle each connection was opened with is appended to `handles`.
+  """
+  update = LlmResponse(
+      live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+          new_handle='handle-1', resumable=True
+      )
+  )
+  opened = 0
+
+  class _Connection(testing_utils.MockLlmConnection):
+
+    def __init__(self, script: list[LlmResponse | Exception]):
+      super().__init__(llm_responses=[])
+      self.script = script
+
+    async def receive(self) -> AsyncGenerator[LlmResponse, None]:
+      while self.script:
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+          raise item
+        yield item
+
+  class _Model(testing_utils.MockModel):
+
+    @contextlib.asynccontextmanager
+    async def connect(  # type: ignore[override]
+        self, llm_request: LlmRequest
+    ) -> AsyncGenerator[_Connection, None]:
+      nonlocal opened
+      resumption = llm_request.live_connect_config.session_resumption
+      handles.append(resumption.handle if resumption else None)
+      opened += 1
+      failure = failures[opened - 1] if opened <= len(failures) else None
+      if failure and opened > 1 and fail_on_connect:
+        raise failure
+      script: list[LlmResponse | Exception] = []
+      if failure:
+        script = [*([update] if keep_handle and opened == 1 else []), failure]
+      yield _Connection(script)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(
+      app_name='app',
+      agent=LlmAgent(name='root_agent', model=_Model(responses=[])),
+      session_service=session_service,
+  )
+  async with contextlib.aclosing(
+      runner.run_live(
+          user_id='u',
+          session_id=session.id,
+          live_request_queue=queue or LiveRequestQueue(),
+          run_config=RunConfig(
+              session_resumption=types.SessionResumptionConfig()
+          ),
+      )
+  ) as events:
+    async for _ in events:
+      pass
+
+
+_ALREADY_CONNECTED = errors.APIError(1008, _ALREADY_CONNECTED_1008)
+_OTHER_1008 = errors.APIError(1008, 'policy violation')
+
+
+@pytest.mark.parametrize(
+    ('failures', 'keep_handle', 'fail_on_connect', 'want_handles'),
+    [
+        (
+            [errors.APIError(1006, {}), _ALREADY_CONNECTED],
+            True,
+            False,
+            [None, 'handle-1', 'handle-1'],
+        ),
+        (
+            [errors.APIError(1006, {}), _ALREADY_CONNECTED],
+            True,
+            True,
+            [None, 'handle-1', 'handle-1'],
+        ),
+        ([errors.APIError(1006, {}), _OTHER_1008], True, True, None),
+        ([_ALREADY_CONNECTED], False, False, None),
+    ],
+    ids=[
+        'already_connected_from_receive',
+        'already_connected_from_connect',
+        'other_reason_from_connect',
+        'already_connected_without_handle',
+    ],
+)
+@pytest.mark.usefixtures('no_backoff')
+async def test_run_live_retries_only_1008_already_connected_on_reconnect(
+    failures: list[Exception],
+    keep_handle: bool,
+    fail_on_connect: bool,
+    want_handles: list[str | None] | None,
+) -> None:
+  """Only "already connected" is retried, and only when resuming."""
+  handles: list[str | None] = []
+  run = _run_live_with_failures(
+      failures,
+      handles,
+      keep_handle=keep_handle,
+      fail_on_connect=fail_on_connect,
+  )
+
+  if want_handles is None:
+    with pytest.raises(errors.APIError) as exc_info:
+      await asyncio.wait_for(run, timeout=5)
+    assert exc_info.value.code == 1008
+  else:
+    await asyncio.wait_for(run, timeout=5)
+    assert handles == want_handles
+
+
+@pytest.mark.parametrize(
+    ('attempt', 'want_seconds'),
+    [(1, 0.0), (2, 0.5), (3, 1.0), (4, 2.0), (5, 4.0), (6, 4.0)],
+)
+def test_reconnect_delay_is_immediate_then_doubles_up_to_the_cap(
+    attempt: int, want_seconds: float
+) -> None:
+  assert _live_llm_flow._reconnect_delay(attempt) == want_seconds
+
+
+@pytest.mark.usefixtures('no_backoff')
+async def test_run_live_bounds_connections_accepted_then_dropped() -> None:
+  """A connection that is accepted and then drops is not retried forever."""
+  failures = [errors.APIError(1011, {})] * 20
+  handles: list[str | None] = []
+
+  with pytest.raises(errors.APIError):
+    await asyncio.wait_for(
+        _run_live_with_failures(failures, handles), timeout=5
+    )
+
+  assert len(handles) == 1 + _flow_utils.DEFAULT_MAX_RECONNECT_ATTEMPTS
+
+
+async def test_run_live_does_not_reconnect_if_client_closed_during_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  queue = LiveRequestQueue()
+
+  def _close_while_waiting(attempt: int) -> float:
+    queue.close()
+    return 0
+
+  monkeypatch.setattr(_live_llm_flow, '_reconnect_delay', _close_while_waiting)
+  handles: list[str | None] = []
+
+  with pytest.raises(errors.APIError):
+    await asyncio.wait_for(
+        _run_live_with_failures(
+            [errors.APIError(1006, {})], handles, queue=queue
+        ),
+        timeout=5,
+    )
+
+  assert handles == [None]

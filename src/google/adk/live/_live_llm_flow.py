@@ -48,6 +48,8 @@ from ._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS
 from ._flow_utils import DEFAULT_TASK_COMPLETION_DELAY
 from ._flow_utils import DEFAULT_TRANSFER_AGENT_DELAY
 from ._flow_utils import handle_control_event_flush as handle_control_event_flush
+from ._flow_utils import RECONNECT_BACKOFF_BASE_SECONDS
+from ._flow_utils import RECONNECT_BACKOFF_MAX_SECONDS
 from ._flow_utils import require_live_request_queue as require_live_request_queue
 from ._flow_utils import run_config_for_new_live_session
 from ._flow_utils import stop_background_tool_tasks as stop_background_tool_tasks
@@ -58,6 +60,10 @@ if TYPE_CHECKING:
   from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Text of the 1008 the server sends when a resumed session reconnects before it
+# has released the previous connection.
+_SESSION_STILL_CONNECTED_MESSAGE = 'already connected to an existing client'
 
 
 async def screen_live_user_content(
@@ -534,6 +540,33 @@ async def _merge_function_responses(
     )
 
 
+def _is_session_still_connected(error: errors.APIError) -> bool:
+  """Whether `error` is the 1008 sent while the old connection is still open."""
+  # On the websocket path genai leaves `message` empty and puts the reason in
+  # `details`, so match on the whole text.
+  return error.code == 1008 and _SESSION_STILL_CONNECTED_MESSAGE in str(error)
+
+
+def _reconnect_delay(attempt: int) -> float:
+  """Backoff in seconds before the reconnect that follows `attempt`."""
+  if attempt <= 1:
+    return 0.0
+  return min(
+      RECONNECT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 2),
+      RECONNECT_BACKOFF_MAX_SECONDS,
+  )
+
+
+async def _wait_before_reconnect(
+    invocation_context: InvocationContext, attempt: int
+) -> bool:
+  """Backs off before a reconnect; False if the client closed meanwhile."""
+  if delay := _reconnect_delay(attempt):
+    await asyncio.sleep(delay)
+  queue = invocation_context.live_request_queue
+  return queue is None or not queue.closed
+
+
 async def run_live_flow(
     flow: BaseLlmFlow,
     invocation_context: InvocationContext,
@@ -669,9 +702,6 @@ async def run_live_flow(
             agent.name,
         )
         async with llm.connect(llm_request) as llm_connection:
-          # Reset retry count to allow the maximum reconnect attempts for
-          # subsequent connection drops.
-          attempt = 1
           # Skip sending history if we are resuming a session. The server
           # already has the state associated with the resumption handle.
           if (
@@ -715,6 +745,11 @@ async def run_live_flow(
                 # Empty event means the queue is closed.
                 if not event:
                   break
+                # The connection delivered something, so reset the retry count
+                # (and the backoff) to allow the maximum reconnect attempts for
+                # subsequent drops. A connection that is accepted but fails
+                # before delivering anything keeps counting.
+                attempt = 1
                 logger.debug(
                     'Receive new event: %s, author: %s', event.id, event.author
                 )
@@ -852,6 +887,14 @@ async def run_live_flow(
           logger.info(
               'Connection closed (%s), reconnecting with session handle.', e
           )
+          if not await _wait_before_reconnect(invocation_context, attempt):
+            # The client closed during the wait; mirror the client-closed
+            # handling above: only a clean close ends the stream.
+            if not isinstance(e, ConnectionClosedOK):
+              raise
+            async for event in finish_in_flight_calls():
+              yield event
+            return
           continue
         # No resumption handle + normal (1000) close = the model ended the
         # session cleanly; end the stream instead of erroring so live nodes
@@ -874,7 +917,11 @@ async def run_live_flow(
         )
         # Error code 1000, 1006 and 1011 indicates a recoverable connection drop.
         # In that case, we attempt to reconnect with session handle if available.
-        if e.code in [1000, 1006, 1011]:
+        # A 1008 saying the session is still connected to an existing client
+        # means the server has not released the previous connection yet, so it
+        # is recoverable too. The reconnect branch below only retries it while
+        # a resumption handle is held; any other 1008 is a policy violation.
+        if e.code in [1000, 1006, 1011] or _is_session_still_connected(e):
           if invocation_context.live_session_resumption_handle and (
               not client_closed
           ):
@@ -884,6 +931,14 @@ async def run_live_flow(
             logger.info(
                 'Connection lost (%s), reconnecting with session handle.', e
             )
+            if not await _wait_before_reconnect(invocation_context, attempt):
+              # The client closed during the wait; only a normal (1000) close
+              # ends the stream cleanly.
+              if e.code != 1000:
+                raise
+              async for event in finish_in_flight_calls():
+                yield event
+              return
             continue
           # No resumption handle + normal (1000) close = the model ended the
           # session cleanly; end the stream instead of erroring so live nodes
