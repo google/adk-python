@@ -39,6 +39,7 @@ from typing_extensions import override
 from google import genai
 
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._gcp_metadata import _get_enterprise_setting
 from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
@@ -64,6 +65,7 @@ _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
 _API_VERSION_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_API_VERSION'
+_GEMINI_API_VERSION = 'v1beta'
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -152,8 +154,8 @@ class Gemini(BaseLlm):
   exposes the latest preview features. Production deployments that require a
   stable, SLA-eligible endpoint can set this to ``v1`` to use the GA Vertex AI
   API. When unset, the ``GOOGLE_GENAI_API_VERSION`` environment variable is
-  consulted, and finally the SDK's own default is used so existing behavior is
-  unchanged.
+  consulted, and finally the Gemini API uses ``v1beta`` and Vertex AI the SDK's
+  own default.
 
   An API version embedded in the ``base_url`` path (e.g. a trailing ``/v1``)
   takes precedence over this field.
@@ -273,7 +275,8 @@ class Gemini(BaseLlm):
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
       llm_request.config.http_options.headers = merge_tracking_headers(
-          llm_request.config.http_options.headers or {}
+          llm_request.config.http_options.headers or {},
+          exclude_runtime_tag=self._exclude_runtime_tag(),
       )
       _, api_version = self._base_url_and_api_version
       if api_version is None:
@@ -421,6 +424,7 @@ class Gemini(BaseLlm):
         llm_request=llm_request,
         stream=stream,
         service_tier=llm_request.service_tier,
+        exclude_runtime_tag=self._exclude_runtime_tag(),
     ):
       yield llm_response
 
@@ -467,6 +471,8 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    if api_version is None and not _get_enterprise_setting(kwargs):
+      adk_http_options.api_version = _GEMINI_API_VERSION
     kwargs['http_options'] = self._with_adk_http_options(
         kwargs['http_options'], adk_http_options
     )
@@ -481,23 +487,33 @@ class Gemini(BaseLlm):
         else GoogleLLMVariant.GEMINI_API
     )
 
+  def _exclude_runtime_tag(self) -> bool:
+    """Returns whether tracking headers must leave out the hosting runtime tag.
+
+    Subclasses whose requests go to a non-Google endpoint return True.
+    """
+    return False
+
   def _tracking_headers(self) -> dict[str, str]:
-    return get_tracking_headers()
+    return get_tracking_headers(exclude_runtime_tag=self._exclude_runtime_tag())
 
   def _configured_api_version(self) -> str | None:
     """Returns the explicitly configured API version, if any.
 
     Resolution order:
       1. The ``api_version`` field set on this instance.
-      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable.
+      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable. Its ``beta``
+         value asks for each backend's beta version, which is what an unset
+         version gets, so it counts as unset.
 
-    Returns ``None`` when neither is set, in which case the google-genai SDK's
-    own default (``v1beta1`` for Vertex AI) applies, preserving existing
-    behavior.
+    Returns ``None`` when neither is set.
     """
     if self.api_version:
       return self.api_version
-    return os.environ.get(_API_VERSION_ENV_VARIABLE_NAME) or None
+    env_api_version = os.environ.get(_API_VERSION_ENV_VARIABLE_NAME)
+    if env_api_version == 'beta':
+      return None
+    return env_api_version or None
 
   @cached_property
   def _base_url_and_api_version(self) -> tuple[str | None, str | None]:
@@ -572,7 +588,10 @@ class Gemini(BaseLlm):
     for field in ('api_version', 'base_url', 'retry_options'):
       if getattr(http_options, field) is None:
         setattr(http_options, field, getattr(adk_http_options, field))
-    http_options.headers = merge_tracking_headers(http_options.headers or {})
+    http_options.headers = merge_tracking_headers(
+        http_options.headers or {},
+        exclude_runtime_tag=self._exclude_runtime_tag(),
+    )
     return http_options
 
   @contextlib.asynccontextmanager
@@ -666,7 +685,8 @@ class Gemini(BaseLlm):
       live_connect_config = live_connect_config.model_copy(
           update={
               'http_options': merge_tracking_http_options(
-                  http_options.model_copy() if http_options else None
+                  http_options.model_copy() if http_options else None,
+                  exclude_runtime_tag=self._exclude_runtime_tag(),
               )
           }
       )
