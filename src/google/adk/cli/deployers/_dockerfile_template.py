@@ -177,6 +177,88 @@ EXPOSE {port}
 """
 
 
+def _render_start_command(
+    app_name: str,
+    start_command_args: list[str],
+    *,
+    validate_agent_import: bool = False,
+) -> str:
+  """Renders the container `CMD` instruction in exec form.
+
+  When `validate_agent_import` is True, runs the `adk` CLI in-process and wraps
+  `fast_api.get_fast_api_app` so `app_name` is preloaded once on the server's
+  own `AgentLoader` (or directly via `AgentLoader` if `get_fast_api_app`
+  predates `agent_loader`) before `uvicorn` binds `PORT`. Running at container
+  startup rather than in `RUN` ensures runtime `env_vars`, `secret_env_vars`,
+  and the runtime service account are present without baking secrets into image
+  layers, while warming the server's `AgentLoader` cache avoids loading the
+  agent a second time on the first request. If loading fails, the process exits
+  non-zero before binding `PORT`, failing the deployment health check while
+  leaving any existing revision serving.
+
+  Args:
+    app_name: The name of the app; must pass `_validate_app_name`.
+    start_command_args: The `adk` command and its arguments.
+    validate_agent_import: Whether to preload and validate `app_name` at
+      container startup before binding `PORT`.
+
+  Returns:
+    A `CMD` instruction in exec form.
+  """
+  if not validate_agent_import:
+    return _to_exec_form('CMD', start_command_args)
+  _validate_app_name(app_name)
+  code = (
+      'import inspect\n'
+      'import sys\n'
+      'from google.adk.cli import fast_api\n'
+      '_orig_get_fast_api_app = fast_api.get_fast_api_app\n'
+      'def _get_fast_api_app(*args, **kwargs):\n'
+      '  fast_api.get_fast_api_app = _orig_get_fast_api_app\n'
+      '  _params = inspect.signature(_orig_get_fast_api_app).parameters\n'
+      '  _supports_loader = (\n'
+      '      "agent_loader" in _params\n'
+      '      or any(\n'
+      '          p.kind == inspect.Parameter.VAR_KEYWORD\n'
+      '          for p in _params.values()\n'
+      '      )\n'
+      '  )\n'
+      '  loader = None\n'
+      '  if _supports_loader:\n'
+      '    loader = kwargs.get("agent_loader")\n'
+      '    if loader is None and "agents_dir" in kwargs:\n'
+      '      try:\n'
+      '        from google.adk.cli.utils.agent_loader import AgentLoader\n'
+      '      except ImportError:\n'
+      '        AgentLoader = None\n'
+      '      loader_cls = (\n'
+      '          fast_api.NestedAgentLoader\n'
+      '          if kwargs.get("web") and hasattr(fast_api,'
+      ' "NestedAgentLoader")\n'
+      '          else getattr(fast_api, "AgentLoader", AgentLoader)\n'
+      '      )\n'
+      '      if loader_cls is not None:\n'
+      '        loader = loader_cls(kwargs["agents_dir"])\n'
+      '        kwargs["agent_loader"] = loader\n'
+      '  app = _orig_get_fast_api_app(*args, **kwargs)\n'
+      '  if loader is not None:\n'
+      f'    loader.load_agent("{app_name}")\n'
+      '  elif "agents_dir" in kwargs:\n'
+      '    try:\n'
+      '      from google.adk.cli.utils.agent_loader import AgentLoader\n'
+      '    except ImportError:\n'
+      '      pass\n'
+      '    else:\n'
+      f'      AgentLoader(kwargs["agents_dir"]).load_agent("{app_name}")\n'
+      '  return app\n'
+      'fast_api.get_fast_api_app = _get_fast_api_app\n'
+      'from google.adk.cli.cli_tools_click import main\n'
+      'sys.argv = sys.argv[1:]\n'
+      'sys.exit(main())'
+  )
+  return _to_exec_form('CMD', ['python', '-c', code, *start_command_args])
+
+
 def _render_install_agent_deps(
     app_name: str, requirements_txt_path: str, fallback: str
 ) -> str:
@@ -221,6 +303,7 @@ def _render_dockerfile(
     reinstall_extra_packages: str = '',
     extra_env_vars: str = '',
     python_version: str = _DEFAULT_PYTHON_VERSION,
+    validate_agent_import: bool = False,
 ) -> str:
   """Renders the Dockerfile used by every `adk deploy` target.
 
@@ -258,6 +341,9 @@ def _render_dockerfile(
       string.
     extra_env_vars: Extra `ENV` lines, or an empty string.
     python_version: The Python version for the base image (default: '3.11').
+    validate_agent_import: Whether to wrap `CMD` so `app_name` is preloaded on
+      the server's `AgentLoader` at container startup before binding `PORT`
+      (default: False).
 
   Returns:
     The Dockerfile contents.
@@ -288,7 +374,11 @@ def _render_dockerfile(
   )
   start_command_args.append('/app/agents')
 
-  start_command = _to_exec_form('CMD', start_command_args)
+  start_command = _render_start_command(
+      app_name,
+      start_command_args,
+      validate_agent_import=validate_agent_import,
+  )
   extras = ['a2a']
   if trace_to_cloud_option or otel_to_cloud_option:
     # gcp has the exporters both flags import, otel-gcp the instrumentation.

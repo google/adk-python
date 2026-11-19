@@ -19,6 +19,18 @@
       {
         "path": [
           "attributes",
+          "gen_ai.response.model"
+        ],
+        "example_native_instrumentation_value": "gemini-2.5-flash",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor version this suite pins omits `gen_ai.response.model` on `generate_content` spans (fixed in newer releases); ADK falls back to the requested model when `model_version` is absent."
+      },
+      {
+        "path": [
+          "attributes",
           "gen_ai.usage.output_tokens"
         ],
         "example_native_instrumentation_value": 25,

@@ -787,77 +787,8 @@ bigquery_agent_analytics:
     assert bq_plugin.table_id == "test-table"
     assert bq_plugin.location == "US"
 
-    # Assert that the internal visual builder flag is set on the app
-    assert getattr(runner.app, "_is_visual_builder_app", False) is True
-
-
-def test_get_runner_async_accepts_internal_special_agent_name(
-    tmp_path,
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  from google.adk.cli.adk_web_server import AdkWebServer
-
-  special_app_name = "__adk_agent_builder_assistant"
-  special_agent = DummyAgent(name="agent_builder_assistant")
-  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
-
-  adk_web_server = AdkWebServer(
-      agent_loader=mock_agent_loader,
-      session_service=mock_session_service,
-      memory_service=mock_memory_service,
-      artifact_service=mock_artifact_service,
-      credential_service=MagicMock(),
-      eval_sets_manager=mock_eval_sets_manager,
-      eval_set_results_manager=mock_eval_set_results_manager,
-      agents_dir=str(tmp_path),
-  )
-
-  runner = asyncio.run(adk_web_server.get_runner_async(special_app_name))
-
-  assert runner.app.name == special_app_name
-  assert runner.app.root_agent is special_agent
-  mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
-
-
-def test_api_server_get_runner_async_rejects_internal_special_agent_name(
-    tmp_path,
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  from google.adk.cli.api_server import ApiServer
-
-  special_app_name = "__adk_agent_builder_assistant"
-  special_agent = DummyAgent(name="agent_builder_assistant")
-  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
-
-  api_server = ApiServer(
-      agent_loader=mock_agent_loader,
-      session_service=mock_session_service,
-      memory_service=mock_memory_service,
-      artifact_service=mock_artifact_service,
-      credential_service=MagicMock(),
-      eval_sets_manager=mock_eval_sets_manager,
-      eval_set_results_manager=mock_eval_set_results_manager,
-      agents_dir=str(tmp_path),
-  )
-
-  with pytest.raises(HTTPException) as exc_info:
-    asyncio.run(api_server.get_runner_async(special_app_name))
-
-  assert exc_info.value.status_code == 403
-  assert (
-      "Access to internal special agents is disabled in API server mode"
-      in exc_info.value.detail
-  )
+    # YAML agents are no longer tagged as Visual Builder apps for telemetry.
+    assert not hasattr(runner.app, "_is_visual_builder_app")
 
 
 _NO_EVAL_SETS_MANAGER = "Eval sets manager is not configured"
@@ -1072,54 +1003,6 @@ async def test_event_graph_for_workflow_root_is_empty(
   assert response.json() == {}
 
 
-@pytest.mark.parametrize(
-    ("web", "bind_host", "expected"),
-    [
-        (True, "127.0.0.1", True),
-        (True, "localhost", True),
-        (True, "::1", True),
-        (True, "0.0.0.0", False),
-        (True, "::", False),
-        (True, "192.168.1.10", False),
-        (True, None, False),
-        (False, "127.0.0.1", False),
-    ],
-)
-def test_special_agents_allowed_only_on_loopback_web_server(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-    web,
-    bind_host,
-    expected,
-):
-  # The agent builder assistant writes files the server imports, and the dev
-  # server is unauthenticated, so it must not be reachable off the machine.
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      web=web,
-      bind_host=bind_host,
-  )
-
-  assert mock_agent_loader._allow_special_agents is expected
-  if not expected:
-    # Refused by the server itself, not by a 500 from the loader.
-    response = client.get(
-        "/apps/__adk_agent_builder_assistant/app-info",
-        headers={"host": "127.0.0.1:8000"},
-    )
-    assert response.status_code == 403
-    assert "internal special agents" in response.json()["detail"]
-
-
 def test_get_fast_api_app_skips_span_processors_without_add_span_processor(
     tmp_path,
     monkeypatch,
@@ -1213,7 +1096,7 @@ def test_app(
 
 
 @pytest.fixture
-def builder_test_app(
+def dev_test_app(
     request,
     tmp_path,
     mock_session_service,
@@ -1287,20 +1170,20 @@ def builder_test_app(
 
 
 @pytest.fixture
-def builder_test_client(builder_test_app):
+def dev_test_client(dev_test_app):
   """A client that reaches the server from the machine it runs on."""
   return TestClient(
-      builder_test_app,
+      dev_test_app,
       base_url=_LOOPBACK_BASE_URL,
       client=("127.0.0.1", 51234),
   )
 
 
 @pytest.fixture
-def remote_builder_test_client(builder_test_app):
+def remote_dev_test_client(dev_test_app):
   """A client that reaches the server from somewhere else on the network."""
   return TestClient(
-      builder_test_app,
+      dev_test_app,
       base_url=_LOOPBACK_BASE_URL,
       client=("203.0.113.7", 51234),
   )
@@ -5859,10 +5742,10 @@ def test_add_session_to_eval_set_with_missing_session(test_app):
   assert response.json()["detail"] == "Session not found"
 
 
-def test_list_metrics_info(builder_test_client):
+def test_list_metrics_info(dev_test_client):
   """Test listing metrics info."""
   url = "/dev/apps/test_app/metrics-info"
-  response = builder_test_client.get(url)
+  response = dev_test_client.get(url)
 
   # Verify the response
   assert response.status_code == 200
@@ -5879,7 +5762,7 @@ def test_list_metrics_info(builder_test_client):
 
 
 def test_list_metrics_info_includes_metrics_that_need_no_threshold(
-    builder_test_client,
+    dev_test_client,
 ):
   """Informational metrics are listed too, flagged as needing no threshold.
 
@@ -5887,7 +5770,7 @@ def test_list_metrics_info_includes_metrics_that_need_no_threshold(
   filters on `requiresThreshold`; a caller that only describes metrics, such
   as the Dev UI's result tooltips, needs every registered metric present.
   """
-  response = builder_test_client.get("/dev/apps/test_app/metrics-info")
+  response = dev_test_client.get("/dev/apps/test_app/metrics-info")
 
   assert response.status_code == 200
   by_name = {
@@ -6303,333 +6186,14 @@ def test_patch_memory(test_app, create_test_session, mock_memory_service):
   logger.info("Add session to memory test completed successfully")
 
 
-def test_builder_final_save_preserves_files_and_cleans_tmp(
-    builder_test_client, tmp_path
+def test_remote_client_can_still_reach_read_only_endpoints(
+    remote_dev_test_client,
 ):
-  files = [
-      (
-          "files",
-          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
-      ),
-      (
-          "files",
-          ("app/sub_agent.yaml", b"name: sub\n", "application/x-yaml"),
-      ),
-  ]
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true", files=files
-  )
-  assert response.status_code == 200
-  assert response.json() is True
-
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save",
-      files=[(
-          "files",
-          (
-              "app/root_agent.yaml",
-              b"name: app_updated\n",
-              "application/x-yaml",
-          ),
-      )],
-  )
-  assert response.status_code == 200
-  assert response.json() is True
-
-  assert (tmp_path / "app" / "sub_agent.yaml").is_file()
-  assert not (tmp_path / "app" / "tmp" / "app").exists()
-  tmp_dir = tmp_path / "app" / "tmp"
-  assert not tmp_dir.exists() or not any(tmp_dir.iterdir())
-
-
-def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      headers={"origin": "https://evil.com"},
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
-      )],
-  )
-
-  assert response.status_code == 403
-  assert response.text == "Forbidden: origin not allowed"
-  assert not (tmp_path / "app" / "tmp" / "app").exists()
-
-
-def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      headers={"origin": _LOOPBACK_BASE_URL},
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
-      )],
-  )
-
-  assert response.status_code == 200
-  assert response.json() is True
-  assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
-
-
-def test_builder_get_rejects_cross_origin_get(builder_test_client):
-  """Reads expose agent config and session data, so they are guarded too."""
-  response = builder_test_client.get(
-      "/dev/apps/missing/builder?tmp=true",
-      headers={"origin": "https://evil.com"},
-  )
-
-  assert response.status_code == 403
-  assert response.text == "Forbidden: origin not allowed"
-
-
-def test_builder_get_allows_same_origin_get(builder_test_client):
-  """The dev UI reads its own agent config from the same origin."""
-  response = builder_test_client.get(
-      "/dev/apps/missing/builder?tmp=true",
-      headers={"origin": _LOOPBACK_BASE_URL},
-  )
-
-  assert response.status_code == 200
-  assert not response.text
-
-
-def test_builder_get_allows_request_without_origin(builder_test_client):
-  """Browsers omit Origin on same-origin reads, and CLI clients never send it."""
-  response = builder_test_client.get("/dev/apps/missing/builder?tmp=true")
-
-  assert response.status_code == 200
-  assert not response.text
-
-
-@pytest.mark.parametrize(
-    "builder_test_app", [["*"], ["regex:https://.*"]], indirect=True
-)
-def test_builder_save_rejects_origin_allowed_only_by_wildcard(
-    builder_test_client, tmp_path
-):
-  """A wildcard opens CORS to every site, but not agent file writes."""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save",
-      headers={"origin": "https://evil.example"},
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
-      )],
-  )
-
-  assert response.status_code == 403
-  assert "own origin" in response.json()["detail"]
-  assert not (tmp_path / "app" / "root_agent.yaml").exists()
-
-
-@pytest.mark.parametrize(
-    "builder_test_app", [["*", "https://ide.example"]], indirect=True
-)
-@pytest.mark.parametrize("origin", [_LOOPBACK_BASE_URL, "https://ide.example"])
-def test_builder_save_allows_own_or_literally_listed_origin(
-    builder_test_client, tmp_path, origin
-):
-  """The dev UI and an origin the developer named still reach the builder."""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save",
-      headers={"origin": origin},
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
-      )],
-  )
-
-  assert response.status_code == 200
-  assert (tmp_path / "app" / "root_agent.yaml").is_file()
-
-
-@pytest.mark.parametrize(
-    "method, path, body",
-    [
-        ("GET", "/apps/__internal_assistant/app-info", None),
-        (
-            "POST",
-            "/run",
-            {
-                "app_name": "__internal_assistant",
-                "user_id": "u",
-                "session_id": "s",
-                "new_message": {"role": "user", "parts": [{"text": "hi"}]},
-            },
-        ),
-    ],
-)
-def test_special_agent_rejects_origin_allowed_only_by_wildcard(
-    method,
-    path,
-    body,
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """Internal agents write code, so a wildcard does not open them to sites."""
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      allow_origins=["*"],
-      bind_host="127.0.0.1",
-  )
-  headers = {"host": "127.0.0.1:8000", "origin": "https://evil.example"}
-
-  response = client.request(method, path, json=body, headers=headers)
-
-  assert response.status_code == 403
-  assert "own origin" in response.json()["detail"]
-
-
-def test_special_agent_allows_own_origin_with_wildcard(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """The dev UI keeps the builder assistant when allow_origins has '*'."""
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      allow_origins=["*"],
-      bind_host="127.0.0.1",
-  )
-
-  response = client.get(
-      "/apps/__internal_assistant/app-info",
-      headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
-  )
-
-  assert response.status_code == 200
-  assert response.json()["rootAgentName"] == "dummy_agent"
-
-
-def test_special_agent_allows_proxied_origin_without_allow_origins(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """Without a wildcard, the forwarded-host same-origin check still applies."""
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      allow_origins=None,
-      bind_host="127.0.0.1",
-  )
-
-  response = client.get(
-      "/apps/__internal_assistant/app-info",
-      headers={
-          "host": "127.0.0.1:8000",
-          "x-forwarded-host": "localhost:9000",
-          "origin": "http://localhost:9000",
-      },
-  )
-
-  assert response.status_code == 200
-  assert response.json()["rootAgentName"] == "dummy_agent"
-
-
-def test_builder_save_rejects_remote_client(
-    remote_builder_test_client, tmp_path
-):
-  """A non-browser client off-machine must not be able to write agent YAML."""
-  # Omitting the Origin header skips _OriginCheckMiddleware entirely, so the
-  # loopback check is the only thing between the network and agents_dir.
-  response = remote_builder_test_client.post(
-      "/dev/apps/app/builder/save",
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
-      )],
-  )
-
-  assert response.status_code == 403
-  assert not (tmp_path / "app" / "root_agent.yaml").exists()
-
-
-def test_builder_get_rejects_remote_client(remote_builder_test_client):
-  """The YAML readback is a disclosure too, so it is gated the same way."""
-  response = remote_builder_test_client.get("/dev/apps/app/builder")
-
-  assert response.status_code == 403
-
-
-def test_builder_cancel_rejects_remote_client(remote_builder_test_client):
-  """Discarding another developer's draft is a remote write as well."""
-  response = remote_builder_test_client.post("/dev/apps/app/builder/cancel")
-
-  assert response.status_code == 403
-
-
-def test_builder_save_rejects_forwarded_loopback_client(
-    builder_test_client, tmp_path
-):
-  """Behind a proxy the peer is loopback but the caller is still remote."""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save",
-      headers={"x-forwarded-for": "203.0.113.7"},
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
-      )],
-  )
-
-  assert response.status_code == 403
-  assert not (tmp_path / "app" / "root_agent.yaml").exists()
-
-
-def test_builder_save_allows_remote_client_when_opted_in(
-    remote_builder_test_client, tmp_path, monkeypatch
-):
-  """Serving the builder off-machine stays possible, but has to be chosen."""
-  monkeypatch.setenv("ADK_ALLOW_REMOTE_AGENT_BUILDER", "1")
-
-  response = remote_builder_test_client.post(
-      "/dev/apps/app/builder/save",
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
-      )],
-  )
-
-  assert response.status_code == 200
-  assert (tmp_path / "app" / "root_agent.yaml").is_file()
-
-
-def test_remote_client_can_still_reach_non_builder_endpoints(
-    remote_builder_test_client,
-):
-  """The gate is scoped to mutating /dev routes and builder readback."""
-  assert remote_builder_test_client.get("/list-apps").status_code == 200
+  """The gate is scoped to mutating /dev routes."""
+  assert remote_dev_test_client.get("/list-apps").status_code == 200
+  assert remote_dev_test_client.get("/dev/apps/app/tests").status_code == 200
   assert (
-      remote_builder_test_client.get("/dev/apps/app/tests").status_code == 200
-  )
-  assert (
-      remote_builder_test_client.get("/dev/apps/app/eval-sets").status_code
-      == 200
+      remote_dev_test_client.get("/dev/apps/app/eval-sets").status_code == 200
   )
 
 
@@ -6684,14 +6248,14 @@ def test_remote_client_can_still_reach_non_builder_endpoints(
     ],
 )
 def test_mutating_dev_routes_reject_remote_client(
-    remote_builder_test_client, builder_test_client, method, path, json_body
+    remote_dev_test_client, dev_test_client, method, path, json_body
 ):
   """All mutating /dev endpoints reject non-loopback and proxied callers."""
   kwargs = {"json": json_body} if json_body is not None else {}
-  remote_response = remote_builder_test_client.request(method, path, **kwargs)
+  remote_response = remote_dev_test_client.request(method, path, **kwargs)
   assert remote_response.status_code == 403
 
-  forwarded_response = builder_test_client.request(
+  forwarded_response = dev_test_client.request(
       method,
       path,
       headers={"x-forwarded-for": "203.0.113.7"},
@@ -6700,390 +6264,61 @@ def test_mutating_dev_routes_reject_remote_client(
   assert forwarded_response.status_code == 403
 
 
-def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
-  tmp_agent_root = tmp_path / "app" / "tmp" / "app"
-  tmp_agent_root.mkdir(parents=True, exist_ok=True)
-  (tmp_agent_root / "root_agent.yaml").write_text("name: app\n")
-
-  response = builder_test_client.post("/dev/apps/app/builder/cancel")
-  assert response.status_code == 200
-  assert response.json() is True
-  assert not (tmp_path / "app" / "tmp").exists()
-
-  response = builder_test_client.post("/dev/apps/app/builder/cancel")
-  assert response.status_code == 200
-  assert response.json() is True
-  assert not (tmp_path / "app" / "tmp").exists()
-
-
-def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
-  app_root = tmp_path / "app"
-  app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "root_agent.yaml").write_bytes(b"name: app\n")
-  nested_dir = app_root / "nested"
-  nested_dir.mkdir(parents=True, exist_ok=True)
-  (nested_dir / "nested.yaml").write_bytes(b"nested: true\n")
-
-  assert not (app_root / "tmp").exists()
-  response = builder_test_client.get("/dev/apps/app/builder?tmp=true")
-  assert response.status_code == 200
-  assert response.text == "name: app\n"
-
-  tmp_agent_root = app_root / "tmp" / "app"
-  assert (tmp_agent_root / "root_agent.yaml").is_file()
-  assert (tmp_agent_root / "nested" / "nested.yaml").is_file()
-
-  response = builder_test_client.get(
-      "/dev/apps/app/builder?tmp=true&file_path=nested/nested.yaml"
-  )
-  assert response.status_code == 200
-  assert response.text == "nested: true\n"
-
-
-def test_builder_get_tmp_true_missing_app_returns_empty(
-    builder_test_client, tmp_path
-):
-  response = builder_test_client.get("/dev/apps/missing/builder?tmp=true")
-  assert response.status_code == 200
-  assert response.text == ""
-  assert not (tmp_path / "missing").exists()
-
-
-def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      files=[(
-          "files",
-          ("app/../escape.yaml", b"nope\n", "application/x-yaml"),
-      )],
-  )
-  assert response.status_code == 400
-  assert not (tmp_path / "escape.yaml").exists()
-  assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
-
-
-def test_builder_save_rejects_py_files(builder_test_client, tmp_path):
-  """Uploading .py files via /builder/save is rejected."""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      files=[(
-          "files",
-          ("app/agent.py", b"import os\nos.system('id')\n", "text/plain"),
-      )],
-  )
-  assert response.status_code == 400
-  assert not (tmp_path / "app" / "tmp" / "app" / "agent.py").exists()
-
-
-def test_builder_save_rejects_non_yaml_extensions(
-    builder_test_client, tmp_path
-):
-  """Uploading non-YAML files (.json, .txt, .sh, etc.) is rejected."""
-  for ext, content in [
-      (".py", b"print('hi')"),
-      (".json", b"{}"),
-      (".txt", b"hello"),
-      (".sh", b"#!/bin/bash"),
-      (".pth", b"import os"),
-  ]:
-    response = builder_test_client.post(
-        "/dev/apps/app/builder/save?tmp=true",
-        files=[(
-            "files",
-            (f"app/file{ext}", content, "application/octet-stream"),
-        )],
-    )
-    assert response.status_code == 400, f"Expected 400 for {ext}"
-
-
-def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
-  """Uploading .yaml and .yml files is allowed."""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      files=[(
-          "files",
-          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
-      )],
-  )
-  assert response.status_code == 200
-  assert response.json() is True
-
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      files=[(
-          "files",
-          ("app/sub_agent.yml", b"name: sub\n", "application/x-yaml"),
-      )],
-  )
-  assert response.status_code == 200
-  assert response.json() is True
-
-
-def test_builder_save_rejects_args_key(builder_test_client, tmp_path):
-  """Uploading YAML with an `args` key is rejected (RCE prevention)."""
-  yaml_with_args = b"""\
-name: my_tool
-args:
-  key: value
-"""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      files=[(
-          "files",
-          ("app/root_agent.yaml", yaml_with_args, "application/x-yaml"),
-      )],
-  )
-  assert response.status_code == 400
-  assert "args" in response.json()["detail"]
-  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
-
-
-def test_builder_save_rejects_nested_args_key(builder_test_client, tmp_path):
-  """Uploading YAML with a nested `args` key is rejected."""
-  yaml_with_nested_args = b"""\
-tools:
-  - name: some_tool
-    args:
-      param: value
-"""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      files=[(
-          "files",
-          ("app/root_agent.yaml", yaml_with_nested_args, "application/x-yaml"),
-      )],
-  )
-  assert response.status_code == 400
-  assert "args" in response.json()["detail"]
-
-
-def _save_builder_yaml(client, content, *, app_name="app"):
-  """POST YAML to the builder save endpoint for the given app."""
+def _post_telemetry_consent(client, **kwargs):
+  """Posts to /config/telemetry, a mutating dev route with no side effects."""
   return client.post(
-      f"/dev/apps/{app_name}/builder/save?tmp=true",
-      files=[(
-          "files",
-          (f"{app_name}/root_agent.yaml", content, "application/x-yaml"),
-      )],
+      "/config/telemetry",
+      json={"telemetry": True},
+      headers={"x-adk-telemetry-request": "true", **kwargs.pop("headers", {})},
+      **kwargs,
   )
 
 
-def test_builder_save_rejects_external_tool_reference(
-    builder_test_client, tmp_path
+def test_mutating_dev_route_allows_remote_client_when_opted_in(
+    remote_dev_test_client, monkeypatch
 ):
-  """A tool naming code outside the app is rejected."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\ntools:\n  - name: os.system\n",
-  )
-  assert response.status_code == 400
-  assert "os.system" in response.json()["detail"]
-  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+  """Serving the dev routes off-machine stays possible, but has to be chosen."""
+  monkeypatch.setenv("ADK_ALLOW_REMOTE_AGENT_BUILDER", "1")
 
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    response = _post_telemetry_consent(remote_dev_test_client)
 
-def test_builder_save_allows_project_tool_reference(builder_test_client):
-  """A tool under the app being edited is allowed."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\ntools:\n  - name: app.tools.search\n",
-  )
   assert response.status_code == 200
-
-
-def test_builder_save_allows_built_in_tool_short_name(builder_test_client):
-  """An undotted tool name still resolves against ADK's own built-ins."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\ntools:\n  - name: google_search\n",
-  )
-  assert response.status_code == 200
-
-
-def test_builder_save_allows_built_in_agent_class(builder_test_client):
-  """A qualified ADK agent class is allowed."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"agent_class: google.adk.agents.LlmAgent\nname: my_agent\n",
-  )
-  assert response.status_code == 200
-
-
-def test_builder_save_rejects_adk_submodule_reference(builder_test_client):
-  """An ADK path reaching past the exported built-ins is rejected."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\ntools:\n"
-      b"  - name: google.adk.tools.bash_tool.BashTool\n",
-  )
-  assert response.status_code == 400
-  assert "BashTool" in response.json()["detail"]
-
-
-def test_builder_save_rejects_external_callback_reference(builder_test_client):
-  """A callback naming code outside the app is rejected."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\nbefore_agent_callbacks:\n  - name: os.system\n",
-  )
-  assert response.status_code == 400
-  assert "before_agent_callbacks" in response.json()["detail"]
-
-
-def test_builder_save_rejects_external_sub_agent_code(builder_test_client):
-  """A sub-agent naming code outside the app is rejected."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\nsub_agents:\n  - code: other_package.agent\n",
-  )
-  assert response.status_code == 400
-  assert "other_package.agent" in response.json()["detail"]
-
-
-def test_builder_save_rejects_external_schema_reference(builder_test_client):
-  """A schema given as a bare string is validated like any other reference."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\ninput_schema: os.path\n",
-  )
-  assert response.status_code == 400
-  assert "input_schema" in response.json()["detail"]
+  mock_write.assert_called_once_with(True)
 
 
 @pytest.mark.parametrize(
-    ("app_name", "reference"),
-    [
-        ("os", "os.system"),
-        ("sys", "sys.exit"),
-        ("google", "google.genai.Client"),
-        ("dotenv", "dotenv.cli.run_command"),
-    ],
+    "dev_test_app", [["*"], ["regex:https://.*"]], indirect=True
 )
-def test_builder_save_rejects_reference_when_app_name_shadows_module(
-    builder_test_client, app_name, reference
+def test_mutating_dev_route_rejects_origin_allowed_only_by_wildcard(
+    dev_test_client,
 ):
-  """An app named after a real module cannot vouch for its own references."""
-  response = _save_builder_yaml(
-      builder_test_client,
-      f"name: my_agent\ntools:\n  - name: {reference}\n".encode(),
-      app_name=app_name,
-  )
-  assert response.status_code == 400
-  assert "shadows" in response.json()["detail"]
-
-
-def test_builder_save_allows_reference_when_app_imports_from_its_directory(
-    builder_test_client, tmp_path, monkeypatch
-):
-  """An app that is importable passes when it imports from its own folder."""
-  (tmp_path / "importable_app").mkdir()
-  (tmp_path / "importable_app" / "__init__.py").touch()
-  monkeypatch.syspath_prepend(str(tmp_path))
-  response = _save_builder_yaml(
-      builder_test_client,
-      b"name: my_agent\ntools:\n  - name: importable_app.tools.search\n",
-      app_name="importable_app",
-  )
-  assert response.status_code == 200
-
-
-def test_builder_save_covers_every_code_config_field(builder_test_client):
-  """Every config field holding a CodeConfig is checked on upload."""
-  code_config_fields = set()
-  for agent in (BaseAgent, LlmAgent):
-    for name, field in agent.config_type.model_fields.items():
-      if "CodeConfig" in str(field.annotation):
-        code_config_fields.add(name)
-  assert code_config_fields, "expected agent configs to declare CodeConfig"
-
-  for field_name in sorted(code_config_fields):
-    content = f"name: my_agent\n{field_name}:\n  name: os.system\n"
-    response = _save_builder_yaml(builder_test_client, content.encode())
-    assert response.status_code == 400, field_name
-    assert field_name in response.json()["detail"]
-
-
-def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /dev/apps/{app_name}/builder?file_path=...
-
-  rejects non-YAML extensions.
-  """
-  app_root = tmp_path / "app"
-  app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / ".env").write_text("SECRET=supersecret\n")
-  (app_root / "agent.py").write_text("root_agent = None\n")
-  (app_root / "config.json").write_text("{}\n")
-
-  for file_path in [".env", "agent.py", "config.json"]:
-    response = builder_test_client.get(
-        f"/dev/apps/app/builder?file_path={file_path}"
+  """A wildcard opens CORS to every site, but not the mutating dev routes."""
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    response = _post_telemetry_consent(
+        dev_test_client, headers={"origin": "https://evil.example"}
     )
-    assert response.status_code == 200, f"Expected 200 for {file_path}"
-    assert response.text == "", f"Expected empty response for {file_path}"
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+  mock_write.assert_not_called()
 
 
-def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /dev/apps/{app_name}/builder?file_path=... allows YAML extensions."""
-  app_root = tmp_path / "app"
-  app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "sub_agent.yaml").write_bytes(b"name: sub\n")
-  (app_root / "tool.yml").write_bytes(b"name: tool\n")
-
-  response = builder_test_client.get(
-      "/dev/apps/app/builder?file_path=sub_agent.yaml"
-  )
-  assert response.status_code == 200
-  assert response.text == "name: sub\n"
-
-  response = builder_test_client.get("/dev/apps/app/builder?file_path=tool.yml")
-  assert response.status_code == 200
-  assert response.text == "name: tool\n"
-
-
-def test_builder_endpoints_not_registered_without_web(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
+@pytest.mark.parametrize(
+    "dev_test_app", [["*", "https://ide.example"]], indirect=True
+)
+@pytest.mark.parametrize("origin", [_LOOPBACK_BASE_URL, "https://ide.example"])
+def test_mutating_dev_route_allows_own_or_literally_listed_origin(
+    dev_test_client, origin
 ):
-  """Builder endpoints must not be registered when web=False (e.g. deploy)."""
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      web=False,
-  )
-  # /dev/apps/app/builder/save should return 404/405, not 200
-  response = client.post(
-      "/dev/apps/app/builder/save",
-      files=[
-          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
-      ],
-  )
-  assert response.status_code in (404, 405)
+  """The dev UI and an origin the developer named still reach the dev routes."""
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    response = _post_telemetry_consent(
+        dev_test_client, headers={"origin": origin}
+    )
 
-  # /dev/apps/{name}/builder/cancel should also be absent
-  response = client.post("/dev/apps/app/builder/cancel")
-  assert response.status_code in (404, 405)
-
-  # /dev/apps/{name}/builder GET should also be absent
-  response = client.get("/dev/apps/app/builder")
-  assert response.status_code in (404, 405)
-
-
-def test_builder_endpoints_registered_with_web(builder_test_client):
-  """Builder endpoints are available when web=True."""
-  response = builder_test_client.post(
-      "/dev/apps/app/builder/save?tmp=true",
-      files=[
-          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
-      ],
-  )
   assert response.status_code == 200
+  mock_write.assert_called_once_with(True)
 
 
 def test_agent_run_resume_without_message_success(
@@ -7151,11 +6386,11 @@ def test_telemetry_post_endpoint_missing_header(test_app):
 
 
 def test_telemetry_post_endpoint_rejects_remote_client(
-    remote_builder_test_client,
+    remote_dev_test_client,
 ):
   """Any non-browser caller can set the header, so the peer address gates it."""
   with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
-    response = remote_builder_test_client.post(
+    response = remote_dev_test_client.post(
         "/config/telemetry",
         json={"telemetry": True},
         headers={"x-adk-telemetry-request": "true"},
@@ -7272,146 +6507,6 @@ def test_returns_404_without_auto_create(
   response = test_app.post(endpoint, json=payload)
   assert response.status_code == 404
   assert "Session not found" in response.json()["detail"]
-
-
-@pytest.mark.asyncio
-async def test_independent_telemetry_context(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-    monkeypatch,
-):
-  """Test that two agents have independent is_visual_builder context variables."""
-  from google.adk.utils._telemetry_context import _is_visual_builder
-  import httpx
-
-  # We use httpx.AsyncClient to send concurrent requests to the FastAPI app.
-  # This proves that is_visual_builder doesn't leak across concurrent requests.
-  captured_visual_builder_values = {}
-
-  async def run_async_capture(
-      self,
-      *,
-      user_id: str,
-      session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
-  ):
-    # Capture the value of is_visual_builder inside the request context
-    captured_visual_builder_values[self.app.name] = _is_visual_builder.get()
-
-    # Sleep to ensure both requests overlap in time
-    await asyncio.sleep(0.1)
-
-    # Read again to ensure it wasn't overwritten by the other concurrent request
-    captured_visual_builder_values[self.app.name + "_after_sleep"] = (
-        _is_visual_builder.get()
-    )
-
-    yield _event_1()
-
-  monkeypatch.setattr(Runner, "run_async", run_async_capture)
-
-  with (
-      patch.object(signal, "signal", autospec=True, return_value=None),
-      patch.object(
-          fast_api_module,
-          "create_session_service_from_options",
-          autospec=True,
-          return_value=mock_session_service,
-      ),
-      patch.object(
-          fast_api_module,
-          "create_artifact_service_from_options",
-          autospec=True,
-          return_value=mock_artifact_service,
-      ),
-      patch.object(
-          fast_api_module,
-          "create_memory_service_from_options",
-          autospec=True,
-          return_value=mock_memory_service,
-      ),
-      patch.object(
-          fast_api_module,
-          "AgentLoader",
-          autospec=True,
-          return_value=mock_agent_loader,
-      ),
-      patch.object(
-          fast_api_module,
-          "NestedAgentLoader",
-          autospec=True,
-          return_value=mock_agent_loader,
-      ),
-      patch.object(
-          fast_api_module,
-          "LocalEvalSetsManager",
-          autospec=True,
-          return_value=mock_eval_sets_manager,
-      ),
-      patch.object(
-          fast_api_module,
-          "LocalEvalSetResultsManager",
-          autospec=True,
-          return_value=mock_eval_set_results_manager,
-      ),
-      patch.object(
-          os.path,
-          "exists",
-          autospec=True,
-          side_effect=lambda p: "yaml_app" in str(p)
-          and str(p).endswith("root_agent.yaml"),
-      ),
-  ):
-    app = get_fast_api_app(
-        agents_dir=".",
-        web=True,
-        session_service_uri="",
-        artifact_service_uri="",
-        memory_service_uri="",
-        allow_origins=["*"],
-        a2a=False,
-        host="127.0.0.1",
-        port=8000,
-    )
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
-      # Send concurrent requests
-      req1 = client.post(
-          "/run",
-          json={
-              "app_name": "test_app",
-              "user_id": "test_user",
-              "session_id": "test_session",
-              "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
-          },
-      )
-      req2 = client.post(
-          "/run",
-          json={
-              "app_name": "yaml_app",
-              "user_id": "test_user",
-              "session_id": "test_session",
-              "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
-          },
-      )
-
-      await asyncio.gather(req1, req2)
-
-  assert captured_visual_builder_values.get("test_app") == False
-  assert captured_visual_builder_values.get("test_app_after_sleep") == False
-
-  assert captured_visual_builder_values.get("yaml_app") == True
-  assert captured_visual_builder_values.get("yaml_app_after_sleep") == True
 
 
 def test_default_app_name_middleware_and_resolution(
@@ -8767,51 +7862,26 @@ def test_span_buffers_filled_when_web_enabled(
   ) == ["ApiServerSpanExporter", "InMemoryExporter"]
 
 
-def test_app_info_serves_special_agent_only_on_loopback_dev_server(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
+def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
+    dev_test_client,
 ):
-  """Internal `__` apps reach a loopback dev server, but not the api server."""
-  api_only_client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      web=False,
-  )
+  """_get_agent_dir only accepts dot-separated Python identifiers."""
+  ok = dev_test_client.get("/dev/apps/test_app/tests")
+  assert ok.status_code == 200
+  assert ok.json() == []
 
-  blocked = api_only_client.get("/apps/__internal_assistant/app-info")
-  assert blocked.status_code == 403
-  assert "internal special agents" in blocked.json()["detail"]
+  nested_ok = dev_test_client.get("/dev/apps/pkg.test_app/tests")
+  assert nested_ok.status_code == 200
 
-  # Same request on a loopback-bound dev server gets past the guard and is
-  # answered on the merits of the loaded DummyAgent (200 with empty agents).
-  dev_client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      bind_host="127.0.0.1",
-  )
-  allowed = dev_client.get(
-      "/apps/__internal_assistant/app-info",
-      headers={"host": "127.0.0.1:8000"},
-  )
-  assert allowed.status_code == 200
-  assert allowed.json()["rootAgentName"] == "dummy_agent"
+  for bad_name in ("bad-name", "1app", "app%20name"):
+    rejected = dev_test_client.get(f"/dev/apps/{bad_name}/tests")
+    assert rejected.status_code == 400, bad_name
+    assert "must be valid" in rejected.json()["detail"]
 
 
-@pytest.mark.parametrize("bind_host", ["0.0.0.0", None])
-def test_dev_server_rejects_special_agent_unless_bound_to_loopback(
-    bind_host,
+@pytest.mark.parametrize("web", [True, False])
+def test_app_info_rejects_reserved_double_underscore_name(
+    web,
     tmp_path,
     mock_session_service,
     mock_artifact_service,
@@ -8820,8 +7890,10 @@ def test_dev_server_rejects_special_agent_unless_bound_to_loopback(
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
 ):
-  """A dev server on a network address, or an unknown one, refuses `__` apps."""
-  agent_loader = AgentLoader(str(tmp_path))
+  """`__` names are reserved, so an agents_dir entry cannot be reached by one."""
+  agent_dir = tmp_path / "__hidden_agent"
+  agent_dir.mkdir()
+  (agent_dir / "agent.py").write_text("root_agent = None\n")
   client = _create_test_client(
       mock_session_service,
       mock_artifact_service,
@@ -8829,63 +7901,20 @@ def test_dev_server_rejects_special_agent_unless_bound_to_loopback(
       mock_agent_loader,
       mock_eval_sets_manager,
       mock_eval_set_results_manager,
-      agent_loader=agent_loader,
-      bind_host=bind_host,
+      agent_loader=AgentLoader(str(tmp_path)),
+      web=web,
+      bind_host="127.0.0.1",
   )
 
-  response = client.get("/apps/__internal_assistant/app-info")
+  response = client.get(
+      "/apps/__hidden_agent/app-info", headers={"host": "127.0.0.1:8000"}
+  )
 
-  assert response.status_code == 403
-  assert "loopback" in response.json()["detail"]
-  # Eval runs load the app without a runner, so the loader must refuse it too.
-  with pytest.raises(PermissionError):
-    agent_loader.load_agent("__adk_agent_builder_assistant")
-
-
-def test_api_server_fallback_rejects_special_agent_even_on_loopback(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """Packages that ship without dev_server.py get an ApiServer, which is closed."""
-  with patch.dict(sys.modules, {"google.adk.cli.dev_server": None}):
-    client = _create_test_client(
-        mock_session_service,
-        mock_artifact_service,
-        mock_memory_service,
-        mock_agent_loader,
-        mock_eval_sets_manager,
-        mock_eval_set_results_manager,
-        bind_host="127.0.0.1",
-    )
-
-  response = client.get("/apps/__internal_assistant/app-info")
-
-  assert response.status_code == 403
-  assert "internal special agents" in response.json()["detail"]
+  assert response.status_code == 404
+  assert "reserved" in response.json()["detail"]
 
 
-def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
-    builder_test_client,
-):
-  """_get_agent_dir only accepts dot-separated Python identifiers."""
-  ok = builder_test_client.get("/dev/apps/test_app/tests")
-  assert ok.status_code == 200
-  assert ok.json() == []
-
-  nested_ok = builder_test_client.get("/dev/apps/pkg.test_app/tests")
-  assert nested_ok.status_code == 200
-
-  for bad_name in ("bad-name", "1app", "app%20name"):
-    rejected = builder_test_client.get(f"/dev/apps/{bad_name}/tests")
-    assert rejected.status_code == 400, bad_name
-    assert "must be valid" in rejected.json()["detail"]
-
-
-def _create_builder_session(client, payload=None):
+def _create_dev_session(client, payload=None):
   response = client.post(
       "/apps/test_app/users/test_user/sessions", json=payload or {}
   )
@@ -8894,28 +7923,28 @@ def _create_builder_session(client, payload=None):
 
 
 def test_dev_create_session_seeds_state_from_initial_state_file(
-    builder_test_client, tmp_path
+    dev_test_client, tmp_path
 ):
   (tmp_path / "test_app").mkdir()
   (tmp_path / "test_app" / "initial_state.json").write_text(
       json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
   )
 
-  session = _create_builder_session(builder_test_client)
+  session = _create_dev_session(dev_test_client)
 
   assert session["state"] == {"city": "New York", "time": "10:30"}
 
 
 def test_dev_create_session_client_state_overrides_initial_state_file(
-    builder_test_client, tmp_path
+    dev_test_client, tmp_path
 ):
   (tmp_path / "test_app").mkdir()
   (tmp_path / "test_app" / "initial_state.json").write_text(
       json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
   )
 
-  session = _create_builder_session(
-      builder_test_client, {"state": {"city": "Paris", "mood": "calm"}}
+  session = _create_dev_session(
+      dev_test_client, {"state": {"city": "Paris", "mood": "calm"}}
   )
 
   assert session["state"] == {
@@ -8926,25 +7955,25 @@ def test_dev_create_session_client_state_overrides_initial_state_file(
 
 
 def test_dev_create_session_without_initial_state_file_is_unchanged(
-    builder_test_client, tmp_path
+    dev_test_client, tmp_path
 ):
   (tmp_path / "test_app").mkdir()
 
-  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+  session = _create_dev_session(dev_test_client, {"state": {"a": 1}})
 
   assert session["state"] == {"a": 1}
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", '"text"'])
 def test_dev_create_session_ignores_invalid_initial_state_file(
-    builder_test_client, tmp_path, content
+    dev_test_client, tmp_path, content
 ):
   (tmp_path / "test_app").mkdir()
   (tmp_path / "test_app" / "initial_state.json").write_text(
       content, encoding="utf-8"
   )
 
-  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+  session = _create_dev_session(dev_test_client, {"state": {"a": 1}})
 
   assert session["state"] == {"a": 1}
 
