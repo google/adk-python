@@ -3,6 +3,21 @@
 ## [2.15.0](https://github.com/google/adk-python/compare/v2.14.1...v2.15.0) (2026-11-19)
 
 
+### Highlights
+
+This release introduces Google Maps integration, asynchronous background session persistence, expanded multi-run evaluation criteria, and major performance optimizations for memory search.
+
+* **Integrations**: Connect agent workflows to location capabilities using the new Google Maps Platform integration. ([5371bb1](https://github.com/google/adk-python/commit/5371bb12fdb58303ed956912c145972e469543b4))
+* **Sessions**: Improve execution responsiveness by persisting session events in the background with `BufferedSessionService`. ([e1deb17](https://github.com/google/adk-python/commit/e1deb17f5274f49595caa703e41d9439563b8015))
+* **Evaluation**: Measure multi-run agent reliability using new pass@k and pass^k cross-run criteria. ([5c7a829](https://github.com/google/adk-python/commit/5c7a8297ef987672c37a6083ad31af99b8e2b66a))
+* **Performance**: Speed up memory search up to 6x by reusing RAG API clients per event loop. ([112491d](https://github.com/google/adk-python/commit/112491db84bc4de3d22c13d5925efffdb8ea1bb8))
+
+#### Breaking changes
+* Pass `arguments=` explicitly when invoking prompts that declare arguments.
+
+<details>
+<summary>All changes</summary>
+
 ### ⚠ BREAKING CHANGES
 
 * a prompt that declares arguments now receives none unless the developer passes arguments= explicitly.
@@ -49,7 +64,7 @@
 * accept content lists in Interactions code execution results ([6959bac](https://github.com/google/adk-python/commit/6959bac7bf254b35e35e13bc4809350c87f732ea))
 * accept every SDK thinking level in ModelConsultTool ([c74df83](https://github.com/google/adk-python/commit/c74df83c0dae648459c6b485e29d531dda9aab29))
 * **antigravity:** pass cached token count in the turn usage event ([cd8debd](https://github.com/google/adk-python/commit/cd8debd2e7920512783217bc81f268824a81033e))
-* **build:** Set uv exclude-newer to 7 days in ADK pyproject.toml ([f390bd9](https://github.com/google/adk-python/commit/f390bd99b0fb643f1a98bb4e491a765023677f66))
+* **build:** set uv exclude-newer to 7 days in ADK pyproject.toml ([f390bd9](https://github.com/google/adk-python/commit/f390bd99b0fb643f1a98bb4e491a765023677f66))
 * capture app_details debug log on the google_adk logger in its test ([b4bf854](https://github.com/google/adk-python/commit/b4bf854ddad631b1250e4ad639cb44a402ba0894))
 * clean up empty maps after deleting sessions ([c0bcdaa](https://github.com/google/adk-python/commit/c0bcdaa480a7547587fffd783f54bc408ae814a0)), closes [#7722](https://github.com/google/adk-python/issues/7722)
 * **cli:** keep extra_packages before requirements and reinstall after ([5e91ab0](https://github.com/google/adk-python/commit/5e91ab0a5dcd0d2dc872c9cb8581a7a2afb18055))
@@ -70,7 +85,6 @@
 * fail on connector schema operation error and bound poll wait ([ab63844](https://github.com/google/adk-python/commit/ab638443816b425787dbb6b2fd835cdf03bbcbef)), closes [#7165](https://github.com/google/adk-python/issues/7165)
 * flush debug logging trace and clear state on unhandled run errors ([9e549ad](https://github.com/google/adk-python/commit/9e549adf7ed48fa2040f4a062a9a48680cc7ab6f))
 * give a cloned LlmAgent tools for its own sub-agents ([61a4dc6](https://github.com/google/adk-python/commit/61a4dc642019345199702eeddfac03626fe8e50b)), closes [#7894](https://github.com/google/adk-python/issues/7894)
-* give a cloned LlmAgent tools for its own sub-agents ([b41fc57](https://github.com/google/adk-python/commit/b41fc578a5db964701fce5cab0f9d26c5d6eaaf0)), closes [#7894](https://github.com/google/adk-python/issues/7894)
 * honor parallelism_limit in simulator and hallucination evals ([656696c](https://github.com/google/adk-python/commit/656696c4d257b98e0d0c477f51fc96d4c0f9b1e0))
 * honor subclass validation aliases in Event and LlmAgent kwargs ([72663e5](https://github.com/google/adk-python/commit/72663e5f036f90f7ff707e6e761eec98ddacb99a))
 * initialize the environment from tool calls ([61efa30](https://github.com/google/adk-python/commit/61efa3003f896d715fd8ed07b570f73c01f81247))
@@ -107,7 +121,6 @@
 * read LangGraphAgent reply text from content blocks ([0795861](https://github.com/google/adk-python/commit/079586136e74221e0c2b795f531be8db935a44d7))
 * record inference token metrics under google-genai instrumentor 0.7b2 ([94be06f](https://github.com/google/adk-python/commit/94be06f6e25a909436a28cfad723f5215043b4d6))
 * refcount toolsets on Runner so close() waits for last holder ([d0f227a](https://github.com/google/adk-python/commit/d0f227afc3c7187de875dda2e11ff4b47fe285cd)), closes [#4045](https://github.com/google/adk-python/issues/4045)
-* refcount toolsets on Runner so close() waits for last holder ([b5b6e58](https://github.com/google/adk-python/commit/b5b6e58d6b095283e438fd3fa110841b0d39be67)), closes [#4045](https://github.com/google/adk-python/issues/4045)
 * repair the model samples that fail on their first turn ([13b6ae8](https://github.com/google/adk-python/commit/13b6ae89cc2d8a55388bc638b97c8ec03bd80401))
 * report empty Claude responses as model errors ([5839007](https://github.com/google/adk-python/commit/5839007855d3f795c822f07b230755a5bf18feaa)), closes [#7660](https://github.com/google/adk-python/issues/7660)
 * require confirmation before large reimbursements in hitl samples ([982f608](https://github.com/google/adk-python/commit/982f6083ce05420f92cdc7426d9c94de706a7684))
@@ -139,7 +152,7 @@
 * stop retrying context cache creation on models that refuse it ([43e959e](https://github.com/google/adk-python/commit/43e959ee4611a3cf9b6d084a7aeaf33f68b489ea))
 * stop returning uncaught exception text to remote A2A peers and trigger callers ([d61f428](https://github.com/google/adk-python/commit/d61f4281d0af7e5047e1032018c9e7a41643e89e))
 * stop the multimodal plugin resending inline media in session mode ([2b7e320](https://github.com/google/adk-python/commit/2b7e3209890c85b0908cfff81080e9be49650581))
-* Support google-genai releases that move converters to _converters ([15af24c](https://github.com/google/adk-python/commit/15af24c15c11baaf9066fb3f8121badab41fce3d))
+* support google-genai releases that move converters to _converters ([15af24c](https://github.com/google/adk-python/commit/15af24c15c11baaf9066fb3f8121badab41fce3d))
 * support non-LLM root nodes in app-info and get_agents_dict ([ec2ac7c](https://github.com/google/adk-python/commit/ec2ac7c5ea8f007e6cdffd4db999df7dea9f329d))
 * take the first non-null union member in _remove_any_of ([ca42dcd](https://github.com/google/adk-python/commit/ca42dcd186d2fab30eb0b57eac99712707921627))
 * **telemetry:** exclude tool runtime from model call duration without a recorded span ([8d857f4](https://github.com/google/adk-python/commit/8d857f47d1da9b88398a4a6019115417b93a53f9))
@@ -179,6 +192,8 @@
 * **samples:** add an OpenAI Responses API sample with a reasoning model ([ef812bd](https://github.com/google/adk-python/commit/ef812bd6c40df54e35f38c4b3d2ac582e3b6e856))
 * say tool_filter does not apply to load_mcp_resource ([b79c529](https://github.com/google/adk-python/commit/b79c529b57d2e9477e86521a8cdf47bd1d9fa98f))
 * use the current Agent Runtime product name in README ([e41b46b](https://github.com/google/adk-python/commit/e41b46bc3df0591810a89bd370470093eed0040b))
+
+</details>
 
 ## [2.14.1](https://github.com/google/adk-python/compare/v2.14.0...v2.14.1) (2026-11-12)
 
