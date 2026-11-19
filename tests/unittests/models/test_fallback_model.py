@@ -364,6 +364,9 @@ class _FakeConnection(BaseLlmConnection):
   async def send_realtime(self, blob):
     raise NotImplementedError()
 
+  async def send_context_update(self, *, system_instruction=None, tools=None):
+    raise NotImplementedError()
+
   async def receive(self):
     raise NotImplementedError()
     yield

@@ -42,12 +42,13 @@ from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.integrations import fsspec as fsspec_pkg
-from google.adk.integrations.fsspec import _fsspec_artifact_service
+from google.adk.integrations.fsspec import _backends
 from google.adk.integrations.fsspec._fsspec_artifact_service import FsspecArtifactService
 from google.genai import types
 import pytest
 
 from ...artifacts.test_artifact_service import FakeFsspecObjectStore
+from ...artifacts.test_artifact_service import FakeS3ObjectStore
 from ...artifacts.test_artifact_service import FIXED_DATETIME
 from ...artifacts.test_artifact_service import mock_gcs_artifact_service
 
@@ -92,13 +93,13 @@ def _enable_feature() -> Iterator[None]:
 
 
 @pytest.fixture
-def store() -> FakeFsspecObjectStore:
-  return FakeFsspecObjectStore()
+def store(request: pytest.FixtureRequest) -> FakeFsspecObjectStore:
+  return getattr(request, "param", FakeFsspecObjectStore)()
 
 
 @pytest.fixture
 def svc(store: FakeFsspecObjectStore) -> FsspecArtifactService:
-  return FsspecArtifactService("gs://b", fs=store)
+  return FsspecArtifactService(f"{store.protocol[0]}://b", fs=store)
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +777,9 @@ async def test_save_artifact_standard_gcs_lookup_passes_upload_kwargs() -> None:
   )
 
 
+@pytest.mark.parametrize(
+    "store", [FakeFsspecObjectStore, FakeS3ObjectStore], indirect=True
+)
 async def test_save_artifact_reserves_concurrent_versions(
     store: FakeFsspecObjectStore, svc: FsspecArtifactService
 ) -> None:
@@ -1128,7 +1132,7 @@ async def test_get_artifact_version_parses_backend_timestamps(
   store.objects["b/app/u/s/f.txt/0"][1].update(info_fields)
 
   with mock.patch.object(
-      _fsspec_artifact_service.platform_time,
+      _backends.platform_time,
       "get_time",
       return_value=9876.5,
   ):
@@ -1136,6 +1140,188 @@ async def test_get_artifact_version_parses_backend_timestamps(
 
   assert version_meta is not None
   assert version_meta.create_time == expected_timestamp
+
+
+# ---------------------------------------------------------------------------
+# S3 metadata
+# ---------------------------------------------------------------------------
+
+
+async def test_s3_metadata_keys_follow_s3_key_rules() -> None:
+  """S3 returns keys lowercased with "_" as "-". ADK's keys are mapped back."""
+  s3 = FakeS3ObjectStore()
+  s3.pipe_file(
+      "b/app/u/s/legacy.pdf/0",
+      b"",
+      ContentType="application/pdf",
+      Metadata={"file_uri": "s3://other/legacy.pdf"},
+  )
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  await svc.save_artifact(
+      **SCOPE,
+      filename="notes",
+      artifact=types.Part(text="hi"),
+      custom_metadata={"userId": "42", "trace_id": "abc"},
+  )
+
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="notes")
+
+  assert await svc.load_artifact(**SCOPE, filename="notes") == types.Part(
+      text="hi"
+  )
+  assert version_meta is not None
+  assert version_meta.custom_metadata == {"userid": "42", "trace-id": "abc"}
+  assert await svc.load_artifact(**SCOPE, filename="legacy.pdf") == types.Part(
+      file_data=types.FileData(
+          file_uri="s3://other/legacy.pdf", mime_type="application/pdf"
+      )
+  )
+
+
+@pytest.mark.parametrize(
+    ("artifact", "custom_metadata", "match"),
+    [
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"adkistext": "true"},
+            "read back as ADK keys",
+            id="lowercased-adk-key",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"FILE_URI": "s3://x/y"},
+            "read back as ADK keys",
+            id="legacy-key-with-underscore",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"note": "\u4f60\u597d"},
+            "must be ASCII",
+            id="non-ascii-value",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"userId": "1", "userid": "2"},
+            "same key",
+            id="keys-differing-in-case",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"a_b": "1", "a-b": "2"},
+            "same key",
+            id="underscore-and-dash",
+        ),
+    ],
+)
+async def test_s3_rejects_metadata_it_cannot_store(
+    artifact: types.Part,
+    custom_metadata: Optional[dict[str, Any]],
+    match: str,
+) -> None:
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+
+  with pytest.raises(InputValidationError, match=match):
+    await svc.save_artifact(
+        **SCOPE,
+        filename="doc",
+        artifact=artifact,
+        custom_metadata=custom_metadata,
+    )
+
+  assert not s3.objects
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        pytest.param(
+            types.Part(
+                inline_data=types.Blob(
+                    data=b"x",
+                    mime_type="image/png",
+                    display_name="\u56fe 100%.png",
+                )
+            ),
+            id="display-name",
+        ),
+        pytest.param(
+            types.Part(
+                file_data=types.FileData(
+                    file_uri="s3://other/\u56fe%20x.pdf",
+                    mime_type="application/pdf",
+                )
+            ),
+            id="file-uri",
+        ),
+    ],
+)
+async def test_s3_round_trips_non_ascii_adk_values(
+    artifact: types.Part,
+) -> None:
+  """ADK's own values are percent-encoded so S3 stores ASCII only."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+
+  await svc.save_artifact(**SCOPE, filename="doc", artifact=artifact)
+
+  assert await svc.load_artifact(**SCOPE, filename="doc") == artifact
+  stored = s3.head_metadata["b/app/u/s/doc/0"]
+  assert all(value.isascii() for value in stored.values())
+
+
+async def test_s3_conditional_request_conflict_retries_next_version() -> None:
+  """A 409 ConditionalRequestConflict moves the save to the next version."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  real_pipe_file = s3.pipe_file
+  conflicted = False
+
+  def pipe_file_with_conflict(path: str, value: bytes, **kwargs: Any) -> None:
+    nonlocal conflicted
+    if not conflicted:
+      conflicted = True
+      # s3fs raises a generic OSError caused by botocore's ClientError.
+      client_error = Exception("ConditionalRequestConflict")
+      client_error.response = {"Error": {"Code": "ConditionalRequestConflict"}}
+      raise OSError("conditional request conflict") from client_error
+    real_pipe_file(path, value, **kwargs)
+
+  with mock.patch.object(s3, "pipe_file", side_effect=pipe_file_with_conflict):
+    version = await svc.save_artifact(
+        **SCOPE, filename="doc", artifact=types.Part(text="hi")
+    )
+
+  assert version == 1
+  assert await svc.load_artifact(**SCOPE, filename="doc") == types.Part(
+      text="hi"
+  )
+
+
+@pytest.mark.parametrize("deleted_before", ["info", "metadata"])
+async def test_s3_version_deleted_during_read_is_missing(
+    deleted_before: str,
+) -> None:
+  """A version deleted before info() or HeadObject reads as missing."""
+  s3 = FakeS3ObjectStore()
+  for version in (0, 1):
+    s3.pipe_file(f"b/app/u/s/doc/{version}", b"x", ContentType="text/plain")
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  real_call = getattr(s3, deleted_before)
+
+  def fail_for_version_0(path: str, **kwargs: Any) -> Any:
+    if path.endswith("/0"):
+      raise FileNotFoundError(path)
+    return real_call(path, **kwargs)
+
+  with mock.patch.object(s3, deleted_before, side_effect=fail_for_version_0):
+    version_meta = await svc.get_artifact_version(
+        **SCOPE, filename="doc", version=0
+    )
+    versions = await svc.list_artifact_versions(**SCOPE, filename="doc")
+
+  assert version_meta is None
+  assert [av.version for av in versions] == [1]
 
 
 # ---------------------------------------------------------------------------

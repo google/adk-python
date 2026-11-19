@@ -33,7 +33,8 @@ in order to run through a dedicated node wrapper. That is framework-internal.
   and cannot be `"user"`.
 - **`description`** — capability description used by the model for delegation.
 - **`sub_agents`** — child agents for hierarchical delegation. Duplicate names
-  across the tree are rejected at validation time.
+  across the tree log a warning at validation time and are not rejected;
+  `find_agent()` returns the first match.
 - **`before_agent_callback` / `after_agent_callback`** — lifecycle hooks. Both
   accept a list; the canonical forms are exposed as
   `canonical_before_agent_callbacks` / `canonical_after_agent_callbacks`.

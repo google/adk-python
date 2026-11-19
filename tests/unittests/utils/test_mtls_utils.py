@@ -202,7 +202,17 @@ class TestMtlsUtils:
           ("https://notgoogleapis.com/v1", False),
           ("https://googleapis.com.evil.com/v1", False),
           ("https://example.com/v1", False),
+          # The apex is not a service endpoint.
+          ("https://googleapis.com/v1", False),
+          ("https://BigQuery.GoogleAPIs.com/v1", True),
+          ("https://googleapis.com@evil.com/v1", False),
+          ("https://user@bigquery.googleapis.com/v1", False),
+          ("https://evil.com\\.googleapis.com/v1", False),
+          ("https://evil.com\\@bigquery.googleapis.com/v1", False),
+          # A backslash outside the authority is fine.
+          ("https://bigquery.googleapis.com/v1?q=a\\b", True),
           ("", False),
+          (None, False),
       ],
   )
   def test_is_googleapis_url(self, url, expected):
