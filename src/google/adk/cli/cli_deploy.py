@@ -56,6 +56,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_AGENT_LOADER_MIN_VERSION: Final[str] = '2.0.0'
 _GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
 # The deployed image runs `adk api_server`, which imports `agentplatform`, so
 # the staged requirements must resolve to the v2 SDK and not to a v1 release
@@ -1710,8 +1711,9 @@ def to_agent_engine(
     agent_engine_config_file (str): The filepath to the agent platform config
       file to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
-    skip_agent_import_validation (bool): Deprecated. This argument is no longer
-      required or used.
+    skip_agent_import_validation (bool): Optional. Whether to skip preloading
+      and validating `<app_name>` on the server's `AgentLoader` at container
+      startup before binding `PORT`.
     trigger_sources (str): Optional. Comma-separated list of trigger sources to
       enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for batch
       and event-driven agent invocations.
@@ -2036,14 +2038,6 @@ def to_agent_engine(
           ' distribution.'
       )
 
-    if skip_agent_import_validation:
-      warnings.warn(
-          'WARNING: `--skip-agent-import-validation` is deprecated and will be'
-          ' removed in the future. Please drop it from the list of arguments.',
-          DeprecationWarning,
-          stacklevel=2,
-      )
-
     # Validated before the instance is created, so a failure cannot leak one.
     enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
     _validate_dockerfile_env_value(
@@ -2057,6 +2051,18 @@ def to_agent_engine(
       install_agent_deps = _render_install_agent_deps(
           app_name, requirements_txt_path, '# No requirements.txt found.'
       )
+      validate_agent_import = not skip_agent_import_validation
+      supports_agent_loader = parse(adk_version) >= parse(
+          _AGENT_LOADER_MIN_VERSION
+      )
+      if validate_agent_import and not supports_agent_loader:
+        click.secho(
+            'Omitting startup agent import validation as it requires'
+            f' adk_version {_AGENT_LOADER_MIN_VERSION} or later, and'
+            f' {adk_version} was requested',
+            fg='yellow',
+        )
+        validate_agent_import = False
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
@@ -2128,6 +2134,7 @@ def to_agent_engine(
           ),
           extra_env_vars=extra_env_vars,
           python_version=python_version,
+          validate_agent_import=validate_agent_import,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
