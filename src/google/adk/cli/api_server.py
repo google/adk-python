@@ -1257,11 +1257,6 @@ class ApiServer:
         if plugins_config and isinstance(plugins_config, dict):
           bq_analytics_config = plugins_config.get("bigquery_agent_analytics")
 
-    # All YAML agents are treated as visual builder agents.
-    is_visual_builder_agent = os.path.exists(
-        os.path.join(self.agents_dir, app_name, "root_agent.yaml")
-    )
-
     def _maybe_add_bq_plugin(plugins: list[BasePlugin]) -> list[BasePlugin]:
       if bq_analytics_config and all([
           bq_analytics_config.get("project_id"),
@@ -1306,10 +1301,6 @@ class ApiServer:
       agentic_app = _wrap_loaded_agent(
           app_name, agent_or_app, extra_plugins_instances
       )
-
-    # If the root agent was loaded from YAML, we treat it as being from Visual Builder
-    if is_visual_builder_agent:
-      object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
     runner = self._create_runner(agentic_app, app_name)
     self.runner_dict[app_name] = runner
@@ -2029,7 +2020,6 @@ class ApiServer:
         raise HTTPException(status_code=404, detail="Session not found")
 
       runner = await self.get_runner_async(app_name)
-      _set_telemetry_context_if_needed(runner)
       if self._live_session_runs.get(
           self._live_session_key(app_name, user_id, session_id)
       ):
@@ -2292,16 +2282,6 @@ class ApiServer:
         raise HTTPException(status_code=404, detail="Session not found")
       await self.memory_service.add_session_to_memory(session)
 
-    def _set_telemetry_context_if_needed(runner: Runner) -> None:
-      """Helper to set contextvars for the current request task."""
-      app = getattr(runner, "app", None)
-      from ..utils._telemetry_context import _is_visual_builder
-
-      if app and getattr(app, "_is_visual_builder_app", False):
-        _is_visual_builder.set(True)
-      else:
-        _is_visual_builder.set(False)
-
     @app.post(
         "/run", response_model=list[Event], response_model_exclude_none=True
     )
@@ -2315,7 +2295,6 @@ class ApiServer:
       req.app_name = app_name
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
-      _set_telemetry_context_if_needed(runner)
       run_config = None
       if (
           req.custom_metadata
@@ -2410,7 +2389,6 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
-      _set_telemetry_context_if_needed(runner)
 
       # Build the run config before the response starts. Constructing it
       # inside event_generator() would run its validation after the 200 and
@@ -2667,8 +2645,8 @@ class ApiServer:
 
       await websocket.accept()
       self.current_app_name_ref.value = app_name
-      runner_for_context = await self.get_runner_async(app_name)
-      _set_telemetry_context_if_needed(runner_for_context)
+      # Load the agent up front, before the live tasks start.
+      await self.get_runner_async(app_name)
 
       live_request_queue = LiveRequestQueue()
 

@@ -3103,17 +3103,22 @@ def cli_migrate_session(
 )
 @click.option(
     "--validate-agent-import/--no-validate-agent-import",
-    default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    default=None,
+    help=(
+        "Optional. Validate that the agent can be loaded at container startup"
+        " before starting the server (enabled by default). Pass"
+        " `--no-validate-agent-import` to skip."
+    ),
 )
 @click.option(
     "--skip-agent-import-validation",
     "skip_agent_import_validation_alias",
     is_flag=True,
     default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    help=(
+        "Optional. Alias for `--no-validate-agent-import`; skips the"
+        " container startup agent import validation."
+    ),
 )
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
@@ -3233,7 +3238,10 @@ def cli_deploy_agent_engine(
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
-    validate_agent_import: bool = False,
+    # Defaults to `False` for backwards compatibility with direct Python
+    # callers; Click passes `None` from `@click.option(..., default=None)` on
+    # CLI invocations, which enables validation by default.
+    validate_agent_import: bool | None = False,
     skip_agent_import_validation_alias: bool = False,
     adk_version: str | None = None,
     trigger_sources: str | None = None,
@@ -3282,6 +3290,9 @@ def cli_deploy_agent_engine(
           "Do not pass both --validate-agent-import and"
           " --skip-agent-import-validation."
       )
+    should_skip_import_validation = skip_agent_import_validation_alias or (
+        validate_agent_import is not None and not validate_agent_import
+    )
     from . import cli_deploy
 
     cli_deploy.to_agent_engine(
@@ -3301,7 +3312,7 @@ def cli_deploy_agent_engine(
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
-        skip_agent_import_validation=not validate_agent_import,
+        skip_agent_import_validation=should_skip_import_validation,
         trigger_sources=trigger_sources,
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
