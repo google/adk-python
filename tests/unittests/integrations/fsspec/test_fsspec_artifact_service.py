@@ -1861,3 +1861,23 @@ async def test_delete_nested_artifact_cleans_empty_dirs_on_local_filesystem(
   assert loaded is not None
   assert loaded.inline_data is not None
   assert loaded.inline_data.data == b"parent"
+
+
+async def test_concurrent_save_and_delete_nested_artifact_on_local_filesystem(
+    tmp_path: Path,
+) -> None:
+  """Concurrent saves racing delete_artifact on ``file://`` retry cleanly."""
+  service = FsspecArtifactService(f"file://{tmp_path / 'artifacts'}")
+  part_a = types.Part.from_bytes(data=b"1", mime_type="text/plain")
+  part_b = types.Part.from_bytes(data=b"2", mime_type="text/plain")
+
+  for i in range(50):
+    name = f"n{i % 5}/x"
+    results = await asyncio.gather(
+        service.save_artifact(**SCOPE, filename=name, artifact=part_a),
+        service.delete_artifact(**SCOPE, filename=name),
+        service.save_artifact(**SCOPE, filename=name, artifact=part_b),
+        return_exceptions=True,
+    )
+    errors = [r for r in results if isinstance(r, BaseException)]
+    assert errors == []

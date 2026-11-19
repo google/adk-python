@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+import errno
 import logging
 import mimetypes
 from typing import Any
@@ -395,16 +396,6 @@ class FsspecArtifactService(BaseArtifactService):
           "Artifact must have either inline_data, text, or file_data."
       )
 
-    if getattr(self._fs, "auto_mkdir", True) is False:
-      try:
-        self._fs.makedirs(artifact_path, exist_ok=True)
-      except (FileExistsError, NotADirectoryError) as exc:
-        if self._has_file_ancestor(artifact_path, filename):
-          raise InputValidationError(
-              f"Artifact name {filename!r} conflicts with an existing"
-              " artifact on this filesystem."
-          ) from exc
-        raise
     versions = self._versions_under(artifact_path)
     version = 0 if not versions else max(versions) + 1
 
@@ -435,6 +426,20 @@ class FsspecArtifactService(BaseArtifactService):
         if not attempts_left:
           raise
         version += 1
+        continue
+      except OSError as exc:
+        # A concurrent delete_artifact may prune the empty artifact directory
+        # between makedirs() and open(key, "xb") (raising FileNotFoundError on
+        # Linux or EINVAL on macOS). Retry if the parent directory disappeared
+        # (or was concurrently recreated as a directory).
+        if not (
+            isinstance(exc, FileNotFoundError)
+            or exc.errno in (errno.ENOENT, errno.EINVAL)
+        ) or self._path_type(artifact_path) not in (None, "directory"):
+          raise
+        attempts_left -= 1
+        if not attempts_left:
+          raise
         continue
       self._fs.invalidate_cache(artifact_path)
       self._fs.invalidate_cache(key)
