@@ -138,7 +138,9 @@ class SlackRunner:
       ):
         if run_event.content and run_event.content.parts:
           for part in run_event.content.parts:
-            if part.text:
+            # Model thoughts are not part of the answer; TeamsRunner skips
+            # them too.
+            if part.text and not part.thought:
               if thinking_ts:
                 await self.slack_app.client.chat_update(
                     channel=channel_id,
