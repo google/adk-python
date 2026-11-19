@@ -435,8 +435,7 @@ def _reject_foreign_origin() -> None:
   """Refuses a code-writing request a browser sent from a foreign origin.
 
   ``*`` and ``regex:`` entries in ``allow_origins`` open the API to other
-  sites, but not the mutating ``/dev`` endpoints or the internal agents, which
-  write agent files.
+  sites, but not the mutating ``/dev`` endpoints, which write files.
 
   Raises:
     HTTPException: 403, if the current request is from a foreign origin.
@@ -1069,8 +1068,6 @@ class ApiServer:
       runner_dict: A dict of instantiated runners for each app.
   """
 
-  _allow_special_agents: bool = False
-
   # Whether this server serves the debug endpoints that read the in-memory
   # span buffers. Nothing evicts from those buffers, so a server that has no
   # reader for them must not fill them.
@@ -1230,17 +1227,6 @@ class ApiServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
-    if app_name.startswith("__") and not self._allow_special_agents:
-      raise HTTPException(
-          status_code=403,
-          detail=(
-              "Access to internal special agents is disabled in API server"
-              " mode and on a development server not known to be bound to a"
-              " loopback address."
-          ),
-      )
-    if app_name.startswith("__"):
-      _reject_foreign_origin()
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -1299,13 +1285,6 @@ class ApiServer:
         agent_or_app: Any,
         plugins: list[BasePlugin],
     ) -> App:
-      if app_name.startswith("__"):
-        # AgentLoader validates special agents before they reach this point.
-        return App.model_construct(
-            name=app_name,
-            root_agent=agent_or_app,
-            plugins=plugins,
-        )
       return App(
           name=_get_app_basename(app_name),
           root_agent=agent_or_app,
@@ -1854,17 +1833,6 @@ class ApiServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      if app_name.startswith("__") and not self._allow_special_agents:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Access to internal special agents is disabled in API server"
-                " mode and on a development server not known to be bound to a"
-                " loopback address."
-            ),
-        )
-      if app_name.startswith("__"):
-        _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       return AppInfo(

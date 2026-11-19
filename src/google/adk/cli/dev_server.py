@@ -393,7 +393,6 @@ class DevServer(ApiServer):
   for local development only and must not be exposed to untrusted networks.
   """
 
-  _allow_special_agents: bool = True
   _serves_debug_trace_endpoints: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
