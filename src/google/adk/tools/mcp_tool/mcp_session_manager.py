@@ -591,13 +591,6 @@ def retry_on_errors(func):
   return wrapper
 
 
-def _is_google_api_host(host: str | None) -> bool:
-  """Returns whether host is a Google API endpoint."""
-  if not host:
-    return False
-  return host == 'googleapis.com' or host.endswith('.googleapis.com')
-
-
 # google.auth is skipped by the mypy config, so AsyncCredentials is Any.
 class _RefreshableAsyncCredentials(AsyncCredentials):  # type: ignore[misc]
   """Adapter to refresh sync credentials asynchronously."""
@@ -630,9 +623,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):  # type: ignore[misc]
     # Application Default Credentials are issued to the caller by Google, so
     # the bearer token only goes to Google API hosts over https. Other MCP
     # servers are still reached over the mTLS channel, just without the token.
-    if parsed_url.scheme != 'https' or not _is_google_api_host(
-        parsed_url.hostname
-    ):
+    if not _mtls_utils.is_googleapis_url(url):
       if not self._warned_non_google_host:
         self._warned_non_google_host = True
         logger.warning(
@@ -1061,11 +1052,10 @@ class MCPSessionManager:
       }
       base_headers.update(overrides)
 
-    url = urllib.parse.urlparse(getattr(self._connection_params, 'url', ''))
+    url = getattr(self._connection_params, 'url', None)
     return merge_tracking_headers(
         base_headers,
-        exclude_runtime_tag=url.scheme != 'https'
-        or not _is_google_api_host(url.hostname),
+        exclude_runtime_tag=not _mtls_utils.is_googleapis_url(url),
     )
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
