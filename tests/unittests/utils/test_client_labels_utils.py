@@ -27,6 +27,63 @@ def test_get_client_labels_default():
   assert f"gl-python/{sys.version.split()[0]}" == labels[1]
 
 
+_RUNTIME_ENV_VARS = (
+    "GOOGLE_CLOUD_AGENT_ENGINE_ID",
+    "K_SERVICE",
+    "CLOUD_RUN_JOB",
+    "KUBERNETES_SERVICE_HOST",
+)
+
+
+# The tags are literals because they are a wire format parsed server-side.
+@pytest.mark.parametrize(
+    "env_vars, expected_tag",
+    [
+        (["GOOGLE_CLOUD_AGENT_ENGINE_ID"], "remote_reasoning_engine"),
+        (["K_SERVICE"], "cloud_run"),
+        (["CLOUD_RUN_JOB"], "cloud_run"),
+        (["K_SERVICE", "CLOUD_RUN_JOB"], "cloud_run"),
+        (["KUBERNETES_SERVICE_HOST"], "k8s"),
+        # Knative and Cloud Run on GKE set both; cloud_run wins.
+        (["K_SERVICE", "KUBERNETES_SERVICE_HOST"], "cloud_run"),
+        (list(_RUNTIME_ENV_VARS), "remote_reasoning_engine"),
+    ],
+)
+def test_get_client_labels_runtime_tag(monkeypatch, env_vars, expected_tag):
+  """Each runtime gets its tag, most specific runtime first."""
+  for name in env_vars:
+    monkeypatch.setenv(name, "value")
+  labels = _client_labels_utils.get_client_labels()
+  assert labels[0] == f"google-adk/{version.__version__}+{expected_tag}"
+
+
+@pytest.mark.parametrize("env_var_name", _RUNTIME_ENV_VARS)
+def test_empty_runtime_env_var_is_ignored(monkeypatch, env_var_name):
+  """A runtime env var set to the empty string does not tag the runtime."""
+  monkeypatch.setenv(env_var_name, "")
+  labels = _client_labels_utils.get_client_labels()
+  assert labels[0] == f"google-adk/{version.__version__}"
+
+
+@pytest.mark.parametrize("env_var_name", _RUNTIME_ENV_VARS)
+def test_get_client_labels_without_any_runtime_tag(monkeypatch, env_var_name):
+  """exclude_runtime_tag=True drops every runtime suffix."""
+  monkeypatch.setenv(env_var_name, "value")
+  labels = _client_labels_utils.get_client_labels(exclude_runtime_tag=True)
+  assert labels[0] == f"google-adk/{version.__version__}"
+
+
+def test_runtime_detection_is_not_cached(monkeypatch):
+  """Env changes after the first call are picked up by the next call."""
+  assert f"google-adk/{version.__version__}" == (
+      _client_labels_utils.get_client_labels()[0]
+  )
+  monkeypatch.setenv("CLOUD_RUN_JOB", "my-job")
+  assert f"google-adk/{version.__version__}+cloud_run" == (
+      _client_labels_utils.get_client_labels()[0]
+  )
+
+
 def test_get_client_labels_with_agent_engine_id(monkeypatch):
   """Test get_client_labels returns agent engine tag when env var is set."""
   monkeypatch.setenv(
@@ -40,6 +97,15 @@ def test_get_client_labels_with_agent_engine_id(monkeypatch):
       == labels[0]
   )
   assert f"gl-python/{sys.version.split()[0]}" == labels[1]
+
+
+def test_framework_label_kept_without_runtime_tag(monkeypatch):
+  """exclude_runtime_tag=True still keeps framework_label."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "test-agent-id")
+  labels = _client_labels_utils.get_client_labels(
+      framework_label="managed_agent", exclude_runtime_tag=True
+  )
+  assert labels[0] == f"google-adk/{version.__version__}+managed_agent"
 
 
 def test_get_client_labels_with_context():

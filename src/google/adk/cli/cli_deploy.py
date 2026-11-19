@@ -24,6 +24,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tomllib
 import traceback
 from typing import Any
 from typing import Callable
@@ -55,6 +56,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_AGENT_LOADER_MIN_VERSION: Final[str] = '2.0.0'
 _GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
 # The deployed image runs `adk api_server`, which imports `agentplatform`, so
 # the staged requirements must resolve to the v2 SDK and not to a v1 release
@@ -781,15 +783,21 @@ _AGENT_ENGINE_CLASS_METHODS = [
             'Deprecated. Use async_stream_query instead.\n\n        Streams'
             ' responses from the ADK application in response to a message.\n\n '
             '       Args:\n            message (Union[str, Dict[str, Any]]):\n '
-            '               Required. The message to stream responses for.\n   '
-            '         user_id (str):\n                Required. The ID of the'
-            ' user.\n            session_id (str):\n                Optional.'
-            ' The ID of the session. If not provided, a new\n               '
-            ' session will be created for the user.\n            run_config'
-            ' (Optional[Dict[str, Any]]):\n                Optional. The run'
-            ' config to use for the query. If you want to\n                pass'
-            ' in a `run_config` pydantic object, you can pass in a dict\n      '
-            '          representing it as'
+            '               Required. The message to stream responses for.'
+            ' Either a text\n                string or a dictionary'
+            ' representing a\n                `google.genai.types.Content`'
+            ' object (for example,\n               '
+            ' `content.model_dump(exclude_none=True, mode="json")` for\n       '
+            '         multimodal inputs; raw `types.Content` or'
+            ' `list[types.Part]`\n                instances are not'
+            ' supported).\n            user_id (str):\n               '
+            ' Required. The ID of the user.\n            session_id (str):\n   '
+            '             Optional. The ID of the session. If not provided, a'
+            ' new\n                session will be created for the user.\n     '
+            '       run_config (Optional[Dict[str, Any]]):\n               '
+            ' Optional. The run config to use for the query. If you want to\n  '
+            '              pass in a `run_config` pydantic object, you can pass'
+            ' in a dict\n                representing it as'
             ' `run_config.model_dump(mode="json")`.\n            **kwargs'
             ' (dict[str, Any]):\n                Optional. Additional keyword'
             ' arguments to pass to the\n                runner.\n\n       '
@@ -817,28 +825,34 @@ _AGENT_ENGINE_CLASS_METHODS = [
         'name': 'async_stream_query',
         'description': (
             'Streams responses asynchronously from the ADK application.\n\n    '
-            '    Args:\n            message (str):\n                Required.'
-            ' The message to stream responses for.\n            user_id'
-            ' (str):\n                Required. The ID of the user.\n          '
-            '  session_id (str):\n                Optional. The ID of the'
-            ' session. If not provided, a new\n                session will be'
-            ' created for the user. If this is specified, then\n               '
-            ' `session_events` will be ignored.\n            session_events'
-            ' (Optional[List[Dict[str, Any]]]):\n                Optional. The'
-            ' session events to use for the query. This will be\n             '
-            '   used to initialize the session if `session_id` is not'
-            ' provided.\n            run_config (Optional[Dict[str,'
-            ' Any]]):\n                Optional. The run config to use for the'
-            ' query. If you want to\n                pass in a `run_config`'
-            ' pydantic object, you can pass in a dict\n               '
-            ' representing it as `run_config.model_dump(mode="json")`.\n       '
-            '     **kwargs (dict[str, Any]):\n                Optional.'
-            ' Additional keyword arguments to pass to the\n               '
-            ' runner.\n\n        Yields:\n            Event dictionaries'
-            ' asynchronously.\n\n        Raises:\n            TypeError: If'
-            ' message is not a string or a dictionary representing\n           '
-            ' a Content object.\n            ValueError: If both session_id and'
-            ' session_events are specified.\n        '
+            '    Args:\n            message (Union[str, Dict[str, Any]]):\n    '
+            '            Required. The message to stream responses for. Either'
+            ' a text\n                string or a dictionary representing a\n  '
+            '              `google.genai.types.Content` object (for example,\n '
+            '               `content.model_dump(exclude_none=True,'
+            ' mode="json")` for\n                multimodal inputs; raw'
+            ' `types.Content` or `list[types.Part]`\n                instances'
+            ' are not supported).\n            user_id (str):\n               '
+            ' Required. The ID of the user.\n            session_id (str):\n   '
+            '             Optional. The ID of the session. If not provided, a'
+            ' new\n                session will be created for the user. If'
+            ' this is specified, then\n                `session_events` will be'
+            ' ignored.\n            session_events (Optional[List[Dict[str,'
+            ' Any]]]):\n                Optional. The session events to use for'
+            ' the query. This will be\n                used to initialize the'
+            ' session if `session_id` is not provided.\n            run_config'
+            ' (Optional[Dict[str, Any]]):\n                Optional. The run'
+            ' config to use for the query. If you want to\n                pass'
+            ' in a `run_config` pydantic object, you can pass in a dict\n      '
+            '          representing it as'
+            ' `run_config.model_dump(mode="json")`.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                runner.\n\n       '
+            ' Yields:\n            Event dictionaries asynchronously.\n\n      '
+            '  Raises:\n            TypeError: If message is not a string or a'
+            ' dictionary representing\n                a Content object.\n     '
+            '       ValueError: If both session_id and session_events are'
+            ' specified.\n        '
         ),
         'parameters': {
             'properties': {
@@ -1174,6 +1188,23 @@ _INSTALLABLE_ARCHIVE_SUFFIXES: Final[tuple[str, ...]] = (
 )
 
 
+def _is_installable_project(path: str) -> bool:
+  """Returns whether a directory is a Python project that pip can install.
+
+  A directory is a project when it has a `setup.py`, or a `pyproject.toml`
+  that declares `[build-system]` or `[project]`. A `pyproject.toml` that only
+  holds tool settings, or cannot be parsed, does not make it one.
+  """
+  if os.path.isfile(os.path.join(path, 'setup.py')):
+    return True
+  try:
+    with open(os.path.join(path, 'pyproject.toml'), 'rb') as f:
+      pyproject = tomllib.load(f)
+  except (OSError, ValueError):
+    return False
+  return 'build-system' in pyproject or 'project' in pyproject
+
+
 def _get_extra_packages_copy(
     staged_extra_packages: Sequence[str], build_context: str
 ) -> str:
@@ -1182,13 +1213,14 @@ def _get_extra_packages_copy(
   Each staged entry is handled one of two ways:
 
   * An installable distribution (a file ending in one of
-    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a directory containing
-    `pyproject.toml` or `setup.py` without a root `__init__.py`) is copied to
+    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a project directory without a root
+    `__init__.py`, see `_is_installable_project`) is copied to
     `/tmp/extra_packages/<base>` and installed with `pip install`, so its
     modules land in site-packages together with the dependencies it declares.
   * Anything else (a plain module, a folder of modules, or a package folder
-    with a root `__init__.py` that may also carry a `pyproject.toml` for tool
-    config) is copied to `/app/<base>` and `/app` is added to PYTHONPATH.
+    with a root `__init__.py`, either of which may carry a `pyproject.toml`
+    for tool config) is copied to `/app/<base>` and `/app` is added to
+    PYTHONPATH.
 
   Installable entries are deliberately kept out of `/app`: a flat-layout
   package such as `my_pkg/pyproject.toml` + `my_pkg/my_pkg/__init__.py` copied
@@ -1213,11 +1245,8 @@ def _get_extra_packages_copy(
     _validate_extra_package_name(base)
     staged_path = os.path.join(build_context, base)
     if os.path.isdir(staged_path):
-      has_build_file = os.path.isfile(
-          os.path.join(staged_path, 'pyproject.toml')
-      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
       has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
-      if has_build_file and not has_root_init:
+      if _is_installable_project(staged_path) and not has_root_init:
         copy_lines.append(
             f'COPY --chown=myuser:myuser "{base}/"'
             f' "/tmp/extra_packages/{base}/"'
@@ -1243,6 +1272,65 @@ def _get_extra_packages_copy(
         _to_exec_form('RUN', ['pip', 'install', *installable_targets])
     )
   return '\n'.join(copy_lines)
+
+
+def _get_extra_packages_reinstall(
+    staged_extra_packages: Sequence[str],
+    build_context: str,
+    *,
+    has_requirements: bool,
+) -> str:
+  """Returns the post-requirements `pip install` override line, if needed.
+
+  `_get_extra_packages_copy` installs extra packages before `requirements.txt`
+  so dependencies shipped only via `--extra_packages` are already in
+  site-packages when `requirements.txt` resolves. Two cases still require a
+  `--force-reinstall --no-deps` pass afterward:
+
+  * `pip` skips a local `.whl` when the same version is already installed (for
+    example from `install_adk`), unlike a local directory or sdist which `pip`
+    marks `should_reinstall`.
+  * When `requirements.txt` is present, `pip install -r requirements.txt` runs
+    after `_get_extra_packages_copy` and can overwrite an extra package with a
+    pinned or upgraded version from the index.
+
+  Args:
+    staged_extra_packages: Basenames returned by `_stage_extra_packages`.
+    build_context: The folder the entries were staged into.
+    has_requirements: Whether `requirements.txt` is installed in the image.
+
+  Returns:
+    A `RUN` instruction in exec form, or an empty string when nothing needs to
+    be reinstalled.
+  """
+  if not staged_extra_packages:
+    return ''
+  reinstall_targets: list[str] = []
+  for base in staged_extra_packages:
+    _validate_extra_package_name(base)
+    staged_path = os.path.join(build_context, base)
+    if os.path.isdir(staged_path):
+      if not has_requirements:
+        continue
+      has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
+      if _is_installable_project(staged_path) and not has_root_init:
+        reinstall_targets.append(f'/tmp/extra_packages/{base}')
+    elif base.endswith('.whl') or (
+        has_requirements and base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES)
+    ):
+      reinstall_targets.append(f'/tmp/extra_packages/{base}')
+  if not reinstall_targets:
+    return ''
+  return _to_exec_form(
+      'RUN',
+      [
+          'pip',
+          'install',
+          '--force-reinstall',
+          '--no-deps',
+          *reinstall_targets,
+      ],
+  )
 
 
 def run(
@@ -1316,10 +1404,11 @@ def run(
       execution.
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A wheel, source archive, or
-      a project directory containing `pyproject.toml` or `setup.py` (without a
-      root `__init__.py`) is installed with pip; any other entry is copied to
-      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
-      resolved against the current working directory.
+      a project directory (`setup.py`, or `pyproject.toml` declaring
+      `[project]` or `[build-system]`, without a root `__init__.py`) is
+      installed with pip; any other entry is copied to `/app/<basename>` and
+      `/app` is added to PYTHONPATH. A relative path is resolved against the
+      current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
@@ -1361,9 +1450,6 @@ def run(
     # create Dockerfile
     click.echo('Creating Dockerfile...')
     host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
     a2a_option = '--a2a' if a2a else ''
     trigger_sources_option = (
         f'--trigger_sources={trigger_sources}' if trigger_sources else ''
@@ -1392,7 +1478,7 @@ def run(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
@@ -1403,6 +1489,11 @@ def run(
         express_mode_option='',
         extra_packages_copy=_get_extra_packages_copy(
             staged_extra_packages, temp_folder
+        ),
+        reinstall_extra_packages=_get_extra_packages_reinstall(
+            staged_extra_packages,
+            temp_folder,
+            has_requirements=os.path.exists(requirements_txt_path),
         ),
         extra_env_vars='',
         python_version=python_version,
@@ -1575,6 +1666,13 @@ def to_agent_engine(
   - .env (optional, for environment variables)
   - ... (other required source files)
 
+  Once deployed, the runtime exposes query methods such as `async_stream_query`
+  and `stream_query`. Pass text queries as a `str`, or multimodal queries as a
+  JSON-serializable `dict` representing `google.genai.types.Content` (for
+  example, `content = types.Content(role='user', parts=[...])` serialized with
+  `content.model_dump(exclude_none=True, mode='json')`; raw `types.Content` or
+  `list[types.Part]` instances are not supported).
+
   Args:
     agent_folder (str): The folder (absolute path) containing the agent source
       code.
@@ -1613,8 +1711,9 @@ def to_agent_engine(
     agent_engine_config_file (str): The filepath to the agent platform config
       file to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
-    skip_agent_import_validation (bool): Deprecated. This argument is no longer
-      required or used.
+    skip_agent_import_validation (bool): Optional. Whether to skip preloading
+      and validating `<app_name>` on the server's `AgentLoader` at container
+      startup before binding `PORT`.
     trigger_sources (str): Optional. Comma-separated list of trigger sources to
       enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for batch
       and event-driven agent invocations.
@@ -1630,10 +1729,10 @@ def to_agent_engine(
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
       paths to stage alongside the agent and make importable in the image. A
-      wheel, source archive, or a project directory containing `pyproject.toml`
-      or `setup.py` (without a root `__init__.py`) is installed with pip; any
-      other entry is copied to `/app/<basename>` and `/app` is added to
-      PYTHONPATH.
+      wheel, source archive, or a project directory (`setup.py`, or
+      `pyproject.toml` declaring `[project]` or `[build-system]`, without a
+      root `__init__.py`) is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH.
     worker_pool (str): Optional. Full Cloud Build private worker pool resource
       name
       (`projects/{project}/locations/{location}/workerPools/{pool}`).
@@ -1939,14 +2038,6 @@ def to_agent_engine(
           ' distribution.'
       )
 
-    if skip_agent_import_validation:
-      warnings.warn(
-          'WARNING: `--skip-agent-import-validation` is deprecated and will be'
-          ' removed in the future. Please drop it from the list of arguments.',
-          DeprecationWarning,
-          stacklevel=2,
-      )
-
     # Validated before the instance is created, so a failure cannot leak one.
     enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
     _validate_dockerfile_env_value(
@@ -1960,6 +2051,18 @@ def to_agent_engine(
       install_agent_deps = _render_install_agent_deps(
           app_name, requirements_txt_path, '# No requirements.txt found.'
       )
+      validate_agent_import = not skip_agent_import_validation
+      supports_agent_loader = parse(adk_version) >= parse(
+          _AGENT_LOADER_MIN_VERSION
+      )
+      if validate_agent_import and not supports_agent_loader:
+        click.secho(
+            'Omitting startup agent import validation as it requires'
+            f' adk_version {_AGENT_LOADER_MIN_VERSION} or later, and'
+            f' {adk_version} was requested',
+            fg='yellow',
+        )
+        validate_agent_import = False
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
@@ -2006,7 +2109,7 @@ def to_agent_engine(
           ),
           trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
           otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-          allow_origins_option='',  # Not supported for now.
+          allow_origins=None,  # Not supported for now.
           adk_version=adk_version,
           host_option='--host=0.0.0.0',
           a2a_option='--a2a',
@@ -2024,8 +2127,14 @@ def to_agent_engine(
           extra_packages_copy=_get_extra_packages_copy(
               staged_extra_packages, temp_folder_path
           ),
+          reinstall_extra_packages=_get_extra_packages_reinstall(
+              staged_extra_packages,
+              temp_folder_path,
+              has_requirements=os.path.exists(requirements_txt_path),
+          ),
           extra_env_vars=extra_env_vars,
           python_version=python_version,
+          validate_agent_import=validate_agent_import,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -2135,10 +2244,11 @@ def to_gke(
     service_type: The Kubernetes Service type (default: ClusterIP).
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A wheel, source archive, or
-      a project directory containing `pyproject.toml` or `setup.py` (without a
-      root `__init__.py`) is installed with pip; any other entry is copied to
-      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
-      resolved against the current working directory.
+      a project directory (`setup.py`, or `pyproject.toml` declaring
+      `[project]` or `[build-system]`, without a root `__init__.py`) is
+      installed with pip; any other entry is copied to `/app/<basename>` and
+      `/app` is added to PYTHONPATH. A relative path is resolved against the
+      current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
@@ -2187,10 +2297,6 @@ def to_gke(
     )
     click.secho('✅ Environment prepared.', fg='green')
 
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
-
     # create Dockerfile
     click.secho('\nSTEP 2: Generating deployment files...', bold=True)
     click.echo('  - Creating Dockerfile...')
@@ -2219,7 +2325,7 @@ def to_gke(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
@@ -2232,6 +2338,11 @@ def to_gke(
         express_mode_option='',
         extra_packages_copy=_get_extra_packages_copy(
             staged_extra_packages, temp_folder
+        ),
+        reinstall_extra_packages=_get_extra_packages_reinstall(
+            staged_extra_packages,
+            temp_folder,
+            has_requirements=os.path.exists(requirements_txt_path),
         ),
         extra_env_vars='',
         python_version=python_version,

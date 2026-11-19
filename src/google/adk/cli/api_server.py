@@ -73,7 +73,6 @@ import yaml
 
 from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
-from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import RunConfig
 from ..apps.app import App
 from ..artifacts.base_artifact_service import ArtifactVersion
@@ -436,8 +435,7 @@ def _reject_foreign_origin() -> None:
   """Refuses a code-writing request a browser sent from a foreign origin.
 
   ``*`` and ``regex:`` entries in ``allow_origins`` open the API to other
-  sites, but not the mutating ``/dev`` endpoints or the internal agents, which
-  write agent files.
+  sites, but not the mutating ``/dev`` endpoints, which write files.
 
   Raises:
     HTTPException: 403, if the current request is from a foreign origin.
@@ -978,9 +976,20 @@ def _setup_instrumentation_lib_if_installed() -> None:
   # Currently the instrumentation lib is in extras dependencies, make sure to
   # warn the user if it's not installed.
   try:
+    from opentelemetry.instrumentation.dependencies import get_dependency_conflicts  # pylint: disable=g-import-not-at-top
     from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 
-    GoogleGenAiSdkInstrumentor().instrument()
+    instrumentor = GoogleGenAiSdkInstrumentor()
+    if conflict := get_dependency_conflicts(
+        instrumentor.instrumentation_dependencies()
+    ):
+      logger.info(
+          "Skipping GoogleGenAiSdkInstrumentor (%s); ADK records telemetry"
+          " spans itself.",
+          conflict,
+      )
+    else:
+      instrumentor.instrument()
   except ImportError:
     logger.warning(
         "Unable to import GoogleGenAiSdkInstrumentor - some"
@@ -1058,8 +1067,6 @@ class ApiServer:
       current_app_name_ref: A shared reference to the latest ran app name.
       runner_dict: A dict of instantiated runners for each app.
   """
-
-  _allow_special_agents: bool = False
 
   # Whether this server serves the debug endpoints that read the in-memory
   # span buffers. Nothing evicts from those buffers, so a server that has no
@@ -1220,17 +1227,6 @@ class ApiServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
-    if app_name.startswith("__") and not self._allow_special_agents:
-      raise HTTPException(
-          status_code=403,
-          detail=(
-              "Access to internal special agents is disabled in API server"
-              " mode and on a development server not known to be bound to a"
-              " loopback address."
-          ),
-      )
-    if app_name.startswith("__"):
-      _reject_foreign_origin()
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -1261,11 +1257,6 @@ class ApiServer:
         if plugins_config and isinstance(plugins_config, dict):
           bq_analytics_config = plugins_config.get("bigquery_agent_analytics")
 
-    # All YAML agents are treated as visual builder agents.
-    is_visual_builder_agent = os.path.exists(
-        os.path.join(self.agents_dir, app_name, "root_agent.yaml")
-    )
-
     def _maybe_add_bq_plugin(plugins: list[BasePlugin]) -> list[BasePlugin]:
       if bq_analytics_config and all([
           bq_analytics_config.get("project_id"),
@@ -1289,13 +1280,6 @@ class ApiServer:
         agent_or_app: Any,
         plugins: list[BasePlugin],
     ) -> App:
-      if app_name.startswith("__"):
-        # AgentLoader validates special agents before they reach this point.
-        return App.model_construct(
-            name=app_name,
-            root_agent=agent_or_app,
-            plugins=plugins,
-        )
       return App(
           name=_get_app_basename(app_name),
           root_agent=agent_or_app,
@@ -1317,10 +1301,6 @@ class ApiServer:
       agentic_app = _wrap_loaded_agent(
           app_name, agent_or_app, extra_plugins_instances
       )
-
-    # If the root agent was loaded from YAML, we treat it as being from Visual Builder
-    if is_visual_builder_agent:
-      object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
     runner = self._create_runner(agentic_app, app_name)
     self.runner_dict[app_name] = runner
@@ -1464,12 +1444,8 @@ class ApiServer:
       lifespan: Optional[Lifespan[FastAPI]] = None,
       allow_origins: Optional[list[str]] = None,
       web_assets_dir: Optional[str] = None,
-      setup_observer: Callable[
-          [Observer, "ApiServer"], None
-      ] = lambda o, s: None,
-      tear_down_observer: Callable[
-          [Observer, "ApiServer"], None
-      ] = lambda o, s: None,
+      setup_observer: Callable[[Observer, ApiServer], None] | None = None,
+      tear_down_observer: Callable[[Observer, ApiServer], None] | None = None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
       with_ui: bool = False,
@@ -1489,7 +1465,8 @@ class ApiServer:
         patterns prefixed with 'regex:' (e.g.,
         'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
-      setup_observer: Callback for setting up the file system observer.
+      setup_observer: Callback for setting up the file system observer. No
+        observer is created when it is None.
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
@@ -1509,10 +1486,14 @@ class ApiServer:
     self._session_trace_dict = session_trace_dict
 
     # Set up a file system watcher to detect changes in the agents directory.
-    from watchdog.observers import Observer as PlatformObserver
+    # Only create it when a caller sets it up: the inotify observer opens an
+    # inotify instance and starts a thread as soon as it is constructed.
+    observer: Observer | None = None
+    if setup_observer is not None:
+      from watchdog.observers import Observer as PlatformObserver
 
-    observer = PlatformObserver()
-    setup_observer(observer, self)
+      observer = PlatformObserver()
+      setup_observer(observer, self)
 
     @asynccontextmanager
     async def internal_lifespan(
@@ -1525,7 +1506,8 @@ class ApiServer:
         else:
           yield None
       finally:
-        tear_down_observer(observer, self)
+        if observer is not None and tear_down_observer is not None:
+          tear_down_observer(observer, self)
         # Create tasks for all runner closures to run concurrently
         await cleanup.close_runners(list(self.runner_dict.values()))
 
@@ -1842,31 +1824,15 @@ class ApiServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      if app_name.startswith("__") and not self._allow_special_agents:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Access to internal special agents is disabled in API server"
-                " mode and on a development server not known to be bound to a"
-                " loopback address."
-            ),
-        )
-      if app_name.startswith("__"):
-        _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
-      if isinstance(root_agent, LlmAgent):
-        return AppInfo(
-            name=app_name,
-            root_agent_name=root_agent.name,
-            description=root_agent.description,
-            language="python",
-            agents=await get_agents_dict(root_agent),
-        )
-      else:
-        raise HTTPException(
-            status_code=400, detail="Root agent is not an LlmAgent"
-        )
+      return AppInfo(
+          name=app_name,
+          root_agent_name=root_agent.name,
+          description=root_agent.description,
+          language="python",
+          agents=await get_agents_dict(root_agent),
+      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
@@ -2054,7 +2020,6 @@ class ApiServer:
         raise HTTPException(status_code=404, detail="Session not found")
 
       runner = await self.get_runner_async(app_name)
-      _set_telemetry_context_if_needed(runner)
       if self._live_session_runs.get(
           self._live_session_key(app_name, user_id, session_id)
       ):
@@ -2317,16 +2282,6 @@ class ApiServer:
         raise HTTPException(status_code=404, detail="Session not found")
       await self.memory_service.add_session_to_memory(session)
 
-    def _set_telemetry_context_if_needed(runner: Runner) -> None:
-      """Helper to set contextvars for the current request task."""
-      app = getattr(runner, "app", None)
-      from ..utils._telemetry_context import _is_visual_builder
-
-      if app and getattr(app, "_is_visual_builder_app", False):
-        _is_visual_builder.set(True)
-      else:
-        _is_visual_builder.set(False)
-
     @app.post(
         "/run", response_model=list[Event], response_model_exclude_none=True
     )
@@ -2340,7 +2295,6 @@ class ApiServer:
       req.app_name = app_name
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
-      _set_telemetry_context_if_needed(runner)
       run_config = None
       if (
           req.custom_metadata
@@ -2400,17 +2354,14 @@ class ApiServer:
       try:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
-        logger.debug("Events generated: %s", events)
-        return JSONResponse(
-            content=[
-                _redact_credential_secrets(
-                    event.model_dump(
-                        exclude_none=True, by_alias=True, mode="json"
-                    )
-                )
-                for event in events
-            ]
-        )
+        redacted_events = [
+            _redact_credential_secrets(
+                event.model_dump(exclude_none=True, by_alias=True, mode="json")
+            )
+            for event in events
+        ]
+        logger.debug("Events generated: %s", redacted_events)
+        return JSONResponse(content=redacted_events)
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)
@@ -2438,7 +2389,6 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
-      _set_telemetry_context_if_needed(runner)
 
       # Build the run config before the response starts. Constructing it
       # inside event_generator() would run its validation after the 200 and
@@ -2695,8 +2645,8 @@ class ApiServer:
 
       await websocket.accept()
       self.current_app_name_ref.value = app_name
-      runner_for_context = await self.get_runner_async(app_name)
-      _set_telemetry_context_if_needed(runner_for_context)
+      # Load the agent up front, before the live tasks start.
+      await self.get_runner_async(app_name)
 
       live_request_queue = LiveRequestQueue()
 

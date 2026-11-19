@@ -102,8 +102,7 @@ class E2BEnvironment(BaseEnvironment):
   @property
   @override
   def working_dir(self) -> Path:
-    if self._sandbox is None:
-      raise RuntimeError("Sandbox is not started. Call initialize() first.")
+    # A fixed path in every sandbox, known before `initialize` starts one.
     return Path(_SANDBOX_HOME)
 
   @override

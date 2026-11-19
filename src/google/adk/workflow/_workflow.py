@@ -90,6 +90,19 @@ class _LoopState(DynamicNodeState):
   error_shut_down: bool = False
   """Flag indicating that the workflow is shutting down due to an error."""
 
+  checkpoint_pending: bool = False
+  """Whether static node statuses changed since the last checkpoint.
+
+  Set when a node starts or completes for real (not a replayed fast-forward)
+  or reaches WAITING or FAILED. `_run_loop` flushes it once per scheduler
+  tick, after `_schedule_ready_nodes`, and after each error-drain pass.
+  """
+
+  checkpointed_running_replayed: frozenset[str] = field(
+      default_factory=frozenset
+  )
+  """Replayed nodes recorded as RUNNING in the last emitted checkpoint."""
+
   join_arrivals: dict[str, set[str]] = field(default_factory=dict)
   """Predecessor arrivals that each wait-for-all node has not consumed yet.
 
@@ -115,7 +128,7 @@ class _LoopState(DynamicNodeState):
 
   A node is added when it is scheduled as a no-op replay and removed when
   that run completes, so completion handling can tell a genuine execution
-  from a fast-forward when deciding whether to emit a checkpoint.
+  from a fast-forward when deciding whether to mark a checkpoint as pending.
   """
 
   trigger_buffer: dict[str, list[Trigger]] = field(default_factory=dict)
@@ -320,8 +333,12 @@ class Workflow(BaseNode):
         return
 
       await self._schedule_ready_nodes(loop_state, ctx)
+      await self._flush_node_checkpoint(loop_state, ctx)
 
       if not loop_state.pending_tasks:
+        if loop_state.checkpointed_running_replayed - loop_state.replayed_nodes:
+          loop_state.checkpoint_pending = True
+          await self._flush_node_checkpoint(loop_state, ctx)
         break
 
       wait_tasks: list[asyncio.Task[Any]] = list(
@@ -385,17 +402,30 @@ class Workflow(BaseNode):
         await self._handle_completion(loop_state, name, task.result(), ctx)
 
       if ctx._error is not None:
-        # Drain sibling tasks that finished in the same tick so their completed
-        # outputs and state changes are preserved before shutting down.
-        while loop_state.pending_tasks:
+        # Drain finished siblings so their outputs and state changes are
+        # preserved before shutting down. In resumable apps each checkpoint
+        # flush blocks until earlier queued events are consumed, releasing
+        # siblings parked on them; non-resumable flushes don't block. Stop
+        # once a pass neither drains a task nor flushes a checkpoint.
+        while True:
           done_siblings = [
-              task for task in loop_state.pending_tasks.values() if task.done()
+              t for t in loop_state.pending_tasks.values() if t.done()
           ]
-          if not done_siblings:
-            break
           for task in done_siblings:
             name = self._pop_completed_task(loop_state, task)
             await self._handle_completion(loop_state, name, task.result(), ctx)
+          if (
+              not done_siblings
+              and not loop_state.checkpoint_pending
+              and (
+                  loop_state.checkpointed_running_replayed
+                  - loop_state.replayed_nodes
+              )
+          ):
+            loop_state.checkpoint_pending = True
+          flushed = await self._flush_node_checkpoint(loop_state, ctx)
+          if not done_siblings and not flushed:
+            break
 
         loop_state.error_shut_down = True
         logger.debug("node %s execute loop end.", ctx.node_path)
@@ -547,7 +577,7 @@ class Workflow(BaseNode):
     # Only a genuinely-executing node marks a new step; a replayed node
     # being fast-forwarded from history should not re-announce itself.
     if started:
-      await self._emit_node_checkpoint(loop_state, ctx)
+      loop_state.checkpoint_pending = True
 
   def _at_concurrency_limit(self, loop_state: _LoopState) -> bool:
     """Check if max_concurrency has been reached.
@@ -721,6 +751,20 @@ class Workflow(BaseNode):
 
   # --- Resumability checkpoints ---
 
+  async def _flush_node_checkpoint(
+      self, loop_state: _LoopState, ctx: Context
+  ) -> bool:
+    """Emit one checkpoint if node statuses changed since the last flush.
+
+    Returns True if a checkpoint was pending (even when `is_resumable` is False
+    and `_emit_node_checkpoint` is a no-op).
+    """
+    if not loop_state.checkpoint_pending:
+      return False
+    loop_state.checkpoint_pending = False
+    await self._emit_node_checkpoint(loop_state, ctx)
+    return True
+
   async def _emit_node_checkpoint(
       self, loop_state: _LoopState, ctx: Context
   ) -> None:
@@ -740,6 +784,12 @@ class Workflow(BaseNode):
     from ..events.event import Event
     from ..events.event_actions import EventActions
 
+    loop_state.checkpointed_running_replayed = frozenset(
+        name
+        for name, run in loop_state.static_runs.items()
+        if name in loop_state.replayed_nodes
+        and run.state.status == NodeStatus.RUNNING
+    )
     nodes = {
         name: run.state.model_dump(
             mode="json", include={"status", "interrupts"}
@@ -809,20 +859,21 @@ class Workflow(BaseNode):
     run.record_outcome(child_ctx, node, loop_state.interrupt_ids)
 
     if run.state.status == NodeStatus.FAILED:
+      loop_state.checkpoint_pending = True
       if ctx._error is None:
         ctx._error = child_ctx.error
         ctx._error_node_path = child_ctx.error_node_path
       return
 
     if run.state.status == NodeStatus.WAITING:
-      await self._emit_node_checkpoint(loop_state, ctx)
+      loop_state.checkpoint_pending = True
       return
 
-    # A genuine execution records a checkpoint on completion. A replayed
+    # A genuine execution marks a checkpoint pending on completion. A replayed
     # fast-forward instead re-surfaces its recovered output so a resumable
     # stream stays complete, without a redundant checkpoint.
     if not replayed:
-      await self._emit_node_checkpoint(loop_state, ctx)
+      loop_state.checkpoint_pending = True
     else:
       await self._maybe_reemit_replayed_output(child_ctx, ctx)
 

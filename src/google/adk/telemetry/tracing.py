@@ -52,6 +52,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_TOP_P
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ARGUMENTS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ID
@@ -100,6 +101,7 @@ from ._experimental_semconv import set_operation_details_common_attributes
 from ._finish_reason import is_reported_finish_reason
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
+from ._serialization import _mask_credential_values
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -405,10 +407,12 @@ def _serialize_tool_response(tool_response: object) -> str:
   """Serializes a tool response with credential secrets redacted."""
   try:
     return safe_json_serialize(
-        _redact_credential_secrets(
+        _mask_credential_values(
+            tool_response,
             to_jsonable_python(
                 tool_response, fallback=lambda _: "<not serializable>"
-            )
+            ),
+            by_alias=True,
         )
     )
   except Exception:  # pylint: disable=broad-exception-caught
@@ -616,7 +620,13 @@ def trace_merged_tool_calls(
     try:
       tool_response_json = safe_json_serialize([
           _redact_credential_secrets(
-              part.function_response.model_dump(exclude_none=True, mode="json")
+              _mask_credential_values(
+                  part.function_response,
+                  part.function_response.model_dump(
+                      exclude_none=True, mode="json"
+                  ),
+                  by_alias=None,
+              )
           )
           for part in parts
           if part.function_response is not None
@@ -834,6 +844,10 @@ def trace_call_llm(
       getattr(llm_response, "grounding_metadata", None),
       telemetry_config.should_add_content_to_legacy_spans,
   )
+  if response_model := _response_model(
+      invocation_context, llm_response, llm_request
+  ):
+    span.set_attribute(GEN_AI_RESPONSE_MODEL, response_model)
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
 
@@ -1272,6 +1286,7 @@ def _use_native_generate_content_span_stable_semconv(
         span, llm_request, common_attributes
     )
     gc_span = GenerateContentSpan(span)
+    gc_span._llm_request = llm_request  # pylint: disable=protected-access
 
     otel_logger.emit(
         LogRecord(
@@ -1327,6 +1342,7 @@ def _use_native_generate_content_span(
         span, llm_request, common_attributes
     )
     gc_span = GenerateContentSpan(span)
+    gc_span._llm_request = llm_request  # pylint: disable=protected-access
 
     set_operation_details_attributes_from_request(
         gc_span.operation_details_attributes,
@@ -1350,6 +1366,7 @@ class GenerateContentSpan:
     # inference is done, instead of when the caller is done with the response.
     # Matches opentelemetry-instrumentation-google-genai behavior.
     self._exit_stack: ExitStack | None = None
+    self._llm_request: LlmRequest | None = None
 
 
 @deprecated(
@@ -1368,6 +1385,8 @@ def trace_generate_content_result(
   if llm_response.partial:
     return
 
+  if model_version := getattr(llm_response, "model_version", None):
+    span.set_attribute(GEN_AI_RESPONSE_MODEL, model_version)
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
@@ -1394,8 +1413,10 @@ def trace_inference_result(
       invocation_context
   )
   gc_span = None
+  llm_request = None
   if isinstance(span, GenerateContentSpan):
     gc_span = span
+    llm_request = gc_span._llm_request  # pylint: disable=protected-access
     span = gc_span.span
 
   if span is None:
@@ -1407,6 +1428,10 @@ def trace_inference_result(
   # reported does not reach here.
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+  if response_model := _response_model(
+      invocation_context, llm_response, llm_request
+  ):
+    span.set_attribute(GEN_AI_RESPONSE_MODEL, response_model)
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   # Callers outside adk pass their own response objects here, which are only
   # required to carry the fields this function already read.
@@ -1438,7 +1463,7 @@ def trace_inference_result(
             ),
             attributes={
                 GEN_AI_SYSTEM: _inference_system_name(
-                    invocation_context, llm_response
+                    invocation_context, llm_response, llm_request
                 )
             },
             context=trace.set_span_in_context(span),
@@ -1537,21 +1562,46 @@ def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
   if not isinstance(agent, LlmAgent):
     return None
 
-  model = agent.model if agent.model != "" else agent._default_model
+  model = agent.model
+  if model == "":
+    # The request processor resolved this before the call, so it is cached.
+    return agent.canonical_model.model
   return model if isinstance(model, str) else model.model
+
+
+def _response_model(
+    invocation_context: InvocationContext | None,
+    llm_response: LlmResponse,
+    llm_request: LlmRequest | None = None,
+) -> str | None:
+  """Returns the response's model, falling back to the requested one."""
+  # External callers pass duck-typed responses without `model_version` (see
+  # `trace_inference_result`).
+  if model := getattr(llm_response, "model_version", None):
+    return model
+  if llm_request is not None and llm_request.model:
+    return llm_request.model
+  if invocation_context is not None and invocation_context.agent is not None:
+    return _agent_model_name(invocation_context.agent)
+  return None
 
 
 def _inference_system_name(
     invocation_context: InvocationContext | None,
     llm_response: LlmResponse,
+    llm_request: LlmRequest | None = None,
 ) -> str:
   """Returns the system name of the model that produced an inference result."""
-  if system_name := _gen_ai_system_name_from_model(llm_response.model_version):
+  # External callers pass duck-typed responses without `model_version` (see
+  # `trace_inference_result`).
+  if system_name := _gen_ai_system_name_from_model(
+      getattr(llm_response, "model_version", None)
+  ):
     return system_name
   # LiteLLM reports `model_version` without the provider prefix (`gpt-4o` for
   # `openai/gpt-4o`), so fall back to the configured model the span reports.
-  model = None
-  if invocation_context is not None:
+  model = llm_request.model if llm_request is not None else None
+  if not model and invocation_context is not None:
     agent = invocation_context.agent
     if agent is not None:
       model = _agent_model_name(agent)

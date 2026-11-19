@@ -10116,6 +10116,64 @@ async def test_get_completion_inputs_maps_include_thoughts(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini/gemini-4-hydrogen",
+        "vertex_ai/gemini-4-hydrogen",
+        "litellm_proxy/vertex_ai/gemini-4-hydrogen",
+        "openrouter/google/gemini-4-hydrogen",
+        "openrouter/google/gemini-4-hydrogen:online",
+        "vertex_ai/projects/my-project/locations/global/publishers/google/models/gemini-4-hydrogen",
+        "projects/my-project/locations/global/publishers/google/models/gemini-4-hydrogen",
+        "gemini/gemini-5-pro",
+    ],
+)
+@pytest.mark.parametrize(
+    ("thinking_config", "expected"),
+    [
+        (
+            types.ThinkingConfig(thinking_budget=512),
+            {"reasoning_effort": "low"},
+        ),
+        (
+            types.ThinkingConfig(thinking_budget=2048),
+            {"reasoning_effort": "medium"},
+        ),
+        (
+            types.ThinkingConfig(thinking_budget=4096),
+            {"reasoning_effort": "high"},
+        ),
+        (types.ThinkingConfig(thinking_budget=0), {"reasoning_effort": "none"}),
+        (types.ThinkingConfig(include_thoughts=True), None),
+    ],
+)
+async def test_get_completion_inputs_gemini_4_and_later_model_shapes(
+    mocker,
+    model: str,
+    thinking_config: types.ThinkingConfig,
+    expected: dict[str, object] | None,
+) -> None:
+  """Treats Gemini 4+ across provider and path shapes as Gemini 3 or newer."""
+  mocker.patch.object(litellm, "supports_reasoning", return_value=True)
+  mocker.patch.object(
+      litellm,
+      "get_supported_openai_params",
+      return_value=["reasoning_effort", "thinking"],
+  )
+  mocker.patch.object(litellm, "get_model_info", return_value=None)
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 async def test_generate_content_async_include_thoughts_false(
     mock_acompletion: AsyncMock,

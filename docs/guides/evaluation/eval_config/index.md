@@ -335,7 +335,7 @@ audio settings of its own on top of them.
 | :--- | :--- | :--- | :--- |
 | `type` | `str` | `"llm_backed"` | Which simulator implementation to use. |
 | `model` | `str` | `"gemini-2.5-flash"` | Model that plays the user. |
-| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 | Generation config for the simulator's model. The default asks for thoughts, so overriding it with a bare `{}` turns thinking off. |
+| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 (thinking level `MEDIUM` on Gemini 4 and later) | Generation config for the simulator's model. Overriding it with a bare `{}` drops the thinking settings, so the model thinks by its own default and returns no thoughts. |
 | `max_allowed_invocations` | `int` | `20` | Hard cap on conversation length. `-1` removes the cap, which is how a run-off conversation becomes a bill. |
 | `custom_instructions` | `str` | `null` | Replacement instructions for the simulator. It must contain the Jinja placeholders `{{ stop_signal }}`, `{{ conversation_plan }}` and `{{ conversation_history }}`, plus `{{ persona }}` if the scenario sets one; a validator rejects it otherwise. |
 | `include_function_calls` | `bool` | `false` | Whether the simulated user sees the agent's tool calls. |
@@ -538,6 +538,35 @@ method other than these two has no `threshold`, or when `pass_at_k` or
 `pass_hat_k` is used outside `cross_run_criteria`. `adk eval` checks `k`
 against the number of runs once `--num_runs` has been applied, and stops before
 any inference when `k` is more than that number.
+
+#### Across the eval set
+
+On a single case, pass@k and pass^k carry the same information as the pass
+rate: all three depend only on how many of its runs passed. Averaged over the
+cases of an eval set they do not. Two eval sets with the same mean pass rate of
+75% can have a mean `pass^4` of 0.5, when one case always passes and another
+passes half the time, or of 0, when every case fails one run in four. The mean
+shows whether failures are concentrated in a few cases or spread across all of
+them.
+
+So the `Eval Run Summary` of `adk eval` prints, under each eval set's pass and
+fail counts, the mean of every cross-run criterion over the eval set's cases:
+
+```text
+Eval Run Summary
+Each eval case was run 4 times and judged on all 4 runs.
+my_eval_set:
+  Tests passed: 10
+  Tests failed: 2
+  pass_rate: 0.75 (mean over 12 cases)
+  pass^4: 0.41 (mean over 11 of 12 cases)
+```
+
+A case with no value for a criterion is left out of its mean, and the line
+then says how many cases the mean covers, as `pass^4` does above. A criterion
+that no case has a value for prints `n/a`. The lines are a report only: the
+counts above them decide the exit code, and they are printed only when
+`cross_run_criteria` is configured.
 
 ### Crashed runs
 

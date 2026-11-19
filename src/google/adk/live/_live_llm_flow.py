@@ -901,5 +901,9 @@ async def run_live_flow(
             'An unexpected error occurred in live flow: %s', e, exc_info=True
         )
         raise
+  except Exception:
+    while not function_response_queue.empty():
+      yield function_response_queue.get_nowait()
+    raise
   finally:
     await stop_background_tool_tasks(invocation_context)

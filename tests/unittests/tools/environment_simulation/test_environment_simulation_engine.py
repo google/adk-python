@@ -22,7 +22,9 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models.llm_response import LlmResponse
+from google.adk.models.registry import LLMRegistry
 from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectedError
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
@@ -30,6 +32,7 @@ from google.adk.tools.environment_simulation.environment_simulation_config impor
 from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_engine import _MAX_CONCURRENT_ARG_MATCHES
 from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_args_matcher import _semantic_arg_matcher
 from google.adk.tools.tool_args_matcher import ArgMatchResult
 from google.adk.tools.tool_args_matcher import BaseArgMatcher
@@ -38,6 +41,8 @@ from google.adk.tools.tool_args_matcher import ToolArgsMatcher
 from google.genai import types as genai_types
 from pydantic import PrivateAttr
 import pytest
+
+from ... import testing_utils
 
 
 @patch(
@@ -391,12 +396,18 @@ class _RecordingJudge:
 
   def __init__(self):
     self.calls: list[tuple[str, str]] = []
+    self.thinking_configs: dict[
+        tuple[str, str], genai_types.ThinkingConfig | None
+    ] = {}
 
   async def generate_content_async(self, llm_request, stream=False):
     del stream
     prompt = llm_request.contents[0].parts[0].text
     arg_name = re.search(r"Argument: (\S+)", prompt).group(1)
     self.calls.append((llm_request.model, arg_name))
+    self.thinking_configs[(llm_request.model, arg_name)] = (
+        llm_request.config.thinking_config
+    )
     yield LlmResponse(
         content=genai_types.Content(
             role="model", parts=[genai_types.Part(text="YES")]
@@ -495,6 +506,49 @@ class TestEnvironmentSimulationEngineArgsMatcher:
     assert ("model-two", "query") in judge.calls
     assert judge.calls.count(("pinned", "other")) == 2
     assert config.args_matcher.default_matcher.model is None
+
+  async def test_semantic_matcher_uses_gemini_4_thinking_level_for_simulation_model(
+      self, mock_analyzer, monkeypatch
+  ):
+    """Gemini 4 simulation_model switches default matcher thinking to LOW."""
+    del mock_analyzer
+    judge = _RecordingJudge()
+    monkeypatch.setattr(
+        _semantic_arg_matcher.LLMRegistry,
+        "new_llm",
+        staticmethod(lambda model: judge),
+    )
+    config = InjectionConfig(
+        match_args={"query": "a", "pinned_arg": "b"},
+        args_matcher=ToolArgsMatcher(
+            default_matcher=SemanticArgMatcher(),
+            per_arg_matchers={
+                "pinned_arg": SemanticArgMatcher(model="gemini-2.5-flash")
+            },
+        ),
+        injected_response={"injected": True},
+    )
+    engine = EnvironmentSimulationEngine(
+        _semantic_config([config], simulation_model="gemini-4-hydrogen")
+    )
+
+    result = await engine.simulate(
+        _search_tool(), {"query": "x", "pinned_arg": "y"}, MagicMock()
+    )
+
+    assert result == {"injected": True}
+    assert judge.thinking_configs[("gemini-4-hydrogen", "query")] == (
+        genai_types.ThinkingConfig(
+            include_thoughts=False,
+            thinking_level=genai_types.ThinkingLevel.LOW,
+        )
+    )
+    assert judge.thinking_configs[("gemini-2.5-flash", "pinned_arg")] == (
+        genai_types.ThinkingConfig(
+            include_thoughts=False,
+            thinking_budget=512,
+        )
+    )
 
   async def test_unmatched_args_matcher_falls_back_to_mock_strategy(
       self, mock_analyzer
@@ -1084,3 +1138,69 @@ def test_engine_reused_across_event_loops(mock_analyzer):
   assert result_1 == {"from": values[-1]}
   assert result_2 == {"from": values[-1]}
   assert matcher._max_in_flight == _MAX_CONCURRENT_ARG_MATCHES
+
+
+@pytest.mark.parametrize(
+    ("simulation_model", "expected_thinking_config"),
+    [
+        (
+            "gemini-4-hydrogen",
+            genai_types.ThinkingConfig(
+                include_thoughts=False,
+                thinking_level=genai_types.ThinkingLevel.MEDIUM,
+            ),
+        ),
+        (
+            "gemini-2.5-flash",
+            genai_types.ThinkingConfig(
+                include_thoughts=False, thinking_budget=10240
+            ),
+        ),
+        (
+            "claude-sonnet-4-5",
+            genai_types.ThinkingConfig(
+                include_thoughts=False, thinking_budget=10240
+            ),
+        ),
+    ],
+)
+async def test_default_thinking_config_follows_simulation_model(
+    monkeypatch, simulation_model, expected_thinking_config
+):
+  """Analysis and mock requests get level MEDIUM only on Gemini 4+."""
+  mock_model = testing_utils.MockModel.create(
+      responses=['{"stateful_parameters": []}'] * 2
+  )
+  monkeypatch.setattr(
+      LLMRegistry, "resolve", staticmethod(lambda _: lambda model: mock_model)
+  )
+
+  def search(query: str) -> dict[str, str]:
+    """Searches for flights."""
+    return {"query": query}
+
+  tool = FunctionTool(search)
+  tool_context = MagicMock()
+  tool_context._invocation_context.agent = LlmAgent(
+      name="agent", model="gemini-2.5-flash", tools=[tool]
+  )
+  engine = EnvironmentSimulationEngine(
+      EnvironmentSimulationConfig(
+          tool_simulation_configs=[
+              ToolSimulationConfig(
+                  tool_name="search",
+                  mock_strategy_type=MockStrategy.MOCK_STRATEGY_TOOL_SPEC,
+              )
+          ],
+          simulation_model=simulation_model,
+      )
+  )
+
+  await engine.simulate(tool, {"query": "flights"}, tool_context)
+
+  assert [
+      request.config.thinking_config for request in mock_model.requests
+  ] == [
+      expected_thinking_config,
+      expected_thinking_config,
+  ]

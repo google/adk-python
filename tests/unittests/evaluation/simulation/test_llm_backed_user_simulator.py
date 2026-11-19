@@ -21,6 +21,7 @@ from google.adk.evaluation.simulation.user_simulator import Status
 from google.adk.evaluation.simulation.user_simulator_personas import UserBehavior
 from google.adk.evaluation.simulation.user_simulator_personas import UserPersona
 from google.adk.events.event import Event
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from pydantic import ValidationError
 import pytest
@@ -418,3 +419,67 @@ class TestLlmBackedUserSimulator:
 
     assert next_user_message.status == Status.SUCCESS
     assert next_user_message.user_message == expected_user_message
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_thinking_config"),
+    [
+        (
+            "gemini-4-hydrogen",
+            types.ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=types.ThinkingLevel.MEDIUM,
+            ),
+        ),
+        (
+            "gemini-2.5-pro",
+            types.ThinkingConfig(include_thoughts=True, thinking_budget=10240),
+        ),
+        (
+            "claude-sonnet-4-5",
+            types.ThinkingConfig(include_thoughts=True, thinking_budget=10240),
+        ),
+    ],
+)
+async def test_default_thinking_config_follows_model(
+    mock_llm_agent, conversation_scenario, model, expected_thinking_config
+):
+  """The default thinking budget is sent as level MEDIUM only to Gemini 4+."""
+  mock_llm_agent.generate_content_async.return_value = to_async_iter(
+      [LlmResponse(content=types.Content(parts=[types.Part(text="Hi")]))]
+  )
+  simulator = LlmBackedUserSimulator(
+      config=LlmBackedUserSimulatorConfig(model=model),
+      conversation_scenario=conversation_scenario,
+  )
+
+  await simulator.get_next_user_message(events=[])
+  await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  request = mock_llm_agent.generate_content_async.call_args.args[0]
+  assert request.config.thinking_config == expected_thinking_config
+
+
+async def test_caller_thinking_config_is_sent_as_given_on_gemini_4(
+    mock_llm_agent, conversation_scenario
+):
+  """A caller-set thinking config reaches a Gemini 4 model unchanged."""
+  mock_llm_agent.generate_content_async.return_value = to_async_iter(
+      [LlmResponse(content=types.Content(parts=[types.Part(text="Hi")]))]
+  )
+  thinking_config = types.ThinkingConfig(thinking_budget=2048)
+  simulator = LlmBackedUserSimulator(
+      config=LlmBackedUserSimulatorConfig(
+          model="gemini-4-hydrogen",
+          model_configuration=types.GenerateContentConfig(
+              thinking_config=thinking_config
+          ),
+      ),
+      conversation_scenario=conversation_scenario,
+  )
+
+  await simulator.get_next_user_message(events=[])
+  await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  request = mock_llm_agent.generate_content_async.call_args.args[0]
+  assert request.config.thinking_config == thinking_config

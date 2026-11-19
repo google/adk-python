@@ -31,6 +31,7 @@ from google.adk.flows.llm_flows.tools._caller import _PreparedFunctionCall
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -725,6 +726,30 @@ async def test_launch_live_call_sets_matching_live_session_id() -> None:
   await invocation_context._active_background_tools['fc-1'].task
 
   assert function_response_queue.get_nowait().live_session_id == 'live-1'
+
+
+@pytest.mark.asyncio
+async def test_launch_live_call_queues_nothing_for_long_running_tool() -> None:
+  """A long-running call that returns nothing puts nothing on the queue."""
+
+  def start_job(label: str) -> None:
+    """Starts a job whose result arrives later."""
+
+  tool = LongRunningFunctionTool(start_job)
+  invocation_context = await _context_with_tools(tool)
+  function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+
+  _live_caller._launch_function_call_live(
+      invocation_context,
+      types.FunctionCall(name='start_job', id='fc-1', args={'label': 'A'}),
+      {tool.name: tool},
+      invocation_context.agent,
+      function_response_queue,
+      None,
+  )
+  await invocation_context._active_background_tools['fc-1'].task
+
+  assert function_response_queue.empty()
 
 
 @pytest.mark.asyncio
