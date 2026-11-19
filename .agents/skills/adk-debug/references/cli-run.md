@@ -33,11 +33,14 @@ with `session_id` and `node_path` injected and `author` first. Empty `actions`
 entries are dropped, so an absent `actions` key means "no actions", not
 "unknown".
 
-In `--jsonl` mode stdout is pure JSONL; the human-readable session banner only
-prints when `--jsonl` is off, and goes to stderr either way. So this is safe:
+In `--jsonl` mode stdout is JSONL after two leading log-setup lines
+(`Log setup complete: ...` and `To access latest log: ...`); the human-readable
+session banner only prints when `--jsonl` is off, and goes to stderr either
+way. Keep only the JSON lines:
 
 ```bash
-adk run --jsonl {agent_dir} "{query}" 2>/dev/null > /tmp/events.jsonl
+adk run --jsonl {agent_dir} "{query}" 2>/dev/null > /tmp/run.out
+grep '^{' /tmp/run.out > /tmp/events.jsonl
 head -1 /tmp/events.jsonl | python3 -m json.tool     # inspect the real shape
 ```
 
@@ -60,7 +63,7 @@ Code | Meaning
 --- | ---
 `0` | The turn completed.
 `1` | Error — bad `--state` JSON, both a query and `--replay`, no query and no stdin, timeout, or an exception during the run.
-`2` | Paused. The run emitted an event with `longRunningToolIds`, i.e. a human-in-the-loop tool is waiting.
+`2` | Paused. The run emitted an event with a non-empty `longRunningToolIds`, i.e. a human-in-the-loop tool is waiting.
 
 On exit 2 the run prints the session id. Resume by re-running with that
 `--session_id` and the answer as the query — ADK maps the query onto the

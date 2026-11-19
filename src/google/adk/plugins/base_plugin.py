@@ -281,11 +281,20 @@ class BasePlugin(ABC):
     This callback provides an opportunity to handle model errors gracefully,
     potentially providing alternative responses or recovery mechanisms.
 
+    It is also called with an `asyncio.CancelledError` when an in-flight model
+    call is cancelled or its response stream is closed before a completed
+    response arrives, so that resources or telemetry state acquired in
+    `before_model_callback` can be released. A cancelled call is never
+    recovered: the cancellation propagates even if an `LlmResponse` is
+    returned, and an exception raised by this callback is logged instead of
+    replacing the cancellation.
+
     Args:
       callback_context: The context for the current agent call.
       llm_request: The request that was sent to the model when the error
         occurred.
-      error: The exception that was raised during model execution.
+      error: The exception that was raised during model execution, or the
+        `asyncio.CancelledError` if the model call was cancelled.
 
     Returns:
       An optional LlmResponse. If an LlmResponse is returned, it will be used

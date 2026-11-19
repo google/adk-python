@@ -337,11 +337,8 @@ def _build_task_input_user_content(
 
   # Fallback: workflow-node task with no originating FC.  Use the
   # node_input that the wrapper stamped onto ``ic.user_content``.
-  if user_content and user_content.parts:
-    parts = list(user_content.parts)
-    if is_single_turn:
-      parts.append(types.Part(text=_SINGLE_TURN_NUDGE))
-    return types.Content(role='user', parts=parts)
+  if not is_single_turn and user_content and user_content.parts:
+    return types.Content(role='user', parts=list(user_content.parts))
   return None
 
 

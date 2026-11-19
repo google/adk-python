@@ -623,6 +623,61 @@ async def test_routing_map_fan_out_runs_both_targets(
 
 
 @pytest.mark.asyncio
+async def test_routes_matching_several_edges_to_a_node_run_it_once(
+    request: pytest.FixtureRequest,
+):
+  """A node runs once when the emitted routes match several edges to it."""
+  node_a = TestingNode(name='NodeA', output='A', route=['route_x', 'route_y'])
+  node_b = TestingNode(name='NodeB', output='B')
+
+  agent = Workflow(
+      name='test_routes_to_one_node',
+      edges=[
+          (START, node_a),
+          (node_a, {'route_x': node_b, 'route_y': node_b}),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert simplify_events_with_node(events) == [
+      ('test_routes_to_one_node@1/NodeA@1', {'output': 'A'}),
+      ('test_routes_to_one_node@1/NodeB@1', {'output': 'B'}),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_routes_matching_several_edges_to_a_join_trigger_it_once(
+    request: pytest.FixtureRequest,
+):
+  """A join fires once when the routes of its only predecessor match twice."""
+  node_a = TestingNode(name='NodeA', output='A', route=['route_x', 'route_y'])
+  gate = JoinNode(name='Gate')
+  node_b = TestingNode(name='NodeB', output='B')
+
+  agent = Workflow(
+      name='test_routes_to_one_join',
+      edges=[
+          (START, node_a),
+          (node_a, {'route_x': gate, 'route_y': gate}),
+          (gate, node_b),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert simplify_events_with_node(events) == [
+      ('test_routes_to_one_join@1/NodeA@1', {'output': 'A'}),
+      ('test_routes_to_one_join@1/Gate@1', {'output': {'NodeA': 'A'}}),
+      ('test_routes_to_one_join@1/NodeB@1', {'output': 'B'}),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_routing_map_default_route_fan_out_runs_both_targets(
     request: pytest.FixtureRequest,
 ):

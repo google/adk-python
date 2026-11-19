@@ -212,9 +212,14 @@ Within a single step (`_execute_step`), when replay is enabled:
      `resume_inputs=recovered.resolved_responses`.
 
 7. **No output, route, or interrupts in recovered events** —
-   - If `node.wait_for_output` or `node.rerun_on_resume`: returns
+   - If `node.wait_for_output` and the node is a `BaseAgent` (task or chat
+     mode), or `node.rerun_on_resume` with `wait_for_output`: returns
      `should_run=True` with `resume_inputs=recovered.resolved_responses`.
-   - Otherwise: returns `should_run = (current_run is not None and not current_run.is_static)`
+   - Else if `node.rerun_on_resume`: fast-forwards (`should_run=False`) when
+     `recovered.finished_after_resume`, otherwise returns `should_run=True`
+     with `resume_inputs`.
+   - Otherwise (including any other `wait_for_output` node, whose next trigger
+     starts a new run): returns `should_run = (current_run is not None and not current_run.is_static)`
      (static nodes that completed with `None` output fast-forward with
      `should_run=False`, while dynamic nodes with no recorded outcome
      re-execute with `should_run=True`).
@@ -333,8 +338,16 @@ _run_impl
   │    └─ ctx._workflow_scheduler = DynamicNodeScheduler(state=loop_state)
   ├─ LOOP (_run_loop):
   │    ├─ _schedule_ready_nodes → pop triggers, dispatch via _start_node_task / ctx._run_node_internal
+  │    ├─ _flush_node_checkpoint → emit one coalesced checkpoint
+  │    │    if a static node status changed since the last flush
+  │    ├─ if pending_tasks is empty → flush once more if a replayed node
+  │    │    recorded as RUNNING in the last checkpoint completed, then break
   │    ├─ asyncio.wait(FIRST_COMPLETED)
-  │    ├─ _handle_completion → update state, emit checkpoint / replayed output, buffer downstream
+  │    ├─ _handle_completion → update state, mark checkpoint pending /
+  │    │    emit replayed output, buffer downstream
+  │    ├─ on a child error → mark it FAILED, drain finished siblings,
+  │    │    _flush_node_checkpoint once per drain pass (plus a final flush if a
+  │    │    checkpointed RUNNING replayed sibling completed), set error_shut_down
   │    └─ await detached dynamic tasks (loop_state.get_dynamic_tasks()) & _surface_detached_dynamic_outcome
   ├─ _cleanup_all_tasks  (finally)
   ├─ _collect_remaining_interrupts
@@ -375,9 +388,12 @@ stages:
      `_classify_static_replay` (`check_interception`) to determine whether the
      run will fast-forward (`not result.should_run` and not a resolved transfer
      interrupt), adding `node_name` to `loop_state.replayed_nodes` (so
-     checkpoint emission is skipped in `_schedule_ready_nodes` and on the
-     `COMPLETED` path of `_handle_completion`; `_handle_completion` still emits
-     a checkpoint if a replayed node comes back `WAITING`).
+     `loop_state.checkpoint_pending` is not set in `_schedule_ready_nodes` or
+     on the `COMPLETED` path of `_handle_completion`; `_handle_completion`
+     still sets it if a replayed node comes back `WAITING`, and `_run_loop`
+     flushes a final checkpoint on normal exit or error drain if a replayed
+     node recorded as `RUNNING` in the last emitted checkpoint completed
+     without a later checkpoint).
      `_at_concurrency_limit` excludes `replayed_nodes` from the
      `max_concurrency` count. A resolved-transfer fast-forward is not in that
      set because it runs its transfer target once the replay barrier releases

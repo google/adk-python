@@ -23,6 +23,7 @@ from typing import cast
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk import version
 from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
@@ -229,6 +230,37 @@ async def test_generate_content_async_with_custom_headers(
 
 @pytest.mark.asyncio
 @mock.patch('google.genai.Client')
+async def test_proxy_requests_get_no_runtime_tag(
+    mock_client_constructor: mock.MagicMock,
+    llm_request: LlmRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Requests through the Apigee proxy carry no hosting runtime tag."""
+  monkeypatch.setenv('GOOGLE_CLOUD_AGENT_ENGINE_ID', 'engine-id')
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse()
+  )
+  mock_client_constructor.return_value = mock_client_instance
+  apigee_llm = ApigeeLlm(model=APIGEE_GEMINI_MODEL_ID, proxy_url=PROXY_URL)
+
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, client_kwargs = mock_client_constructor.call_args
+  _, request_kwargs = mock_client_instance.aio.models.generate_content.call_args
+  completions_client = apigee_llm._completions_http_client  # pylint: disable=protected-access
+  untagged = f'google-adk/{version.__version__}'
+  for headers in (
+      client_kwargs['http_options'].headers,
+      request_kwargs['config'].http_options.headers,
+      completions_client._headers,  # pylint: disable=protected-access
+  ):
+    assert headers['user-agent'].split()[0] == untagged
+    assert headers['x-goog-api-client'].split()[0] == untagged
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
 async def test_vertex_model_path_parsing(
     mock_client_constructor: mock.MagicMock,
 ) -> None:
@@ -371,11 +403,17 @@ def test_vertex_model_missing_project_or_location_raises_error(
         'expected_model_id',
     ),
     [
-        ('apigee/gemini-2.5-flash', None, False, None, 'gemini-2.5-flash'),
+        ('apigee/gemini-2.5-flash', None, False, 'v1beta', 'gemini-2.5-flash'),
         ('apigee/gemini-2.5-flash', 'true', True, None, 'gemini-2.5-flash'),
         ('apigee/gemini-2.5-flash', '1', True, None, 'gemini-2.5-flash'),
-        ('apigee/gemini-2.5-flash', 'false', False, None, 'gemini-2.5-flash'),
-        ('apigee/gemini-2.5-flash', '0', False, None, 'gemini-2.5-flash'),
+        (
+            'apigee/gemini-2.5-flash',
+            'false',
+            False,
+            'v1beta',
+            'gemini-2.5-flash',
+        ),
+        ('apigee/gemini-2.5-flash', '0', False, 'v1beta', 'gemini-2.5-flash'),
         (
             'apigee/v1/gemini-2.5-flash',
             None,
@@ -474,6 +512,28 @@ async def test_model_string_parsing_and_client_initialization(
             config=request.config,
         )
     )
+
+
+@pytest.mark.parametrize(
+    ('api_version_env', 'expected_api_version'),
+    [('v1', None), ('beta', 'v1beta')],
+)
+def test_gemini_api_default_yields_to_api_version_env_var(
+    api_version_env: str, expected_api_version: str | None
+) -> None:
+  """Only an unset or beta GOOGLE_GENAI_API_VERSION gets ADK's v1beta."""
+  with (
+      mock.patch.dict(
+          os.environ, {'GOOGLE_GENAI_API_VERSION': api_version_env}, clear=True
+      ),
+      mock.patch('google.genai.Client', autospec=True) as mock_client,
+  ):
+    _ = ApigeeLlm(
+        model='apigee/gemini-2.5-flash', proxy_url=PROXY_URL
+    ).api_client
+
+  http_options = mock_client.call_args.kwargs['http_options']
+  assert http_options.api_version == expected_api_version
 
 
 @pytest.mark.asyncio
@@ -896,8 +956,10 @@ def test_streaming_parallel_tool_calls_without_index_stay_apart() -> None:
 
 
 @pytest.mark.asyncio
-async def test_streaming_chat_completions_malformed_tool_call_args_raises():
-  """Malformed tool call arguments raise ValueError and abort the stream."""
+async def test_streaming_chat_completions_malformed_tool_call_args_are_reported() -> (
+    None
+):
+  """Malformed tool call arguments end the stream as a malformed call."""
   request = LlmRequest(
       model='apigee/openai/gpt-4o',
       contents=[],
@@ -925,10 +987,12 @@ async def test_streaming_chat_completions_malformed_tool_call_args_raises():
       return_value=http_client,
   ):
     client = CompletionsHTTPClient(base_url=PROXY_URL)
-    with pytest.raises(ValueError) as exc_info:
-      _ = [item async for item in client.generate_content_async(request, True)]
+    responses = [
+        item async for item in client.generate_content_async(request, True)
+    ]
 
-  assert 'tool call arguments: {"a":' in str(exc_info.value)
+  assert responses[-1].error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert not responses[-1].get_function_calls()
 
 
 @pytest.mark.asyncio

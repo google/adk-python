@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 import contextvars
+import enum
 from typing import Any
 from typing import Callable
 from unittest import mock
@@ -69,6 +70,62 @@ def test_build_function_response_content() -> None:
   assert fr.name == 'my_tool'
   assert fr.id == 'call-123'
   assert fr.response == {'status': 'ok'}
+
+
+class _Unit(enum.Enum):
+  CELSIUS = 'celsius'
+  FAHRENHEIT = 'fahrenheit'
+
+
+@pytest.mark.parametrize(
+    ('function_result', 'expected_response'),
+    [
+        (_Unit.CELSIUS, {'result': 'celsius'}),
+        (
+            {'unit': _Unit.CELSIUS, 'units': [_Unit.FAHRENHEIT]},
+            {'unit': 'celsius', 'units': ['fahrenheit']},
+        ),
+        ({'by_unit': {_Unit.CELSIUS: 21}}, {'by_unit': {'celsius': 21}}),
+        ({'units': (_Unit.CELSIUS,)}, {'units': ('celsius',)}),
+        ({'by_pair': {(1, 2): 'x'}}, {'by_pair': {(1, 2): 'x'}}),
+    ],
+)
+def test_build_function_response_content_sends_enum_values(
+    function_result: object, expected_response: dict[str, Any]
+) -> None:
+  tool = BaseTool(name='my_tool', description='desc')
+  content = _tool_caller._build_function_response_content(
+      tool=tool,
+      function_result=function_result,
+      function_call_id='call-123',
+  )
+  assert content.parts is not None
+  fr = content.parts[0].function_response
+  assert fr is not None
+  assert fr.response == expected_response
+
+
+@pytest.mark.asyncio
+async def test_echoed_enum_argument_is_sent_back_as_its_value() -> None:
+  def get_unit(unit: _Unit) -> dict[str, Any]:
+    return {'unit': unit}
+
+  invocation_context = await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent')
+  )
+
+  event = await functions.handle_function_call_list_async(
+      invocation_context,
+      [
+          types.FunctionCall(
+              name='get_unit', id='call-1', args={'unit': 'celsius'}
+          )
+      ],
+      {'get_unit': FunctionTool(get_unit)},
+  )
+
+  assert event is not None
+  assert event.get_function_responses()[0].response == {'unit': 'celsius'}
 
 
 @pytest.mark.asyncio

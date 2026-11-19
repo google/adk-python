@@ -138,6 +138,31 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
   ) -> EvaluationResult:
     """Aggregates the per invocation results to get the overall score."""
 
+  def _convert_auto_rater_response_to_score_for_invocation(
+      self,
+      auto_rater_response: LlmResponse,
+      *,
+      actual: Invocation,
+      expected: Invocation | None,
+  ) -> AutoRaterScore:
+    """Returns the score in a judge response to the prompt for an invocation.
+
+    `evaluate_invocations` formats the prompts of all invocations before any
+    judge response arrives. A subclass that keeps per-invocation state while
+    formatting a prompt overrides this method to restore that state before the
+    response is parsed.
+
+    Args:
+      auto_rater_response: The judge response to parse.
+      actual: The actual invocation the prompt was formatted for.
+      expected: The expected invocation the prompt was formatted for, if any.
+
+    Returns:
+      The score parsed from the response.
+    """
+    del actual, expected  # Parsing needs only the response by default.
+    return self.convert_auto_rater_response_to_score(auto_rater_response)
+
   async def _evaluate_single_sample(
       self,
       llm_request: LlmRequest,
@@ -159,8 +184,10 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     ) as agen:
       async for llm_response in agen:
         # Non-streaming call, so there is only one response content.
-        auto_rater_score = self.convert_auto_rater_response_to_score(
-            llm_response
+        auto_rater_score = (
+            self._convert_auto_rater_response_to_score_for_invocation(
+                llm_response, actual=actual, expected=expected
+            )
         )
         return PerInvocationResult(
             actual_invocation=actual,

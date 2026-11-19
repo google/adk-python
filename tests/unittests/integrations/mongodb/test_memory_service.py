@@ -17,6 +17,9 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from typing import Any
 from unittest import mock
 
@@ -50,16 +53,37 @@ class _FakeCollection:
     self.create_index_error: Exception | None = None
     self.bulk_write_calls: list[tuple[list[Any], bool]] = []
     self.last_pipeline: list[dict[str, Any]] | None = None
+    self.search_index_models: list[Any] = []
 
   def create_index(
-      self, keys: list[tuple[str, int]], *, name: str | None = None
+      self,
+      keys: list[tuple[str, int]],
+      *,
+      name: str | None = None,
+      expireAfterSeconds: int | None = None,
   ) -> str:
     self.create_index_calls += 1
     if self.create_index_error is not None:
       raise self.create_index_error
     index_name = name or "_".join(f"{k}_{v}" for k, v in keys)
-    self._indexes[index_name] = {"key": list(keys)}
+    spec: dict[str, Any] = {"key": list(keys)}
+    if expireAfterSeconds is not None:
+      spec["expireAfterSeconds"] = expireAfterSeconds
+    self._indexes[index_name] = spec
     return index_name
+
+  def create_search_index(self, *, model: Any) -> str:
+    if self.create_index_error is not None:
+      raise self.create_index_error
+    if self.list_search_indexes(model["name"]):
+      raise _OperationFailure("Duplicate Index", code=68)
+    self.search_index_models.append(model)
+    return model["name"]
+
+  def list_search_indexes(self, name: str) -> list[dict[str, Any]]:
+    return [
+        model for model in self.search_index_models if model["name"] == name
+    ]
 
   def index_information(self) -> dict[str, dict[str, Any]]:
     return copy.deepcopy(self._indexes)
@@ -110,6 +134,16 @@ class _FakeCollection:
           )
       elif "$limit" in stage:
         docs = docs[: stage["$limit"]]
+      elif "$vectorSearch" in stage:
+        spec = stage["$vectorSearch"]
+        if "filter" in spec:
+          docs = [doc for doc in docs if _matches(doc, spec["filter"])]
+        docs = docs[: spec.get("limit", len(docs))]
+      elif "$project" in stage:
+        excluded = {f for f, v in stage["$project"].items() if v == 0}
+        docs = [
+            {k: v for k, v in doc.items() if k not in excluded} for doc in docs
+        ]
       else:
         raise NotImplementedError(f"Unsupported stage: {stage}")
     return docs
@@ -156,6 +190,24 @@ class _FakeDatabase:
   def __getitem__(self, name: str) -> _FakeCollection:
     if name not in self._collections:
       self._collections[name] = _FakeCollection()
+    return self._collections[name]
+
+  def list_collection_names(
+      self, filter: dict[str, Any] | None = None
+  ) -> list[str]:
+    names = list(self._collections)
+    if filter is not None:
+      names = [n for n in names if n == filter["name"]]
+    return names
+
+  def create_collection(
+      self, name: str, *, check_exists: bool = True
+  ) -> _FakeCollection:
+    assert not check_exists, "server-side existence check expected"
+    if name in self._collections:
+      error = _OperationFailure("collection already exists", code=48)
+      raise error
+    self._collections[name] = _FakeCollection()
     return self._collections[name]
 
 
@@ -207,7 +259,7 @@ class _OperationFailure(Exception):
 
 
 async def test_recall_index_created_once_by_default() -> None:
-  """The app/user/keywords index is created once without opting in."""
+  """The recall index is created once without opting in; TTL is opt-in."""
   client: Any = _FakeMongoClient()
   svc = MongoDbMemoryService(mongo_client=client, database_name="test_db")
   await svc.add_session_to_memory(_session_with_texts("hello world"))
@@ -216,6 +268,8 @@ async def test_recall_index_created_once_by_default() -> None:
   collection = client["test_db"]["memories"]
   indexes = collection.index_information()
   assert "app_user_keywords" in indexes
+  assert "memory_ttl" not in indexes
+  # The first-use guard keeps it at one create_index call.
   assert collection.create_index_calls == 1
 
 
@@ -826,6 +880,449 @@ async def test_close_only_closes_owned_client() -> None:
     )
   await svc_owned.close()
   assert owned_client.closed
+
+
+def _memory_doc(text: str, doc_id: Any = None) -> dict[str, Any]:
+  """Builds a stored memory document as the service would write it."""
+  if doc_id is None:
+    doc_id = {
+        "app_name": APP,
+        "user_id": USER,
+        "session_id": "s1",
+        "event_id": "e0",
+    }
+  return {
+      "_id": doc_id,
+      "app_name": APP,
+      "user_id": USER,
+      "author": "user",
+      "text": text,
+      "content": (
+          types.Content(role="user", parts=[types.Part(text=text)]).model_dump(
+              exclude_none=True, mode="json"
+          )
+      ),
+      "timestamp": 1.0,
+  }
+
+
+def _vector_service(**kwargs: Any) -> MongoDbMemoryService:
+  defaults: dict[str, Any] = dict(
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="vector",
+      genai_client=mock.MagicMock(),
+  )
+  defaults.update(kwargs)
+  return MongoDbMemoryService(**defaults)
+
+
+async def test_vector_mode_ingest_embeds_in_one_batch() -> None:
+  """Vector mode embeds all event texts in one call and stores the vectors."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+  embedding = mock.MagicMock()
+  embedding.values = [0.1, 0.2]
+  genai_client.aio.models.embed_content = mock.AsyncMock(
+      return_value=mock.MagicMock(embeddings=[embedding, embedding])
+  )
+  svc = _vector_service(
+      mongo_client=client,
+      genai_client=genai_client,
+      embedding_output_dimensionality=2,
+  )
+
+  await svc.add_session_to_memory(
+      _session_with_texts("first memory", "second memory")
+  )
+
+  embed_call = genai_client.aio.models.embed_content.await_args
+  assert embed_call.kwargs["contents"] == ["first memory", "second memory"]
+  assert embed_call.kwargs["model"] == "text-embedding-005"
+  docs = list(client["test_db"]["memories"]._docs.values())
+  assert len(docs) == 2
+  assert all(doc["embedding"] == [0.1, 0.2] for doc in docs)
+  assert all("text" in doc and "keywords" not in doc for doc in docs)
+
+
+async def test_vector_mode_recall_runs_vector_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Vector mode recalls via $vectorSearch with an embedded query."""
+  embed_query = mock.AsyncMock(return_value=[0.1, 0.2])
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._search_tool._embed_query", embed_query
+  )
+  client: Any = _FakeMongoClient()
+  collection = client["test_db"]["memories"]
+  collection._docs[_doc_key("m1")] = _memory_doc("nearest memory", "m1")
+  svc = _vector_service(mongo_client=client)
+
+  response = await svc.search_memory(
+      app_name=APP, user_id=USER, query="coffee machine"
+  )
+
+  assert embed_query.await_args.kwargs["query"] == "coffee machine"
+  stage = collection.last_pipeline[0]["$vectorSearch"]
+  assert stage["queryVector"] == [0.1, 0.2]
+  assert stage["path"] == "embedding"
+  assert stage["filter"] == {"app_name": APP, "user_id": USER}
+  assert stage["limit"] == svc._max_results
+  texts = [
+      " ".join(p.text for p in m.content.parts if p.text)
+      for m in response.memories
+  ]
+  assert texts == ["nearest memory"]
+
+
+async def test_auto_mode_ingest_stores_plain_text_without_embeddings() -> None:
+  """Auto mode stores plain text; Atlas embeds it, not the genai client."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+  svc = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="auto",
+      genai_client=genai_client,
+  )
+
+  await svc.add_session_to_memory(_session_with_texts("just text"))
+
+  doc = next(iter(client["test_db"]["memories"]._docs.values()))
+  assert doc["text"] == "just text"
+  assert "embedding" not in doc and "keywords" not in doc
+  genai_client.aio.models.embed_content.assert_not_called()
+
+
+async def test_auto_mode_recall_sends_query_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Auto mode sends query.text to the autoEmbed index; no embed call."""
+  embed_query = mock.AsyncMock(return_value=[0.1])
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._search_tool._embed_query", embed_query
+  )
+  client: Any = _FakeMongoClient()
+  collection = client["test_db"]["memories"]
+  collection._docs[_doc_key("m1")] = _memory_doc("atlas recall", "m1")
+  svc = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="auto",
+  )
+
+  response = await svc.search_memory(
+      app_name=APP, user_id=USER, query="coffee machine"
+  )
+
+  embed_query.assert_not_awaited()
+  stage = collection.last_pipeline[0]["$vectorSearch"]
+  assert stage["query"] == {"text": "coffee machine"}
+  assert stage["path"] == "text"
+  assert stage["filter"] == {"app_name": APP, "user_id": USER}
+  assert len(response.memories) == 1
+
+
+def _embedding_client(dims: int) -> mock.MagicMock:
+  """A genai client mock that embeds every text as a `dims`-long vector."""
+  genai_client = mock.MagicMock()
+
+  async def embed_content(*, model, contents, config):
+    del model, config
+    return mock.MagicMock(
+        embeddings=[mock.MagicMock(values=[0.1] * dims) for _ in contents]
+    )
+
+  genai_client.aio.models.embed_content = mock.AsyncMock(
+      side_effect=embed_content
+  )
+  return genai_client
+
+
+async def test_vector_mode_creates_vector_index() -> None:
+  """ensure_indexes in vector mode creates a vectorSearch index once."""
+  client: Any = _FakeMongoClient()
+  svc = _vector_service(
+      mongo_client=client,
+      ensure_indexes=True,
+      genai_client=_embedding_client(768),
+  )
+
+  await svc.add_session_to_memory(_session_with_texts("first"))
+  await svc.add_session_to_memory(_session_with_texts("second"))
+
+  collection = client["test_db"]["memories"]
+  assert len(collection.search_index_models) == 1
+  model = collection.search_index_models[0]
+  fields = model["definition"]["fields"]
+  assert {
+      "type": "vector",
+      "path": "embedding",
+      "numDimensions": 768,
+      "similarity": "cosine",
+  } in fields
+  assert {"type": "filter", "path": "app_name"} in fields
+  assert model["name"] == "memory_vector_index"
+
+
+async def test_existing_vector_index_is_reused() -> None:
+  """A later service instance reuses the vector index instead of failing."""
+  client: Any = _FakeMongoClient()
+  for text in ("first", "second"):
+    svc = _vector_service(
+        mongo_client=client,
+        ensure_indexes=True,
+        genai_client=_embedding_client(768),
+    )
+    await svc.add_session_to_memory(_session_with_texts(text))
+
+  collection = client["test_db"]["memories"]
+  assert len(collection.search_index_models) == 1
+  assert len(collection._docs) == 1
+
+
+async def test_existing_vector_index_with_other_dimensions_raises() -> None:
+  """An existing index sized for another model fails loudly, not silently."""
+  client: Any = _FakeMongoClient()
+  await _vector_service(
+      mongo_client=client,
+      ensure_indexes=True,
+      genai_client=_embedding_client(768),
+  ).add_session_to_memory(_session_with_texts("first"))
+  svc = _vector_service(
+      mongo_client=client,
+      ensure_indexes=True,
+      genai_client=_embedding_client(2),
+      embedding_output_dimensionality=2,
+  )
+
+  with pytest.raises(ValueError, match="numDimensions=768 \\(expected 2\\)"):
+    await svc.add_session_to_memory(_session_with_texts("second"))
+  assert len(client["test_db"]["memories"]._docs) == 1
+
+
+async def test_existing_index_from_other_mode_raises() -> None:
+  """An autoEmbed index is not reused as a vector index."""
+  client: Any = _FakeMongoClient()
+  await MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", retrieval_mode="auto"
+  ).add_session_to_memory(_session_with_texts("first"))
+  svc = _vector_service(
+      mongo_client=client,
+      ensure_indexes=True,
+      genai_client=_embedding_client(768),
+  )
+
+  with pytest.raises(ValueError, match="type=None"):
+    await svc.add_session_to_memory(_session_with_texts("second"))
+
+
+async def test_memories_collection_created_concurrently_is_tolerated() -> None:
+  """NamespaceExists from a concurrent collection create is not an error."""
+  client: Any = _FakeMongoClient()
+  database = client["test_db"]
+  svc = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", retrieval_mode="auto"
+  )
+  with mock.patch.object(database, "list_collection_names", return_value=[]):
+    database["memories"]  # Another process created it after our check.
+    await svc.add_session_to_memory(_session_with_texts("x"))
+
+  assert len(database["memories"].search_index_models) == 1
+
+
+async def test_blank_query_skips_vector_search() -> None:
+  """A blank query returns nothing without embedding or searching."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+  svc = _vector_service(mongo_client=client, genai_client=genai_client)
+
+  response = await svc.search_memory(app_name=APP, user_id=USER, query="  ")
+
+  assert not response.memories
+  genai_client.aio.models.embed_content.assert_not_called()
+  assert client["test_db"]["memories"].last_pipeline is None
+
+
+async def test_embedding_dimension_mismatch_raises() -> None:
+  """Vectors not sized for the index are rejected instead of lost."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+  genai_client.aio.models.embed_content = mock.AsyncMock(
+      return_value=mock.MagicMock(embeddings=[mock.MagicMock(values=[0.1])])
+  )
+  svc = _vector_service(mongo_client=client, genai_client=genai_client)
+
+  with pytest.raises(ValueError, match="not 768-dimensional"):
+    await svc.add_session_to_memory(_session_with_texts("one"))
+  assert not client["test_db"]["memories"]._docs
+
+
+async def test_vector_index_created_concurrently_is_tolerated() -> None:
+  """IndexAlreadyExists from a concurrent creator is not an error."""
+  client: Any = _FakeMongoClient()
+  collection = client["test_db"]["memories"]
+  svc = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", retrieval_mode="auto"
+  )
+  with mock.patch.object(collection, "list_search_indexes", return_value=[]):
+    collection.create_search_index = mock.Mock(
+        side_effect=_OperationFailure("Duplicate Index", code=68)
+    )
+    await svc.add_session_to_memory(_session_with_texts("first"))
+    await svc.add_session_to_memory(_session_with_texts("second"))
+
+  assert collection.create_search_index.call_count == 1
+  assert len(collection._docs) == 1
+
+
+async def test_vector_mode_ingest_embeds_in_batches() -> None:
+  """Large sessions are embedded in several requests, in order."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+
+  async def embed_content(*, model, contents, config):
+    del model, config
+    return mock.MagicMock(
+        embeddings=[
+            mock.MagicMock(values=[float(text.split()[1])]) for text in contents
+        ]
+    )
+
+  genai_client.aio.models.embed_content = mock.AsyncMock(
+      side_effect=embed_content
+  )
+  svc = _vector_service(
+      mongo_client=client,
+      genai_client=genai_client,
+      embedding_output_dimensionality=1,
+  )
+  texts = [f"memory {i}" for i in range(250)]
+
+  await svc.add_session_to_memory(_session_with_texts(*texts))
+
+  calls = genai_client.aio.models.embed_content.await_args_list
+  assert [len(c.kwargs["contents"]) for c in calls] == [100, 100, 50]
+  docs = client["test_db"]["memories"]._docs.values()
+  assert all(
+      doc["embedding"] == [float(doc["text"].split()[1])] for doc in docs
+  )
+
+
+async def test_embedding_count_mismatch_raises() -> None:
+  """A response with the wrong number of embeddings is rejected."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+  embedding = mock.MagicMock(values=[0.1])
+  genai_client.aio.models.embed_content = mock.AsyncMock(
+      return_value=mock.MagicMock(embeddings=[embedding])
+  )
+  svc = _vector_service(mongo_client=client, genai_client=genai_client)
+
+  with pytest.raises(ValueError, match="1 embeddings for 2 texts"):
+    await svc.add_session_to_memory(_session_with_texts("one", "two"))
+
+
+async def test_vector_search_caps_num_candidates() -> None:
+  """numCandidates and limit stay within the $vectorSearch maximum."""
+  client: Any = _FakeMongoClient()
+  svc = _vector_service(
+      mongo_client=client, retrieval_mode="auto", max_results=5000
+  )
+
+  await svc.search_memory(app_name=APP, user_id=USER, query="anything")
+
+  stage = client["test_db"]["memories"].last_pipeline[0]["$vectorSearch"]
+  assert stage["numCandidates"] == 10_000
+  assert stage["limit"] == 5000
+
+
+async def test_auto_mode_creates_autoembed_index() -> None:
+  """ensure_indexes in auto mode creates an autoEmbed index on `text`."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=True,
+      retrieval_mode="auto",
+  )
+
+  await svc.add_session_to_memory(_session_with_texts("x"))
+
+  collection = client["test_db"]["memories"]
+  model = collection.search_index_models[0]
+  fields = model["definition"]["fields"]
+  assert {
+      "type": "autoEmbed",
+      "modality": "text",
+      "path": "text",
+      "model": "voyage-4",
+  } in fields
+
+
+def test_retrieval_mode_must_be_known() -> None:
+  """An unknown retrieval mode is a config error."""
+  mode: Any = "semantic"
+  with pytest.raises(ValueError, match="retrieval_mode"):
+    MongoDbMemoryService(
+        mongo_client=_FakeMongoClient(),
+        database_name="test_db",
+        retrieval_mode=mode,
+    )
+
+
+def test_memory_ttl_days_must_be_positive_or_none() -> None:
+  """memory_ttl_days of zero or negative is a config error; None is valid."""
+  with pytest.raises(ValueError, match="memory_ttl_days"):
+    MongoDbMemoryService(
+        mongo_client=_FakeMongoClient(),
+        database_name="test_db",
+        memory_ttl_days=0,
+    )
+  # None disables expiry and is accepted.
+  MongoDbMemoryService(
+      mongo_client=_FakeMongoClient(),
+      database_name="test_db",
+      memory_ttl_days=None,
+  )
+
+
+async def test_memories_do_not_expire_by_default() -> None:
+  """Without memory_ttl_days, no expire_at is stored and no TTL index made."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(mongo_client=client, database_name="test_db")
+  await svc.add_session_to_memory(_session_with_texts("hello world"))
+
+  collection = client["test_db"]["memories"]
+  doc = next(iter(collection._docs.values()))
+  assert "expire_at" not in doc
+  assert "memory_ttl" not in collection.index_information()
+
+
+async def test_ttl_writes_expire_at_and_creates_index() -> None:
+  """memory_ttl_days=7 stores expire_at ~7 days out and a TTL index."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", memory_ttl_days=7
+  )
+  before = datetime.now(timezone.utc)
+  await svc.add_session_to_memory(
+      _session_with_texts("first memory", "second memory")
+  )
+  after = datetime.now(timezone.utc)
+
+  docs = list(client["test_db"]["memories"]._docs.values())
+  assert len(docs) == 2
+  for doc in docs:
+    expire_at = doc["expire_at"]
+    if expire_at.tzinfo is None:
+      expire_at = expire_at.replace(tzinfo=timezone.utc)
+    assert expire_at - before >= timedelta(days=7) - timedelta(seconds=1)
+    assert expire_at - after <= timedelta(days=7)
+  indexes = client["test_db"]["memories"].index_information()
+  assert indexes["memory_ttl"]["expireAfterSeconds"] == 0
 
 
 def test_constructor_validates_client_args() -> None:

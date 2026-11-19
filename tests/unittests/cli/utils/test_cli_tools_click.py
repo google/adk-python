@@ -2493,9 +2493,20 @@ def _fake_inference_and_scoring(
     return []
 
   async def _fake_collect_eval_results(
-      inference_results, eval_service, eval_metrics, *, parallelism=None
+      inference_results,
+      eval_service,
+      eval_metrics,
+      *,
+      parallelism=None,
+      multi_run_config=None,
   ):
-    del inference_results, eval_service, eval_metrics, parallelism
+    del (
+        inference_results,
+        eval_service,
+        eval_metrics,
+        parallelism,
+        multi_run_config,
+    )
     return eval_results
 
   monkeypatch.setattr(
@@ -2542,6 +2553,11 @@ def test_cli_eval_with_num_runs_aggregates_per_eval_case(
   )
   assert "Tests passed: 1" in result.output
   assert "Tests failed: 0" in result.output
+  assert "case1  PASSED  PF  1/2 (50%)" in result.output
+  assert (
+      "response_match_score: 0.80 (threshold 0.80, PASSED, runs: [1.00, 0.60])"
+      in result.output
+  )
 
 
 @pytest.mark.unmute_click
@@ -3090,6 +3106,191 @@ def test_cli_eval_rejects_parallelism_below_one(
 
   assert result.exit_code != 0
   assert "Invalid value for '--parallelism'" in result.output
+
+
+def test_cli_eval_fails_before_inference_when_k_exceeds_the_num_runs_flag(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """A pass@k criterion's k is checked against the runs that --num_runs sets.
+
+  Setup: the eval config sets no num_runs and asks for pass^4, and
+    `--num_runs 2` runs each case twice.
+  Assert: the command fails with a usage error naming the criterion, and no
+    inference was requested.
+  """
+  eval_set_id = "test_eval_set_k_above_flag"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_k_above_flag", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "cross_run_criteria": [{"method": "pass_hat_k", "k": 4}]
+          },
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(monkeypatch, [])
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "2",
+      ],
+  )
+
+  assert result.exit_code != 0
+  assert "cross_run_criteria[0]: k=4 is more than the 2 run" in result.output
+  assert not inference_configs
+
+
+def test_cli_eval_accepts_k_within_a_num_runs_flag_above_the_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """--num_runs can raise the runs above the config's, which k then fits."""
+  eval_set_id = "test_eval_set_k_within_flag"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_k_within_flag", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "num_runs": 2,
+              "cross_run_criteria": [{"method": "pass_hat_k", "k": 4}],
+          },
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "5",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [5]
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_summary_prints_each_cross_run_criterion_mean(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """The summary averages each cross-run criterion over the eval cases.
+
+  Setup: two cases run twice. case1 passes both runs; case2 passes one. The
+    config counts passing runs with `pass_rate` and reports `pass^2`.
+  Assert: under the pass/fail counts, each criterion's mean over the two
+    cases is printed, in config order: pass_rate 0.75, then pass^2 0.5.
+  """
+  eval_set_id = "test_eval_set_criterion_means"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_criterion_means", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "num_runs": 2,
+              "cross_run_criteria": [
+                  {"method": "pass_rate", "threshold": 0.5},
+                  {"method": "pass_hat_k", "k": 2},
+              ],
+          },
+      })
+  )
+  case1 = [
+      _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+      _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=1),
+  ]
+  case2 = [
+      _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+      _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+  ]
+  _fake_inference_and_scoring(
+      monkeypatch,
+      case1 + [run.model_copy(update={"eval_id": "case2"}) for run in case2],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  mean_block = (
+      f"{eval_set_id}:\n"
+      "  Tests passed: 2\n"
+      "  Tests failed: 0\n"
+      "  pass_rate: 0.75 (mean over 2 cases)\n"
+      "  pass^2: 0.50 (mean over 2 cases)\n"
+  )
+  assert mean_block in result.output
+  assert result.output.index(mean_block) < result.output.index("pass^2=1.00")
+  assert "pass^2=0.00" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_summary_has_no_criterion_lines_without_criteria(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """Without cross-run criteria the summary prints only the pass/fail counts."""
+  eval_set_id = "test_eval_set_no_criteria"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_no_criteria", eval_set_id
+  )
+  _fake_inference_and_scoring(
+      monkeypatch,
+      [
+          _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+          _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+      ],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_path), eval_set_id, "--num_runs", "2"],
+  )
+
+  assert result.exit_code == 0
+  assert (
+      f"{eval_set_id}:\n  Tests passed: 1\n  Tests failed: 0\n" in result.output
+  )
+  assert "mean over" not in result.output
 
 
 def test_cli_create_eval_set(tmp_path: Path):

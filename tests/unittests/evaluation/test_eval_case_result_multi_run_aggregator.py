@@ -17,28 +17,33 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import dataclasses
 import statistics
 from typing import Optional
 
 from google.adk.agents.common_configs import CodeConfig
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
+from google.adk.evaluation._eval_case_result_multi_run_aggregator import check_pass_k_criteria_against_num_runs
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import count_runs_failed_without_metric_results
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import get_run_status
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
-from google.adk.evaluation._eval_case_result_multi_run_aggregator import MethodResult
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
+from google.adk.evaluation._eval_case_result_multi_run_aggregator import summarize_cross_run_criteria
+from google.adk.evaluation._eval_case_result_multi_run_aggregator import summarize_eval_case_results
 from google.adk.evaluation._multi_run_aggregation_methods import get_built_in_aggregation_methods
 from google.adk.evaluation._multi_run_aggregation_methods import RunResult
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_config import CustomCrossRunMethodConfig
 from google.adk.evaluation.eval_config import MultiRunConfig
 from google.adk.evaluation.eval_config import MultiRunCriterion
+from google.adk.evaluation.eval_config import PassKMultiRunCriterion
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import EvalMetricResultDetails
 from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
 from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_result import EvalCaseResult
+from google.adk.evaluation.eval_result import MethodResult
 from google.adk.evaluation.eval_rubrics import RubricScore
 from google.genai import types as genai_types
 import pytest
@@ -1755,3 +1760,318 @@ def test_custom_cross_run_criterion_cannot_pass_a_case_whose_runs_all_crashed():
       aggregated[0].cross_run_results[0].status,
       aggregated[0].final_eval_status,
   ) == (EvalStatus.PASSED, EvalStatus.NOT_EVALUATED)
+
+
+def _runs_where_each_metric_fails_once() -> list[EvalCaseResult]:
+  """Returns four runs in which `a` and `b` each fail once, in different runs.
+
+  Each metric passed 3 of 4 runs, so each metric's mean, 0.75, meets its
+  threshold, but the case passed only 2 of 4 runs as a whole.
+  """
+  return [
+      _judged_run(0, a=1.0, b=1.0),
+      _judged_run(1, a=1.0, b=0.0),
+      _judged_run(2, a=0.0, b=1.0),
+      _judged_run(3, a=1.0, b=1.0),
+  ]
+
+
+def test_pass_k_criteria_without_threshold_only_report():
+  """pass@k and pass^k without a threshold report but never judge the case.
+
+  Setup: the case passed 2 of 4 runs as a whole, and each metric's mean meets
+    its threshold.
+  Assert: pass^2 is 1/6 and pass@2 is 5/6, both INFORMATIONAL with no
+    threshold, and the case still passes on its metrics.
+  """
+  multi_run_config = MultiRunConfig(
+      cross_run_criteria=[
+          PassKMultiRunCriterion(method="pass_hat_k", k=2),
+          PassKMultiRunCriterion(method="pass_at_k", k=2),
+      ]
+  )
+
+  (aggregated,) = aggregate_eval_case_results(
+      _runs_where_each_metric_fails_once(), multi_run_config=multi_run_config
+  )
+
+  assert [
+      (result.name, result.value, result.threshold, result.status)
+      for result in aggregated.cross_run_results
+  ] == [
+      ("pass^2", pytest.approx(1 / 6), None, EvalStatus.INFORMATIONAL),
+      ("pass@2", pytest.approx(5 / 6), None, EvalStatus.INFORMATIONAL),
+  ]
+  assert aggregated.final_eval_status == EvalStatus.PASSED
+
+
+def test_pass_hat_k_with_threshold_fails_the_case_below_it():
+  """A pass^k criterion with a threshold judges the case like pass_rate."""
+  multi_run_config = MultiRunConfig(
+      cross_run_criteria=[
+          PassKMultiRunCriterion(method="pass_hat_k", k=2, threshold=0.5)
+      ]
+  )
+
+  (aggregated,) = aggregate_eval_case_results(
+      _runs_where_each_metric_fails_once(), multi_run_config=multi_run_config
+  )
+
+  assert (
+      aggregated.cross_run_results[0].status,
+      aggregated.final_eval_status,
+  ) == (EvalStatus.FAILED, EvalStatus.FAILED)
+
+
+def test_pass_k_criterion_leaves_out_a_run_that_crashed():
+  """A crashed run has no verdict, so it is left out of n."""
+  runs = [
+      _judged_run(0, a=1.0),
+      _judged_run(1, a=1.0),
+      _crashed_run(session_id="s2"),
+  ]
+  multi_run_config = MultiRunConfig(
+      max_crashed_runs=1,
+      cross_run_criteria=[PassKMultiRunCriterion(method="pass_hat_k", k=2)],
+  )
+
+  (aggregated,) = aggregate_eval_case_results(
+      runs, multi_run_config=multi_run_config
+  )
+
+  result = aggregated.cross_run_results[0]
+  assert (result.value, result.note) == (
+      pytest.approx(1.0),
+      "2 of 3 runs passed, 1 crashed",
+  )
+
+
+def test_pass_k_criterion_without_enough_decided_runs_has_no_value():
+  """With fewer decided runs than k, the criterion reports no value."""
+  multi_run_config = MultiRunConfig(
+      cross_run_criteria=[PassKMultiRunCriterion(method="pass_hat_k", k=3)]
+  )
+
+  (aggregated,) = aggregate_eval_case_results(
+      [_judged_run(0, a=1.0), _judged_run(1, a=None)],
+      multi_run_config=multi_run_config,
+  )
+
+  assert aggregated.cross_run_results[0].value is None
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [_judged_run(0, a=0.0), _judged_run(1, a=0.0)],
+        [_judged_run(0, a=1.0), _judged_run(1, a=None)],
+        [_crashed_run(session_id="s0"), _crashed_run(session_id="s1")],
+    ],
+    ids=["value_zero", "too_few_decided_runs", "all_runs_crashed"],
+)
+def test_pass_k_criterion_without_threshold_is_always_informational(runs):
+  """Without a threshold the criterion is INFORMATIONAL, with or without a value."""
+  multi_run_config = MultiRunConfig(
+      max_crashed_runs=2,
+      cross_run_criteria=[PassKMultiRunCriterion(method="pass_hat_k", k=2)],
+  )
+
+  (aggregated,) = aggregate_eval_case_results(
+      runs, multi_run_config=multi_run_config
+  )
+
+  assert aggregated.cross_run_results[0].status == EvalStatus.INFORMATIONAL
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected_status"),
+    [
+        ([_judged_run(0, a=1.0), _judged_run(1, a=1.0)], EvalStatus.PASSED),
+        ([_judged_run(0, a=0.0), _judged_run(1, a=0.0)], EvalStatus.FAILED),
+        (
+            [_judged_run(0, a=None), _judged_run(1, a=None)],
+            EvalStatus.NOT_EVALUATED,
+        ),
+    ],
+    ids=["metrics_pass", "metrics_fail", "metrics_not_evaluated"],
+)
+def test_pass_k_criterion_without_threshold_never_changes_the_verdict(
+    runs, expected_status
+):
+  """The case's verdict is the same with or without a report-only criterion."""
+  report_only = MultiRunConfig(
+      cross_run_criteria=[PassKMultiRunCriterion(method="pass_hat_k", k=2)]
+  )
+
+  (without_criterion,) = aggregate_eval_case_results(
+      runs, multi_run_config=MultiRunConfig()
+  )
+  (with_criterion,) = aggregate_eval_case_results(
+      runs, multi_run_config=report_only
+  )
+
+  assert (
+      without_criterion.final_eval_status,
+      with_criterion.final_eval_status,
+  ) == (expected_status, expected_status)
+
+
+@pytest.mark.parametrize(
+    ("threshold", "expected"), [(None, False), (0.5, True)]
+)
+def test_has_pass_count_rules_ignores_report_only_criteria(threshold, expected):
+  """Only a criterion with a threshold judges, so only it counts as a rule."""
+  multi_run_config = MultiRunConfig(
+      cross_run_criteria=[
+          PassKMultiRunCriterion(method="pass_hat_k", k=1, threshold=threshold)
+      ]
+  )
+
+  assert has_pass_count_rules(multi_run_config) is expected
+
+
+@pytest.mark.parametrize("num_runs", [3, 4])
+def test_check_pass_k_criteria_accepts_k_up_to_num_runs(num_runs):
+  """A k up to the number of runs each case gets is fine."""
+  multi_run_config = MultiRunConfig(
+      cross_run_criteria=[PassKMultiRunCriterion(method="pass_hat_k", k=3)]
+  )
+
+  check_pass_k_criteria_against_num_runs(multi_run_config, num_runs)
+
+
+def test_check_pass_k_criteria_rejects_k_above_num_runs():
+  """A k above the number of runs each case gets could never have a value."""
+  multi_run_config = MultiRunConfig(
+      cross_run_criteria=[
+          MultiRunCriterion(method="pass_rate", threshold=0.5),
+          PassKMultiRunCriterion(method="pass_at_k", k=4),
+      ]
+  )
+
+  with pytest.raises(
+      ValueError, match=r"cross_run_criteria\[1\]: k=4 is more than the 2 run"
+  ):
+    check_pass_k_criteria_against_num_runs(multi_run_config, 2)
+
+
+def test_check_pass_k_criteria_without_config_passes():
+  """Without a multi-run config there is nothing to check."""
+  check_pass_k_criteria_against_num_runs(None, 1)
+
+
+def test_summarize_eval_case_results_records_run_counts_and_pass_rate():
+  """Summary captures passed, failed, crashed, not-evaluated runs and pass rate.
+
+  Setup: four runs of one case: two pass, one fails, and one crashes.
+  Assert: `summarize_eval_case_results` records `num_runs=4`, `passed_runs=2`,
+    `failed_runs=1`, `crashed_runs=1`, `not_evaluated_runs=0`, and
+    `pass_rate=2/3`.
+  """
+  runs = [
+      _judged_run(0, response_match_score=1.0),
+      _judged_run(1, response_match_score=0.5),
+      _judged_run(2, response_match_score=0.9),
+      _crashed_run(session_id="s3"),
+  ]
+
+  summaries = summarize_eval_case_results(
+      runs, multi_run_config=MultiRunConfig(max_crashed_runs=1)
+  )
+
+  assert len(summaries) == 1
+  summary = summaries[0]
+  assert (
+      summary.num_runs,
+      summary.passed_runs,
+      summary.failed_runs,
+      summary.crashed_runs,
+      summary.not_evaluated_runs,
+      summary.pass_rate,
+      summary.final_eval_status,
+  ) == (4, 2, 1, 1, 0, 2 / 3, EvalStatus.PASSED)
+
+
+def _case_with_criteria(
+    eval_id: str, **values: Optional[float]
+) -> MultiRunCaseResult:
+  """Returns a judged case whose cross-run criteria have the given values."""
+  return MultiRunCaseResult(
+      eval_set_id="set1",
+      eval_id=eval_id,
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[],
+      runs=[],
+      cross_run_results=[
+          MethodResult(
+              name=name,
+              value=value,
+              threshold=None,
+              status=EvalStatus.INFORMATIONAL,
+          )
+          for name, value in values.items()
+      ],
+  )
+
+
+def test_summarize_cross_run_criteria_averages_each_criterion_over_cases():
+  """Each criterion's per-case values are averaged, in config order."""
+  summaries = summarize_cross_run_criteria([
+      _case_with_criteria("case1", pass_at_2=1.0, pass_hat_2=1.0),
+      _case_with_criteria("case2", pass_at_2=1.0, pass_hat_2=0.0),
+  ])
+
+  assert [
+      (s.name, s.mean, s.num_cases_with_value, s.num_cases) for s in summaries
+  ] == [("pass_at_2", 1.0, 2, 2), ("pass_hat_2", 0.5, 2, 2)]
+
+
+def test_summarize_cross_run_criteria_leaves_out_a_case_without_a_value():
+  """A case with no value is left out of the mean, and the count says so."""
+  (summary,) = summarize_cross_run_criteria([
+      _case_with_criteria("case1", pass_hat_3=1.0),
+      _case_with_criteria("case2", pass_hat_3=None),
+  ])
+
+  assert (summary.mean, summary.num_cases_with_value, summary.num_cases) == (
+      1.0,
+      1,
+      2,
+  )
+
+
+def test_summarize_cross_run_criteria_counts_a_case_judged_on_its_own():
+  """A case kept as its single run has no cross-run results, but still counts."""
+  single_run_case = dataclasses.replace(
+      _case_with_criteria("case2"), cross_run_results=[]
+  )
+
+  (summary,) = summarize_cross_run_criteria(
+      [_case_with_criteria("case1", pass_hat_2=0.5), single_run_case]
+  )
+
+  assert (summary.mean, summary.num_cases_with_value, summary.num_cases) == (
+      0.5,
+      1,
+      2,
+  )
+
+
+def test_summarize_cross_run_criteria_has_no_mean_without_any_value():
+  """When no case has a value there is nothing to average."""
+  (summary,) = summarize_cross_run_criteria([
+      _case_with_criteria("case1", pass_hat_3=None),
+      _case_with_criteria("case2", pass_hat_3=None),
+  ])
+
+  assert (summary.mean, summary.num_cases_with_value, summary.num_cases) == (
+      None,
+      0,
+      2,
+  )
+
+
+def test_summarize_cross_run_criteria_is_empty_without_criteria():
+  """Without cross-run criteria there is nothing to summarize."""
+  assert not summarize_cross_run_criteria([_case_with_criteria("case1")])
+  assert not summarize_cross_run_criteria([])

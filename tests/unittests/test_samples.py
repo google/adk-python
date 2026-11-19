@@ -38,6 +38,8 @@ from google.genai import types
 import pytest
 import requests
 
+from . import testing_utils
+
 CONTRIBUTING_DIR = Path(__file__).parent.parent.parent / "contributing"
 SAMPLES_DIR = CONTRIBUTING_DIR / "samples"
 
@@ -321,6 +323,194 @@ def _sample_module(sample_dir: Path, module_name: str) -> Iterator[Any]:
     for name in list(sys.modules):
       if name == prefix or name.startswith(prefix + "."):
         del sys.modules[name]
+
+
+@pytest.mark.parametrize(
+    "sample", ["human_in_loop", "tool_human_in_the_loop_config"]
+)
+@pytest.mark.parametrize("decision", [None, "rejected", "approved"])
+@pytest.mark.parametrize("amount", [100, 200])
+async def test_reimbursement_requires_confirmation(sample, decision, amount):
+  """Reimbursements of $100+ pause until the confirmation is answered."""
+  root_agent = _load_root_agent(SAMPLES_DIR / "hitl" / sample)
+  model = testing_utils.MockModel.create([])
+  root_agent.model = model
+  runner = testing_utils.InMemoryRunner(root_agent)
+  args = {"purpose": "travel", "amount": amount}
+  message = testing_utils.UserContent(f"Please reimburse ${amount} for travel")
+
+  if decision is not None:
+    model.responses.extend(
+        testing_utils.MockModel.create([
+            types.Part.from_function_call(name="ask_for_approval", args=args),
+            "Waiting for the manager.",
+        ]).responses
+    )
+    events = await runner.run_async(message)
+    approval_call = next(
+        call
+        for event in events
+        for call in event.get_function_calls()
+        if call.name == "ask_for_approval"
+    )
+    message = testing_utils.UserContent(
+        types.Part(
+            function_response=types.FunctionResponse(
+                id=approval_call.id,
+                name=approval_call.name,
+                response={
+                    "status": decision,
+                    "ticketId": "reimbursement-ticket-001",
+                },
+            )
+        )
+    )
+
+  model.responses.extend(
+      testing_utils.MockModel.create([
+          types.Part.from_function_call(name="reimburse", args=args),
+          "Done.",
+      ]).responses
+  )
+  events = await runner.run_async(message)
+  responses = [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+      if response.name == "reimburse"
+  ]
+  assert responses and all("error" in response for response in responses)
+  assert not any(
+      part.text
+      for event in events
+      if event.content
+      for part in event.content.parts or []
+  )
+  confirmation = next(
+      call
+      for event in events
+      for call in event.get_function_calls()
+      if call.name == "adk_request_confirmation"
+  )
+  events = await runner.run_async(
+      testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation.id,
+                  name=confirmation.name,
+                  response={"confirmed": decision == "approved"},
+              )
+          )
+      )
+  )
+  responses = [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+      if response.name == "reimburse"
+  ]
+  assert len(responses) == 1
+  if decision == "approved":
+    assert responses == [{"status": "ok"}]
+  else:
+    assert "error" in responses[0]
+
+
+@pytest.mark.parametrize(
+    "sample", ["human_in_loop", "tool_human_in_the_loop_config"]
+)
+async def test_small_reimbursement_needs_no_confirmation(sample):
+  """Reimbursements under $100 pay out without a confirmation."""
+  root_agent = _load_root_agent(SAMPLES_DIR / "hitl" / sample)
+  root_agent.model = testing_utils.MockModel.create([
+      types.Part.from_function_call(
+          name="reimburse", args={"purpose": "meals", "amount": 50}
+      ),
+      "Done.",
+  ])
+  events = await testing_utils.InMemoryRunner(root_agent).run_async(
+      "Please reimburse $50 for meals"
+  )
+  assert [
+      call.name for event in events for call in event.get_function_calls()
+  ] == ["reimburse"]
+  assert [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+  ] == [{"status": "ok"}]
+
+
+@pytest.mark.parametrize(
+    "approval, purpose, amount, calls, paid",
+    [
+        (False, "conference travel", 200, 1, 1),
+        (True, "conference travel", 200, 1, 2),
+        (True, " Conference Travel", 200, 1, 2),
+        (True, "conference travel", 300, 1, 1),
+        (True, "other travel", 200, 1, 1),
+        (True, "conference travel", 200, 2, 2),
+    ],
+)
+async def test_reimbursement_main_confirms_only_approved_ticket(
+    approval, purpose, amount, calls, paid, monkeypatch
+):
+  """main.py confirms only one reimbursement matching the approved ticket."""
+  sample_dir = SAMPLES_DIR / "hitl" / "human_in_loop"
+  responses = [
+      [
+          types.Part.from_function_call(
+              name="reimburse", args={"purpose": "meals", "amount": 50}
+          )
+      ],
+      [types.Part(text="Meals reimbursed.")],
+  ]
+  if approval:
+    responses.extend([
+        [
+            types.Part.from_function_call(
+                name="ask_for_approval",
+                args={"purpose": "conference travel", "amount": 200},
+            )
+        ],
+        [types.Part(text="Waiting for the manager.")],
+    ])
+  responses.append([
+      types.Part.from_function_call(
+          name="reimburse", args={"purpose": purpose, "amount": amount}
+      )
+      for _ in range(calls)
+  ])
+  responses.extend([[types.Part(text="Done.")]] * calls)
+  with _sample_module(sample_dir, "agent") as agent_module:
+    agent_module.root_agent.model = testing_utils.MockModel.create(responses)
+    # main.py imports agent directly so it can also be run as a script.
+    monkeypatch.setitem(sys.modules, "agent", agent_module)
+    with _sample_module(sample_dir, "main") as main_module:
+      await main_module.main()
+      session = await main_module.session_service.get_session(
+          app_name=main_module.APP_NAME,
+          user_id=main_module.USER_ID,
+          session_id=main_module.SESSION_ID,
+      )
+  assert (
+      sum(
+          response.name == "reimburse" and response.response == {"status": "ok"}
+          for event in session.events
+          for response in event.get_function_responses()
+      )
+      == paid
+  )
+  confirmations = [
+      response
+      for event in session.events
+      for response in event.get_function_responses()
+      if response.name == "adk_request_confirmation"
+  ]
+  assert len(confirmations) == calls
+  assert sum(response.response["confirmed"] for response in confirmations) == (
+      paid - 1
+  )
 
 
 @pytest.mark.parametrize(

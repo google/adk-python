@@ -19,11 +19,14 @@ import sys
 import types
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.models.llm_response import LlmResponse
+from google.adk.models.registry import LLMRegistry
 from google.adk.optimization.data_types import UnstructuredSamplingResult
 from google.adk.optimization.gepa_root_agent_prompt_optimizer import _create_agent_gepa_adapter_class
 from google.adk.optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
 from google.adk.optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
 from google.adk.optimization.sampler import Sampler
+from google.genai import types as genai_types
 import pytest
 
 
@@ -79,6 +82,7 @@ def mock_sampler(mocker):
 @pytest.fixture
 def mock_agent(mocker):
   agent = mocker.MagicMock(spec=Agent)
+  agent.max_parallel_workers = None
   agent.instruction = "Initial instruction"
   agent.sub_agents = {}
   agent.mode = None
@@ -315,3 +319,68 @@ async def test_optimize_logs_warning_on_overlapping_ids(
       " aliasing issues unless each common UID refers to the same example"
       " in both sets."
   )
+
+
+@pytest.mark.parametrize(
+    ("optimizer_model", "expected_thinking_config"),
+    [
+        (
+            "gemini-4-hydrogen",
+            genai_types.ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=genai_types.ThinkingLevel.HIGH,
+            ),
+        ),
+        (
+            "gemini-2.5-pro",
+            genai_types.ThinkingConfig(
+                include_thoughts=True, thinking_budget=10240
+            ),
+        ),
+        (
+            "claude-sonnet-4-5",
+            genai_types.ThinkingConfig(
+                include_thoughts=True, thinking_budget=10240
+            ),
+        ),
+    ],
+)
+async def test_default_thinking_config_follows_optimizer_model(
+    mocker,
+    mock_gepa,
+    mock_sampler,
+    mock_agent,
+    optimizer_model,
+    expected_thinking_config,
+):
+  """Reflection sends the default budget as level HIGH only to Gemini 4+."""
+  llm = mocker.MagicMock()
+
+  async def generate_content_async(llm_request):
+    del llm_request
+    yield LlmResponse(
+        content=genai_types.Content(parts=[genai_types.Part(text="New prompt")])
+    )
+
+  llm.generate_content_async.side_effect = generate_content_async
+  mocker.patch.object(
+      LLMRegistry, "resolve", return_value=mocker.MagicMock(return_value=llm)
+  )
+  gepa_result = mocker.MagicMock()
+  gepa_result.candidates = []
+  gepa_result.val_aggregate_scores = []
+  gepa_result.to_dict.return_value = {}
+
+  def run_gepa(**kwargs):
+    kwargs["reflection_lm"]("Improve the prompt.")
+    return gepa_result
+
+  mock_gepa.optimize.side_effect = run_gepa
+  optimizer = GEPARootAgentPromptOptimizer(
+      GEPARootAgentPromptOptimizerConfig(optimizer_model=optimizer_model)
+  )
+
+  await optimizer.optimize(mock_agent, mock_sampler)
+
+  request = llm.generate_content_async.call_args.args[0]
+  assert request.config.thinking_config == expected_thinking_config

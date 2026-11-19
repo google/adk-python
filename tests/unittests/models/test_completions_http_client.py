@@ -28,6 +28,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import httpx
+from pydantic import BaseModel
 import pytest
 
 
@@ -116,6 +117,106 @@ async def test_construct_payload_with_config(client, llm_request):
     assert payload['seed'] == 42
     assert payload['n'] == 2
     assert payload['response_format'] == {'type': 'json_object'}
+
+
+@pytest.mark.parametrize(
+    ('model', 'expected_token_key'),
+    [
+        ('apigee/openai/gpt-5-mini', 'max_completion_tokens'),
+        ('apigee/openai/o3', 'max_completion_tokens'),
+        ('apigee/openai/o4-mini', 'max_completion_tokens'),
+        ('apigee/openai/gpt-4o', 'max_tokens'),
+        ('apigee/openai/gpt-5-chat-latest', 'max_tokens'),
+        ('apigee/openai/qwen3', 'max_tokens'),
+    ],
+)
+@pytest.mark.parametrize('max_output_tokens', [None, 0, 1024])
+async def test_token_limit_uses_supported_parameter(
+    client: CompletionsHTTPClient,
+    llm_request: LlmRequest,
+    model: str,
+    expected_token_key: str,
+    max_output_tokens: int | None,
+) -> None:
+  """Requests use the token-limit parameter accepted by the model."""
+  llm_request.model = model
+  llm_request.config = types.GenerateContentConfig(
+      max_output_tokens=max_output_tokens
+  )
+  response = mock.Mock(spec=httpx.Response)
+  response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': 'Hi'}}]
+  }
+
+  with mock.patch.object(
+      httpx.AsyncClient,
+      'post',
+      new_callable=mock.AsyncMock,
+      return_value=response,
+  ) as post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  post.assert_called_once()
+  payload = post.call_args.kwargs['json']
+  token_limits = {
+      key: payload[key]
+      for key in ('max_tokens', 'max_completion_tokens')
+      if key in payload
+  }
+  expected = (
+      {}
+      if max_output_tokens is None
+      else {expected_token_key: max_output_tokens}
+  )
+  assert token_limits == expected
+
+
+@pytest.mark.parametrize(
+    ('model', 'expected_sampling'),
+    [
+        ('apigee/openai/gpt-5-mini', {'top_p': 1.0}),
+        ('apigee/openai/o3', {'top_p': 1.0}),
+        ('apigee/openai/gpt-4o', {'temperature': 0.5, 'top_p': 1.0}),
+        (
+            'apigee/openai/gpt-5-chat-latest',
+            {'temperature': 0.5, 'top_p': 1.0},
+        ),
+    ],
+)
+async def test_reasoning_model_drops_non_default_sampling_params(
+    client: CompletionsHTTPClient,
+    llm_request: LlmRequest,
+    model: str,
+    expected_sampling: dict[str, float],
+) -> None:
+  """Reasoning models get only the default temperature/top_p."""
+  llm_request.model = model
+  llm_request.config = types.GenerateContentConfig(temperature=0.5, top_p=1.0)
+  response = mock.Mock(spec=httpx.Response)
+  response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': 'Hi'}}]
+  }
+
+  with mock.patch.object(
+      httpx.AsyncClient,
+      'post',
+      new_callable=mock.AsyncMock,
+      return_value=response,
+  ) as post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  post.assert_called_once()
+  payload = post.call_args.kwargs['json']
+  sampling = {
+      key: payload[key] for key in ('temperature', 'top_p') if key in payload
+  }
+  assert sampling == expected_sampling
 
 
 @pytest.mark.asyncio
@@ -325,8 +426,11 @@ async def test_generate_content_async_function_call_response(
             {
                 'type': 'json_schema',
                 'json_schema': {
-                    'type': 'object',
-                    'properties': {'name': {'type': 'string'}},
+                    'name': 'response',
+                    'schema': {
+                        'type': 'object',
+                        'properties': {'name': {'type': 'string'}},
+                    },
                 },
             },
         ),
@@ -337,8 +441,11 @@ async def test_generate_content_async_function_call_response(
             {
                 'type': 'json_schema',
                 'json_schema': {
-                    'type': 'object',
-                    'properties': {'name': {'type': 'string'}},
+                    'name': 'response',
+                    'schema': {
+                        'type': 'object',
+                        'properties': {'name': {'type': 'string'}},
+                    },
                 },
             },
         ),
@@ -347,6 +454,58 @@ async def test_generate_content_async_function_call_response(
             None,
             'application/json',
             {'type': 'json_object'},
+        ),
+        (
+            {
+                'name': 'weather',
+                'description': 'Forecast',
+                'strict': True,
+                'schema': {'type': 'object', 'properties': {}},
+            },
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'weather',
+                    'description': 'Forecast',
+                    'strict': True,
+                    'schema': {'type': 'object', 'properties': {}},
+                },
+            },
+        ),
+        (
+            {'title': 'Daily weather!', 'type': 'object', 'properties': {}},
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'Daily_weather_',
+                    'schema': {
+                        'title': 'Daily weather!',
+                        'type': 'object',
+                        'properties': {},
+                    },
+                },
+            },
+        ),
+        (
+            {},
+            'application/json',
+            {
+                'type': 'json_schema',
+                'json_schema': {'name': 'response', 'schema': {}},
+            },
+        ),
+        (
+            {'title': 'a' * 70, 'type': 'object'},
+            None,
+            {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': 'a' * 64,
+                    'schema': {'title': 'a' * 70, 'type': 'object'},
+                },
+            },
         ),
     ],
 )
@@ -379,6 +538,116 @@ async def test_construct_payload_response_format(
     payload = mock_post.call_args[1]['json']
 
     assert payload['response_format'] == expected_response_format
+
+
+@pytest.mark.asyncio
+async def test_output_schema_model_is_sent_to_chat_completions(
+    client, llm_request
+):
+  class Weather(BaseModel):
+    city: str
+
+  llm_request.set_output_schema(Weather)
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'Weather', 'schema': Weather.model_json_schema()},
+  }
+
+
+@pytest.mark.asyncio
+async def test_response_json_schema_takes_precedence_over_output_schema(
+    client, llm_request
+):
+  llm_request.config = types.GenerateContentConfig(
+      response_schema={'type': 'object', 'title': 'Ignored'},
+      response_json_schema={},
+      response_mime_type='application/json',
+  )
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'response', 'schema': {}},
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('schema', 'expected_schema'),
+    [
+        (
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={'city': types.Schema(type=types.Type.STRING)},
+            ),
+            {'type': 'object', 'properties': {'city': {'type': 'string'}}},
+        ),
+        (
+            {
+                'type': 'OBJECT',
+                'properties': {'city': {'type': 'STRING'}},
+                'default': {'type': 'EXAMPLE'},
+            },
+            {
+                'type': 'object',
+                'properties': {'city': {'type': 'string'}},
+                'default': {'type': 'EXAMPLE'},
+            },
+        ),
+        (list[str], {'items': {'type': 'string'}, 'type': 'array'}),
+    ],
+)
+async def test_output_schema_formats_supported_types(
+    client, llm_request, schema, expected_schema
+):
+  llm_request.set_output_schema(schema)
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': '{}'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert mock_post.call_args[1]['json']['response_format'] == {
+      'type': 'json_schema',
+      'json_schema': {'name': 'response', 'schema': expected_schema},
+  }
+  if isinstance(schema, dict):
+    assert schema['type'] == 'OBJECT'
+    assert schema['properties']['city']['type'] == 'STRING'
 
 
 @pytest.mark.asyncio
@@ -1400,21 +1669,6 @@ def test_completed_streaming_tool_arguments_are_preserved(
 
 
 @pytest.mark.parametrize('finish_reason', ['tool_calls', 'stop', 'unknown'])
-def test_non_length_malformed_tool_arguments_still_raise(
-    finish_reason: str,
-) -> None:
-  """The token-limit guard does not change other termination paths."""
-  handler = ChatCompletionsResponseHandler()
-  list(handler.process_chunk(_tool_argument_chunk('{"city": "Par')))
-  terminal = handler.process_chunk(
-      {'choices': [{'delta': {}, 'finish_reason': finish_reason}]}
-  )
-  assert next(terminal).partial is True
-  with pytest.raises(ValueError, match='Invalid JSON in tool call arguments'):
-    list(terminal)
-
-
-@pytest.mark.parametrize('finish_reason', ['tool_calls', 'stop', 'unknown'])
 def test_non_length_argument_merge_fallback_is_unchanged(
     finish_reason: str,
 ) -> None:
@@ -1681,15 +1935,179 @@ def test_non_streaming_complete_arguments_preserved(
   assert response.get_function_calls()[0].id == 'call_0'
 
 
-@pytest.mark.parametrize('finish_reason', ['tool_calls', 'stop', 'unknown'])
-def test_non_streaming_non_length_malformed_arguments_still_raise(
+def _last_response(
+    arguments: list[str | None],
     finish_reason: str,
-) -> None:
-  """Only explicit token exhaustion changes argument parsing failures."""
-  with pytest.raises(ValueError, match='Invalid JSON in tool call arguments'):
-    ChatCompletionsResponseHandler().process_response(
-        _non_streaming_tool_response(['{"city":"Pa'], finish_reason)
+    *,
+    streaming: bool,
+    text: str | None = None,
+) -> LlmResponse:
+  """Returns the final response for one message that makes these tool calls."""
+  if not streaming:
+    return ChatCompletionsResponseHandler().process_response(
+        _non_streaming_tool_response(arguments, finish_reason, text)
     )
+  handler = ChatCompletionsResponseHandler()
+  if text:
+    list(handler.process_chunk({'choices': [{'delta': {'content': text}}]}))
+  for index, fragment in enumerate(arguments):
+    list(handler.process_chunk(_tool_argument_chunk(fragment, index)))
+  *_, last = handler.process_chunk(
+      {'choices': [{'delta': {}, 'finish_reason': finish_reason}]}
+  )
+  return last
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('finish_reason', ['tool_calls', 'stop', 'unknown'])
+@pytest.mark.parametrize(
+    'arguments', ['[1, 2]', '"x"', '5', 'null', '{"city":"Pa', ' ']
+)
+def test_malformed_tool_arguments_are_reported(
+    arguments: str, finish_reason: str, streaming: bool
+) -> None:
+  """Arguments that are not a JSON object never reach a tool."""
+  response = _last_response([arguments], finish_reason, streaming=streaming)
+
+  assert not response.partial
+  assert response.content is None
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_message is not None
+  assert 'weather' in response.error_message
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('bad_index', [0, 1])
+@pytest.mark.parametrize('bad_arguments', ['[1, 2]', '{"city":"Pa'])
+def test_malformed_tool_arguments_drop_only_that_call(
+    bad_arguments: str, bad_index: int, streaming: bool
+) -> None:
+  """A call beside a malformed one still runs, and text stays."""
+  arguments: list[str | None] = ['{"city":"Paris"}', '{"city":"Paris"}']
+  arguments[bad_index] = bad_arguments
+
+  response = _last_response(
+      arguments, 'tool_calls', streaming=streaming, text='Checking.'
+  )
+
+  assert response.content is not None
+  assert response.content.parts[0].text == 'Checking.'
+  assert [call.args for call in response.get_function_calls()] == [
+      {'city': 'Paris'}
+  ]
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+def test_unparseable_and_non_object_calls_are_both_dropped(
+    streaming: bool,
+) -> None:
+  """Every malformed call in a batch is left out, whatever made it bad."""
+  response = _last_response(
+      ['{"city":"Pa', '[1, 2]'], 'tool_calls', streaming=streaming
+  )
+
+  assert not response.get_function_calls()
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+def test_malformed_tool_arguments_keep_a_content_filter_finish_reason(
+    streaming: bool,
+) -> None:
+  """A finish reason that already explains the failure stays the error."""
+  response = _last_response(['[1, 2]'], 'content_filter', streaming=streaming)
+
+  assert response.finish_reason == types.FinishReason.SAFETY
+  assert response.error_code == types.FinishReason.SAFETY
+  assert not response.get_function_calls()
+
+
+def test_streamed_array_around_an_object_is_not_salvaged_into_arguments() -> (
+    None
+):
+  """An array that wraps an object does not become that object."""
+  handler = ChatCompletionsResponseHandler()
+  for fragment in ['[', '{"city":"Paris"}', ']']:
+    list(handler.process_chunk(_tool_argument_chunk(fragment)))
+
+  *_, last = handler.process_chunk(
+      {'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}]}
+  )
+
+  assert not last.get_function_calls()
+  assert last.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+def test_malformed_call_with_a_non_string_name_is_reported_unnamed(
+    streaming: bool,
+) -> None:
+  """A provider name that is not a string does not break the report."""
+  if streaming:
+    handler = ChatCompletionsResponseHandler()
+    chunk = _tool_argument_chunk('[1, 2]')
+    chunk['choices'][0]['delta']['tool_calls'][0]['function']['name'] = 5
+    list(handler.process_chunk(chunk))
+    *_, response = handler.process_chunk(
+        {'choices': [{'delta': {}, 'finish_reason': 'stop'}]}
+    )
+  else:
+    payload = _non_streaming_tool_response(['[1, 2]'], 'stop')
+    payload['choices'][0]['message']['tool_calls'][0]['function']['name'] = 5
+    response = ChatCompletionsResponseHandler().process_response(payload)
+
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert '<unnamed>' in response.error_message
+
+
+def test_non_object_legacy_function_call_arguments_are_reported() -> None:
+  """The legacy single function_call field is checked like tool_calls."""
+  payload = _non_streaming_tool_response(['[1, 2]'], 'stop')
+  message = payload['choices'][0]['message']
+  message['function_call'] = message.pop('tool_calls')[0]['function']
+
+  response = ChatCompletionsResponseHandler().process_response(payload)
+
+  assert not response.get_function_calls()
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+
+
+def test_legacy_function_call_is_kept_beside_a_non_object_tool_call() -> None:
+  """A valid legacy function_call survives another call being dropped."""
+  payload = _non_streaming_tool_response(['[1, 2]'], 'stop')
+  payload['choices'][0]['message']['function_call'] = {
+      'name': 'time',
+      'arguments': '{"zone":"UTC"}',
+  }
+
+  response = ChatCompletionsResponseHandler().process_response(payload)
+
+  assert [(call.name, call.args) for call in response.get_function_calls()] == [
+      ('time', {'zone': 'UTC'})
+  ]
+
+
+def test_non_object_arguments_do_not_hide_an_unsupported_call_type() -> None:
+  """An unsupported call type raises whatever its arguments are."""
+  payload = _non_streaming_tool_response(['[1, 2]'], 'stop')
+  payload['choices'][0]['message']['tool_calls'][0]['type'] = 'custom'
+
+  with pytest.raises(ValueError, match='Unsupported tool_call type'):
+    ChatCompletionsResponseHandler().process_response(payload)
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('arguments', [None, ''])
+def test_tool_call_without_arguments_is_not_reported_as_malformed(
+    arguments: str | None, streaming: bool
+) -> None:
+  """A call that takes no arguments still reaches the tool."""
+  response = _last_response([arguments], 'tool_calls', streaming=streaming)
+
+  assert response.error_code is None
+  assert [call.name for call in response.get_function_calls()] == ['weather']
 
 
 def test_non_streaming_length_unsupported_call_type_still_raises() -> None:

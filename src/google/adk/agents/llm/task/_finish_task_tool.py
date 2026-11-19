@@ -202,6 +202,9 @@ no accompanying text output."""
     # set event.output on the task agent's run.
     del validated_output
 
+    # Ends the turn without another model call, so the agent's after callbacks
+    # still run.
+    tool_context.actions.skip_summarization = True
     return FINISH_TASK_SUCCESS_RESULT
 
 

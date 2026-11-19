@@ -37,6 +37,7 @@ from google.adk.runners import InMemoryRunner
 from google.genai import Client
 from google.genai import interactions
 from google.genai import types
+from google.genai import version as genai_version
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionResultStep
@@ -381,6 +382,191 @@ class TestConvertPartToInteractionContent:
         'temperature': 20,
         'condition': 'sunny',
     }
+
+  @pytest.mark.parametrize(
+      ('mime_type', 'content_type'),
+      [
+          ('image/png', 'image'),
+          ('audio/wav', 'audio'),
+          ('video/mp4', 'video'),
+          ('application/pdf', 'document'),
+      ],
+  )
+  def test_function_response_with_media(
+      self, monkeypatch, mime_type, content_type
+  ):
+    """Media a tool attached to its response is sent after its JSON."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'media-bytes', mime_type=mime_type
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': content_type,
+                'data': base64.b64encode(b'media-bytes').decode(),
+                'mime_type': mime_type,
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_with_media_uri(self, monkeypatch):
+    """Media a tool returned as a uri is sent by uri."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='fetch_report',
+            response={'pages': 2},
+            parts=[
+                types.FunctionResponsePart.from_uri(
+                    file_uri='gs://bucket/report.pdf',
+                    mime_type='application/pdf',
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='fetch_report',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"pages": 2}'},
+            {
+                'type': 'document',
+                'uri': 'gs://bucket/report.pdf',
+                'mime_type': 'application/pdf',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_drops_only_the_media_the_client_cannot_send(
+      self, monkeypatch
+  ):
+    """Media the client can send still goes out after a part it cannot."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                ),
+                types.FunctionResponsePart.from_bytes(
+                    data=b'png-bytes', mime_type='image/png'
+                ),
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': 'image',
+                'data': base64.b64encode(b'png-bytes').decode(),
+                'mime_type': 'image/png',
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_media_the_client_cannot_send_is_dropped(
+      self, monkeypatch, caplog
+  ):
+    """Media the client cannot send is dropped, warned about once."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_WARNED_FUNCTION_RESULT_MIME_TYPES', set()
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='record_audio',
+            response={'duration': 3},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                )
+            ],
+        )
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils._convert_part_to_interaction_content(part)
+      # History is reconverted every turn; the drop is reported only once.
+      interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='record_audio',
+        call_id='call_123',
+        result={'duration': 3},
+        is_error=False,
+    )
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert warnings == [
+        'Dropping tool result media of type audio/wav, which the installed'
+        ' google-genai cannot send in a function result; google-genai 2.33'
+        ' and later can.'
+    ]
+
+  def test_function_response_media_types_follow_the_client_release(self):
+    """google-genai 2.33 added audio, video and document to image."""
+    release = tuple(int(n) for n in genai_version.__version__.split('.')[:2])
+    expected = (
+        {'image', 'audio', 'video', 'document'}
+        if release >= (2, 33)
+        else {'image'}
+    )
+    assert interactions_utils._FUNCTION_RESULT_MEDIA_TYPES == expected
 
   def test_function_response_simple(self):
     """Test converting a function response Part with simple response."""
@@ -1202,6 +1388,31 @@ class TestConvertInteractionOutputToParts:
     result = result_list[0] if result_list else None
     assert result.code_execution_result.output == 'Error: division by zero'
     assert result.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
+
+  def test_code_execution_result_content_list_output(self):
+    """A content list result keeps its text as output and its media as parts."""
+    # Unvalidated, since google-genai accepts a content list only from 3.0.
+    output = CodeExecutionResultStep.model_construct(
+        type='code_execution_result',
+        call_id='',
+        result=[
+            TextContent(type='text', text='plotted'),
+            ImageContent(
+                type='image',
+                data=base64.b64encode(b'image_bytes').decode('utf-8'),
+                mime_type='image/png',
+            ),
+        ],
+        is_error=False,
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    assert len(result_list) == 2
+    assert result_list[0].code_execution_result.output == 'plotted'
+    assert (
+        result_list[0].code_execution_result.outcome == types.Outcome.OUTCOME_OK
+    )
+    assert result_list[1].inline_data.data == b'image_bytes'
+    assert result_list[1].inline_data.mime_type == 'image/png'
 
   def test_thought_output_without_signature_returns_empty(self):
     """A thought step with no signature contributes no parts."""
@@ -3542,6 +3753,28 @@ async def test_generate_content_via_interactions_non_streaming_yields_single_res
   assert len(responses) == 1
   assert responses[0].interaction_id == 'interaction_ns'
   assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+
+@pytest.mark.parametrize('exclude_runtime_tag', [False, True])
+async def test_generate_content_via_interactions_runtime_tag(
+    monkeypatch, exclude_runtime_tag
+):
+  """exclude_runtime_tag reaches the headers sent to interactions.create."""
+  monkeypatch.setenv('GOOGLE_CLOUD_AGENT_ENGINE_ID', 'engine-id')
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+  await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client,
+          _build_llm_request(),
+          stream=False,
+          exclude_runtime_tag=exclude_runtime_tag,
+      )
+  )
+
+  headers = api_client.create_calls[0]['extra_headers']
+  token = headers['user-agent'].split()[0]
+  assert token.endswith('+remote_reasoning_engine') is not exclude_runtime_tag
 
 
 class TestServiceTier:

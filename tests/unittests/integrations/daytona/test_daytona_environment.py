@@ -15,6 +15,7 @@
 """Tests for DaytonaEnvironment."""
 
 import contextlib
+from pathlib import Path
 from unittest import mock
 
 import daytona
@@ -119,10 +120,9 @@ async def test_close_deletes_sandbox_and_is_idempotent(daytona_patch, sandbox):
   client.close.assert_awaited_once()
 
 
-async def test_working_dir_requires_initialize():
+async def test_working_dir_is_known_before_initialize():
   env = DaytonaEnvironment()
-  with pytest.raises(RuntimeError):
-    _ = env.working_dir
+  assert env.working_dir == Path("/workspaces")
 
 
 async def test_execute_before_initialize_raises():

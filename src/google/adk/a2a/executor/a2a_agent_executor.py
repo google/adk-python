@@ -26,6 +26,7 @@ from a2a.server.events.event_queue import EventQueue
 from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from google.adk.sessions.session import Session
@@ -33,17 +34,19 @@ from typing_extensions import override
 
 from .. import _compat
 from ...events.event import Event
+from ...utils._error_reporting import report_error
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
-from ..experimental import a2a_experimental
 from .a2a_agent_executor_impl import _A2aAgentExecutor as ExecutorImpl
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
 from .utils import _ActiveTaskRegistry
 from .utils import _consume_runner_with_abort
+from .utils import _ErrorRecoveryTracker
 from .utils import _is_abort_adk_event
+from .utils import _is_error_event
 from .utils import _require_request_context
 from .utils import _require_user_id
 from .utils import execute_after_agent_interceptors
@@ -53,7 +56,6 @@ from .utils import execute_before_agent_interceptors
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
 
@@ -159,7 +161,15 @@ class A2aAgentExecutor(AgentExecutor):
     try:
       await self._handle_request(context, event_queue)
     except Exception as e:
-      logger.error('Error handling A2A request: %s', e, exc_info=True)
+      # The peer that sent this request is not trusted with the exception text:
+      # it names absolute paths, installed modules and echoed payloads. The
+      # traceback is logged here, the peer gets the correlation id for it.
+      failure_text = report_error(
+          logger,
+          e,
+          summary='Agent execution failed.',
+          log_message='Error handling A2A request',
+      )
       # Publish failure event
       try:
         await event_queue.enqueue_event(
@@ -171,7 +181,7 @@ class A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=platform_uuid.new_uuid(),
                         role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
+                        parts=[_compat.make_text_part(failure_text)],
                     ),
                 ),
                 final=True,
@@ -236,6 +246,11 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     task_result_aggregator = TaskResultAggregator()
+    error_tracker = _ErrorRecoveryTracker()
+    # Each failure reported, in emission order, with the ADK error event it
+    # reports. A failure reported for a non-error event (source None) cannot be
+    # recovered from.
+    failures: list[tuple[Event | None, Message | None]] = []
     last_adk_event: Event | None = None
     abort_signal = (
         active_run.abort_signal if active_run is not None else asyncio.Event()
@@ -247,6 +262,8 @@ class A2aAgentExecutor(AgentExecutor):
       last_adk_event = adk_event
       if adk_event and _is_abort_adk_event(adk_event):
         aborted = True
+      error_tracker.observe(adk_event)
+      is_error_event = _is_error_event(adk_event)
       for a2a_event in self._config.event_converter(
           adk_event,
           invocation_context,
@@ -261,6 +278,13 @@ class A2aAgentExecutor(AgentExecutor):
             self._config.execute_interceptors,
         )
         for e in a2a_events:
+          if (
+              isinstance(e, TaskStatusUpdateEvent)
+              and e.status.state == _compat.TS_FAILED
+          ):
+            failures.append(
+                (adk_event if is_error_event else None, e.status.message)
+            )
           task_result_aggregator.process_event(e)
           await event_queue.enqueue_event(e)
 
@@ -269,6 +293,16 @@ class A2aAgentExecutor(AgentExecutor):
     )
     if abort_signal.is_set():
       aborted = True
+
+    # An error the run recovered from (e.g. a failed sub-agent whose parent
+    # went on to answer) neither fails the task nor supplies its message.
+    if task_result_aggregator.task_state == _compat.TS_FAILED:
+      # pylint: disable-next=protected-access
+      task_result_aggregator._keep_failures([
+          message
+          for source, message in failures
+          if source is None or error_tracker.is_unresolved(source)
+      ])
 
     # Build metadata for final event to preserve invocation_id and event_id.
     final_metadata = {

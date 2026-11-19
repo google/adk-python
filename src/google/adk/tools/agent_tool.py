@@ -274,14 +274,13 @@ class AgentTool(BaseTool):
       except ValidationError as e:
         return _arg_validation_error(self.name, e)
       # The text must stay a bare JSON document: the node runtime re-validates
-      # it against this same schema, so any prose here fails that parse.
+      # it against this same schema, so any prose here fails that parse. It
+      # validates by field name, so by_alias=False overrides a schema's
+      # serialize_by_alias.
+      text = input_value.model_dump_json(exclude_none=True, by_alias=False)
       content = types.Content(
           role='user',
-          parts=[
-              types.Part.from_text(
-                  text=input_value.model_dump_json(exclude_none=True)
-              )
-          ],
+          parts=[types.Part.from_text(text=text)],
       )
     else:
       if 'request' in args:
@@ -305,12 +304,20 @@ class AgentTool(BaseTool):
         else None
     )
     nested_compaction_config = _nested_compaction_config(invocation_context)
+    # A nested run that shares the caller's plugins records the caller's
+    # invocation, so those plugins can attribute its events to this call.
+    parent_invocation_id = (
+        invocation_context.invocation_id
+        if self.include_plugins and invocation_context is not None
+        else None
+    )
 
     class _NestedRunner(Runner):
       """Runs only the in-flow compaction trigger on the nested session.
 
       Post-invocation compaction is skipped because it would summarize a
-      session the tool is about to discard.
+      session the tool is about to discard. Each invocation context it creates
+      also records ``parent_invocation_id``.
       """
 
       @override
@@ -321,6 +328,9 @@ class AgentTool(BaseTool):
       ) -> InvocationContext:
         ctx = super()._new_invocation_context(session, **kwargs)
         ctx.events_compaction_config = nested_compaction_config
+        ctx._parent_invocation_id = (  # pylint: disable=protected-access
+            parent_invocation_id
+        )
         return ctx
 
       @override
@@ -458,34 +468,35 @@ class AgentTool(BaseTool):
     # input_required pauses do not, so only a call id that is *never* answered
     # by a function response before the run ends is actually still pending.
     pending_tool_ids: set[str] = set()
-    async with Aclosing(
-        runner.run_async(
-            user_id=session.user_id,
-            session_id=session.id,
-            new_message=content,
-            state_delta=temp_state or None,
-            run_config=nested_run_config,
-            abort_signal=abort_signal,
-        )
-    ) as agen:
-      async for event in agen:
-        # Forward state delta to parent session.
-        if event.actions.state_delta:
-          tool_context.state.update(event.actions.state_delta)
-        if event.error_message:
-          last_error_message = event.error_message
-        if event.long_running_tool_ids:
-          pending_tool_ids |= event.long_running_tool_ids
-        if event.content:
-          last_content = event.content
-          last_grounding_metadata = event.grounding_metadata
-          pending_tool_ids -= {
-              fr.id for fr in event.get_function_responses() if fr.id
-          }
-
-    # Clean up runner resources (especially MCP sessions)
-    # to avoid "Attempted to exit cancel scope in a different task" errors
-    await runner.close()
+    try:
+      async with Aclosing(
+          runner.run_async(
+              user_id=session.user_id,
+              session_id=session.id,
+              new_message=content,
+              state_delta=temp_state or None,
+              run_config=nested_run_config,
+              abort_signal=abort_signal,
+          )
+      ) as agen:
+        async for event in agen:
+          # Forward state delta to parent session.
+          if event.actions.state_delta:
+            tool_context.state.update(event.actions.state_delta)
+          if event.error_message:
+            last_error_message = event.error_message
+          if event.long_running_tool_ids:
+            pending_tool_ids |= event.long_running_tool_ids
+          if event.content:
+            last_content = event.content
+            last_grounding_metadata = event.grounding_metadata
+            pending_tool_ids -= {
+                fr.id for fr in event.get_function_responses() if fr.id
+            }
+    finally:
+      # Clean up runner resources (especially MCP sessions)
+      # to avoid "Attempted to exit cancel scope in a different task" errors
+      await runner.close()
 
     if pending_tool_ids:
       tool_context.actions.skip_summarization = False
