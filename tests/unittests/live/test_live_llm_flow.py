@@ -21,6 +21,7 @@ import contextlib
 import logging
 from typing import AsyncGenerator
 from typing import Callable
+from typing import Collection
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -1335,13 +1336,16 @@ async def _run_live_with_failures(
     keep_handle: bool = True,
     fail_on_connect: bool = False,
     queue: LiveRequestQueue | None = None,
+    delivering: Collection[int] = (),
 ) -> None:
   """Runs a live session whose connections fail with `failures`, in order.
 
   The first connection offers a resumption handle (unless `keep_handle` is
   false) and raises its failure from `receive`. Later ones raise theirs from
   `receive`, or from `connect` when `fail_on_connect` is set, without
-  delivering anything. The connection after the last failure ends cleanly.
+  delivering anything. The connections numbered (from 1) in `delivering`
+  deliver one event before failing. The connection after the last failure
+  ends cleanly.
   The handle each connection was opened with is appended to `handles`.
   """
   update = LlmResponse(
@@ -1379,7 +1383,8 @@ async def _run_live_with_failures(
         raise failure
       script: list[LlmResponse | Exception] = []
       if failure:
-        script = [*([update] if keep_handle and opened == 1 else []), failure]
+        delivers = (keep_handle and opened == 1) or opened in delivering
+        script = [*([update] if delivers else []), failure]
       yield _Connection(script)
 
   session_service = InMemorySessionService()
@@ -1479,6 +1484,32 @@ async def test_run_live_bounds_connections_accepted_then_dropped() -> None:
     )
 
   assert len(handles) == 1 + _flow_utils.DEFAULT_MAX_RECONNECT_ATTEMPTS
+
+
+async def test_run_live_backoff_restarts_after_a_connection_delivers_an_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Drops without events keep backing off; a delivering one starts over."""
+  attempts: list[int] = []
+
+  def _record(attempt: int) -> float:
+    attempts.append(attempt)
+    return 0
+
+  monkeypatch.setattr(_live_llm_flow, '_reconnect_delay', _record)
+  failures = [
+      errors.APIError(1011, {}),  # delivers the handle, then drops
+      errors.APIError(1011, {}),
+      errors.APIError(1006, {}),
+      errors.APIError(1011, {}),  # delivers an event, then drops
+      errors.APIError(1006, {}),
+  ]
+
+  await asyncio.wait_for(
+      _run_live_with_failures(failures, [], delivering={4}), timeout=5
+  )
+
+  assert attempts == [1, 2, 3, 1, 2]
 
 
 async def test_run_live_does_not_reconnect_if_client_closed_during_backoff(
