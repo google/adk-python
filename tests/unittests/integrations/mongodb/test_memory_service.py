@@ -24,6 +24,7 @@ from typing import Any
 from unittest import mock
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.integrations.mongodb import _client
 from google.adk.integrations.mongodb import MongoDbMemoryService
 from google.adk.sessions.session import Session
@@ -113,6 +114,11 @@ class _FakeCollection:
     self.bulk_write_calls.append((list(requests), ordered))
     for req in requests:
       self.replace_one(req._filter, req._doc, upsert=req._upsert)
+
+  def delete_many(self, filter_doc: dict[str, Any]) -> None:
+    for key, doc in list(self._docs.items()):
+      if _matches(doc, filter_doc):
+        del self._docs[key]
 
   def aggregate(self, pipeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
     self.last_pipeline = copy.deepcopy(pipeline)
@@ -573,6 +579,93 @@ async def test_add_events_to_memory_batches_and_scopes_session() -> None:
   calls_before = len(collection.bulk_write_calls)
   await svc.add_events_to_memory(app_name=APP, user_id=USER, events=[])
   assert len(collection.bulk_write_calls) == calls_before
+
+
+async def test_add_session_to_memory_skips_rewound_events(
+    service: MongoDbMemoryService,
+) -> None:
+  """Turns a rewind took back are not stored, also when added before it."""
+  session = _session_with_texts("trip to paris", "address is baker street")
+  session.events[0].invocation_id = "inv-kept"
+  session.events[1].invocation_id = "inv-rewound"
+  await service.add_session_to_memory(session)
+
+  session.events.append(
+      Event(
+          invocation_id="inv-rewind",
+          author="user",
+          timestamp=3.0,
+          actions=EventActions(rewind_before_invocation_id="inv-rewound"),
+      )
+  )
+  await service.add_session_to_memory(session)
+
+  rewound_result = await service.search_memory(
+      app_name=APP, user_id=USER, query="baker"
+  )
+  kept_result = await service.search_memory(
+      app_name=APP, user_id=USER, query="paris"
+  )
+  assert not rewound_result.memories
+  assert [m.id for m in kept_result.memories] == ["e0"]
+
+  session.events.append(
+      Event(
+          invocation_id="inv-rewind-all",
+          author="user",
+          timestamp=4.0,
+          actions=EventActions(rewind_before_invocation_id="inv-kept"),
+      )
+  )
+  await service.add_session_to_memory(session)
+
+  all_rewound_result = await service.search_memory(
+      app_name=APP, user_id=USER, query="paris"
+  )
+  assert not all_rewound_result.memories
+
+
+async def test_add_session_to_memory_rewind_leaves_other_sessions() -> None:
+  """A rewind deletes only its own session's memories of the rewound turn."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(mongo_client=client, database_name="test_db")
+  other = _session_with_texts("baker street visit", session_id="s2")
+  await svc.add_session_to_memory(other)
+
+  # Both sessions hold an event with id e0; only s1's is rewound.
+  session = _session_with_texts("address is baker street", session_id="s1")
+  session.events[0].invocation_id = "inv-rewound"
+  await svc.add_session_to_memory(session)
+  session.events.append(
+      Event(
+          invocation_id="inv-rewind",
+          author="user",
+          timestamp=2.0,
+          actions=EventActions(rewind_before_invocation_id="inv-rewound"),
+      )
+  )
+  await svc.add_session_to_memory(session)
+
+  result = await svc.search_memory(app_name=APP, user_id=USER, query="baker")
+  assert [m.content.parts[0].text for m in result.memories] == [
+      "baker street visit"
+  ]
+
+
+async def test_add_session_to_memory_keeps_turns_outside_a_truncated_session(
+    service: MongoDbMemoryService,
+) -> None:
+  """Turns missing from a session loaded with num_recent_events stay stored."""
+  session = _session_with_texts("trip to paris", "flight to london")
+  await service.add_session_to_memory(session)
+
+  session.events = session.events[1:]
+  await service.add_session_to_memory(session)
+
+  result = await service.search_memory(
+      app_name=APP, user_id=USER, query="paris"
+  )
+  assert [m.id for m in result.memories] == ["e0"]
 
 
 async def test_unicode_and_nfc_keyword_extraction_and_search(

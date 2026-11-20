@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from collections.abc import Collection as AbstractCollection
 from collections.abc import Mapping
 from collections.abc import Sequence
 from datetime import datetime
@@ -39,6 +40,7 @@ from typing_extensions import override
 
 from . import _client
 from . import _search_tool
+from ...events._rewind_events import _apply_rewinds
 from ...features import experimental
 from ...features import FeatureName
 from ...memory import _utils
@@ -550,12 +552,17 @@ class MongoDbMemoryService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    """Ingests the session's text events into the memory collection."""
-    await self.add_events_to_memory(
+    """Stores live events and deletes those a rewind took back."""
+    live_events = _apply_rewinds(session.events)
+    live_ids = {event.id for event in live_events}
+    await self._write_events_to_memory(
         app_name=session.app_name,
         user_id=session.user_id,
-        events=session.events,
+        events=live_events,
         session_id=session.id,
+        rewound_event_ids={
+            event.id for event in session.events if event.id not in live_ids
+        },
     )
 
   @override
@@ -578,6 +585,23 @@ class MongoDbMemoryService(BaseMemoryService):
     processes the document.
     """
     del custom_metadata  # Not supported by MongoDB memory service.
+    await self._write_events_to_memory(
+        app_name=app_name,
+        user_id=user_id,
+        events=events,
+        session_id=session_id,
+    )
+
+  async def _write_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      rewound_event_ids: AbstractCollection[str] = (),
+  ) -> None:
+    """Upserts the text events and deletes the memories of rewound events."""
     scoped_session_id = session_id or _UNKNOWN_SESSION_ID
 
     entries: list[tuple[Event, types.Content, str, list[Any]]] = []
@@ -589,11 +613,11 @@ class MongoDbMemoryService(BaseMemoryService):
       if not text:
         continue
       entries.append((event, event.content, text, visible_parts))
-    if not entries:
+    if not entries and not rewound_event_ids:
       return
 
     embeddings: list[list[float]] | None = None
-    if self._retrieval_mode == _VECTOR_RETRIEVAL:
+    if entries and self._retrieval_mode == _VECTOR_RETRIEVAL:
       embeddings = await self._embed_texts([text for _, _, text, _ in entries])
       expected = (
           self._embedding_output_dimensionality or _DEFAULT_EMBEDDING_DIMENSIONS
@@ -655,6 +679,17 @@ class MongoDbMemoryService(BaseMemoryService):
       self._ensure_indexes_once()
       if operations:
         self._memories().bulk_write(operations, ordered=False)
+      if rewound_event_ids:
+        self._memories().delete_many({
+            "_id": {
+                "$in": [
+                    self._memory_key(
+                        app_name, user_id, scoped_session_id, event_id
+                    )
+                    for event_id in sorted(rewound_event_ids)
+                ]
+            }
+        })
 
     await asyncio.to_thread(_write)
 
