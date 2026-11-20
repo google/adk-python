@@ -177,6 +177,61 @@ immediately. [Skill, Frontmatter, and Resources](../../skills/skill/index.md)
 explains when to choose each mode, and why you should not filter `list_skills`
 out with `tool_filter` to get the eager behavior.
 
+### Let a classifier load the skill for a turn
+
+When the model decides that a skill applies, it spends a whole model step on
+calling `load_skill` and reads the instructions only in the step after that.
+The `classification_config` argument moves that decision to a classifier, which
+is typically a smaller and faster model than the agent's. It takes a
+`SkillClassificationConfig` from `google.adk.tools.skill_toolset`, which holds
+any `BaseClassifier` from
+[google.adk.labs.classifiers](../../labs/classifiers/llm_classifier/index.md).
+
+The following configuration asks an `LlmClassifier` which skill applies to each
+user message, and loads it when the classifier gives it a probability of at
+least 0.7:
+
+```python
+from google.adk.labs.classifiers import LlmClassifier
+from google.adk.tools.skill_toolset import SkillClassificationConfig
+from google.adk.tools.skill_toolset import SkillToolset
+
+toolset = SkillToolset(
+    skills=skills,  # your own list of skills
+    classification_config=SkillClassificationConfig(
+        classifier=LlmClassifier(model="gemini-flash-lite-latest"),
+        threshold=0.7,
+    ),
+)
+```
+
+Before the model's first step of each turn, the classifier chooses among the
+local skills, described by their descriptions, and an option meaning that no
+skill applies. When it chooses a skill that is not already active with at least
+the `threshold` probability, the toolset calls its own `load_skill` tool and
+records the call and its response in the session. The model's first step then
+already has the skill's instructions and its additional tools, so the turn
+needs one model step fewer. In the default `LAZY` discovery mode, the model
+also skips the `list_skills` step.
+
+Because the load goes through the `load_skill` tool, the lifecycle modes, tool
+callbacks, plugins, and telemetry treat it like a load that the model made. The
+call event carries the classifier's choice and probability under the
+`adk_skill_classification` key of `custom_metadata`, so you can tell the two
+apart when you evaluate the classifier.
+
+If the classifier chooses no skill, falls short of the threshold, declines to
+answer, or raises an error, the turn runs as it would without a classifier. A
+wrong but confident choice is what costs you: the model reads the instructions
+of a skill that does not apply. Tune `threshold` with evals, because an
+`LlmClassifier` reports the probabilities that its model states rather than
+calibrated ones. The classifier call also adds its latency to every turn,
+including turns that need no skill, so the saving depends on how many of your
+turns load a skill.
+
+The `instructions` field replaces the default question put to the classifier,
+for example to describe your domain. The choices are always the skill names.
+
 ### Control how long skills stay active
 
 The `lifecycle_config` argument takes a `SkillLifecycleConfig`, which decides
@@ -275,6 +330,9 @@ guidance yourself. The method raises `ValueError` if the skill does not exist.
   sessions lose their active skills.
 - Under `run_live`, the whole stream is one invocation, so an ephemeral skill
   stays active until the stream ends.
+- A `classification_config` classifies only the user's latest message, without
+  earlier turns, and only against the local skills. It loads at most one skill
+  per turn, and it does nothing under `run_live`.
 
 ## Related samples
 
