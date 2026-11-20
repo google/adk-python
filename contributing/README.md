@@ -10,7 +10,7 @@ Samples folder host samples to test different features. The samples are usually 
 
 ## ADK project and architecture overview
 
-The [adk_project_overview_and_architecture.md](adk_project_overview_and_architecture.md) describes the ADK project overview and its technical architecture from high-level.
+The [adk_project_overview_and_architecture.md](adk_project_overview_and_architecture.md) describes the ADK project overview and its technical architecture from a high level.
 
 This is helpful for contributors to understand the project and design philosophy.
 It can also be fed into LLMs for vibe-coding.
