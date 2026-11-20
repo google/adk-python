@@ -311,6 +311,7 @@ async def test_call_advisor_happy_path_filters_thoughts_and_partials():
       total_tokens=100,
   )
   assert result.latency_ms > 0.0
+  assert result.thinking_level == types.ThinkingLevel.HIGH
 
   assert llm.recorded_streams == [False]
   assert len(llm.recorded_requests) == 1
@@ -391,6 +392,7 @@ async def test_call_advisor_retries_without_thinking_config_on_rejection(
     )
 
   assert result.text == 'Fallback succeeded.'
+  assert result.thinking_level is None
   assert len(llm.recorded_requests) == 2
   assert llm.recorded_requests[0].config.thinking_config is not None
   assert llm.recorded_requests[1].config.thinking_config is None
@@ -932,7 +934,9 @@ async def test_call_advisor_enters_client_label_context_with_extra_default_label
   monkeypatch.setattr(
       _client_labels_utils,
       '_get_default_labels',
-      lambda framework_label=None: list(extra_defaults),
+      lambda framework_label=None, *, exclude_runtime_tag=False: list(
+          extra_defaults
+      ),
   )
 
   observed_labels_during_call: list[list[str]] = []

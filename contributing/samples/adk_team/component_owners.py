@@ -38,7 +38,7 @@ LABEL_TO_OWNER = {
     "services": ["DeanChensj", "asugumar-google"],
     "skills": ["wukath"],
     "tools": ["xuanyang15", "asugumar-google"],
-    "tracing": ["jawoszek"],
+    "tracing": ["RKest"],
     "web": ["wyf7107"],
     "workflow": ["DeanChensj"],
 }

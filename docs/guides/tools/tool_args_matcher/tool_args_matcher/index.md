@@ -214,7 +214,7 @@ The `semantic` matcher takes the following options:
 | :--- | :--- | :--- | :--- |
 | `model` | `str \| None` | Not set | The model that compares the values. When not set, Environment Simulation uses its `simulation_model`, and other callers use `gemini-2.5-flash`. |
 | `criteria` | `str \| None` | Not set | What counts as a match, in plain language. When not set, the matcher accepts rephrasings, synonyms, and differences in case or word order that keep the meaning. |
-| `generate_content_config` | `GenerateContentConfig` | Temperature 0, JSON output, and a 512-token thinking budget. | The content generation configuration for the model call. |
+| `generate_content_config` | `GenerateContentConfig` | Temperature 0, JSON output, and low thinking (`LOW` thinking level on Gemini 4 and later, or a 512-token thinking budget otherwise). | The content generation configuration for the model call. |
 | `timeout_seconds` | `float \| None` | `60.0` | How long to wait for the model. A slower call raises `TimeoutError` and is not remembered. `None` waits indefinitely. |
 
 To customize how an argument is judged, set `criteria` and `model` on the

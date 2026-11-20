@@ -161,7 +161,6 @@ _FACTS_MISSING_FROM_SPANS: dict[str, str] = {
         " succeeded"
     ),
     "gen_ai.provider.name": "spans carry only the deprecated gen_ai.system",
-    "gen_ai.response.model": "spans carry the requested model only",
 }
 
 

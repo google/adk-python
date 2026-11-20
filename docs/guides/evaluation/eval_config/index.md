@@ -335,7 +335,7 @@ audio settings of its own on top of them.
 | :--- | :--- | :--- | :--- |
 | `type` | `str` | `"llm_backed"` | Which simulator implementation to use. |
 | `model` | `str` | `"gemini-2.5-flash"` | Model that plays the user. |
-| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 | Generation config for the simulator's model. The default asks for thoughts, so overriding it with a bare `{}` turns thinking off. |
+| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 (thinking level `MEDIUM` on Gemini 4 and later) | Generation config for the simulator's model. Overriding it with a bare `{}` drops the thinking settings, so the model thinks by its own default and returns no thoughts. |
 | `max_allowed_invocations` | `int` | `20` | Hard cap on conversation length. `-1` removes the cap, which is how a run-off conversation becomes a bill. |
 | `custom_instructions` | `str` | `null` | Replacement instructions for the simulator. It must contain the Jinja placeholders `{{ stop_signal }}`, `{{ conversation_plan }}` and `{{ conversation_history }}`, plus `{{ persona }}` if the scenario sets one; a validator rejects it otherwise. |
 | `include_function_calls` | `bool` | `false` | Whether the simulated user sees the agent's tool calls. |

@@ -121,13 +121,22 @@ def _is_multi_region_endpoint(endpoint: str) -> bool:
   return host.endswith(_NO_MTLS_GOOGLEAPIS_SUFFIXES)
 
 
-def is_googleapis_url(url: str) -> bool:
-  """Returns whether url is an https *.googleapis.com url, mTLS or not."""
+def is_googleapis_url(url: str | None) -> bool:
+  """Returns whether url is an https *.googleapis.com url, mTLS or not.
+
+  This is the one check ADK uses to decide whether a request goes to a Google
+  API, for example before attaching Google credentials or tracking tags. A
+  userinfo or backslash in the authority is rejected, because HTTP clients
+  disagree on which host such a url names.
+  """
   if not url:
     return False
   parsed = urlsplit(url)
-  return parsed.scheme == "https" and (parsed.hostname or "").endswith(
-      _GOOGLEAPIS_SUFFIX
+  return (
+      parsed.scheme == "https"
+      and "@" not in parsed.netloc
+      and "\\" not in parsed.netloc
+      and (parsed.hostname or "").endswith(_GOOGLEAPIS_SUFFIX)
   )
 
 
