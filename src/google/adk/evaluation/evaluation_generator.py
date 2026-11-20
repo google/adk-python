@@ -1163,6 +1163,14 @@ class EvaluationGenerator:
                 model_version=e.model_version,
             )
         )
+      # Skip orphaned non-conversational buckets (such as lifecycle, state, or
+      # metadata events where invocation_id is None and no user message parts
+      # exist) to avoid emitting phantom invocations with empty user content.
+      if not user_content.parts and (
+          invocation_id is None or (not final_response and not merged_events)
+      ):
+        continue
+
       invocations.append(
           Invocation(
               invocation_id=invocation_id,
