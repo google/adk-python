@@ -17,7 +17,6 @@ import random
 from google.adk import Agent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.tool_context import ToolContext
-from google.genai import types
 
 
 def roll_die(sides: int, tool_context: ToolContext) -> int:
@@ -75,14 +74,6 @@ root_agent = Agent(
     tools=[
         roll_die,
     ],
-    generate_content_config=types.GenerateContentConfig(
-        safety_settings=[
-            types.SafetySetting(  # avoid false alarm about rolling dice.
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.OFF,
-            ),
-        ]
-    ),
     before_model_callback=before_model_callback,
     after_model_callback=after_model_callback,
 )

@@ -155,6 +155,10 @@ jobs:
           echo "Updated version.py to ${PEP440_VERSION}"
           grep __version__ src/google/adk/version.py
 
+      # Builds the wheel that is published. Keep pyproject.toml's 7-day
+      # exclude-newer cutoff in force here (do not set UV_EXCLUDE_NEWER): the
+      # build backend runs at build time, so a freshly compromised flit-core
+      # could inject code into the release.
       - name: Build package
         run: uv build
 

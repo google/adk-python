@@ -15,6 +15,7 @@
 """Testings for the Workflow HITL scenarios."""
 
 import asyncio
+from collections.abc import Iterator
 import copy
 import json
 from typing import Any
@@ -42,6 +43,7 @@ from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import JoinNode
 from google.adk.workflow import node
+from google.adk.workflow import RetryConfig
 from google.adk.workflow import START
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
@@ -3081,3 +3083,79 @@ async def test_aborted_request_input_reruns_node_on_same_invocation_resume():
   assert b_runs == 1
   outputs3 = [e.output for e in events3 if e.output is not None]
   assert outputs3[-1] == 'approved:True|from_b'
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_branch_retried_while_sibling_waited_for_input(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Resuming keeps a branch retried in place while a sibling asked for input.
+
+  Setup: a resumable workflow with a retry_config runs prep, then flaky and
+    asker in parallel, both feeding a join. flaky fails on its first run;
+    asker asks for input.
+  Act:
+    - Run 1: flaky is retried in place and succeeds; asker interrupts.
+    - Run 2: answer asker's question.
+  Assert:
+    - Run 1 pauses on asker's question after prep ran once and flaky twice.
+    - Run 2 runs only asker again: prep and flaky are replayed, not rerun.
+    - The join receives flaky's output from its retry and asker's answer.
+  """
+  runs = {'prep': 0, 'flaky': 0, 'asker': 0}
+  flaky_attempts: list[int] = []
+
+  def prep() -> str:
+    runs['prep'] += 1
+    return 'prepped'
+
+  def flaky(ctx: Context, node_input: str) -> str:
+    del node_input
+    runs['flaky'] += 1
+    flaky_attempts.append(ctx.attempt_count)
+    if runs['flaky'] == 1:
+      raise ValueError('flaky failed')
+    return 'flaky_ok'
+
+  @node(rerun_on_resume=True)
+  def asker(ctx: Context, node_input: str) -> Iterator[RequestInput | str]:
+    del node_input
+    runs['asker'] += 1
+    if 'proceed' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='proceed', message='Proceed?')
+      return
+    yield f"answered_{ctx.resume_inputs['proceed']['text']}"
+
+  agent = Workflow(
+      name='retry_then_resume_wf',
+      edges=[(START, prep, (flaky, asker), JoinNode(name='join'))],
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert extract_event_interrupt_ids(request_input_event) == {'proceed'}
+  assert runs == {'prep': 1, 'flaky': 2, 'asker': 1}
+  assert flaky_attempts == [1, 2]
+
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('proceed', {'text': 'yes'})
+      ),
+      invocation_id=request_input_event.invocation_id,
+  )
+
+  assert runs == {'prep': 1, 'flaky': 2, 'asker': 2}
+  assert flaky_attempts == [1, 2]
+  assert {
+      'flaky': 'flaky_ok',
+      'asker': 'answered_yes',
+  } in workflow_testing_utils.get_outputs(events2)

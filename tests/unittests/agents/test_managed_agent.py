@@ -16,6 +16,7 @@ import asyncio
 import subprocess
 import sys
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
 from google.adk.agents._managed_agent import ManagedAgent
@@ -122,6 +123,52 @@ def test_lazy_client_dev_api_omits_location(monkeypatch):
   assert captured['enterprise'] is False
   assert 'location' not in captured
   assert captured['http_options'].headers == get_tracking_headers()
+
+
+@pytest.mark.parametrize('env_api_version', [None, ''])
+def test_lazy_client_dev_api_defaults_to_v1beta(monkeypatch, env_api_version):
+  """Developer API clients default to v1beta unless another version is set."""
+  monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '0')
+  if env_api_version is None:
+    monkeypatch.delenv('GOOGLE_GENAI_API_VERSION', raising=False)
+  else:
+    monkeypatch.setenv('GOOGLE_GENAI_API_VERSION', env_api_version)
+
+  with mock.patch(
+      'google.genai.Client', autospec=True, return_value=_FakeClient()
+  ) as mock_client:
+    agent = ManagedAgent(name='mgr', agent_id='agents/a')
+    _ = agent.api_client
+
+  assert mock_client.call_args.kwargs['http_options'].api_version == 'v1beta'
+
+
+def test_lazy_client_dev_api_honors_explicit_api_version_env(monkeypatch):
+  """Explicit GOOGLE_GENAI_API_VERSION leaves api_version to the SDK."""
+  monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '0')
+  monkeypatch.setenv('GOOGLE_GENAI_API_VERSION', 'v1alpha')
+
+  with mock.patch(
+      'google.genai.Client', autospec=True, return_value=_FakeClient()
+  ) as mock_client:
+    agent = ManagedAgent(name='mgr', agent_id='agents/a')
+    _ = agent.api_client
+
+  assert mock_client.call_args.kwargs['http_options'].api_version is None
+
+
+def test_lazy_client_enterprise_leaves_api_version_unset(monkeypatch):
+  """Enterprise ManagedAgent clients leave api_version to the SDK."""
+  monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '1')
+  monkeypatch.delenv('GOOGLE_GENAI_API_VERSION', raising=False)
+
+  with mock.patch(
+      'google.genai.Client', autospec=True, return_value=_FakeClient()
+  ) as mock_client:
+    agent = ManagedAgent(name='mgr', agent_id='agents/a')
+    _ = agent.api_client
+
+  assert mock_client.call_args.kwargs['http_options'].api_version is None
 
 
 def test_injected_non_global_enterprise_client_raises():

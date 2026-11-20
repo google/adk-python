@@ -133,7 +133,7 @@ async def _run_impl(self, *, ctx, node_input):
 | `wait_for_output` | `bool` | `False` | Stay WAITING until output *or* route is yielded, so predecessors can re-trigger the node (join nodes). Never yielding either deadlocks the node. |
 | `retry_config` | `RetryConfig \| None` | `None` | Retry on failure. Not persisted, so the count restarts after a resume. |
 | `timeout` | `float \| None` | `None` | Max execution time in seconds; exceeding it raises `NodeTimeoutError`, which `retry_config` can retry. |
-| `input_schema` | `SchemaType \| None` | `None` | Validate/coerce input data before `run()` |
+| `input_schema` | `SchemaType \| None` | `None` | Validate/coerce input data inside `run()`, before `_run_impl()` sees it |
 | `output_schema` | `SchemaType \| None` | `None` | Validate/coerce output data |
 | `state_schema` | `type[BaseModel] \| None` | `None` | Declare expected `ctx.state` keys and types; mutations are validated at runtime. Children inherit it unless they declare their own. Prefixed keys (`app:`, `user:`, `temp:`) bypass validation. |
 
