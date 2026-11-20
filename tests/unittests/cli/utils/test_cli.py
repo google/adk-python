@@ -76,8 +76,9 @@ def _patch_types_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
   # Dummy Part / Content
   class _Part:
 
-    def __init__(self, text: str | None = "") -> None:
+    def __init__(self, text: str | None = "", thought: bool | None = None):
       self.text = text
+      self.thought = thought
 
   class _Content:
 
@@ -193,6 +194,45 @@ async def test_run_input_file_outputs(
   assert session.state["foo"] == "bar"
   assert any("[user]:" in line for line in recorder)
   assert any("[assistant]:" in line for line in recorder)
+
+
+@pytest.mark.asyncio
+async def test_run_input_file_hides_thought_parts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_input_file echoes only the answer, not the model's thought parts."""
+  recorder: List[str] = []
+  monkeypatch.setattr(click, "echo", recorder.append)
+
+  class _ThinkingRunner:
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+      ...
+
+    async def run_async(self, *a: Any, **k: Any):
+      parts = [
+          cli.types.Part("thinking...", thought=True),
+          cli.types.Part("Hi!"),
+      ]
+      yield types.SimpleNamespace(
+          author="assistant", content=cli.types.Content("model", parts)
+      )
+
+  monkeypatch.setattr(cli, "Runner", _ThinkingRunner)
+  input_path = tmp_path / "input.json"
+  input_path.write_text(json.dumps({"state": {}, "queries": ["hi"]}))
+
+  await cli.run_input_file(
+      app_name="app",
+      user_id="user",
+      agent_or_app=BaseAgent(name="root"),
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      credential_service=InMemoryCredentialService(),
+      input_path=str(input_path),
+  )
+
+  assert recorder == ["[user]: hi", "[assistant]: Hi!"]
 
 
 # _run_cli (input_file branch)
@@ -686,6 +726,27 @@ def test_print_event_preserves_non_ascii_in_jsonl(
   assert "\\u" not in echoed[0]
 
 
+def test_print_event_hides_thought_parts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """_print_event prints only the answer, not the model's thought parts."""
+  from google.adk.events.event import Event
+
+  echoed: list[str] = []
+  monkeypatch.setattr(click, "echo", lambda msg: echoed.append(msg))
+  event = Event.model_validate({
+      "author": "agent",
+      "content": {
+          "role": "model",
+          "parts": [{"text": "thinking...", "thought": True}, {"text": "Hi!"}],
+      },
+  })
+
+  cli._print_event(event)
+
+  assert echoed == ["[agent]: Hi!"]
+
+
 @pytest.mark.asyncio
 async def test_run_cli_in_memory_flag_sets_memory_service_uri(
     fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1118,6 +1179,7 @@ async def test_run_interactively_reload_agents_hitl_consumes_queued_input(
     ) -> None:
       self.text = text
       self.function_response = function_response
+      self.thought = None
 
   monkeypatch.setattr(cli.types, "Part", _PartWithFunctionResponse)
 

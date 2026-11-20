@@ -161,7 +161,12 @@ async def run_input_file(
     ) as agen:
       async for event in agen:
         if event.content and event.content.parts:
-          if text := ''.join(part.text or '' for part in event.content.parts):
+          # Thought parts are model reasoning, not part of the answer.
+          if text := ''.join(
+              part.text or ''
+              for part in event.content.parts
+              if not part.thought
+          ):
             click.echo(f'[{event.author}]: {text}')
   return session
 
@@ -586,7 +591,7 @@ def _print_event(
     # Human readable mode
     author = event.author or 'unknown'
     text_parts = (
-        [p.text for p in event.content.parts if p.text]
+        [p.text for p in event.content.parts if p.text and not p.thought]
         if event.content and event.content.parts
         else []
     )
