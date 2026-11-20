@@ -25,7 +25,9 @@ import weakref
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.apps.app import App
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.mcp_tool._agent_to_mcp import _connection_key
 from google.adk.tools.mcp_tool._agent_to_mcp import _MAX_REAP_ATTEMPTS
@@ -208,6 +210,39 @@ async def test_call_tool_runs_agent_end_to_end():
 
   assert not field(result, "isError")
   assert "hello from the agent" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_to_mcp_server_preserves_app_plugins():
+  class _RecordAppPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name="record_app")
+      self.app_names = []
+
+    async def before_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      self.app_names.append(invocation_context.session.app_name)
+
+  plugin = _RecordAppPlugin()
+  app = App(
+      name="my_app",
+      root_agent=_EchoAgent(name="assistant", description="Echo requests"),
+      plugins=[plugin],
+  )
+  server = to_mcp_server(app)
+  tools = await server.list_tools()
+  assert [(tool.name, tool.description) for tool in tools] == [
+      ("my_app", "Echo requests")
+  ]
+
+  async with connected_client_session(server) as client:
+    result = await client.call_tool("my_app", {"request": "hi"})
+
+  assert not field(result, "isError")
+  assert result.content[0].text == "hello from the agent"
+  assert plugin.app_names == ["my_app"]
 
 
 @pytest.mark.asyncio
