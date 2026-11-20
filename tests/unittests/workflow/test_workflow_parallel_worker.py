@@ -1953,6 +1953,56 @@ async def test_parallel_worker_does_not_multiply_attempts(
   assert attempts == 3
 
 
+@pytest.mark.asyncio
+async def test_workflow_retry_reruns_only_failed_worker_item(
+    request: pytest.FixtureRequest,
+) -> None:
+  """A worker in a Workflow with retry_config retries only the failed item."""
+  counts: dict[str, int] = {}
+  item3_started = asyncio.Event()
+  item2_succeeded = asyncio.Event()
+  item3_cancelled = False
+
+  async def _worker_fn(node_input: str) -> str:
+    nonlocal item3_cancelled
+    counts[node_input] = counts.get(node_input, 0) + 1
+    if node_input == 'item1':
+      return 'item1_ok'
+    if node_input == 'item2':
+      await item3_started.wait()
+      if counts['item2'] == 1:
+        raise ValueError('item2 failed once')
+      item2_succeeded.set()
+      return 'item2_ok'
+    if node_input == 'item3':
+      item3_started.set()
+      try:
+        await item2_succeeded.wait()
+      except asyncio.CancelledError:
+        item3_cancelled = True
+        raise
+      return 'item3_ok'
+    return f'{node_input}_ok'
+
+  producer = _ProducerNode(items=['item1', 'item2', 'item3'], name='Producer')
+  worker = ParallelWorker(node=_worker_fn)
+  wf = Workflow(
+      name='outer_retry_pw_wf',
+      edges=[(START, producer, worker)],
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert item3_cancelled is False
+  assert counts == {'item1': 1, 'item2': 2, 'item3': 1}
+  assert _outputs_for(events, 'outer_retry_pw_wf@1/_worker_fn@1') == [
+      ['item1_ok', 'item2_ok', 'item3_ok']
+  ]
+
+
 def test_parallel_worker_model_copy_can_clear_retry_config() -> None:
   """model_copy(update={'retry_config': None}) clears the item node policy."""
 
