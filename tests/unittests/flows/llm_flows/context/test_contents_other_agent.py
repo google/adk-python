@@ -208,6 +208,226 @@ async def test_other_agent_thoughts_excluded_from_current_turn_only_context():
   ]
 
 
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [types.Part(text="", thought_signature=b"sig")],
+        [types.Part(thought_signature=b"sig")],
+        [types.Part(thought=True, thought_signature=b"sig")],
+        [types.Part(text="reasoning", thought=True, thought_signature=b"sig")],
+        [types.Part(text=""), types.Part(text="", thought_signature=b"sig")],
+    ],
+    ids=[
+        "empty_text_with_signature",
+        "signature_only_unmarked",
+        "signature_only_marked_thought",
+        "thought_text_with_signature",
+        "blank_answer_then_signature_part",
+    ],
+)
+@pytest.mark.asyncio
+async def test_other_agent_reply_relayed_as_nothing_does_not_start_turn(parts):
+  """Test that a signature-only reply from another agent is not a turn start.
+
+  A thought signature goes back only to the model that produced it, so another
+  agent's reply holding nothing else is relayed as nothing. Starting the
+  current turn there left the request with no contents at all.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash",
+      name="current_agent",
+      include_contents="none",
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Summarise the Q3 numbers"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="other_agent",
+          content=types.ModelContent(parts),
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents == [types.UserContent("Summarise the Q3 numbers")]
+
+
+@pytest.mark.asyncio
+async def test_turn_starts_at_latest_other_agent_reply_with_content():
+  """Test that the turn starts at the latest reply that relays something."""
+  agent = Agent(
+      model="gemini-2.5-flash",
+      name="current_agent",
+      include_contents="none",
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Summarise the Q3 numbers"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="analyst_agent",
+          content=types.ModelContent("Revenue was 12.4M"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="planner_agent",
+          content=types.ModelContent(
+              [types.Part(text="", thought_signature=b"sig")]
+          ),
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents == [
+      types.Content(
+          role="user",
+          parts=[
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[analyst_agent] said:", "Revenue was 12.4M"
+              ),
+          ],
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_own_thought_signature_kept_after_skipping_signature_only_reply():
+  """Test that the agent's own signatures still reach its model.
+
+  Only the choice of turn start changes. The agent's own events in the turn are
+  replayed as before, signatures included, which Gemini 3 needs to continue
+  function calling.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash",
+      name="current_agent",
+      include_contents="none",
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Summarise the Q3 numbers"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="other_agent",
+          content=types.ModelContent(
+              [types.Part(text="", thought_signature=b"other-sig")]
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="current_agent",
+          content=types.ModelContent([
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="call_1", name="get_numbers", args={}
+                  ),
+                  thought_signature=b"own-sig",
+              )
+          ]),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="current_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_1",
+                          name="get_numbers",
+                          response={"revenue": "12.4M"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert [content.role for content in llm_request.contents] == [
+      "user",
+      "model",
+      "user",
+  ]
+  assert llm_request.contents[0] == types.UserContent(
+      "Summarise the Q3 numbers"
+  )
+  signatures = [
+      part.thought_signature
+      for content in llm_request.contents
+      for part in content.parts or []
+      if part.thought_signature
+  ]
+  assert signatures == [b"own-sig"]
+
+
+@pytest.mark.asyncio
+async def test_signature_only_reply_starts_turn_when_no_earlier_start():
+  """Test that a reply relayed as nothing is still the start of last resort.
+
+  A scoped agent can take its input from the invocation rather than from an
+  event in its scope, and that input is added only once a turn start is found.
+  Passing over the only candidate would drop the input as well.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash",
+      name="current_agent",
+      include_contents="none",
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="Summarise the Q3 numbers"
+  )
+  invocation_context.isolation_scope = "task_1"
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="other_agent",
+          isolation_scope="task_1",
+          content=types.ModelContent(
+              [types.Part(text="", thought_signature=b"sig")]
+          ),
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents == [
+      types.Content(
+          role="user", parts=[types.Part(text="Summarise the Q3 numbers")]
+      )
+  ]
+
+
 @pytest.mark.asyncio
 async def test_other_agent_function_calls():
   """Test that function calls from other agents are preserved in context."""
