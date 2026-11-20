@@ -1502,10 +1502,10 @@ async def test_workflow_timeout_retry_replays_finished_branch() -> None:
 async def test_workflow_retry_with_parallel_branches_runs_succeeded_branch_once() -> (
     None
 ):
-  """A Workflow retry after parallel branch A fails runs branch B only once.
+  """A Workflow with retry_config runs a succeeded sibling branch only once.
 
-  branch_a fails only after branch_b has finished, so branch_b's result is
-  already recorded when branch_a is retried.
+  branch_a inherits the workflow's retry_config and retries in place after
+  branch_b has finished, so branch_b is not rerun.
   """
   branch_a_runs = 0
   branch_b_runs = 0
