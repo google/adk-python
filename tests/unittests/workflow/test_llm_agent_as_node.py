@@ -778,14 +778,6 @@ async def test_single_turn_transfer_output_reaches_downstream(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        'The replayed single_turn node still carries transfer_to_agent from'
-        ' its persisted function response, so the target runs again.'
-    ),
-    raises=AssertionError,
-    strict=True,
-)
 async def test_single_turn_transfer_target_not_rerun_on_resume(
     request: pytest.FixtureRequest,
 ):

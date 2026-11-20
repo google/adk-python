@@ -201,7 +201,31 @@ def check_interception(
       route=route,
       interrupts=interrupts,
       resume_inputs=resume_inputs,
-      transfer_to_agent=recovered.transfer_to_agent,
+      transfer_to_agent=(
+          None
+          if _transfer_ran_inline(node, recovered)
+          else recovered.transfer_to_agent
+      ),
+  )
+
+
+def _transfer_ran_inline(node: BaseNode, recovered: _ChildScanState) -> bool:
+  """Whether the node already ran its recorded transfer target to completion.
+
+  A single_turn LlmAgent node runs its transfer target inline, and the
+  target's reply becomes the node's output. Once that output is recorded, the
+  transfer must not be handed back to the scheduler on replay, or the target
+  runs a second time. A target that paused before replying has no output yet
+  and keeps its transfer so it can resume.
+  """
+  from ...agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
+  from ...utils._agent_mode import AgentMode  # pylint: disable=g-import-not-at-top
+  from .._llm_agent_wrapper import _effective_llm_agent_mode  # pylint: disable=g-import-not-at-top
+
+  return (
+      recovered.output is not None
+      and isinstance(node, LlmAgent)
+      and _effective_llm_agent_mode(node) == AgentMode.SINGLE_TURN
   )
 
 
