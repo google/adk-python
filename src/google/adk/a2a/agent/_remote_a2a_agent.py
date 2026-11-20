@@ -85,6 +85,7 @@ from ..converters.to_adk_event import _warn_if_peer_metadata_has_state_delta
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..converters.utils import _is_failed_status
+from ..converters.utils import A2A_CLIENT_ERROR_CODE
 from ..converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from ..converters.utils import A2A_TASK_FAILED_ERROR_MESSAGE
 from ..logs.log_utils import build_a2a_request_log
@@ -534,6 +535,39 @@ def _create_task_failure_events(
       is_error=True,
   )
   return error_event, finish_event
+
+
+def _create_client_error_event(
+    ctx: InvocationContext,
+    agent_name: str,
+    error_message: str,
+    *,
+    a2a_request: Any = None,
+    extra_metadata: Optional[dict[str, Any]] = None,
+) -> Event:
+  """Creates the error event for a failure of the A2A exchange itself.
+
+  This is for failures on the caller's side of the wire: the agent card or the
+  credential cannot be resolved, the request fails, the stream is cut, or a
+  response cannot be handled. A task the remote agent reports as failed is a
+  different case and carries ``A2A_TASK_FAILED_ERROR_CODE``.
+
+  Every such event has the same shape: ``error_code``, ``error_message`` and no
+  content, with the message also under the ``a2a:error`` metadata key and the
+  request under ``a2a:request`` when one was already built.
+  """
+  metadata: dict[str, Any] = {A2A_METADATA_PREFIX + "error": error_message}
+  metadata.update(extra_metadata or {})
+  if a2a_request:
+    metadata[A2A_METADATA_PREFIX + "request"] = _compat.a2a_to_dict(a2a_request)
+  return Event(
+      author=agent_name,
+      invocation_id=ctx.invocation_id,
+      branch=ctx.branch,
+      error_code=A2A_CLIENT_ERROR_CODE,
+      error_message=error_message,
+      custom_metadata=metadata,
+  )
 
 
 def _add_mock_function_call(event: Event, state: TaskState) -> None:
@@ -1859,11 +1893,8 @@ class RemoteA2aAgent(BaseAgent):
               a2a_response.context_id
           )
       else:
-        event = Event(
-            author=self.name,
-            error_message="Unknown A2A response type",
-            invocation_id=ctx.invocation_id,
-            branch=ctx.branch,
+        event = _create_client_error_event(
+            ctx, self.name, "Unknown A2A response type"
         )
       # Filter out thought parts from user-facing response content.
       # Intermediate (submitted/working) events have all parts marked as
@@ -1876,11 +1907,8 @@ class RemoteA2aAgent(BaseAgent):
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
-      return Event(
-          author=self.name,
-          error_message=f"Failed to process A2A response: {e}",
-          invocation_id=ctx.invocation_id,
-          branch=ctx.branch,
+      return _create_client_error_event(
+          ctx, self.name, f"Failed to process A2A response: {e}"
       )
 
   async def _handle_a2a_response_v2(
@@ -1958,20 +1986,14 @@ class RemoteA2aAgent(BaseAgent):
               a2a_response.context_id
           )
       else:
-        event = Event(
-            author=self.name,
-            error_message="Unknown A2A response type",
-            invocation_id=ctx.invocation_id,
-            branch=ctx.branch,
+        event = _create_client_error_event(
+            ctx, self.name, "Unknown A2A response type"
         )
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
-      return Event(
-          author=self.name,
-          error_message=f"Failed to process A2A response: {e}",
-          invocation_id=ctx.invocation_id,
-          branch=ctx.branch,
+      return _create_client_error_event(
+          ctx, self.name, f"Failed to process A2A response: {e}"
       )
 
   async def _run_async_impl(
@@ -1991,12 +2013,7 @@ class RemoteA2aAgent(BaseAgent):
         except Exception as e:  # pylint: disable=broad-except
           task_error_message = f"Failed to authenticate remote A2A agent: {e}"
           should_release_task_control = True
-          yield Event(
-              author=self.name,
-              error_message=task_error_message,
-              invocation_id=ctx.invocation_id,
-              branch=ctx.branch,
-          )
+          yield _create_client_error_event(ctx, self.name, task_error_message)
           return
         if auth_request_event:
           # A pause, not a failure: the invocation resumes once the client
@@ -2009,12 +2026,7 @@ class RemoteA2aAgent(BaseAgent):
       except Exception as e:
         task_error_message = f"Failed to initialize remote A2A agent: {e}"
         should_release_task_control = True
-        yield Event(
-            author=self.name,
-            error_message=task_error_message,
-            invocation_id=ctx.invocation_id,
-            branch=ctx.branch,
-        )
+        yield _create_client_error_event(ctx, self.name, task_error_message)
         return
 
       # Create A2A request for function response or regular message
@@ -2210,19 +2222,8 @@ class RemoteA2aAgent(BaseAgent):
           )
           logger.error(task_error_message)
           should_release_task_control = True
-          yield Event(
-              author=self.name,
-              error_message=task_error_message,
-              invocation_id=ctx.invocation_id,
-              branch=ctx.branch,
-              custom_metadata=(
-                  {
-                      A2A_METADATA_PREFIX
-                      + "request": _compat.a2a_to_dict(a2a_request),
-                  }
-                  if a2a_request
-                  else None
-              ),
+          yield _create_client_error_event(
+              ctx, self.name, task_error_message, a2a_request=a2a_request
           )
 
       except _compat.A2A_HTTP_ERRORS as e:
@@ -2231,20 +2232,14 @@ class RemoteA2aAgent(BaseAgent):
         should_release_task_control = True
         logger.error(error_message)
         status_code: object = getattr(e, "status_code", None)
-        custom_metadata: dict[str, Any] = {
-            A2A_METADATA_PREFIX + "error": error_message,
-            A2A_METADATA_PREFIX + "status_code": str(status_code),
-        }
-        if a2a_request:
-          custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-              _compat.a2a_to_dict(a2a_request)
-          )
-        yield Event(
-            author=self.name,
-            error_message=error_message,
-            invocation_id=ctx.invocation_id,
-            branch=ctx.branch,
-            custom_metadata=custom_metadata,
+        yield _create_client_error_event(
+            ctx,
+            self.name,
+            error_message,
+            a2a_request=a2a_request,
+            extra_metadata={
+                A2A_METADATA_PREFIX + "status_code": str(status_code)
+            },
         )
 
       except Exception as e:
@@ -2252,19 +2247,8 @@ class RemoteA2aAgent(BaseAgent):
         task_error_message = error_message
         should_release_task_control = True
         logger.error(error_message)
-        custom_metadata = {
-            A2A_METADATA_PREFIX + "error": error_message,
-        }
-        if a2a_request:
-          custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-              _compat.a2a_to_dict(a2a_request)
-          )
-        yield Event(
-            author=self.name,
-            error_message=error_message,
-            invocation_id=ctx.invocation_id,
-            branch=ctx.branch,
-            custom_metadata=custom_metadata,
+        yield _create_client_error_event(
+            ctx, self.name, error_message, a2a_request=a2a_request
         )
 
     finally:
