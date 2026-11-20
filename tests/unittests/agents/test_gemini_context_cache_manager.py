@@ -488,16 +488,85 @@ class TestGeminiContextCacheManager:
     assert result is None
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
+  @pytest.mark.parametrize(
+      "trailing_parts",
+      [
+          pytest.param(
+              [
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="fetch_doc",
+                          response={"result": "lorem ipsum " * 10_000},
+                      )
+                  )
+              ],
+              id="function_response",
+          ),
+          pytest.param(
+              [
+                  types.Part(
+                      executable_code=types.ExecutableCode(
+                          code="total += 1\n" * 10_000,
+                          language=types.Language.PYTHON,
+                      )
+                  )
+              ],
+              id="executable_code",
+          ),
+          pytest.param(
+              [
+                  types.Part(
+                      code_execution_result=types.CodeExecutionResult(
+                          outcome=types.Outcome.OUTCOME_OK,
+                          output="row\n" * 30_000,
+                      )
+                  )
+              ],
+              id="code_execution_result",
+          ),
+          pytest.param(
+              [
+                  types.Part(
+                      inline_data=types.Blob(
+                          mime_type="image/png", data=b"\x89PNG"
+                      )
+                  )
+                  for _ in range(20)
+              ],
+              id="media",
+          ),
+          pytest.param(
+              [
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="fetch_doc",
+                          response={},
+                          parts=[
+                              types.FunctionResponsePart(
+                                  inline_data=types.FunctionResponseBlob(
+                                      mime_type="image/png", data=b"\x89PNG"
+                                  )
+                              )
+                              for _ in range(20)
+                          ],
+                      )
+                  )
+              ],
+              id="tool_result_media",
+          ),
+      ],
+  )
   async def test_large_trailing_tool_result_does_not_pass_cache_size_gate(
-      self,
+      self, trailing_parts: list[types.Part]
   ):
-    """A large uncached tool result does not make a tiny prefix cacheable.
+    """A large uncached payload does not make a tiny prefix cacheable.
 
-    Setup: a user message and a function call, followed by a large function
-      response. The response is the last user batch, so only the first two
-      contents are cacheable, and they are far below Gemini's minimum.
+    Setup: a user message and a function call, followed by a large payload
+      that has no text: a tool result, code, code output or media. It is the
+      last user batch, so only the first two contents are cacheable, and they
+      are far below Gemini's minimum.
     Act: handle caching with fingerprint metadata from the previous turn and
-      a previous-prompt token count that the large response dominates.
+      a previous-prompt token count that the large payload dominates.
     Assert: no cache is created.
     """
     self.manager.genai_client.aio.caches.create = AsyncMock()
@@ -513,17 +582,7 @@ class TestGeminiContextCacheManager:
                 )
             ],
         ),
-        types.Content(
-            role="user",
-            parts=[
-                types.Part(
-                    function_response=types.FunctionResponse(
-                        name="fetch_doc",
-                        response={"result": "lorem ipsum " * 10_000},
-                    )
-                )
-            ],
-        ),
+        types.Content(role="user", parts=trailing_parts),
     ]
     llm_request = LlmRequest(
         model="gemini-2.5-flash",

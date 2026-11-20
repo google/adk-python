@@ -85,21 +85,36 @@ def _json_character_count(value: object) -> int:
   return len(json.dumps(value, ensure_ascii=False, default=str))
 
 
+# Gemini bills a small image, or one PDF page, at 258 tokens. Character counts
+# below assume 4 characters per token.
+_MEDIA_PART_CHARACTER_COUNT = 258 * 4
+
+
 def _part_character_count(part: types.Part) -> int:
-  """Returns a rough size for the part's payload that the model reads as text.
+  """Returns a rough size for the part's payload, in text characters.
 
   Function calls and responses are sent as structured data, but the model
   tokenizes their names and JSON payloads much like text. In an agent loop they
   are often most of the prompt, so leaving them out skews any share computed
-  from these counts. Media parts have no character-based size and are left out.
+  from these counts.
+
+  Media has no character-based size; its token cost depends on resolution or
+  duration, not on byte length. Each media item, including one a tool returned
+  in `FunctionResponse.parts`, counts as one small image. That undercounts
+  larger media but keeps a prefix that holds media from looking empty.
   """
   count = len(part.text) if part.text else 0
+  if part.inline_data or part.file_data:
+    count += _MEDIA_PART_CHARACTER_COUNT
   if part.function_call:
     count += len(part.function_call.name or "")
     count += _json_character_count(part.function_call.args)
   if part.function_response:
     count += len(part.function_response.name or "")
     count += _json_character_count(part.function_response.response)
+    for response_part in part.function_response.parts or []:
+      if response_part.inline_data or response_part.file_data:
+        count += _MEDIA_PART_CHARACTER_COUNT
   if part.executable_code and part.executable_code.code:
     count += len(part.executable_code.code)
   if part.code_execution_result and part.code_execution_result.output:
@@ -533,7 +548,8 @@ class GeminiContextCacheManager:
     """Estimate token count for the request (or its cacheable prefix).
 
     This is a rough estimation based on the length of the text, function
-    calls, function responses and code each content carries.
+    calls, function responses and code each content carries, plus a fixed
+    size for each media item.
 
     Args:
         llm_request: Request to estimate tokens for
