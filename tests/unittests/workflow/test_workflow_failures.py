@@ -15,12 +15,14 @@
 """Tests for Workflow error handling, graceful shutdown, and retry logic."""
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 
 from google.adk import platform as adk_platform
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import App
@@ -47,6 +49,7 @@ from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import ValidationError
 import pytest
 from typing_extensions import override
 
@@ -1179,9 +1182,8 @@ async def test_workflow_returns_normally_on_node_failure():
 async def test_retry_config_on_nested_workflow_retries_failing_child():
   """A sub-workflow's retry_config re-runs a child node that raises.
 
-  A Workflow reports a failing child by setting an error on its context
-  instead of raising, so this only works if the node runner treats a
-  reported failure the same as a raised one.
+  The child has no retry_config of its own, so it inherits the sub-workflow's
+  policy and is retried in place.
   """
   attempts = 0
   downstream_input = None
@@ -1881,3 +1883,327 @@ async def test_retry_replays_sibling_with_pending_event_persist() -> None:
   assert sibling_attempts == 1
   assert not any(e.partial for e in plugin_events)
   assert not any(e.partial for e in streamed_events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('nested', [False, True], ids=['flat', 'nested'])
+@pytest.mark.parametrize(
+    'sibling_finished',
+    [False, True],
+    ids=['sibling_running', 'sibling_finished'],
+)
+async def test_workflow_retry_reruns_only_failed_parallel_branch(
+    nested: bool, sibling_finished: bool
+) -> None:
+  """A Workflow with retry_config retries only the failed parallel branch."""
+  flaky_runs = sibling_runs = 0
+  sibling_cancelled = False
+  sibling_started = asyncio.Event()
+  sibling_done = asyncio.Event()
+  flaky_succeeded = asyncio.Event()
+  joined_output = None
+
+  @node()
+  async def flaky(ctx: Context) -> str:
+    nonlocal flaky_runs
+    flaky_runs += 1
+    await (sibling_done if sibling_finished else sibling_started).wait()
+    if flaky_runs < 3:
+      raise CustomError('flaky failed')
+    flaky_succeeded.set()
+    return 'flaky_ok'
+
+  @node()
+  async def sibling(ctx: Context) -> str | None:
+    nonlocal sibling_runs, sibling_cancelled
+    sibling_runs += 1
+    sibling_started.set()
+    if sibling_finished:
+      sibling_done.set()
+      return None
+    try:
+      await flaky_succeeded.wait()
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+    return 'sibling_ok'
+
+  join = JoinNode(name='join')
+
+  @node()
+  async def collect(ctx: Context, node_input: Any) -> Any:
+    nonlocal joined_output
+    joined_output = node_input
+    return node_input
+
+  retry_config = RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0)
+  branches = Workflow(
+      name='branches',
+      edges=[
+          (START, (flaky, sibling)),
+          ((flaky, sibling), join),
+          (join, collect),
+      ],
+      retry_config=None if nested else retry_config,
+  )
+  wf = (
+      Workflow(
+          name='outer', edges=[(START, branches)], retry_config=retry_config
+      )
+      if nested
+      else branches
+  )
+
+  await _run_workflow(wf)
+
+  assert (sibling_cancelled, sibling_runs, flaky_runs) == (False, 1, 3)
+  assert joined_output == {
+      'flaky': 'flaky_ok',
+      'sibling': None if sibling_finished else 'sibling_ok',
+  }
+
+
+def _retry(
+    max_attempts: int, exceptions: list[type[Exception]] | None = None
+) -> RetryConfig:
+  """Returns a retry policy without backoff delays."""
+  return RetryConfig(
+      max_attempts=max_attempts,
+      initial_delay=0.0,
+      jitter=0.0,
+      exceptions=exceptions,
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'child_retry,wf_retry,error_cls,expected_attempts',
+    [
+        (None, _retry(3), CustomRetryableError, [1, 2, 3]),
+        (None, _retry(3, [CustomRetryableError]), CustomNonRetryableError, [1]),
+        (_retry(2), _retry(4), CustomRetryableError, [1, 2]),
+        (
+            _retry(3, [CustomRetryableError]),
+            _retry(3),
+            CustomNonRetryableError,
+            [1],
+        ),
+    ],
+    ids=[
+        'inherited_limit',
+        'outside_exceptions',
+        'child_own_limit',
+        'child_own_exceptions',
+    ],
+)
+async def test_workflow_retry_single_failing_child_attempts(
+    child_retry: RetryConfig | None,
+    wf_retry: RetryConfig,
+    error_cls: type[Exception],
+    expected_attempts: list[int],
+) -> None:
+  """A failing child uses its effective policy without workflow retry."""
+  attempts: list[int] = []
+
+  @node(retry_config=child_retry)
+  async def failing(ctx: Context) -> str:
+    attempts.append(ctx.attempt_count)
+    raise error_cls('child failure')
+
+  wf = Workflow(name='wf', edges=[(START, failing)], retry_config=wf_retry)
+  with pytest.raises(error_cls, match='child failure'):
+    await _run_workflow(wf)
+  assert attempts == expected_attempts
+
+
+@pytest.mark.asyncio
+async def test_workflow_retry_does_not_retry_detached_dynamic_child() -> None:
+  """A detached create_task(ctx.run_node(...)) failure is not retried."""
+  runs = 0
+  child_started = asyncio.Event()
+  spawner_done = asyncio.Event()
+
+  @node()
+  async def detached_child(ctx: Context) -> str:
+    nonlocal runs
+    runs += 1
+    child_started.set()
+    await spawner_done.wait()
+    raise CustomRetryableError('detached failure')
+
+  @node(rerun_on_resume=True)
+  async def spawner(ctx: Context) -> AsyncGenerator[str, None]:
+    task = asyncio.create_task(ctx.run_node(detached_child))
+    # Retrieve the task's exception so asyncio does not log it as unhandled.
+    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+    await child_started.wait()
+    yield 'spawned'
+    spawner_done.set()
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, spawner)],
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+  with pytest.raises(CustomRetryableError, match='detached failure'):
+    await asyncio.wait_for(_run_workflow(wf), timeout=5.0)
+  assert runs == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_retry_retries_each_loop_turn_on_agent_copy() -> None:
+  """Each loop turn retries a copy of the agent child, not the user's agent."""
+  turn_attempts: dict[int, int] = {}
+  completed_turns = 0
+  seen_agents: list[BaseAgent] = []
+
+  class _LoopAgent(BaseAgent):
+
+    @override
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      nonlocal completed_turns
+      seen_agents.append(self)
+      turn = completed_turns + 1
+      turn_attempts[turn] = turn_attempts.get(turn, 0) + 1
+      if turn_attempts[turn] == 1:
+        raise CustomRetryableError(f'transient failure on turn {turn}')
+      completed_turns += 1
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          output=completed_turns,
+      )
+
+  @node()
+  async def check_done(ctx: Context, node_input: int) -> None:
+    ctx.route = 'again' if node_input < 2 else 'done'
+
+  @node()
+  async def finish(ctx: Context) -> str:
+    return 'loop_complete'
+
+  agent = _LoopAgent(name='loop_agent')
+  wf = Workflow(
+      name='wf',
+      edges=[
+          (START, agent),
+          (agent, check_done, {'again': agent, 'done': finish}),
+      ],
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+
+  events, _, _ = await asyncio.wait_for(_run_workflow(wf), timeout=5.0)
+
+  graph_agent = next(n for n in wf.graph.nodes if n.name == agent.name)
+  assert agent.retry_config is None and graph_agent is not agent
+  assert graph_agent.retry_config == wf.retry_config
+  assert seen_agents[0] is seen_agents[1] and seen_agents[2] is seen_agents[3]
+  assert turn_attempts == {1: 2, 2: 2}
+  assert 'loop_complete' in [e.output for e in events if e.output is not None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'update_kind', ['set_retry_config', 'clear_retry_config', 'replace_graph']
+)
+async def test_workflow_model_copy_updates_child_retry_config(
+    update_kind: str,
+) -> None:
+  """Workflow.model_copy updates inherited child policies and keeps own ones."""
+  workflow_policy = RetryConfig(max_attempts=4, initial_delay=0.0, jitter=0.0)
+  own_policy = RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0)
+  inherited_runs = 0
+
+  @node()
+  async def inherited_child(ctx: Context) -> str:
+    nonlocal inherited_runs
+    inherited_runs += 1
+    if inherited_runs < 2:
+      raise CustomRetryableError('inherited transient')
+    return 'ok'
+
+  @node(retry_config=own_policy)
+  async def own_policy_child(ctx: Context) -> str:
+    return 'done'
+
+  def child_policies(workflow: Workflow) -> dict[str, RetryConfig | None]:
+    return {
+        n.name: n.retry_config
+        for n in workflow.graph.nodes
+        if n.name != START.name
+    }
+
+  edges = [(START, inherited_child, own_policy_child)]
+  if update_kind == 'set_retry_config':
+    wf = Workflow(name='wf', edges=edges)
+    copied = node(wf, retry_config=workflow_policy)
+  elif update_kind == 'clear_retry_config':
+    wf = Workflow(name='wf', edges=edges, retry_config=workflow_policy)
+    copied = wf.model_copy(update={'retry_config': None})
+  else:
+    wf = Workflow(
+        name='wf',
+        edges=[(START, own_policy_child)],
+        retry_config=workflow_policy,
+    )
+    copied = wf.model_copy(
+        update={'graph': Workflow(name='source', edges=edges).graph}
+    )
+  original_policies = child_policies(wf)
+  inherits = update_kind != 'clear_retry_config'
+  run_outcome = (
+      contextlib.nullcontext()
+      if inherits
+      else pytest.raises(CustomRetryableError, match='inherited transient')
+  )
+
+  with run_outcome:
+    await asyncio.wait_for(_run_workflow(copied), timeout=5.0)
+
+  assert child_policies(copied) == {
+      'inherited_child': workflow_policy if inherits else None,
+      'own_policy_child': own_policy,
+  }
+  assert inherited_runs == (2 if inherits else 1)
+  assert child_policies(wf) == original_policies
+
+
+def test_workflow_without_retry_config_ignores_child_policies() -> None:
+  """A Workflow without retry_config does not read its children's policies.
+
+  Downstream tests build workflows from spec-constrained mock agents that
+  have no retry_config attribute; those must not fail at construction.
+  """
+  agent = mock.MagicMock(spec=BaseAgent)
+  agent.name = 'agent'
+
+  wf = Workflow(name='wf', edges=[(START, agent)])
+
+  assert any(n is agent for n in wf.graph.nodes)
+
+
+@pytest.mark.parametrize(
+    'expected,assigned',
+    [(None, _retry(3)), (_retry(2), _retry(3)), (_retry(2), None)],
+    ids=['set_after_build', 'replace_after_build', 'clear_after_build'],
+)
+def test_workflow_assigning_retry_config_after_construction_raises(
+    expected: RetryConfig | None,
+    assigned: RetryConfig | None,
+) -> None:
+  """Assigning retry_config on an existing Workflow raises ValidationError."""
+
+  @node()
+  async def step(ctx: Context) -> str:
+    return 'ok'
+
+  wf = Workflow(name='wf', edges=[(START, step)], retry_config=expected)
+  with pytest.raises(ValidationError) as exc_info:
+    wf.retry_config = assigned
+  assert exc_info.value.errors()[0]['type'] == 'frozen_field'
+
+  child = next(n for n in wf.graph.nodes if n.name == 'step')
+  assert wf.retry_config == expected
+  assert child.retry_config == expected
