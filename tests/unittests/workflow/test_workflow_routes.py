@@ -223,6 +223,7 @@ async def test_run_async_with_list_of_routes(request: pytest.FixtureRequest):
   node_b = TestingNode(name='NodeB', output='B')
   node_c = TestingNode(name='NodeC', output='C')
   node_d = TestingNode(name='NodeD', output='D')
+  join = JoinNode(name='Join')
   graph = Graph(
       edges=[
           Edge(from_node=START, to_node=node_a),
@@ -241,6 +242,10 @@ async def test_run_async_with_list_of_routes(request: pytest.FixtureRequest):
               to_node=node_d,
               route='route_d',
           ),
+          # Join the triggered branches so the workflow has one terminal
+          # output.
+          Edge(from_node=node_b, to_node=join),
+          Edge(from_node=node_c, to_node=join),
       ],
   )
   agent = Workflow(
@@ -254,14 +259,14 @@ async def test_run_async_with_list_of_routes(request: pytest.FixtureRequest):
 
   simplified_events = simplify_events_with_node(events)
 
-  assert len(simplified_events) == 3
+  assert len(simplified_events) == 4
   assert simplified_events[0] == (
       'test_workflow_agent_list_routes@1/NodeA@1',
       {'output': 'A'},
   )
 
   # Check that the other two events are from NodeB and NodeC, in any order.
-  other_events = simplified_events[1:]
+  other_events = simplified_events[1:3]
   expected_other_events = [
       (
           'test_workflow_agent_list_routes@1/NodeB@1',
@@ -274,6 +279,10 @@ async def test_run_async_with_list_of_routes(request: pytest.FixtureRequest):
   ]
   assert len(other_events) == len(expected_other_events)
   assert all(item in other_events for item in expected_other_events)
+  assert simplified_events[3] == (
+      'test_workflow_agent_list_routes@1/Join@1',
+      {'output': {'NodeB': 'B', 'NodeC': 'C'}},
+  )
 
 
 @pytest.mark.asyncio
@@ -282,6 +291,7 @@ async def test_run_async_with_default_route(request: pytest.FixtureRequest):
   node_b = TestingNode(name='NodeB', output='B')
   node_c = TestingNode(name='NodeC', output='C')
   node_d = TestingNode(name='NodeD', output='D')
+  join = JoinNode(name='Join')
 
   graph = Graph(
       edges=[
@@ -302,6 +312,10 @@ async def test_run_async_with_default_route(request: pytest.FixtureRequest):
               from_node=node_a,
               to_node=node_d,
           ),
+          # Join the triggered branches so the workflow has one terminal
+          # output.
+          Edge(from_node=node_c, to_node=join),
+          Edge(from_node=node_d, to_node=join),
       ],
   )
   agent = Workflow(
@@ -315,14 +329,14 @@ async def test_run_async_with_default_route(request: pytest.FixtureRequest):
 
   simplified_events = simplify_events_with_node(events)
 
-  assert len(simplified_events) == 3
+  assert len(simplified_events) == 4
   assert simplified_events[0] == (
       'test_workflow_agent_default_route@1/NodeA@1',
       {'output': 'A'},
   )
 
   # Check that NodeC (default route) and NodeD (untagged) are triggered.
-  other_events = simplified_events[1:]
+  other_events = simplified_events[1:3]
   expected_other_events = [
       (
           'test_workflow_agent_default_route@1/NodeC@1',
@@ -335,6 +349,10 @@ async def test_run_async_with_default_route(request: pytest.FixtureRequest):
   ]
   assert len(other_events) == len(expected_other_events)
   assert all(item in other_events for item in expected_other_events)
+  assert simplified_events[3] == (
+      'test_workflow_agent_default_route@1/Join@1',
+      {'output': {'NodeC': 'C', 'NodeD': 'D'}},
+  )
 
 
 @pytest.mark.asyncio
@@ -390,6 +408,7 @@ async def test_run_async_with_untagged_edges(request: pytest.FixtureRequest):
   node_b = TestingNode(name='NodeB', output='B')
   node_c = TestingNode(name='NodeC', output='C')
   node_d = TestingNode(name='NodeD', output='D')
+  join = JoinNode(name='Join')
   graph = Graph(
       edges=[
           Edge(from_node=START, to_node=node_a),
@@ -408,6 +427,10 @@ async def test_run_async_with_untagged_edges(request: pytest.FixtureRequest):
               from_node=node_a,
               to_node=node_d,
           ),
+          # Join the triggered branches so the workflow has one terminal
+          # output.
+          Edge(from_node=node_b, to_node=join),
+          Edge(from_node=node_d, to_node=join),
       ],
   )
   agent = Workflow(
@@ -421,14 +444,14 @@ async def test_run_async_with_untagged_edges(request: pytest.FixtureRequest):
 
   simplified_events = simplify_events_with_node(events)
 
-  assert len(simplified_events) == 3
+  assert len(simplified_events) == 4
   assert simplified_events[0] == (
       'test_workflow_agent_untagged_edges@1/NodeA@1',
       {'output': 'A'},
   )
 
   # Check that NodeB and NodeD are triggered.
-  other_events = simplified_events[1:]
+  other_events = simplified_events[1:3]
   expected_other_events = [
       (
           'test_workflow_agent_untagged_edges@1/NodeB@1',
@@ -441,6 +464,10 @@ async def test_run_async_with_untagged_edges(request: pytest.FixtureRequest):
   ]
   assert len(other_events) == len(expected_other_events)
   assert all(item in other_events for item in expected_other_events)
+  assert simplified_events[3] == (
+      'test_workflow_agent_untagged_edges@1/Join@1',
+      {'output': {'NodeB': 'B', 'NodeD': 'D'}},
+  )
 
 
 @pytest.mark.asyncio
