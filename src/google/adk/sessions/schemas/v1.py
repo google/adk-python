@@ -160,6 +160,34 @@ class StorageSession(Base):
     return session
 
 
+class PendingCompaction(Base):
+  """Latest completed turn eligible for sliding-window compaction."""
+
+  __tablename__ = "adk_pending_compactions"
+  app_name: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  user_id: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  session_id: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
+  )
+  through: Mapped[str] = mapped_column(String(DEFAULT_MAX_KEY_LENGTH))
+  through_time: Mapped[float]
+  available_at: Mapped[float]
+  owner: Mapped[str | None] = mapped_column(String(36))
+  last_error: Mapped[str | None] = mapped_column(String(255))
+  __table_args__ = (
+      ForeignKeyConstraint(
+          ["app_name", "user_id", "session_id"],
+          ["sessions.app_name", "sessions.user_id", "sessions.id"],
+          ondelete="CASCADE",
+      ),
+      Index("idx_adk_compactions_ready", "app_name", "available_at"),
+  )
+
+
 class StorageEvent(Base):
   """Represents an event stored in the database."""
 

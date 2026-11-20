@@ -121,6 +121,7 @@ async def _summarize_events_with_trace(
     events_to_compact: list[Event],
     trigger: str,
     abort_signal: asyncio.Event | None = None,
+    propagate_errors: bool = False,
 ) -> Event | None:
   """Summarizes events within a trace span labeled for compaction."""
   if config.summarizer is None or (
@@ -173,6 +174,8 @@ async def _summarize_events_with_trace(
       span.record_exception(e)
       span.set_status(Status(StatusCode.ERROR, type(e).__name__))
       span.set_attribute(ERROR_TYPE, resolve_error_type(e))
+      if propagate_errors:
+        raise
       logger.warning(
           'Event compaction failed; continuing with the uncompacted history.',
           exc_info=True,
@@ -906,11 +909,36 @@ async def _run_compaction_for_sliding_window_config(
     if token_compacted:
       return
 
-  if not _has_sliding_window_config(config):
+  events_to_compact = _sliding_window(config, events)
+  if not events_to_compact:
     return
 
-  if config.compaction_interval is None or config.overlap_size is None:
+  _ensure_compaction_summarizer(config=config, agent=agent)
+  if config.summarizer is None:
     return
+
+  compaction_event = await _summarize_events_with_trace(
+      session=session,
+      config=config,
+      events=events,
+      events_to_compact=events_to_compact,
+      trigger='sliding_window',
+      abort_signal=abort_signal,
+  )
+  logger.debug('Event compactor finished.')
+  if compaction_event:
+    yield compaction_event
+
+
+def _sliding_window(
+    config: EventsCompactionConfig, events: list[Event]
+) -> list[Event]:
+  """Select the same closed window for inline compaction and worker replay."""
+  if not _has_sliding_window_config(config):
+    return []
+
+  if config.compaction_interval is None or config.overlap_size is None:
+    return []
 
   # Find the last compaction event and its range.
   last_compacted_end_timestamp = 0.0
@@ -939,7 +967,7 @@ async def _run_compaction_for_sliding_window_config(
   ]
 
   if len(new_invocation_ids) < config.compaction_interval:
-    return  # Not enough new invocations to trigger compaction.
+    return []  # Not enough new invocations to trigger compaction.
 
   # Determine the range of invocations to compact.
   # The end of the compaction range is the last of the new invocations.
@@ -981,25 +1009,11 @@ async def _run_compaction_for_sliding_window_config(
       )
 
   if not events_to_compact:
-    return
+    return []
 
   if not _is_range_worth_compacting(
       events=events, events_to_compact=events_to_compact
   ):
-    return
+    return []
 
-  _ensure_compaction_summarizer(config=config, agent=agent)
-  if config.summarizer is None:
-    return
-
-  compaction_event = await _summarize_events_with_trace(
-      session=session,
-      config=config,
-      events=events,
-      events_to_compact=events_to_compact,
-      trigger='sliding_window',
-      abort_signal=abort_signal,
-  )
-  logger.debug('Event compactor finished.')
-  if compaction_event:
-    yield compaction_event
+  return events_to_compact
