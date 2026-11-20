@@ -129,6 +129,11 @@ class CheckGroundingClient:
     self._supplied_client = client
 
   @property
+  def limits(self) -> GroundingLimits:
+    """Capacity limits of the backend."""
+    return self._limits
+
+  @property
   def client(self) -> discoveryengine_v1.GroundedGenerationServiceAsyncClient:
     """Returns the async client for the running event loop.
 
