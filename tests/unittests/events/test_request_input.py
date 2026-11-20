@@ -16,10 +16,15 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+from typing import Literal
 import uuid
 
 from google.adk.events.request_input import RequestInput
 from google.adk.platform import uuid as platform_uuid
+from pydantic import BaseModel
+from pydantic import Field
+import pytest
 
 
 class TestRequestInputInterruptId:
@@ -54,3 +59,19 @@ class TestRequestInputInterruptId:
     request = RequestInput(interrupt_id="explicit-id")
 
     assert request.interrupt_id == "explicit-id"
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        Literal["yes", "no"],
+        Annotated[BaseModel, Field(title="Answer")],
+        Annotated[int, Field(gt=0)],
+    ],
+)
+def test_response_schema_preserves_typing_alias(schema):
+  """Input requests retain the declared response schema."""
+  request = RequestInput(response_schema=schema)
+
+  assert request.response_schema is schema
+  assert request.model_dump()["response_schema"] is schema
