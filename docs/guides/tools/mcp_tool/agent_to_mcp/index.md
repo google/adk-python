@@ -91,6 +91,17 @@ streamable-http each client connection gets its own session.
 on SDK 1.x, renamed to `mcp.server.mcpserver.MCPServer` on 2.x. It returns an
 instance of that class, which the caller runs on a transport of their choice.
 
+Some deployments cannot rely on the connection to identify the conversation: a
+stateless streamable-http deployment (`stateless_http=True`), several instances
+behind a load balancer, or an MCP protocol revision that neither performs the
+`initialize` handshake nor sends an `Mcp-Session-Id` header. For those, pass
+`session_id_arg=True`. The tool then takes an optional `session_id` argument and
+returns the id of the session it ran in as structured content, so the host carries
+the conversation itself and passes the id back on the next call. Any caller that
+knows the id joins that conversation, so enable this only for hosts you trust to
+hold it. With this option on, sessions are never reaped: the host decides when a
+conversation is over.
+
 ## Configuration options
 
 | Option | Type | Default | Description |
@@ -99,6 +110,7 @@ instance of that class, which the caller runs on a transport of their choice.
 | `name` | `str \| None` | `None` | The MCP server and tool name. Defaults to the agent's name (or `"adk_agent"`). Set it when you want the tool to appear under a name other than the agent's. |
 | `instructions` | `str \| None` | `None` | Optional server instructions an MCP host may surface to its model to describe how to use the tool. |
 | `runner` | `Runner \| None` | `None` | A pre-built `Runner`. If omitted, one is created with in-memory services. Supply your own to use persistent or custom session, artifact, memory, or credential services — this is the recommended path for a long-lived networked server. |
+| `session_id_arg` | `bool` | `False` | Whether the tool exposes a `session_id` argument and returns the session id, so the host carries the conversation instead of the MCP connection. Needed for stateless transports, multi-instance deployments, and protocol revisions without `Mcp-Session-Id`. |
 
 ## Advanced applications
 
