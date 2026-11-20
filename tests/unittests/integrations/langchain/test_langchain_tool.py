@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 from google.adk.events.event_actions import EventActions
 from google.adk.integrations.langchain import LangchainTool
+from langchain_core.tools import BaseTool
 from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
@@ -72,6 +73,52 @@ test_langchain_sync_add_tool = StructuredTool.from_function(
     description="Adds two numbers",
     args_schema=AddSchema,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync_supported", [False, True])
+async def test_base_tool_uses_custom_async_implementation(sync_supported):
+  """Async execution honors the tool's async implementation when provided."""
+
+  class AsyncAddTool(BaseTool):
+    name: str = "async_add"
+    description: str = "Adds two numbers asynchronously"
+
+    def _run(self, x: int, y: int) -> int:
+      if not sync_supported:
+        raise NotImplementedError("This tool only supports async execution")
+      return -1
+
+    async def _arun(self, x: int, y: int) -> int:
+      return x + y
+
+  langchain_tool = LangchainTool(tool=AsyncAddTool())
+
+  result = await langchain_tool.run_async(
+      args={"x": 1, "y": 3}, tool_context=MagicMock()
+  )
+
+  assert result == 4
+
+
+@pytest.mark.asyncio
+async def test_sync_base_tool_works_without_custom_async_implementation():
+  """A sync-only BaseTool remains usable through the adapter."""
+
+  class SyncAddTool(BaseTool):
+    name: str = "sync_add"
+    description: str = "Adds two numbers"
+
+    def _run(self, x: int, y: int) -> int:
+      return x + y
+
+  langchain_tool = LangchainTool(tool=SyncAddTool())
+
+  result = await langchain_tool.run_async(
+      args={"x": 1, "y": 3}, tool_context=MagicMock()
+  )
+
+  assert result == 4
 
 
 @pytest.mark.asyncio
