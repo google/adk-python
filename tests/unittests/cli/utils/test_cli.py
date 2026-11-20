@@ -644,6 +644,104 @@ async def test_run_interactively_whitespace_and_exit(
   assert any("echo:hello" in m for m in echoed)
 
 
+@pytest.mark.asyncio
+async def test_run_interactively_keyboard_interrupt_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """run_interactively should exit cleanly on KeyboardInterrupt."""
+  session_service = InMemorySessionService()
+  sess = await session_service.create_session(app_name="dummy", user_id="u")
+  artifact_service = InMemoryArtifactService()
+  credential_service = InMemoryCredentialService()
+  root_agent = BaseAgent(name="root")
+
+  def mock_input(*_a: Any, **_k: Any) -> str:
+    raise KeyboardInterrupt()
+
+  monkeypatch.setattr("builtins.input", mock_input)
+
+  await cli.run_interactively(
+      root_agent, artifact_service, sess, session_service, credential_service
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_interactively_eof_error_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """run_interactively should exit cleanly on EOFError."""
+  session_service = InMemorySessionService()
+  sess = await session_service.create_session(app_name="dummy", user_id="u")
+  artifact_service = InMemoryArtifactService()
+  credential_service = InMemoryCredentialService()
+  root_agent = BaseAgent(name="root")
+
+  def mock_input(*_a: Any, **_k: Any) -> str:
+    raise EOFError()
+
+  monkeypatch.setattr("builtins.input", mock_input)
+
+  await cli.run_interactively(
+      root_agent, artifact_service, sess, session_service, credential_service
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_interactively_keyboard_interrupt_during_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """run_interactively catches KeyboardInterrupt in turn and resumes."""
+  session_service = InMemorySessionService()
+  sess = await session_service.create_session(app_name="dummy", user_id="u")
+  artifact_service = InMemoryArtifactService()
+  credential_service = InMemoryCredentialService()
+  root_agent = BaseAgent(name="root")
+
+  answers = iter(["hello", "exit"])
+  monkeypatch.setattr("builtins.input", lambda *_a, **_k: next(answers))
+
+  interrupted = False
+
+  async def mock_run_and_print(*_a: Any, **_k: Any) -> None:
+    nonlocal interrupted
+    interrupted = True
+    raise KeyboardInterrupt()
+
+  monkeypatch.setattr(cli, "run_and_print", mock_run_and_print)
+
+  await cli.run_interactively(
+      root_agent, artifact_service, sess, session_service, credential_service
+  )
+
+  assert interrupted is True
+
+
+@pytest.mark.asyncio
+async def test_run_once_cli_keyboard_interrupt(
+    fake_agent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_once_cli returns exit code 130 on KeyboardInterrupt."""
+  parent_dir, folder_name = fake_agent
+
+  class _InterruptRunner:
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+      pass
+
+    async def run_async(self, *a: Any, **k: Any):
+      raise KeyboardInterrupt()
+      yield  # Make it an async generator
+
+  monkeypatch.setattr(cli, "Runner", _InterruptRunner)
+
+  exit_code = await cli.run_once_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      query="test",
+  )
+  assert exit_code == 130
+
+
 def test_print_event_omits_internal_metadata_in_jsonl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

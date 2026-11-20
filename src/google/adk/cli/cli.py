@@ -332,12 +332,17 @@ async def run_interactively(
           if not line:
             break
           loop.call_soon_threadsafe(input_queue.put_nowait, line)
+      except (RuntimeError, EOFError, KeyboardInterrupt):
+        pass
       except Exception:
         print('[ERROR] Exception in stdin reader thread:', file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
       finally:
         if not loop.is_closed():
-          loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
+          try:
+            loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
+          except RuntimeError:
+            pass
 
     t = create_thread(target=_read_input)
     t.daemon = True
@@ -360,13 +365,23 @@ async def run_interactively(
   while True:
     if next_message is None:
       if not reload_agents or reload_event is None:
-        query = input('[user]: ')
+        try:
+          query = input('[user]: ')
+        except (KeyboardInterrupt, EOFError):
+          click.echo()
+          break
       else:
         input_task = asyncio.create_task(_next_line())
         reload_task = asyncio.create_task(reload_event.wait())
-        done, pending_tasks = await asyncio.wait(
-            [input_task, reload_task], return_when=asyncio.FIRST_COMPLETED
-        )
+        try:
+          done, pending_tasks = await asyncio.wait(
+              [input_task, reload_task], return_when=asyncio.FIRST_COMPLETED
+          )
+        except (KeyboardInterrupt, asyncio.CancelledError):
+          input_task.cancel()
+          reload_task.cancel()
+          click.echo()
+          break
 
         if input_task in done:
           reload_task.cancel()
@@ -429,6 +444,13 @@ async def run_interactively(
       if reload_agents:
         _prompt_user(new_line=True)
       continue
+    except KeyboardInterrupt:
+      click.echo()
+      next_message = None
+      resume_invocation_id = None
+      if reload_agents:
+        _prompt_user(new_line=True)
+      continue
 
     next_message = None
     resume_invocation_id = None
@@ -436,17 +458,21 @@ async def run_interactively(
     # Check for pending HITL function calls that need user input.
     pending = _collect_pending_function_calls(collected_events)
     if pending:
-      # Handle each pending function call. If there are multiple,
-      # collect all responses into a single Content with multiple parts.
-      parts: list[types.Part] = []
-      for fc_id, fc_name, args in pending:
-        response_content = await _prompt_for_function_call(
-            fc_id, fc_name, args, _read_line
-        )
-        if response_content.parts:
-          parts.extend(response_content.parts)
-      next_message = types.Content(role='user', parts=parts)
-      resume_invocation_id = invocation_id
+      try:
+        # Handle each pending function call. If there are multiple,
+        # collect all responses into a single Content with multiple parts.
+        parts: list[types.Part] = []
+        for fc_id, fc_name, args in pending:
+          response_content = await _prompt_for_function_call(
+              fc_id, fc_name, args, _read_line
+          )
+          if response_content.parts:
+            parts.extend(response_content.parts)
+        next_message = types.Content(role='user', parts=parts)
+        resume_invocation_id = invocation_id
+      except (KeyboardInterrupt, EOFError):
+        click.echo()
+        break
 
     if reload_agents and next_message is None:
       _prompt_user(new_line=True)
@@ -751,7 +777,11 @@ async def run_cli(
       )
 
     if save_session:
-      session_id = session_id or input('Session ID to save: ')
+      try:
+        session_id = session_id or input('Session ID to save: ')
+      except (KeyboardInterrupt, EOFError):
+        click.echo('\nSession not saved.')
+        return
       session_path = agent_root / f'{session_id}.session.json'
 
       # Fetch the session again to get all the details.
@@ -1021,6 +1051,9 @@ async def run_once_cli(
   except asyncio.TimeoutError:
     click.secho(f'Error: Command timed out after {timeout}', fg='red', err=True)
     return 1
+  except KeyboardInterrupt:
+    click.echo('\nAborted.', err=True)
+    return 130
   except Exception as e:
     click.secho(f'Error: {e}', fg='red', err=True)
     return 1
