@@ -48,6 +48,7 @@ from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 import httpx
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel
 import pytest
 
@@ -723,6 +724,27 @@ def test_function_declaration_to_tool_param(
   assert (
       function_declaration_to_tool_param(function_declaration)
       == expected_tool_param
+  )
+
+
+def test_vertex_optional_tool_parameters_still_accept_null(monkeypatch):
+  """Vertex-sanitized declarations keep null valid in the Anthropic payload."""
+  monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "1")
+
+  def weather(city: str | None = None):
+    """Look up the weather."""
+
+  declaration = FunctionTool(weather)._get_declaration()
+
+  tool = function_declaration_to_tool_param(declaration)
+
+  validator = Draft202012Validator(tool["input_schema"])
+  assert validator.is_valid({"city": None})
+  assert validator.is_valid({"city": "Paris"})
+  assert not validator.is_valid({"city": 7})
+  assert (
+      declaration.parameters_json_schema["properties"]["city"]["nullable"]
+      is True
   )
 
 

@@ -137,35 +137,43 @@ def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
   return TypeAdapter(schema).json_schema()
 
 
-def lowercase_schema_types(value: object) -> None:
-  """Lowercases the JSON Schema ``type`` strings in a schema, in place.
+def _json_schema_equal(left: object, right: object) -> bool:
+  """Compares JSON values, keeping booleans distinct from numbers."""
+  if isinstance(left, bool) or isinstance(right, bool):
+    return type(left) is type(right) and left == right
+  if isinstance(left, list) and isinstance(right, list):
+    return len(left) == len(right) and all(
+        _json_schema_equal(a, b) for a, b in zip(left, right)
+    )
+  if isinstance(left, dict) and isinstance(right, dict):
+    return left.keys() == right.keys() and all(
+        _json_schema_equal(left[key], right[key]) for key in left
+    )
+  return left == right
 
-  ``types.Schema`` serializes its type as the uppercase enum name (``STRING``),
-  while JSON Schema and the model providers that consume it expect ``string``.
-  A type may also be a list of names, as in ``["STRING", "NULL"]``. Nested
-  subschemas are reached through the schema keywords only, so a ``type`` key
-  inside a ``default`` or ``example`` value is left untouched.
+
+def lowercase_schema_types(
+    value: object, *, convert_nullable: bool = True
+) -> None:
+  """Normalizes GenAI type names and nullability for JSON Schema, in place.
+
+  Only schema keywords are traversed; default and example values remain data.
+  Nullable typed schemas use type lists, keeping subschemas and references at
+  their original paths. Applicators that can reject null need a union instead.
 
   Args:
     value: A JSON Schema dict, or a list of them. Mutated in place.
+    convert_nullable: Whether to convert nullable to JSON Schema unions. Set to
+      False for Gemini schemas, which natively support nullable.
   """
   if isinstance(value, list):
     for item in value:
-      lowercase_schema_types(item)
+      lowercase_schema_types(item, convert_nullable=convert_nullable)
     return
-
   if not isinstance(value, dict):
     return
 
-  schema_type = value.get("type")
-  if isinstance(schema_type, str):
-    value["type"] = schema_type.lower()
-  elif isinstance(schema_type, list):
-    value["type"] = [
-        item.lower() if isinstance(item, str) else item for item in schema_type
-    ]
-
-  for dict_key in (
+  for key in (
       "$defs",
       "definitions",
       "defs",
@@ -173,12 +181,11 @@ def lowercase_schema_types(value: object) -> None:
       "patternProperties",
       "properties",
   ):
-    child_dict = value.get(dict_key)
-    if isinstance(child_dict, dict):
-      for child_value in child_dict.values():
-        lowercase_schema_types(child_value)
-
-  for single_key in (
+    children = value.get(key)
+    if isinstance(children, dict):
+      for child in children.values():
+        lowercase_schema_types(child, convert_nullable=convert_nullable)
+  for key in (
       "additionalItems",
       "additionalProperties",
       "additional_properties",
@@ -191,12 +198,6 @@ def lowercase_schema_types(value: object) -> None:
       "then",
       "unevaluatedItems",
       "unevaluatedProperties",
-  ):
-    child_value = value.get(single_key)
-    if isinstance(child_value, (dict, list)):
-      lowercase_schema_types(child_value)
-
-  for list_key in (
       "allOf",
       "all_of",
       "anyOf",
@@ -205,9 +206,71 @@ def lowercase_schema_types(value: object) -> None:
       "one_of",
       "prefixItems",
   ):
-    child_list = value.get(list_key)
-    if isinstance(child_list, list):
-      lowercase_schema_types(child_list)
+    lowercase_schema_types(value.get(key), convert_nullable=convert_nullable)
+
+  schema_type = value.get("type")
+  if isinstance(schema_type, str):
+    value["type"] = schema_type.lower()
+  elif isinstance(schema_type, list):
+    value["type"] = [
+        item.lower() if isinstance(item, str) else item for item in schema_type
+    ]
+
+  if not convert_nullable or value.pop("nullable", False) is not True:
+    return
+
+  # Widen type/enum in place, preserving properties, items and their descendants
+  # as JSON Pointer targets even when applicators also need a null alternative.
+  if "type" in value:
+    schema_type = value["type"]
+    if isinstance(schema_type, str):
+      value["type"] = (
+          [schema_type, "null"] if schema_type != "null" else ["null"]
+      )
+    elif isinstance(schema_type, list) and "null" not in schema_type:
+      schema_type.append("null")
+  if "const" in value:
+    constant = value.pop("const")
+    value["enum"] = (
+        [constant]
+        if "enum" not in value
+        or any(_json_schema_equal(constant, item) for item in value["enum"])
+        else []
+    )
+  if "enum" in value and not any(
+      _json_schema_equal(None, item) for item in value["enum"]
+  ):
+    value["enum"].append(None)
+
+  # Only applicators/references can still reject null. Move those constraints
+  # into a union, leaving all other keywords and subschemas at their old paths.
+  union_keys = (
+      "$ref",
+      "$dynamicRef",
+      "allOf",
+      "all_of",
+      "oneOf",
+      "one_of",
+      "not",
+      "if",
+      "then",
+      "else",
+  )
+  needs_union = any(key in value for key in union_keys) or (
+      "type" in value and any(key in value for key in ("anyOf", "any_of"))
+  )
+  if needs_union:
+    constraints = {
+        key: value.pop(key)
+        for key in (*union_keys, "anyOf", "any_of")
+        if key in value
+    }
+    value["anyOf"] = [constraints, {"type": "null"}]
+  elif "type" not in value:
+    for key in ("anyOf", "any_of"):
+      if key in value:
+        value[key].append({"type": "null"})
+    # Untyped type-specific keywords already accept null.
 
 
 def enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -254,7 +317,11 @@ def enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
 
   # Ensure all object schemas have additionalProperties: false and list every
   # property as required.
-  if schema.get("type") == "object" and "properties" in schema:
+  schema_type = schema.get("type")
+  is_object = schema_type == "object" or (
+      isinstance(schema_type, list) and "object" in schema_type
+  )
+  if is_object and "properties" in schema:
     schema["additionalProperties"] = False
     schema["required"] = sorted(schema["properties"].keys())
 

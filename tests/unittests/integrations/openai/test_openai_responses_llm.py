@@ -37,6 +37,7 @@ from google.adk.integrations.openai._openai_responses_llm import _file_data_part
 from google.adk.integrations.openai._openai_responses_llm import _function_declaration_to_response_tool
 from google.adk.integrations.openai._openai_responses_llm import _inline_data_part_to_response_content
 from google.adk.integrations.openai._openai_responses_llm import _loads_json_object
+from google.adk.integrations.openai._openai_responses_llm import _response_text_config
 from google.adk.integrations.openai._openai_responses_llm import _response_to_llm_response
 from google.adk.integrations.openai._openai_responses_llm import _serialize_system_instruction
 from google.adk.integrations.openai._openai_responses_llm import _tool_choice
@@ -44,6 +45,7 @@ from google.adk.integrations.openai._openai_responses_llm import AzureOpenAIResp
 from google.adk.integrations.openai._openai_responses_llm import OpenAIResponsesLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.utils._schema_utils import enforce_strict_openai_schema
+from jsonschema import Draft202012Validator
 from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam
 from openai.types.responses import FunctionToolParam
@@ -95,6 +97,62 @@ class _CaptureClient:
 
   def __init__(self, response):
     self.responses = _CaptureResponses(response)
+
+
+@pytest.mark.parametrize('use_json_schema', [False, True])
+def test_tool_parameters_preserve_nullable_values(use_json_schema):
+  """Null remains valid in the Responses API tool schema."""
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'city': types.Schema(type=types.Type.STRING, nullable=True)},
+      required=['city'],
+  )
+  declaration = types.FunctionDeclaration(name='weather')
+  if use_json_schema:
+    declaration.parameters_json_schema = schema.model_dump(
+        by_alias=True, exclude_none=True, mode='json'
+    )
+  else:
+    declaration.parameters = schema
+
+  tool = _function_declaration_to_response_tool(declaration)
+
+  validator = Draft202012Validator(tool['parameters'])
+  assert validator.is_valid({'city': None})
+  assert validator.is_valid({'city': 'Paris'})
+  assert not validator.is_valid({'city': 7})
+  assert schema.properties['city'].nullable is True
+
+
+def test_nullable_objects_keep_strict_response_constraints():
+  """Strict Responses schemas validate complete objects and null values."""
+  config = types.GenerateContentConfig(
+      response_schema=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              'details': types.Schema(
+                  type=types.Type.OBJECT,
+                  nullable=True,
+                  properties={'name': types.Schema(type=types.Type.STRING)},
+              )
+          },
+      )
+  )
+
+  text_config = _response_text_config(config)
+
+  output_schema = text_config['format']['schema']
+  assert output_schema['required'] == ['details']
+  assert output_schema['additionalProperties'] is False
+  details = output_schema['properties']['details']
+  assert details['type'] == ['object', 'null']
+  assert details['required'] == ['name']
+  assert details['additionalProperties'] is False
+  validator = Draft202012Validator(output_schema)
+  assert validator.is_valid({'details': None})
+  assert validator.is_valid({'details': {'name': 'Paris'}})
+  assert not validator.is_valid({'details': {}})
+  assert not validator.is_valid({'details': {'name': 'Paris', 'extra': 1}})
 
 
 def test_openai_responses_package_exports_required_types():
