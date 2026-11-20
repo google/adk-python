@@ -26,7 +26,7 @@
   <a href="https://github.com/google/adk-java">ADK Java</a>,
   <a href="https://github.com/google/adk-kotlin">ADK Kotlin</a>,
   <a href="https://github.com/google/adk-go">ADK Go</a> &
-  <a href="https://github.com/google/adk-js">ADK Typescript</a>.
+  <a href="https://github.com/google/adk-js">ADK TypeScript</a>.
 </h3>
 
 Agent Development Kit (ADK) is a flexible and modular framework that applies
