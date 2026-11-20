@@ -251,6 +251,7 @@ class A2aAgentExecutor(AgentExecutor):
     # reports. A failure reported for a non-error event (source None) cannot be
     # recovered from.
     failures: list[tuple[Event | None, Message | None]] = []
+    pending_metadata: dict[tuple[object, str | None], dict] = {}
     last_adk_event: Event | None = None
     abort_signal = (
         active_run.abort_signal if active_run is not None else asyncio.Event()
@@ -285,8 +286,23 @@ class A2aAgentExecutor(AgentExecutor):
             failures.append(
                 (adk_event if is_error_event else None, e.status.message)
             )
+          # Pause requests carry their call exactly once, in the terminal
+          # message retained by the aggregator. Streaming the same call under
+          # WORKING first makes callers request confirmation twice (#7247).
+          pending_request = isinstance(
+              e, TaskStatusUpdateEvent
+          ) and e.status.state in (
+              _compat.TS_INPUT_REQUIRED,
+              _compat.TS_AUTH_REQUIRED,
+          )
+          if pending_request:
+            message = _compat.normalize_message(e.status.message)
+            pending_metadata[
+                (e.status.state, message.message_id if message else None)
+            ] = _compat.meta_to_dict(e.metadata)
           task_result_aggregator.process_event(e)
-          await event_queue.enqueue_event(e)
+          if not pending_request:
+            await event_queue.enqueue_event(e)
 
     await _consume_runner_with_abort(
         runner.run_async, run_request, abort_signal, _on_event
@@ -359,6 +375,18 @@ class A2aAgentExecutor(AgentExecutor):
       status_message = task_result_aggregator.task_status_message
       if aborted and task_result_aggregator.task_state != _compat.TS_CANCELED:
         status_message = None
+      if final_state in (_compat.TS_INPUT_REQUIRED, _compat.TS_AUTH_REQUIRED):
+        # The suppressed pause event also owns actions and custom metadata.
+        # Preserve only the message selected by the aggregator's state priority.
+        final_metadata.update(
+            pending_metadata.get(
+                (
+                    final_state,
+                    status_message.message_id if status_message else None,
+                ),
+                {},
+            )
+        )
       final_event = _compat.make_task_status_update_event(
           task_id=task_id,
           context_id=context_id,
