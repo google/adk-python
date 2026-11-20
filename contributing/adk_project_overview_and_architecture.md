@@ -8,7 +8,7 @@ Google Agent Development Kit (ADK) for Python
 
 - Modularity & Composition: We build complex multi-agent systems by composing multiple, smaller, specialized agents.
 
-- Deployment-Agnostic: The agent's core logic is separate from its deployment environment. The same agent.py can be run locally for testing, served via an API, or deployed to the cloud.
+- Deployment-Agnostic: The agent's core logic is separate from its deployment environment. The same `agent.py` can be run locally for testing, served via an API, or deployed to the cloud.
 
 ## Foundational Abstractions (Our Vocabulary)
 
