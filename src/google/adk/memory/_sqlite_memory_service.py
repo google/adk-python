@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Collection
+from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
@@ -592,10 +593,28 @@ def _is_mark(c: str) -> bool:
   return unicodedata.category(c).startswith("M")
 
 
-# Combining marks count as word characters: \w alone would split a word at
-# them, such as the Thai vowel and tone marks in ข้าว.
+# The zero-width non-joiner and joiner. Bengali, Hindi and Persian, among
+# others, use them inside a word to pick a glyph form, such as the ZWJ
+# between র and ্যাব in the Bengali word RAB.
+_JOINERS = "\u200c\u200d"
+
+
+# Combining marks and joiners count as word characters: \w alone would split
+# a word at them, such as the Thai vowel and tone marks in ข้าว.
 def _is_token_char(c: str) -> bool:
-  return c.isalnum() or c in "_%" or _is_mark(c)
+  return c.isalnum() or c in "_%" or _is_mark(c) or c in _JOINERS
+
+
+def _trim_token(chars: Iterable[str]) -> str:
+  """Joins chars, dropping leading marks and joiners and trailing joiners."""
+  # Marks with no letter before them are dropped: the emoji variation
+  # selector U+FE0F is a mark, and as a token it would match any emoji. A
+  # joiner at the start or end of a token is dropped too, so the ZWJs that
+  # join the emoji of a family emoji are not tokens either.
+  token = "".join(
+      itertools.dropwhile(lambda c: _is_mark(c) or c in _JOINERS, chars)
+  )
+  return token.rstrip(_JOINERS)
 
 
 def _extract_tokens(query: str) -> list[str]:
@@ -606,9 +625,7 @@ def _extract_tokens(query: str) -> list[str]:
   for is_token, group in itertools.groupby(normalized, _is_token_char):
     if not is_token:
       continue
-    # Marks with no letter before them are dropped: the emoji variation
-    # selector U+FE0F is a mark, and as a token it would match any emoji.
-    lowered = "".join(itertools.dropwhile(_is_mark, group)).lower()
+    lowered = _trim_token(group).lower()
     if lowered and lowered not in seen:
       seen.add(lowered)
       tokens.append(lowered)
