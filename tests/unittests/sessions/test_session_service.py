@@ -2249,6 +2249,206 @@ async def test_append_event_to_stale_session():
     ]
 
 
+async def _database_service_for_schema(
+    schema_module: Any, db_path: Path
+) -> DatabaseSessionService:
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+  if schema_module is v0:
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+      await conn.run_sync(v0.Base.metadata.create_all)
+    await engine.dispose()
+  return DatabaseSessionService(db_url)
+
+
+def _batch_events(start: float) -> list[Event]:
+  return [
+      Event(
+          invocation_id='inv1',
+          author='agent',
+          timestamp=start + 1,
+          content=types.Content(role='model', parts=[types.Part(text='a')]),
+          actions=EventActions(
+              state_delta={'k': 1, 'user:u': 1, 'app:a': 1, 'temp:t': 1}
+          ),
+      ),
+      Event(
+          invocation_id='inv1',
+          author='agent',
+          timestamp=start + 2,
+          content=types.Content(role='model', parts=[types.Part(text='b')]),
+          actions=EventActions(state_delta={'k': 2, 'user:u': None}),
+      ),
+      Event(
+          invocation_id='inv1',
+          author='agent',
+          timestamp=start + 3,
+          content=types.Content(role='model', parts=[types.Part(text='c')]),
+          actions=EventActions(state_delta={'other': 'x'}),
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('schema_module', [v0, v1], ids=['v0', 'v1'])
+async def test_database_append_events_matches_one_append_per_event(
+    schema_module: Any, tmp_path: Path
+) -> None:
+  """`append_events` has the effect of one `append_event` per event."""
+  start = datetime.now().astimezone(timezone.utc).timestamp()
+  outcomes = {}
+  for mode in ('one_by_one', 'batched'):
+    service = await _database_service_for_schema(
+        schema_module, tmp_path / f'{mode}.db'
+    )
+    async with service:
+      session = await service.create_session(app_name='app', user_id='u')
+      events = _batch_events(start)
+      if mode == 'batched':
+        returned = await service.append_events(session, events)
+      else:
+        returned = [await service.append_event(session, e) for e in events]
+      assert [e.id for e in returned] == [e.id for e in events]
+      assert [e.id for e in session.events] == [e.id for e in events]
+      stored = await service.get_session(
+          app_name='app', user_id='u', session_id=session.id
+      )
+      assert [e.id for e in stored.events] == [e.id for e in events]
+      outcomes[mode] = (
+          [e.actions.state_delta for e in returned],
+          [e.content.parts[0].text for e in stored.events],
+          dict(session.state),
+          session.last_update_time,
+          dict(stored.state),
+          stored.last_update_time,
+      )
+      # The session is still current, so it can be appended to again.
+      await service.append_event(
+          session,
+          Event(invocation_id='inv2', author='user', timestamp=start + 4),
+      )
+
+  assert outcomes['batched'] == outcomes['one_by_one']
+  _, texts, live_state, live_time, stored_state, stored_time = outcomes[
+      'batched'
+  ]
+  assert texts == ['a', 'b', 'c']
+  assert stored_state == {'k': 2, 'user:u': None, 'app:a': 1, 'other': 'x'}
+  assert live_state['temp:t'] == 1
+  assert live_time == stored_time == start + 3
+
+
+@pytest.mark.asyncio
+async def test_database_append_events_uses_one_transaction() -> None:
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  async with service:
+    session = await service.create_session(app_name='app', user_id='u')
+    start = datetime.now().astimezone(timezone.utc).timestamp()
+    real = service._rollback_on_exception_session
+    with mock.patch.object(
+        service, '_rollback_on_exception_session', side_effect=real
+    ) as transactions:
+      await service.append_events(session, _batch_events(start))
+    assert transactions.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_database_append_events_to_stale_session_stores_nothing() -> None:
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  async with service:
+    start = datetime.now().astimezone(timezone.utc).timestamp()
+    stale = await service.create_session(app_name='app', user_id='u')
+    fresh = await service.get_session(
+        app_name='app', user_id='u', session_id=stale.id
+    )
+    await service.append_event(
+        fresh, Event(invocation_id='inv0', author='user', timestamp=start)
+    )
+
+    stale.state['temp:t'] = 0
+    events = _batch_events(start)
+    deltas = [dict(e.actions.state_delta) for e in events]
+
+    with pytest.raises(StaleSessionError):
+      await service.append_events(stale, events)
+
+    stored = await service.get_session(
+        app_name='app', user_id='u', session_id=stale.id
+    )
+    assert [e.invocation_id for e in stored.events] == ['inv0']
+    assert 'k' not in stored.state
+    assert stale.events == []
+    # The session and the events are left as they were, temp: state included.
+    assert stale.state['temp:t'] == 0
+    assert [e.actions.state_delta for e in events] == deltas
+
+
+@pytest.mark.asyncio
+async def test_database_append_events_failed_write_stores_nothing() -> None:
+  """A failure while writing the batch rolls back every event in it."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  async with service:
+    session = await service.create_session(app_name='app', user_id='u')
+    start = datetime.now().astimezone(timezone.utc).timestamp()
+    storage_event = service._get_schema_classes().StorageEvent
+    real_from_event = storage_event.from_event
+    calls = 0
+
+    def fail_on_second_event(*args: Any, **kwargs: Any) -> Any:
+      nonlocal calls
+      calls += 1
+      if calls == 2:
+        raise RuntimeError('write failed')
+      return real_from_event(*args, **kwargs)
+
+    events = _batch_events(start)
+    deltas = [dict(e.actions.state_delta) for e in events]
+    with mock.patch.object(
+        storage_event, 'from_event', side_effect=fail_on_second_event
+    ):
+      with pytest.raises(RuntimeError, match='write failed'):
+        await service.append_events(session, events)
+
+    stored = await service.get_session(
+        app_name='app', user_id='u', session_id=session.id
+    )
+    assert stored.events == []
+    assert 'k' not in stored.state
+    assert session.events == []
+    # The session and the events are left as they were, temp: state included.
+    assert 'temp:t' not in session.state
+    assert [e.actions.state_delta for e in events] == deltas
+    # Nothing was stored, so the session is still current.
+    await service.append_event(
+        session, Event(invocation_id='inv2', author='user', timestamp=start)
+    )
+
+
+@pytest.mark.asyncio
+async def test_database_append_events_skips_partial_events() -> None:
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  async with service:
+    session = await service.create_session(app_name='app', user_id='u')
+    start = datetime.now().astimezone(timezone.utc).timestamp()
+    partial = Event(
+        invocation_id='inv1', author='agent', timestamp=start, partial=True
+    )
+    full = Event(invocation_id='inv1', author='agent', timestamp=start + 1)
+
+    assert await service.append_events(session, [partial, full]) == [
+        partial,
+        full,
+    ]
+    assert await service.append_events(session, [partial]) == [partial]
+    assert await service.append_events(session, []) == []
+
+    stored = await service.get_session(
+        app_name='app', user_id='u', session_id=session.id
+    )
+    assert [e.id for e in stored.events] == [full.id]
+    assert [e.id for e in session.events] == [full.id]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('schema_module', [v0, v1], ids=['v0', 'v1'])
 async def test_append_event_same_timestamp_single_writer_not_stale(
