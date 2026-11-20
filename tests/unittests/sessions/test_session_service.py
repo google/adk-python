@@ -2365,8 +2365,12 @@ async def test_database_append_events_to_stale_session_stores_nothing() -> None:
         fresh, Event(invocation_id='inv0', author='user', timestamp=start)
     )
 
+    stale.state['temp:t'] = 0
+    events = _batch_events(start)
+    deltas = [dict(e.actions.state_delta) for e in events]
+
     with pytest.raises(StaleSessionError):
-      await service.append_events(stale, _batch_events(start))
+      await service.append_events(stale, events)
 
     stored = await service.get_session(
         app_name='app', user_id='u', session_id=stale.id
@@ -2374,6 +2378,9 @@ async def test_database_append_events_to_stale_session_stores_nothing() -> None:
     assert [e.invocation_id for e in stored.events] == ['inv0']
     assert 'k' not in stored.state
     assert stale.events == []
+    # The session and the events are left as they were, temp: state included.
+    assert stale.state['temp:t'] == 0
+    assert [e.actions.state_delta for e in events] == deltas
 
 
 @pytest.mark.asyncio
@@ -2394,11 +2401,13 @@ async def test_database_append_events_failed_write_stores_nothing() -> None:
         raise RuntimeError('write failed')
       return real_from_event(*args, **kwargs)
 
+    events = _batch_events(start)
+    deltas = [dict(e.actions.state_delta) for e in events]
     with mock.patch.object(
         storage_event, 'from_event', side_effect=fail_on_second_event
     ):
       with pytest.raises(RuntimeError, match='write failed'):
-        await service.append_events(session, _batch_events(start))
+        await service.append_events(session, events)
 
     stored = await service.get_session(
         app_name='app', user_id='u', session_id=session.id
@@ -2406,6 +2415,9 @@ async def test_database_append_events_failed_write_stores_nothing() -> None:
     assert stored.events == []
     assert 'k' not in stored.state
     assert session.events == []
+    # The session and the events are left as they were, temp: state included.
+    assert 'temp:t' not in session.state
+    assert [e.actions.state_delta for e in events] == deltas
     # Nothing was stored, so the session is still current.
     await service.append_event(
         session, Event(invocation_id='inv2', author='user', timestamp=start)
