@@ -25,6 +25,8 @@ from pydantic import ConfigDict
 from .cache_metadata import CacheMetadata
 
 
+### BEGIN_GENERATED_CODE: LlmResponse
+### Do not edit, code generation overwrites it.
 class LlmResponse(BaseModel):
   """LLM response class that provides the first candidate response from the
 
@@ -49,8 +51,8 @@ class LlmResponse(BaseModel):
   """
 
   model_config = ConfigDict(
-      extra='forbid',
       alias_generator=alias_generators.to_camel,
+      extra='forbid',
       populate_by_name=True,
   )
   """The pydantic model config."""
@@ -100,11 +102,11 @@ class LlmResponse(BaseModel):
   `turn_complete` alone no longer means the model is done. This field
   disambiguates the two:
 
-  * `IN_PROGRESS`: the model is still working on the user's prompt; more turns
-    will follow, so the app should not treat the interaction as finished (e.g.
-    should not re-enable the microphone yet).
-  * `IDLE`: the model has finished processing the user's prompt and is waiting
-    for further user input.
+  * `IN_PROGRESS`: the model is still working on the user's prompt; more turns will follow,
+    so the app should not treat the interaction as finished (e.g. should not re-enable the
+    microphone yet).
+  * `IDLE`: the model has finished processing the user's prompt and is waiting for further
+    user input.
 
   It stays `None` for models that don't report it. Callers building a
   turn-taking UI should fall back to treating `turn_complete == True` as
@@ -207,6 +209,7 @@ class LlmResponse(BaseModel):
   provisions or reuses a sandbox environment. It is persisted on the resulting
   Event so subsequent turns can reuse the same environment for stateful work.
   """
+  ### END_GENERATED_CODE: LlmResponse
 
   def get_function_calls(self) -> list[types.FunctionCall]:
     """Returns the function calls in the response."""

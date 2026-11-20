@@ -43,14 +43,16 @@ string literal.
 """
 
 
+### BEGIN_GENERATED_CODE: NodeInfo
+### Do not edit, code generation overwrites it.
 class NodeInfo(BaseModel):
   """Workflow node metadata attached to an Event."""
 
   model_config = ConfigDict(
-      ser_json_bytes='base64',
-      val_json_bytes='base64',
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
+      ser_json_bytes='base64',
+      val_json_bytes='base64',
   )
 
   path: str = ''
@@ -74,6 +76,7 @@ class NodeInfo(BaseModel):
   No separate output event is needed — the content event already
   carries the output value.
   """
+  ### END_GENERATED_CODE: NodeInfo
 
   @property
   def run_id(self) -> str:
@@ -95,6 +98,8 @@ class NodeInfo(BaseModel):
     return _NodePathBuilder.from_string(self.path).node_name
 
 
+### BEGIN_GENERATED_CODE: Event
+### Do not edit, code generation overwrites it.
 class Event(LlmResponse):
   """Represents an event in a conversation between agents and users.
 
@@ -107,21 +112,28 @@ class Event(LlmResponse):
   """
 
   model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
       extra='ignore',
+      populate_by_name=True,
       ser_json_bytes='base64',
       val_json_bytes='base64',
-      alias_generator=alias_generators.to_camel,
-      populate_by_name=True,
   )
   """The pydantic model config."""
 
-  __deepcopy__ = _model_copy.deep_copy_model
+  id: str = ''
+  """The unique identifier of the event.
+
+  Computed: do not assign the ID. It will be assigned by the session.
+  """
 
   invocation_id: str = ''
   """The invocation ID of the event. Should be non-empty before appending to a session."""
+
   author: str = ''
   """'user' or the name of the agent, indicating who appended the event to the
-  session."""
+  session.
+  """
+
   actions: EventActions = Field(default_factory=EventActions)
   """The actions taken by the agent."""
 
@@ -146,6 +158,7 @@ class Event(LlmResponse):
   Branch is used when multiple sub-agent shouldn't see their peer agents'
   conversation history.
   """
+
   isolation_scope: str | None = None
   """Scope tag indicating which logical context this event belongs to.
 
@@ -161,12 +174,14 @@ class Event(LlmResponse):
   rely on its semantics.
   """
 
-  # The following are computed fields.
-  # Do not assign the ID. It will be assigned by the session.
-  id: str = ''
-  """The unique identifier of the event."""
   timestamp: float = Field(default_factory=lambda: platform_time.get_time())
-  """The timestamp of the event."""
+  """The timestamp of the event.
+
+  Computed: set to the current time when the event is created.
+  """
+  ### END_GENERATED_CODE: Event
+
+  __deepcopy__ = _model_copy.deep_copy_model
 
   @field_serializer('long_running_tool_ids')
   def _serialize_long_running_tool_ids(
