@@ -46,9 +46,7 @@ class AudioTranscriber:
         A list of Content objects containing the transcribed text.
     """
 
-    bundled_audio: list[
-        tuple[str | None, bytes | genai_types.Blob | genai_types.Content]
-    ] = []
+    bundled_audio: list[tuple[str | None, bytes | genai_types.Content]] = []
     current_speaker: str | None = None
     current_audio_data = b''
     contents: list[genai_types.Content] = []
@@ -88,7 +86,7 @@ class AudioTranscriber:
 
     # Step2: transcription
     for speaker, data in bundled_audio:
-      if isinstance(data, genai_types.Blob):
+      if isinstance(data, bytes):
         audio = speech.RecognitionAudio(content=data)
 
         config = speech.RecognitionConfig(
@@ -108,6 +106,6 @@ class AudioTranscriber:
           contents.append(content)
       else:
         # don't need to transcribe model which are already text
-        contents.append(data)  # type: ignore[arg-type]
+        contents.append(data)
 
     return contents

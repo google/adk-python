@@ -122,13 +122,6 @@ async def test_transcribe_file_skips_blobs_with_no_audio_data():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        'bundled audio is stored as raw bytes, so the Blob check in the'
-        ' transcription step never matches and audio is never transcribed'
-    ),
-)
 async def test_transcribe_file_transcribes_merged_same_speaker_audio():
   """Consecutive same-speaker blobs become one transcription, in order."""
   interleaved_text = _text_content('model', 'go on')
