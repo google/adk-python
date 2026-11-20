@@ -1207,9 +1207,15 @@ async def test_root_task_survives_clarification(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_service_type",
+    ["in_memory", "database"],
+    ids=["in-memory", "sqlite-reload"],
+)
 async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
     request: pytest.FixtureRequest,
     tmp_path,
+    session_service_type: str,
 ):
   """Four-turn regression for #7384: second root task clarification isolation.
 
@@ -1242,6 +1248,7 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
 
   from google.adk.runners import Runner
   from google.adk.sessions.database_session_service import DatabaseSessionService
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
   app_name = request.function.__name__
   app_a = App(name=app_name, root_agent=agent_a)
@@ -1249,7 +1256,9 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
   session_id = "root-task-session"
   db_url = f"sqlite+aiosqlite:///{tmp_path / 'root_task_sessions.db'}"
 
-  async with DatabaseSessionService(db_url) as session_service:
+  async def run_first_three_turns(
+      session_service: InMemorySessionService | DatabaseSessionService,
+  ) -> Runner:
     await session_service.create_session(
         app_name=app_name,
         user_id="u",
@@ -1274,9 +1283,6 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
     ):
       pass
 
-    # Task A made 2 LLM calls.
-    assert len(model_a.requests) == 2
-
     # Turn 3: Task B starts in the same persisted session.
     async for _ in runner_b.run_async(
         user_id="u",
@@ -1285,9 +1291,11 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
     ):
       pass
 
-  # Reload the persisted session and use a new Runner before Task B resumes.
-  async with DatabaseSessionService(db_url) as session_service:
-    runner_b = Runner(app=app_b, session_service=session_service)
+    return runner_b
+
+  if session_service_type == "in_memory":
+    session_service = InMemorySessionService()
+    runner_b = await run_first_three_turns(session_service)
     # Turn 4: User answers Task B's clarification question; Task B finishes.
     async for _ in runner_b.run_async(
         user_id="u",
@@ -1295,6 +1303,23 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
         new_message=testing_utils.get_user_content("Clarification for B"),
     ):
       pass
+  else:
+    async with DatabaseSessionService(db_url) as session_service:
+      await run_first_three_turns(session_service)
+
+    # Reload the persisted session and use a new Runner before Task B resumes.
+    async with DatabaseSessionService(db_url) as session_service:
+      runner_b = Runner(app=app_b, session_service=session_service)
+      # Turn 4: User answers Task B's clarification question; Task B finishes.
+      async for _ in runner_b.run_async(
+          user_id="u",
+          session_id=session_id,
+          new_message=testing_utils.get_user_content("Clarification for B"),
+      ):
+        pass
+
+  # Task A made 2 LLM calls.
+  assert len(model_a.requests) == 2
 
   # Task B made 2 LLM calls.
   assert (
@@ -1321,6 +1346,12 @@ async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
   assert (
       "Clarification for A" not in b_user_parts_turn3[0]
   ), "Task A's clarification answer must not appear in Task B's context"
+  req3_text = "\n".join(
+      p.text or "" for content in req3.contents for p in content.parts
+  )
+  assert "Do task A" not in req3_text
+  assert "What details do you need for A?" not in req3_text
+  assert "Clarification for A" not in req3_text
 
   # Verify call 4 (Turn 4): Task B's resumption request should contain its own
   # original prompt and its clarification answer, but never Task A's answer.
