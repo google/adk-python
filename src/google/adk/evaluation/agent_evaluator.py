@@ -621,10 +621,15 @@ class AgentEvaluator:
 
     data = []
     for per_invocation_result in eval_metric_result_with_invocations:
+      score = per_invocation_result.eval_metric_result.score
       data.append({
           "eval_status": per_invocation_result.eval_metric_result.eval_status,
-          "score": per_invocation_result.eval_metric_result.score,
-          "threshold": threshold,
+          # `tabulate` with `maxcolwidths` set casts every non-numeric cell as
+          # `type(cell)(cell)`, which raises for `None`, so print an empty cell
+          # instead. An informational metric carries no threshold, and a metric
+          # that produced no score has none to show.
+          "score": score if score is not None else "",
+          "threshold": threshold if threshold is not None else "",
           "prompt": AgentEvaluator._convert_content_to_text(
               per_invocation_result.expected_invocation.user_content
               if per_invocation_result.expected_invocation
