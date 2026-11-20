@@ -644,6 +644,53 @@ async def test_run_interactively_whitespace_and_exit(
   assert any("echo:hello" in m for m in echoed)
 
 
+def test_enable_line_editing_imports_readline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """_enable_line_editing should import readline so input() gets history."""
+  pytest.importorskip("readline")
+  monkeypatch.delitem(sys.modules, "readline", raising=False)
+
+  cli._enable_line_editing()
+
+  assert "readline" in sys.modules
+
+
+def test_enable_line_editing_without_readline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """_enable_line_editing should not fail where readline is missing."""
+  # A None entry in sys.modules makes the import raise ImportError, as on
+  # Windows.
+  monkeypatch.setitem(sys.modules, "readline", None)
+
+  cli._enable_line_editing()
+
+
+@pytest.mark.asyncio
+async def test_run_interactively_enables_line_editing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """run_interactively should enable line editing before reading input."""
+  session_service = InMemorySessionService()
+  sess = await session_service.create_session(app_name="dummy", user_id="u")
+  calls: list[str] = []
+  monkeypatch.setattr(
+      cli, "_enable_line_editing", lambda: calls.append("enabled")
+  )
+  monkeypatch.setattr("builtins.input", lambda *_a, **_k: "exit")
+
+  await cli.run_interactively(
+      BaseAgent(name="root"),
+      InMemoryArtifactService(),
+      sess,
+      session_service,
+      InMemoryCredentialService(),
+  )
+
+  assert calls == ["enabled"]
+
+
 def test_print_event_omits_internal_metadata_in_jsonl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
