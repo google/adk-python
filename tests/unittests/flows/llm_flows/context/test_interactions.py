@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.context import _contents as contents
 from google.adk.flows.llm_flows.context import _interactions as interactions_processor
 from google.adk.flows.llm_flows.single_flow import SingleFlow
@@ -295,6 +296,74 @@ def test_find_previous_interaction_state_returns_both_ids():
   )
 
   assert state == ("int_2", "env_2")
+
+
+def _rewind_marker(rewind_before_invocation_id: str) -> Event:
+  """The marker event Runner.rewind_async appends to the session."""
+  return Event(
+      invocation_id="e-rewind",
+      author="user",
+      actions=EventActions(
+          rewind_before_invocation_id=rewind_before_invocation_id
+      ),
+  )
+
+
+def test_find_previous_interaction_state_skips_rewound_turns():
+  events = [
+      Event(invocation_id="inv_1", author="user"),
+      Event(
+          invocation_id="inv_1",
+          author="my_agent",
+          interaction_id="int_1",
+          environment_id="env_1",
+      ),
+      Event(invocation_id="inv_2", author="user"),
+      Event(
+          invocation_id="inv_2",
+          author="my_agent",
+          interaction_id="int_2",
+          environment_id="env_2",
+      ),
+      _rewind_marker("inv_2"),
+  ]
+
+  state = interactions_processor._find_previous_interaction_state(
+      events, agent_name="my_agent", current_branch=None
+  )
+
+  # Chaining onto int_2 would put the rewound turn back into the
+  # server-side history, so the request continues from int_1 instead.
+  assert state == ("int_1", "env_1")
+
+
+def test_find_previous_interaction_state_none_when_every_turn_rewound():
+  events = [
+      Event(invocation_id="inv_1", author="user"),
+      Event(invocation_id="inv_1", author="my_agent", interaction_id="int_1"),
+      _rewind_marker("inv_1"),
+  ]
+
+  state = interactions_processor._find_previous_interaction_state(
+      events, agent_name="my_agent", current_branch=None
+  )
+
+  assert state == (None, None)
+
+
+def test_find_previous_interaction_state_chains_turns_after_a_rewind():
+  events = [
+      Event(invocation_id="inv_1", author="my_agent", interaction_id="int_1"),
+      Event(invocation_id="inv_2", author="my_agent", interaction_id="int_2"),
+      _rewind_marker("inv_2"),
+      Event(invocation_id="inv_3", author="my_agent", interaction_id="int_3"),
+  ]
+
+  state = interactions_processor._find_previous_interaction_state(
+      events, agent_name="my_agent", current_branch=None
+  )
+
+  assert state == ("int_3", None)
 
 
 def _tier_context(
