@@ -1216,9 +1216,20 @@ def cli_run(
     )
 
 
+class _PytestPassthroughCommand(HelpfulCommand):
+  """Keeps the raw args so the command can find the '--' click consumes."""
+
+  def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+    ctx.meta[_RAW_ARGS_META_KEY] = list(args)
+    return super().parse_args(ctx, args)
+
+
+_RAW_ARGS_META_KEY = "adk.test.raw_args"
+
+
 @main.command(
     "test",
-    cls=HelpfulCommand,
+    cls=_PytestPassthroughCommand,
     context_settings={
         "allow_extra_args": True,
         "allow_interspersed_args": True,
@@ -1257,10 +1268,13 @@ def cli_test(ctx: click.Context, folder: str, rebuild: bool) -> None:
     sys.exit(0)
 
   # Parse arguments to separate pytest args (after --) from regular args
+  # Click drops the first '--' from ctx.args, so locate it in the raw args.
+  raw_args = ctx.meta.get(_RAW_ARGS_META_KEY, [])
   pytest_args = []
-  if "--" in ctx.args:
-    separator_index = ctx.args.index("--")
-    pytest_args = ctx.args[separator_index + 1 :]
+  if "--" in raw_args:
+    after_separator = raw_args[raw_args.index("--") + 1 :]
+    separator_index = max(0, len(ctx.args) - len(after_separator))
+    pytest_args = ctx.args[separator_index:]
     regular_args = ctx.args[:separator_index]
 
     if regular_args:

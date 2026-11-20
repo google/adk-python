@@ -4350,10 +4350,6 @@ def test_cli_test_rebuild_skips_the_pytest_subprocess(
   assert fake_pytest_run.runs == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="click consumes '--' before the guard sees it, so it never fires",
-)
 def test_cli_test_rejects_args_between_folder_and_double_dash(
     tmp_path: Path, fake_pytest_run
 ) -> None:
