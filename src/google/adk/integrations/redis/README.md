@@ -117,7 +117,11 @@ fail with `CROSSSLOT`. Use a standalone Redis instance for this service.
 | `{key_prefix}v2:u2_{b64url(app_name)}.{b64url(user_id)}` | JSON (`dict`) | Persisted user-scoped state (keys prefixed with `user:`). Shared across sessions for the same user. Expired based on `ttl_seconds`. |
 | `{key_prefix}v2:a2_{b64url(app_name)}` | JSON (`dict`) | Persisted app-scoped state (keys prefixed with `app:`). Shared across all sessions and users for the app. Expired based on `ttl_seconds`. |
 
-`b64url(value)` is the unpadded URL-safe Base64 encoding of the UTF-8 value. With the default `key_prefix`, the new namespace is `adk:session:v2:`. These versioned keys are not compatible with keys written by earlier versions. This service does not read, migrate, or delete legacy entries; existing entries remain untouched and are not visible to this version. Plan a coordinated migration or cutover before upgrading. Legacy keys can expire under their configured TTL; if expiry is disabled, inventory and back up relevant entries before any manual cleanup, excluding the new `{key_prefix}v2:` keys. Do not flush a Redis instance shared with other applications.
+`b64url(value)` is the unpadded URL-safe Base64 encoding of the UTF-8 value. With the default `key_prefix`, the new namespace is `adk:session:v2:`. These versioned keys are not compatible with keys written by earlier versions. This service does not read, migrate, or delete legacy entries; existing entries remain untouched and are not visible to this version. Plan a coordinated migration or cutover before upgrading.
+
+All workers sharing a Redis instance and `key_prefix` must switch together: stop or drain old workers before starting new ones rather than rolling out mixed versions. Sessions and `app:`/`user:` state written by old workers during any overlap remain in legacy keys and are not visible to v2 workers after cutover.
+
+Legacy keys can expire under their configured TTL; if expiry is disabled, inventory and back up relevant entries before any manual cleanup, excluding the new `{key_prefix}v2:` keys. Do not flush a Redis instance shared with other applications.
 
 When events append state deltas:
 - `user:<key>` updates are synchronized to the user state key.
