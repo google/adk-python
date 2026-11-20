@@ -1,0 +1,11 @@
+{
+  "criteria": {
+    "retrieval_recall": 1.0
+  },
+  "custom_metrics": {
+    "retrieval_recall": {
+      "code_config": {"name": "retrieval_recall.retrieval_recall"},
+      "description": "Share of the expected documents that search_docs actually returned."
+    }
+  }
+}

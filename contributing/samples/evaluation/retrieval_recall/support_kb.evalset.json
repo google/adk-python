@@ -1,0 +1,218 @@
+{
+  "eval_set_id": "retrieval_recall",
+  "name": "Retrieval recall: support knowledge base",
+  "description": "Each case lists the document ids search_docs should return; the custom metric scores how many of them it did.",
+  "eval_cases": [
+    {
+      "eval_id": "return_window",
+      "conversation": [
+        {
+          "invocation_id": "rr-1",
+          "user_content": {
+            "parts": [
+              {
+                "text": "How many days do I have to return an item?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": "You can return most items within 30 days of delivery."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "search_docs",
+                "args": {
+                  "query": "return item days"
+                }
+              }
+            ],
+            "tool_responses": [
+              {
+                "name": "search_docs",
+                "response": {
+                  "documents": [
+                    {
+                      "id": "returns-policy"
+                    }
+                  ]
+                }
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "support_kb_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "return_and_refund",
+      "conversation": [
+        {
+          "invocation_id": "rr-2",
+          "user_content": {
+            "parts": [
+              {
+                "text": "I want to return my headphones. What is the returns policy and when will my refund arrive?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": "You can return them within 30 days of delivery, and the refund arrives within 5 business days after we receive them."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "search_docs",
+                "args": {
+                  "query": "returns policy refund arrive"
+                }
+              }
+            ],
+            "tool_responses": [
+              {
+                "name": "search_docs",
+                "response": {
+                  "documents": [
+                    {
+                      "id": "returns-policy"
+                    },
+                    {
+                      "id": "refund-timing"
+                    }
+                  ]
+                }
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "support_kb_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "international_shipping",
+      "conversation": [
+        {
+          "invocation_id": "rr-3",
+          "user_content": {
+            "parts": [
+              {
+                "text": "How long does international shipping take?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": "International shipping takes 7 to 14 business days."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "search_docs",
+                "args": {
+                  "query": "international shipping time"
+                }
+              }
+            ],
+            "tool_responses": [
+              {
+                "name": "search_docs",
+                "response": {
+                  "documents": [
+                    {
+                      "id": "international-shipping"
+                    }
+                  ]
+                }
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "support_kb_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "password_reset",
+      "conversation": [
+        {
+          "invocation_id": "rr-4",
+          "user_content": {
+            "parts": [
+              {
+                "text": "How do I reset my password?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": "Use the Forgot password link on the sign-in page; the emailed link expires after 1 hour."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "search_docs",
+                "args": {
+                  "query": "reset password"
+                }
+              }
+            ],
+            "tool_responses": [
+              {
+                "name": "search_docs",
+                "response": {
+                  "documents": [
+                    {
+                      "id": "account-password"
+                    }
+                  ]
+                }
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "support_kb_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}
