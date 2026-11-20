@@ -39,6 +39,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.utils.context_utils import Aclosing
 from google.genai import errors
@@ -1119,6 +1120,78 @@ async def test_run_live_does_not_synthesize_structured_response():
   agent_events = [e for e in events if e.author == agent.name and e.content]
   assert [bool(e.get_function_calls()) for e in agent_events] == [True, False]
   assert agent_events[1].get_function_responses()
+
+
+async def test_run_live_tool_instruction_does_not_start_a_turn() -> None:
+  """A tool's instruction does not make a new live session answer first.
+
+  Setup: an agent with `load_artifacts` and a session that already has an
+    artifact, so the tool adds an instruction to the request.
+  Act: open a live session and close it before the user says anything.
+  Assert: the artifact list is in the system instruction and no history is
+    replayed, so nothing tells the model that the user's turn is over.
+  """
+
+  class _RecordingConnection(testing_utils.MockLlmConnection):
+
+    def __init__(self) -> None:
+      super().__init__(llm_responses=[])
+      self.history: list[types.Content] | None = None
+
+    async def send_history(self, history: list[types.Content]) -> None:
+      self.history = history
+
+  class _RecordingModel(testing_utils.MockModel):
+    connections: list[_RecordingConnection] = []
+
+    # MockModel.connect is annotated as returning the connection itself, so
+    # mypy reads its yield type as Never and rejects any typed override.
+    @contextlib.asynccontextmanager
+    async def connect(  # type: ignore[override]
+        self, llm_request: LlmRequest
+    ) -> AsyncGenerator[_RecordingConnection, None]:
+      self.requests.append(llm_request)
+      connection = _RecordingConnection()
+      self.connections.append(connection)
+      yield connection
+
+  model = _RecordingModel(responses=[])
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  await artifact_service.save_artifact(
+      app_name='app',
+      user_id='u',
+      session_id=session.id,
+      filename='report.txt',
+      artifact=types.Part.from_text(text='q3 numbers'),
+  )
+  runner = Runner(
+      app_name='app',
+      agent=LlmAgent(
+          name='root_agent', model=model, tools=[load_artifacts_tool]
+      ),
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.close()
+
+  async def _run_to_end() -> None:
+    async with contextlib.aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+        )
+    ) as events:
+      async for _ in events:
+        pass
+
+  await asyncio.wait_for(_run_to_end(), timeout=5)
+
+  assert 'report.txt' in (model.requests[0].config.system_instruction or '')
+  assert model.connections[0].history is None
 
 
 _END_OF_RECEIVE_STREAM = object()

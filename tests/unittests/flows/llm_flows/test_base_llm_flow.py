@@ -2900,6 +2900,7 @@ async def test_finalize_dynamic_instructions_feature_enabled():
 
   invocation_context = mock.Mock(spec=InvocationContext)
   invocation_context.agent = agent
+  invocation_context.live_request_queue = None
 
   llm_request = LlmRequest()
   llm_request._append_dynamic_instructions(['dynamic 1', 'dynamic 2'])
@@ -2935,6 +2936,7 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
 
   invocation_context = mock.Mock(spec=InvocationContext)
   invocation_context.agent = agent
+  invocation_context.live_request_queue = None
 
   llm_request = LlmRequest()
   llm_request._append_dynamic_instructions(['dynamic 1', 'dynamic 2'])
@@ -2959,6 +2961,66 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
+
+
+@pytest.mark.asyncio
+async def test_finalize_dynamic_instructions_live_keeps_system_instruction():
+  """A live session keeps tool instructions out of the replayed history.
+
+  Live replays `contents` as history, and history that ends on a user-role
+  content tells the model the user has finished their turn.
+  """
+  agent = Agent(name='test_agent', model='gemini-2.0-flash')
+
+  invocation_context = mock.Mock(spec=InvocationContext)
+  invocation_context.agent = agent
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  llm_request = LlmRequest()
+  llm_request._append_dynamic_instructions(['dynamic 1', 'dynamic 2'])
+
+  with temporary_feature_override(
+      FeatureName.DYNAMIC_INSTRUCTION_ROUTING, True
+  ):
+    await _finalize_dynamic_instructions(invocation_context, llm_request)
+
+  assert llm_request.config.system_instruction == 'dynamic 1\n\ndynamic 2'
+  assert not llm_request.contents
+
+
+@pytest.mark.asyncio
+async def test_finalize_dynamic_instructions_interactions_keeps_system_instruction():
+  """An Interactions API agent keeps tool instructions out of its input.
+
+  A chained interaction sends the latest user contents as input and the
+  service keeps them, so a routed instruction would pile up turn after turn.
+  """
+  agent = Agent(
+      name='test_agent',
+      model=Gemini(model='gemini-2.5-flash', use_interactions_api=True),
+  )
+
+  invocation_context = mock.Mock(spec=InvocationContext)
+  invocation_context.agent = agent
+  invocation_context.live_request_queue = None
+
+  llm_request = LlmRequest()
+  llm_request._append_dynamic_instructions(['dynamic 1'])
+  llm_request.contents.append(
+      types.Content(
+          role='user', parts=[types.Part.from_text(text='user question')]
+      )
+  )
+
+  with temporary_feature_override(
+      FeatureName.DYNAMIC_INSTRUCTION_ROUTING, True
+  ):
+    await _finalize_dynamic_instructions(invocation_context, llm_request)
+
+  assert llm_request.config.system_instruction == 'dynamic 1'
+  assert [content.parts[0].text for content in llm_request.contents] == [
+      'user question'
+  ]
 
 
 @pytest.mark.asyncio

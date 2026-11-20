@@ -364,11 +364,18 @@ class ModelArmorPlugin(BasePlugin):
 def _latest_user_text_content(
     llm_request: LlmRequest,
 ) -> Optional[types.Content]:
-  """Returns the most recent user content that has screenable text."""
+  """Returns the most recent user content that has screenable text.
+
+  Skips user-role contents ADK added for this request, such as a tool's
+  instruction, which can come after the user's prompt on a step that follows
+  a tool call.
+  """
   if not llm_request.contents:
     return None
   for content in reversed(llm_request.contents):
     if content.role != 'user':
+      continue
+    if llm_request._is_transient_user_content(content):  # pylint: disable=protected-access
       continue
     if _content_text(content):
       return content

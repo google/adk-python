@@ -22,6 +22,7 @@ from typing import Any
 from typing import Optional
 from unittest import mock
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.integrations.model_armor import ModelArmorConfig
 from google.adk.integrations.model_armor import ModelArmorPlugin
 from google.adk.integrations.model_armor._config import _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE
@@ -31,11 +32,15 @@ from google.adk.integrations.model_armor._plugin import _shared_template_locatio
 from google.adk.integrations.model_armor._plugin import _TOOL_OUTPUT_CHUNK_OVERLAP_CHARS
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import InMemoryRunner
+from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.utils import _mtls_utils
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import modelarmor_v1
 from google.genai import types
 import pytest
+
+from tests.unittests import testing_utils
 
 _PROMPT_TEMPLATE_PATH = (
     'projects/test-project/locations/us-central1/templates/test-prompt'
@@ -225,6 +230,82 @@ async def test_thought_parts_are_left_out_of_the_screened_text():
   await _screen_input(plugin, request)
 
   assert _screened(client) == [('input', 'the visible question')]
+
+
+@pytest.mark.asyncio
+async def test_prompt_is_screened_on_the_model_call_after_a_tool_result():
+  """Every model call screens the user's prompt, not an instruction ADK added.
+
+  Setup: an agent with `load_artifacts` and a saved artifact, so ADK adds the
+    artifact list to the request as a user-role instruction. The model calls
+    a tool, then answers.
+  Act: run one turn.
+  Assert: both model calls screen the user's prompt, including the one after
+    the tool result, where the instruction comes after the prompt.
+  """
+
+  def get_weather(city: str) -> dict[str, str]:
+    """Returns the weather in a city."""
+    return {'city': city, 'weather': 'sunny'}
+
+  plugin, client = _plugin(response_template_name=None)
+  runner = InMemoryRunner(
+      agent=LlmAgent(
+          name='assistant',
+          model=testing_utils.MockModel.create(
+              responses=[
+                  types.Part.from_function_call(
+                      name='get_weather', args={'city': 'SF'}
+                  ),
+                  'It is sunny in SF.',
+              ]
+          ),
+          tools=[load_artifacts_tool, get_weather],
+      ),
+      app_name='app',
+      plugins=[plugin],
+  )
+  session = await runner.session_service.create_session(
+      app_name='app', user_id='u'
+  )
+  await runner.artifact_service.save_artifact(
+      app_name='app',
+      user_id='u',
+      session_id=session.id,
+      filename='report.txt',
+      artifact=types.Part.from_text(text='q3 numbers'),
+  )
+
+  async for _ in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.UserContent("What's the weather in SF?"),
+  ):
+    pass
+
+  assert _screened(client) == [
+      ('input', "What's the weather in SF?"),
+      ('input', "What's the weather in SF?"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_user_text_matching_an_adk_instruction_is_still_screened():
+  """User input is screened even when its text equals an instruction ADK added.
+
+  Only the content ADK inserted is skipped, so a user can't dodge screening by
+  sending the instruction's text.
+  """
+  plugin, client = _plugin()
+  text = 'You have a list of artifacts: ["report.txt"]'
+  request = _user_request(text)
+  request._insert_transient_user_content(
+      [types.Content(role='user', parts=[types.Part(text=text)])]
+  )
+
+  await _screen_input(plugin, request)
+
+  assert _screened(client) == [('input', text)]
 
 
 # --- Output screening -------------------------------------------------------

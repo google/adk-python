@@ -25,6 +25,26 @@ from ....agents.invocation_context import InvocationContext
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from .._base_llm_processor import BaseLlmRequestProcessor
+from ..core._utils import as_llm_agent
+
+
+def _routes_into_contents(invocation_context: InvocationContext) -> bool:
+  """Returns whether a tool's instruction should ride in the contents.
+
+  Routing keeps `system_instruction` stable for provider-side prompt caching.
+  Live and Interactions API requests don't gain from that, and both read a
+  trailing user-role content as user input: live replays it as a finished
+  user turn, so the model answers before the user speaks, and a chained
+  interaction stores it as user input on every turn. Those keep the
+  instruction in `system_instruction`.
+  """
+  if invocation_context.live_request_queue is not None:
+    return False
+
+  from ....models.google_llm import Gemini
+
+  model = getattr(as_llm_agent(invocation_context), 'canonical_model', None)
+  return not (isinstance(model, Gemini) and model.use_interactions_api)
 
 
 async def finalize_dynamic_instructions(
@@ -41,7 +61,9 @@ async def finalize_dynamic_instructions(
   from ....features import is_feature_enabled
 
   # TODO: Deprecate system_instruction fallback and make user content routing standard.
-  if is_feature_enabled(FeatureName.DYNAMIC_INSTRUCTION_ROUTING):
+  if is_feature_enabled(
+      FeatureName.DYNAMIC_INSTRUCTION_ROUTING
+  ) and _routes_into_contents(invocation_context):
     from ..context._contents import _add_instructions_to_user_content
     from ._instructions import _label_dynamic_instruction
 
