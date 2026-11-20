@@ -663,7 +663,18 @@ def set_operation_details_common_attributes(
 def set_operation_details_attributes_from_request(
     operation_details_attributes: MutableMapping[str, AnyValue],
     llm_request: LlmRequest,
+    *,
+    include_content: bool = True,
 ) -> None:
+  if not include_content:
+    # Without content capture only the tool definitions survive redaction
+    # (see _operation_details_attributes_no_content), so skip serializing the
+    # whole conversation history on every request.
+    tool_definitions = _resolve_tool_definitions(llm_request.config.tools or [])
+    operation_details_attributes[GEN_AI_TOOL_DEFINITIONS] = _to_any_value(
+        tool_definitions
+    )
+    return
   operation_details_attributes.update(
       _build_request_operation_details(llm_request)
   )
