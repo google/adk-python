@@ -371,6 +371,13 @@ class Context(ReadonlyContext):
   @output.setter
   def output(self, value: Any) -> None:
     if self._output_value is not None:
+      if self._output_value is value:
+        return
+      try:
+        if self._output_value == value:
+          return
+      except Exception:
+        pass
       raise ValueError(
           'Output already set. A node can produce at most one output.'
       )

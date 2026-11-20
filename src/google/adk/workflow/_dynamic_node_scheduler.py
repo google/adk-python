@@ -849,6 +849,15 @@ async def run_node_internal(
       resume_inputs=resume_inputs,
   )
 
+  if (
+      use_as_output
+      and not isinstance(ctx.node, Workflow)
+      and child_ctx
+      and child_ctx.output is not None
+  ):
+    if ctx.output is None:
+      ctx.output = child_ctx.output
+
   transfer_to_agent = child_ctx.actions.transfer_to_agent if child_ctx else None
   if child_ctx and child_ctx.actions.skip_summarization:
     ctx.actions.skip_summarization = True
