@@ -675,9 +675,9 @@ def _list_skills_in_gcs_dir(
 
   skills: dict[str, models.Frontmatter] = {}
   for skill_prefix in sorted(iterator.prefixes):
-    manifest_blob = bucket.blob(f"{skill_prefix}SKILL.md")
+    manifest_blob = _find_gcs_skill_manifest(bucket, skill_prefix)
 
-    if manifest_blob.exists():
+    if manifest_blob is not None:
       content = manifest_blob.download_as_text()
       skill_id = skill_prefix.rstrip("/").split("/")[-1]
       try:
@@ -696,6 +696,23 @@ def _list_skills_in_gcs_dir(
             e,
         )
   return skills
+
+
+def _find_gcs_skill_manifest(bucket: Any, skill_prefix: str) -> Any:
+  """Returns the blob holding a GCS skill's manifest, or None if it has none.
+
+  Accepts the same manifest names as the local and zip loaders, in the same
+  order, so a skill directory loads the same way wherever it is stored.
+
+  Args:
+    bucket: The GCS bucket that holds the skill.
+    skill_prefix: The skill directory's object prefix, ending in "/".
+  """
+  for name in ("SKILL.md", "skill.md"):
+    blob = bucket.blob(f"{skill_prefix}{name}")
+    if blob.exists():
+      return blob
+  return None
 
 
 def _load_skill_from_gcs_dir(
@@ -750,9 +767,9 @@ def _load_skill_from_gcs_dir(
     base_prefix += "/"
 
   skill_dir_prefix = f"{base_prefix}{skill_id}/"
-  manifest_blob = bucket.blob(f"{skill_dir_prefix}SKILL.md")
+  manifest_blob = _find_gcs_skill_manifest(bucket, skill_dir_prefix)
 
-  if not manifest_blob.exists():
+  if manifest_blob is None:
     raise FileNotFoundError(
         f"SKILL.md not found at gs://{bucket_name}/{skill_dir_prefix}SKILL.md"
     )

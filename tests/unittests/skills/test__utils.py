@@ -419,6 +419,90 @@ def test__list_skills_in_gcs_dir(mock_client_class):
   assert skills["my-skill"].name == "my-skill"
 
 
+def _mock_gcs_bucket_with_manifests(mock_client_class, manifests):
+  """Wires a mocked GCS client to a skill with the given manifest files.
+
+  Args:
+    mock_client_class: The patched google.cloud.storage.Client.
+    manifests: Maps each manifest file name in the skill directory to the
+      instructions body it holds.
+  """
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  mock_iterator = mock.MagicMock()
+  mock_iterator.prefixes = ["skills/my-skill/"]
+
+  def list_blobs_side_effect(prefix=None, delimiter=None):
+    return mock_iterator if delimiter == "/" else []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  def mock_blob_side_effect(path):
+    name = path.rsplit("/", 1)[-1]
+    m = mock.MagicMock()
+    m.exists.return_value = name in manifests
+    m.download_as_text.return_value = (
+        f"---\nname: my-skill\ndescription: A skill\n---\n{manifests.get(name)}"
+    )
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+  return mock_bucket
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__list_skills_in_gcs_dir_accepts_lowercase_manifest(mock_client_class):
+  """Like the local and zip loaders, GCS accepts skill.md as the manifest."""
+  _mock_gcs_bucket_with_manifests(mock_client_class, {"skill.md": "Body"})
+
+  skills = _list_skills_in_gcs_dir("my-bucket", "skills/")
+
+  assert list(skills) == ["my-skill"]
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_accepts_lowercase_manifest(
+    mock_client_class,
+):
+  mock_bucket = _mock_gcs_bucket_with_manifests(
+      mock_client_class, {"skill.md": "Body"}
+  )
+
+  skill = _load_skill_from_gcs_dir(
+      "my-bucket", "my-skill", skills_base_path="skills/"
+  )
+
+  assert skill.name == "my-skill"
+  assert skill.instructions == "Body"
+  assert [c.args[0] for c in mock_bucket.blob.call_args_list] == [
+      "skills/my-skill/SKILL.md",
+      "skills/my-skill/skill.md",
+  ]
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_prefers_uppercase_manifest(
+    mock_client_class,
+):
+  """With both manifests present, SKILL.md is used and skill.md is ignored."""
+  mock_bucket = _mock_gcs_bucket_with_manifests(
+      mock_client_class,
+      {"SKILL.md": "Upper body", "skill.md": "Lower body"},
+  )
+
+  skill = _load_skill_from_gcs_dir(
+      "my-bucket", "my-skill", skills_base_path="skills/"
+  )
+
+  assert skill.instructions == "Upper body"
+  assert [c.args[0] for c in mock_bucket.blob.call_args_list] == [
+      "skills/my-skill/SKILL.md",
+  ]
+
+
 def _mock_gcs_bucket_with_one_invalid_skill(mock_client_class):
   """Wires a mocked GCS client to a bucket with one valid, one invalid skill."""
   mock_client = mock.MagicMock()
