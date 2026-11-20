@@ -576,6 +576,12 @@ def _create_status_update_event(
   )
 
 
+def _has_session_delta(event: Event) -> bool:
+  """Returns whether the event changes session state or artifacts."""
+  actions = event.actions
+  return bool(actions and (actions.state_delta or actions.artifact_delta))
+
+
 def convert_event_to_a2a_events(
     event: Event,
     invocation_context: InvocationContext,
@@ -627,6 +633,19 @@ def convert_event_to_a2a_events(
           message, invocation_context, event, task_id, context_id
       )
       a2a_events.append(running_event)
+    elif not a2a_events and _has_session_delta(event):
+      # An event with no content can still change state or save an artifact
+      # (e.g. an agent callback or the built-in code executor). Report it as a
+      # working update so after_event interceptors and the client see it.
+      a2a_events.append(
+          _compat.make_task_status_update_event(
+              task_id=task_id,
+              context_id=context_id,
+              status=_compat.make_task_status(_compat.TS_WORKING),
+              final=False,
+              metadata=_get_context_metadata(event, invocation_context),
+          )
+      )
 
   except Exception as e:
     logger.error("Failed to convert event to A2A events: %s", e)

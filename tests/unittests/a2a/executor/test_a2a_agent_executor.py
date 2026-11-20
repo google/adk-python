@@ -33,11 +33,13 @@ from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
+from google.adk.a2a.executor.interceptors import include_artifacts_in_a2a_event_interceptor
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_response import LlmResponse
@@ -1771,6 +1773,7 @@ async def _execute(
     agent: BaseAgent | None = None,
     node: Workflow | None = None,
     config: A2aAgentExecutorConfig | None = None,
+    artifact_service: InMemoryArtifactService | None = None,
 ) -> list[A2AEvent]:
   """Runs the agent or node through A2aAgentExecutor and returns events."""
   context = Mock(spec=RequestContext)
@@ -1790,6 +1793,7 @@ async def _execute(
       agent=agent,
       node=node,
       session_service=InMemorySessionService(),
+      artifact_service=artifact_service,
   )
   executor = A2aAgentExecutor(
       runner=runner, config=config, force_new_version=force_new_version
@@ -2095,3 +2099,42 @@ async def test_task_fails_on_interceptor_failure_for_non_error_event() -> None:
   events = await _execute(force_new_version=False, agent=root, config=config)
 
   assert events[-1].status.state == _compat.TS_FAILED
+
+
+@_EXECUTOR_VERSIONS
+async def test_artifact_saved_by_agent_callback_is_published(
+    force_new_version: bool,
+) -> None:
+  """An artifact saved by an agent callback reaches the A2A task.
+
+  Setup: the agent answers, then its after_agent_callback saves an artifact
+    and returns no content, so the runner yields an event whose only payload
+    is the artifact_delta.
+  Assert: include_artifacts_in_a2a_event_interceptor publishes the artifact,
+    and the answer is still published as the task's result.
+  """
+
+  async def _save_report(callback_context: Any) -> None:
+    await callback_context.save_artifact(
+        "report.txt", Part(text="quarterly numbers")
+    )
+
+  root = _agent(
+      "root",
+      _text_response("Report is ready."),
+      after_agent_callback=_save_report,
+  )
+  config = A2aAgentExecutorConfig(
+      execute_interceptors=[include_artifacts_in_a2a_event_interceptor]
+  )
+
+  events = await _execute(
+      force_new_version=force_new_version,
+      agent=root,
+      config=config,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  assert events[-1].status.state == _compat.TS_COMPLETED
+  assert "quarterly numbers" in _artifact_texts(events)
+  assert "Report is ready." in _artifact_texts(events)
