@@ -117,6 +117,17 @@ def test_is_audio_part_file_data_audio_mime_is_audio():
   assert is_audio_part(_file_part('audio/wav')) is True
 
 
+@pytest.mark.parametrize('make_part', [_blob_part, _file_part])
+@pytest.mark.parametrize('mime_type', ['Audio/WAV', 'AUDIO/pcm;rate=16000'])
+def test_audio_detection_and_history_filter_ignore_mime_type_case(
+    make_part, mime_type
+):
+  part = make_part(mime_type)
+  history = [types.Content(role='user', parts=[types.Part(text='keep'), part])]
+  assert is_audio_part(part) is True
+  assert _filter_media_history(history)[0].parts == [types.Part(text='keep')]
+
+
 def test_is_audio_part_non_audio_mime_is_not_audio():
   # Only the 'audio/' top-level type counts; video and image blobs must
   # survive so they still reach the model.

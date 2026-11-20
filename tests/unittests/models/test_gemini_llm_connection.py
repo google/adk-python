@@ -920,6 +920,14 @@ async def test_receive_handles_output_transcription_fragments(
             inline_data=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
         ),
         types.Part(
+            inline_data=types.Blob(data=b'\x00\xFF', mime_type='Audio/PCM')
+        ),
+        types.Part(
+            file_data=types.FileData(
+                file_uri='files/audio.wav', mime_type='AUDIO/WAV'
+            )
+        ),
+        types.Part(
             file_data=types.FileData(
                 file_uri='artifact://app/user/session/_adk_live/audio.pcm#1',
                 mime_type='audio/pcm',
