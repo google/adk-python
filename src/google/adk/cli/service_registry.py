@@ -270,13 +270,9 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
   def sqlite_session_factory(uri: str, **kwargs: Any) -> BaseSessionService:
     from ..sessions.sqlite_session_service import SqliteSessionService
 
-    parsed = urlparse(uri)
-    db_path = parsed.path
-    if not db_path:
+    if not urlparse(uri).path:
       # Treat sqlite:// without a path as an in-memory session service.
       return memory_session_factory("memory://", **kwargs)
-    elif db_path.startswith("/"):
-      db_path = db_path[1:]
 
     # SqliteSessionService only accepts db_path, warn if extra kwargs provided
     ignored_kwargs = {k: v for k, v in kwargs.items() if k != "agents_dir"}
@@ -286,7 +282,7 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
           "The following parameters will be ignored: %s",
           list(ignored_kwargs.keys()),
       )
-    return SqliteSessionService(db_path=db_path)
+    return SqliteSessionService(db_path=uri)
 
   registry.register_session_service("memory", memory_session_factory)
   registry.register_session_service("agentengine", agentengine_session_factory)
