@@ -1757,7 +1757,7 @@ async def _content_to_message_param(
             id=tool_call_id,
             function={
                 "name": function_call.name,
-                "arguments": _safe_json_serialize(function_call.args),
+                "arguments": _safe_json_serialize(function_call.args or {}),
             },
         )
         # Preserve thought_signature for Gemini thinking models.
