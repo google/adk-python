@@ -14,6 +14,9 @@
 
 import base64
 import contextlib
+import datetime
+import decimal
+import enum
 import json
 import logging
 import os
@@ -25,6 +28,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
+import uuid
 import warnings
 
 from google.adk.agents.context_cache_config import ContextCacheConfig
@@ -1222,6 +1226,54 @@ def test_safe_json_serialize_circular_dict_falls_back_to_str():
   obj = {}
   obj["self"] = obj
   assert isinstance(_safe_json_serialize(obj), str)
+
+
+def test_safe_json_serialize_converts_values_json_cannot_encode():
+  class _Status(enum.Enum):
+    PAID = "paid"
+
+  class _Line(BaseModel):
+    sku: str
+    note: str | None = None
+
+  payload = {
+      "due_date": datetime.date(2026, 12, 1),
+      "total": decimal.Decimal("12.50"),
+      "status": _Status.PAID,
+      "id": uuid.UUID("12345678-1234-5678-1234-567812345678"),
+      "lines": [_Line(sku="A-1")],
+      "missing": None,
+  }
+
+  assert json.loads(_safe_json_serialize(payload)) == {
+      "due_date": "2026-12-01",
+      "total": "12.50",
+      "status": "paid",
+      "id": "12345678-1234-5678-1234-567812345678",
+      "lines": [{"sku": "A-1"}],
+      "missing": None,
+  }
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_response_with_date_is_json():
+  part = types.Part.from_function_response(
+      name="extract_invoice",
+      response={
+          "due_date": datetime.date(2026, 12, 1),
+          "total": decimal.Decimal("12.50"),
+      },
+  )
+  part.function_response.id = "tool_call_1"
+  content = types.Content(role="user", parts=[part])
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "tool"
+  assert json.loads(message["content"]) == {
+      "due_date": "2026-12-01",
+      "total": "12.50",
+  }
 
 
 def test_safe_json_serialize_circular_list_falls_back_to_str():
