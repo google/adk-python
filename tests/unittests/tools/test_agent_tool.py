@@ -32,6 +32,7 @@ from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.tools._thread_pool import _call_tool_in_thread_pool
@@ -2006,6 +2007,63 @@ async def test_run_async_returns_answer_after_long_running_tool_resolves() -> (
       ),
   ])
   assert result == 'final answer after pending tool'
+
+
+@mark.asyncio
+async def test_run_async_extracts_output_when_final_event_has_no_content():
+  """A task-mode `finish_task` event carries its result on `output`, not `content`."""
+  result = await _run_agent_tool_with_events([
+      Event(author='inner_agent', output={'result': '42'}),
+  ])
+  assert result == {'result': '42'}
+
+
+@mark.asyncio
+@mark.parametrize('use_output', [True, False])
+async def test_run_async_preserves_error_after_structured_result(use_output):
+  result_event = Event(author='inner_agent', output={'result': 'stale'})
+  if not use_output:
+    result_event = Event(
+        author='inner_agent',
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name='lookup', response={'result': 'stale'}
+                    )
+                )
+            ],
+        ),
+        actions=EventActions(skip_summarization=True),
+    )
+  result = await _run_agent_tool_with_events([
+      result_event,
+      Event(author='inner_agent', error_message='The wrapped task failed'),
+  ])
+  assert result == 'The wrapped task failed'
+
+
+@mark.asyncio
+async def test_run_async_extracts_skip_summarization_function_response():
+  """A tool response with `skip_summarization` set carries the real result."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='lookup', response={'answer': '42'}
+                      )
+                  )
+              ],
+          ),
+          actions=EventActions(skip_summarization=True),
+      ),
+  ])
+  assert result == {'answer': '42'}
 
 
 class TestAgentToolWithCompositeAgents:

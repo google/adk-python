@@ -460,6 +460,8 @@ class AgentTool(BaseTool):
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
+    last_output = None
+    last_skip_summarization_response = None
     # Long-running tool calls (adk_request_confirmation, adk_request_input, a
     # remote agent's input_required, or an ordinary LongRunningFunctionTool)
     # all set long_running_tool_ids on the event carrying the call. An ordinary
@@ -485,6 +487,11 @@ class AgentTool(BaseTool):
             tool_context.state.update(event.actions.state_delta)
           if event.error_message:
             last_error_message = event.error_message
+          if event.output is not None:
+            last_output = event.output
+          if event.actions.skip_summarization:
+            for response in event.get_function_responses():
+              last_skip_summarization_response = response.response
           if event.long_running_tool_ids:
             pending_tool_ids |= event.long_running_tool_ids
           if event.content:
@@ -516,17 +523,27 @@ class AgentTool(BaseTool):
           ' which AgentTool cannot resume.'
       )
 
-    if last_content is None or last_content.parts is None:
-      return last_error_message or ''
-    parts_text = (_part_to_text(p) for p in last_content.parts if not p.thought)
+    parts_text = (
+        (_part_to_text(p) for p in last_content.parts or [] if not p.thought)
+        if last_content
+        else []
+    )
     merged_text = '\n'.join(t for t in parts_text if t)
     if not merged_text and last_error_message:
       return last_error_message
-    output_schema = _get_output_schema(self.agent)
-    if output_schema:
-      tool_result = validate_schema(output_schema, merged_text)
+    if not merged_text and last_output is not None:
+      tool_result = last_output
+    elif not merged_text and last_skip_summarization_response is not None:
+      tool_result = last_skip_summarization_response
+    elif last_content is None or last_content.parts is None:
+      return last_error_message or ''
     else:
-      tool_result = merged_text
+      output_schema = _get_output_schema(self.agent)
+      tool_result = (
+          validate_schema(output_schema, merged_text)
+          if output_schema
+          else merged_text
+      )
 
     if self.propagate_grounding_metadata and last_grounding_metadata:
       tool_context.state['temp:_adk_grounding_metadata'] = (
