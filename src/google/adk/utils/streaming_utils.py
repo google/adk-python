@@ -183,6 +183,7 @@ class StreamingResponseAggregator:
     )
     self._grounding_metadata: types.GroundingMetadata | None = None
     self._citation_metadata: types.CitationMetadata | None = None
+    self._url_context_metadata: types.UrlContextMetadata | None = None
     self._response: types.GenerateContentResponse | None = None
 
     # For progressive SSE streaming mode: accumulate parts in order
@@ -452,6 +453,8 @@ class StreamingResponseAggregator:
       self._grounding_metadata = llm_response.grounding_metadata
     if llm_response.citation_metadata:
       self._citation_metadata = llm_response.citation_metadata
+    if llm_response.url_context_metadata:
+      self._url_context_metadata = llm_response.url_context_metadata
 
     # ========== Progressive SSE Streaming (new feature) ==========
     # Save finish_reason for final aggregation
@@ -527,6 +530,7 @@ class StreamingResponseAggregator:
           usage_metadata=llm_response.usage_metadata,
           grounding_metadata=llm_response.grounding_metadata,
           citation_metadata=llm_response.citation_metadata,
+          url_context_metadata=llm_response.url_context_metadata,
           finish_reason=llm_response.finish_reason,
           model_version=llm_response.model_version,
       )
@@ -598,6 +602,7 @@ class StreamingResponseAggregator:
           content=content,
           grounding_metadata=self._grounding_metadata,
           citation_metadata=self._citation_metadata,
+          url_context_metadata=self._url_context_metadata,
           error_code=error_code,
           error_message=error_message,
           usage_metadata=self._usage_metadata,
@@ -619,6 +624,7 @@ class StreamingResponseAggregator:
         content=content,
         grounding_metadata=self._grounding_metadata,
         citation_metadata=self._citation_metadata,
+        url_context_metadata=self._url_context_metadata,
         error_code=error_code,
         error_message=error_message,
         usage_metadata=self._usage_metadata,
