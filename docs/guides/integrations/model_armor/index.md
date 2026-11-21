@@ -73,6 +73,7 @@ Credentials come from Application Default Credentials.
 2. Otherwise it reads whichever form the text arrived in:
    - **Unary**: text parts on `llm_response.content`.
    - **Live**: `llm_response.output_transcription`, this is checked first.
+   - **Streaming (SSE) and live partials**: each partial response is screened together with up to 4,096 characters of the text streamed before it in the same model call, so content split across chunks is caught. Chunks already delivered cannot be recalled: once the screened text matches (or screening fails and failures are blocked), the text of the remaining partial responses is withheld (`custom_metadata={"model_armor_blocked": True}`). With `deidentify_sensitive_data`, a chunk is delivered de-identified when that leaves the text already delivered unchanged; otherwise it is withheld. The final response is screened in full as usual.
 3. The text is sent to Model Armor's `SanitizeModelResponse` method.
 4. It acts on the result (below).
 
