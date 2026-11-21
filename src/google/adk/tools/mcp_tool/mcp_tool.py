@@ -331,6 +331,7 @@ class McpTool(BaseAuthenticatedTool):
       mcp_session_manager: MCPSessionManager,
       auth_scheme: AuthScheme | None = None,
       auth_credential: AuthCredential | None = None,
+      credential_key: str | None = None,
       require_confirmation: bool | Callable[..., bool] = False,
       header_provider: (
           Callable[
@@ -352,6 +353,10 @@ class McpTool(BaseAuthenticatedTool):
         mcp_session_manager: The MCP session manager to use for communication.
         auth_scheme: The authentication scheme to use.
         auth_credential: The authentication credential to use.
+        credential_key: The key the credential is saved and loaded under. Pass
+          the owning toolset's key so the tool finds the credential the toolset
+          resolved; when omitted, a key is derived from the scheme and
+          credential.
         require_confirmation: Whether this tool requires confirmation. A boolean
           or a callable that takes the function's arguments and returns a
           boolean. If the callable returns True, the tool will require
@@ -386,7 +391,9 @@ class McpTool(BaseAuthenticatedTool):
         name=mcp_tool.name,
         description=mcp_tool.description if mcp_tool.description else "",
         auth_config=AuthConfig(
-            auth_scheme=auth_scheme, raw_auth_credential=auth_credential
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+            credential_key=credential_key,
         )
         if auth_scheme
         else None,
