@@ -15,8 +15,9 @@
 """OpenAI integration.
 
 Model providers for the OpenAI Chat Completions and Responses APIs, and for
-hosts that speak them. The model classes need the ``openai`` package; they are
-imported lazily so this package imports without it. Install with:
+hosts that speak them, plus a classifier for the OpenAI Decisions API. The
+model and classifier classes need the ``openai`` package; they are imported
+lazily so this package imports without it. Install with:
 pip install "google-adk[openai]"
 """
 
@@ -26,6 +27,7 @@ import typing
 
 if typing.TYPE_CHECKING:
   from ._openai_common import OpenAIGenerateContentConfig
+  from ._openai_decisions_classifier import OpenAIDecisionsClassifier
   from ._openai_llm import OpenAILlm
   from ._openai_responses_llm import AzureOpenAIResponsesLlm
   from ._openai_responses_llm import OpenAIResponsesLlm
@@ -33,6 +35,7 @@ if typing.TYPE_CHECKING:
 # Map attribute names to relative module paths
 _lazy_imports = {
     'AzureOpenAIResponsesLlm': '._openai_responses_llm',
+    'OpenAIDecisionsClassifier': '._openai_decisions_classifier',
     'OpenAIGenerateContentConfig': '._openai_common',
     'OpenAILlm': '._openai_llm',
     'OpenAIResponsesLlm': '._openai_responses_llm',
@@ -54,6 +57,7 @@ def __dir__() -> list[str]:
 
 __all__ = [
     'AzureOpenAIResponsesLlm',
+    'OpenAIDecisionsClassifier',
     'OpenAIGenerateContentConfig',
     'OpenAILlm',
     'OpenAIResponsesLlm',

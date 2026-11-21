@@ -24,9 +24,17 @@ from .._errors import WorkflowInvariantError
 class ReplaySequenceBarrier:
   """Unified chronological sequence barrier to ensure deterministic replay ordering."""
 
-  def __init__(self, sequence: list[str], timeout_sec: float = 15.0) -> None:
+  def __init__(
+      self,
+      sequence: list[str],
+      timeout_sec: float = 15.0,
+      *,
+      pending: frozenset[str] = frozenset(),
+  ) -> None:
     self.sequence = sequence
     self.timeout_sec = timeout_sec
+    # Keys placed by an interrupt rather than a recorded result.
+    self.pending = pending
     self.current_index = 0
     self._completed: set[str] = set()
     self.events = {key: asyncio.Event() for key in sequence}

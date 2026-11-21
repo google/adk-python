@@ -20,6 +20,9 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+import copy
+from enum import Enum
 import inspect
 import json
 import logging
@@ -29,12 +32,14 @@ from typing import Any
 from typing import cast
 from typing import get_args
 from typing import get_origin
-from typing import Optional
 from typing import Union
 
 from google.genai import types
+from pydantic import AliasChoices
+from pydantic import AliasPath
 from pydantic import BaseModel
 from pydantic import TypeAdapter
+from pydantic.fields import FieldInfo
 from typing_extensions import Annotated
 
 from . import _json_utils
@@ -95,7 +100,7 @@ def is_list_of_basemodel(schema: SchemaType) -> bool:
   return isinstance(inner_type, type) and issubclass(inner_type, BaseModel)
 
 
-def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
+def get_list_inner_type(schema: SchemaType) -> type[BaseModel] | None:
   """Get the inner BaseModel type from a list[BaseModel] schema.
 
   Args:
@@ -174,6 +179,7 @@ def lowercase_schema_types(value: object) -> None:
         lowercase_schema_types(child_value)
 
   for single_key in (
+      "additionalItems",
       "additionalProperties",
       "additional_properties",
       "contains",
@@ -183,6 +189,7 @@ def lowercase_schema_types(value: object) -> None:
       "not",
       "propertyNames",
       "then",
+      "unevaluatedItems",
       "unevaluatedProperties",
   ):
     child_value = value.get(single_key)
@@ -201,6 +208,72 @@ def lowercase_schema_types(value: object) -> None:
     child_list = value.get(list_key)
     if isinstance(child_list, list):
       lowercase_schema_types(child_list)
+
+
+def enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
+  """Recursively transforms a JSON schema for OpenAI strict structured outputs.
+
+  OpenAI strict mode requires:
+  1. additionalProperties: false on all object schemas (including nested/$defs).
+  2. All properties listed in 'required' (no optional omissions).
+  3. $ref nodes must have no sibling keywords (e.g., no 'description' next to
+     '$ref').
+
+  This function mutates the schema dict in place.
+
+  Args:
+    schema: A JSON schema dictionary to transform.
+  """
+  if not isinstance(schema, dict):
+    return
+
+  # A root $ref beside $defs (Pydantic's form for a recursive model) is
+  # inlined, so the root is an object and the $defs it points to are kept.
+  # Root keys win over the definition's; `seen` stops a cyclic $ref chain.
+  defs = schema.get("$defs")
+  seen: set[str] = set()
+  while isinstance(defs, dict):
+    ref = schema.get("$ref")
+    if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+      break
+    name = ref.removeprefix("#/$defs/")
+    target = defs.get(name)
+    if name in seen or not isinstance(target, dict):
+      break
+    seen.add(name)
+    del schema["$ref"]
+    for key, value in copy.deepcopy(target).items():
+      schema.setdefault(key, value)
+
+  # Strip sibling keywords from $ref nodes (OpenAI rejects them).
+  if "$ref" in schema:
+    for key in list(schema.keys()):
+      if key != "$ref":
+        del schema[key]
+    return
+
+  # Ensure all object schemas have additionalProperties: false and list every
+  # property as required.
+  if schema.get("type") == "object" and "properties" in schema:
+    schema["additionalProperties"] = False
+    schema["required"] = sorted(schema["properties"].keys())
+
+  # Recurse into $defs (Pydantic's nested model definitions).
+  for defn in schema.get("$defs", {}).values():
+    enforce_strict_openai_schema(defn)
+
+  # Recurse into property schemas.
+  for prop in schema.get("properties", {}).values():
+    enforce_strict_openai_schema(prop)
+
+  # Recurse into combinators.
+  for key in ("anyOf", "oneOf", "allOf"):
+    for item in schema.get(key, []):
+      enforce_strict_openai_schema(item)
+
+  # Recurse into array item schemas.
+  if "items" in schema and isinstance(schema["items"], dict):
+    enforce_strict_openai_schema(schema["items"])
 
 
 # Anchored, linear-time removal of an optional leading language tag
@@ -336,7 +409,7 @@ def _unwrap_content_payload(
 
 
 def validate_node_data(
-    schema: Optional[SchemaType],
+    schema: SchemaType | None,
     data: Any,
     *,
     preserve_content: bool = False,
@@ -358,7 +431,8 @@ def validate_node_data(
     return val
 
   def _validate_python_object(val: Any) -> Any:
-    validated: Any = TypeAdapter(schema).validate_python(val)
+    # by_name accepts data a model dumped by field name, e.g. AgentTool input.
+    validated: Any = TypeAdapter(schema).validate_python(val, by_name=True)
     return _to_serializable(validated)
 
   if isinstance(data, types.Content):
@@ -393,6 +467,27 @@ def validate_node_data(
   return _validate_python_object(data)
 
 
+def _find_enum_member(enum_type: type[Enum], value: object) -> Enum | None:
+  """Returns the member of enum_type that value stands for, or None."""
+  try:
+    # Looking up a member returns the member itself.
+    return enum_type(value)
+  except (ValueError, TypeError):
+    pass
+  # Without json_schema_for_func_decl the declaration renders non-str values
+  # with json.dumps, so the model sends that back.
+  if isinstance(value, str):
+    for candidate in enum_type:
+      if isinstance(candidate.value, str):
+        continue
+      try:
+        if json.dumps(candidate.value) == value:
+          return candidate
+      except TypeError:
+        continue
+  return None
+
+
 def preprocess_args(
     args: dict[str, Any],
     signature: inspect.Signature | None,
@@ -401,7 +496,9 @@ def preprocess_args(
   """Preprocess and convert incoming argument dictionary before invocation.
 
   Converts dictionary values to Pydantic model instances where the function
-  signature expects a BaseModel subclass or Optional[BaseModel].
+  signature expects a BaseModel subclass, an Optional or list of one, raw
+  values to the member where it expects an Enum, Optional[Enum] or
+  list[Enum], and integral floats to int where it expects int or list[int].
 
   Args:
     args: The incoming argument dictionary to preprocess.
@@ -410,7 +507,8 @@ def preprocess_args(
     type_hints: Optional cached type hints dictionary for the callable.
 
   Returns:
-    A copy of args with applicable values converted to Pydantic model instances.
+    A copy of args with applicable values converted to Pydantic model
+    instances, Enum members or ints.
   """
   converted_args = args.copy()
   if signature is None:
@@ -462,6 +560,24 @@ def preprocess_args(
               )
             continue
 
+        # The declaration lists the enum's values, so the model sends a value
+        # back. Look up the member so the function gets the Enum it declared.
+        if inspect.isclass(target_type) and issubclass(target_type, Enum):
+          value = args[param_name]
+          if value is not None and not isinstance(value, target_type):
+            member = _find_enum_member(target_type, value)
+            if member is None:
+              logger.warning(
+                  "Argument '%s' is not a value of enum %s: %r; passing it"
+                  " through unchanged.",
+                  param_name,
+                  target_type.__name__,
+                  value,
+              )
+            else:
+              converted_args[param_name] = member
+          continue
+
         # Some session stores persist call args as a proto `Struct`, whose
         # only number type is double, so an int comes back as a float.
         if target_type is int and type(args[param_name]) is float:
@@ -505,6 +621,39 @@ def preprocess_args(
           converted_args[param_name] = coerced_items
           continue
 
+        # The declaration lists an enum's values, so each element of a
+        # list[Enum] argument comes back as a value. Look up the members so
+        # the function gets the Enums it declared.
+        item_types = (
+            get_args(target_type) if get_origin(target_type) is list else ()
+        )
+        if (
+            len(item_types) == 1
+            and inspect.isclass(item_types[0])
+            and issubclass(item_types[0], Enum)
+            and isinstance(args[param_name], list)
+        ):
+          enum_type = item_types[0]
+          converted_items = []
+          unknown_items = []
+          for item in args[param_name]:
+            member = _find_enum_member(enum_type, item)
+            if member is None:
+              unknown_items.append(item)
+              converted_items.append(item)
+            else:
+              converted_items.append(member)
+          if unknown_items:
+            logger.warning(
+                "Argument '%s' is typed list[%s] but contains values that are"
+                " not members: %r; passing them through unchanged.",
+                param_name,
+                enum_type.__name__,
+                unknown_items,
+            )
+          converted_args[param_name] = converted_items
+          continue
+
         if inspect.isclass(target_type) and issubclass(target_type, BaseModel):
           if args[param_name] is None:
             continue
@@ -546,3 +695,25 @@ def preprocess_args(
             converted_args[param_name] = converted_list
 
   return converted_args
+
+
+def top_level_input_keys(fields: Mapping[str, FieldInfo]) -> set[str]:
+  """Returns the top-level input keys that a model's fields consume."""
+  keys = set(fields)
+  for f in fields.values():
+    if f.alias:
+      keys.add(f.alias)
+    # A validation alias may consume an entire top-level input container.
+    validation_alias = f.validation_alias
+    if isinstance(validation_alias, str):
+      keys.add(validation_alias)
+    elif isinstance(validation_alias, (AliasChoices, AliasPath)):
+      alias_paths = (
+          [validation_alias.path]
+          if isinstance(validation_alias, AliasPath)
+          else validation_alias.convert_to_aliases()
+      )
+      for alias_path in alias_paths:
+        if alias_path and isinstance(alias_path[0], str):
+          keys.add(alias_path[0])
+  return keys

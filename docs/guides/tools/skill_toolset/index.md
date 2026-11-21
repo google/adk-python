@@ -122,8 +122,10 @@ kinds of backend. Pass one of them if any of your skills ships a script.
   a remote sandbox.
 - The `code_executor` argument takes a `BaseCodeExecutor`. ADK sends the
   executor a small Python program that unpacks the skill's files into a
-  temporary folder and runs the script there. ADK supports Python and shell
-  scripts on this path.
+  temporary folder and runs the script there.
+
+ADK supports Python (`.py`) and shell (`.sh`, `.bash`) scripts across both
+backends.
 
 The two are mutually exclusive, and passing both raises `ValueError`. If you
 pass neither, `run_skill_script` falls back to the agent's own `code_executor`.
@@ -139,9 +141,10 @@ default. It applies to every command in an environment and to shell scripts on
 the code-executor path. It does not limit a Python script on the code-executor
 path, which runs inside the executor's own process.
 
-Choose the backend with the risk in mind. In environment mode the model writes
-the shell command itself, so the command can do anything the environment
-allows. A `LocalEnvironment` and a local code executor such as
+Choose the backend with the risk in mind. ADK builds the command from the
+validated script path and structured arguments rather than running a free-form
+shell string, while the script itself still runs with all privileges of the
+backend. A `LocalEnvironment` and a local code executor such as
 `UnsafeLocalCodeExecutor` both run on the machine that hosts your agent with no
 isolation. Use a sandboxed environment or executor when the skills, or the
 users talking to the agent, are not fully trusted.

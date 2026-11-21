@@ -55,7 +55,9 @@ def is_single_agent_directory(path: Path | str) -> bool:
     return False
 
 
-# Special agents directory for agents with names starting with double underscore
+# Deprecated: built-in `__` agents are no longer supported and nothing reads
+# this constant. It is kept only so the public name does not disappear before
+# the next release; remove it after that.
 SPECIAL_AGENTS_DIR = os.path.join(
     os.path.dirname(__file__), "..", "built_in_agents"
 )
@@ -79,7 +81,7 @@ class AgentLoader(BaseAgentLoader):
     agents_path = Path(agents_dir).resolve()
     self._init_agent_mode(agents_path)
     self._original_sys_path = None
-    self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
+    self._agent_cache: dict[str, Union[BaseNode, App]] = {}
     self._root_agent_type_mismatches: list[tuple[str, str, bool]] = []
 
   def _init_agent_mode(self, agents_path: Path) -> None:
@@ -119,7 +121,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _load_from_module_or_package(
       self, agent_name: str
-  ) -> Optional[Union[BaseAgent, App]]:
+  ) -> Optional[Union[BaseNode, App]]:
     # Load for case: Import "{agent_name}" (as a package or module)
     # Covers structures:
     #   a) agents_dir/{agent_name}.py (with root_agent in the module)
@@ -174,7 +176,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _load_from_submodule(
       self, agent_name: str
-  ) -> Optional[Union[BaseAgent], App]:
+  ) -> Optional[Union[BaseNode, App]]:
     # Load for case: Import "{agent_name}.agent" and look for "root_agent"
     # Covers structure: agents_dir/{agent_name}/agent.py (with root_agent defined in the module)
     try:
@@ -230,7 +232,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _load_from_yaml_config(
       self, agent_name: str, agents_dir: str
-  ) -> Optional[BaseAgent]:
+  ) -> Optional[BaseNode]:
     # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
     config_path = os.path.join(agents_dir, agent_name, "root_agent.yaml")
     try:
@@ -251,24 +253,20 @@ class AgentLoader(BaseAgentLoader):
       ) + e.args[1:]
       raise e
 
-  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+  # `\Z` rather than `$`, which also matches just before a trailing newline.
+  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+\Z")
 
   def _validate_agent_name(self, agent_name: str) -> None:
     """Validate agent name to prevent arbitrary module imports."""
-    # Strip the special agent prefix for validation
     if agent_name.startswith("__"):
-      if not self._allow_special_agents:
-        raise PermissionError(
-            f"Loading special internal agent {agent_name!r} is disabled in this"
-            " loader configuration."
-        )
-      name_to_check = agent_name[2:]
-      check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
-    else:
-      name_to_check = agent_name
-      check_dir = self.agents_dir
+      raise ValueError(
+          f"Invalid agent name: {agent_name!r}. Names starting with '__' are"
+          " reserved."
+      )
+    name_to_check = agent_name
+    check_dir = self.agents_dir
 
-    if self._is_single_agent and not agent_name.startswith("__"):
+    if self._is_single_agent:
       if agent_name != self._single_agent_name:
         raise ValueError(
             f"Agent not found: {agent_name!r}. In single agent mode, only "
@@ -290,40 +288,13 @@ class AgentLoader(BaseAgentLoader):
           f" exists in '{os.path.join(check_dir, name_to_check)}'."
       )
 
-  def _perform_load(self, agent_name: str) -> Union[BaseAgent, App]:
+  def _perform_load(self, agent_name: str) -> Union[BaseNode, App]:
     """Internal logic to load an agent"""
     self._root_agent_type_mismatches = []
     self._validate_agent_name(agent_name)
-    # Determine the directory to use for loading
-    if agent_name.startswith("__"):
-      # Special agent: use special agents directory
-      agents_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
-      # Remove the double underscore prefix for the actual agent name
-      actual_agent_name = agent_name[2:]
-      # If this special agents directory is part of a package (has __init__.py
-      # up the tree), build a fully-qualified module path so the built-in agent
-      # can continue to use relative imports. Otherwise, fall back to importing
-      # by module name relative to agents_dir.
-      module_base_name = actual_agent_name
-      package_parts: list[str] = []
-      package_root: Optional[Path] = None
-      current_dir = Path(agents_dir).resolve()
-      while True:
-        if not (current_dir / "__init__.py").is_file():
-          package_root = current_dir
-          break
-        package_parts.append(current_dir.name)
-        current_dir = current_dir.parent
-      if package_parts:
-        package_parts.reverse()
-        module_base_name = ".".join(package_parts + [actual_agent_name])
-        if str(package_root) not in sys.path:
-          sys.path.insert(0, str(package_root))
-    else:
-      # Regular agent: use the configured agents directory
-      agents_dir = self.agents_dir
-      actual_agent_name = agent_name
-      module_base_name = actual_agent_name
+    agents_dir = self.agents_dir
+    actual_agent_name = agent_name
+    module_base_name = actual_agent_name
 
     # Add agents_dir to sys.path
     if agents_dir not in sys.path:
@@ -409,16 +380,12 @@ class AgentLoader(BaseAgentLoader):
   def _record_origin_metadata(
       self,
       *,
-      loaded: Union[BaseAgent, App],
+      loaded: Union[BaseNode, App],
       expected_app_name: str,
       module_name: Optional[str],
       agents_dir: str,
   ) -> None:
     """Annotates loaded agent/App with its origin for later diagnostics."""
-
-    # Do not attach metadata for built-in agents (double underscore names).
-    if expected_app_name.startswith("__"):
-      return
 
     origin_path: Optional[Path] = None
     if module_name:
@@ -445,7 +412,7 @@ class AgentLoader(BaseAgentLoader):
       _attach_metadata(loaded)
 
   @override
-  def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
+  def load_agent(self, agent_name: str) -> Union[BaseNode, App]:
     """Load an agent module (with caching & .env) and return its root_agent.
 
     Raises:

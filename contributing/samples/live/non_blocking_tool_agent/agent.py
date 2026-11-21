@@ -14,14 +14,13 @@
 
 import asyncio
 from typing import Any
-from typing import Dict
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
 
-async def slow_background_task(task_description: str) -> Dict[str, Any]:
+async def slow_background_task(task_description: str) -> dict[str, Any]:
   """Performs a long-running background computation or data retrieval.
 
   Args:
@@ -50,7 +49,7 @@ non_blocking_tool.behavior = types.Behavior.NON_BLOCKING
 
 
 root_agent = Agent(
-    model="gemini-live-2.5-flash-native-audio",
+    model="gemini-3.8-live",
     name="non_blocking_tool_agent",
     description=(
         "Agent demonstrating non-blocking tool execution in ADK Live mode."

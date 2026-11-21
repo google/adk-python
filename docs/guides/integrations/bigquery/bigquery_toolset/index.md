@@ -102,6 +102,36 @@ toolset = BigQueryToolset(
 )
 ```
 
+### Pairing with built-in BigQuery skills
+
+The `google.adk.integrations.bigquery` package ships with first-party BigQuery
+skills (`"bigquery-ai-ml"` and `"bigquery-graph"`) that follow the
+[agentskills.io](https://agentskills.io) specification. You can load them via
+`get_bigquery_skill` and attach them alongside `BigQueryToolset` using
+`SkillToolset` to give your agent curated guidance for BigQuery AI/ML functions
+and Graph Query Language (GQL) or SQL/PGQ queries:
+
+```python
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.integrations.bigquery import BigQueryToolset
+from google.adk.integrations.bigquery import get_bigquery_skill
+from google.adk.tools.skill_toolset import SkillToolset
+
+bigquery_toolset = BigQueryToolset()
+bigquery_skills = SkillToolset(
+    skills=[
+        get_bigquery_skill("bigquery-ai-ml"),
+        get_bigquery_skill("bigquery-graph"),
+    ]
+)
+
+agent = LlmAgent(
+    name="bigquery_analyst",
+    instruction="Analyze BigQuery datasets and run AI/ML or graph queries.",
+    tools=[bigquery_toolset, bigquery_skills],
+)
+```
+
 ## Limitations
 
 The toolset is limited to the specific operations defined in its internal tool

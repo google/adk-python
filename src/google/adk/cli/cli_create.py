@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import keyword
 import os
 from typing import Optional
 
@@ -226,6 +227,12 @@ def run_cmd(
     validate_app_name(app_name)
   except ValueError as exc:
     raise click.BadParameter(str(exc)) from exc
+
+  if not app_name.isidentifier() or keyword.iskeyword(app_name):
+    raise click.BadParameter(
+        f"Invalid agent name '{app_name}': must be a valid Python identifier"
+        " (e.g. 'my_agent', not 'my-agent') and cannot be a Python keyword."
+    )
 
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw

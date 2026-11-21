@@ -16,9 +16,6 @@ import contextvars
 from enum import Enum
 from functools import partial
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
@@ -39,39 +36,39 @@ class CallbackType(Enum):
 
 class AsyncBeforeToolCallback:
 
-  def __init__(self, mock_response: Dict[str, Any]):
+  def __init__(self, mock_response: dict[str, Any]):
     self.mock_response = mock_response
 
   async def __call__(
       self,
       tool: FunctionTool,
-      args: Dict[str, Any],
+      args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[Dict[str, Any]]:
+  ) -> dict[str, Any] | None:
     return self.mock_response
 
 
 class AsyncAfterToolCallback:
 
-  def __init__(self, mock_response: Dict[str, Any]):
+  def __init__(self, mock_response: dict[str, Any]):
     self.mock_response = mock_response
 
   async def __call__(
       self,
       tool: FunctionTool,
-      args: Dict[str, Any],
+      args: dict[str, Any],
       tool_context: ToolContext,
-      tool_response: Dict[str, Any],
-  ) -> Optional[Dict[str, Any]]:
+      tool_response: dict[str, Any],
+  ) -> dict[str, Any] | None:
     return self.mock_response
 
 
 async def invoke_tool_with_callbacks_live(
     before_cb=None, after_cb=None
-) -> Optional[Event]:
+) -> Event | None:
   """Test helper to invoke a tool with callbacks using handle_function_calls_live."""
 
-  def simple_fn(**kwargs) -> Dict[str, Any]:
+  def simple_fn(**kwargs) -> dict[str, Any]:
     return {"initial": "response"}
 
   tool = FunctionTool(simple_fn)
@@ -104,25 +101,25 @@ async def invoke_tool_with_callbacks_live(
 
 def mock_sync_before_cb_side_effect(
     tool, args, tool_context, ret_value=None
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
   return ret_value
 
 
 async def mock_async_before_cb_side_effect(
     tool, args, tool_context, ret_value=None
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
   return ret_value
 
 
 def mock_sync_after_cb_side_effect(
     tool, args, tool_context, tool_response, ret_value=None
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
   return ret_value
 
 
 async def mock_async_after_cb_side_effect(
     tool, args, tool_context, tool_response, ret_value=None
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
   return ret_value
 
 
@@ -212,9 +209,9 @@ CALLBACK_PARAMS = [
 )
 @pytest.mark.asyncio
 async def test_live_before_tool_callbacks_chain(
-    callbacks: List[tuple[Optional[Dict[str, Any]], int]],
-    expected_response: Dict[str, Any],
-    expected_calls: List[int],
+    callbacks: list[tuple[dict[str, Any] | None, int]],
+    expected_response: dict[str, Any],
+    expected_calls: list[int],
 ):
   """Test that before tool callback chains work correctly in live mode."""
   mock_before_cbs = []
@@ -266,9 +263,9 @@ async def test_live_before_tool_callbacks_chain(
 )
 @pytest.mark.asyncio
 async def test_live_after_tool_callbacks_chain(
-    callbacks: List[tuple[Optional[Dict[str, Any]], int]],
-    expected_response: Dict[str, Any],
-    expected_calls: List[int],
+    callbacks: list[tuple[dict[str, Any] | None, int]],
+    expected_response: dict[str, Any],
+    expected_calls: list[int],
 ):
   """Test that after tool callback chains work correctly in live mode."""
   mock_after_cbs = []
@@ -348,7 +345,7 @@ async def test_live_callback_compatibility_with_async():
   # Test with async version
   from google.adk.flows.llm_flows.functions import handle_function_calls_async
 
-  def simple_fn(**kwargs) -> Dict[str, Any]:
+  def simple_fn(**kwargs) -> dict[str, Any]:
     return {"initial": "response"}
 
   tool = FunctionTool(simple_fn)
@@ -396,7 +393,7 @@ async def test_live_on_tool_error_callback_tool_not_found_noop():
   def noop_on_tool_error_callback(tool, args, tool_context, error):
     return None
 
-  def simple_fn(**kwargs) -> Dict[str, Any]:
+  def simple_fn(**kwargs) -> dict[str, Any]:
     return {"initial": "response"}
 
   tool = FunctionTool(simple_fn)
@@ -435,7 +432,7 @@ async def test_live_on_tool_error_callback_tool_not_found_modify_tool_response()
   def mock_on_tool_error_callback(tool, args, tool_context, error):
     return {"result": "on_tool_error_callback_response"}
 
-  def simple_fn(**kwargs) -> Dict[str, Any]:
+  def simple_fn(**kwargs) -> dict[str, Any]:
     return {"initial": "response"}
 
   tool = FunctionTool(simple_fn)
@@ -569,7 +566,7 @@ _live_ambient_value: contextvars.ContextVar[str] = contextvars.ContextVar(
 async def test_live_before_tool_callback_contextvar_reaches_the_tool():
   """A contextvar set in before_tool_callback is still set when the tool runs."""
 
-  def read_ambient_value() -> Dict[str, Any]:
+  def read_ambient_value() -> dict[str, Any]:
     return {"result": _live_ambient_value.get()}
 
   def before_cb(tool, args, tool_context) -> None:

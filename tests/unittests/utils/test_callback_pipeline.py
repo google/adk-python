@@ -14,10 +14,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest import mock
 
 from google.adk.agents import CallbackType
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.utils._callback_pipeline import _invoke_cleanup_callback
 from google.adk.utils._callback_pipeline import _normalize_callbacks
 from google.adk.utils._callback_pipeline import _run_callbacks
 from google.adk.utils._callback_pipeline import _stop_on_non_none
@@ -570,3 +572,116 @@ async def test_run_callbacks_forwards_positional_args_with_callback_type():
   assert result_with_type == 'item-ok'
   assert observed_type == CallbackType.BEFORE_AGENT
   assert callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_none_is_noop(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """A missing cleanup callback returns None without logging."""
+  await _invoke_cleanup_callback(
+      None,
+      owner_kind='Plugin',
+      owner_name='p1',
+      callback_name='on_tool_error_callback',
+      subject='tool',
+      subject_name='my_tool',
+  )
+
+  assert not caplog.records
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_invokes_sync_and_async() -> None:
+  """Cleanup callbacks run sync and async callables and adapt args."""
+  seen: list[tuple[str, str, type[BaseException]]] = []
+
+  def sync_cb(ctx: str, req: str, err: BaseException) -> dict[str, str]:
+    seen.append(('sync', f'{ctx}:{req}', type(err)))
+    return {'ignored': 'yes'}
+
+  async def async_cb(
+      *,
+      callback_context: str,
+      llm_request: str,
+      error: BaseException,
+  ) -> dict[str, str]:
+    await asyncio.sleep(0)
+    seen.append(('async', f'{callback_context}:{llm_request}', type(error)))
+    return {'ignored': 'yes'}
+
+  cancelled = asyncio.CancelledError('aborted')
+  for cb in (sync_cb, async_cb):
+    await _invoke_cleanup_callback(
+        cb,
+        owner_kind='Agent',
+        owner_name='root_agent',
+        callback_name='on_model_error callback',
+        subject='model call for agent',
+        subject_name='root_agent',
+        error=cancelled,
+        llm_request='req_1',
+        callback_context='ctx_1',
+    )
+
+  assert seen == [
+      ('sync', 'ctx_1:req_1', asyncio.CancelledError),
+      ('async', 'ctx_1:req_1', asyncio.CancelledError),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_swallows_and_logs_cancelled_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """CancelledError raised inside a cleanup callback is logged and swallowed."""
+
+  async def cancelling_cb(**kwargs: object) -> None:
+    del kwargs
+    await asyncio.sleep(0)
+    raise asyncio.CancelledError()
+
+  await _invoke_cleanup_callback(
+      cancelling_cb,
+      owner_kind='Plugin',
+      owner_name='plugin_c',
+      callback_name='on_tool_error_callback',
+      subject='tool',
+      subject_name='slow_tool',
+      error=asyncio.CancelledError(),
+  )
+
+  assert (
+      "Plugin 'plugin_c' on_tool_error_callback was cancelled while tool"
+      " 'slow_tool' was being cancelled; continuing remaining cleanup"
+      ' callbacks.'
+      in caplog.text
+  )
+
+
+@pytest.mark.asyncio
+async def test_invoke_cleanup_callback_swallows_and_logs_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Exceptions raised inside a cleanup callback are logged and swallowed."""
+
+  def failing_cb(**kwargs: object) -> None:
+    del kwargs
+    raise RuntimeError('cleanup boom')
+
+  await _invoke_cleanup_callback(
+      failing_cb,
+      owner_kind='Agent',
+      owner_name='root_agent',
+      callback_name='on_model_error callback',
+      subject='model call for agent',
+      subject_name='root_agent',
+      error=asyncio.CancelledError(),
+  )
+
+  assert (
+      "Agent 'root_agent' on_model_error callback raised while model call for"
+      " agent 'root_agent' was being cancelled; the cancellation propagates"
+      ' regardless.'
+      in caplog.text
+  )

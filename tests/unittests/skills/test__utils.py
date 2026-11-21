@@ -716,6 +716,33 @@ def test_list_skills_in_dir_on_error_can_abort(tmp_path):
     list_skills_in_dir(_skills_dir_with_one_invalid(tmp_path), on_error=strict)
 
 
+def test_list_skills_in_dir_reports_unreadable_skill_md_to_on_error(tmp_path):
+  """A SKILL.md that cannot be read is reported and other skills are kept."""
+  skills_dir = tmp_path / "skills"
+  for name in ("good", "blocked"):
+    (skills_dir / name).mkdir(parents=True)
+    (skills_dir / name / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: desc\n---\nbody"
+    )
+  real_read_text = pathlib.Path.read_text
+
+  def fake_read_text(self, *args, **kwargs):
+    if self.parent.name == "blocked":
+      raise PermissionError(13, "Permission denied", str(self))
+    return real_read_text(self, *args, **kwargs)
+
+  failures = []
+  with mock.patch.object(pathlib.Path, "read_text", fake_read_text):
+    skills = list_skills_in_dir(
+        skills_dir,
+        on_error=lambda skill_id, error: failures.append((skill_id, error)),
+    )
+
+  assert list(skills) == ["good"]
+  assert [skill_id for skill_id, _ in failures] == ["blocked"]
+  assert isinstance(failures[0][1], PermissionError)
+
+
 def test__load_skill_from_zip_bytes():
   """Tests loading a skill directly from in-memory zip file bytes."""
 

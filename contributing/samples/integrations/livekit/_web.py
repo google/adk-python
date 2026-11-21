@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -27,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 STATIC_DIR = Path(__file__).parent / "client" / "static"
 
 
-def make_app(lifespan: Optional[Any] = None) -> FastAPI:
+def make_app(lifespan: Any | None = None) -> FastAPI:
   """Builds the FastAPI app that serves the browser client."""
   app = FastAPI(lifespan=lifespan)
   app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

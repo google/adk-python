@@ -139,6 +139,7 @@ class AgentEvaluator:
       output_file: Optional[str] = None,
       app_name: Optional[str] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      parallelism: int | None = None,
   ) -> None:
     """Evaluates an agent using the given EvalSet.
 
@@ -171,6 +172,9 @@ class AgentEvaluator:
         persisting eval set results.
       eval_set_results_manager: Optional manager used to persist the eval set
         evaluation result as `*.evalset_result.json`.
+      parallelism: Maximum number of eval cases to run in parallel during
+        inference and metric evaluation. Overrides `eval_config.parallelism`;
+        when neither is set, `LocalEvalService` uses its built-in default (4).
 
     Raises:
       TypeError: If `agent_module` is not a module path, `BaseNode`, or `App`,
@@ -179,6 +183,9 @@ class AgentEvaluator:
     """
     if num_runs < 1:
       raise ValueError(f"`num_runs` must be at least 1, got {num_runs}.")
+
+    if parallelism is not None and parallelism < 1:
+      raise ValueError(f"`parallelism` must be at least 1, got {parallelism}.")
 
     if eval_set_results_manager is not None and not app_name:
       raise ValueError(
@@ -238,6 +245,8 @@ class AgentEvaluator:
     metric_evaluator_registry = register_custom_metrics_from_config(
         eval_config, DEFAULT_METRIC_EVALUATOR_REGISTRY.fork()
     )
+    if parallelism is None:
+      parallelism = eval_config.parallelism
 
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
@@ -252,6 +261,7 @@ class AgentEvaluator:
         app=app,
         eval_set_results_manager=eval_set_results_manager,
         metric_evaluator_registry=metric_evaluator_registry,
+        parallelism=parallelism,
     )
 
     # Step 2: Post-process the results!
@@ -320,6 +330,7 @@ class AgentEvaluator:
       output_file: Optional[str] = None,
       app_name: Optional[str] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      parallelism: int | None = None,
   ) -> None:
     """Evaluates an Agent given eval data.
 
@@ -353,6 +364,10 @@ class AgentEvaluator:
         persisting eval set results.
       eval_set_results_manager: Optional manager used to persist the eval set
         evaluation result as `*.evalset_result.json`.
+      parallelism: Maximum number of eval cases to run in parallel during
+        inference and metric evaluation. Overrides `parallelism` in each test
+        file's eval config; when neither is set, `LocalEvalService` uses its
+        built-in default (4).
 
     Raises:
       TypeError: If `agent_module` is not a module path, `BaseNode`, or `App`,
@@ -361,6 +376,9 @@ class AgentEvaluator:
     """
     if num_runs < 1:
       raise ValueError(f"`num_runs` must be at least 1, got {num_runs}.")
+
+    if parallelism is not None and parallelism < 1:
+      raise ValueError(f"`parallelism` must be at least 1, got {parallelism}.")
 
     if eval_set_results_manager is not None and not app_name:
       raise ValueError(
@@ -403,6 +421,7 @@ class AgentEvaluator:
           eval_set_results_manager=eval_set_results_manager,
           artifact_service=artifact_service,
           output_file=output_file,
+          parallelism=parallelism,
       )
 
   @staticmethod
@@ -784,6 +803,7 @@ class AgentEvaluator:
       app_name: str,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
+      parallelism: int | None = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -819,6 +839,8 @@ class AgentEvaluator:
       )
     else:
       inference_config = InferenceConfig(use_live=False)
+    if parallelism is not None:
+      inference_config.parallelism = parallelism
 
     inference_requests = [
         InferenceRequest(
@@ -844,9 +866,12 @@ class AgentEvaluator:
     # As we perform more than one run for an eval case, we collect eval results
     # by eval id.
     eval_results_by_eval_id: dict[str, list[EvalCaseResult]] = {}
+    evaluate_config = EvaluateConfig(eval_metrics=eval_metrics)
+    if parallelism is not None:
+      evaluate_config.parallelism = parallelism
     evaluate_request = EvaluateRequest(
         inference_results=inference_results,
-        evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
+        evaluate_config=evaluate_config,
     )
     async with Aclosing(
         eval_service.evaluate(evaluate_request=evaluate_request)

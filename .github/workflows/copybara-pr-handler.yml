@@ -39,8 +39,17 @@ jobs:
       contents: read
 
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Find the PRs the pushed commits import
+        id: imported
+        if: github.event_name == 'push'
+        run: python3 scripts/find_imported_prs.py "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
       - name: Check for Copybara commits and close PRs
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PRS_TO_CLOSE: ${{ steps.imported.outputs.prs }}
         with:
           github-token: ${{ secrets.ADK_TRIAGE_AGENT }}
           script: |
@@ -59,45 +68,9 @@ jobs:
 
               prsToClose.push({ prNumber, commitSha });
             } else {
-              // Normal mode: process commits from push event
-              const commits = context.payload.commits || [];
-              console.log(`Found ${commits.length} commit(s) in this push`);
-
-              // Process each commit
-              for (const commit of commits) {
-                const sha = commit.id;
-                const committer = commit.committer.name;
-                const message = commit.message;
-
-                console.log(`\n--- Processing commit ${sha.substring(0, 7)} ---`);
-                console.log(`Committer: ${committer}`);
-
-                // Check if this is a Copybara commit or has a pull request reference
-                const prRegex = /Merges?:?\s+(?:https:\/\/github\.com\/google\/adk-python\/pull\/|#)(\d+)/i;
-                const isCopybara = committer === 'Copybara-Service' ||
-                                   commit.author?.email === 'genai-sdk-bot@google.com' ||
-                                   message.includes('GitOrigin-RevId:') ||
-                                   message.includes('PiperOrigin-RevId:') ||
-                                   prRegex.test(message);
-
-                if (!isCopybara) {
-                  console.log('Not a Copybara commit, skipping');
-                  continue;
-                }
-
-                // Extract PR number from commit message
-                const prMatch = message.match(prRegex);
-
-                if (!prMatch) {
-                  console.log('No PR number found in Copybara commit message');
-                  continue;
-                }
-
-                const prNumber = parseInt(prMatch[1]);
-                const commitSha = sha.substring(0, 7);
-
-                prsToClose.push({ prNumber, commitSha });
-              }
+              // Normal mode: the PRs scripts/find_imported_prs.py found
+              prsToClose = JSON.parse(process.env.PRS_TO_CLOSE || '[]');
+              console.log(`Found ${prsToClose.length} imported PR(s) in this push`);
             }
 
             // Process PRs to close

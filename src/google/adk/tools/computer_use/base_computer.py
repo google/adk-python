@@ -39,11 +39,12 @@ class ComputerState(pydantic.BaseModel):
   """Represents the current state of the computer environment.
 
   Attributes:
-    screenshot: The screenshot in PNG format as bytes.
+    screenshot: The screenshot in PNG format as bytes, or None if none was
+      captured.
     url: The current URL of the webpage being displayed.
   """
 
-  screenshot: bytes = pydantic.Field(
+  screenshot: Optional[bytes] = pydantic.Field(
       default=None, description="Screenshot in PNG format"
   )
   url: Optional[str] = pydantic.Field(

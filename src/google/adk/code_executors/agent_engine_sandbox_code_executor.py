@@ -123,6 +123,36 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       self.agent_engine_resource_name = agent_engine_resource_name
 
   @override
+  def __deepcopy__(
+      self, memo: dict[int, Any] | None = None
+  ) -> AgentEngineSandboxCodeExecutor:
+    """Supports deepcopy (e.g., for AdkApp.clone()) and serialization."""
+    if memo is None:
+      memo = {}
+    if self._agent_engine_creation_lock is not None:
+      memo[id(self._agent_engine_creation_lock)] = threading.Lock()
+    return super().__deepcopy__(memo=memo)
+
+  def __getstate__(self) -> dict[str, Any]:
+    """Excludes threading.Lock from serialization state for cloudpickle."""
+    state = super().__getstate__()
+    if (
+        '__pydantic_private__' in state
+        and state['__pydantic_private__'] is not None
+    ):
+      state['__pydantic_private__'] = {
+          k: v
+          for k, v in state['__pydantic_private__'].items()
+          if k != '_agent_engine_creation_lock'
+      }
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    """Restores state and reinitializes threading.Lock upon unpickling."""
+    super().__setstate__(state)
+    self._agent_engine_creation_lock = threading.Lock()
+
+  @override
   def execute_code(
       self,
       invocation_context: InvocationContext,

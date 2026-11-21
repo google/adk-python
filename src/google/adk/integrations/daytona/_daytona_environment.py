@@ -16,10 +16,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
+import contextlib
 import logging
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+from typing import cast
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
@@ -32,6 +37,21 @@ if TYPE_CHECKING:
   from daytona import AsyncSandbox
   from daytona import ExecuteResponse
   from daytona import Image
+
+  from ...agents.context import Context
+
+
+class _ClosableBytesStream(Protocol):
+
+  def __aiter__(self) -> AsyncIterator[bytes]:
+    ...
+
+  async def __anext__(self) -> bytes:
+    ...
+
+  async def aclose(self) -> object:
+    ...
+
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -77,12 +97,11 @@ class DaytonaEnvironment(BaseEnvironment):
   @property
   @override
   def working_dir(self) -> Path:
-    if self._sandbox is None:
-      raise RuntimeError("Sandbox is not started. Call initialize() first.")
+    # A fixed path in every sandbox, known before `initialize` starts one.
     return Path(_SANDBOX_HOME)
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     if self._sandbox is not None:
       return
     self._sandbox = await self._create_sandbox()
@@ -106,6 +125,7 @@ class DaytonaEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     sandbox = await self._ensure_sandbox()
 
@@ -135,7 +155,12 @@ class DaytonaEnvironment(BaseEnvironment):
     )
 
   @override
-  async def read_file(self, path: str | os.PathLike[str]) -> bytes:
+  async def read_file(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> bytes:
     sandbox = await self._ensure_sandbox()
     resolved = self._resolve_path(path)
     try:
@@ -151,8 +176,51 @@ class DaytonaEnvironment(BaseEnvironment):
       raise e
 
   @override
+  async def read_file_stream(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> AsyncGenerator[bytes, None]:
+    from daytona import DaytonaError
+    from daytona import DaytonaNotFoundError
+
+    sandbox = await self._ensure_sandbox()
+    resolved = self._resolve_path(path)
+    received = False
+    try:
+      # SDK stub types the stream as AsyncIterator, omitting aclose().
+      chunks = cast(
+          _ClosableBytesStream,
+          await sandbox.fs.download_file_stream(resolved),
+      )
+      async with contextlib.aclosing(chunks):
+        async for chunk in chunks:
+          received = True
+          yield bytes(chunk)
+      return
+    except DaytonaNotFoundError as e:
+      raise FileNotFoundError(resolved) from e
+    except DaytonaError as e:
+      # download_file_stream raises this for an empty file, where read_file
+      # returns b''; only then fall back to read_file so both agree.
+      if (
+          received
+          or e.status_code is not None
+          or not str(e).endswith(f"No file data received for: {resolved}")
+      ):
+        raise
+    content = await self.read_file(path)
+    if content:
+      yield content
+
+  @override
   async def write_file(
-      self, path: str | os.PathLike[str], content: str | bytes
+      self,
+      path: str | os.PathLike[str],
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
   ) -> None:
     sandbox = await self._ensure_sandbox()
     resolved = self._resolve_path(path)

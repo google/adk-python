@@ -15,7 +15,6 @@
 import os
 import sys
 from typing import Any
-from typing import Optional
 from urllib.parse import urljoin
 
 from adk_answering_agent.settings import GITHUB_GRAPHQL_URL
@@ -24,11 +23,6 @@ from google.adk.runners import Runner
 from google.genai import types
 import requests
 
-headers = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json",
-}
-
 
 def error_response(error_message: str) -> dict[str, Any]:
   return {"status": "error", "error_message": error_message}
@@ -36,6 +30,12 @@ def error_response(error_message: str) -> dict[str, Any]:
 
 def run_graphql_query(query: str, variables: dict[str, Any]) -> dict[str, Any]:
   """Executes a GraphQL query."""
+  if not GITHUB_TOKEN:
+    raise ValueError("GITHUB_TOKEN environment variable not set")
+  headers = {
+      "Authorization": f"token {GITHUB_TOKEN}",
+      "Accept": "application/vnd.github.v3+json",
+  }
   payload = {"query": query, "variables": variables}
   response = requests.post(
       GITHUB_GRAPHQL_URL, headers=headers, json=payload, timeout=60
@@ -80,7 +80,7 @@ def _generate_github_url(repo_name: str, relative_path: str) -> str:
   return f"https://github.com/google/{repo_name}/blob/main/{relative_path}"
 
 
-def convert_gcs_to_https(gcs_uri: str) -> Optional[str]:
+def convert_gcs_to_https(gcs_uri: str) -> str | None:
   """Converts a GCS file link into a publicly accessible HTTPS link.
 
   Args:

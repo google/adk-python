@@ -13,8 +13,6 @@
 # limitations under the License.
 
 
-from typing import Optional
-
 from google.adk.agents import Agent
 from google.adk.agents import ParallelAgent
 from google.adk.agents.base_agent import BeforeAgentCallback
@@ -29,7 +27,7 @@ def before_agent_callback_check_relevance(
 ) -> BeforeAgentCallback:
   """Callback to check if the state is relevant before executing the agent."""
 
-  def callback(callback_context: CallbackContext) -> Optional[types.Content]:
+  def callback(callback_context: CallbackContext) -> types.Content | None:
     """Check if the state is relevant."""
     if agent_name not in callback_context.state["execution_agents"]:
       return types.Content(

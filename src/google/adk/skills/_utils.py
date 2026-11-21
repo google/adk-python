@@ -610,7 +610,7 @@ def _list_skills_in_dir(
             f" name '{skill_id}'."
         )
       skills[skill_id] = frontmatter
-    except (FileNotFoundError, ValueError, ValidationError) as e:
+    except (OSError, ValueError, ValidationError) as e:
       if on_error is not None:
         on_error(skill_id, e)
         continue

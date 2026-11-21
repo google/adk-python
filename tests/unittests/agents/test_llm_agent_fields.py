@@ -17,7 +17,6 @@
 import asyncio
 import logging
 from typing import Any
-from typing import Optional
 from unittest import mock
 import warnings
 
@@ -47,7 +46,7 @@ import pytest
 
 
 async def _create_readonly_context(
-    agent: LlmAgent, state: Optional[dict[str, Any]] = None
+    agent: LlmAgent, state: dict[str, Any] | None = None
 ) -> ReadonlyContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(

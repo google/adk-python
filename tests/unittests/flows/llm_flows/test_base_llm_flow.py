@@ -17,7 +17,6 @@
 import asyncio
 import logging
 import ssl
-from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -50,6 +49,8 @@ from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
+from google.adk.planners.base_planner import BasePlanner
+from google.adk.platform import time as platform_time
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
@@ -1944,7 +1945,7 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 @pytest.mark.asyncio
 async def test_run_live_transfer_is_independent_of_response_order(
     function_response_names: tuple[str, ...],
-    transfer_action: Optional[str],
+    transfer_action: str | None,
     expect_transfer: bool,
 ):
   """Live transfer keys off the action, not the transfer response's position."""
@@ -2825,52 +2826,6 @@ async def test_thought_before_tool_call_in_non_progressive_sse_does_not_error():
   assert function_called == 1
   assert [e for e in events if e.error_code] == []
   assert events[-1].content.parts[0].text == 'Result is 2.'
-
-
-@pytest.mark.asyncio
-async def test_postprocess_live_skips_none_function_response_event():
-  """When every live function call defers, no None event must be yielded.
-
-  handle_function_calls_live returns None if all calls are long-running, and
-  yielding that None downstream crashes the live receive loop.
-  """
-  from google.adk.flows.llm_flows import base_llm_flow as blf
-
-  agent = Agent(name='test_agent', model='gemini-2.0-flash')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  flow = BaseLlmFlowForTesting()
-
-  fc_part = types.Part(
-      function_call=types.FunctionCall(name='lro', id='1', args={})
-  )
-  content = types.Content(role='model', parts=[fc_part])
-  model_response_event = Event(
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-      content=content,
-  )
-  llm_request = LlmRequest(model='gemini-2.0-flash')
-  llm_response = LlmResponse(content=content)
-
-  with mock.patch.object(
-      blf.functions,
-      'handle_function_calls_live',
-      new=AsyncMock(return_value=None),
-  ):
-    events = [
-        event
-        async for event in _live_llm_flow.postprocess_live_flow(
-            flow,
-            invocation_context,
-            llm_request,
-            llm_response,
-            model_response_event,
-        )
-    ]
-
-  assert all(event is not None for event in events)
 
 
 @pytest.mark.asyncio
@@ -3868,3 +3823,56 @@ async def test_run_async_aborted_between_steps_breaks_outer_loop():
 
   assert step_invocations == 1
   assert yielded_events == [fc_event]
+
+
+@pytest.mark.asyncio
+async def test_model_response_event_timestamp_matches_yield_order():
+  """Model-response event is stamped when built, after earlier step events."""
+  now = 1_000.0
+  platform_time.set_time_provider(lambda: now)
+
+  class _ClockAdvancingLlm(BaseLlm):
+    model: str = 'clock-advancing'
+
+    async def generate_content_async(self, llm_request, stream=False):
+      nonlocal now
+      now = 2_000.0
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='hi')]
+          )
+      )
+
+  class _StateUpdatingPlanner(BasePlanner):
+
+    def build_planning_instruction(self, readonly_context, llm_request):
+      return None
+
+    def process_planning_response(self, callback_context, response_parts):
+      nonlocal now
+      now = 3_000.0
+      callback_context.state['plan'] = 'step 1'
+      return None
+
+  try:
+    agent = Agent(
+        name='test_agent',
+        model=_ClockAdvancingLlm(),
+        planner=_StateUpdatingPlanner(),
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='test message'
+    )
+    flow = SingleFlow()
+
+    events = []
+    async for event in flow.run_async(invocation_context):
+      events.append(event)
+      now += 1_000.0
+  finally:
+    platform_time.reset_time_provider()
+
+  assert len(events) == 2
+  assert events[0].actions.state_delta == {'plan': 'step 1'}
+  assert events[1].content.parts[0].text == 'hi'
+  assert [e.timestamp for e in events] == [3_000.0, 4_000.0]

@@ -204,9 +204,9 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         tool_exception=TOOL_ERROR,
     ),
-    # The same turn streamed, its answer arriving in two chunks that leave
-    # `partial` unset: one inference span per turn either way, and a completion
-    # log holding the whole answer rather than whichever chunk arrived first.
+    # The same turn streamed through Gemini's aggregator, its answer arriving in
+    # two chunks: one inference span per turn either way, and a completion log
+    # holding the aggregated answer rather than the chunks.
     *semconv_matrix("streaming"),
     # Compaction scenarios. Both triggers, because they place the
     # `compact_events` span differently: token-threshold nests inside

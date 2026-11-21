@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from typing import Any
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents import CallbackType
@@ -74,7 +73,7 @@ class MockOnModelCallback(BaseModel):
     )
 
 
-def noop_callback(**kwargs) -> Optional[LlmResponse]:
+def noop_callback(**kwargs) -> LlmResponse | None:
   pass
 
 

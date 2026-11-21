@@ -28,12 +28,10 @@ from typing import Union
 from typing_extensions import override
 
 from . import envs
-from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 from ...workflow import BaseNode
 from .agent_loader import AgentLoader
 from .agent_loader import is_single_agent_directory
-from .agent_loader import SPECIAL_AGENTS_DIR
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -132,18 +130,14 @@ class NestedAgentLoader(AgentLoader):
   def _validate_agent_name(self, full_agent_name: str) -> None:
     """Validate agent name allowing dot-separated paths."""
     if full_agent_name.startswith("__"):
-      if not self._allow_special_agents:
-        raise PermissionError(
-            f"Loading special internal agent {full_agent_name!r} is disabled in"
-            " this loader configuration."
-        )
-      agent_relative_path = full_agent_name[2:]
-      check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
-    else:
-      agent_relative_path = full_agent_name
-      check_dir = self.agents_dir
+      raise ValueError(
+          f"Invalid agent name: {full_agent_name!r}. Names starting with '__'"
+          " are reserved."
+      )
+    agent_relative_path = full_agent_name
+    check_dir = self.agents_dir
 
-    if self._is_single_agent and not full_agent_name.startswith("__"):
+    if self._is_single_agent:
       if full_agent_name != self._single_agent_name:
         raise ValueError(
             f"Agent not found: {full_agent_name!r}. In single agent mode, only "
@@ -170,7 +164,7 @@ class NestedAgentLoader(AgentLoader):
       )
 
   @override
-  def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
+  def load_agent(self, agent_name: str) -> Union[BaseNode, App]:
     """Load an agent module (with caching & .env) and return its root_agent.
 
     Args:
@@ -186,33 +180,13 @@ class NestedAgentLoader(AgentLoader):
     return agent_or_app
 
   @override
-  def _perform_load(self, agent_path: str) -> Union[BaseAgent, App]:
+  def _perform_load(self, agent_path: str) -> Union[BaseNode, App]:
     """Internal logic to load an agent allowing slash-separated paths."""
     self._root_agent_type_mismatches = []
     self._validate_agent_name(agent_path)
-    # Determine the directory to use for loading
-    if agent_path.startswith("__"):
-      agents_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
-      actual_agent_name = agent_path[2:]
-      module_base_name = actual_agent_name
-      package_parts: list[str] = []
-      package_root: Optional[Path] = None
-      current_dir = Path(agents_dir).resolve()
-      while True:
-        if not (current_dir / "__init__.py").is_file():
-          package_root = current_dir
-          break
-        package_parts.append(current_dir.name)
-        current_dir = current_dir.parent
-      if package_parts:
-        package_parts.reverse()
-        module_base_name = ".".join(package_parts + [actual_agent_name])
-        if str(package_root) not in sys.path:
-          sys.path.insert(0, str(package_root))
-    else:
-      agents_dir = self.agents_dir
-      actual_agent_name = agent_path.replace(".", "/")
-      module_base_name = agent_path.replace("/", ".")
+    agents_dir = self.agents_dir
+    actual_agent_name = agent_path.replace(".", "/")
+    module_base_name = agent_path.replace("/", ".")
 
     if agents_dir not in sys.path:
       sys.path.insert(0, agents_dir)
@@ -329,16 +303,12 @@ class NestedAgentLoader(AgentLoader):
   def _record_origin_metadata(
       self,
       *,
-      loaded: Union[BaseAgent, App],
+      loaded: Union[BaseNode, App],
       expected_app_name: str,
       module_name: Optional[str],
       agents_dir: str,
   ) -> None:
     expected_full_app_name = expected_app_name
-
-    # Do not attach metadata for built-in agents (double underscore names).
-    if expected_full_app_name.startswith("__"):
-      return
 
     origin_path: Optional[Path] = None
     if module_name:

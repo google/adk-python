@@ -152,7 +152,10 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
     auth_fc_ids: set[str] = set()
     auth_responses: dict[str, Any] = {}
     for function_call_response in responses:
-      if function_call_response.name != REQUEST_EUC_FUNCTION_CALL_NAME:
+      if (
+          function_call_response.name != REQUEST_EUC_FUNCTION_CALL_NAME
+          or function_call_response.id is None
+      ):
         continue
       auth_fc_ids.add(function_call_response.id)
       auth_responses[function_call_response.id] = (
@@ -164,7 +167,10 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Store credentials and collect tools to resume.
     tools_to_resume = await _store_auth_and_collect_resume_targets(
-        events, auth_fc_ids, auth_responses, invocation_context.session.state
+        events,
+        auth_fc_ids,
+        auth_responses,
+        State(value=invocation_context.session.state, delta={}),
     )
 
     if not tools_to_resume:

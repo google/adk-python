@@ -15,7 +15,6 @@
 from enum import Enum
 from functools import partial
 from typing import Any
-from typing import List
 from typing import Optional
 from unittest import mock
 
@@ -132,9 +131,9 @@ CALLBACK_PARAMS = [
 )
 @pytest.mark.asyncio
 async def test_before_model_callbacks_chain(
-    callbacks: List[tuple[str, int]],
+    callbacks: list[tuple[str, int]],
     expected_response: str,
-    expected_calls: List[int],
+    expected_calls: list[int],
 ):
   responses = ["model_response"]
   mock_model = testing_utils.MockModel.create(responses=responses)
@@ -194,9 +193,9 @@ async def test_before_model_callbacks_chain(
 )
 @pytest.mark.asyncio
 async def test_after_model_callbacks_chain(
-    callbacks: List[tuple[str, int]],
+    callbacks: list[tuple[str, int]],
     expected_response: str,
-    expected_calls: List[int],
+    expected_calls: list[int],
 ):
   responses = ["model_response"]
   mock_model = testing_utils.MockModel.create(responses=responses)

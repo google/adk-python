@@ -26,9 +26,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import AsyncIterator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
@@ -41,9 +39,11 @@ from typing_extensions import override
 from google import genai
 
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._gcp_metadata import _get_enterprise_setting
 from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._google_client_headers import merge_tracking_http_options
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
@@ -65,6 +65,7 @@ _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
 _API_VERSION_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_API_VERSION'
+_GEMINI_API_VERSION = 'v1beta'
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -131,30 +132,30 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
-  client: Optional[genai.Client] = Field(default=None, exclude=True)
+  client: genai.Client | None = Field(default=None, exclude=True)
   """An optional pre-configured google-genai Client.
 
   When provided, this client will be used for all API calls instead of
   constructing a new one from environment variables or other attributes.
   """
 
-  client_kwargs: Optional[dict[str, Any]] = Field(
+  client_kwargs: dict[str, Any] | None = Field(
       default=None, exclude=True, repr=False
   )
   """Extra arguments to pass to the google.genai.Client constructor."""
 
-  base_url: Optional[str] = None
+  base_url: str | None = None
   """The base URL for the AI platform service endpoint."""
 
-  api_version: Optional[str] = None
+  api_version: str | None = None
   """The API version to use for the AI platform service endpoint.
 
   For the Vertex AI backend the google-genai SDK defaults to ``v1beta1``, which
   exposes the latest preview features. Production deployments that require a
   stable, SLA-eligible endpoint can set this to ``v1`` to use the GA Vertex AI
   API. When unset, the ``GOOGLE_GENAI_API_VERSION`` environment variable is
-  consulted, and finally the SDK's own default is used so existing behavior is
-  unchanged.
+  consulted, and finally the Gemini API uses ``v1beta`` and Vertex AI the SDK's
+  own default.
 
   An API version embedded in the ``base_url`` path (e.g. a trailing ``/v1``)
   takes precedence over this field.
@@ -167,7 +168,7 @@ class Gemini(BaseLlm):
   ```
   """
 
-  speech_config: Optional[types.SpeechConfig] = None
+  speech_config: types.SpeechConfig | None = None
 
   use_interactions_api: bool = False
   """Whether to use the interactions API for model invocation.
@@ -187,7 +188,7 @@ class Gemini(BaseLlm):
   ```
   """
 
-  retry_options: Optional[types.HttpRetryOptions] = None
+  retry_options: types.HttpRetryOptions | None = None
   """Allow Gemini to retry failed responses.
 
   Sample:
@@ -274,7 +275,8 @@ class Gemini(BaseLlm):
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
       llm_request.config.http_options.headers = merge_tracking_headers(
-          llm_request.config.http_options.headers or {}
+          llm_request.config.http_options.headers or {},
+          exclude_runtime_tag=self._exclude_runtime_tag(),
       )
       _, api_version = self._base_url_and_api_version
       if api_version is None:
@@ -422,6 +424,7 @@ class Gemini(BaseLlm):
         llm_request=llm_request,
         stream=stream,
         service_tier=llm_request.service_tier,
+        exclude_runtime_tag=self._exclude_runtime_tag(),
     ):
       yield llm_response
 
@@ -468,6 +471,8 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    if api_version is None and not _get_enterprise_setting(kwargs):
+      adk_http_options.api_version = _GEMINI_API_VERSION
     kwargs['http_options'] = self._with_adk_http_options(
         kwargs['http_options'], adk_http_options
     )
@@ -482,26 +487,36 @@ class Gemini(BaseLlm):
         else GoogleLLMVariant.GEMINI_API
     )
 
-  def _tracking_headers(self) -> dict[str, str]:
-    return get_tracking_headers()
+  def _exclude_runtime_tag(self) -> bool:
+    """Returns whether tracking headers must leave out the hosting runtime tag.
 
-  def _configured_api_version(self) -> Optional[str]:
+    Subclasses whose requests go to a non-Google endpoint return True.
+    """
+    return False
+
+  def _tracking_headers(self) -> dict[str, str]:
+    return get_tracking_headers(exclude_runtime_tag=self._exclude_runtime_tag())
+
+  def _configured_api_version(self) -> str | None:
     """Returns the explicitly configured API version, if any.
 
     Resolution order:
       1. The ``api_version`` field set on this instance.
-      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable.
+      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable. Its ``beta``
+         value asks for each backend's beta version, which is what an unset
+         version gets, so it counts as unset.
 
-    Returns ``None`` when neither is set, in which case the google-genai SDK's
-    own default (``v1beta1`` for Vertex AI) applies, preserving existing
-    behavior.
+    Returns ``None`` when neither is set.
     """
     if self.api_version:
       return self.api_version
-    return os.environ.get(_API_VERSION_ENV_VARIABLE_NAME) or None
+    env_api_version = os.environ.get(_API_VERSION_ENV_VARIABLE_NAME)
+    if env_api_version == 'beta':
+      return None
+    return env_api_version or None
 
   @cached_property
-  def _base_url_and_api_version(self) -> tuple[Optional[str], Optional[str]]:
+  def _base_url_and_api_version(self) -> tuple[str | None, str | None]:
     return _normalize_base_url_and_api_version(self.base_url)
 
   @cached_property
@@ -547,7 +562,7 @@ class Gemini(BaseLlm):
 
   def _with_adk_http_options(
       self,
-      http_options: Optional[types.HttpOptionsOrDict],
+      http_options: types.HttpOptionsOrDict | None,
       adk_http_options: types.HttpOptions,
   ) -> types.HttpOptions:
     """Returns a copy of http_options with ADK's options merged in.
@@ -573,7 +588,10 @@ class Gemini(BaseLlm):
     for field in ('api_version', 'base_url', 'retry_options'):
       if getattr(http_options, field) is None:
         setattr(http_options, field, getattr(adk_http_options, field))
-    http_options.headers = merge_tracking_headers(http_options.headers or {})
+    http_options.headers = merge_tracking_headers(
+        http_options.headers or {},
+        exclude_runtime_tag=self._exclude_runtime_tag(),
+    )
     return http_options
 
   @contextlib.asynccontextmanager
@@ -587,21 +605,7 @@ class Gemini(BaseLlm):
 
     Yields:
       BaseLlmConnection, the connection to the Gemini model.
-
-    Raises:
-      ValueError: If ``live_connect_config`` sets ``http_options``, which
-        google-genai only accepts on the client for the Live API.
     """
-    if (
-        llm_request.live_connect_config
-        and llm_request.live_connect_config.http_options
-    ):
-      raise ValueError(
-          'The Live API does not support request-level http_options in'
-          ' live_connect_config. Set them on the client instead, e.g.'
-          " Gemini(client_kwargs={'http_options': ...})."
-      )
-
     if self.speech_config is not None:
       llm_request.live_connect_config.speech_config = self.speech_config
 
@@ -660,12 +664,34 @@ class Gemini(BaseLlm):
         len(llm_request.contents or []),
         llm_request.live_connect_config.response_modalities,
     )
-    logger.debug('Live connect config: %s', llm_request.live_connect_config)
+    if logger.isEnabledFor(logging.DEBUG):
+      # Excludes http_options for the same reason as _build_request_log.
+      logger.debug(
+          'Live connect config: %s',
+          llm_request.live_connect_config.model_dump(
+              exclude_none=True, exclude={'http_options': True}
+          ),
+      )
     model = llm_request.model
     if model is None:
       raise ValueError('Live Gemini requests require a model name.')
+    live_connect_config = llm_request.live_connect_config
+    # ADK adds its tracking headers only to clients it builds, so a
+    # caller-supplied client lacks them. Caller http_options headers replace
+    # the client's headers of the same name, which would drop ADK's tags, so
+    # those need them merged in too.
+    if self.client is not None or live_connect_config.http_options is not None:
+      http_options = live_connect_config.http_options
+      live_connect_config = live_connect_config.model_copy(
+          update={
+              'http_options': merge_tracking_http_options(
+                  http_options.model_copy() if http_options else None,
+                  exclude_runtime_tag=self._exclude_runtime_tag(),
+              )
+          }
+      )
     async with self._live_api_client.aio.live.connect(
-        model=model, config=llm_request.live_connect_config
+        model=model, config=live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(
           live_session,
@@ -767,7 +793,7 @@ def _build_function_declaration_log(
 def _build_request_log(req: LlmRequest) -> str:
   # Find which tool contains function_declarations
   function_decls: list[types.FunctionDeclaration] = []
-  function_decl_tool_index: Optional[int] = None
+  function_decl_tool_index: int | None = None
 
   if req.config.tools:
     for idx, tool in enumerate(req.config.tools):
@@ -892,7 +918,7 @@ Raw response:
 
 
 def _remove_display_name_if_present(
-    data_obj: Union[types.Blob, types.FileData, None],
+    data_obj: types.Blob | types.FileData | None,
 ) -> None:
   """Sets display_name to None for the Gemini API (non-Vertex) backend.
 
@@ -904,8 +930,8 @@ def _remove_display_name_if_present(
 
 
 def _normalize_base_url_and_api_version(
-    base_url: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
+    base_url: str | None,
+) -> tuple[str | None, str | None]:
   """Extracts a Google API version suffix from a base URL when present.
 
   Returns:

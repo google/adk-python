@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion
@@ -27,6 +26,8 @@ from typing_extensions import deprecated
 from .env_utils import is_env_enabled
 
 if TYPE_CHECKING:
+  from google.genai import types
+
   from ..models.llm_request import LlmRequest
 
 _DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
@@ -91,7 +92,7 @@ def extract_model_name(model_string: str) -> str:
   return model_string
 
 
-def is_gemini_model(model_string: Optional[str]) -> bool:
+def is_gemini_model(model_string: str | None) -> bool:
   """Check if the model is a Gemini model using regex patterns.
 
   Args:
@@ -111,7 +112,7 @@ def is_gemini_model(model_string: Optional[str]) -> bool:
     'ADK no longer distinguishes Gemini versions internally, because Gemini'
     ' 1.x is fully deprecated. Use is_gemini_model instead.'
 )
-def is_gemini_1_model(model_string: Optional[str]) -> bool:
+def is_gemini_1_model(model_string: str | None) -> bool:
   """Check if the model is a Gemini 1.x model using regex patterns.
 
   Args:
@@ -131,7 +132,7 @@ def is_gemini_1_model(model_string: Optional[str]) -> bool:
     'ADK no longer distinguishes Gemini versions internally, because Gemini'
     ' 1.x is fully deprecated. Use is_gemini_model instead.'
 )
-def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
+def is_gemini_eap_or_2_or_above(model_string: str | None) -> bool:
   """Check if the model is a Gemini EAP or a Gemini 2.0+ model.
 
   EAP (Early Access Program) Gemini models follow a different naming
@@ -152,23 +153,11 @@ def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
   if _is_gemini_eap_model(model_string):
     return True
 
-  model_name = extract_model_name(model_string)
-  if not model_name.startswith('gemini-'):
-    return False
-
-  version_string = model_name[len('gemini-') :].split('-', 1)[0]
-  if not version_string:
-    return False
-
-  try:
-    parsed_version = Version(version_string)
-  except InvalidVersion:
-    return False
-
-  return parsed_version.major >= 2
+  major = _gemini_major_version(model_string)
+  return major is not None and major >= 2
 
 
-def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
+def _is_gemini_eap_model(model_string: str | None) -> bool:
   """Check if the model is an Early Access Program (EAP) Gemini model.
 
   Matches names of the form ``gemini-<variant>-early-exp`` optionally
@@ -196,8 +185,57 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
   )
 
 
+def _gemini_major_version(model_string: str | None) -> int | None:
+  """Returns the numeric major version of a Gemini model, or None."""
+  if not model_string or not is_gemini_model(model_string):
+    return None
+
+  model_name = extract_model_name(model_string)
+  version_string = model_name[len('gemini-') :].split('-', 1)[0]
+  try:
+    return Version(version_string).major
+  except InvalidVersion:
+    return None
+
+
+def _is_gemini_3_or_newer(model_string: str | None) -> bool:
+  """Whether `model_string` names a Gemini 3.0 or later model."""
+  major = _gemini_major_version(model_string)
+  return major is not None and major >= 3
+
+
+def _with_gemini_4_thinking_level(
+    config: types.GenerateContentConfig,
+    *,
+    model: str | None,
+    default_thinking_config: types.ThinkingConfig,
+    thinking_level: types.ThinkingLevel,
+) -> types.GenerateContentConfig:
+  """Replaces the default thinking budget with `thinking_level` on Gemini 4+.
+
+  Returns `config` itself unless `model` is Gemini 4 or later and
+  `config.thinking_config` still equals `default_thinking_config`, in which
+  case it returns a copy that sets `thinking_level` instead of the budget.
+  """
+  major = _gemini_major_version(model)
+  if (
+      major is None
+      or major < 4
+      or config.thinking_config != default_thinking_config
+  ):
+    return config
+  from google.genai import types
+
+  request_config = config.model_copy(deep=True)
+  request_config.thinking_config = types.ThinkingConfig(
+      include_thoughts=default_thinking_config.include_thoughts,
+      thinking_level=thinking_level,
+  )
+  return request_config
+
+
 def _supports_builtin_tools_with_function_calling(
-    model_string: Optional[str],
+    model_string: str | None,
 ) -> bool:
   """Whether the model accepts built-in tools alongside function declarations.
 
@@ -212,21 +250,10 @@ def _supports_builtin_tools_with_function_calling(
   Returns:
     True if the model is Gemini 3.0 or later, False otherwise.
   """
-  if not model_string:
-    return False
-
-  model_name = extract_model_name(model_string)
-  if not model_name.startswith('gemini-'):
-    return False
-
-  version_string = model_name[len('gemini-') :].split('-', 1)[0]
-  try:
-    return Version(version_string).major >= 3
-  except InvalidVersion:
-    return False
+  return _is_gemini_3_or_newer(model_string)
 
 
-def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
+def _is_gemini_3_x_live(model_string: str | None) -> bool:
   """Check if the model is a Gemini 3.x Live model.
 
   Args:
@@ -245,7 +272,7 @@ def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
   )
 
 
-def is_gemini_3_5_live_translate(model_string: Optional[str]) -> bool:
+def is_gemini_3_5_live_translate(model_string: str | None) -> bool:
   """Check if the model is a Gemini 3.5 Live Translate model.
 
   Args:

@@ -23,7 +23,6 @@ from contextlib import asynccontextmanager
 import hashlib
 import itertools
 from pathlib import Path
-import re
 import sqlite3
 from typing import Any
 from typing import Literal
@@ -423,7 +422,12 @@ class SqliteMemoryService(BaseMemoryService):
 
     async with self._get_db_connection() as db:
       # self._fts_available is initialized during _ensure_schema within _get_db_connection.
-      if self._fts_available:
+      # FTS5's unicode61 tokenizer indexes a run of Chinese, Japanese, Korean
+      # or Thai text as one token, so a word inside the run never matches.
+      # LIKE matches it as a substring instead.
+      if self._fts_available and not any(
+          _has_unspaced_script(token) for token in tokens
+      ):
         fts_query = " OR ".join(_escape_fts_token(token) for token in tokens)
         async with db.execute(
             """
@@ -550,6 +554,27 @@ def _is_latin(c: str) -> bool:
   return unicodedata.name(c, "").startswith("LATIN")
 
 
+# Chinese, Japanese and Thai put no spaces between words, and Korean attaches
+# particles to nouns. Matched as substrings of the character name so that
+# halfwidth forms such as "HALFWIDTH KATAKANA LETTER A" are included.
+_UNSPACED_SCRIPT_NAMES = (
+    "CJK UNIFIED IDEOGRAPH",
+    "CJK COMPATIBILITY IDEOGRAPH",
+    "HIRAGANA",
+    "KATAKANA",
+    "HANGUL",
+    "THAI",
+)
+
+
+def _has_unspaced_script(token: str) -> bool:
+  return any(
+      name in unicodedata.name(c, "")
+      for c in token
+      for name in _UNSPACED_SCRIPT_NAMES
+  )
+
+
 def _split_script_runs(text: str) -> str:
   if text.isascii():
     return text
@@ -563,14 +588,28 @@ def _split_script_runs(text: str) -> str:
   return " ".join(chunks)
 
 
+def _is_mark(c: str) -> bool:
+  return unicodedata.category(c).startswith("M")
+
+
+# Combining marks count as word characters: \w alone would split a word at
+# them, such as the Thai vowel and tone marks in ข้าว.
+def _is_token_char(c: str) -> bool:
+  return c.isalnum() or c in "_%" or _is_mark(c)
+
+
 def _extract_tokens(query: str) -> list[str]:
   normalized = unicodedata.normalize("NFC", query)
   normalized = _split_script_runs(normalized)
   seen = set()
   tokens = []
-  for word in re.findall(r"[\w%]+", normalized):
-    lowered = word.lower()
-    if lowered not in seen:
+  for is_token, group in itertools.groupby(normalized, _is_token_char):
+    if not is_token:
+      continue
+    # Marks with no letter before them are dropped: the emoji variation
+    # selector U+FE0F is a mark, and as a token it would match any emoji.
+    lowered = "".join(itertools.dropwhile(_is_mark, group)).lower()
+    if lowered and lowered not in seen:
       seen.add(lowered)
       tokens.append(lowered)
   return tokens

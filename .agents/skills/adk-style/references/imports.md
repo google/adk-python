@@ -21,13 +21,13 @@
 ## One name per line
 
 `isort`'s `google` profile puts every imported name on its own line, so
-`from typing import Any, Optional` becomes two lines. Ordering is
+`from typing import Any, Literal` becomes two lines. Ordering is
 case-insensitive and does not group by type, which is why `PrivateAttr` sorts
 after `model_validator`:
 
 ```python
 from typing import Any
-from typing import Optional
+from typing import Literal
 
 from pydantic import BaseModel
 from pydantic import Field

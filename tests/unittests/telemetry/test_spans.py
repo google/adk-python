@@ -14,13 +14,12 @@
 
 import json
 from typing import Any
-from typing import Dict
-from typing import Optional
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -81,6 +80,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_PROVIDER_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
@@ -95,6 +95,8 @@ from opentelemetry.semconv.attributes.url_attributes import URL_FULL
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 import pytest
+
+from ..testing_utils import MockModel
 
 try:
   from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
@@ -136,9 +138,9 @@ def mock_event_fixture():
 
 
 async def _create_invocation_context(
-    agent: LlmAgent,
-    state: Optional[dict[str, object]] = None,
-    run_config: Optional[RunConfig] = None,
+    agent: LlmAgent | None = None,
+    state: dict[str, object] | None = None,
+    run_config: RunConfig | None = None,
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -229,6 +231,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.usage.experimental.reasoning_tokens_limit', 10),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
+      mock.call(GEN_AI_RESPONSE_MODEL, 'gemini-pro'),
   ]
 
   expected_usage_attrs = {
@@ -246,6 +249,72 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       expected_calls, any_order=True
   )
   mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_sets_response_model_from_model_version(
+    monkeypatch, mock_span_fixture
+):
+  """The served model, not just the requested one, belongs on the span."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model='requested-model')
+  llm_response = LlmResponse(
+      turn_complete=True,
+      model_version='served-model-v2',
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'served-model-v2'
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_sets_response_model_from_requested_model_fallback(
+    monkeypatch, mock_span_fixture
+):
+  """The requested model serves as fallback when model_version is absent."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model='requested-model')
+  llm_response = LlmResponse(turn_complete=True)
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'requested-model'
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_omits_response_model_without_any_model(
+    monkeypatch, mock_span_fixture
+):
+  """No model is known anywhere, so the attribute must not be published."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  invocation_context = await _create_invocation_context(agent=None)
+  llm_request = LlmRequest(model='')
+  llm_response = LlmResponse(turn_complete=True)
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  set_calls = [
+      call.args[0] for call in mock_span_fixture.set_attribute.call_args_list
+  ]
+  assert GEN_AI_RESPONSE_MODEL not in set_calls
 
 
 @pytest.mark.asyncio
@@ -339,8 +408,9 @@ async def test_trace_call_llm_with_no_usage_metadata(
       mock.call('gen_ai.request.max_tokens', 1024),
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
+      mock.call(GEN_AI_RESPONSE_MODEL, 'gemini-pro'),
   ]
-  assert mock_span_fixture.set_attribute.call_count == 10
+  assert mock_span_fixture.set_attribute.call_count == 11
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -1011,6 +1081,61 @@ async def test_trace_inference_result_withholds_grounding_content_by_default(
 
 
 @pytest.mark.asyncio
+async def test_trace_inference_result_sets_response_model_from_model_version(
+    mock_span_fixture,
+):
+  """The generate_content span carries the served model, not the request's."""
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_response = LlmResponse(
+      turn_complete=True,
+      model_version='served-model-v2',
+  )
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'served-model-v2'
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_falls_back_to_inherited_agent_model(
+    mock_span_fixture,
+):
+  """Without model_version, the span falls back to the inherited agent model."""
+  sub_agent = LlmAgent(name='sub_agent')
+  LlmAgent(
+      name='parent_agent',
+      model='gemini-2.0-flash',
+      sub_agents=[sub_agent],
+  )
+  invocation_context = await _create_invocation_context(sub_agent)
+  llm_response = LlmResponse(turn_complete=True)
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'gemini-2.0-flash'
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_omits_response_model_without_any_model(
+    mock_span_fixture,
+):
+  """No model is known anywhere, so the attribute must not be published."""
+  llm_response = LlmResponse(turn_complete=True)
+
+  trace_inference_result(None, mock_span_fixture, llm_response)
+
+  set_calls = [
+      call.args[0] for call in mock_span_fixture.set_attribute.call_args_list
+  ]
+  assert GEN_AI_RESPONSE_MODEL not in set_calls
+
+
+@pytest.mark.asyncio
 async def test_trace_inference_result_allows_a_response_without_cache_metadata(
     mock_span_fixture,
 ):
@@ -1030,6 +1155,32 @@ async def test_trace_inference_result_allows_a_response_without_cache_metadata(
 
   trace_inference_result(
       invocation_context, mock_span_fixture, ResponseWithoutCacheMetadata()
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_allows_a_response_without_model_version(
+    mock_span_fixture,
+):
+  """A response without model_version falls back to the agent model."""
+
+  class ResponseWithoutModelVersion:
+    """Stands in for a caller's response type outside adk."""
+
+    partial = False
+    finish_reason = types.FinishReason.STOP
+    usage_metadata = None
+    content = None
+
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_inference_result(
+      invocation_context, mock_span_fixture, ResponseWithoutModelVersion()
+  )
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'gemini-2.5-flash'
   )
 
 
@@ -1081,9 +1232,12 @@ async def test_trace_call_llm_with_binary_content(
   # Verify basic telemetry attributes are set
   expected_calls = [
       mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call(GEN_AI_RESPONSE_MODEL, 'gemini-pro'),
   ]
-  assert mock_span_fixture.set_attribute.call_count == 7
-  mock_span_fixture.set_attribute.assert_has_calls(expected_calls)
+  assert mock_span_fixture.set_attribute.call_count == 8
+  mock_span_fixture.set_attribute.assert_has_calls(
+      expected_calls, any_order=True
+  )
 
   # Verify binary values are properly serialized as base64
   llm_request_json_str = None
@@ -1260,7 +1414,7 @@ def test_trace_tool_call_with_scalar_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
+  test_args: dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
   test_tool_call_id: str = 'tool_call_id_001'
   test_event_id: str = 'event_id_001'
   scalar_function_response: object = 'Scalar result'
@@ -1319,10 +1473,10 @@ def test_trace_tool_call_with_dict_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, object] = {
+  dict_function_response: dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -1393,7 +1547,8 @@ def test_trace_tool_call_with_dict_response(
                     ),
                 )
             },
-            'legit-client-id',
+            # A live credential is masked by type, as tool args are.
+            '<redacted>',
         ),
         (
             {
@@ -1996,10 +2151,10 @@ def test_trace_tool_call_disabling_request_response_content(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, object] = {
+  dict_function_response: dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -2441,6 +2596,100 @@ async def test_generate_content_span_with_genai_instrumentation(
   assert USER_ID not in common_attributes
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'through_workflow_agent',
+    [False, True],
+    ids=['direct_parent', 'through_sequential_agent'],
+)
+@mock.patch('google.adk.telemetry.tracing.tracer')
+async def test_generate_content_span_with_inherited_non_gemini_model(
+    mock_tracer,
+    monkeypatch,
+    through_workflow_agent,
+):
+  """A sub-agent inheriting a non-Gemini model gets ADK's own span."""
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
+  agent = LlmAgent(name='test_agent')
+  child = (
+      SequentialAgent(name='workflow_agent', sub_agents=[agent])
+      if through_workflow_agent
+      else agent
+  )
+  LlmAgent(
+      name='parent_agent',
+      model=MockModel(model='not-a-gemini-model', responses=[]),
+      sub_agents=[child],
+  )
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='not-a-gemini-model',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    pass
+
+  mock_tracer.start_as_current_span.assert_called_once_with(
+      'generate_content not-a-gemini-model'
+  )
+  assert gc_span.span is mock_span
+
+
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.tracer')
+async def test_generate_content_span_with_inherited_gemini_model(
+    mock_tracer,
+    monkeypatch,
+):
+  """A sub-agent inheriting Gemini under a non-Gemini default is not doubled."""
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
+  monkeypatch.setattr(LlmAgent, '_default_model', 'not-a-gemini-model')
+  agent = LlmAgent(name='test_agent')
+  LlmAgent(name='parent_agent', model='gemini-1.5-pro', sub_agents=[agent])
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='gemini-1.5-pro',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    pass
+
+  mock_tracer.start_as_current_span.assert_not_called()
+  assert gc_span is None
+
+
 def _mock_callable_tool():
   """Description of some tool."""
   return 'result'
@@ -2783,7 +3032,7 @@ def test_trace_tool_call_with_tool_execution_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a'}
+  test_args: dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Internal server error',
       error_type=ToolErrorType.INTERNAL_SERVER_ERROR,
@@ -2823,7 +3072,7 @@ def test_trace_tool_call_with_timeout_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param_a': 'value_a'}
+  test_args: dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Request timed out',
       error_type=ToolErrorType.REQUEST_TIMEOUT,
@@ -2849,7 +3098,7 @@ def test_trace_tool_call_with_standard_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, object] = {'param': 1}
+  test_args: dict[str, object] = {'param': 1}
   test_error = ValueError('Invalid arguments')
 
   trace_tool_call(
@@ -3221,7 +3470,7 @@ class _ErrorDetectingTool(BaseTool):
   async def run_async(self, *, args, tool_context):
     return 'result'
 
-  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+  def _detect_error_in_response(self, response: Any) -> str | None:
     raise RuntimeError('detection exploded')
 
 
@@ -3916,3 +4165,21 @@ async def test_use_generate_content_span_rejects_context_without_agent():
         LlmRequest(model='gemini-pro'), invocation_context, mock.MagicMock()
     ):
       pass
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_generate_content_result_sets_response_model(
+    mock_otel_logger, mock_span_fixture
+):
+  """trace_generate_content_result sets gen_ai.response.model."""
+  del mock_otel_logger
+  llm_response = LlmResponse(
+      model_version='gemini-2.5-flash-001',
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  trace_generate_content_result(mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'gemini-2.5-flash-001'
+  )

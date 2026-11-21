@@ -339,12 +339,9 @@ a case apart.
 
 ## Limitations
 
-*   **`LocalEvalService` is experimental.** It carries the `@experimental`
-    decorator and warns on construction; treat the constructor signature as
-    subject to change.
-*   **It needs the evaluation extra.** `base_eval_service` imports on a base
-    install, but `local_eval_service` pulls in `vertexai` through
-    `google-cloud-aiplatform[evaluation]`. Install `google-adk[eval]`.
+*   **`LocalEvalService` needs the evaluation extra.** `base_eval_service`
+    imports on a base install, but `local_eval_service` pulls in `vertexai`
+    through `google-cloud-aiplatform[evaluation]`. Install `google-adk[eval]`.
 *   **Nothing is re-exported at package level.** Import from
     `google.adk.evaluation.base_eval_service` and
     `google.adk.evaluation.local_eval_service`; `google.adk.evaluation` exports

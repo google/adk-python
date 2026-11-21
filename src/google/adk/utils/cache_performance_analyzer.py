@@ -21,9 +21,6 @@ history, including hit ratios, cost savings, and cache refresh patterns.
 from __future__ import annotations
 
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -40,8 +37,8 @@ class CachePerformanceAnalyzer:
       session_id: str,
       user_id: str,
       app_name: str,
-      agent_name: Optional[str] = None,
-  ) -> List[CacheMetadata]:
+      agent_name: str | None = None,
+  ) -> list[CacheMetadata]:
     """Get cache usage history for agent from events.
 
     Args:
@@ -73,7 +70,7 @@ class CachePerformanceAnalyzer:
 
   async def analyze_agent_cache_performance(
       self, session_id: str, user_id: str, app_name: str, agent_name: str
-  ) -> Dict[str, Any]:
+  ) -> dict[str, Any]:
     """Analyze cache performance for agent.
 
     Args:

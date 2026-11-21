@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING
 from opentelemetry import baggage
 from opentelemetry import context
 from opentelemetry import metrics
+from opentelemetry import trace as trace_api
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.sdk import trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.trace.propagation import tracecontext
@@ -35,7 +37,6 @@ if TYPE_CHECKING:
   from collections.abc import AsyncGenerator
   from collections.abc import AsyncIterator
   from typing import Mapping
-  from typing import Optional
 
   import fastapi
   from starlette.middleware.base import DispatchFunction
@@ -59,6 +60,14 @@ _GOOGLE_TRACEPARENT_SUPPORT_ATTRIBUTE_KEY = "supportID"
 def get_propagated_context(request: fastapi.Request) -> context.Context:
   """Propagates context from the request headers."""
   ctx = context.get_current()
+  ctx = W3CBaggagePropagator().extract(carrier=request.headers, context=ctx)
+  # Only the headers handled below may set these keys. Upstream instrumentation
+  # (e.g. FastAPI >= 0.142) may already have copied caller baggage into ctx.
+  for reserved_key in (
+      _GOOGLE_TRACEPARENT_BAGGAGE_KEY,
+      _TRACEPARENT_BAGGAGE_KEY,
+  ):
+    ctx = baggage.remove_baggage(reserved_key, context=ctx)
 
   if _GOOGLE_TRACEPARENT_HEADER in request.headers:
     original_traceparent = request.headers[_GOOGLE_TRACEPARENT_HEADER]
@@ -80,6 +89,20 @@ def get_propagated_context(request: fastapi.Request) -> context.Context:
       ctx = baggage.set_baggage(
           _TRACEPARENT_BAGGAGE_KEY, ae_traceparent, context=extracted_ctx
       )
+  elif (
+      _GOOGLE_TRACEPARENT_HEADER in request.headers
+      and not os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")
+      # Upstream HTTP instrumentation already continued the caller's trace.
+      and not trace_api.get_current_span(ctx).get_span_context().is_valid
+  ):
+    original_traceparent = request.headers[_GOOGLE_TRACEPARENT_HEADER]
+    extracted_ctx = tracecontext.TraceContextTextMapPropagator().extract(
+        carrier=request.headers, context=ctx
+    )
+    if extracted_ctx is not ctx:
+      ctx = baggage.set_baggage(
+          _TRACEPARENT_BAGGAGE_KEY, original_traceparent, context=extracted_ctx
+      )
 
   return ctx
 
@@ -88,7 +111,7 @@ class TopSpanProcessor(trace.SpanProcessor):
   """Top span processor."""
 
   def on_start(
-      self, span: trace.Span, parent_context: Optional[context.Context] = None
+      self, span: trace.Span, parent_context: context.Context | None = None
   ) -> None:
     """Adds support ID to the top span."""
     baggage_items = baggage.get_all(context=parent_context)

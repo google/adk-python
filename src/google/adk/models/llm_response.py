@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from typing import Optional
 
 from google.genai import types
 from pydantic import alias_generators
@@ -56,20 +55,20 @@ class LlmResponse(BaseModel):
   )
   """The pydantic model config."""
 
-  model_version: Optional[str] = None
+  model_version: str | None = None
   """Output only. The model version used to generate the response."""
 
-  content: Optional[types.Content] = None
+  content: types.Content | None = None
   """The generative content of the response.
 
   This should only contain content from the user or the model, and not any
   framework or system-generated data.
   """
 
-  grounding_metadata: Optional[types.GroundingMetadata] = None
+  grounding_metadata: types.GroundingMetadata | None = None
   """The grounding metadata of the response."""
 
-  partial: Optional[bool] = None
+  partial: bool | None = None
   """Marks this response as an incomplete fragment of a larger response.
 
   Only used in streaming mode, where a producer emits zero or more fragments
@@ -82,19 +81,19 @@ class LlmResponse(BaseModel):
   turn based on a fragment.
   """
 
-  turn_complete: Optional[bool] = None
+  turn_complete: bool | None = None
   """Indicates whether the response from the model is complete.
 
   Only used for streaming mode.
   """
 
-  turn_complete_reason: Optional[types.TurnCompleteReason] = None
+  turn_complete_reason: types.TurnCompleteReason | None = None
   """The reason why the turn is complete.
 
   Only used for streaming mode.
   """
 
-  interaction_status: Optional[types.InteractionStatus] = None
+  interaction_status: types.InteractionStatus | None = None
   """The activity status of the live session, reported with `turn_complete`.
 
   Newer live models may answer a single user prompt with several model turns, so
@@ -114,21 +113,21 @@ class LlmResponse(BaseModel):
   NOTE: this is not related to the Interactions API InteractionStatusUpdate.
   """
 
-  finish_reason: Optional[types.FinishReason] = None
+  finish_reason: types.FinishReason | None = None
   """The finish reason of the response."""
 
-  error_code: Optional[str] = None
+  error_code: str | None = None
   """Error code if the response is an error. Code varies by model."""
 
-  error_message: Optional[str] = None
+  error_message: str | None = None
   """Error message if the response is an error."""
 
-  interrupted: Optional[bool] = None
+  interrupted: bool | None = None
   """Flag indicating that LLM was interrupted when generating the content.
   Usually it's due to user interruption during a bidi streaming.
   """
 
-  custom_metadata: Optional[dict[str, Any]] = None
+  custom_metadata: dict[str, Any] | None = None
   """The custom metadata of the LlmResponse.
 
   An optional key-value pair to label an LlmResponse.
@@ -136,10 +135,10 @@ class LlmResponse(BaseModel):
   NOTE: the entire dict must be JSON serializable.
   """
 
-  usage_metadata: Optional[types.GenerateContentResponseUsageMetadata] = None
+  usage_metadata: types.GenerateContentResponseUsageMetadata | None = None
   """The usage metadata of the LlmResponse"""
 
-  cache_creation_token_count: Optional[int] = None
+  cache_creation_token_count: int | None = None
   """Number of prompt tokens written to the prompt cache for this response.
 
   The cache-*write* counterpart to
@@ -155,53 +154,53 @@ class LlmResponse(BaseModel):
   for providers/turns that report cache writes; ``None`` otherwise.
   """
 
-  live_session_resumption_update: Optional[
-      types.LiveServerSessionResumptionUpdate
-  ] = None
+  live_session_resumption_update: (
+      types.LiveServerSessionResumptionUpdate | None
+  ) = None
   """The session resumption update of the LlmResponse"""
 
-  live_session_id: Optional[str] = None
+  live_session_id: str | None = None
   """The session ID of the Live session."""
 
-  go_away: Optional[types.LiveServerGoAway] = None
+  go_away: types.LiveServerGoAway | None = None
   """The GoAway signal from the Live model."""
 
-  voice_activity: Optional[types.VoiceActivity] = None
+  voice_activity: types.VoiceActivity | None = None
   """Voice activity signal from the Live model."""
 
-  input_transcription: Optional[types.Transcription] = None
+  input_transcription: types.Transcription | None = None
   """Audio transcription of user input."""
 
-  output_transcription: Optional[types.Transcription] = None
+  output_transcription: types.Transcription | None = None
   """Audio transcription of model output."""
 
-  avg_logprobs: Optional[float] = None
+  avg_logprobs: float | None = None
   """Average log probability of the generated tokens."""
 
-  logprobs_result: Optional[types.LogprobsResult] = None
+  logprobs_result: types.LogprobsResult | None = None
   """Detailed log probabilities for chosen and top candidate tokens."""
 
-  cache_metadata: Optional[CacheMetadata] = None
+  cache_metadata: CacheMetadata | None = None
   """Context cache metadata if caching was used for this response.
 
   Contains cache identification, usage tracking, and lifecycle information.
   This field is automatically populated when context caching is enabled.
   """
 
-  citation_metadata: Optional[types.CitationMetadata] = None
+  citation_metadata: types.CitationMetadata | None = None
   """Citation metadata for the response.
 
   This field is automatically populated when citation is enabled.
   """
 
-  interaction_id: Optional[str] = None
+  interaction_id: str | None = None
   """The interaction ID from the interactions API.
 
   This field is populated when using the interactions API for model invocation.
   It can be used to identify and chain interactions for stateful conversations.
   """
 
-  environment_id: Optional[str] = None
+  environment_id: str | None = None
   """The execution environment ID from the interactions API.
 
   This field is populated when an interactions-API agent (e.g. ManagedAgent)

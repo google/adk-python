@@ -58,6 +58,52 @@ async def test_compute_state_delta_reverts_state_to_rewind_point():
   assert "app:stay" not in delta
 
 
+async def test_compute_state_delta_leaves_state_without_events_untouched() -> (
+    None
+):
+  """Keys that no undone event wrote are left out of the rewind delta."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      state={"tenant_id": "t1", "k1": "v1", "k2": "v2"},
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(state_delta={"k1": "v1"}),
+          ),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(state_delta={"k2": "v2"}),
+          ),
+      ],
+  )
+
+  delta = await _rewind_utils.compute_state_delta_for_rewind(session, 1)
+
+  assert delta == {"k2": None}
+
+
+async def test_compute_state_delta_clears_overwritten_initial_key() -> None:
+  """An initial key an undone event overwrote is cleared, not restored."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      state={"mode": "b"},
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(state_delta={"mode": "b"}),
+          ),
+      ],
+  )
+
+  delta = await _rewind_utils.compute_state_delta_for_rewind(session, 0)
+
+  assert delta == {"mode": None}
+
+
 async def test_compute_state_delta_for_rewind_ignores_temp_keys():
   """compute_state_delta_for_rewind must exclude temp:-prefixed state keys."""
   session = Session(

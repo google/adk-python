@@ -16,7 +16,6 @@
 
 import asyncio
 import logging
-from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.sequential_agent import SequentialAgent
@@ -286,7 +285,7 @@ class _MockTool(BaseTool):
   def __init__(self, name: str):
     super().__init__(name=name, description=f'Mock tool {name}')
 
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,

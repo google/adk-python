@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import importlib.util
 import logging
 import os
@@ -30,10 +31,11 @@ from google.genai import types as genai_types
 from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..evaluation._eval_case_result_multi_run_aggregator import count_runs_failed_without_metric_results
+from ..evaluation._eval_case_result_multi_run_aggregator import CrossRunCriterionSummary
 from ..evaluation._eval_case_result_multi_run_aggregator import describe_run_statuses
 from ..evaluation._eval_case_result_multi_run_aggregator import get_run_status
-from ..evaluation._eval_case_result_multi_run_aggregator import MethodResult
 from ..evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
+from ..evaluation._eval_case_result_multi_run_aggregator import summarize_multi_run_case_result
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -42,6 +44,7 @@ from ..evaluation.base_eval_service import InferenceResult
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
+from ..evaluation.eval_config import MultiRunConfig
 from ..evaluation.eval_metrics import DurationDetails
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
@@ -50,6 +53,7 @@ from ..evaluation.eval_metrics import PrebuiltMetrics
 from ..evaluation.eval_metrics import RubricsBasedCriterion
 from ..evaluation.eval_metrics import TokenUsageDetails
 from ..evaluation.eval_result import EvalCaseResult
+from ..evaluation.eval_result import MethodResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..evaluation.evaluator import EvalStatus
 from ..utils.context_utils import Aclosing
@@ -206,15 +210,24 @@ async def _collect_eval_results(
     inference_results: list[InferenceResult],
     eval_service: BaseEvalService,
     eval_metrics: list[EvalMetric],
+    *,
+    parallelism: int | None = None,
+    multi_run_config: Optional[MultiRunConfig] = None,
 ) -> list[EvalCaseResult]:
   """Simple utility methods to collect eval results from an eval service.
 
   The method is intentionally kept private to prevent general usage.
   """
   eval_results = []
+  evaluate_config = EvaluateConfig(
+      eval_metrics=eval_metrics,
+      multi_run_config=multi_run_config,
+  )
+  if parallelism is not None:
+    evaluate_config.parallelism = parallelism
   evaluate_request = EvaluateRequest(
       inference_results=inference_results,
-      evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
+      evaluate_config=evaluate_config,
   )
   async with Aclosing(
       eval_service.evaluate(evaluate_request=evaluate_request)
@@ -375,6 +388,24 @@ def _format_method_result(method_result: MethodResult) -> str:
   return text
 
 
+def _format_eval_set_criterion_summary(
+    summary: CrossRunCriterionSummary,
+) -> str:
+  """Formats a cross-run criterion's mean over an eval set's cases.
+
+  The line says how many cases the mean covers when some case had no value,
+  so "pass^3: 0.41 (mean over 11 of 12 cases)" is not read as a mean over
+  all twelve.
+  """
+  if summary.mean is None:
+    return f"{summary.name}: n/a (no case had a value)"
+  if summary.num_cases_with_value == summary.num_cases:
+    cases = "1 case" if summary.num_cases == 1 else f"{summary.num_cases} cases"
+  else:
+    cases = f"{summary.num_cases_with_value} of {summary.num_cases} cases"
+  return f"{summary.name}: {summary.mean:.2f} (mean over {cases})"
+
+
 def _describe_crashed_runs(*, crashed: int, runs: int, allowed: int) -> str:
   """Returns the line that says how many runs crashed, and how many may.
 
@@ -389,6 +420,130 @@ def _describe_crashed_runs(*, crashed: int, runs: int, allowed: int) -> str:
   if crashed > allowed:
     return f"{line}, more than the {allowed} allowed."
   return f"{line} (up to {allowed} allowed)."
+
+
+def _format_run_symbol(run: EvalCaseResult) -> str:
+  """Returns a single-character symbol for one run in the summary strip."""
+  if count_runs_failed_without_metric_results([run]):
+    return "C"
+  status = get_run_status(run)
+  if status == EvalStatus.PASSED:
+    return "P"
+  if status == EvalStatus.FAILED:
+    return "F"
+  return "-"
+
+
+def _get_run_metric_score(
+    run: EvalCaseResult, metric_name: str
+) -> Optional[float]:
+  """Returns a single run's score for `metric_name`, or None if unavailable."""
+  for metric_result in run.overall_eval_metric_results:
+    if (
+        metric_result.metric_name == metric_name
+        and metric_result.score is not None
+    ):
+      return metric_result.score
+  invocation_scores = [
+      metric_result.score
+      for invocation in run.eval_metric_result_per_invocation
+      for metric_result in invocation.eval_metric_results
+      if metric_result.metric_name == metric_name
+      and metric_result.score is not None
+  ]
+  if invocation_scores:
+    return sum(invocation_scores) / len(invocation_scores)
+  return None
+
+
+def _format_summary_metric_line(
+    metric_result: EvalMetricResult,
+    runs: Sequence[EvalCaseResult],
+) -> str:
+  """Formats one indented per-metric line with per-run scores."""
+  score_str = (
+      f"{metric_result.score:.2f}" if metric_result.score is not None else "n/a"
+  )
+  per_run_scores = [
+      f"{run_score:.2f}"
+      if (run_score := _get_run_metric_score(run, metric_result.metric_name))
+      is not None
+      else "-"
+      for run in runs
+  ]
+  runs_str = f"runs: [{', '.join(per_run_scores)}]"
+  if (
+      metric_result.eval_status == EvalStatus.INFORMATIONAL
+      or metric_result.threshold is None
+  ):
+    return f"    {metric_result.metric_name}: {score_str} ({runs_str})"
+  return (
+      f"    {metric_result.metric_name}: {score_str}"
+      f" (threshold {metric_result.threshold:.2f},"
+      f" {metric_result.eval_status.name}, {runs_str})"
+  )
+
+
+def _format_criterion_summary(res: MethodResult) -> str:
+  """Formats one cross-run criterion for the case header line."""
+  val_str = f"{res.value:.2f}" if res.value is not None else "n/a"
+  if res.status in (EvalStatus.INFORMATIONAL, EvalStatus.NOT_EVALUATED):
+    return f"{res.name}={val_str}"
+  return f"{res.name}={val_str} ({res.status.name})"
+
+
+def pretty_print_multi_run_summary_table(
+    aggregate_eval_results: Sequence[MultiRunCaseResult],
+) -> None:
+  """Prints a compact case-by-run summary with default Pass Rate and run scores.
+
+  Args:
+    aggregate_eval_results: One aggregated result per eval case.
+  """
+  if not aggregate_eval_results:
+    return
+
+  summaries = [
+      summarize_multi_run_case_result(case_result)
+      for case_result in aggregate_eval_results
+  ]
+  id_width = max(len(s.eval_id) for s in summaries)
+  status_width = max(len(s.final_eval_status.name) for s in summaries)
+
+  for case_result, summary in zip(aggregate_eval_results, summaries):
+    click.echo("")
+    run_strip = "".join(_format_run_symbol(run) for run in case_result.runs)
+    decided_runs = summary.passed_runs + summary.failed_runs
+    pass_rate_str = (
+        f"{summary.pass_rate:.0%}" if summary.pass_rate is not None else "n/a"
+    )
+    runs_part = (
+        f"{run_strip}  {summary.passed_runs}/{decided_runs} ({pass_rate_str})"
+    )
+    header_parts = [
+        f"  {summary.eval_id:<{id_width}}",
+        f"{summary.final_eval_status.name:<{status_width}}",
+        runs_part,
+    ]
+    if summary.cross_run_results:
+      header_parts.append(
+          "  ".join(
+              _format_criterion_summary(res)
+              for res in summary.cross_run_results
+          )
+      )
+    click.echo("  ".join(header_parts))
+
+    gated = [
+        m
+        for m in summary.overall_eval_metric_results
+        if m.eval_status != EvalStatus.INFORMATIONAL
+    ]
+    shown_metrics = (
+        gated if gated else list(summary.overall_eval_metric_results)
+    )
+    for metric_result in shown_metrics:
+      click.echo(_format_summary_metric_line(metric_result, case_result.runs))
 
 
 def _pretty_print_eval_results_across_runs(
@@ -603,15 +758,12 @@ def get_eval_sets_manager(
 ) -> EvalSetsManager:
   """Returns an instance of EvalSetsManager."""
   try:
-    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-    from .utils import evals
+    from .utils import _eval_storage
+
+    eval_sets_manager, _ = _eval_storage.create_eval_managers(
+        eval_storage_uri, agents_dir
+    )
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  if eval_storage_uri:
-    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
-    )
-    return gcs_eval_managers.eval_sets_manager
-  else:
-    return LocalEvalSetsManager(agents_dir=agents_dir)
+  return eval_sets_manager

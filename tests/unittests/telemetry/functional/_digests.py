@@ -273,10 +273,12 @@ def _grouped_metric_points(
             value = dp.value
           else:
             value = PRESENT
-          # ``*.duration`` histograms record wall-clock timings, which are
-          # non-deterministic; replace them so expectations need not pin a
-          # timing.
-          if metric.name.endswith(".duration"):
+          # ``*.duration`` and chunk timing histograms record wall-clock
+          # timings, which are non-deterministic; replace them so expectations
+          # need not pin a timing.
+          if metric.name.endswith(".duration") or metric.name.endswith(
+              "_chunk"
+          ):
             value = PRESENT
           grouped.setdefault(metric.name, set()).add(
               MetricPoint(attributes=dict(dp.attributes), value=value)

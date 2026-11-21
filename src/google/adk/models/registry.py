@@ -22,7 +22,6 @@ import logging
 import re
 from typing import cast
 from typing import TYPE_CHECKING
-from typing import Union
 
 if TYPE_CHECKING:
   from .base_llm import BaseLlm
@@ -31,7 +30,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 _LazyEntry = tuple[str, str]
-_llm_registry_dict: dict[str, Union[type['BaseLlm'], _LazyEntry]] = {}
+_llm_registry_dict: dict[str, type[BaseLlm] | _LazyEntry] = {}
 
 
 def _resolve_litellm_provider(model: str) -> type[BaseLlm] | None:

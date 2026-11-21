@@ -16,18 +16,18 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from typing import AsyncGenerator
-from typing import Union
+from typing import Optional
 
 from google.genai import types
 
 from .llm_response import LlmResponse
 
-RealtimeInput = Union[
-    types.Blob,
-    types.ActivityStart,
-    types.ActivityEnd,
-    types.LiveClientRealtimeInput,
-]
+RealtimeInput = (
+    types.Blob
+    | types.ActivityStart
+    | types.ActivityEnd
+    | types.LiveClientRealtimeInput
+)
 """Inputs the live flow passes to `BaseLlmConnection.send_realtime`."""
 
 
@@ -84,6 +84,21 @@ class BaseLlmConnection:
 
     Args:
       blob: The blob to send to the model.
+    """
+    pass
+
+  @abstractmethod
+  async def send_context_update(
+      self,
+      *,
+      system_instruction: Optional[str] = None,
+      tools: Optional[types.ToolListUnion] = None,
+  ) -> None:
+    """Replaces the instruction or tools on the open connection.
+
+    Args:
+      system_instruction: The new instruction, or None to keep the current one.
+      tools: The new tools, or None to keep the current ones.
     """
     pass
 

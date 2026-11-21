@@ -24,10 +24,9 @@ from typing import Any
 from ....tools.base_tool import BaseTool
 from ....tools.function_tool import FunctionTool
 from ....tools.tool_context import ToolContext
-from ....utils._sync_runner import _get_tool_thread_pool
-from ....utils._sync_runner import _shutdown_closed_loop_pools  # noqa: F401
-from ....utils._sync_runner import _TOOL_THREAD_POOL_LOCK  # noqa: F401
-from ....utils._sync_runner import _TOOL_THREAD_POOLS  # noqa: F401
+from ....utils._sync_runner import _get_tool_thread_pool as _get_tool_thread_pool
+from ....utils._sync_runner import _TOOL_THREAD_POOL_LOCK as _TOOL_THREAD_POOL_LOCK
+from ....utils._sync_runner import _TOOL_THREAD_POOLS as _TOOL_THREAD_POOLS
 from ....utils._sync_runner import _use_executor_for_sync_callables
 
 

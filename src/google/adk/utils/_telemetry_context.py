@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import contextvars
-from typing import Optional
 
 from .. import version
 
@@ -48,12 +47,12 @@ _is_visual_builder: contextvars.ContextVar[bool] = contextvars.ContextVar(
 # on a shared loop, if ``__init__`` captured nothing, ``_build_loop_state``
 # pins whatever is visible when the loop state is first built. Flipping the
 # value mid-flight does not re-attribute an already-built writer.
-_telemetry_surface: contextvars.ContextVar[Optional[str]] = (
-    contextvars.ContextVar("_telemetry_surface", default=None)
+_telemetry_surface: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_telemetry_surface", default=None
 )
 
 
-def _get_telemetry_surface() -> Optional[str]:
+def _get_telemetry_surface() -> str | None:
   """Returns the active caller-surface label.
 
   Unifies the explicit ``_telemetry_surface`` token with the legacy
@@ -64,7 +63,7 @@ def _get_telemetry_surface() -> Optional[str]:
   )
 
 
-def _surface_user_agent() -> Optional[str]:
+def _surface_user_agent() -> str | None:
   """Returns the versioned caller-surface User-Agent token, if any."""
   surface = _get_telemetry_surface()
   return f"google-adk-{surface}/{version.__version__}" if surface else None

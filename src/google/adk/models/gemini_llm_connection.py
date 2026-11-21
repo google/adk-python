@@ -18,11 +18,12 @@ import logging
 from typing import AsyncGenerator
 from typing import cast
 from typing import Final
+from typing import Optional
 
 from google.genai import types
 
 from ..utils import model_name_utils
-from ..utils.content_utils import _filter_media_parts
+from ..utils.content_utils import _filter_media_history
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
@@ -86,11 +87,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     # 1. Agent transfer to a new agent
     # 2. Establishing a new live connection with previous ADK session history
 
-    contents = [
-        filtered
-        for content in history
-        if (filtered := _filter_media_parts(content)) is not None
-    ]
+    contents = _filter_media_history(history)
 
     if contents:
       logger.debug('Sending history to live connection: %s', contents)
@@ -685,6 +682,29 @@ class GeminiLlmConnection(BaseLlmConnection):
             model_version=self._model_version,
             live_session_id=self._gemini_session.session_id,
         )
+
+  async def send_context_update(
+      self,
+      *,
+      system_instruction: Optional[str] = None,
+      tools: Optional[types.ToolListUnion] = None,
+  ) -> None:
+    if not self._is_gemini_3_x_live:
+      raise RuntimeError(
+          'Context updates need a Gemini 3.x Live model, not'
+          f' {self._model_version}.'
+      )
+    await self._gemini_session.send_context_update(
+        system_instruction=(
+            types.Content(
+                role='system',
+                parts=[types.Part.from_text(text=system_instruction)],
+            )
+            if system_instruction
+            else None
+        ),
+        tools=tools,
+    )
 
   async def close(self) -> None:
     """Closes the llm server connection."""

@@ -17,8 +17,6 @@ from abc import ABC
 from abc import abstractmethod
 import logging
 from typing import Any
-from typing import Optional
-from typing import Union
 
 from google.adk.platform import time as platform_time
 from google.genai import types
@@ -56,7 +54,7 @@ class ArtifactVersion(BaseModel):
           "Unix timestamp (seconds) when the version record was created."
       ),
   )
-  mime_type: Optional[str] = Field(
+  mime_type: str | None = Field(
       default=None,
       description=(
           "MIME type when the artifact payload is stored as binary data."
@@ -64,7 +62,7 @@ class ArtifactVersion(BaseModel):
   )
 
 
-def ensure_part(artifact: Union[types.Part, dict[str, Any]]) -> types.Part:
+def ensure_part(artifact: types.Part | dict[str, Any]) -> types.Part:
   """Normalizes an artifact to a ``types.Part`` instance.
 
   External callers may provide artifacts as
@@ -94,9 +92,9 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: Union[types.Part, dict[str, Any]],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      artifact: types.Part | dict[str, Any],
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     """Saves an artifact to the artifact service storage.
 
@@ -129,9 +127,9 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[types.Part]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> types.Part | None:
     """Gets an artifact from the artifact service storage.
 
     The artifact is a file identified by the app name, user ID, session ID, and
@@ -151,7 +149,7 @@ class BaseArtifactService(ABC):
 
   @abstractmethod
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
+      self, *, app_name: str, user_id: str, session_id: str | None = None
   ) -> list[str]:
     """Lists all the artifact filenames within a session.
 
@@ -182,7 +180,7 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> None:
     """Deletes an artifact.
 
@@ -201,7 +199,7 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[int]:
     """Lists all versions of an artifact.
 
@@ -223,7 +221,7 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[ArtifactVersion]:
     """Lists all versions and their metadata for a specific artifact.
 
@@ -247,9 +245,9 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     """Gets the metadata for a specific version of an artifact.
 
     Args:

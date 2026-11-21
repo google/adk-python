@@ -44,6 +44,7 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_configs import ToolArgsConfig
 from google.adk.tools.tool_context import ToolContext
@@ -53,6 +54,9 @@ from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
+from pydantic.alias_generators import to_camel
 import pytest
 from pytest import mark
 
@@ -204,10 +208,15 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
   assert captured['session_app_name'] == parent_app_name
 
 
-async def _capture_nested_run_config(
-    monkeypatch, parent_run_config: RunConfig
-) -> RunConfig:
-  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+async def _capture_sub_runner_kwargs(
+    monkeypatch,
+    *,
+    parent_run_config: Optional[RunConfig] = None,
+    memory_service=None,
+) -> dict[str, Any]:
+  """Returns the kwargs an AgentTool hands to the Runner it starts."""
+  if parent_run_config is None:
+    parent_run_config = RunConfig()
   captured: dict[str, Any] = {}
 
   async def _empty_async_generator():
@@ -227,7 +236,8 @@ async def _capture_nested_run_config(
         credential_service,
         plugins,
     ):
-      del app_name, artifact_service, memory_service, credential_service
+      del app_name, artifact_service, credential_service
+      captured['memory_service'] = memory_service
       self.agent = agent
       self.session_service = session_service
       self.plugin_manager = PluginManager(plugins=plugins)
@@ -275,7 +285,7 @@ async def _capture_nested_run_config(
   invocation_context = InvocationContext(
       artifact_service=InMemoryArtifactService(),
       session_service=parent_session_service,
-      memory_service=InMemoryMemoryService(),
+      memory_service=memory_service,
       plugin_manager=PluginManager(),
       invocation_id='invocation-id',
       agent=root_agent,
@@ -288,6 +298,18 @@ async def _capture_nested_run_config(
       tool_context=ToolContext(invocation_context),
   )
 
+  return captured
+
+
+async def _capture_nested_run_config(
+    monkeypatch, parent_run_config: RunConfig
+) -> RunConfig:
+  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+  captured = await _capture_sub_runner_kwargs(
+      monkeypatch,
+      parent_run_config=parent_run_config,
+      memory_service=InMemoryMemoryService(),
+  )
   return captured['run_config']
 
 
@@ -431,6 +453,28 @@ async def test_agent_tool_forwards_parent_abort_signal(monkeypatch):
   )
 
   assert captured['abort_signal'] is parent_signal
+
+
+@mark.asyncio
+async def test_agent_tool_forwards_parent_memory_service(monkeypatch):
+  """The sub-agent must see the memory service the app is configured with."""
+  parent_memory_service = InMemoryMemoryService()
+
+  captured = await _capture_sub_runner_kwargs(
+      monkeypatch, memory_service=parent_memory_service
+  )
+
+  assert captured['memory_service'] is parent_memory_service
+
+
+@mark.asyncio
+async def test_agent_tool_memory_service_defaults_when_parent_has_none(
+    monkeypatch,
+):
+  """Without a parent memory service the sub-agent still gets a usable one."""
+  captured = await _capture_sub_runner_kwargs(monkeypatch, memory_service=None)
+
+  assert isinstance(captured['memory_service'], InMemoryMemoryService)
 
 
 def test_no_schema():
@@ -818,6 +862,165 @@ def test_custom_schema(env_variables):
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+class _AliasGeneratorInput(BaseModel):
+  model_config = ConfigDict(alias_generator=to_camel)
+  city_name: str
+
+
+class _ValidationAliasInput(BaseModel):
+  city_name: str = Field(validation_alias='cityName')
+
+
+class _SerializeByAliasInput(BaseModel):
+  model_config = ConfigDict(serialize_by_alias=True)
+  city_name: str = Field(serialization_alias='cityName')
+
+
+class _NestedAliasInput(BaseModel):
+  trip: _AliasGeneratorInput
+
+
+def _run_tool_agent(input_schema, args):
+  tool_agent_model = testing_utils.MockModel.create(responses=['sunny'])
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+      input_schema=input_schema,
+  )
+  function_call = Part.from_function_call(name='tool_agent', args=args)
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[function_call, 'done']),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  events = testing_utils.simplify_events(
+      testing_utils.InMemoryRunner(root_agent).run('test1')
+  )
+  assert events == [
+      ('root_agent', function_call),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='tool_agent', response={'result': 'sunny'}
+          ),
+      ),
+      ('root_agent', 'done'),
+  ]
+  return testing_utils.simplify_contents(tool_agent_model.requests[0].contents)
+
+
+@mark.parametrize(
+    'input_schema, args, expected',
+    [
+        (_ValidationAliasInput, {'cityName': 'Paris'}, '{"city_name":"Paris"}'),
+        (
+            _SerializeByAliasInput,
+            {'city_name': 'Paris'},
+            '{"city_name":"Paris"}',
+        ),
+        (
+            _NestedAliasInput,
+            {'trip': {'cityName': 'Paris'}},
+            '{"trip":{"city_name":"Paris"}}',
+        ),
+    ],
+)
+def test_input_schema_with_aliases(input_schema, args, expected):
+  """Tests that an aliased input_schema reaches the agent by field name."""
+
+  assert _run_tool_agent(input_schema, args) == [('user', expected)]
+
+
+def test_input_schema_sends_defaults_and_drops_none_defaults():
+  """Tests that aliased defaults are sent and None defaults are dropped."""
+
+  class TripInput(BaseModel):
+    city: str
+    num_days: int = Field(default=3, validation_alias='numDays')
+    hotel: str = None
+
+  assert _run_tool_agent(TripInput, {'city': 'Paris'}) == [
+      ('user', '{"city":"Paris","num_days":3}')
+  ]
+
+
+@mark.parametrize('skip_summarization', [False, True])
+def test_invalid_input_schema_args_return_error_to_model(skip_summarization):
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent_model = testing_utils.MockModel.create(responses=['unused'])
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, input_schema=TripInput
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='tool_agent', args={'city': 'Paris'}),
+          'retrying',
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      tools=[
+          AgentTool(agent=tool_agent, skip_summarization=skip_summarization)
+      ],
+  )
+
+  events = testing_utils.InMemoryRunner(root_agent).run('plan a trip')
+
+  function_responses = []
+  for event in events:
+    function_responses.extend(event.get_function_responses())
+  assert len(function_responses) == 1
+  error = function_responses[0].response['error']
+  assert error.startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in error
+  assert testing_utils.simplify_events(events)[-1] == (
+      'root_agent',
+      'retrying',
+  )
+  assert not tool_agent_model.requests
+
+
+@mark.asyncio
+async def test_single_turn_tool_invalid_input_schema_args_return_error_to_model():
+  from google.adk.tools.agent_tool import _SingleTurnAgentTool
+
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      input_schema=TripInput,
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=tool_agent,
+      session=session,
+      session_service=session_service,
+  )
+
+  result = await _SingleTurnAgentTool(tool_agent).run_async(
+      args={'city': 'Paris'},
+      tool_context=ToolContext(invocation_context=invocation_context),
+  )
+
+  assert result['error'].startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in result['error']
 
 
 @mark.parametrize(
@@ -2800,7 +3003,8 @@ async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
 
   Setup: the caller's app sets token_threshold=100 with summarizer=None and
     wraps a SequentialAgent whose LlmAgent sub-agent stays below the threshold
-    on its first call (20 tokens) and crosses it on its final call (200 tokens).
+    after its first call (20 tokens plus a ~45-token tool call and response)
+    and crosses it on its final call (200 tokens).
   Act: run the root agent, which calls the wrapped SequentialAgent tool once.
   Assert: the nested run finishes without running post-invocation compaction,
     which would raise ValueError on SequentialAgent with summarizer=None or
@@ -2808,8 +3012,8 @@ async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
   """
 
   def read_large_file() -> str:
-    """Returns a large file body."""
-    return 'lorem ipsum dolor sit amet ' * 80
+    """Returns a file body small enough to keep the first call under 100."""
+    return 'lorem ipsum dolor sit amet ' * 5
 
   read_call = Part.from_function_call(name='read_large_file', args={})
   tool_agent_model = testing_utils.MockModel.create(
@@ -3102,7 +3306,18 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
     use_custom_summarizer: bool,
     wrap_in_sequential: bool,
 ):
-  """A nested run yielding no events skips post-invocation compaction."""
+  """A nested run yielding no events skips post-invocation compaction.
+
+  Setup: the caller's app sets token_threshold=100, and the root agent calls
+    the wrapped agent with a ~135-token request, which is all the nested
+    session holds, so post-invocation compaction would summarize it. The
+    nested run ends before the wrapped agent calls its model.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: only the caller compacts, once, before its second model call: the
+    request it sent counts toward its own threshold too. The nested session is
+    never summarized, by a custom summarizer or by a default one built from
+    the wrapped agent's model.
+  """
 
   def stop_before_agent(callback_context):
     callback_context._invocation_context.end_invocation = True
@@ -3128,18 +3343,25 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
       name=wrapped_agent.name,
       args={'request': 'lorem ipsum dolor sit amet ' * 20},
   )
+  # Without a custom summarizer, the caller's default one uses its own model.
+  root_responses = (
+      [nested_call, 'root answer']
+      if use_custom_summarizer
+      else [nested_call, 'CALLER SUMMARY', 'root answer']
+  )
+  root_agent_model = testing_utils.MockModel.create(
+      responses=root_responses,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10
+      ),
+  )
   root_agent = Agent(
       name='root_agent',
-      model=testing_utils.MockModel.create(
-          responses=[nested_call, 'root answer'],
-          usage_metadata=types.GenerateContentResponseUsageMetadata(
-              prompt_token_count=10
-          ),
-      ),
+      model=root_agent_model,
       tools=[AgentTool(agent=wrapped_agent)],
   )
   summarizer_model = testing_utils.MockModel.create(
-      responses=['NESTED SUMMARY'] * 5
+      responses=['CALLER SUMMARY'] * 5
   )
   app = App(
       name='parent_app',
@@ -3160,4 +3382,164 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
 
   assert events[-1].content.parts[0].text == 'root answer'
   assert len(tool_agent_model.requests) == 0
-  assert len(summarizer_model.requests) == 0
+  assert len(summarizer_model.requests) == (1 if use_custom_summarizer else 0)
+  assert len(root_agent_model.requests) == len(root_responses)
+  compactions = [
+      event for event in runner.session.events if event.actions.compaction
+  ]
+  assert len(compactions) == 1
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('failure_mode', 'expected_exc'),
+    [
+        ('cancelled_error', asyncio.CancelledError),
+        ('runtime_error', RuntimeError),
+    ],
+    ids=['cancelled_error', 'runtime_error'],
+)
+async def test_agent_tool_closes_runner_when_nested_run_raises(
+    failure_mode: str,
+    expected_exc: type[BaseException],
+):
+  """The child runner and its toolsets are closed when the nested run raises."""
+
+  class _TrackingToolset(BaseToolset):
+
+    def __init__(self):
+      super().__init__()
+      self.close_calls = 0
+
+    async def get_tools(self, readonly_context=None):
+      del readonly_context
+      return []
+
+    async def close(self) -> None:
+      self.close_calls += 1
+
+  in_child = asyncio.Event()
+
+  async def fail_in_child(callback_context: CallbackContext):
+    del callback_context
+    if failure_mode == 'runtime_error':
+      raise RuntimeError('boom')
+    in_child.set()
+    await asyncio.Future()
+
+  toolset = _TrackingToolset()
+  tool_agent = LlmAgent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      tools=[toolset],
+      before_agent_callback=fail_in_child,
+  )
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      tools=[agent_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=root_agent
+  )
+
+  task = asyncio.create_task(
+      agent_tool.run_async(
+          args={'request': 'go'},
+          tool_context=ToolContext(invocation_context),
+      )
+  )
+  if failure_mode == 'cancelled_error':
+    await in_child.wait()
+    task.cancel()
+
+  with pytest.raises(expected_exc):
+    await task
+
+  assert toolset.close_calls == 1
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('include_plugins', 'expect_parent_id'),
+    [
+        (True, True),
+        (False, False),
+    ],
+)
+async def test_agent_tool_sets_parent_invocation_id_only_when_sharing_plugins(
+    include_plugins: bool,
+    expect_parent_id: bool,
+):
+  """Stamps caller invocation_id onto child ctx only when include_plugins=True."""
+  root_inv_ids: list[str] = []
+  root_parent_ids: list[str | None] = []
+  child_inv_ids: dict[str, str] = {}
+  child_parent_ids: dict[str, str | None] = {}
+
+  def record_root_ctx(callback_context: CallbackContext):
+    root_inv_ids.append(callback_context._invocation_context.invocation_id)
+    root_parent_ids.append(
+        callback_context._invocation_context._parent_invocation_id
+    )
+
+  def record_child_ctx(callback_context: CallbackContext):
+    agent_name = callback_context.agent_name
+    child_inv_ids[agent_name] = (
+        callback_context._invocation_context.invocation_id
+    )
+    child_parent_ids[agent_name] = (
+        callback_context._invocation_context._parent_invocation_id
+    )
+
+  leaf_agent = Agent(
+      name='leaf_child',
+      model=testing_utils.MockModel.create(responses=['leaf_done']),
+      before_agent_callback=record_child_ctx,
+  )
+  seq_child = SequentialAgent(
+      name='seq_child',
+      sub_agents=[leaf_agent],
+      before_agent_callback=record_child_ctx,
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='seq_child', args={'request': 'run'}),
+          'root_done',
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      tools=[AgentTool(agent=seq_child, include_plugins=include_plugins)],
+      before_agent_callback=record_root_ctx,
+  )
+
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      memory_service=InMemoryMemoryService(),
+  )
+  session = await runner.session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  async for _ in runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=testing_utils.get_user_content('hello'),
+  ):
+    pass
+
+  assert len(root_inv_ids) == 1
+  assert root_parent_ids == [None]
+  assert set(child_parent_ids) == {'seq_child', 'leaf_child'}
+  assert child_inv_ids['seq_child'] == child_inv_ids['leaf_child']
+  assert child_inv_ids['seq_child'] != root_inv_ids[0]
+  expected = root_inv_ids[0] if expect_parent_id else None
+  assert child_parent_ids == {
+      'seq_child': expected,
+      'leaf_child': expected,
+  }

@@ -17,8 +17,6 @@ from __future__ import annotations
 """Utility functions for converting examples to a string that can be used in system instructions in the prompt."""
 
 import logging
-from typing import Optional
-from typing import Union
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
@@ -42,9 +40,7 @@ _FUNCTION_RESPONSE_PREFIX = "```tool_outputs\n"
 _FUNCTION_RESPONSE_SUFFIX = "\n```\n"
 
 
-def convert_examples_to_text(
-    examples: list[Example], model: Optional[str]
-) -> str:
+def convert_examples_to_text(examples: list[Example], model: str | None) -> str:
   """Converts a list of examples to a string that can be used in a system instruction."""
   examples_str = ""
   # Loose match: vendor-hosted ids like "google.gemini-2.5-flash" are Gemini.
@@ -93,9 +89,9 @@ def convert_examples_to_text(
 
 
 def build_example_si(
-    examples: Union[list[Example], BaseExampleProvider],
+    examples: list[Example] | BaseExampleProvider,
     query: str,
-    model: Optional[str],
+    model: str | None,
 ) -> str:
   if isinstance(examples, list):
     return convert_examples_to_text(examples, model)

@@ -13,7 +13,6 @@
 # limitations under the License.
 import asyncio
 from typing import Literal
-from typing import Optional
 
 from google.adk.tools.computer_use.base_computer import BaseComputer
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
@@ -79,7 +78,7 @@ class PlaywrightComputer(BaseComputer):
       initial_url: str = "https://www.google.com",
       search_engine_url: str = "https://www.google.com",
       highlight_mouse: bool = False,
-      user_data_dir: Optional[str] = None,
+      user_data_dir: str | None = None,
   ):
     self._initial_url = initial_url
     self._screen_size = screen_size

@@ -37,7 +37,6 @@ from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
 from ...workflow import Workflow
 from ..executor.a2a_agent_executor import A2aAgentExecutor
-from ..experimental import a2a_experimental
 from .agent_card_builder import AgentCardBuilder
 
 
@@ -76,7 +75,6 @@ def _load_agent_card(
     return agent_card
 
 
-@a2a_experimental
 def to_a2a(
     agent: BaseAgent | Workflow,
     *,

@@ -33,13 +33,11 @@ from typing import Union
 import weakref
 
 from google.genai import types
-from packaging.version import InvalidVersion
-from packaging.version import Version
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...models.llm_request import LlmRequest
-from ...utils.model_name_utils import extract_model_name
+from ...utils.model_name_utils import _gemini_major_version
 from .._url_validator import _is_blocked_hostname
 from .._url_validator import _parse_request_target
 from .._url_validator import _resolve_direct_addresses
@@ -133,20 +131,6 @@ def _expand_local_exclusions(excluded_names: Iterable[str]) -> set[str]:
   return expanded
 
 
-def _parse_gemini_major_version(model_string: Optional[str]) -> Optional[int]:
-  """Returns the major version of a `gemini-*` model, or None if unparseable."""
-  if not model_string:
-    return None
-  model_name = extract_model_name(model_string)
-  if not model_name.startswith("gemini-"):
-    return None
-  version_part = model_name[len("gemini-") :].split("-", 1)[0]
-  try:
-    return Version(version_part).major
-  except InvalidVersion:
-    return None
-
-
 def _is_legacy_gemini_model(model_string: Optional[str]) -> bool:
   """Returns True if model_string is explicitly a Gemini 1.x or 2.x model.
 
@@ -156,7 +140,7 @@ def _is_legacy_gemini_model(model_string: Optional[str]) -> bool:
       `gemini-flash-latest`, EAP models, or custom/tuned Vertex AI endpoint
       resource paths) default to False (the modern Gemini 3.x action schema).
   """
-  major = _parse_gemini_major_version(model_string)
+  major = _gemini_major_version(model_string)
   return major is not None and major < 3
 
 
@@ -195,7 +179,7 @@ def _resolve_excluded_predefined_functions_for_model(
       resolved.extend(mapped_names)
     else:
       resolved.append(name)
-  major = _parse_gemini_major_version(model)
+  major = _gemini_major_version(model)
   if major is not None and major >= 3:
     resolved.extend(unimplemented_modern_actions)
   deduped = list(dict.fromkeys(resolved))
@@ -321,7 +305,8 @@ class ComputerUseToolset(BaseToolset):
       return lock
 
   def __getstate__(self) -> dict[str, Any]:
-    state = dict(super().__getstate__())
+    # keep super(): a BaseToolset.__getstate__ override must still run
+    state = dict(cast(Mapping[str, Any], super().__getstate__()))
     state.pop("_lock_map_lock", None)
     state["_init_lock_map"] = {}
     state["_initialized"] = False
@@ -521,11 +506,6 @@ class ComputerUseToolset(BaseToolset):
         if not isinstance(url, str):
           raise ValueError("url is not a string")
         target = _parse_request_target(url)
-        # A browser ends the authority at "\" but urlparse does not: in
-        # `http://169.254.169.254\@example.com/` the host is example.com here
-        # and 169.254.169.254 in Chrome, so refuse instead of checking it.
-        if "\\" in target.parsed_url.netloc:
-          raise ValueError("backslash in hostname")
         if not self._allow_private_network_access:
           if _is_blocked_hostname(target.hostname):
             raise ValueError("hostname is blocked")

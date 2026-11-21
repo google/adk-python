@@ -14,7 +14,6 @@
 
 """Tests for the OTel resource describing where an agent runs."""
 
-from typing import Optional
 from unittest import mock
 
 from google.adk.telemetry import _gcp_resource
@@ -115,8 +114,8 @@ def detected_platform():
 @pytest.mark.parametrize("project_id_in_arg", ["project_id_in_arg", None])
 @pytest.mark.parametrize("project_id_on_env", ["project_id_on_env", None])
 def test_get_gcp_resource(
-    project_id_in_arg: Optional[str],
-    project_id_on_env: Optional[str],
+    project_id_in_arg: str | None,
+    project_id_on_env: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ):
   """The OTel environment overrides the project the caller passed in."""
@@ -323,7 +322,7 @@ def test_get_gcp_resource_looks_up_main_agent_id_project_number(  # pylint: disa
 )
 def test_get_gcp_resource_sets_main_agent_id_off_agent_runtime(  # pylint: disable=redefined-outer-name
     detected_platform: mock.Mock,
-    attributes: dict[str, Optional[str]],
+    attributes: dict[str, str | None],
     expected: str,
 ):
   """GKE and Cloud Run agents are named the way Agent Registry names them."""
@@ -375,8 +374,8 @@ def test_get_gcp_resource_reads_gke_namespace_and_deployment_off_the_pod(  # pyl
 )
 def test_get_gcp_resource_omits_an_incomplete_urn_on_agent_runtime(
     monkeypatch: pytest.MonkeyPatch,
-    project: Optional[str],
-    location: Optional[str],
+    project: str | None,
+    location: str | None,
 ):
   """A URN missing a segment joins to the wrong agent, so it is not emitted."""
   monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
@@ -412,7 +411,7 @@ def test_get_gcp_resource_omits_an_incomplete_urn_on_agent_runtime(
 def test_get_gcp_resource_omits_an_incomplete_urn_off_agent_runtime(  # pylint: disable=redefined-outer-name
     monkeypatch: pytest.MonkeyPatch,
     detected_platform: mock.Mock,
-    attributes: dict[str, Optional[str]],
+    attributes: dict[str, str | None],
 ):
   """A URN missing a segment joins to the wrong agent, so it is not emitted."""
   # Nothing to fall back on: the pod name is not one a Deployment would give.
@@ -517,7 +516,7 @@ def test_fetch_project_does_not_memoize_a_failed_lookup(  # pylint: disable=rede
 @pytest.mark.parametrize("project", [None, ""], ids=["none", "empty"])
 def test_fetch_project_does_not_look_up_an_absent_project(  # pylint: disable=redefined-outer-name
     resource_manager: mock.Mock,
-    project: Optional[str],
+    project: str | None,
 ):
   """`projects/` is not a lookup worth making."""
   assert _fetch_project(project) == _Project(id="", number="")

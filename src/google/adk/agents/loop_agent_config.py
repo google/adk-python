@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import deprecated
@@ -42,6 +40,6 @@ class LoopAgentConfig(BaseAgentConfig):
       description='The value is used to uniquely identify the LoopAgent class.',
   )
 
-  max_iterations: Optional[int] = Field(
+  max_iterations: int | None = Field(
       default=None, description='Optional. LoopAgent.max_iterations.'
   )

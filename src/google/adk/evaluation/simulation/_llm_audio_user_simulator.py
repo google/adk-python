@@ -43,7 +43,6 @@ from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
-from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..evaluator import Evaluator
 from .llm_backed_user_simulator_prompts import is_valid_user_simulator_template
@@ -88,7 +87,11 @@ class LlmAudioUserSimulatorConfig(BaseUserSimulatorConfig):
               thinking_budget=10240,
           )
       ),
-      description="The configuration for the text-generation model.",
+      description=(
+          "The configuration for the text-generation model. Its default"
+          " thinking budget is sent as thinking level MEDIUM to Gemini 4 and"
+          " later models."
+      ),
   )
 
   max_allowed_invocations: int = Field(
@@ -186,7 +189,6 @@ conversation history prompt provided to the user simulator.""",
 # ---------------------------------------------------------------------------
 
 
-@experimental
 class _LlmAudioUserSimulator(UserSimulator):
   """A UserSimulator that generates *audio* user messages.
 

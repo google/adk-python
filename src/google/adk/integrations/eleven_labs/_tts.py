@@ -45,8 +45,15 @@ _DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 # Supported PCM sample rates for ElevenLabs TTS output.
 _SUPPORTED_RATES = (8000, 16000, 22050, 24000, 32000, 44100, 48000)
 
-# Matches sentence boundaries followed by whitespace or newlines.
-_SENTENCE_END = re.compile(r'[.!?\u2026]["\'\u201d\u2019)\]]*\s+|\n+')
+# Matches sentence boundaries followed by whitespace or newlines. Full-width
+# (CJK) terminators have no space after them, so they end a sentence once the
+# next character arrives.
+_SENTENCE_END = re.compile(
+    r'[.!?\u2026]["\'\u201d\u2019)\]]*\s+'
+    r"|[\u3002\uff01\uff1f]+[\u300d\u300f\uff09\u201d\u2019]*\s*"
+    r"(?=[^\s\u3002\uff01\uff1f\u300d\u300f\uff09\u201d\u2019])"
+    r"|\n+"
+)
 
 
 def _take_sentence(buffer: str, max_chars: int) -> Tuple[Optional[str], str]:
@@ -54,16 +61,19 @@ def _take_sentence(buffer: str, max_chars: int) -> Tuple[Optional[str], str]:
 
   The sentence keeps its trailing whitespace, so the pieces concatenate back
   to the original text. Returns `(None, buffer)` if no boundary is found and
-  the buffer is under `max_chars`. Otherwise splits at the last word boundary.
+  the buffer is under `max_chars`. Otherwise splits at the last word boundary,
+  or at `max_chars` when there is none.
   """
   match = _SENTENCE_END.search(buffer)
   if match:
     return buffer[: match.end()], buffer[match.end() :]
 
-  if len(buffer) >= max_chars:
+  if 0 < max_chars <= len(buffer):
     cut = buffer.rfind(" ", 0, max_chars)
     if cut > 0:
       return buffer[: cut + 1], buffer[cut + 1 :]
+    # No space to cut at (e.g. CJK text): cut at the limit.
+    return buffer[:max_chars], buffer[max_chars:]
 
   return None, buffer
 

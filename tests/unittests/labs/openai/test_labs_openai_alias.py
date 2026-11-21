@@ -18,11 +18,20 @@ from google.adk.integrations import openai as integrations_openai
 from google.adk.labs import openai as labs_openai
 import pytest
 
+# The names that moved out of google.adk.labs.openai. Names added to the
+# integration since then are exported only from google.adk.integrations.openai.
+_MOVED_NAMES = (
+    'AzureOpenAIResponsesLlm',
+    'OpenAIGenerateContentConfig',
+    'OpenAILlm',
+    'OpenAIResponsesLlm',
+)
 
-@pytest.mark.parametrize('name', integrations_openai.__all__)
+
+@pytest.mark.parametrize('name', _MOVED_NAMES)
 def test_labs_openai_reexports_integrations_openai(name):
   assert getattr(labs_openai, name) is getattr(integrations_openai, name)
 
 
-def test_labs_openai_exports_match_integrations_openai():
-  assert sorted(labs_openai.__all__) == sorted(integrations_openai.__all__)
+def test_labs_openai_exports_only_the_moved_names():
+  assert sorted(labs_openai.__all__) == sorted(_MOVED_NAMES)

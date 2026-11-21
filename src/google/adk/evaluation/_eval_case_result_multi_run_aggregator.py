@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
 import dataclasses
+import statistics
 
 from ._multi_run_aggregation_methods import AggregationMethod
 from ._multi_run_aggregation_methods import DEFAULT_AGGREGATION_METHOD
@@ -34,42 +35,14 @@ from ._multi_run_aggregation_methods import min_over_runs
 from ._multi_run_aggregation_methods import RunResult
 from .eval_config import MultiRunConfig
 from .eval_config import MultiRunCriterion
+from .eval_config import PassKMultiRunCriterion
 from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import EvalMetricResultDetails
 from .eval_result import EvalCaseResult
+from .eval_result import MethodResult
+from .eval_result import MultiRunCaseSummary
 from .evaluator import EvalStatus
-
-
-@dataclasses.dataclass(frozen=True)
-class MethodResult:
-  """How one rule judged the runs of an eval case.
-
-  The rule's target is one metric, or the whole eval case.
-  """
-
-  name: str
-  """The name of the aggregation method, e.g. "mean_over_invocations"."""
-
-  value: float | None
-  """The method's value over the runs, or None if the runs gave it none."""
-
-  threshold: float | None
-  """The value needed to pass. None for a metric that never passes or fails."""
-
-  status: EvalStatus
-  """PASSED or FAILED by comparing the value with the threshold.
-
-  The value passes at or above the threshold, or at or below it for a metric
-  whose evaluator treats lower scores as better. NOT_EVALUATED when there is
-  no value, and INFORMATIONAL for a metric that never passes or fails.
-  """
-
-  note: str | None = None
-  """What the value rests on, such as how many runs passed, or why it is None.
-
-  For a metric judged lower-is-better, with nothing else to say, it says so.
-  """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,6 +89,28 @@ class MultiRunCaseResult:
   The config's `max_crashed_runs` for a case judged on its runs. 0 for a case
   run once and kept as it is, which a crash fails through the run's own status.
   """
+
+
+@dataclasses.dataclass(frozen=True)
+class CrossRunCriterionSummary:
+  """The mean of one cross-run criterion's values over the cases of an eval set.
+
+  Averaged over the eval cases, pass@k and pass^k show what no single case
+  can: whether failures are concentrated in a few cases or spread across all
+  of them. Two eval sets with the same mean pass rate can differ widely here.
+  """
+
+  name: str
+  """The criterion's name as shown in output, e.g. "pass^3"."""
+
+  mean: float | None
+  """The mean of the per-case values, or None if no case had a value."""
+
+  num_cases_with_value: int
+  """How many cases had a value and so were averaged."""
+
+  num_cases: int
+  """How many cases the eval set has."""
 
 
 def _is_crashed(eval_case_result: EvalCaseResult) -> bool:
@@ -172,7 +167,8 @@ def has_pass_count_rules(multi_run_config: MultiRunConfig | None) -> bool:
 
   Such a rule is given as an object: as a metric's rule, or in
   `cross_run_criteria`. It judges a case run once as well, so that run is
-  judged by the config rather than reported as it is.
+  judged by the config rather than reported as it is. A cross-run criterion
+  without a threshold only reports a value, so it does not count.
 
   Args:
     multi_run_config: The multi-run config, or None if there is none.
@@ -183,9 +179,38 @@ def has_pass_count_rules(multi_run_config: MultiRunConfig | None) -> bool:
       multi_run_config.cross_run_scoring,
       *(multi_run_config.cross_run_scoring_by_metric or {}).values(),
   ]
-  return bool(multi_run_config.cross_run_criteria) or any(
-      isinstance(rule, MultiRunCriterion) for rule in metric_rules
-  )
+  return any(
+      criterion.threshold is not None
+      for criterion in multi_run_config.cross_run_criteria or []
+  ) or any(isinstance(rule, MultiRunCriterion) for rule in metric_rules)
+
+
+def check_pass_k_criteria_against_num_runs(
+    multi_run_config: MultiRunConfig | None, num_runs: int
+) -> None:
+  """Raises if a pass@k or pass^k criterion looks at more runs than there are.
+
+  `num_runs` is the number of runs each eval case actually gets, after
+  `adk eval --num_runs` overrides `multi_run_config.num_runs`. That is only
+  known once the eval starts, so this is checked then, before any inference,
+  rather than when the config is read.
+
+  Args:
+    multi_run_config: The multi-run config, or None if there is none.
+    num_runs: How many times each eval case will be run.
+
+  Raises:
+    ValueError: If a criterion's `k` is more than `num_runs`.
+  """
+  if multi_run_config is None:
+    return
+  for index, criterion in enumerate(multi_run_config.cross_run_criteria or []):
+    if isinstance(criterion, PassKMultiRunCriterion) and criterion.k > num_runs:
+      raise ValueError(
+          f"multi_run_config.cross_run_criteria[{index}]: k={criterion.k} is"
+          f" more than the {num_runs} run(s) of each eval case. Lower k, or"
+          " raise num_runs in the eval config or with --num_runs."
+      )
 
 
 def load_aggregation_methods(
@@ -571,8 +596,9 @@ def _judge_cross_run_criteria(
   """Returns how each cross-run criterion judged the runs, each as a whole.
 
   Each run's status is `get_run_status`, so a run that crashed is undecided; a
-  whole run has no score. `methods` holds every method a criterion can name,
-  keyed by name.
+  whole run has no score. A criterion without a threshold only reports its
+  value, so its status is INFORMATIONAL. `methods` holds every method a
+  criterion can name, keyed by name.
   """
   statuses = [get_run_status(run) for run in runs]
   crashed = count_runs_failed_without_metric_results(runs)
@@ -580,13 +606,19 @@ def _judge_cross_run_criteria(
   method_results = []
   for criterion in cross_run_criteria:
     method = methods[criterion.method]
+    if isinstance(criterion, PassKMultiRunCriterion):
+      method = method.with_k(criterion.k)
     value = method.compute(run_results)
     method_results.append(
         MethodResult(
             name=method.name,
             value=value,
             threshold=criterion.threshold,
-            status=_compare(value, criterion.threshold),
+            status=(
+                EvalStatus.INFORMATIONAL
+                if criterion.threshold is None
+                else _compare(value, criterion.threshold)
+            ),
             note=_pass_count_note(statuses, value, crashed=crashed),
         )
     )
@@ -756,3 +788,83 @@ def aggregate_eval_case_results(
     )
 
   return sorted(aggregate_results, key=lambda x: (x.eval_set_id, x.eval_id))
+
+
+def summarize_multi_run_case_result(
+    case_result: MultiRunCaseResult,
+) -> MultiRunCaseSummary:
+  """Converts a `MultiRunCaseResult` into a serializable `MultiRunCaseSummary`."""
+  runs = case_result.runs
+  statuses = [get_run_status(run) for run in runs]
+  crashed_runs = count_runs_failed_without_metric_results(runs)
+  passed_runs = statuses.count(EvalStatus.PASSED)
+  failed_runs = statuses.count(EvalStatus.FAILED)
+  decided_runs = passed_runs + failed_runs
+  not_evaluated_runs = len(statuses) - decided_runs - crashed_runs
+  pass_rate = passed_runs / decided_runs if decided_runs else None
+  return MultiRunCaseSummary(
+      eval_set_id=case_result.eval_set_id,
+      eval_id=case_result.eval_id,
+      final_eval_status=case_result.final_eval_status,
+      num_runs=len(runs),
+      passed_runs=passed_runs,
+      failed_runs=failed_runs,
+      crashed_runs=crashed_runs,
+      not_evaluated_runs=not_evaluated_runs,
+      pass_rate=pass_rate,
+      overall_eval_metric_results=list(case_result.overall_eval_metric_results),
+      metric_methods=dict(case_result.metric_methods),
+      cross_run_results=list(case_result.cross_run_results),
+      max_crashed_runs=case_result.max_crashed_runs,
+  )
+
+
+def summarize_eval_case_results(
+    eval_case_results: list[EvalCaseResult],
+    *,
+    multi_run_config: MultiRunConfig | None = None,
+) -> list[MultiRunCaseSummary]:
+  """Aggregates per-run `EvalCaseResult`s into serializable `MultiRunCaseSummary`s."""
+  return [
+      summarize_multi_run_case_result(case_result)
+      for case_result in aggregate_eval_case_results(
+          eval_case_results, multi_run_config=multi_run_config
+      )
+  ]
+
+
+def summarize_cross_run_criteria(
+    case_results: Sequence[MultiRunCaseResult],
+) -> list[CrossRunCriterionSummary]:
+  """Returns the mean of each cross-run criterion over the given eval cases.
+
+  The cases come from one eval set judged by one `multi_run_config`, so the
+  i-th cross-run result of every case is the same criterion, and the summaries
+  keep that order. A case with no value for a criterion is left out of its
+  mean: one with fewer decided runs than the criterion's k, or one run once
+  that the config did not judge, which has no cross-run results at all. Each
+  summary says how many cases it averaged, so a mean over few cases is not
+  read as one over all of them.
+
+  Args:
+    case_results: The eval cases of one eval set, judged on their runs.
+
+  Returns:
+    One summary per configured cross-run criterion, in config order. Empty
+    when no case has a cross-run result.
+  """
+  values_by_criterion: dict[tuple[int, str], list[float]] = {}
+  for case_result in case_results:
+    for index, method_result in enumerate(case_result.cross_run_results):
+      values = values_by_criterion.setdefault((index, method_result.name), [])
+      if method_result.value is not None:
+        values.append(method_result.value)
+  return [
+      CrossRunCriterionSummary(
+          name=name,
+          mean=statistics.mean(values) if values else None,
+          num_cases_with_value=len(values),
+          num_cases=len(case_results),
+      )
+      for (_, name), values in sorted(values_by_criterion.items())
+  ]

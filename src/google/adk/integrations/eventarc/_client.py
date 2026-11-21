@@ -26,6 +26,8 @@ import typing
 
 from google.api_core.gapic_v1 import client_info
 
+from ...utils._event_loop_cache import _PerLoopCache
+
 if typing.TYPE_CHECKING:
   from google.cloud import eventarc_publishing_v1  # type: ignore
   from google.cloud.eventarc_publishing_v1 import PublisherAsyncClient  # type: ignore
@@ -50,9 +52,12 @@ except ImportError:
 _CACHE_TTL = 1800  # 30 minutes
 _CACHE_MAX_SIZE = 10
 
-_publisher_client_cache: collections.OrderedDict[
-    tuple[str | None, str, int, str], tuple[PublisherAsyncClient, float]
-] = collections.OrderedDict()
+_CacheKey = tuple[str | None, str, int, str]
+_CacheEntry = tuple[PublisherAsyncClient, float]
+
+_publisher_client_cache: _PerLoopCache[
+    collections.OrderedDict[_CacheKey, _CacheEntry]
+] = _PerLoopCache()
 _publisher_client_lock = threading.Lock()
 
 
@@ -159,7 +164,7 @@ def _get_cache_key(
     credentials: typing.Any,
     final_user_agent: str,
     project_id: str | None = None,
-) -> tuple[str | None, str, int, str]:
+) -> _CacheKey:
   """Generates a deterministic cache key for the publisher client connection pool."""
   cred_id = _get_credential_id(credentials)
   return (project_id, final_user_agent, os.getpid(), cred_id)
@@ -171,10 +176,11 @@ async def get_publisher_client(
     user_agent: str | None = None,
     project_id: str | None = None,
 ) -> PublisherAsyncClient:
-  """Gets or creates a publisher client for Eventarc."""
+  """Gets or creates the running loop's Eventarc publisher client."""
   if eventarc_publishing_v1 is None:
     raise RuntimeError("google-cloud-eventarc-publishing is not installed")
 
+  loop_cache = _publisher_client_cache.get(collections.OrderedDict)
   final_user_agent = _get_final_user_agent(user_agent)
   cache_key = _get_cache_key(
       credentials=credentials,
@@ -184,14 +190,13 @@ async def get_publisher_client(
   current_time = time.time()
   old_client_to_close = None
   with _publisher_client_lock:
-    client_entry = _publisher_client_cache.get(cache_key)
+    client_entry = loop_cache.get(cache_key)
     if client_entry is not None:
       client, expiration = client_entry
       if expiration > current_time:
-        _publisher_client_cache.move_to_end(cache_key)
+        loop_cache.move_to_end(cache_key)
         return client
-      else:
-        _publisher_client_cache.pop(cache_key, None)
+      loop_cache.pop(cache_key, None)
 
     info = client_info.ClientInfo(user_agent=final_user_agent)  # type: ignore[no-untyped-call]
 
@@ -200,10 +205,10 @@ async def get_publisher_client(
         client_info=info,
     )
 
-    if len(_publisher_client_cache) >= _CACHE_MAX_SIZE:
-      _, (old_client_to_close, _) = _publisher_client_cache.popitem(last=False)
+    if len(loop_cache) >= _CACHE_MAX_SIZE:
+      _, (old_client_to_close, _) = loop_cache.popitem(last=False)
 
-    _publisher_client_cache[cache_key] = (client, current_time + _CACHE_TTL)
+    loop_cache[cache_key] = (client, current_time + _CACHE_TTL)
 
   if old_client_to_close is not None:
     await _close_client(old_client_to_close)
@@ -217,7 +222,8 @@ async def remove_publisher_client(
     user_agent: str | None = None,
     project_id: str | None = None,
 ) -> None:
-  """Removes a publisher client from the cache."""
+  """Removes a publisher client from the running event loop's cache."""
+  loop_cache = _publisher_client_cache.get(collections.OrderedDict)
   final_user_agent = _get_final_user_agent(user_agent)
   cache_key = _get_cache_key(
       credentials=credentials,
@@ -226,15 +232,16 @@ async def remove_publisher_client(
   )
 
   with _publisher_client_lock:
-    entry = _publisher_client_cache.pop(cache_key, None)
+    entry = loop_cache.pop(cache_key, None)
   if entry is not None:
     await _close_client(entry[0])
 
 
 async def cleanup_clients() -> None:
-  """Cleans up all cached publisher clients."""
+  """Cleans up cached publisher clients for the running event loop."""
+  loop_cache = _publisher_client_cache.get(collections.OrderedDict)
   with _publisher_client_lock:
-    clients = list(_publisher_client_cache.values())
-    _publisher_client_cache.clear()
+    clients = list(loop_cache.values())
+    loop_cache.clear()
   for client, _ in clients:
     await _close_client(client)

@@ -26,6 +26,7 @@ from ._types import ClassifierInput
 from ._types import ClassifierResponse
 from ._types import JSONContent
 from ._types import Question
+from ._types import RefusalAnswer
 from ._types import Score
 from ._types import ScoreAnswer
 
@@ -42,6 +43,7 @@ __all__ = [
     'JSONContent',
     'LlmClassifier',
     'Question',
+    'RefusalAnswer',
     'Score',
     'ScoreAnswer',
 ]

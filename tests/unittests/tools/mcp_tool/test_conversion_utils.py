@@ -18,10 +18,14 @@ from __future__ import annotations
 
 from unittest import mock
 
+from google.adk.features._feature_registry import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.mcp_tool.conversion_utils import adk_to_mcp_tool_type
 from google.adk.tools.mcp_tool.conversion_utils import gemini_to_json_schema
 from google.genai import types
+from jsonschema import Draft202012Validator
 import mcp.types as mcp_types
 import pytest
 
@@ -30,6 +34,32 @@ from ._sdk_compat import field
 
 class TestAdkToMcpToolType:
   """Tests for adk_to_mcp_tool_type function."""
+
+  @pytest.mark.parametrize("json_schema_enabled", [False, True])
+  @pytest.mark.parametrize("record_id", ["record-7", 7])
+  def test_function_tool_union_arguments_remain_valid(
+      self, env_variables, json_schema_enabled, record_id
+  ):
+    """Exported tools accept union arguments, including nested array items."""
+
+    def lookup_records(
+        record_id: str | int, related_ids: list[str | int]
+    ) -> str:
+      """Look up records by numeric ID or name."""
+      return str(record_id)
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_enabled
+    ):
+      result = adk_to_mcp_tool_type(FunctionTool(lookup_records))
+    validator = Draft202012Validator(field(result, "inputSchema"))
+
+    validator.validate({"record_id": record_id, "related_ids": ["record-8", 8]})
+    assert not validator.is_valid({"record_id": None, "related_ids": []})
+    assert not validator.is_valid(
+        {"record_id": record_id, "related_ids": [None]}
+    )
+    assert not validator.is_valid({"related_ids": []})
 
   def test_tool_with_no_declaration(self):
     """Test conversion when tool has no declaration."""
@@ -224,17 +254,24 @@ class TestGeminiToJsonSchema:
     with pytest.raises(TypeError, match="Input must be an instance of Schema"):
       gemini_to_json_schema({"type": "STRING"})
 
-  def test_absent_type_maps_to_null(self):
-    """JSON Schema needs a type keyword; an untyped Schema degrades to null."""
-    assert gemini_to_json_schema(types.Schema()) == {"type": "null"}
+  @pytest.mark.parametrize("schema_type", [None, types.Type.TYPE_UNSPECIFIED])
+  def test_unspecified_type_does_not_restrict_values(self, schema_type):
+    """Omitting a JSON Schema type imposes no type constraint."""
+    result = gemini_to_json_schema(types.Schema(type=schema_type))
+    validator = Draft202012Validator(result)
 
-  def test_unspecified_type_maps_to_null(self):
-    """TYPE_UNSPECIFIED carries no information and must not be emitted."""
-    result = gemini_to_json_schema(
-        types.Schema(type=types.Type.TYPE_UNSPECIFIED)
-    )
+    assert "type" not in result
+    for value in ["record-7", 7, True, None, [], {}]:
+      validator.validate(value)
 
-    assert result == {"type": "null"}
+  def test_explicit_null_type_only_accepts_null(self):
+    """An explicit NULL type still restricts values to null."""
+    result = gemini_to_json_schema(types.Schema(type=types.Type.NULL))
+    validator = Draft202012Validator(result)
+
+    validator.validate(None)
+    assert not validator.is_valid("record-7")
+    assert not validator.is_valid(7)
 
   def test_type_is_lower_cased(self):
     """Gemini spells types upper case; JSON Schema requires lower case."""
@@ -391,3 +428,38 @@ class TestGeminiToJsonSchema:
         {"type": "string"},
         {"type": "integer", "minimum": 0},
     ]
+    validator = Draft202012Validator(result)
+    validator.validate("record-7")
+    validator.validate(7)
+    for invalid in [None, -1, 1.5, True, [], {}]:
+      assert not validator.is_valid(invalid)
+
+  def test_explicit_type_still_constrains_any_of(self):
+    """An explicit type is intersected with anyOf, not silently discarded."""
+    schema = types.Schema(
+        type=types.Type.STRING,
+        any_of=[
+            types.Schema(type=types.Type.STRING),
+            types.Schema(type=types.Type.INTEGER),
+        ],
+    )
+
+    result = gemini_to_json_schema(schema)
+    validator = Draft202012Validator(result)
+
+    validator.validate("record-7")
+    assert not validator.is_valid(7)
+
+  def test_object_any_of_of_objects_keeps_object_type(self):
+    """OBJECT is kept when every anyOf branch is an object."""
+    schema = types.Schema(
+        type=types.Type.OBJECT,
+        any_of=[
+            types.Schema(type=types.Type.OBJECT, required=["a"]),
+            types.Schema(type=types.Type.OBJECT, required=["b"]),
+        ],
+    )
+
+    result = gemini_to_json_schema(schema)
+
+    assert result["type"] == "object"

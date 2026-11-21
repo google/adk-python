@@ -31,6 +31,12 @@ _APP_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$'
 )
 
+_DEFAULT_PYTHON_VERSION: Final[str] = '3.11'
+
+_PYTHON_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'^3\.(1[1-9]|[2-9][0-9])(\.[0-9]+)?$'
+)
+
 
 def _validate_app_name(app_name: str) -> str:
   """Validates the deploy app name before it is written into a Dockerfile.
@@ -53,6 +59,27 @@ def _validate_app_name(app_name: str) -> str:
         ' digit, hyphen, or underscore).'
     )
   return app_name
+
+
+def _validate_python_version(python_version: str) -> str:
+  """Validates the Python version before it is written into a Dockerfile.
+
+  Args:
+    python_version: The Python version (e.g. '3.11', '3.12', '3.12.1').
+
+  Returns:
+    The validated Python version, unchanged.
+
+  Raises:
+    click.ClickException: If the Python version is not a valid 3.11+ version
+      string.
+  """
+  if not _PYTHON_VERSION_PATTERN.fullmatch(python_version):
+    raise click.ClickException(
+        f'Invalid python_version {python_version!r}. Expected a Python 3.11+'
+        ' version string such as "3.11", "3.12", or "3.12.1".'
+    )
+  return python_version
 
 
 def _validate_dockerfile_literal(name: str, value: Any) -> str:
@@ -98,7 +125,7 @@ def _to_exec_form(instruction: str, args: list[str]) -> str:
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
-FROM python:3.11-slim
+FROM python:{python_version}-slim
 WORKDIR /app
 
 # Create a non-root user
@@ -125,28 +152,111 @@ ENV PATH="/home/myuser/.local/bin:$PATH"
 
 # Install ADK - Start
 {install_adk}
+# Install ADK - End
+
+# Copy agent - Start
+{extra_packages_copy}
+
+# Set permission
+COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
+# Copy agent - End
+
+# Install Agent Deps - Start
+{install_agent_deps}
+{reinstall_extra_packages}
 # Remove dev_server.py to ensure production-safe endpoints only (disabling dev endpoints in production)
 # Shell form on purpose: this instruction interpolates nothing, and `|| true`
 # is shell syntax. Do not add a `{{...}}` placeholder to it without moving it to
 # exec form first.
 RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
-# Install ADK - End
-
-# Copy agent - Start
-
-# Set permission
-COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-{extra_packages_copy}
-# Copy agent - End
-
-# Install Agent Deps - Start
-{install_agent_deps}
 # Install Agent Deps - End
 
 EXPOSE {port}
 
 {start_command}
 """
+
+
+def _render_start_command(
+    app_name: str,
+    start_command_args: list[str],
+    *,
+    validate_agent_import: bool = False,
+) -> str:
+  """Renders the container `CMD` instruction in exec form.
+
+  When `validate_agent_import` is True, runs the `adk` CLI in-process and wraps
+  `fast_api.get_fast_api_app` so `app_name` is preloaded once on the server's
+  own `AgentLoader` (or directly via `AgentLoader` if `get_fast_api_app`
+  predates `agent_loader`) before `uvicorn` binds `PORT`. Running at container
+  startup rather than in `RUN` ensures runtime `env_vars`, `secret_env_vars`,
+  and the runtime service account are present without baking secrets into image
+  layers, while warming the server's `AgentLoader` cache avoids loading the
+  agent a second time on the first request. If loading fails, the process exits
+  non-zero before binding `PORT`, failing the deployment health check while
+  leaving any existing revision serving.
+
+  Args:
+    app_name: The name of the app; must pass `_validate_app_name`.
+    start_command_args: The `adk` command and its arguments.
+    validate_agent_import: Whether to preload and validate `app_name` at
+      container startup before binding `PORT`.
+
+  Returns:
+    A `CMD` instruction in exec form.
+  """
+  if not validate_agent_import:
+    return _to_exec_form('CMD', start_command_args)
+  _validate_app_name(app_name)
+  code = (
+      'import inspect\n'
+      'import sys\n'
+      'from google.adk.cli import fast_api\n'
+      '_orig_get_fast_api_app = fast_api.get_fast_api_app\n'
+      'def _get_fast_api_app(*args, **kwargs):\n'
+      '  fast_api.get_fast_api_app = _orig_get_fast_api_app\n'
+      '  _params = inspect.signature(_orig_get_fast_api_app).parameters\n'
+      '  _supports_loader = (\n'
+      '      "agent_loader" in _params\n'
+      '      or any(\n'
+      '          p.kind == inspect.Parameter.VAR_KEYWORD\n'
+      '          for p in _params.values()\n'
+      '      )\n'
+      '  )\n'
+      '  loader = None\n'
+      '  if _supports_loader:\n'
+      '    loader = kwargs.get("agent_loader")\n'
+      '    if loader is None and "agents_dir" in kwargs:\n'
+      '      try:\n'
+      '        from google.adk.cli.utils.agent_loader import AgentLoader\n'
+      '      except ImportError:\n'
+      '        AgentLoader = None\n'
+      '      loader_cls = (\n'
+      '          fast_api.NestedAgentLoader\n'
+      '          if kwargs.get("web") and hasattr(fast_api,'
+      ' "NestedAgentLoader")\n'
+      '          else getattr(fast_api, "AgentLoader", AgentLoader)\n'
+      '      )\n'
+      '      if loader_cls is not None:\n'
+      '        loader = loader_cls(kwargs["agents_dir"])\n'
+      '        kwargs["agent_loader"] = loader\n'
+      '  app = _orig_get_fast_api_app(*args, **kwargs)\n'
+      '  if loader is not None:\n'
+      f'    loader.load_agent("{app_name}")\n'
+      '  elif "agents_dir" in kwargs:\n'
+      '    try:\n'
+      '      from google.adk.cli.utils.agent_loader import AgentLoader\n'
+      '    except ImportError:\n'
+      '      pass\n'
+      '    else:\n'
+      f'      AgentLoader(kwargs["agents_dir"]).load_agent("{app_name}")\n'
+      '  return app\n'
+      'fast_api.get_fast_api_app = _get_fast_api_app\n'
+      'from google.adk.cli.cli_tools_click import main\n'
+      'sys.argv = sys.argv[1:]\n'
+      'sys.exit(main())'
+  )
+  return _to_exec_form('CMD', ['python', '-c', code, *start_command_args])
 
 
 def _render_install_agent_deps(
@@ -180,7 +290,7 @@ def _render_dockerfile(
     service_options: list[str],
     trace_to_cloud_option: str,
     otel_to_cloud_option: str,
-    allow_origins_option: str,
+    allow_origins: list[str] | None,
     adk_version: str,
     host_option: str,
     a2a_option: str,
@@ -190,7 +300,10 @@ def _render_dockerfile(
     gemini_enterprise_option: str = '',
     express_mode_option: str = '',
     extra_packages_copy: str = '',
+    reinstall_extra_packages: str = '',
     extra_env_vars: str = '',
+    python_version: str = _DEFAULT_PYTHON_VERSION,
+    validate_agent_import: bool = False,
 ) -> str:
   """Renders the Dockerfile used by every `adk deploy` target.
 
@@ -208,7 +321,8 @@ def _render_dockerfile(
     service_options: Session/artifact/memory service flags, one per entry.
     trace_to_cloud_option: `--trace_to_cloud` or an empty string.
     otel_to_cloud_option: `--otel_to_cloud` or an empty string.
-    allow_origins_option: `--allow_origins=...` or an empty string.
+    allow_origins: Origins for CORS, each emitted as its own `--allow_origins`
+      entry.
     adk_version: The ADK version to install in the image.
     host_option: `--host=...` or an empty string.
     a2a_option: `--a2a` or an empty string.
@@ -220,8 +334,16 @@ def _render_dockerfile(
     gemini_enterprise_option: `--gemini_enterprise_app_name=...` or an empty
       string.
     express_mode_option: `--express_mode` or an empty string.
-    extra_packages_copy: Extra `COPY`/`ENV` instructions, or an empty string.
+    extra_packages_copy: Extra `COPY`/`ENV`/`RUN` instructions staged before
+      `install_agent_deps`, or an empty string.
+    reinstall_extra_packages: Post-requirements `RUN` instruction that
+      reinstalls extra packages with `--force-reinstall --no-deps`, or an empty
+      string.
     extra_env_vars: Extra `ENV` lines, or an empty string.
+    python_version: The Python version for the base image (default: '3.11').
+    validate_agent_import: Whether to wrap `CMD` so `app_name` is preloaded on
+      the server's `AgentLoader` at container startup before binding `PORT`
+      (default: False).
 
   Returns:
     The Dockerfile contents.
@@ -240,7 +362,7 @@ def _render_dockerfile(
           *service_options,
           trace_to_cloud_option,
           otel_to_cloud_option,
-          allow_origins_option,
+          *(f'--allow_origins={origin}' for origin in allow_origins or ()),
           a2a_option,
           trigger_sources_option,
           trigger_oidc_audience_option,
@@ -252,7 +374,11 @@ def _render_dockerfile(
   )
   start_command_args.append('/app/agents')
 
-  start_command = _to_exec_form('CMD', start_command_args)
+  start_command = _render_start_command(
+      app_name,
+      start_command_args,
+      validate_agent_import=validate_agent_import,
+  )
   extras = ['a2a']
   if trace_to_cloud_option or otel_to_cloud_option:
     # gcp has the exporters both flags import, otel-gcp the instrumentation.
@@ -263,11 +389,13 @@ def _render_dockerfile(
   )
 
   return _DOCKERFILE_TEMPLATE.format(
+      python_version=_validate_python_version(python_version),
       app_name=app_name,
       port=port,
       install_adk=install_adk,
       install_agent_deps=install_agent_deps,
       extra_packages_copy=extra_packages_copy,
+      reinstall_extra_packages=reinstall_extra_packages,
       extra_env_vars=extra_env_vars,
       start_command=start_command,
   )

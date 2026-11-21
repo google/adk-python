@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.adk.agents import _agent_router
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -41,7 +39,7 @@ class _MockLlmAgent(LlmAgent):
       self,
       name: str,
       disallow_transfer_to_parent: bool = False,
-      parent_agent: Optional[BaseAgent] = None,
+      parent_agent: BaseAgent | None = None,
   ):
     super().__init__(name=name, model="gemini-1.5-pro", sub_agents=[])
     self.disallow_transfer_to_parent = disallow_transfer_to_parent

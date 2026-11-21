@@ -20,8 +20,6 @@ import inspect
 import logging
 from typing import AsyncGenerator
 from typing import ClassVar
-from typing import Type
-from typing import Union
 import warnings
 
 from typing_extensions import deprecated
@@ -54,7 +52,7 @@ with warnings.catch_warnings():
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-def _tool_name(tool: Union[ToolUnion, BaseNode]) -> str | None:
+def _tool_name(tool: ToolUnion | BaseNode) -> str | None:
   if isinstance(tool, (BaseTool, BaseNode)):
     return tool.name
   if callable(tool):
@@ -98,7 +96,7 @@ class SequentialAgent(BaseAgent):
     a future version. Workflow cannot yet be used as an LlmAgent sub-agent.
   """
 
-  config_type: ClassVar[Type[BaseAgentConfig]] = SequentialAgentConfig
+  config_type: ClassVar[type[BaseAgentConfig]] = SequentialAgentConfig
   """The config type for this agent.
 
   DEPRECATED: This attribute is deprecated and will be removed in a future

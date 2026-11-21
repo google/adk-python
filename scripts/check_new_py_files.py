@@ -24,7 +24,13 @@ ADK conventions enforced for newly-added Python files:
    have a corresponding unit guide in docs/guides/ (unless exempt or tagged with
    NO_UNIT_GUIDE / SKIP_UNIT_GUIDE in the commit message or environment). A
    module that no package __init__.py imports from or names is internal and
-   needs no guide. See .agents/skills/adk-unit-guide/SKILL.md.
+   needs no guide. A page that documents several units counts for each of
+   them: a module also passes when every name the package exports from it is
+   documented by a guide page in its own docs/guides/ directory, or by the
+   index.md of a directory above that. A page documents a name in a heading,
+   the first cell of a table row, or a code example; a mention in prose does
+   not count.
+   See .agents/skills/adk-unit-guide/SKILL.md.
 
 Either rule can be switched off on its own, with --no-prefix-check and
 --no-unit-guide. The two are gated by separate CI jobs for that reason: the
@@ -119,6 +125,7 @@ _GUIDE_VIOLATION_LINE = (
     "Error: New Python file '{path}' requires a unit guide in docs/guides/.\n"
     "Expected guide at 'docs/guides/{expected}/index.md' or"
     " 'docs/guides/{expected}.md'.\n"
+    '{shared_page}'
     'If a unit guide is not required for this file, explain why with a'
     " 'NO_UNIT_GUIDE=<reason>' tag in the commit message of the change that"
     ' adds it. Where no message can be read, as when the change is only'
@@ -127,6 +134,33 @@ _GUIDE_VIOLATION_LINE = (
     " NO_UNIT_GUIDE='<reason>' git commit.\n"
     'See .agents/skills/adk-unit-guide/SKILL.md for details on creating unit'
     ' guides.'
+)
+
+# Fills {shared_page} above when the package says which names it exports from
+# the file: a page that documents several units can then cover it, and the
+# names it still lacks tell the author exactly what to write, and where on the
+# page writing it counts.
+_GUIDE_SHARED_PAGE_LINE = (
+    'A page that documents several units also counts, once it documents every'
+    ' name the package exports from this file in a heading, the first cell of'
+    " a table row, or a code example. No page under 'docs/guides/{scope}/',"
+    ' or index.md above it, documents: {names}.\n'
+)
+
+# Fills {shared_page} when an __init__.py takes the module whole, so the
+# exported names are not all listed and no shared page can be checked.
+_GUIDE_WHOLE_MODULE_LINE = (
+    "A page under 'docs/guides/{scope}/', or index.md above it, covers"
+    ' this file only once every __init__.py imports its exports by name'
+    ' instead of taking the module whole.\n'
+)
+
+# Fills {shared_page} when the package names the module only in a string,
+# outside a lazy-import table, without saying what it exports.
+_GUIDE_UNNAMED_MODULE_LINE = (
+    'The package names this module only in a string, without saying what it'
+    " exports, so no page under 'docs/guides/{scope}/', or index.md above"
+    ' it, can cover it.\n'
 )
 
 # Subtrees that may exist in the working tree but are intentionally absent from
@@ -496,37 +530,110 @@ def _resolve_module(package: list[str], name: str) -> list[str] | None:
   return absolute[len(_ABSOLUTE_PACKAGE) + 1 :].split('.')
 
 
-def _modules_named_in_init(tree: ast.AST, package: list[str]) -> set[str]:
-  """Returns the package-relative modules one __init__.py imports or names."""
-  targets: list[list[str] | None] = []
+def _lazy_import_target(package: list[str], name: str) -> list[str] | None:
+  """Resolves a module name the way a lazy-import table writes it.
+
+  Args:
+    package: The importing package's components, empty for the package root.
+    name: The string as written: '.mod', '..pkg.mod', 'mod', or an absolute
+      'google.adk.pkg.mod'.
+
+  Returns:
+    The module's components relative to the package root, or None when the
+    string is not a module name or names one outside the package.
+  """
+  if not _MODULE_NAME_STRING.match(name):
+    return None
+  if not name.startswith(('.', _ABSOLUTE_PACKAGE + '.')):
+    # A bare name in a lazy-import table is joined onto the package's name.
+    name = '.' + name
+  return _resolve_module(package, name)
+
+
+# Stands in for the names of an import that takes a module whole: a star
+# import, `from . import _mod`, or `import`. The package then exports names no
+# import lists, so no guide page can be shown to document them all. No Python
+# name is spelled this way, and merging name sets by union keeps it, so an
+# __init__.py that names one export cannot hide another that takes them all.
+_UNLISTED_NAMES = '*'
+
+
+def _modules_named_in_init(
+    tree: ast.AST, package: list[str]
+) -> dict[str, set[str]]:
+  """Returns the modules one __init__.py imports or names, with their names.
+
+  Args:
+    tree: The parsed __init__.py.
+    package: The package's components, empty for the package root.
+
+  Returns:
+    Package-relative module path -> the names the package exports from that
+    module. A `_`-prefixed name is private to `__init__.py` and is skipped. An
+    import that takes the module whole adds `_UNLISTED_NAMES` rather than
+    names. The set is empty when only a string names the module outside a
+    lazy-import table, which marks it exported without saying what it exports.
+  """
+  named: dict[str, set[str]] = {}
+
+  def note(target: list[str] | None, *names: str) -> None:
+    if not target:
+      return
+    public = [name for name in names if not name.startswith('_')]
+    if public or not names:
+      named.setdefault('/'.join(target), set()).update(public)
+
   for node in ast.walk(tree):
     if isinstance(node, ast.ImportFrom):
       target = _resolve_module(package, '.' * node.level + (node.module or ''))
       if target is None:
         continue
-      targets.append(target)
-      # `from . import _mod` imports the module itself.
-      targets.extend(target + [alias.name] for alias in node.names)
+      for alias in node.names:
+        if alias.name == '*':
+          note(target, _UNLISTED_NAMES)
+          continue
+        # `from . import _mod` imports the module itself, and with it every
+        # name the module holds, even with `as _mod`.
+        note(target + [alias.name], _UNLISTED_NAMES)
+        if not (alias.asname and alias.asname.startswith('_')):
+          note(target, alias.asname or alias.name)
     elif isinstance(node, ast.Import):
-      targets.extend(
-          _resolve_module(package, alias.name) for alias in node.names
-      )
+      for alias in node.names:
+        note(_resolve_module(package, alias.name), _UNLISTED_NAMES)
     elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-      name = node.value
-      if not _MODULE_NAME_STRING.match(name):
-        continue
-      if not name.startswith(('.', _ABSOLUTE_PACKAGE + '.')):
-        # A bare name in a lazy-import table is joined onto the package's name.
-        name = '.' + name
-      targets.append(_resolve_module(package, name))
-  return {'/'.join(target) for target in targets if target}
+      note(_lazy_import_target(package, node.value))
+    elif isinstance(node, ast.Dict):
+      # A lazy-import table maps each name the package exports to the module
+      # holding it, as a module string or a tuple that holds one. The tuples
+      # differ in shape: tools writes (module, attribute) and models writes
+      # (patterns, module), so the module is the first string in the tuple
+      # rather than its first item. The walk also reaches those strings as
+      # constants, which marks the module exported; this adds the names.
+      for key, value in zip(node.keys, node.values):
+        items = value.elts if isinstance(value, ast.Tuple) else [value]
+        module = next(
+            (
+                item.value
+                for item in items
+                if isinstance(item, ast.Constant)
+                and isinstance(item.value, str)
+            ),
+            None,
+        )
+        if (
+            isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and module is not None
+        ):
+          note(_lazy_import_target(package, module), key.value)
+  return named
 
 
 def _raise_walk_error(error: OSError) -> None:
   raise error
 
 
-def _reexported_modules(repo_root: str) -> set[str] | None:
+def _reexported_modules(repo_root: str) -> dict[str, set[str]] | None:
   """Returns the modules that some package __init__.py imports from or names.
 
   An import counts wherever it sits, including under `if TYPE_CHECKING:` and
@@ -538,12 +645,14 @@ def _reexported_modules(repo_root: str) -> set[str] | None:
 
   Returns:
     Package-relative module paths without their extension, e.g.
-    `agents/_llm_agent`. None when the package or some __init__.py cannot be
-    read: what it exports is then unknown, so no module can be shown to be
-    internal.
+    `agents/_llm_agent`, each mapped to the names the package exports from it
+    across every __init__.py. The set holds `_UNLISTED_NAMES` when any import
+    takes the module whole, and is empty when no import says. None when the
+    package or some __init__.py cannot be read: what it exports is then
+    unknown, so no module can be shown to be internal.
   """
   package_root = os.path.join(repo_root, _PACKAGE_RELPATH)
-  named: set[str] = set()
+  named: dict[str, set[str]] = {}
   try:
     for dirpath, dirnames, filenames in os.walk(
         package_root, onerror=_raise_walk_error, followlinks=True
@@ -558,7 +667,10 @@ def _reexported_modules(repo_root: str) -> set[str] | None:
       init_path = os.path.join(dirpath, '__init__.py')
       with open(init_path, 'r', encoding='utf-8') as f:
         tree = ast.parse(f.read(), filename=init_path)
-      named |= _modules_named_in_init(tree, package)
+      for module, names in _modules_named_in_init(tree, package).items():
+        # A union, so a star import in one __init__.py still counts after
+        # another names a single export from the same module.
+        named.setdefault(module, set()).update(names)
   except (OSError, SyntaxError, ValueError) as e:
     print(
         f'Warning: the package __init__.py files cannot all be read ({e}),'
@@ -567,6 +679,126 @@ def _reexported_modules(repo_root: str) -> set[str] | None:
     )
     return None
   return named
+
+
+def _guide_pages_near(docs_guides_dir: str, rel_dir: str) -> list[str]:
+  """Lists the guide pages that may document a module in `rel_dir`.
+
+  Those are every page in the module's own directory under docs/guides/ and
+  below it, plus the index.md of each directory above that one. The guides
+  root itself is left out: its README.md is the table of contents, which names
+  nearly every unit without documenting any of them.
+
+  Args:
+    docs_guides_dir: The absolute path of docs/guides/.
+    rel_dir: The module's directory relative to the package root, e.g.
+      `integrations/mongodb`. Never empty, since a module at the package root
+      has no directory of its own to search.
+
+  Returns:
+    The absolute paths of the pages that exist.
+  """
+  parts = rel_dir.split('/')
+  module_dir = os.path.join(docs_guides_dir, *parts)
+  pages: list[str] = []
+  for dirpath, _, filenames in os.walk(module_dir):
+    pages.extend(
+        os.path.join(dirpath, name)
+        for name in filenames
+        if name.endswith('.md')
+    )
+  for depth in range(len(parts) - 1, 0, -1):
+    index = os.path.join(docs_guides_dir, *parts[:depth], 'index.md')
+    if os.path.isfile(index):
+      pages.append(index)
+  return pages
+
+
+# A fenced code block opens and closes with a run of three or more backticks or
+# tildes. What follows the opening run is the block's info string.
+_FENCE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+_HEADING = re.compile(r'^ {0,3}#{1,6}(?:\s|$)')
+# The pipes between the cells of a table row. An escaped `\|` is a pipe inside
+# a cell, as in a `str \| None` type.
+_TABLE_CELL_SEPARATOR = re.compile(r'(?<!\\)\|')
+
+
+def _documenting_text(page: str) -> list[str]:
+  """Picks out the parts of a guide page that can document a name.
+
+  A guide documents a unit by giving it a heading, a row of a table, or a code
+  example. A mention in prose or in another table column only refers to the
+  unit: the invocation_context guide names `SequentialAgent` once, to say what
+  ending an invocation does not stop, and documents nothing about it.
+
+  Args:
+    page: The page's Markdown.
+
+  Returns:
+    Each heading, the first cell of each table row, which holds what the row
+    describes, and each line of fenced code.
+  """
+  snippets: list[str] = []
+  fence = ''
+  for line in page.splitlines():
+    marker = _FENCE.match(line)
+    if fence:
+      if (
+          marker
+          and marker.group(1)[0] == fence[0]
+          and len(marker.group(1)) >= len(fence)
+          and not marker.group(2).strip()
+      ):
+        fence = ''
+      else:
+        snippets.append(line)
+      continue
+    # A backtick fence's info string cannot hold a backtick. That keeps an
+    # inline span such as ```` ```tool_code ```` at the start of a line from
+    # opening a block, which would count every later mention on the page as
+    # code until the next fence.
+    if marker and not (marker.group(1)[0] == '`' and '`' in marker.group(2)):
+      fence = marker.group(1)
+      continue
+    stripped = line.strip()
+    if _HEADING.match(line):
+      snippets.append(stripped)
+    elif stripped.startswith('|'):
+      snippets.append(_TABLE_CELL_SEPARATOR.split(stripped)[1])
+  return snippets
+
+
+def _names_missing_from_guides(
+    docs_guides_dir: str, rel_dir: str, names: set[str]
+) -> list[str]:
+  """Returns the names that no guide page near `rel_dir` documents.
+
+  A page documents a name where a heading, the first cell of a table row, or
+  a line of a code example names it as a whole word, so `RunResultV2` does not
+  document `RunResult`. A page that cannot be read documents nothing.
+
+  Args:
+    docs_guides_dir: The absolute path of docs/guides/.
+    rel_dir: The module's directory relative to the package root.
+    names: The names the package exports from the module.
+
+  Returns:
+    The names no page documents, sorted.
+  """
+  snippets: list[str] = []
+  for page in _guide_pages_near(docs_guides_dir, rel_dir):
+    try:
+      with open(page, 'r', encoding='utf-8') as f:
+        snippets.extend(_documenting_text(f.read()))
+    except (OSError, ValueError):
+      continue
+  return sorted(
+      name
+      for name in names
+      if not any(
+          re.search(rf'\b{re.escape(name)}\b', text) for text in snippets
+      )
+  )
 
 
 def has_no_unit_guide_tag(commit_msg: str) -> bool:
@@ -773,7 +1005,8 @@ def check_files(
     A tuple of (prefix_violations, guide_violations).
   """
   prefix_violations: list[str] = []
-  guide_violations: list[tuple[str, str]] = []  # (path, expected_guide_dir)
+  # (path, expected_guide_dir, shared_page_note)
+  guide_violations: list[tuple[str, str, str]] = []
 
   docs_guides_dir = os.path.join(
       os.path.abspath(repo_root), _DOCS_GUIDES_RELPATH
@@ -820,20 +1053,54 @@ def check_files(
           guide_found = True
           break
 
+      # A page that documents several units, such as a topic overview or the
+      # guide of the class a helper serves, covers this module once it
+      # documents everything the package exports from it. That needs the
+      # whole list: after a star import anywhere, even one alongside an
+      # import that names a single export, some exported names are not known,
+      # so there is nothing to check a page against. A module at the package
+      # root has no guide directory of its own to search.
+      shared_page = ''
+      exported = (
+          reexported.get(rel_to_adk[:-3]) if reexported is not None else None
+      )
+      if (
+          not guide_found
+          and exported is not None
+          and rel_dir
+          and rel_dir != '.'
+      ):
+        if exported and _UNLISTED_NAMES not in exported:
+          missing = _names_missing_from_guides(
+              docs_guides_dir, rel_dir, exported
+          )
+          if not missing:
+            guide_found = True
+          else:
+            shared_page = _GUIDE_SHARED_PAGE_LINE.format(
+                scope=rel_dir, names=', '.join(missing)
+            )
+        elif exported:
+          shared_page = _GUIDE_WHOLE_MODULE_LINE.format(scope=rel_dir)
+        else:
+          shared_page = _GUIDE_UNNAMED_MODULE_LINE.format(scope=rel_dir)
+
       if not guide_found:
         expected = (
             f'{rel_dir}/{name_no_prefix}'
             if (rel_dir and rel_dir != '.')
             else name_no_prefix
         )
-        guide_violations.append((display_path, expected))
+        guide_violations.append((display_path, expected, shared_page))
 
   rendered_prefix_errors = [
       _PREFIX_VIOLATION_LINE.format(path=p) for p in prefix_violations
   ]
   rendered_guide_errors = [
-      _GUIDE_VIOLATION_LINE.format(path=p, expected=exp)
-      for p, exp in guide_violations
+      _GUIDE_VIOLATION_LINE.format(
+          path=p, expected=exp, shared_page=shared_page
+      )
+      for p, exp, shared_page in guide_violations
   ]
   return rendered_prefix_errors, rendered_guide_errors
 

@@ -20,6 +20,7 @@ from collections.abc import Mapping
 import json
 import math
 from typing import Any
+from typing import ClassVar
 
 from google.genai import types
 from pydantic import model_validator
@@ -241,6 +242,8 @@ class LlmClassifier(BaseClassifier):
       )
       response.answers['department'].choice  # 'billing'
   """
+
+  _CLIENT_LABEL_KIND: ClassVar[str] = 'llm'
 
   model: str | BaseLlm
   """The model to use: a name resolved through ``LLMRegistry``, or a model

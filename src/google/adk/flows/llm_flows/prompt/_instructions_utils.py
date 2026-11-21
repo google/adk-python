@@ -20,7 +20,6 @@ import logging
 import re
 from typing import Awaitable
 from typing import Callable
-from typing import Union
 
 from google.genai import types
 from typing_extensions import TypeAlias
@@ -39,7 +38,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Type alias for agent instruction providers: a callable that receives a
 # ReadonlyContext and returns an instruction string (sync or async).
 InstructionProvider: TypeAlias = Callable[
-    [ReadonlyContext], Union[str, Awaitable[str]]
+    [ReadonlyContext], str | Awaitable[str]
 ]
 
 _TEMPLATE_VAR_PATTERN = re.compile(r'(?<![\$\{\\]){+[^{}]*}+')

@@ -28,6 +28,7 @@ from typing_extensions import override
 
 from ..dependencies._agentplatform import agentplatform
 from ..dependencies.vertexai import vertexai
+from ..utils.content_utils import extract_text_from_content
 from .app_details import AgentDetails
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
@@ -126,10 +127,9 @@ class _VertexAiEvalFacade(Evaluator):
     """
 
   def _get_text(self, content: Optional[genai_types.Content]) -> str:
-    if content and content.parts:
-      return "\n".join([p.text for p in content.parts if p.text])
-
-    return ""
+    # The single-turn metrics receive plain text, which cannot carry the
+    # `thought` flag, so thought parts are dropped here.
+    return extract_text_from_content(content, splitter="\n")
 
   def _get_score(self, eval_result: object) -> Optional[float]:
     summary_metrics: object = getattr(eval_result, "summary_metrics", None)
@@ -418,6 +418,9 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
       turn_index: int,
       invocation: Invocation,
   ) -> vertexai.types.evals.ConversationTurn:
+    # Thought parts stay: unlike the plain text in `_get_text`, they reach
+    # Vertex with their `thought` flag, so the Vertex metric decides whether
+    # its judge sees the model's reasoning.
     agent_events = []
     agent_events.append(
         vertexai.types.evals.AgentEvent(

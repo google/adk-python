@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 from unittest import mock
 
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
@@ -2071,7 +2070,7 @@ async def test_receive_populates_turn_complete_reason(
 
 
 def _create_turn_complete_message(
-    interaction_status: Optional[types.InteractionStatus],
+    interaction_status: types.InteractionStatus | None,
 ) -> mock.Mock:
   """Creates a turn_complete message carrying the given interaction status.
 
@@ -2771,3 +2770,29 @@ async def test_receive_voice_activity(gemini_connection, mock_gemini_session):
 
   assert len(responses) == 1
   assert responses[0].voice_activity == mock_vad
+
+
+async def test_send_context_update_sends_instruction_as_system_content(
+    mock_gemini_session,
+):
+  connection = GeminiLlmConnection(
+      mock_gemini_session, model_version='gemini-3.8-live'
+  )
+
+  await connection.send_context_update(system_instruction='Be brief.')
+
+  mock_gemini_session.send_context_update.assert_awaited_once_with(
+      system_instruction=types.Content(
+          role='system', parts=[types.Part.from_text(text='Be brief.')]
+      ),
+      tools=None,
+  )
+
+
+async def test_send_context_update_raises_for_gemini_2_5(mock_gemini_session):
+  connection = GeminiLlmConnection(
+      mock_gemini_session, model_version='gemini-2.5-flash-native-audio'
+  )
+
+  with pytest.raises(RuntimeError):
+    await connection.send_context_update(system_instruction='Be brief.')

@@ -15,9 +15,9 @@
   `contributing/samples/`.
 - **No quoted type hints.** Deferred annotations make forward references work
   unquoted, so write `list[str]`, not `"list[str]"`.
-- **Builtin generics** for new code: `list[str]`, `dict[str, int]`,
-  `tuple[str, ...]`. `typing.List` / `typing.Dict` survive in older modules;
-  don't add more, and don't churn existing ones.
+- **Builtin generics**: `list[str]`, `dict[str, int]`, `tuple[str, ...]`,
+  `set[str]`, `type[Foo]`. Never `typing.List`, `Dict`, `Tuple`, `Set`,
+  `FrozenSet`, or `Type`.
 
 ## Mypy
 
@@ -43,13 +43,34 @@ Fix a type error rather than silencing it. When you can't:
   change, use a `cast` rather than a new `isinstance` check that raises: test
   doubles and protobuf maps reach that check.
 
-## `Optional[X]` vs `X | None`
+## `X | None` and `X | Y`, not `Optional` and `Union`
 
-Both appear in the codebase. Follow this convention:
+Write `X | None` instead of `Optional[X]` and `X | Y` instead of
+`Union[X, Y]`. This applies everywhere: annotations, type aliases, and runtime
+type arguments such as `TypeAdapter(int | None)`.
 
-- **New code** (especially in `workflow/`): prefer `X | None`.
-- **Existing files**: match the style already in the file.
-- Do not refactor one into the other without a reason.
+```python
+# Bad
+def load(name: Optional[str] = None) -> Union[Agent, App]:
+  ...
+
+# Good
+def load(name: str | None = None) -> Agent | App:
+  ...
+```
+
+Two places keep `typing.Union` on purpose:
+
+- A union built from a computed tuple, such as `Union[tuple(members)]`, which
+  `|` cannot express.
+- Tests and samples whose subject is the `Optional` or `Union` spelling
+  itself. Users write both forms in tool signatures, so ADK's parsers must
+  keep handling `typing.Union`.
+
+Code that inspects annotations at runtime must accept both spellings:
+`get_origin()` returns `typing.Union` for `Optional[X]` but `types.UnionType`
+for `X | None` (before Python 3.14). Check
+`get_origin(tp) in (Union, UnionType)`, never `get_origin(tp) is Union`.
 
 ## Agent Mode Constants and Type Aliases
 

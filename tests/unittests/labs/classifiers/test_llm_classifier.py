@@ -32,6 +32,10 @@ from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
+from google.adk.utils._client_labels_utils import classifier_client_label
+from google.adk.utils._client_labels_utils import client_label_context
+from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
+from google.adk.utils._client_labels_utils import get_client_labels
 from google.genai import types
 import pydantic
 import pytest
@@ -52,10 +56,13 @@ class _FakeLlm(BaseLlm):
 
   requests: list[LlmRequest] = pydantic.Field(default_factory=list)
 
+  client_labels: list[list[str]] = pydantic.Field(default_factory=list)
+
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     self.requests.append(llm_request)
+    self.client_labels.append(get_client_labels())
     if self.error_code:
       yield LlmResponse(error_code=self.error_code, error_message='boom')
       return
@@ -360,6 +367,24 @@ async def test_reassigning_model_name_resolves_the_new_model(monkeypatch):
     LLMRegistry.resolve.cache_clear()
 
   assert response.answers['risky'] == BinaryAnswer(probability=0.9)
+
+
+async def test_labels_model_calls_as_llm_classifier():
+  classifier, llm = _classifier({'risky': {'probability': 0.9}})
+
+  await classifier.classify(input='x', questions={'risky': Binary()})
+
+  assert llm.client_labels[0][-1] == classifier_client_label('llm')
+  assert classifier_client_label('llm') not in get_client_labels()
+
+
+async def test_keeps_an_outer_client_label():
+  classifier, llm = _classifier({'risky': {'probability': 0.9}})
+
+  with client_label_context(EVAL_CLIENT_LABEL):
+    await classifier.classify(input='x', questions={'risky': Binary()})
+
+  assert llm.client_labels[0][-1] == EVAL_CLIENT_LABEL
 
 
 def test_needs_model():

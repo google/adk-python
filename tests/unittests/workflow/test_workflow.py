@@ -27,7 +27,9 @@ from unittest import mock
 import uuid
 import weakref
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
@@ -35,6 +37,8 @@ from google.adk.events.request_input import RequestInput
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._join_node import JoinNode
@@ -46,6 +50,9 @@ from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 import pytest
+
+from . import workflow_testing_utils
+from .. import testing_utils
 
 # ---------------------------------------------------------------------------
 # Shared helper nodes (used by multiple tests)
@@ -209,6 +216,27 @@ async def test_sequential_two_nodes():
   assert ('NodeA', 'Hello') in by_node
   assert ('NodeB', 'World') in by_node
   assert by_node.index(('NodeA', 'Hello')) < by_node.index(('NodeB', 'World'))
+
+
+@pytest.mark.asyncio
+async def test_event_validation_alias_does_not_route_workflow():
+  """A custom event's aliased data does not become a workflow route."""
+
+  class _DomainEvent(Event):
+    destination: str = Field(validation_alias='route')
+
+  async def emit_event():
+    yield _DomainEvent(route='domain_destination', output='ready')
+
+  def consume(node_input: str) -> str:
+    return f'{node_input} processed'
+
+  wf = Workflow(name='wf', edges=[(START, emit_event, consume)])
+
+  events, _, _ = await _run_workflow(wf)
+
+  assert ('consume', 'ready processed') in _output_by_node(events)
+  assert all(event.actions.route is None for event in events)
 
 
 @pytest.mark.asyncio
@@ -941,6 +969,40 @@ async def test_wait_for_output_completes_after_all():
   assert by_node[3] == ('Downstream', 'done')
 
 
+@pytest.mark.asyncio
+async def test_wait_for_output_terminal_rerun_into_waiting_clears_output():
+  """A wait_for_output terminal node rerun into WAITING ends with no output."""
+  gate_runs = 0
+
+  class _FirstOnlyGateNode(BaseNode):
+    wait_for_output: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del ctx, node_input
+      nonlocal gate_runs
+      gate_runs += 1
+      if gate_runs == 1:
+        yield Event(output='first_only')
+
+  gate = _FirstOnlyGateNode(name='gate')
+  inner = Workflow(
+      name='inner',
+      edges=[
+          (START, _OutputNode(name='a', value='A'), gate),
+          (START, _OutputNode(name='b', value='B'), gate),
+      ],
+  )
+  capture = _InputCapturingNode(name='capture')
+  outer = Workflow(name='outer', edges=[(START, inner, capture)])
+
+  await _run_workflow(outer)
+
+  assert gate_runs == 2
+  assert capture.received_inputs == [None]
+
+
 # 25. test_run_async_with_implicit_graph_chain
 @pytest.mark.asyncio
 async def test_chain_syntax():
@@ -1449,6 +1511,242 @@ async def test_use_as_output_custom_node():
   by_node = _output_by_node(events)
   assert ('func_b', 'delegated_output') in by_node
   assert not any(name == 'delegator' for name, _ in by_node)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize('message_kind', ['text', 'image'])
+async def test_delegated_output_preserves_message_content(
+    delegate_output: bool, message_kind: str
+):
+  """Delegating output suppresses duplicates without losing message content."""
+  if message_kind == 'text':
+    part = types.Part(text='Please review the result.')
+  else:
+    part = types.Part.from_bytes(data=b'image-data', mime_type='image/png')
+  content = types.Content(role='model', parts=[part])
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, content=content)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  messages = [e for e in events if e.content == content]
+  assert len(messages) == 1
+  assert messages[0].output == (None if delegate_output else 'answer')
+  assert _outputs(events).count('answer') == (1 if delegate_output else 2)
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert sum(e.content == content for e in persisted.events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delegate_output', [False, True])
+@pytest.mark.parametrize(
+    'error_fields',
+    [
+        {'error_code': 'UPSTREAM_ERROR'},
+        {'error_message': 'The upstream operation failed.'},
+        {
+            'error_code': 'UPSTREAM_ERROR',
+            'error_message': 'The upstream operation failed.',
+        },
+    ],
+)
+async def test_delegated_output_preserves_error_details(
+    delegate_output: bool, error_fields: dict[str, str]
+):
+  """Delegated output keeps errors, and keeps output beside an error code."""
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'),
+          use_as_output=delegate_output,
+      )
+      yield Event(output=result, **error_fields)
+
+  wf = Workflow(name='wf', edges=[(START, _Delegator(name='delegator'))])
+  events, ss, session = await _run_workflow(wf)
+  errors = [e for e in events if e.error_code or e.error_message]
+  assert len(errors) == 1
+  for field, value in error_fields.items():
+    assert getattr(errors[0], field) == value
+  assert errors[0].output == (
+      None if delegate_output and 'error_code' not in error_fields else 'answer'
+  )
+  assert _outputs(events).count('answer') == (
+      1 if delegate_output and 'error_code' not in error_fields else 2
+  )
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert (
+      sum(bool(e.error_code or e.error_message) for e in persisted.events) == 1
+  )
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_with_error_is_not_rerun_on_resume():
+  """A delegator that completed with an error event is not rerun on resume."""
+  delegator_runs = []
+
+  class _Delegator(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      delegator_runs.append(node_input)
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'), use_as_output=True
+      )
+      yield Event(output=result, error_code='UPSTREAM_ERROR')
+
+  class _Approval(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'approval' in ctx.resume_inputs:
+        yield Event(output=node_input)
+        return
+      yield _make_function_call_interrupt('approval')
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, _Delegator(name='delegator'), _Approval(name='approval'))],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  async for _ in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(role='user', parts=[types.Part(text='go')]),
+  ):
+    pass
+  resumed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='approve', id='approval', response={'ok': True}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  assert len(delegator_runs) == 1
+  assert 'answer' in _outputs(resumed_events)
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_preserves_confirmation_and_resume():
+  """A parent can request confirmation after publishing its child's output.
+
+  Setup: a parent delegates output, then yields a combined output/interrupt
+  event.
+  Act: run once, then respond to its approval request.
+  Assert: the request is persisted and visible, and downstream runs only on
+  resume.
+  """
+  downstream_inputs = []
+
+  class _ApprovalNode(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'approval' in ctx.resume_inputs:
+        yield Event(
+            output='approved answer',
+            content=types.Content(parts=[types.Part(text='Approved.')]),
+        )
+        return
+      result = await ctx.run_node(
+          _OutputNode(name='child', value='answer'), use_as_output=True
+      )
+      event = _make_function_call_interrupt('approval')
+      event.output = result
+      yield event
+
+  def downstream(node_input):
+    downstream_inputs.append(node_input)
+    return 'finished'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, _ApprovalNode(name='approval_node'), downstream)],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  first_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(role='user', parts=[types.Part(text='go')]),
+      )
+  ]
+  requests = [
+      e for e in first_events if e.long_running_tool_ids == {'approval'}
+  ]
+  assert len(requests) == 1
+  assert requests[0].get_function_calls()[0].id == 'approval'
+  assert requests[0].output is None
+  assert _outputs(first_events).count('answer') == 1
+  assert downstream_inputs == []
+  persisted = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  assert persisted is not None
+  assert any(e.long_running_tool_ids == {'approval'} for e in persisted.events)
+
+  resumed_events = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='approve', id='approval', response={'ok': True}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  assert downstream_inputs == ['approved answer']
+  assert 'finished' in _outputs(resumed_events)
 
 
 @pytest.mark.asyncio
@@ -2675,12 +2973,10 @@ async def test_workflow_error_drains_completed_sibling_nodes():
 
   original_handle_completion = Workflow._handle_completion
 
-  def spy_handle_completion(
-      self, loop_state, node_name, node_obj, child_ctx, ctx
-  ):
+  def spy_handle_completion(self, loop_state, node_name, child_ctx, ctx):
     handle_completion_calls.append(node_name)
     return original_handle_completion(
-        self, loop_state, node_name, node_obj, child_ctx, ctx
+        self, loop_state, node_name, child_ctx, ctx
     )
 
   events: list[Event] = []
@@ -2696,8 +2992,7 @@ async def test_workflow_error_drains_completed_sibling_nodes():
         events.append(event)
 
   assert succeeding_completed is True
-  assert 'failing_node' not in handle_completion_calls
-  assert 'succeeding_node' in handle_completion_calls
+  assert handle_completion_calls == ['failing_node', 'succeeding_node']
   outputs = [e.output for e in events if e.output is not None]
   assert 'sibling_output' in outputs
 
@@ -2787,6 +3082,598 @@ async def test_workflow_error_drain_marks_errored_sibling_failed_in_checkpoint()
   assert last_checkpoint['second_ok']['status'] == NodeStatus.COMPLETED.value
 
 
+def _node_checkpoints(events: list[Event]) -> list[dict[str, Any]]:
+  """Extract the node-status snapshots of `agent_state` checkpoint events."""
+  return [
+      e.actions.agent_state['nodes']
+      for e in events
+      if e.actions
+      and e.actions.agent_state
+      and 'nodes' in e.actions.agent_state
+  ]
+
+
+class _PassthroughWorkflow(Workflow):
+  """Overrides `_handle_completion` and delegates to the base class."""
+
+  async def _handle_completion(
+      self,
+      loop_state: Any,
+      node_name: str,
+      child_ctx: Context,
+      ctx: Context,
+  ) -> None:
+    await super()._handle_completion(loop_state, node_name, child_ctx, ctx)
+
+
+@pytest.mark.parametrize(
+    'workflow_cls',
+    [Workflow, _PassthroughWorkflow],
+    ids=['workflow', 'completion_override'],
+)
+async def test_workflow_handoff_coalesces_completion_and_start_checkpoint(
+    workflow_cls: type[Workflow],
+):
+  """A sequential handoff emits one coalesced COMPLETED+RUNNING checkpoint.
+
+  The `completion_override` case runs a subclass that overrides
+  `_handle_completion` and delegates to the base class.
+  """
+
+  class _StepNode(BaseNode):
+
+    output_value: str
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(output=self.output_value)
+
+  node_a = _StepNode(name='a', output_value='out_a')
+  node_b = _StepNode(name='b', output_value='out_b')
+  wf = workflow_cls(
+      name='handoff_wf', edges=[(START, node_a), (node_a, node_b)]
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+  ):
+    events.append(event)
+
+  assert _node_checkpoints(events) == [
+      {'a': {'status': NodeStatus.RUNNING.value, 'interrupts': []}},
+      {
+          'a': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+          'b': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+      },
+      {
+          'a': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+          'b': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+      },
+  ]
+
+
+async def test_workflow_fan_out_records_all_branch_starts_in_one_checkpoint():
+  """A fan-out records all branch starts in one RUNNING checkpoint.
+
+  Setup: START fans out to b0, b1 and b2. The session service blocks the
+    first checkpoint append until all three branches have started.
+  Act: run the workflow with a 2-second timeout.
+  Assert: the run does not time out, and its first event is one checkpoint
+    with every branch RUNNING.
+  """
+  started_branches: list[str] = []
+  all_branches_started = asyncio.Event()
+
+  class _BranchNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      started_branches.append(self.name)
+      if len(started_branches) == 3:
+        all_branches_started.set()
+      yield Event(output=f'done_{self.name}')
+
+  class _GateFirstCheckpointSessionService(InMemorySessionService):
+
+    first_checkpoint_seen: bool = False
+
+    async def append_event(self, session: Session, event: Event) -> Event:
+      if (
+          not self.first_checkpoint_seen
+          and event.actions
+          and event.actions.agent_state
+          and 'nodes' in event.actions.agent_state
+      ):
+        self.first_checkpoint_seen = True
+        await all_branches_started.wait()
+      return await super().append_event(session=session, event=event)
+
+  b0 = _BranchNode(name='b0')
+  b1 = _BranchNode(name='b1')
+  b2 = _BranchNode(name='b2')
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='fanout_wf',
+      edges=[
+          (START, (b0, b1, b2)),
+          ((b0, b1, b2), join),
+      ],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = _GateFirstCheckpointSessionService()
+  runner = workflow_testing_utils.create_runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+          ),
+          events,
+      ),
+      timeout=2.0,
+  )
+
+  assert started_branches == ['b0', 'b1', 'b2']
+  assert events[0].actions.agent_state == {
+      'nodes': {
+          'b0': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+          'b1': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+          'b2': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+      }
+  }
+
+
+async def test_workflow_lone_failing_node_emits_failed_checkpoint():
+  """A lone failing node is recorded as FAILED in the final checkpoint."""
+
+  class _FailingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      raise ValueError('boom')
+      yield Event(output='unreachable')
+
+  wf = Workflow(
+      name='lone_fail_wf', edges=[(START, _FailingNode(name='failing'))]
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  with pytest.raises(ValueError, match='boom'):
+    async for event in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+    ):
+      events.append(event)
+
+  assert _node_checkpoints(events) == [
+      {'failing': {'status': NodeStatus.RUNNING.value, 'interrupts': []}},
+      {'failing': {'status': NodeStatus.FAILED.value, 'interrupts': []}},
+  ]
+
+
+@pytest.mark.parametrize(
+    'late_sibling_fails', [False, True], ids=['late_completes', 'late_fails']
+)
+async def test_workflow_error_only_tick_drains_and_checkpoints_siblings(
+    late_sibling_fails: bool,
+):
+  """Siblings released by the first error still reach the final checkpoint.
+
+  Setup: failing_1 fails at once; failing_2 and late block until the
+    consumer sees failing_1's error, so the error tick holds only failures.
+    late then completes, or fails in the `late_fails` case.
+  Assert: late was still RUNNING when failing_1 was checkpointed FAILED, and
+    the last checkpoint records the final status of every node.
+  """
+  first_failure_emitted = asyncio.Event()
+
+  class _ImmediateFailNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      raise ValueError('first failure')
+      yield Event(output='unreachable')
+
+  class _DelayedFailNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await first_failure_emitted.wait()
+      raise ValueError('second failure')
+      yield Event(output='unreachable')
+
+  class _DelayedSuccessNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await first_failure_emitted.wait()
+      yield Event(output='delayed_output')
+
+  late_cls = _DelayedFailNode if late_sibling_fails else _DelayedSuccessNode
+  wf = Workflow(
+      name='error_only_drain_wf',
+      edges=[
+          (START, _ImmediateFailNode(name='failing_1')),
+          (START, _DelayedFailNode(name='failing_2')),
+          (START, late_cls(name='late')),
+      ],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  with pytest.raises(ValueError, match='first failure'):
+    async for event in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+    ):
+      events.append(event)
+      if event.error_message == 'first failure':
+        first_failure_emitted.set()
+      await asyncio.sleep(0)
+
+  checkpoints = _node_checkpoints(events)
+  # late was still RUNNING when failing_1 was checkpointed FAILED, so a later
+  # drain pass recorded its final status.
+  assert checkpoints[1]['failing_1']['status'] == NodeStatus.FAILED.value
+  assert checkpoints[1]['late']['status'] == NodeStatus.RUNNING.value
+  late_status = (
+      NodeStatus.FAILED if late_sibling_fails else NodeStatus.COMPLETED
+  )
+  assert checkpoints[-1] == {
+      'failing_1': {'status': NodeStatus.FAILED.value, 'interrupts': []},
+      'failing_2': {'status': NodeStatus.FAILED.value, 'interrupts': []},
+      'late': {'status': late_status.value, 'interrupts': []},
+  }
+  assert _outputs(events) == ([] if late_sibling_fails else ['delayed_output'])
+
+
+async def test_workflow_wait_for_output_without_output_checkpoints_waiting():
+  """A wait_for_output node that yields no output is checkpointed WAITING."""
+
+  class _NoOutputNode(BaseNode):
+    wait_for_output: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(state={'seen': True})
+
+  blocker = _NoOutputNode(name='blocker')
+  downstream = _OutputNode(name='downstream', value='should_not_run')
+  wf = Workflow(
+      name='wait_for_output_wf',
+      edges=[
+          (START, blocker),
+          (blocker, downstream),
+      ],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  await _drain(
+      runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      ),
+      events,
+  )
+
+  assert _node_checkpoints(events) == [
+      {'blocker': {'status': NodeStatus.RUNNING.value, 'interrupts': []}},
+      {'blocker': {'status': NodeStatus.WAITING.value, 'interrupts': []}},
+  ]
+
+
+async def test_workflow_resume_trailing_replay_checkpoints_completed():
+  """A trailing replayed node started with a checkpoint ends COMPLETED.
+
+  Setup: replay_sub completes before ask_a pauses on an interrupt, and
+    rep_b -> rep_c completes after ask_a pauses.
+  Act: resume answering ask_a.
+  Assert: replay_sub emits no checkpoints on Turn 2, wf's penultimate
+    checkpoint records rep_c RUNNING when ask_a finishes, and wf's final
+    checkpoint marks every node COMPLETED.
+  """
+  ask_a_interrupted = asyncio.Event()
+
+  class _AskNode(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'int_a' in ctx.resume_inputs:
+        yield Event(state={'approved': ctx.resume_inputs['int_a']})
+      else:
+        yield RequestInput(interrupt_id='int_a', message='Approve?')
+        ask_a_interrupted.set()
+
+  class _WaitInterruptNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await ask_a_interrupted.wait()
+      yield Event(output='b_done')
+
+  sub_wf = Workflow(
+      name='replay_sub',
+      edges=[(START, _OutputNode(name='sub_step', value='sub_done'))],
+  )
+  ask_a = _AskNode(name='ask_a')
+  rep_b = _WaitInterruptNode(name='rep_b')
+  rep_c = _OutputNode(name='rep_c', value='c_done')
+  wf = Workflow(
+      name='trailing_replay_wf',
+      edges=[
+          (START, sub_wf),
+          (sub_wf, ask_a),
+          (START, rep_b),
+          (rep_b, rep_c),
+      ],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  turn1_events: list[Event] = []
+  await _drain(
+      runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      ),
+      turn1_events,
+  )
+
+  resume_msg = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name='adk_request_input',
+                  id='int_a',
+                  response={'result': 'yes'},
+              )
+          )
+      ],
+      role='user',
+  )
+  turn2_events: list[Event] = []
+  await _drain(
+      runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          invocation_id=turn1_events[0].invocation_id,
+          new_message=resume_msg,
+      ),
+      turn2_events,
+  )
+
+  sub_checkpoints = _node_checkpoints(
+      [e for e in turn2_events if e.author == 'replay_sub']
+  )
+  wf_checkpoints = _node_checkpoints(
+      [e for e in turn2_events if e.author == 'trailing_replay_wf']
+  )
+  assert sub_checkpoints == []
+  assert wf_checkpoints[-1] == {
+      'replay_sub': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+      'ask_a': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+      'rep_b': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+      'rep_c': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+  }
+  assert wf_checkpoints[-2]['rep_c']['status'] == NodeStatus.RUNNING.value
+
+
+@pytest.mark.parametrize(
+    'sub_blocks_on_resume',
+    [False, True],
+    ids=['replayed_drains', 'replayed_blocked'],
+)
+async def test_workflow_resume_error_drain_handles_replayed_sibling(
+    sub_blocks_on_resume: bool,
+):
+  """Error drain checkpoints drained replayed siblings without duplicates.
+
+  Setup: Turn 1 pauses on ask_fail, then finishes sub_wf -> join-predecessor
+    order ['ask_fail@1', 'sub_wf@1', 'rep_c@1']. On Turn 2, ask_fail raises;
+    sub_wf either finishes (releasing rep_c on the barrier) or stays blocked.
+  Assert: when rep_c drains, the final checkpoint marks it COMPLETED; when
+    rep_c stays blocked on the barrier, no duplicate checkpoint is emitted.
+  """
+  ask_interrupted = asyncio.Event()
+  sub_finished_turn1 = asyncio.Event()
+  sub_out_seen_turn2 = asyncio.Event()
+  never_done = asyncio.Event()
+  turn = 0
+
+  class _AskThenFailNode(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'int_a' in ctx.resume_inputs:
+        if not sub_blocks_on_resume:
+          await sub_out_seen_turn2.wait()
+        raise ValueError('resume boom')
+      yield RequestInput(interrupt_id='int_a', message='Approve?')
+      ask_interrupted.set()
+
+  class _SubGateNode(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await ask_interrupted.wait()
+      if turn == 2 and sub_blocks_on_resume:
+        await never_done.wait()
+      if False:  # pylint: disable=using-constant-test
+        yield
+
+  class _SubStepNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await ask_interrupted.wait()
+      yield Event(output='sub_done')
+      sub_finished_turn1.set()
+
+  class _RepCNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await sub_finished_turn1.wait()
+      yield Event(output='c_done')
+
+  sub_step = _SubStepNode(name='sub_step')
+  sub_edges = (
+      [(START, _SubGateNode(name='sub_gate'), sub_step)]
+      if sub_blocks_on_resume
+      else [(START, sub_step)]
+  )
+  sub_wf = Workflow(name='sub_wf', edges=sub_edges)
+  ask_fail = _AskThenFailNode(name='ask_fail')
+  rep_c = _RepCNode(name='rep_c')
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='error_drain_replay_wf',
+      edges=[
+          (START, ask_fail),
+          (START, (sub_wf, rep_c)),
+          ((ask_fail, sub_wf, rep_c), join),
+      ],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  turn = 1
+  turn1_events: list[Event] = []
+  await _drain(
+      runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      ),
+      turn1_events,
+  )
+
+  turn = 2
+  resume_msg = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name='adk_request_input',
+                  id='int_a',
+                  response={'result': 'yes'},
+              )
+          )
+      ],
+      role='user',
+  )
+  turn2_events: list[Event] = []
+  with pytest.raises(ValueError, match='resume boom'):
+    async for event in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        invocation_id=turn1_events[0].invocation_id,
+        new_message=resume_msg,
+    ):
+      turn2_events.append(event)
+      if event.output == 'sub_done':
+        sub_out_seen_turn2.set()
+
+  wf_checkpoints = _node_checkpoints(
+      [e for e in turn2_events if e.author == 'error_drain_replay_wf']
+  )
+  if sub_blocks_on_resume:
+    assert wf_checkpoints == [
+        {
+            'ask_fail': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+            'sub_wf': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+            'rep_c': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+        },
+        {
+            'ask_fail': {'status': NodeStatus.FAILED.value, 'interrupts': []},
+            'sub_wf': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+            'rep_c': {'status': NodeStatus.RUNNING.value, 'interrupts': []},
+        },
+    ]
+  else:
+    assert wf_checkpoints[-2]['rep_c']['status'] == NodeStatus.RUNNING.value
+    assert wf_checkpoints[-1] == {
+        'ask_fail': {'status': NodeStatus.FAILED.value, 'interrupts': []},
+        'sub_wf': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+        'rep_c': {'status': NodeStatus.COMPLETED.value, 'interrupts': []},
+    }
+
+
 @pytest.mark.asyncio
 async def test_workflow_abort_yields_abort_event_and_runs_after_run():
   """Aborting a workflow yields one abort event; breaking out still runs after_run."""
@@ -2847,3 +3734,233 @@ def test_workflow_iter_static_children_empty_when_no_graph():
   """Workflow._iter_static_children yields nothing when the workflow has no graph."""
   wf = Workflow(name='empty_wf')
   assert list(wf._iter_static_children()) == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_resume_task_on_replay_barrier_allows_siblings():
+  """A waiting task agent on the replay barrier stays RUNNING until ready."""
+  # Arrange
+  node_b_interrupted = asyncio.Event()
+
+  class _NodeA(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(output='a_done')
+
+  class _NodeB(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'int_b' in ctx.resume_inputs:
+        yield Event(output=f"b_done:{ctx.resume_inputs['int_b']}")
+        return
+      yield RequestInput(interrupt_id='int_b', message='Approve node_b')
+      node_b_interrupted.set()
+
+  def ask_task():
+    return None
+
+  async def _wait_for_node_b(*, callback_context, llm_request):
+    del callback_context, llm_request
+    await node_b_interrupted.wait()
+    return None
+
+  task_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='ask_task', args={}),
+      ]
+  )
+  node_a = _NodeA(name='node_a')
+  node_b = _NodeB(name='node_b')
+  task_agent = LlmAgent(
+      name='task_agent',
+      model=task_model,
+      tools=[LongRunningFunctionTool(func=ask_task)],
+      mode='task',
+      before_model_callback=_wait_for_node_b,
+  )
+  wf = Workflow(
+      name='replay_barrier_task_wf',
+      edges=[(START, node_a), (START, task_agent), (node_a, node_b)],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  turn1_events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+          ),
+          turn1_events,
+      ),
+      timeout=2.0,
+  )
+  task_interrupt_ids = {
+      lro_id
+      for e in turn1_events
+      if e.long_running_tool_ids
+      for lro_id in e.long_running_tool_ids
+      if lro_id != 'int_b'
+  }
+  assert len(task_interrupt_ids) == 1
+
+  # Act: resume answering only int_b while task_agent stays unresolved behind
+  # node_b@1 on the ['node_a@1', 'node_b@1', 'task_agent@1'] sequence barrier.
+  resume_msg = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name='adk_request_input',
+                  id='int_b',
+                  response={'result': 'approved'},
+              )
+          )
+      ],
+      role='user',
+  )
+  turn2_events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              invocation_id=turn1_events[0].invocation_id,
+              new_message=resume_msg,
+          ),
+          turn2_events,
+      ),
+      timeout=2.0,
+  )
+
+  # Assert
+  outputs = [e.output for e in turn2_events if e.output is not None]
+  assert 'b_done:approved' in outputs
+  checkpoints = [
+      e.actions.agent_state['nodes']
+      for e in turn2_events
+      if e.actions
+      and e.actions.agent_state
+      and 'nodes' in e.actions.agent_state
+  ]
+  assert len(checkpoints) >= 2
+  for cp in checkpoints[:-1]:
+    assert cp['task_agent']['status'] == NodeStatus.RUNNING.value
+  assert checkpoints[-1]['node_b']['status'] == NodeStatus.COMPLETED.value
+  assert checkpoints[-1]['task_agent']['status'] == NodeStatus.WAITING.value
+  assert set(checkpoints[-1]['task_agent']['interrupts']) == task_interrupt_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('nested', [False, True])
+async def test_workflow_resume_direct_sibling_transfer_preserves_inputs(
+    nested: bool,
+):
+  """A sibling transfer target under a Workflow resumes with its inputs."""
+  # Arrange
+  seen_resume_inputs: list[dict[str, Any]] = []
+
+  class _BetaAgent(BaseAgent):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del node_input
+      ctx.event_author = self.name
+      seen_resume_inputs.append(dict(ctx.resume_inputs or {}))
+      if ctx.resume_inputs and 'int_beta' in ctx.resume_inputs:
+        yield Event(output=f"beta_done:{ctx.resume_inputs['int_beta']}")
+        return
+      yield RequestInput(interrupt_id='int_beta', message='Approve beta')
+
+  class _Downstream(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del ctx
+      yield Event(output=f'downstream:{node_input}')
+
+  alpha_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='transfer_to_agent', args={'agent_name': 'beta'}
+          ),
+      ]
+  )
+  alpha = LlmAgent(name='alpha', model=alpha_model)
+  beta = _BetaAgent(name='beta')
+  coordinator = LlmAgent(
+      name='coordinator',
+      model=testing_utils.MockModel.create(responses=[]),
+      sub_agents=[alpha, beta],
+  )
+  assert coordinator.sub_agents == [alpha, beta]
+  wf = Workflow(
+      name='inner_wf',
+      edges=[(START, alpha), (alpha, _Downstream(name='downstream'))],
+  )
+  root = Workflow(name='outer_wf', edges=[(START, wf)]) if nested else wf
+  app = App(
+      name='test',
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act: turn 1 transfers alpha -> sibling beta directly under inner_wf and
+  # pauses on beta; turn 2 resolves int_beta and finishes downstream.
+  turn1_events = await runner.run_async(testing_utils.get_user_content('go'))
+  resume_msg = testing_utils.UserContent(
+      create_request_input_response('int_beta', {'result': 'approved'})
+  )
+  turn2_events = await runner.run_async(
+      new_message=resume_msg,
+      invocation_id=turn1_events[0].invocation_id,
+  )
+
+  # Assert
+  wf_prefix = 'outer_wf@1/inner_wf@1' if nested else 'inner_wf@1'
+  expected_beta_path = f'{wf_prefix}/beta@1'
+  expected_downstream_path = f'{wf_prefix}/downstream@1'
+  assert any(
+      e.author == 'beta'
+      and e.long_running_tool_ids == {'int_beta'}
+      and e.node_info.path == expected_beta_path
+      for e in turn1_events
+  )
+  assert not any(
+      e.node_info.path == expected_downstream_path for e in turn1_events
+  )
+  assert len(alpha_model.requests) == 1
+  assert seen_resume_inputs == [{}, {'int_beta': 'approved'}]
+  observed_turn2 = [
+      (e.author, e.node_info.path, e.output)
+      for e in turn2_events
+      if e.author == 'beta'
+      or e.node_info.path == expected_downstream_path
+      or e.actions.end_of_agent
+  ]
+  expected_turn2 = [
+      ('beta', expected_beta_path, 'beta_done:approved'),
+      ('inner_wf', expected_downstream_path, 'downstream:beta_done:approved'),
+      ('inner_wf', '', None),
+  ]
+  if nested:
+    expected_turn2.append(('outer_wf', '', None))
+  assert observed_turn2 == expected_turn2

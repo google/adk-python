@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import json
 import os
+import pickle
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -554,3 +556,43 @@ class TestAgentEngineSandboxCodeExecutor:
         == existing_sandbox_name
     )
     mock_api_client.sandboxes.create.assert_not_called()
+
+  def test_deepcopy(self):
+    """Deepcopy gives the clone its own lock and preserves memo identity."""
+    sandbox_res = "projects/test-proj/locations/us-central1/reasoningEngines/123/sandboxEnvironments/789"
+    with pytest.warns(UserWarning):
+      executor = AgentEngineSandboxCodeExecutor(
+          sandbox_resource_name=sandbox_res
+      )
+
+    container = [executor, executor]
+    cloned_container = copy.deepcopy(container)
+    cloned = cloned_container[0]
+    assert cloned is cloned_container[1]
+    assert cloned.model_dump() == executor.model_dump()
+    assert cloned._project_id == executor._project_id
+    assert cloned._location == executor._location
+    assert cloned._agent_engine_creation_lock is not None
+    assert (
+        cloned._agent_engine_creation_lock
+        is not executor._agent_engine_creation_lock
+    )
+
+  def test_pickle_roundtrip(self):
+    """Pickle roundtrip gives the unpickled instance its own lock."""
+    sandbox_res = "projects/test-proj/locations/us-central1/reasoningEngines/123/sandboxEnvironments/789"
+    with pytest.warns(UserWarning):
+      executor = AgentEngineSandboxCodeExecutor(
+          sandbox_resource_name=sandbox_res
+      )
+
+    pickled = pickle.dumps(executor)
+    unpickled = pickle.loads(pickled)
+    assert unpickled.model_dump() == executor.model_dump()
+    assert unpickled._project_id == executor._project_id
+    assert unpickled._location == executor._location
+    assert unpickled._agent_engine_creation_lock is not None
+    assert (
+        unpickled._agent_engine_creation_lock
+        is not executor._agent_engine_creation_lock
+    )

@@ -19,6 +19,8 @@ from google.adk.tools.environment_simulation.environment_simulation_config impor
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy
 from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
+from google.adk.tools.tool_args_matcher import SemanticArgMatcher
+from google.adk.tools.tool_args_matcher import ToolArgsMatcher
 from pydantic import ValidationError
 import pytest
 
@@ -56,6 +58,37 @@ class TestInjectionConfig:
 
     assert config.injected_response == response
     assert config.injected_error is None
+
+
+class TestInjectionConfigArgsMatcher:
+  """Tests for InjectionConfig.args_matcher."""
+
+  def test_args_matcher_defaults_to_none(self):
+    config = InjectionConfig(injected_response={"status": "ok"})
+
+    assert config.args_matcher is None
+
+  def test_args_matcher_loads_from_dict(self):
+    """A JSON-style config builds the matchers named by type."""
+    config = InjectionConfig.model_validate({
+        "match_args": {"query": "employees in NYC", "limit": 10},
+        "args_matcher": {
+            "per_arg_matchers": {"query": {"type": "semantic"}},
+        },
+        "injected_response": {"status": "ok"},
+    })
+
+    assert config.args_matcher == ToolArgsMatcher(
+        per_arg_matchers={"query": SemanticArgMatcher()}
+    )
+
+  def test_args_matcher_without_match_args_raises(self):
+    """A matcher with nothing to compare against is a config mistake."""
+    with pytest.raises(ValidationError, match="args_matcher requires"):
+      InjectionConfig(
+          args_matcher=ToolArgsMatcher(),
+          injected_response={"status": "ok"},
+      )
 
 
 class TestToolSimulationConfig:

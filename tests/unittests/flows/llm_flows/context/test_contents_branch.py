@@ -20,6 +20,7 @@ Child agents can see parent agents' events, but not sibling agents' events.
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows.context._contents import _is_tool_sub_branch_event
 from google.adk.flows.llm_flows.context._contents import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
@@ -449,6 +450,32 @@ async def test_agent_inheriting_tool_branch_keeps_its_events():
     pass
 
   assert types.ModelContent("Inner progress") in llm_request.contents
+
+
+@pytest.mark.parametrize(
+    ("current_branch", "event_branch", "tool_call_ids", "expected"),
+    [
+        ("root", "root.tool@fc", {"fc"}, True),
+        ("root", "root.tool@fc.node@1", {"fc"}, True),
+        (None, "tool@fc", {"fc"}, True),
+        ("root", "root_1.tool@fc", {"fc"}, False),
+        ("root", "root.agent@fc", {"fc"}, False),
+        ("root.tool@fc", "root.tool@fc", {"fc"}, False),
+        ("root", "root.tool@other", {"fc"}, False),
+        ("root", "root.tool@fc", set(), False),
+        ("root", None, {"fc"}, False),
+    ],
+)
+def test_tool_sub_branch_event_needs_tool_segment_below_branch(
+    current_branch, event_branch, tool_call_ids, expected
+):
+  """Only a tool-call segment strictly below the current branch matches."""
+  event = Event(author="tool", branch=event_branch)
+
+  assert (
+      _is_tool_sub_branch_event(current_branch, event, "agent", tool_call_ids)
+      is expected
+  )
 
 
 @pytest.mark.asyncio

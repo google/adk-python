@@ -15,7 +15,6 @@
 # Hello world agent defined with get_agent_async instead of root_agent.
 import contextlib
 import random
-from typing import Optional
 
 from google.adk import Agent
 from google.adk.agents import llm_agent
@@ -63,7 +62,7 @@ def check_prime(nums: list[int]) -> list[str]:
 
 
 async def get_agent_async() -> (
-    tuple[llm_agent.LlmAgent, Optional[contextlib.AsyncExitStack]]
+    tuple[llm_agent.LlmAgent, contextlib.AsyncExitStack | None]
 ):
   """Returns the root agent."""
   root_agent = Agent(

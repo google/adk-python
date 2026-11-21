@@ -14,15 +14,25 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import logging
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.tools._node_tool import NodeTool
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.utils.agent_info import get_agents_dict
 from google.adk.utils.agent_info import get_tools_info
+from google.adk.workflow import Edge
+from google.adk.workflow import JoinNode
 from google.adk.workflow import node
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.genai import types
 import pytest
 
@@ -35,7 +45,7 @@ class _CountingTool(BaseTool):
     self.declaration_calls = 0
     self._declared = declared
 
-  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
     self.declaration_calls += 1
     if not self._declared:
       return None
@@ -51,7 +61,7 @@ class _CountingToolset(BaseToolset):
     self._tools = tools
 
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     return self._tools
 
@@ -288,3 +298,176 @@ async def test_get_agents_dict_reports_each_agents_own_tools():
   # Tools are per-agent; a parent does not inherit its child's tools.
   assert _declaration_names(agents['root'].tools) == ['root_tool']
   assert _declaration_names(agents['child'].tools) == ['child_tool']
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_collects_llm_agents_from_workflow():
+  """Collects LlmAgent nodes from a Workflow while omitting non-LLM nodes."""
+
+  @node
+  def preprocess(x: str) -> str:
+    return x
+
+  join = JoinNode(name='merge')
+  weather = LlmAgent(
+      name='weather_agent',
+      description='Fetches weather.',
+      instruction='Use tool.',
+      tools=[_CountingTool('tell_weather')],
+  )
+  translator = LlmAgent(
+      name='translate_agent',
+      description='Translates text.',
+      instruction='Translate to German.',
+  )
+  workflow = Workflow(
+      name='weather_workflow',
+      edges=[
+          (START, preprocess, (weather, translator), join),
+      ],
+  )
+
+  agents = await get_agents_dict(workflow)
+
+  assert set(agents) == {'weather_agent', 'translate_agent'}
+  assert _declaration_names(agents['weather_agent'].tools) == ['tell_weather']
+  assert agents['weather_agent'].sub_agents == []
+  assert agents['translate_agent'].sub_agents == []
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_traverses_nested_workflows_and_shell_agents():
+  """Finds LlmAgents nested inside Workflows, shell agents, and workers."""
+
+  @node
+  def noop() -> str:
+    return 'ok'
+
+  seq_leaf = LlmAgent(name='seq_leaf')
+  par_leaf = LlmAgent(name='par_leaf')
+  loop_leaf = LlmAgent(name='loop_leaf')
+  worker_leaf = LlmAgent(name='worker_leaf')
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, SequentialAgent(name='seq', sub_agents=[seq_leaf]))],
+  )
+  outer_wf = Workflow(
+      name='outer_wf',
+      edges=[
+          (
+              START,
+              inner_wf,
+              ParallelAgent(name='par', sub_agents=[par_leaf]),
+              LoopAgent(name='loop', sub_agents=[loop_leaf]),
+              node(worker_leaf, parallel_worker=True),
+              noop,
+          ),
+      ],
+  )
+
+  agents = await get_agents_dict(outer_wf)
+
+  assert set(agents) == {'seq_leaf', 'par_leaf', 'loop_leaf', 'worker_leaf'}
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_flattens_non_llm_sub_agent_containers():
+  """Links LlmAgent parents to nearest LlmAgent descendants across shells."""
+  grandchild = LlmAgent(name='grandchild')
+  first = LlmAgent(name='first', sub_agents=[grandchild])
+  second = LlmAgent(name='second')
+  shell = SequentialAgent(name='shell', sub_agents=[first, second])
+  root = LlmAgent(name='root', sub_agents=[shell])
+
+  agents = await get_agents_dict(root)
+
+  assert set(agents) == {'root', 'first', 'second', 'grandchild'}
+  assert agents['root'].sub_agents == ['first', 'second']
+  assert agents['first'].sub_agents == ['grandchild']
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_visits_node_tool_without_adding_sub_agent():
+  """Includes LlmAgents inside a NodeTool without listing them as sub_agents."""
+  helper = LlmAgent(name='helper', instruction='Help.')
+  tool_wf = Workflow(name='tool_wf', edges=[(START, helper)])
+  root = LlmAgent(
+      name='root',
+      tools=[NodeTool(node=tool_wf, name='run_helper')],
+  )
+
+  agents = await get_agents_dict(root)
+
+  assert set(agents) == {'root', 'helper'}
+  assert agents['root'].sub_agents == []
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_does_not_traverse_into_agent_tool():
+  """Leaves LlmAgents wrapped in an AgentTool out of the result."""
+  wrapped = LlmAgent(name='wrapped', instruction='Help.')
+  root = LlmAgent(name='root', tools=[AgentTool(agent=wrapped)])
+
+  agents = await get_agents_dict(root)
+
+  assert set(agents) == {'root'}
+  assert agents['root'].sub_agents == []
+  assert _declaration_names(agents['root'].tools) == ['wrapped']
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_terminates_on_workflow_cycle_and_dag():
+  """Terminates cleanly on routed cycles and shared nodes in a Workflow."""
+  reviewer = LlmAgent(name='reviewer')
+  publisher = LlmAgent(name='publisher')
+  shared = LlmAgent(name='shared')
+  workflow = Workflow(
+      name='cyclic_wf',
+      edges=[
+          Edge(from_node=START, to_node=reviewer),
+          Edge(from_node=reviewer, to_node=shared, route='draft'),
+          Edge(from_node=shared, to_node=reviewer, route='retry'),
+          Edge(from_node=reviewer, to_node=publisher, route='approved'),
+          Edge(from_node=shared, to_node=publisher, route='skip'),
+      ],
+  )
+
+  agents = await get_agents_dict(workflow)
+
+  assert set(agents) == {'reviewer', 'shared', 'publisher'}
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_empty_when_no_llm_agents_exist():
+  """Returns an empty dict for trees without any LlmAgent."""
+
+  @node
+  def step_one() -> str:
+    return 'one'
+
+  workflow = Workflow(name='fn_only', edges=[(START, step_one)])
+  base_only = BaseAgent(name='custom_base')
+
+  assert await get_agents_dict(workflow) == {}
+  assert await get_agents_dict(base_only) == {}
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_keeps_first_entry_on_duplicate_llm_name(
+    caplog: pytest.LogCaptureFixture,
+):
+  """Logs a warning and keeps the first entry when LlmAgent names collide."""
+  first = LlmAgent(name='dup', description='first')
+  second = LlmAgent(name='dup', description='second')
+  inner_wf = Workflow(name='inner_wf', edges=[(START, second)])
+  root = LlmAgent(
+      name='root',
+      tools=[NodeTool(node=inner_wf, name='inner_tool')],
+      sub_agents=[first],
+  )
+
+  with caplog.at_level(logging.WARNING):
+    agents = await get_agents_dict(root)
+
+  assert agents['dup'].description == 'first'
+  assert any('Duplicate LlmAgent name' in r.message for r in caplog.records)

@@ -20,7 +20,6 @@ from collections.abc import AsyncGenerator
 from typing import Annotated
 from typing import Any
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -41,6 +40,7 @@ from ._types import Binary
 from ._types import BinaryAnswer
 from ._types import Choice
 from ._types import ChoiceAnswer
+from ._types import RefusalAnswer
 
 if TYPE_CHECKING:
   from ...agents.context import Context
@@ -67,7 +67,7 @@ class ClassifierNode(BaseNode):
   classifier: SerializeAsAny[BaseClassifier]
   """The classifier that answers :attr:`question`."""
 
-  question: Annotated[Union[Choice, Binary], Field(discriminator='type')]
+  question: Annotated[Choice | Binary, Field(discriminator='type')]
   """The question whose answer picks the route."""
 
   threshold: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -95,6 +95,11 @@ class ClassifierNode(BaseNode):
     return {True, False}
 
   def _route_for(self, answer: Answer) -> RouteValue:
+    if isinstance(answer, RefusalAnswer):
+      raise WorkflowDataError(
+          f'Classifier for node "{self.name}" declined to answer, so the node'
+          ' has no route to take.'
+      )
     if isinstance(self.question, Choice) and isinstance(answer, ChoiceAnswer):
       if answer.choice not in self.question.criteria:
         raise WorkflowDataError(

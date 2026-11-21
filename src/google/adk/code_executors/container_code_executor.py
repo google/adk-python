@@ -14,8 +14,14 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import logging
+import mimetypes
 import os
+import posixpath
+import tarfile
+import threading
 from typing import Any
 from typing import cast
 import weakref
@@ -31,6 +37,7 @@ from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
+from .code_execution_utils import File
 
 logger = logging.getLogger('google_adk.' + __name__)
 DEFAULT_IMAGE_TAG = 'adk-code-executor:latest'
@@ -39,6 +46,10 @@ DEFAULT_IMAGE_TAG = 'adk-code-executor:latest'
 # Follows the convention of coreutils `timeout`; unlike 128 + SIGALRM it is not
 # something the executed code produces by letting an alarm of its own fire.
 _TIMEOUT_EXIT_CODE = 124
+
+# Bounds what is read back from output_dir, since the executed code is untrusted
+# and could otherwise exhaust the agent process's memory.
+_MAX_OUTPUT_ARCHIVE_BYTES = 100 * 1024 * 1024
 
 # Runs the code under a supervisor that enforces a hard wall-clock bound inside
 # the container. The code runs in a forked child in its own process group; the
@@ -135,6 +146,15 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   ``GkeCodeExecutor`` (gVisor) or a managed executor
   (``VertexAiCodeExecutor`` / ``AgentEngineSandboxCodeExecutor``).
 
+  Files: input files are written to ``input_dir`` and every file the code
+  writes under ``output_dir`` is returned as an output file; both directories
+  are emptied before each run. Because ``optimize_data_file`` is not supported,
+  the agent flow does not stage files itself: add them with
+  ``CodeExecutorContext.add_input_files()``. The code runs in the image's
+  working directory, so it must use these absolute paths, and the model has to
+  be told them, e.g. in the agent's instruction. Executions are serialized,
+  since every run shares the one container and these two directories.
+
   Attributes:
     base_url: Optional. The base url of the user hosted Docker client.
     image: The tag of the predefined image or custom image to run on the
@@ -145,6 +165,9 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     network_enabled: Whether to start the container with networking enabled.
       Defaults to False. Set to True only if the executed code must make network
       requests and you trust it.
+    input_dir: The directory in the container where input files will be placed.
+    output_dir: The directory in the container where output files will be
+      retrieved from.
   """
 
   base_url: str | None = None
@@ -176,6 +199,16 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   code must make network requests and you trust it.
   """
 
+  input_dir: str = '/tmp/inputs'
+  """
+  The directory in the container where input files will be placed.
+  """
+
+  output_dir: str = '/tmp/outputs'
+  """
+  The directory in the container where output files will be retrieved from.
+  """
+
   # Overrides the BaseCodeExecutor attribute: unlike the base default of None,
   # the timeout here is always finite and must be positive (0 would mean no
   # bound at all).
@@ -205,6 +238,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   _finalizer: (
       weakref.finalize[[Container | None], ContainerCodeExecutor] | None
   ) = PrivateAttr(default=None)
+  _execution_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
   def __init__(
       self,
@@ -236,6 +270,13 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       )
 
     super().__init__(**data)
+    input_dir = posixpath.normpath(self.input_dir)
+    output_dir = posixpath.normpath(self.output_dir)
+    if posixpath.commonpath([input_dir, output_dir]) in (input_dir, output_dir):
+      raise ValueError(
+          'input_dir and output_dir must not be the same or nested in each'
+          ' other.'
+      )
     self.base_url = base_url
     self.image = image if image else DEFAULT_IMAGE_TAG
     self.docker_path = os.path.abspath(docker_path) if docker_path else None
@@ -254,6 +295,17 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
+    with self._execution_lock:
+      return self._execute_code_locked(code_execution_input)
+
+  def _execute_code_locked(
+      self, code_execution_input: CodeExecutionInput
+  ) -> CodeExecutionResult:
+    """Runs the code; the caller holds `_execution_lock`."""
+    self._prepare_directories()
+    if code_execution_input.input_files:
+      self._put_input_files(code_execution_input.input_files)
+
     output = ''
     error = ''
     exec_result = cast(Container, self._container).exec_run(
@@ -286,11 +338,13 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       )
       error = f'{error}\n{timed_out}' if error else timed_out
 
+    output_files = self._get_output_files()
+
     # Collect the final result.
     return CodeExecutionResult(
         stdout=output,
         stderr=error,
-        output_files=[],
+        output_files=output_files,
         exit_code=exec_result.exit_code,
     )
 
@@ -316,6 +370,124 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     )
     if exec_result.exit_code != 0:
       raise ValueError('python3 is not installed in the container.')
+
+  def _prepare_directories(self) -> None:
+    """Empties the input and output directories in the container."""
+    container = cast(Container, self._container)
+    for cmd in (
+        ['rm', '-rf', self.input_dir, self.output_dir],
+        ['mkdir', '-p', self.input_dir, self.output_dir],
+    ):
+      exec_result = container.exec_run(cmd)
+      if exec_result.exit_code != 0:
+        raise RuntimeError(
+            f'Failed to prepare {self.input_dir} and {self.output_dir}:'
+            f' {exec_result.output!r}'
+        )
+
+  def _put_input_files(self, input_files: list[File]) -> None:
+    """Puts input files into the container using put_archive.
+
+    Args:
+      input_files: The list of input files to copy into the container.
+    """
+    tar_buffer = io.BytesIO()
+    seen: set[str] = set()
+    with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+      for file in input_files:
+        file_name = os.path.basename(file.name)
+        if not file_name or file_name in ('.', '..'):
+          raise ValueError(f'Invalid input file name: {file.name!r}')
+        if file_name in seen:
+          raise ValueError(f'Duplicate input file name: {file_name!r}')
+        seen.add(file_name)
+        content = (
+            base64.b64decode(file.content, validate=True)
+            if isinstance(file.content, str)
+            else file.content
+        )
+        tarinfo = tarfile.TarInfo(name=file_name)
+        tarinfo.size = len(content)
+        tar.addfile(tarinfo, io.BytesIO(content))
+
+    tar_buffer.seek(0)
+    cast(Container, self._container).put_archive(
+        self.input_dir,
+        tar_buffer.read(),
+    )
+    logger.debug(
+        'Copied %d input files to %s', len(input_files), self.input_dir
+    )
+
+  def _get_output_files(self) -> list[File]:
+    """Gets output files from the container.
+
+    Returns:
+      The list of output files retrieved from the container.
+    """
+    try:
+      tar_stream, _ = cast(Container, self._container).get_archive(
+          self.output_dir
+      )
+    except docker.errors.APIError as e:
+      if e.response is not None and e.response.status_code == 404:
+        logger.debug('No output files found at %s', self.output_dir)
+        return []
+      raise
+    chunks: list[bytes] = []
+    total_size = 0
+    for chunk in tar_stream:
+      total_size += len(chunk)
+      if total_size > _MAX_OUTPUT_ARCHIVE_BYTES:
+        raise RuntimeError(
+            f'Output files in {self.output_dir} exceed'
+            f' {_MAX_OUTPUT_ARCHIVE_BYTES} bytes.'
+        )
+      chunks.append(chunk)
+    tar_bytes = b''.join(chunks)
+    if not tar_bytes:
+      return []
+    tar_buffer = io.BytesIO(tar_bytes)
+    output_files = []
+
+    with tarfile.open(fileobj=tar_buffer, mode='r') as tar:
+      for member in tar.getmembers():
+        if member.isfile():
+          file_obj = tar.extractfile(member)
+          if file_obj:
+            content = file_obj.read()
+            # The archive's top-level entry is output_dir itself.
+            file_name = member.name.partition('/')[2]
+            if file_name.startswith('user:'):
+              raise RuntimeError(
+                  f'Output file name {file_name!r} is reserved for'
+                  ' user-scoped artifacts.'
+              )
+            if file_name:
+              output_files.append(
+                  File(
+                      name=file_name,
+                      content=content,
+                      mime_type=self._guess_mime_type(file_name),
+                  )
+              )
+
+    logger.debug(
+        'Retrieved %d output files from %s', len(output_files), self.output_dir
+    )
+    return output_files
+
+  def _guess_mime_type(self, file_name: str) -> str:
+    """Guesses the MIME type based on the file extension.
+
+    Args:
+      file_name: The name of the file.
+
+    Returns:
+      The guessed MIME type, or 'application/octet-stream' if unknown.
+    """
+    mime_type, _ = mimetypes.guess_type(file_name)
+    return mime_type if mime_type else 'application/octet-stream'
 
   def __init_container(self) -> None:
     """Initializes the container."""

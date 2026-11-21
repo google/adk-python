@@ -1686,12 +1686,154 @@ async def test_sdk_subagent_steps_preserve_author_and_hierarchy():
   assert author_fallback == 'threat_intelligence_orchestrator_subagent'
   assert 'traj-fallback' not in subagent_authors
 
+  root_agent_multi = AntigravityAgent(
+      name='root_agent',
+      config=_make_config(subagents=[sub_1, sub_2]),
+      mode='single_turn',
+  )
+  root_subagent_authors: dict[str, str] = {}
+  root_pending: list[str] = []
+  root_seen_calls: set[str] = set()
+  root_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-root',
+          depth=0,
+          step_index=1,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'reverse_engineering_agent'},
+                  id='call_sub_step_1',
+              )
+          ],
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert root_author == 'root_agent'
+  assert root_pending == ['reverse_engineering_agent']
+  root_author_second, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-root',
+          depth=0,
+          step_index=2,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'reverse_engineering_agent'},
+                  id='call_sub_step_1',
+              ),
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'code_insights_agent'},
+                  id='call_sub_step_2',
+              ),
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'TypeName': 'reverse_engineering_agent'},
+                  id='call_sub_step_3',
+              ),
+          ],
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert root_author_second == 'root_agent'
+  assert root_pending == [
+      'reverse_engineering_agent',
+      'code_insights_agent',
+      'reverse_engineering_agent',
+  ]
+  step_queued_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-sub-step-queued-1',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='from step args 1',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert step_queued_author == 'reverse_engineering_agent'
+  step_queued_second_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-sub-step-queued-2',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='from step args 2',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert step_queued_second_author == 'code_insights_agent'
+  step_queued_third_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-sub-step-queued-3',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='from step args 3',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+      seen_subagent_calls=root_seen_calls,
+  )
+  assert step_queued_third_author == 'reverse_engineering_agent'
+  assert not root_pending
+  root_fallback_author, _, _ = root_agent_multi._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-root-fallback',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='root fallback',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=root_subagent_authors,
+      pending_invocations=root_pending,
+  )
+  assert root_fallback_author == 'subagent'
+  assert 'traj-root-fallback' not in root_subagent_authors
+
   ctx_with_prior = _mock_run_ctx()
   ctx_with_prior.session.events = [
       Event(
           author='re_sub',
           custom_metadata={
               'trajectory_id': 'traj-sub-turn1',
+              'parent_trajectory_id': 'traj-root',
+              'depth': 1,
+          },
+      ),
+      Event(
+          author='root_agent_subagent',
+          custom_metadata={
+              'trajectory_id': 'traj-sub-generic',
               'parent_trajectory_id': 'traj-root',
               'depth': 1,
           },
@@ -1859,6 +2001,7 @@ async def test_last_turn_usage_populates_usage_metadata_on_trailing_event():
   active_agent = _fake_active_agent(_steps_once)
   active_agent.conversation.last_turn_usage = types.SimpleNamespace(
       prompt_token_count=100,
+      cached_content_token_count=40,
       candidates_token_count=50,
       thoughts_token_count=20,
       total_token_count=170,
@@ -1876,9 +2019,32 @@ async def test_last_turn_usage_populates_usage_metadata_on_trailing_event():
   terminal_event = events[-1]
   assert terminal_event.usage_metadata is not None
   assert terminal_event.usage_metadata.prompt_token_count == 100
+  assert terminal_event.usage_metadata.cached_content_token_count == 40
   assert terminal_event.usage_metadata.candidates_token_count == 50
   assert terminal_event.usage_metadata.thoughts_token_count == 20
   assert terminal_event.usage_metadata.total_token_count == 170
+
+
+@pytest.mark.asyncio
+async def test_last_turn_usage_without_cached_count_leaves_it_none():
+  active_agent = _fake_active_agent(_steps_once)
+  active_agent.conversation.last_turn_usage = types.SimpleNamespace(
+      prompt_token_count=100,
+      candidates_token_count=50,
+      thoughts_token_count=20,
+      total_token_count=170,
+  )
+
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(), mode='single_turn'
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', lambda config: active_agent):
+    events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
+
+  assert events[-1].usage_metadata is not None
+  assert events[-1].usage_metadata.cached_content_token_count is None
+  assert events[-1].usage_metadata.prompt_token_count == 100
 
 
 @pytest.mark.asyncio

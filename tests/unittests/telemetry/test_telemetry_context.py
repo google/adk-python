@@ -20,7 +20,6 @@ import asyncio
 from collections.abc import Iterable
 import itertools
 import re
-from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
@@ -66,7 +65,7 @@ _ALL_TELEMETRY_ENV_VARS = (
 )
 
 
-def _set_env(monkeypatch: pytest.MonkeyPatch, **env: Optional[str]) -> None:
+def _set_env(monkeypatch: pytest.MonkeyPatch, **env: str | None) -> None:
   """Applies a clean telemetry env: unset everything, then set the given vars.
 
   Starting from a known-empty state keeps each parametrized case hermetic
@@ -118,9 +117,9 @@ _VALID_CONSTRUCTION_TABLE = list(
     'opt_in,capture,adk_experimental_telemetry', _VALID_CONSTRUCTION_TABLE
 )
 def test_telemetry_config_construction_accepts_valid_combinations(
-    opt_in: Optional[str],
-    capture: Optional[ContentCapturingMode],
-    adk_experimental_telemetry: Optional[bool],
+    opt_in: str | None,
+    capture: ContentCapturingMode | None,
+    adk_experimental_telemetry: bool | None,
 ):
   """Every valid (opt_in, capture, adk_experimental_telemetry) triple constructs and round-trips its fields."""
   cfg = TelemetryConfig(
@@ -340,8 +339,8 @@ _EXPERIMENTAL_RESOLUTION_TABLE = [
 )
 def test_should_use_experimental_genai_semconv_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    opt_in: Optional[str],
-    env_value: Optional[str],
+    opt_in: str | None,
+    env_value: str | None,
     expected: bool,
 ):
   """Per-request opt_in wins; otherwise the env CSV opt-in token decides."""
@@ -369,8 +368,8 @@ def test_should_use_experimental_genai_semconv_resolution(
 )
 def test_should_use_experimental_genai_semconv_defaults_on_under_schema_v2(
     monkeypatch: pytest.MonkeyPatch,
-    opt_in: Optional[str],
-    env_value: Optional[str],
+    opt_in: str | None,
+    env_value: str | None,
     expected: bool,
 ):
   """Under the semconv-aligned schema the env var can only opt further in."""
@@ -408,8 +407,8 @@ _CAPTURE_RESOLUTION_TABLE = [
 )
 def test_content_capturing_mode_value_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    capture: Optional[ContentCapturingMode],
-    env_value: Optional[str],
+    capture: ContentCapturingMode | None,
+    env_value: str | None,
     expected: str,
 ):
   """Per-request capture field wins; else env fallback w/ legacy coercion."""
@@ -467,8 +466,8 @@ _LEGACY_SPAN_RESOLUTION_TABLE = [
 )
 def test_should_add_content_to_legacy_spans_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    capture: Optional[ContentCapturingMode],
-    env_value: Optional[str],
+    capture: ContentCapturingMode | None,
+    env_value: str | None,
     expected: bool,
 ):
   """Legacy ADK span knob: field uses OTel routing, else its own default-on env."""
@@ -581,8 +580,8 @@ _EXPERIMENTAL_FEATURE_ENV_TABLE = [
 )
 def test_experimental_feature_enabled_env_parsing(
     monkeypatch: pytest.MonkeyPatch,
-    env_value: Optional[str],
-    features_value: Optional[str],
+    env_value: str | None,
+    features_value: str | None,
     feature: _ExperimentalFeature,
     expected: bool,
 ):
@@ -838,11 +837,11 @@ _FEATURES_FIELD_PRECEDENCE_TABLE = [
 )
 def test_features_field_precedence(
     monkeypatch: pytest.MonkeyPatch,
-    lock: Optional[str],
-    opt_in: Optional[bool],
-    features_field: Optional[Iterable[str]],
-    env_blanket: Optional[str],
-    env_features: Optional[str],
+    lock: str | None,
+    opt_in: bool | None,
+    features_field: Iterable[str] | None,
+    env_blanket: str | None,
+    env_features: str | None,
     feature: _ExperimentalFeature,
     expected: bool,
 ):
@@ -886,8 +885,8 @@ _FEATURES_FIELD_COERCION_TABLE = [
 @pytest.mark.parametrize('value,expected', _FEATURES_FIELD_COERCION_TABLE)
 def test_features_field_normalizes_its_value(
     monkeypatch: pytest.MonkeyPatch,
-    value: Optional[Iterable[str]],
-    expected: Optional[frozenset[str]],
+    value: Iterable[str] | None,
+    expected: frozenset[str] | None,
 ):
   """Any iterable of names is accepted and normalized like the env parser."""
   _set_env(monkeypatch)
@@ -948,7 +947,7 @@ def test_all_features_unrecognized_results_in_none(
 
 
 def _run_set_common_attrs(
-    telemetry_config: Optional[TelemetryConfig],
+    telemetry_config: TelemetryConfig | None,
 ) -> dict:
   """Runs set_operation_details_common_attributes and returns the result map."""
   out: dict = {}
@@ -1303,7 +1302,7 @@ async def test_concurrent_runner_invocations_do_not_leak_telemetry(
 
   async def _run(
       runner: InMemoryRunner,
-      telemetry_config: Optional[TelemetryConfig],
+      telemetry_config: TelemetryConfig | None,
   ) -> None:
     session = await runner.runner.session_service.create_session(
         app_name=runner.app_name, user_id='test_user'

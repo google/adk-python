@@ -14,6 +14,7 @@
 
 """Pluggable comparison of expected and actual tool call arguments."""
 
+from ._semantic_arg_matcher import SemanticArgMatcher
 from ._tool_args_matcher import ArgMatchResult
 from ._tool_args_matcher import BaseArgMatcher
 from ._tool_args_matcher import register_arg_matcher
@@ -24,6 +25,7 @@ __all__ = [
     'ArgMatchResult',
     'BaseArgMatcher',
     'register_arg_matcher',
+    'SemanticArgMatcher',
     'ToolArgsMatcher',
     'ToolArgsMatchResult',
 ]

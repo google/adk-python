@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import itertools
 import re
 import statistics
 
@@ -27,6 +28,8 @@ from google.adk.evaluation._multi_run_aggregation_methods import load_custom_agg
 from google.adk.evaluation._multi_run_aggregation_methods import mean_of_runs
 from google.adk.evaluation._multi_run_aggregation_methods import mean_over_invocations
 from google.adk.evaluation._multi_run_aggregation_methods import min_over_runs
+from google.adk.evaluation._multi_run_aggregation_methods import pass_at_k
+from google.adk.evaluation._multi_run_aggregation_methods import pass_hat_k
 from google.adk.evaluation._multi_run_aggregation_methods import pass_rate
 from google.adk.evaluation._multi_run_aggregation_methods import RunResult
 from google.adk.evaluation.eval_config import CustomCrossRunMethodConfig
@@ -187,6 +190,97 @@ def test_default_aggregation_method_is_a_built_in_method():
       get_built_in_aggregation_methods()["mean_over_invocations"]
       is DEFAULT_AGGREGATION_METHOD
   )
+
+
+@pytest.mark.parametrize("num_decided", range(1, 7))
+def test_pass_k_methods_match_enumeration_of_every_k_subset(num_decided):
+  """pass@k and pass^k equal the share of k-run subsets with any or all passes."""
+  for num_passed in range(num_decided + 1):
+    outcomes = [True] * num_passed + [False] * (num_decided - num_passed)
+    runs = [
+        _judged_run(EvalStatus.PASSED if passed else EvalStatus.FAILED)
+        for passed in outcomes
+    ]
+    for k in range(1, num_decided + 1):
+      subsets = list(itertools.combinations(outcomes, k))
+
+      assert pass_at_k(runs, k) == pytest.approx(
+          sum(any(subset) for subset in subsets) / len(subsets)
+      )
+      assert pass_hat_k(runs, k) == pytest.approx(
+          sum(all(subset) for subset in subsets) / len(subsets)
+      )
+
+
+def test_pass_k_methods_at_k_one_equal_the_pass_rate():
+  """At k = 1, pass@k and pass^k are both the pass rate."""
+  runs = [_judged_run(EvalStatus.PASSED)] * 3 + [_judged_run(EvalStatus.FAILED)]
+
+  assert pass_at_k(runs, 1) == pytest.approx(pass_rate(runs))
+  assert pass_hat_k(runs, 1) == pytest.approx(pass_rate(runs))
+
+
+def test_pass_k_methods_leave_out_runs_that_were_not_evaluated():
+  """An undecided run is left out of n, as in pass_rate."""
+  runs = [
+      _judged_run(EvalStatus.PASSED),
+      _judged_run(EvalStatus.NOT_EVALUATED),
+      _judged_run(EvalStatus.PASSED),
+      _judged_run(EvalStatus.FAILED),
+  ]
+
+  # Three decided runs, two of which passed.
+  assert pass_at_k(runs, 2) == pytest.approx(1.0)
+  assert pass_hat_k(runs, 2) == pytest.approx(1 / 3)
+
+
+@pytest.mark.parametrize("method", [pass_at_k, pass_hat_k])
+def test_pass_k_methods_are_none_with_fewer_than_k_decided_runs(method):
+  """Fewer than k decided runs cannot support an estimate of k runs."""
+  runs = [_judged_run(EvalStatus.PASSED), _judged_run(EvalStatus.NOT_EVALUATED)]
+
+  assert method(runs, 2) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "display_name", "compute_with_k"),
+    [("pass_at_k", "pass@3", pass_at_k), ("pass_hat_k", "pass^3", pass_hat_k)],
+)
+def test_pass_k_method_with_k_is_named_and_computed_for_k(
+    name, display_name, compute_with_k
+):
+  """A pass@k method needs k, and binding it names the method for k."""
+  method = get_built_in_aggregation_methods()[name]
+  runs = [_judged_run(EvalStatus.PASSED)] * 3 + [_judged_run(EvalStatus.FAILED)]
+
+  bound = method.with_k(3)
+
+  assert method.uses_scores is False
+  with pytest.raises(TypeError, match="needs k"):
+    method.compute(runs)
+  assert bound.name == display_name
+  assert bound.compute(runs) == pytest.approx(compute_with_k(runs, 3))
+
+
+def test_with_k_on_a_method_without_k_raises_type_error():
+  """Only a method that looks at k runs at a time takes k."""
+  with pytest.raises(TypeError, match="does not take k"):
+    get_built_in_aggregation_methods()["pass_rate"].with_k(2)
+
+
+@pytest.mark.parametrize("k", [0, -1])
+@pytest.mark.parametrize("method", [pass_at_k, pass_hat_k])
+def test_pass_k_methods_reject_k_below_one(method, k):
+  """k = 0 would give a misleading value and k < 0 would divide by zero."""
+  with pytest.raises(ValueError, match=f"k must be at least 1, got {k}."):
+    method([], k)
+
+
+@pytest.mark.parametrize("k", [0, -1])
+def test_with_k_rejects_k_below_one(k):
+  """Binding a k below 1 fails at once, not when the method is computed."""
+  with pytest.raises(ValueError, match=f"k must be at least 1, got {k}."):
+    get_built_in_aggregation_methods()["pass_hat_k"].with_k(k)
 
 
 @pytest.mark.parametrize(

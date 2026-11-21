@@ -141,7 +141,9 @@ instead.
 Your function is then called **positionally with exactly four arguments**, so its
 arity matters and its parameter names do not. If the return value is awaitable
 it is awaited, which is why an `async def` metric works with no extra
-declaration.
+declaration. Synchronous metric functions run concurrently in worker threads (up
+to `EvaluateConfig.parallelism`), so they should avoid mutating unsynchronized
+shared state.
 
 Three things about that call catch people out.
 
@@ -210,7 +212,9 @@ keys available, and those two capabilities are worth taking separately.
 
 Subclass `Evaluator` when the metric needs setup that should happen once per
 run rather than once per call. The constructor is invoked with a single keyword
-argument, `eval_metric=`, and `evaluate_invocations` may be sync or async.
+argument, `eval_metric=`, and `evaluate_invocations` may be sync or async
+(synchronous `evaluate_invocations` methods likewise run concurrently in worker
+threads up to `EvaluateConfig.parallelism`).
 
 ```python
 from google.adk.evaluation.eval_metrics import BaseCriterion
@@ -314,9 +318,7 @@ that two-stage validation works.
     the evaluation does.
 *   **Registration is process-global.** `DEFAULT_METRIC_EVALUATOR_REGISTRY` is a
     module-level singleton, so registering the same metric name twice replaces
-    the first registration and logs it. Constructing any registry also emits an
-    experimental-feature warning, `MetricEvaluatorRegistry` being marked
-    experimental.
+    the first registration and logs it.
 *   **Nothing is re-exported at package level.** Import from
     `google.adk.evaluation.evaluator` and
     `google.adk.evaluation.metric_evaluator_registry` directly; the package

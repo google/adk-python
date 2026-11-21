@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import ntpath
 import os
@@ -19,7 +20,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 from typing import Literal
-from typing import Type
 from unittest import mock
 import warnings
 
@@ -35,7 +35,6 @@ from google.adk.agents.llm_agent_config import LlmAgentConfig
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.cli.built_in_agents.utils import load_agent_config_schema
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import jsonschema
@@ -190,7 +189,7 @@ sub_agents: []
     ],
 )
 def test_agent_config_discriminator_with_sub_agents(
-    agent_class_value: str, expected_agent_type: Type[BaseAgent], tmp_path: Path
+    agent_class_value: str, expected_agent_type: type[BaseAgent], tmp_path: Path
 ):
   # Create sub-agent config files
   sub_agent_dir = tmp_path / "sub_agents"
@@ -234,7 +233,7 @@ sub_agents:
     ],
 )
 def test_agent_config_discriminator_llm_agent_with_sub_agents(
-    agent_class_value: str, expected_agent_type: Type[BaseAgent], tmp_path: Path
+    agent_class_value: str, expected_agent_type: type[BaseAgent], tmp_path: Path
 ):
   # Create sub-agent config files
   sub_agent_dir = tmp_path / "sub_agents"
@@ -816,6 +815,93 @@ def test_from_config_blocks_args_key_when_enforced(tmp_path: Path):
     assert "Blocked key 'args' found" in str(exc_info.value)
   finally:
     config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
+def test_base_agent_from_config_blocks_args_key_when_enforced(
+    tmp_path: Path,
+    enforce_yaml_key_denylist: None,  # pylint: disable=redefined-outer-name
+):
+  """BaseAgent.from_config also enforces the YAML key denylist when enabled."""
+  _ = enforce_yaml_key_denylist
+  with pytest.raises(ValueError, match="Blocked key 'args' found"):
+    with warnings.catch_warnings():
+      warnings.simplefilter("ignore", DeprecationWarning)
+      LlmAgent.from_config(
+          {
+              "name": "my_agent",
+              "tools": [{"name": "my_pkg.tool", "args": {"x": 1}}],
+          },
+          str(tmp_path / "agent.yaml"),
+      )
+
+
+def test_agent_config_mapper_blocks_private_builtin_tool():
+  """_AgentConfigMapper rejects underscore-prefixed ADK tool names."""
+  from google.adk.tools.tool_configs import ToolConfig  # pylint: disable=g-import-not-at-top
+
+  # pylint: disable=protected-access
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils._AgentConfigMapper("/fake/path.yaml")._resolve_tools(
+        [ToolConfig(name="_private_builtin")]
+    )
+  # pylint: enable=protected-access
+
+
+@pytest.mark.parametrize(
+    "blocked_prefix",
+    [
+        "google.adk.cli",
+        "pydantic._internal",
+        "pydantic.v1",
+    ],
+)
+def test_validate_module_reference_blocks_exact_internal_prefixes(
+    blocked_prefix: str,
+):
+  """Exact CLI and Pydantic-internal package names are blocked alongside submodules."""
+  # pylint: disable=protected-access
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils._validate_module_reference(blocked_prefix)
+  # pylint: enable=protected-access
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "anyio.run_process",
+        "click.edit",
+        "click.launch",
+        "dotenv.load_dotenv",
+        "dotenv.set_key",
+        "graphviz.backend.execute.run_check",
+        "uvicorn.importer.import_from_string",
+        "watchdog.utils.load_class",
+        "pydantic._internal._validators.import_string",
+        "pydantic.v1.utils.import_string",
+        "google.adk.agents.config_agent_utils._set_enforce_denylist",
+        "google.adk.agents.config_agent_utils._set_enforce_yaml_key_denylist",
+        "google.adk.tools.mcp_tool.mcp_toolset._set_allow_config_stdio_servers",
+        "google.adk.events._internal_metadata.mark_restored",
+        "google.adk.cli.cli_deploy.to_cloud_run",
+    ],
+)
+def test_resolve_code_and_workflow_refs_block_core_gadgets_and_private_adk(
+    blocked_ref: str, tmp_path: Path
+):
+  """Core dependency gadgets, CLI internals, and private ADK symbols are rejected."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+  wf_file = tmp_path / "wf.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: test_wf\n"
+      "edges:\n"
+      f"  - [START, {blocked_ref}]\n"
+  )
+  with pytest.raises(ValueError, match="Invalid fully qualified name") as exc:
+    config_agent_utils.from_config(str(wf_file))
+  assert "Blocked module reference" in str(exc.value.__cause__)
 
 
 @pytest.fixture
@@ -1734,6 +1820,16 @@ def test_from_config_lets_an_inline_node_reach_a_from_config_override(
   assert wf.graph.edges[0].to_node.name == "built_by_override"
 
 
+def _load_shipped_agent_config_schema() -> dict[str, Any]:
+  """Loads the AgentConfig JSON schema that ships with the package."""
+  schema_path = (
+      Path(config_agent_utils.__file__).parent
+      / "config_schemas"
+      / "AgentConfig.json"
+  )
+  return json.loads(schema_path.read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize(
     "config_dict",
     [
@@ -1809,7 +1905,7 @@ def test_from_config_lets_an_inline_node_reach_a_from_config_override(
 def test_shipped_agent_config_json_validates_valid_configs(
     config_dict: dict[str, Any],
 ):
-  schema = load_agent_config_schema(raw_format=False)
+  schema = _load_shipped_agent_config_schema()
   assert isinstance(schema, dict)
   jsonschema.validate(config_dict, schema)
 
@@ -1848,7 +1944,7 @@ def test_shipped_agent_config_json_validates_valid_configs(
 def test_shipped_agent_config_json_rejects_invalid_configs(
     invalid_config_dict: dict[str, Any],
 ):
-  schema = load_agent_config_schema(raw_format=False)
+  schema = _load_shipped_agent_config_schema()
   assert isinstance(schema, dict)
   with pytest.raises(jsonschema.ValidationError):
     jsonschema.validate(invalid_config_dict, schema)

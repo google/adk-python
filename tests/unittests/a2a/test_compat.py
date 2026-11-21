@@ -254,6 +254,21 @@ def test_get_skill_security_v1_extracts_scheme_scopes(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
+# a2a_version_headers
+# -----------------------------------------------------------------------------
+def test_a2a_version_headers_names_the_sdk_protocol_version():
+  if _compat.IS_A2A_V1:
+    from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+    from a2a.utils.constants import VERSION_HEADER
+
+    assert _compat.a2a_version_headers() == {
+        VERSION_HEADER: PROTOCOL_VERSION_CURRENT
+    }
+  else:
+    assert _compat.a2a_version_headers() == {}
+
+
+# -----------------------------------------------------------------------------
 # rebind_client_factory_httpx
 # -----------------------------------------------------------------------------
 def _factory_with_custom_transport(httpx_client, consumers):

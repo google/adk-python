@@ -288,17 +288,21 @@ defeating the first.
 ### Lock the policy against application code
 
 A platform team that has decided prompt content must never leave the process
-cannot rely on every agent author passing the right `RunConfig`. Set both
+cannot rely on every agent author passing the right `RunConfig`. Set all three
 variables in the deployment environment:
 
 ```bash
 export ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT
 export ADK_TELEMETRY_IGNORE_RUN_CONFIG=1
 ```
 
-The first sets the policy, the second makes `TelemetryConfig` ignore the
-per-request fields, so an application passing
-`capture_message_content=SPAN_AND_EVENT` gets `NO_CONTENT` anyway.
+The first disables content on legacy ADK spans, the second disables it on
+GenAI log records and experimental spans, and the third makes
+`TelemetryConfig` ignore the per-request fields. An application passing
+`capture_message_content=SPAN_AND_EVENT` therefore still gets `NO_CONTENT`.
+The admin lock alone does not disable capture: without the second setting,
+an inherited OpenTelemetry content-capture variable can still enable it.
 
 ### Turn content on for one run
 

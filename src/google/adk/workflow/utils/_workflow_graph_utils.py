@@ -155,10 +155,10 @@ def build_node(
         # Sub-agents dynamically attached to a parent agent default to 'chat'
         # mode to enable agent transfer.
         # Standalone agents in a workflow graph default to `default_llm_mode`.
-        if agent.parent_agent is not None:
+        if agent.parent_agent is not None or default_llm_mode == AgentMode.CHAT:
           agent.mode = AgentMode.CHAT.value
         else:
-          agent.mode = str(default_llm_mode)
+          agent.mode = AgentMode.SINGLE_TURN.value
 
       if (
           isinstance(agent, LlmAgent)
@@ -173,8 +173,15 @@ def build_node(
       if isinstance(agent, LlmAgent) and agent.parallel_worker:
         from .._parallel_worker import _ParallelWorker
 
+        # The limit lives on the _ParallelWorker; clearing it (and
+        # parallel_worker below) keeps the per-item clone valid under its own
+        # after-validator if it is ever re-validated or serialized.
+        max_parallel_workers = agent.max_parallel_workers
+        agent.max_parallel_workers = None
         agent.parallel_worker = False
-        return _ParallelWorker(node=agent)
+        return _ParallelWorker(
+            node=agent, max_parallel_workers=max_parallel_workers
+        )
       return cast(BaseNode, agent)
     else:
       if kwargs:

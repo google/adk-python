@@ -45,6 +45,7 @@ from google.adk.cli.trigger_routes import TriggerRouter
 from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.utils._error_reporting import ENV_DEBUG_ERRORS
 from google.genai import types
 import pytest
 
@@ -93,6 +94,16 @@ async def dummy_run_async(
   await asyncio.sleep(0)
 
 
+_SECRET_ERROR = "Agent crashed: [Errno 2] No such file: '/home/victim/key.json'"
+"""An exception message shaped like the ones that leak host detail."""
+
+_SECRET_429 = (
+    "429 quota exceeded for project victim-prod calling"
+    " https://internal.corp/v1/models"
+)
+"""A transient-error message shaped like the ones that leak host detail."""
+
+
 async def dummy_run_async_error(
     self,
     user_id,
@@ -103,7 +114,7 @@ async def dummy_run_async_error(
     invocation_id: Optional[str] = None,
 ):
   """Mocked Runner.run_async that raises an exception."""
-  raise RuntimeError("Agent crashed")
+  raise RuntimeError(_SECRET_ERROR)
   yield  # make it an async generator  # noqa: E305
 
 
@@ -142,7 +153,7 @@ async def dummy_run_async_always_429(
     invocation_id: Optional[str] = None,
 ):
   """Mocked Runner.run_async that always raises a 429 error."""
-  raise RuntimeError("RESOURCE_EXHAUSTED: 429 quota exceeded")
+  raise RuntimeError(f"RESOURCE_EXHAUSTED: {_SECRET_429}")
   yield  # noqa: E305
 
 
@@ -1735,6 +1746,120 @@ class TestRetryLogic:
     assert resp.status_code == 500
     # Non-transient errors should NOT be retried — only 1 call
     assert call_count == 1
+
+
+# ===================================================================
+# Error detail redaction
+# ===================================================================
+
+
+class TestErrorDetailRedaction:
+  """The trigger endpoints must not hand exception text to their caller.
+
+  These endpoints are reachable by remote infrastructure, so an exception
+  message -- which routinely carries absolute paths, module locations and
+  echoed payloads -- is reconnaissance the caller should never receive. It
+  belongs in the log, behind a correlation id.
+  """
+
+  @pytest.mark.parametrize(
+      "path, payload",
+      [
+          (
+              "/apps/test_app/trigger/pubsub",
+              {"message": {"data": base64.b64encode(b"x").decode("utf-8")}},
+          ),
+          ("/apps/test_app/trigger/eventarc", {"data": {"test": True}}),
+      ],
+  )
+  def test_agent_error_detail_is_redacted(
+      self, client, monkeypatch, path, payload
+  ):
+    """A crashing agent yields a summary and a correlation id, nothing else."""
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_error)
+
+    resp = client.post(path, json=payload)
+
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert detail.startswith("Agent processing failed.")
+    assert "error_id" in detail
+    assert _SECRET_ERROR not in detail
+    assert "/home/victim" not in detail
+
+  @pytest.mark.parametrize(
+      "path, payload",
+      [
+          (
+              "/apps/test_app/trigger/pubsub",
+              {"message": {"data": base64.b64encode(b"x").decode("utf-8")}},
+          ),
+          ("/apps/test_app/trigger/eventarc", {"data": {"test": True}}),
+      ],
+  )
+  def test_retry_exhausted_detail_is_redacted(
+      self, client, monkeypatch, path, payload
+  ):
+    """The provider's 429 text must not ride out on the TransientError."""
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_always_429)
+
+    with patch(
+        "google.adk.cli.trigger_routes.asyncio.sleep", new_callable=AsyncMock
+    ):
+      resp = client.post(path, json=payload)
+
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert detail.startswith("Rate limit exceeded (429). Retryable.")
+    assert "error_id" in detail
+    assert _SECRET_429 not in detail
+    assert "internal.corp" not in detail
+
+  def test_undecodable_data_detail_is_redacted(self, client):
+    """The base64 decoder's own message is not echoed back either."""
+    resp = client.post(
+        "/apps/test_app/trigger/pubsub",
+        json={"message": {"data": "!!!not-base64!!!"}},
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail.startswith("Invalid base64 message data.")
+    assert "error_id" in detail
+
+  def test_debug_flag_restores_exception_detail(self, client, monkeypatch):
+    """ADK_DEBUG_ERRORS is the documented opt-in for local debugging."""
+    monkeypatch.setenv(ENV_DEBUG_ERRORS, "1")
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_error)
+
+    resp = client.post(
+        "/apps/test_app/trigger/pubsub",
+        json={"message": {"data": base64.b64encode(b"x").decode("utf-8")}},
+    )
+
+    assert resp.status_code == 500
+    assert _SECRET_ERROR in resp.json()["detail"]
+
+  def test_error_id_correlates_with_the_logged_exception(
+      self, client, monkeypatch, caplog
+  ):
+    """The id handed to the caller is the one the full traceback is under."""
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_error)
+
+    with caplog.at_level("ERROR", logger="google_adk"):
+      resp = client.post(
+          "/apps/test_app/trigger/pubsub",
+          json={"message": {"data": base64.b64encode(b"x").decode("utf-8")}},
+      )
+
+    error_id = resp.json()["detail"].split("error_id: ")[1].rstrip(")")
+    matching = [
+        record
+        for record in caplog.records
+        if f"error_id={error_id}" in record.getMessage()
+    ]
+    assert len(matching) == 1
+    assert _SECRET_ERROR in str(matching[0].exc_info[1])
 
 
 # ===================================================================

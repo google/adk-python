@@ -84,6 +84,25 @@ def _filter_media_parts(content: types.Content) -> types.Content | None:
   return types.Content(role=content.role, parts=filtered_parts)
 
 
+def _filter_media_history(history: list[types.Content]) -> list[types.Content]:
+  """Filters media parts out of every content in a replayed history.
+
+  Applies `_filter_media_parts` to each content and leaves out the contents
+  with no parts left.
+
+  Args:
+    history: The history to filter. It is not modified.
+
+  Returns:
+    The filtered contents, in their original order.
+  """
+  return [
+      filtered
+      for content in history
+      if (filtered := _filter_media_parts(content)) is not None
+  ]
+
+
 def extract_text_from_content(
     content: types.Content | None, splitter: str = ''
 ) -> str:

@@ -34,7 +34,6 @@ import os
 from typing import Any
 from typing import get_args as get_literals
 from typing import Literal
-from typing import Optional
 from typing import TypeAlias
 
 from pydantic import BaseModel
@@ -227,12 +226,12 @@ class TelemetryConfig(BaseModel):
 
   model_config = ConfigDict(frozen=True, extra='forbid')
 
-  genai_semconv_stability_opt_in: Optional[
-      Literal['stable', 'experimental']
-  ] = None
-  capture_message_content: Optional[ContentCapturingMode] = None
-  adk_experimental_telemetry_opt_in: Optional[StrictBool] = None
-  experimental_features_opt_in: Optional[frozenset[str]] = None
+  genai_semconv_stability_opt_in: Literal['stable', 'experimental'] | None = (
+      None
+  )
+  capture_message_content: ContentCapturingMode | None = None
+  adk_experimental_telemetry_opt_in: StrictBool | None = None
+  experimental_features_opt_in: frozenset[str] | None = None
 
   _env_experimental_genai_semconv: bool = PrivateAttr()
   _env_content_capturing_mode: ContentCapturingMode = PrivateAttr()

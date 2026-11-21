@@ -44,9 +44,17 @@ class ToolConfirmation(BaseModel):
   def from_response_dict(cls, response: dict[str, Any]) -> ToolConfirmation:
     """Parse ToolConfirmation from a function response dict.
 
-    Handles both the direct dict format and the ADK client's
-    ``{'response': json_string}`` wrapper format.
+    Handles both the direct dict format and the ``{'response': ...}``
+    wrapper format, accepting a JSON string, bytes, or a parsed dict.
+    None fields inside the wrapper fall back to the model defaults.
     """
     if response and len(response) == 1 and "response" in response:
-      return cls.model_validate(json.loads(response["response"]))
+      raw = response["response"]
+      if isinstance(raw, (str, bytes, bytearray)):
+        data = json.loads(raw)
+      else:
+        data = raw
+      if isinstance(data, dict):
+        data = {k: v for k, v in data.items() if v is not None}
+      return cls.model_validate(data)
     return cls.model_validate(response)

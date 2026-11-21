@@ -44,6 +44,7 @@ from ...dependencies._mcp import ClientSession as _ClientSession
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import ListResourcesResult
 from ...dependencies._mcp import ListToolsResult
+from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
@@ -177,6 +178,7 @@ class McpToolset(BaseToolset):
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
       propagate_grounding_metadata: bool = False,
+      message_handler: MessageHandlerFnT | None = None,
   ) -> None:
     """Initializes the McpToolset.
 
@@ -220,7 +222,8 @@ class McpToolset(BaseToolset):
         CallbackContext. The **kwargs parameter allows for future extensibility.
       use_mcp_resources: Whether the agent should have access to MCP resources.
         This will add a `load_mcp_resource` tool to the toolset and include
-        available resources in the agent context. Defaults to False.
+        available resources in the agent context. `tool_filter` selects among
+        the server's tools and does not apply to this tool. Defaults to False.
       sampling_callback: Optional callback to handle sampling requests from the
         MCP server.
       sampling_capabilities: Optional capabilities for sampling.
@@ -232,6 +235,11 @@ class McpToolset(BaseToolset):
       propagate_grounding_metadata: If True, each listed tool copies
         ``meta.adk_grounding_metadata`` from the MCP result into
         ``temp:_adk_grounding_metadata``. Default False.
+      message_handler: Optional async callback for incoming MCP messages,
+        including server notifications. Does not invalidate the tool-list cache.
+        On MCP SDK 1.x it runs inside the session's receive loop, so it must
+        not await requests on this toolset (e.g. ``get_tools()``); offload
+        follow-up work with ``asyncio.create_task(...)``.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -269,6 +277,7 @@ class McpToolset(BaseToolset):
         sampling_callback=self._sampling_callback,
         sampling_capabilities=self._sampling_capabilities,
         elicitation_callback=self._elicitation_callback,
+        message_handler=message_handler,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
