@@ -163,6 +163,64 @@ async def test_builtin_code_executor_image_artifact_creation(mock_datetime):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'display_name, saved_names',
+    [
+        (None, ['20250101_120000.png', '20250101_120000_1.png']),
+        ('chart.png', ['chart.png', 'chart_1.png']),
+    ],
+)
+@patch('google.adk.flows.llm_flows.extensions._code_execution.datetime')
+async def test_builtin_code_executor_saves_each_image_of_a_response(
+    mock_datetime, display_name, saved_names
+):
+  """Two images of one response that would share a name stay two artifacts."""
+  mock_datetime.datetime.fromtimestamp.return_value.astimezone.return_value = (
+      datetime.datetime(2025, 1, 1, 12, 0, 0)
+  )
+  agent = Agent(name='test_agent', code_executor=BuiltInCodeExecutor())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='plot two charts'
+  )
+  images = [b'chart one', b'chart two']
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(
+                      mime_type='image/png',
+                      data=data,
+                      display_name=display_name,
+                  )
+              )
+              for data in images
+          ]
+      )
+  )
+
+  events = [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+  assert len(events) == 1
+  assert events[0].actions.artifact_delta == {name: 0 for name in saved_names}
+  assert [part.text for part in llm_response.content.parts] == [
+      f'Saved as artifact: {name}. ' for name in saved_names
+  ]
+  for name, data in zip(saved_names, images):
+    artifact = await invocation_context.artifact_service.load_artifact(
+        app_name=invocation_context.app_name,
+        user_id=invocation_context.user_id,
+        session_id=invocation_context.session.id,
+        filename=name,
+    )
+    assert artifact.inline_data.data == data
+
+
+@pytest.mark.asyncio
 async def test_builtin_code_executor_emits_no_event_without_images():
   """Test BuiltInCodeExecutor emits no event when there is no image to save."""
   code_executor = BuiltInCodeExecutor()
