@@ -22,6 +22,8 @@ from typing import Any
 from typing import Optional
 from unittest import mock
 
+from google.adk.agents.llm_agent import Agent
+from google.adk.apps.app import App
 from google.adk.integrations.model_armor import ModelArmorConfig
 from google.adk.integrations.model_armor import ModelArmorPlugin
 from google.adk.integrations.model_armor._config import _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE
@@ -31,11 +33,15 @@ from google.adk.integrations.model_armor._plugin import _shared_template_locatio
 from google.adk.integrations.model_armor._plugin import _TOOL_OUTPUT_CHUNK_OVERLAP_CHARS
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.utils import _mtls_utils
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import modelarmor_v1
 from google.genai import types
 import pytest
+
+from tests.unittests.testing_utils import MockModel
 
 _PROMPT_TEMPLATE_PATH = (
     'projects/test-project/locations/us-central1/templates/test-prompt'
@@ -675,7 +681,7 @@ async def test_sanitize_model_response_returns_the_sanitization_result():
 
 
 @pytest.mark.asyncio
-async def test_close_only_closes_own_client():
+async def test_close_leaves_supplied_client_untouched() -> None:
   """A supplied SDK client belongs to its caller, so close() must leave it."""
   supplied = mock.Mock()
   supplied.transport.close = mock.AsyncMock()
@@ -684,18 +690,8 @@ async def test_close_only_closes_own_client():
 
   supplied.transport.close.assert_not_awaited()
 
-  plugin = ModelArmorPlugin(
-      config=_config(), credentials=AnonymousCredentials()
-  )
-  built_client = plugin.client  # Opens the channel the plugin owns.
-  built_client.transport.close = mock.AsyncMock()
 
-  await plugin.close()
-
-  built_client.transport.close.assert_awaited_once()
-
-
-def test_each_event_loop_gets_its_own_client():
+def test_each_event_loop_gets_its_own_client() -> None:
   """Each sync Runner.run call runs a new loop, which needs its own channel."""
   plugin = ModelArmorPlugin(
       config=_config(), credentials=AnonymousCredentials()
@@ -714,8 +710,8 @@ def test_each_event_loop_gets_its_own_client():
 
 
 @pytest.mark.asyncio
-async def test_close_releases_the_running_loops_client():
-  """After close() the next read on the same loop builds a fresh client."""
+async def test_close_does_not_close_shared_client() -> None:
+  """Runner close must not tear down the shared client on the running loop."""
   plugin = ModelArmorPlugin(
       config=_config(), credentials=AnonymousCredentials()
   )
@@ -724,9 +720,107 @@ async def test_close_releases_the_running_loops_client():
 
   await plugin.close()
 
-  client.transport.close.assert_awaited_once()
-  assert plugin.client is not client
-  await plugin.close()
+  client.transport.close.assert_not_awaited()
+  assert plugin.client is client
+
+
+def test_closing_one_runner_keeps_sibling_runners_screening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Closing one runner must not cancel a sibling runner's screening."""
+
+  class _ClosableClient:
+    instances: list[_ClosableClient] = []
+    parse_template_path = staticmethod(
+        modelarmor_v1.ModelArmorAsyncClient.parse_template_path
+    )
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      _ClosableClient.instances.append(self)
+      self.closed = False
+      self.in_flight = asyncio.Event()
+      self.release = asyncio.Event()
+      self.transport = mock.AsyncMock()
+
+      async def _close() -> None:
+        self.closed = True
+
+      self.transport.close.side_effect = _close
+
+    async def sanitize_user_prompt(
+        self, request: Any
+    ) -> modelarmor_v1.SanitizeUserPromptResponse:
+      self.in_flight.set()
+      await self.release.wait()
+      if self.closed:
+        raise asyncio.CancelledError('Channel closed')
+      return modelarmor_v1.SanitizeUserPromptResponse(
+          sanitization_result=_sanitization_result()
+      )
+
+    async def sanitize_model_response(
+        self, request: Any
+    ) -> modelarmor_v1.SanitizeModelResponseResponse:
+      return modelarmor_v1.SanitizeModelResponseResponse(
+          sanitization_result=_sanitization_result()
+      )
+
+  monkeypatch.setattr(modelarmor_v1, 'ModelArmorAsyncClient', _ClosableClient)
+
+  plugin = ModelArmorPlugin(
+      config=_config(), credentials=AnonymousCredentials()
+  )
+  agent = Agent(
+      name='test_agent', model=MockModel.create(['Hello from sibling runner!'])
+  )
+  app = App(name='test_app', root_agent=agent, plugins=[plugin])
+  session_service = InMemorySessionService()
+
+  async def scenario() -> tuple[list[Any], _ClosableClient]:
+    runner_closing = Runner(app=app, session_service=session_service)
+    runner_busy = Runner(app=app, session_service=session_service)
+
+    await session_service.create_session(
+        app_name='test_app', user_id='u', session_id='s'
+    )
+
+    async def turn() -> list[Any]:
+      events = []
+      async for event in runner_busy.run_async(
+          user_id='u',
+          session_id='s',
+          new_message=types.Content(
+              role='user', parts=[types.Part(text='hello')]
+          ),
+      ):
+        events.append(event)
+      return events
+
+    task = asyncio.create_task(turn())
+
+    async def _get_client() -> _ClosableClient:
+      while not _ClosableClient.instances:
+        await asyncio.sleep(0)
+      return _ClosableClient.instances[0]
+
+    client = await asyncio.wait_for(_get_client(), timeout=10.0)
+    await asyncio.wait_for(client.in_flight.wait(), timeout=10.0)
+
+    await runner_closing.close()
+    client.release.set()
+
+    events = await task
+    return events, client
+
+  events, client = asyncio.run(scenario())
+  texts = [
+      event.content.parts[0].text
+      for event in events
+      if event.content and event.content.parts and event.content.parts[0].text
+  ]
+  assert texts == ['Hello from sibling runner!']
+  assert not client.closed
+  client.transport.close.assert_not_awaited()
 
 
 # --- Tool output screening --------------------------------------------------
