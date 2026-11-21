@@ -246,20 +246,37 @@ class TriggerResponse(BaseModel):
   )
 
 
+TRIGGER_USER_ID_PREFIX = "trigger"
+"""Namespace that owns the user ids of runs started by a trigger.
+
+A subscription name or event source is caller-controlled metadata, not an
+identity. Prefixing the derived id keeps trigger runs in their own namespace,
+so a request body cannot name an interactive user and land in that user's
+state, artifacts, or memory.
+"""
+
+
 def _make_trigger_user_id(
     raw_value: Optional[str],
     *,
-    default: str,
+    trigger: str,
 ) -> str:
-  """Normalize trigger metadata into a session-safe user_id."""
-  if not raw_value:
-    return default
+  """Build a session-safe user id in the trigger-owned namespace.
 
-  normalized = raw_value.strip().strip("/")
-  if not normalized:
-    return default
+  Args:
+    raw_value: Untrusted subscription or event-source metadata.
+    trigger: The trigger that started the run, such as ``"pubsub"``.
 
-  return normalized.replace("/", "--")
+  Returns:
+    A user id that keeps the run outside interactive users' namespaces.
+  """
+  parts = [TRIGGER_USER_ID_PREFIX, trigger]
+  if raw_value:
+    normalized = raw_value.strip().strip("/")
+    if normalized:
+      parts.append(normalized)
+
+  return "--".join(parts).replace("/", "--")
 
 
 class GoogleOidcVerifier:
@@ -382,7 +399,8 @@ class TriggerRouter:
 
     Args:
       app_name: The target application / agent name.
-      user_id: Identifier for observability (derived from trigger metadata).
+      user_id: The trigger namespace that owns the run's session and
+        per-user data.
       message_text: The text input to send to the agent.
       session_id: The session ID to use.
       session_state: Initial state for the session if it has to be created.
@@ -449,7 +467,8 @@ class TriggerRouter:
 
     Args:
       app_name: The target application / agent name.
-      user_id: Identifier for observability.
+      user_id: The trigger namespace that owns the run's session and
+        per-user data.
       message_text: The text input to send to the agent.
       delivery: Identity of the upstream delivery, stored in session state
         under ``TRIGGER_DELIVERY_STATE_KEY``.
@@ -545,9 +564,7 @@ class TriggerRouter:
       async def trigger_pubsub(
           app_name: str, req: PubSubTriggerRequest, request: Request
       ) -> TriggerResponse:
-        user_id = _make_trigger_user_id(
-            req.subscription, default="pubsub-caller"
-        )
+        user_id = _make_trigger_user_id(req.subscription, trigger="pubsub")
 
         decoded_data = None
         data_payload = None
@@ -634,10 +651,8 @@ class TriggerRouter:
       async def trigger_eventarc(
           app_name: str, req: EventarcTriggerRequest, request: Request
       ) -> TriggerResponse:
-        user_id = _make_trigger_user_id(
-            req.source or request.headers.get("ce-source"),
-            default="eventarc-caller",
-        )
+        event_source = req.source or request.headers.get("ce-source")
+        user_id = _make_trigger_user_id(event_source, trigger="eventarc")
 
         event_type = req.type or request.headers.get("ce-type")
         event_id = req.id or request.headers.get("ce-id")
@@ -648,7 +663,7 @@ class TriggerRouter:
 
         logger.info(
             "Eventarc trigger: source=%s, type=%s, id=%s",
-            user_id,
+            event_source,
             event_type,
             event_id,
         )
@@ -729,9 +744,7 @@ class TriggerRouter:
               delivery={
                   "source": "eventarc",
                   "id": event_id,
-                  "event_source": (
-                      req.source or request.headers.get("ce-source")
-                  ),
+                  "event_source": event_source,
                   "type": event_type,
               },
           )
