@@ -123,7 +123,7 @@ def create_request_input_event(request_input: RequestInput) -> Event:
               )
           ],
       ),
-      long_running_tool_ids=[request_input.interrupt_id],
+      long_running_tool_ids={request_input.interrupt_id},
   )
 
 
@@ -234,7 +234,7 @@ def create_auth_request_event(
               )
           ],
       ),
-      long_running_tool_ids=[interrupt_id],
+      long_running_tool_ids={interrupt_id},
   )
 
 
