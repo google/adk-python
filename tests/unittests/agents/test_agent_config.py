@@ -489,6 +489,23 @@ def test_resolve_agent_reference_blocks_absolute_path():
     )
 
 
+def test_resolve_agent_reference_blocks_root_relative_path():
+  """A root-relative config_path counts as absolute on every platform.
+
+  On Windows `os.path.isabs` is False for a path that has a root but no
+  drive, so both spellings are rejected explicitly.
+  """
+  for config_path in ("/etc/passwd", "\\etc\\passwd"):
+    ref_config = AgentRefConfig(config_path=config_path)
+    with pytest.raises(
+        ValueError,
+        match="Absolute paths are not allowed in AgentRefConfig config_path",
+    ):
+      config_agent_utils.resolve_agent_reference(
+          ref_config, "/workspace/main.yaml"
+      )
+
+
 def test_resolve_agent_reference_blocks_path_traversal():
   """Verify resolve_agent_reference raises ValueError for path traversal."""
   ref_config = AgentRefConfig(config_path="../outside.yaml")
