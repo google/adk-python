@@ -175,7 +175,7 @@ class IntegrationClient:
         ) from e
       raise ValueError(f"Request error: {e}") from e
     except Exception as e:
-      raise Exception(f"An unexpected error occurred: {e}") from e
+      raise ValueError(f"An unexpected error occurred: {e}") from e
 
   def get_openapi_spec_for_connection(
       self, tool_name: str = "", tool_instructions: str = ""
