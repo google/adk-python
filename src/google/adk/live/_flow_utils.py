@@ -47,6 +47,11 @@ _TOOL_FINISH_TIMEOUT_SECONDS = 10.0
 
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
+# Delay before the first reconnect; it doubles on each further attempt up to
+# the cap, so a server still holding the old connection is not hammered.
+RECONNECT_BACKOFF_BASE_SECONDS = 0.5
+RECONNECT_BACKOFF_MAX_SECONDS = 4.0
+
 # Statistics configuration
 DEFAULT_ENABLE_CACHE_STATISTICS = False
 
