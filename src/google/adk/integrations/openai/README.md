@@ -4,15 +4,27 @@ This folder contains the integration for OpenAI models in ADK.
 
 ## Usage in Code
 
-To use the OpenAI integration in your Python code, instantiate `OpenAILlm` and
-assign it to your agent's `model` field:
+A bare GPT model ID uses the OpenAI Responses API by default.
+
+```python
+from google.adk.agents.llm_agent import LlmAgent
+
+# Create an agent and assign the model
+agent = LlmAgent(
+    name="my_openai_agent",
+    model="gpt-6-astra",
+    instruction="You are a helpful assistant.",
+)
+```
+
+Use `OpenAILlm` to explicitly select the Chat Completions API.
 
 ```python
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.integrations.openai import OpenAILlm
 
 # Create the OpenAI model instance
-openai_model = OpenAILlm(model="gpt-4o")
+openai_model = OpenAILlm(model="gpt-6-astra")
 
 # Create an agent and assign the model
 agent = LlmAgent(
@@ -21,6 +33,26 @@ agent = LlmAgent(
     instruction="You are a helpful assistant.",
 )
 ```
+
+Use `OpenAIResponsesLlm` to explicitly select the Responses API.
+
+```python
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.integrations.openai import OpenAIResponsesLlm
+
+# Create the OpenAI model instance
+openai_model = OpenAIResponsesLlm(model="gpt-6-astra")
+
+# Create an agent and assign the model
+agent = LlmAgent(
+    name="my_openai_agent",
+    model=openai_model,
+    instruction="You are a helpful assistant.",
+)
+```
+
+The `openai:` prefix selects the Responses API and `openaillm:` selects
+Chat Completions.
 
 Requires the `openai` Python package and the `OPENAI_API_KEY` environment
 variable. Install the package with ADK's `openai` extra:

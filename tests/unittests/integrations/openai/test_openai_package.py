@@ -85,7 +85,7 @@ def test_model_registry_module_fails_to_import_without_openai():
   Pointing the registry at the lazy package would import cleanly and defer the
   failure to the class lookup, which the registry does not guard.
   """
-  module_path = models._LAZY_PROVIDERS['OpenAILlm'][1]
+  module_path = models._LAZY_PROVIDERS['OpenAIResponsesLlm'][1]
 
   with _openai_uninstalled():
     with pytest.raises(ImportError):

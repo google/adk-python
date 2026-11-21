@@ -16,6 +16,7 @@ from unittest import mock
 
 from google.adk import models
 from google.adk.integrations.openai import OpenAILlm
+from google.adk.integrations.openai import OpenAIResponsesLlm
 from google.adk.models import registry
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.apigee_llm import ApigeeLlm
@@ -124,14 +125,15 @@ def test_match_apigee_family(model_name):
 @pytest.mark.parametrize(
     'model_name',
     [
+        'gpt-4o',
         'o1-preview',
         'o3-mini',
         'o4-mini',
     ],
 )
-def test_match_openai_reasoning_family(model_name):
-  """Test that the OpenAI o-series resolves regardless of generation."""
-  assert models.LLMRegistry.resolve(model_name) is OpenAILlm
+def test_match_openai_family(model_name):
+  """Bare OpenAI model names select the Responses API."""
+  assert models.LLMRegistry.resolve(model_name) is OpenAIResponsesLlm
 
 
 def test_non_exist_model():
@@ -185,15 +187,15 @@ def test_helpful_error_for_openai_without_openai_extra(model_name):
 
   Without this branch they fell through to the generic hint, which told the
   user to reach the model through litellm instead of installing the package
-  the registered OpenAILlm needs.
+  the registered OpenAIResponsesLlm needs.
   """
   # Point the lazy entries at a module that cannot be imported, which is what
   # an uninstalled openai looks like to the registry.
   with mock.patch.dict(
       registry._llm_registry_dict,
       {
-          r'gpt-.*': ('google.adk.models.not_installed', 'OpenAILlm'),
-          r'o\d+-.*': ('google.adk.models.not_installed', 'OpenAILlm'),
+          r'gpt-.*': ('google.adk.models.not_installed', 'OpenAIResponsesLlm'),
+          r'o\d+-.*': ('google.adk.models.not_installed', 'OpenAIResponsesLlm'),
       },
   ):
     registry.LLMRegistry.resolve.cache_clear()
@@ -259,6 +261,16 @@ def test_register_after_resolve_returns_the_new_class():
   finally:
     registry._llm_registry_dict.pop(model_name, None)
     models.LLMRegistry.resolve.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ('prefix', 'expected_class'),
+    [('openai', OpenAIResponsesLlm), ('openaillm', OpenAILlm)],
+)
+def test_new_llm_with_openai_prefix(prefix, expected_class):
+  model = models.LLMRegistry.new_llm(f'{prefix}:gpt-4o')
+  assert isinstance(model, expected_class)
+  assert model.model == 'gpt-4o'
 
 
 def test_new_llm_with_prefix(mocker):
