@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import contextlib
+import datetime
 import json
 import logging
 import os
@@ -26,12 +27,15 @@ from google.adk.integrations.openai._openai_llm import _response_to_llm_response
 from google.adk.integrations.openai._openai_llm import _serialize_system_instruction
 from google.adk.integrations.openai._openai_llm import _usage_metadata
 from google.adk.integrations.openai._openai_llm import OpenAILlm
+from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools.load_memory_tool import LoadMemoryResponse
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 import pytest
 
 
@@ -123,6 +127,81 @@ def test_content_to_openai_messages_with_empty_response():
   messages = _content_to_openai_messages(content)
   assert len(messages) == 1
   assert messages[0]["content"] == ""
+
+
+class _Order(BaseModel):
+  id: int
+  shipped: datetime.date
+  note: str | None = None
+
+
+@pytest.mark.parametrize(
+    "response, want_content",
+    [
+        pytest.param(
+            {"last_login": datetime.datetime(2026, 11, 9, 10, 0)},
+            '{"last_login": "2026-11-09T10:00:00"}',
+            id="datetime",
+        ),
+        pytest.param(
+            {"thumbnail": b"\x89PNG"},
+            '{"thumbnail": "iVBORw=="}',
+            id="bytes",
+        ),
+        pytest.param(
+            {"result": _Order(id=7, shipped=datetime.date(2026, 11, 10))},
+            '{"result": {"id": 7, "shipped": "2026-11-10"}}',
+            id="pydantic_model",
+        ),
+        pytest.param(
+            {
+                "result": LoadMemoryResponse(
+                    memories=[
+                        MemoryEntry(
+                            content=types.Content(
+                                role="user",
+                                parts=[types.Part(text="My cat is Tom.")],
+                            ),
+                            author="user",
+                        )
+                    ]
+                )
+            },
+            '{"result": {"memories": [{"content": {"parts": [{"text": "My cat'
+            ' is Tom."}], "role": "user"}, "custom_metadata": {}, "author":'
+            ' "user"}]}}',
+            id="load_memory",
+        ),
+        pytest.param(
+            {"city": "Zürich", "forecast": {"rain": None, "temps": [1.5, -2]}},
+            '{"city": "Z\\u00fcrich", "forecast": {"rain": null, "temps": [1.5,'
+            " -2]}}",
+            id="plain_json_unchanged",
+        ),
+    ],
+)
+def test_content_to_openai_messages_encodes_tool_result_values(
+    response, want_content
+):
+  """Tool results that json cannot encode directly are still sent."""
+  from google.adk.integrations.openai._openai_llm import _content_to_openai_messages
+
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="call_123", name="lookup", response=response
+              )
+          )
+      ],
+  )
+  messages = _content_to_openai_messages(content)
+  assert messages == [{
+      "role": "tool",
+      "tool_call_id": "call_123",
+      "content": want_content,
+  }]
 
 
 @pytest.mark.asyncio
