@@ -33,6 +33,9 @@ from google.adk.a2a.converters.event_converter import ARTIFACT_ID_SEPARATOR
 from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
@@ -1167,6 +1170,29 @@ class TestA2AToEventConverters:
       assert result.invocation_id == "test-invocation-id"
       assert result.content.role == "model"
       # Parts will be empty since conversion returned None, but that's expected for this test
+
+  def test_convert_a2a_message_to_event_long_running_without_id(self):
+    """A long-running function call without an id must not fail conversion."""
+    a2a_part = _compat.make_data_part(
+        data={"name": "wait_for_human", "args": {}},  # no "id": optional
+        metadata={
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+            ): True,
+        },
+    )
+    message = _compat.make_message(
+        message_id="m1",
+        role=_compat.ROLE_AGENT,
+        parts=[a2a_part],
+    )
+    event = convert_a2a_message_to_event(
+        message, "test-author", self.mock_invocation_context
+    )
+    assert event.long_running_tool_ids is None
 
   def test_convert_a2a_message_to_event_empty_parts(self):
     """Test conversion with empty parts list."""
