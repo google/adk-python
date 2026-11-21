@@ -2285,6 +2285,204 @@ class TestRestApiTool:
         request_params["url"] == "https://example.com/test/123"
     )  # Path param replaced
 
+  @pytest.mark.parametrize("explode", [False, True, None])
+  @pytest.mark.parametrize(
+      "style,value,expected,exploded",
+      [
+          (None, "blue", "blue", "blue"),
+          (
+              None,
+              ["blue", "black", "brown"],
+              "blue%2Cblack%2Cbrown",
+              "blue%2Cblack%2Cbrown",
+          ),
+          (
+              None,
+              {"R": 100, "G": 200, "B": 150},
+              "R%2C100%2CG%2C200%2CB%2C150",
+              "R%2C100%2CG%2C200%2CB%2C150",
+          ),
+          ("simple", "blue", "blue", "blue"),
+          (
+              "simple",
+              ["blue", "black", "brown"],
+              "blue%2Cblack%2Cbrown",
+              "blue%2Cblack%2Cbrown",
+          ),
+          (
+              "simple",
+              {"R": 100, "G": 200, "B": 150},
+              "R%2C100%2CG%2C200%2CB%2C150",
+              "R%2C100%2CG%2C200%2CB%2C150",
+          ),
+          ("label", "blue", ".blue", ".blue"),
+          (
+              "label",
+              ["blue", "black", "brown"],
+              ".blue.black.brown",
+              ".blue.black.brown",
+          ),
+          (
+              "label",
+              {"R": 100, "G": 200, "B": 150},
+              ".R.100.G.200.B.150",
+              ".R=100.G=200.B=150",
+          ),
+          ("matrix", "blue", ";color=blue", ";color=blue"),
+          (
+              "matrix",
+              ["blue", "black", "brown"],
+              ";color=blue,black,brown",
+              ";color=blue;color=black;color=brown",
+          ),
+          (
+              "matrix",
+              {"R": 100, "G": 200, "B": 150},
+              ";color=R,100,G,200,B,150",
+              ";R=100;G=200;B=150",
+          ),
+          ("label", "", ".", "."),
+          ("matrix", "", ";color", ";color"),
+      ],
+  )
+  async def test_path_parameter_style_examples(
+      self, mock_tool_context, style, value, expected, exploded, explode
+  ):
+    """Label/matrix match OAS 3.0.3; simple retains its existing encoding."""
+    if isinstance(value, list):
+      schema = {"type": "array", "items": {"type": "string"}}
+    elif isinstance(value, dict):
+      schema = {
+          "type": "object",
+          "properties": {key: {"type": "integer"} for key in value},
+      }
+    else:
+      schema = {"type": "string"}
+    parameter = {
+        "name": "color",
+        "in": "path",
+        "required": True,
+        "schema": schema,
+    }
+    if style is not None:
+      parameter["style"] = style
+    if explode is not None:
+      parameter["explode"] = explode
+    sent = []
+
+    def handle(request):
+      sent.append(request.url.raw_path.decode())
+      return httpx.Response(200, json={"ok": True})
+
+    spec = {
+        "openapi": "3.0.3",
+        "info": {"title": "Colors", "version": "1"},
+        "servers": [{"url": "https://example.com"}],
+        "paths": {
+            "/items{color}/details": {
+                "get": {
+                    "operationId": "get_color",
+                    "parameters": [parameter],
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+    }
+    tool = OpenAPIToolset(
+        spec_dict=spec,
+        httpx_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handle)
+        ),
+        allow_private_network_access=True,
+    ).get_tool("get_color")
+
+    result = await tool.run_async(
+        args={"color": value}, tool_context=mock_tool_context
+    )
+
+    assert result == {"ok": True}
+    assert sent == [f"/items{exploded if explode else expected}/details"]
+
+  @pytest.mark.parametrize("style", ["label", "matrix"])
+  @pytest.mark.parametrize("explode", [False, True])
+  @pytest.mark.parametrize(
+      "value",
+      [
+          "a/b?c#d;=,%é",
+          ["a/b?c#d;=,%é", "ok"],
+          {"a/b?c#d;=,%é": "a/b?c#d;=,%é"},
+      ],
+  )
+  def test_path_parameter_styles_encode_data(self, style, explode, value):
+    """Reserved data stays escaped while style punctuation stays literal."""
+    tool = RestApiTool(
+        name="colors",
+        description="Colors",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/items/{color}/details",
+            method="GET",
+        ),
+        operation=Operation(operationId="colors"),
+    )
+    param = ApiParameter(
+        original_name="color",
+        py_name="color",
+        param_location="path",
+        param_schema=OpenAPISchema(type="string"),
+        style=style,
+        explode=explode,
+    )
+    encoded = "a%2Fb%3Fc%23d%3B%3D%2C%25%C3%A9"
+    if isinstance(value, dict):
+      separator = "=" if explode else ("." if style == "label" else ",")
+      expected = encoded + separator + encoded
+      prefix = "." if style == "label" else (";" if explode else ";color=")
+    elif isinstance(value, list):
+      separator = "." if style == "label" else (";color=" if explode else ",")
+      expected = encoded + separator + "ok"
+      prefix = "." if style == "label" else ";color="
+    else:
+      expected = encoded
+      prefix = "." if style == "label" else ";color="
+
+    request = tool._prepare_request_params([param], {"color": value})
+
+    assert (
+        request["url"]
+        == f"https://example.com/items/{prefix}{expected}/details"
+    )
+    assert request["params"] == {}
+
+  @pytest.mark.parametrize("style", ["label", "matrix"])
+  @pytest.mark.parametrize("explode", [False, True])
+  @pytest.mark.parametrize(
+      "value", ["..", ["blue", "../admin"], {"..": "blue"}, {"R": "x/../admin"}]
+  )
+  def test_path_parameter_styles_reject_dot_segments(
+      self, style, explode, value
+  ):
+    """Styled paths retain dot-segment checks for each key and value."""
+    tool = RestApiTool(
+        name="colors",
+        description="Colors",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com", path="/items/{color}", method="GET"
+        ),
+        operation=Operation(operationId="colors"),
+    )
+    param = ApiParameter(
+        original_name="color",
+        py_name="color",
+        param_location="path",
+        param_schema=OpenAPISchema(type="string"),
+        style=style,
+        explode=explode,
+    )
+
+    with pytest.raises(InputValidationError, match="parent-directory"):
+      tool._prepare_request_params([param], {"color": value})
+
   def test_prepare_request_params_path_param_is_percent_encoded(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
