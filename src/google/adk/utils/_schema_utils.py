@@ -496,8 +496,8 @@ def preprocess_args(
   """Preprocess and convert incoming argument dictionary before invocation.
 
   Converts dictionary values to Pydantic model instances where the function
-  signature expects a BaseModel subclass, an Optional or list of one, raw
-  values to the member where it expects an Enum, Optional[Enum] or
+  signature expects a BaseModel subclass, or an Optional, list or dict of one,
+  raw values to the member where it expects an Enum, Optional[Enum] or
   list[Enum], and integral floats to int where it expects int or list[int].
 
   Args:
@@ -693,6 +693,35 @@ def preprocess_args(
               else:
                 converted_list.append(item)
             converted_args[param_name] = converted_list
+
+        # Handle dict[str, BaseModel subclass]: the declaration describes each
+        # value as the model, so each value comes back as a JSON object.
+        if (
+            origin is dict
+            and len(get_args(target_type)) == 2
+            and isinstance(args[param_name], dict)
+        ):
+          value_type = get_args(target_type)[1]
+          if get_origin(value_type) is Annotated:
+            value_type = get_args(value_type)[0]
+          if inspect.isclass(value_type) and issubclass(value_type, BaseModel):
+            converted_dict: dict[object, object] = {}
+            for key, value in args[param_name].items():
+              if isinstance(value, dict):
+                try:
+                  converted_dict[key] = value_type.model_validate(value)
+                except Exception as e:
+                  logger.warning(
+                      "Failed to convert value '%s' in '%s' to %s: %s",
+                      key,
+                      param_name,
+                      value_type,
+                      e,
+                  )
+                  converted_dict[key] = value
+              else:
+                converted_dict[key] = value
+            converted_args[param_name] = converted_dict
 
   return converted_args
 

@@ -638,6 +638,31 @@ class TestPreprocessArgs:
     assert isinstance(coerced["pipe_items"][0], OtherModel)
     assert coerced["pipe_items"][0].tag == "tagged"
 
+  def test_preprocess_args_converts_dict_of_models(self):
+    def dict_fn(
+        by_name: dict[str, SampleModel],
+        maybe: Optional[dict[str, OtherModel]] = None,
+    ):
+      pass
+
+    sig = inspect.signature(dict_fn)
+    hints = get_type_hints_cached(dict_fn)
+    existing = SampleModel(name="kept", value=3)
+    raw_args = {
+        "by_name": {"a": {"name": "one", "value": 1}, "b": existing},
+        "maybe": {"x": {"tag": "tagged"}},
+    }
+    coerced = preprocess_args(raw_args, sig, hints)
+
+    assert isinstance(coerced["by_name"]["a"], SampleModel)
+    assert coerced["by_name"]["a"].name == "one"
+    assert coerced["by_name"]["b"] is existing
+    assert isinstance(coerced["maybe"]["x"], OtherModel)
+    assert coerced["maybe"]["x"].tag == "tagged"
+
+    invalid = preprocess_args({"by_name": {"a": {"name": 1}}}, sig, hints)
+    assert invalid["by_name"] == {"a": {"name": 1}}
+
   def test_preprocess_args_partial_converts_pydantic_model(self):
     def model_fn(x: int, data: SampleModel) -> int:
       return x + data.value
