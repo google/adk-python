@@ -249,3 +249,60 @@ async def test_run_live_dedupes_base_node_task_completed_tool(
 
   assert sub_agent.tools == [task_completed]
   assert sub_agent.instruction == 'initial'
+
+
+@pytest.mark.asyncio
+async def test_run_live_leaves_the_shared_sub_agent_alone(
+    request: pytest.FixtureRequest,
+):
+  """The live-only task_completed tool and instruction stay on a copy."""
+
+  seen: dict[str, object] = {}
+
+  class _LiveLlmSubAgent(LlmAgent):
+
+    @override
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      seen['tools'] = [
+          getattr(tool, '__name__', getattr(tool, 'name', None))
+          for tool in self.tools
+      ]
+      seen['instruction'] = self.instruction
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='live')]),
+      )
+
+  def echo(text: str) -> str:
+    """Echoes the text back."""
+    return text
+
+  sub_agent = _LiveLlmSubAgent(
+      name='live_sub_agent', instruction='initial', tools=[echo]
+  )
+  sequential_agent = SequentialAgent(name='seq_agent', sub_agents=[sub_agent])
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, sequential_agent
+  )
+
+  _ = [e async for e in sequential_agent.run_live(parent_ctx)]
+
+  # The live run got what it needs ...
+  assert seen['tools'] == ['echo', 'task_completed']
+  assert isinstance(seen['instruction'], str)
+  assert seen['instruction'].startswith('initial')
+  assert 'task_completed' in seen['instruction']
+
+  # ... but the agent the caller built is unchanged.
+  assert sub_agent.tools == [echo]
+  assert sub_agent.instruction == 'initial'
+
+  # A second live run does not stack a second copy of the instruction, and a
+  # later ordinary run still runs with the original configuration.
+  _ = [e async for e in sequential_agent.run_live(parent_ctx)]
+  assert seen['tools'] == ['echo', 'task_completed']
+  assert sub_agent.tools == [echo]
+  assert sub_agent.instruction == 'initial'
