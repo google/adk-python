@@ -433,7 +433,9 @@ As in `AgentEvaluator`, the comparison goes the way the metric's evaluator
 judged its scores: if each score it passed is below the threshold and each one
 it failed is above, lower is better, so the result passes at or below the
 threshold and the output adds `lower is better`; otherwise it passes at or
-above the threshold.
+above the threshold. The efficiency metrics, such as `token_usage_v1`, have no
+threshold, but lower is better for all of them, so `min_over_runs` takes their
+highest run score.
 
 A **rule object**, `{"method": ..., "threshold": ...}`, counts the runs that
 passed and compares the result with its own `threshold`, from 0 to 1. Each run

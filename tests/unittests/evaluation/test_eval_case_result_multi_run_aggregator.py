@@ -1355,6 +1355,115 @@ def test_min_over_runs_takes_the_highest_score_where_lower_is_better(
   )
 
 
+def _runs_with_informational_metric(
+    metric_name: str, values: Sequence[float]
+) -> list[EvalCaseResult]:
+  """Returns one run of case1 per value, each scoring `metric_name` with it.
+
+  The metric has no threshold and is INFORMATIONAL, like the efficiency
+  metrics, and is scored for the whole run and for its one invocation.
+  """
+  runs = []
+  for index, value in enumerate(values):
+    metric_result = EvalMetricResult(
+        metric_name=metric_name,
+        score=value,
+        eval_status=EvalStatus.INFORMATIONAL,
+    )
+    runs.append(
+        EvalCaseResult(
+            eval_set_id="set1",
+            eval_id="case1",
+            final_eval_status=EvalStatus.PASSED,
+            overall_eval_metric_results=[metric_result],
+            eval_metric_result_per_invocation=[
+                EvalMetricResultPerInvocation(
+                    actual_invocation=Invocation(
+                        user_content=genai_types.Content(
+                            parts=[genai_types.Part(text="hi")]
+                        )
+                    ),
+                    eval_metric_results=[metric_result.model_copy()],
+                )
+            ],
+            session_id=f"s{index}",
+            repetition_index=index,
+        )
+    )
+  return runs
+
+
+@pytest.mark.parametrize(
+    "metric_name",
+    [
+        "tool_call_count_v1",
+        "inference_call_count_v1",
+        "token_usage_v1",
+        "invocation_duration_v1",
+    ],
+)
+def test_min_over_runs_takes_the_highest_score_of_an_efficiency_metric(
+    metric_name,
+):
+  """`min_over_runs` keeps the worst run of a metric where lower is better.
+
+  Setup: an efficiency metric, which is informational and has no threshold,
+    scored 100.0 in one run and 5000.0 in the other.
+  Assert: the value is the higher score, the worst run, and the metric stays
+    INFORMATIONAL.
+  """
+  runs = _runs_with_informational_metric(metric_name, [100.0, 5000.0])
+  multi_run_config = MultiRunConfig(cross_run_scoring="min_over_runs")
+
+  aggregated = aggregate_eval_case_results(
+      runs, multi_run_config=multi_run_config
+  )
+
+  assert aggregated[0].metric_methods[metric_name] == MethodResult(
+      name="min_over_runs",
+      value=5000.0,
+      threshold=None,
+      status=EvalStatus.INFORMATIONAL,
+      note="lower is better",
+  )
+  overall = {
+      result.metric_name: result
+      for result in aggregated[0].overall_eval_metric_results
+  }
+  assert overall[metric_name].score == 5000.0
+
+
+def test_min_over_runs_by_metric_takes_the_highest_score_of_an_efficiency_metric():
+  """Naming the method for the metric alone judges it the same way."""
+  runs = _runs_with_informational_metric("token_usage_v1", [100.0, 5000.0])
+  multi_run_config = MultiRunConfig(
+      cross_run_scoring_by_metric={"token_usage_v1": "min_over_runs"}
+  )
+
+  aggregated = aggregate_eval_case_results(
+      runs, multi_run_config=multi_run_config
+  )
+
+  assert aggregated[0].metric_methods["token_usage_v1"].value == 5000.0
+
+
+def test_min_over_runs_takes_the_lowest_score_of_other_informational_metrics():
+  """An informational metric with no known direction keeps the lowest score."""
+  runs = _runs_with_informational_metric("llm_call_count", [2.0, 4.0])
+  multi_run_config = MultiRunConfig(cross_run_scoring="min_over_runs")
+
+  aggregated = aggregate_eval_case_results(
+      runs, multi_run_config=multi_run_config
+  )
+
+  assert aggregated[0].metric_methods["llm_call_count"] == MethodResult(
+      name="min_over_runs",
+      value=2.0,
+      threshold=None,
+      status=EvalStatus.INFORMATIONAL,
+  )
+
+
 def test_cross_run_criterion_passes_when_enough_runs_pass_as_a_whole():
   """Every run passed, so the share of passing runs meets the criterion."""
   runs = [_judged_run(index, response_match_score=1.0) for index in range(2)]

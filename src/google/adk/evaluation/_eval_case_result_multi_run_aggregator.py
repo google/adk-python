@@ -33,6 +33,7 @@ from ._multi_run_aggregation_methods import get_built_in_aggregation_methods
 from ._multi_run_aggregation_methods import load_custom_aggregation_method
 from ._multi_run_aggregation_methods import min_over_runs
 from ._multi_run_aggregation_methods import RunResult
+from .eval_config import _DEFAULT_EFFICIENCY_METRICS
 from .eval_config import MultiRunConfig
 from .eval_config import MultiRunCriterion
 from .eval_config import PassKMultiRunCriterion
@@ -536,6 +537,10 @@ def _judge_metric(
       # evaluator did, so a metric where lower is better keeps that. More
       # passing runs are always better, so a rule that counts them does not.
       higher_is_better = _higher_is_better(runs, metric_name, threshold)
+    elif informational and metric_name in _DEFAULT_EFFICIENCY_METRICS:
+      # Lower is better for the efficiency metrics, but they are informational
+      # and have no threshold to read that direction from.
+      higher_is_better = False
     value = _compute(method, run_results, higher_is_better=higher_is_better)
     status = (
         EvalStatus.INFORMATIONAL
