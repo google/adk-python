@@ -118,6 +118,64 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     compacted_event = await self.compactor.maybe_summarize_events(events=events)
     self.assertIsNone(compacted_event)
 
+  async def test_maybe_compact_events_rejects_incomplete_summary(self):
+    events = [
+        self._create_event(1.0, 'The delivery address is 123 Maple Avenue.'),
+        self._create_event(2.0, 'Saved.', 'model'),
+    ]
+    for finish_reason in (
+        types.FinishReason.MAX_TOKENS,
+        types.FinishReason.SAFETY,
+        types.FinishReason.OTHER,
+    ):
+      with self.subTest(finish_reason=finish_reason):
+        llm_response = LlmResponse(
+            content=Content(parts=[Part(text='The delivery address is')]),
+            finish_reason=finish_reason,
+        )
+
+        async def async_gen(response=llm_response):
+          yield response
+
+        self.mock_llm.generate_content_async.return_value = async_gen()
+
+        compacted_event = await self.compactor.maybe_summarize_events(
+            events=events
+        )
+
+        self.assertIsNone(compacted_event)
+
+  async def test_maybe_compact_events_accepts_complete_summary(self):
+    events = [
+        self._create_event(1.0, 'Hello', 'user'),
+        self._create_event(2.0, 'Hi there!', 'model'),
+    ]
+    for finish_reason in (
+        None,
+        types.FinishReason.STOP,
+        types.FinishReason.FINISH_REASON_UNSPECIFIED,
+    ):
+      with self.subTest(finish_reason=finish_reason):
+        llm_response = LlmResponse(
+            content=Content(parts=[Part(text='Summary')]),
+            finish_reason=finish_reason,
+        )
+
+        async def async_gen(response=llm_response):
+          yield response
+
+        self.mock_llm.generate_content_async.return_value = async_gen()
+
+        compacted_event = await self.compactor.maybe_summarize_events(
+            events=events
+        )
+
+        self.assertIsNotNone(compacted_event)
+        self.assertEqual(
+            compacted_event.actions.compaction.compacted_content.parts[0].text,
+            'Summary',
+        )
+
   async def test_maybe_compact_events_includes_usage_metadata(self):
     events = [
         self._create_event(1.0, 'Hello', 'user'),
