@@ -20,11 +20,17 @@ import json
 from google.adk.models._generate_content_body import to_generate_content_body
 from google.adk.models.llm_request import LlmRequest
 from google.genai import _common as _genai_common
-from google.genai import models as _genai_models
 from google.genai import types
 import pytest
 
 from google import genai
+
+try:
+  from google.genai import _converters as _genai_converters
+except ImportError:
+  # google-genai releases before the _converters module keep the converters in
+  # models.
+  from google.genai import models as _genai_converters
 
 _CONFIG_FIELDS = types.GenerateContentConfig.model_fields
 
@@ -429,8 +435,8 @@ def test_no_config_still_produces_a_body():
     "module, symbol",
     [
         (types, "_GenerateContentParameters"),
-        (_genai_models, "_GenerateContentParameters_to_vertex"),
-        (_genai_models, "_GenerateContentParameters_to_mldev"),
+        (_genai_converters, "_GenerateContentParameters_to_vertex"),
+        (_genai_converters, "_GenerateContentParameters_to_mldev"),
         (_genai_common, "convert_to_dict"),
         (_genai_common, "encode_unserializable_types"),
     ],

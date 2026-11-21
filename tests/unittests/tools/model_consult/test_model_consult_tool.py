@@ -681,6 +681,26 @@ async def test_thinking_level_reaches_request(
   assert result['thinking_level'] == expected_name
 
 
+@pytest.mark.skipif(
+    not hasattr(types.ThinkingLevel, 'XHIGH'),
+    reason='The installed google-genai has no ThinkingLevel.XHIGH.',
+)
+@pytest.mark.asyncio
+async def test_thinking_level_xhigh_reaches_request():
+  """Verifies thinking_level='xhigh' is sent to the advisor model."""
+  llm = _FakeAdvisorLlm()
+  tool = ModelConsultTool(model=llm, thinking_level='xhigh')
+  ctx = _make_tool_context([_user_event('go')])
+
+  result = await _run(tool, ctx, question='Next?')
+
+  assert (
+      llm.requests[0].config.thinking_config.thinking_level
+      == types.ThinkingLevel.XHIGH
+  )
+  assert result['thinking_level'] == 'xhigh'
+
+
 @pytest.mark.asyncio
 async def test_thinking_level_none_sends_no_thinking_config():
   """Verifies thinking_level=None omits ThinkingConfig from advisor request."""
@@ -692,6 +712,33 @@ async def test_thinking_level_none_sends_no_thinking_config():
 
   assert llm.requests[0].config.thinking_config is None
   assert result['thinking_level'] is None
+
+
+@pytest.mark.parametrize(
+    'config_level,expected',
+    [
+        (types.ThinkingLevel.HIGH, 'high'),
+        (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_thinking_level_reports_level_from_generate_content_config(
+    config_level: types.ThinkingLevel, expected: str | None
+):
+  """With thinking_level=None, the payload reports the config's own level."""
+  llm = _FakeAdvisorLlm()
+  tool = ModelConsultTool(
+      model=llm,
+      thinking_level=None,
+      generate_content_config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_level=config_level)
+      ),
+  )
+  ctx = _make_tool_context([_user_event('go')])
+
+  result = await _run(tool, ctx, question='Next?')
+
+  assert result['thinking_level'] == expected
 
 
 @pytest.mark.parametrize(
@@ -1224,6 +1271,7 @@ async def test_thinking_config_rejection_falls_back_and_still_answers():
 
   assert result['status'] == 'ok'
   assert result['guidance'] == 'fallback advice'
+  assert result['thinking_level'] is None
   assert len(llm.requests) == 2
   assert llm.requests[0].config.thinking_config is not None
   assert llm.requests[1].config.thinking_config is None

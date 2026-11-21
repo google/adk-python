@@ -28,6 +28,7 @@ from google.adk.optimization.data_types import AgentWithScores
 from google.adk.optimization.data_types import OptimizerResult
 from google.adk.optimization.data_types import UnstructuredSamplingResult
 from google.adk.optimization.sampler import Sampler
+from google.adk.utils.model_name_utils import _with_gemini_4_thinking_level
 from google.genai import types as genai_types
 from pydantic import BaseModel
 from pydantic import Field
@@ -50,6 +51,11 @@ Focus on clarity, structure, and providing actionable guidance for the agent.
 **Output only the new, full, improved agent prompt. Do not add any other text, explanations, or markdown formatting.**
 """
 
+_DEFAULT_THINKING_CONFIG = genai_types.ThinkingConfig(
+    include_thoughts=True,
+    thinking_budget=10240,
+)
+
 
 class SimplePromptOptimizerConfig(BaseModel):
   """Configuration for the IterativePromptOptimizer."""
@@ -68,7 +74,11 @@ class SimplePromptOptimizerConfig(BaseModel):
               thinking_budget=10240,
           )
       ),
-      description="The configuration for the optimizer model.",
+      description=(
+          "The configuration for the optimizer model. Its default thinking"
+          " budget is sent as thinking level HIGH to Gemini 4 and later"
+          " models."
+      ),
   )
 
   num_iterations: int = Field(
@@ -103,7 +113,12 @@ class SimplePromptOptimizer(
     )
     llm_request = LlmRequest(
         model=self._config.optimizer_model,
-        config=self._config.model_configuration,
+        config=_with_gemini_4_thinking_level(
+            self._config.model_configuration,
+            model=self._config.optimizer_model,
+            default_thinking_config=_DEFAULT_THINKING_CONFIG,
+            thinking_level=genai_types.ThinkingLevel.HIGH,
+        ),
         contents=[
             genai_types.Content(
                 parts=[genai_types.Part(text=prompt_for_optimizer)],

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-import datetime
 import logging
 import mimetypes
 from typing import Any
@@ -36,7 +35,15 @@ from ...artifacts.base_artifact_service import ensure_part
 from ...errors.input_validation_error import InputValidationError
 from ...features._feature_decorator import experimental
 from ...features._feature_registry import FeatureName
-from ...platform import time as platform_time
+from ._backends import _ADK_DISPLAY_NAME_METADATA_KEY
+from ._backends import _ADK_FILE_MIME_TYPE_METADATA_KEY
+from ._backends import _ADK_FILE_URI_METADATA_KEY
+from ._backends import _ADK_IS_TEXT_METADATA_KEY
+from ._backends import _BackendAdapter
+from ._backends import _DEFAULT_MIME_TYPE
+from ._backends import _fs_protocols
+from ._backends import _ObjectMetadata
+from ._backends import _user_metadata
 
 if TYPE_CHECKING:
   import fsspec
@@ -45,62 +52,12 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _USER_NAMESPACE_PREFIX = "user:"
 _USER_NAMESPACE_SEGMENT = "user"
-_DEFAULT_MIME_TYPE = "application/octet-stream"
-_GCS_PROTOCOLS = frozenset({"gs", "gcs"})
-_LOCAL_PROTOCOLS = frozenset({"file", "local"})
-_RAPID_PRECONDITION_ERROR_NAMES = frozenset({
-    "FailedPrecondition",
-    "PreconditionFailed",
-})
-# Parameter names consumed by GCSFileSystem.setxattrs (plus fsspec's
-# sync_wrapper), which would collide or be intercepted when unpacking
-# **blob_metadata on Rapid buckets.
-_RAPID_SETXATTRS_RESERVED_KEYS = frozenset({
-    "self",
-    "path",
-    "content_type",
-    "content_encoding",
-    "fixed_key_metadata",
-    "timeout",
-})
 _MAX_SAVE_VERSION_ATTEMPTS = 10
-
-# Custom-metadata keys written by GcsArtifactService on save. They must stay
-# identical so that objects written by either service are readable by both.
-_ADK_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
-_ADK_IS_TEXT_METADATA_KEY = "adkIsText"
-_ADK_FILE_URI_METADATA_KEY = "adkFileUri"
-_ADK_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
-# Only legacy key GcsArtifactService still reads; other snake_case names are
-# indistinguishable from caller-supplied custom metadata and are not honored.
-_LEGACY_FILE_URI_METADATA_KEY = "file_uri"
-# Object metadata keys reserved for ADK's own bookkeeping. They are dropped
-# from custom_metadata on save and hidden from it on read.
-_INTERNAL_METADATA_KEYS = frozenset({
-    _ADK_DISPLAY_NAME_METADATA_KEY,
-    _ADK_IS_TEXT_METADATA_KEY,
-    _ADK_FILE_URI_METADATA_KEY,
-    _ADK_FILE_MIME_TYPE_METADATA_KEY,
-    _LEGACY_FILE_URI_METADATA_KEY,
-})
 
 
 def _file_has_user_namespace(filename: str) -> bool:
   """Returns True when ``filename`` uses the ``user:`` cross-session scope."""
   return filename.startswith(_USER_NAMESPACE_PREFIX)
-
-
-def _user_metadata(
-    raw_metadata: Optional[Mapping[str, Any]],
-) -> dict[str, Any]:
-  """Returns only caller-supplied metadata keys, hiding ADK internal markers."""
-  if not raw_metadata:
-    return {}
-  return {
-      key: value
-      for key, value in raw_metadata.items()
-      if key not in _INTERNAL_METADATA_KEYS
-  }
 
 
 def _validate_filename(filename: str) -> None:
@@ -160,33 +117,6 @@ def _guess_mime(filename: str) -> str:
   return guessed or _DEFAULT_MIME_TYPE
 
 
-def _fs_protocols(fs: fsspec.AbstractFileSystem) -> tuple[str, ...]:
-  """Returns the protocol names handled by ``fs``."""
-  return (fs.protocol,) if isinstance(fs.protocol, str) else tuple(fs.protocol)
-
-
-def _parse_timestamp(info: Mapping[str, Any]) -> float:
-  """Extracts a Unix creation timestamp from an fsspec info() mapping."""
-  for field in ("timeCreated", "created", "mtime", "LastModified", "updated"):
-    raw = info.get(field)
-    if isinstance(raw, (int, float)):
-      return float(raw)
-    if isinstance(raw, datetime.datetime):
-      if raw.tzinfo is None:
-        raw = raw.replace(tzinfo=datetime.timezone.utc)
-      return raw.timestamp()
-    if isinstance(raw, str):
-      iso = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
-      try:
-        parsed = datetime.datetime.fromisoformat(iso)
-      except ValueError:
-        continue
-      if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-      return parsed.timestamp()
-  return platform_time.get_time()
-
-
 @experimental(FeatureName.FSSPEC_ARTIFACT_SERVICE)
 class FsspecArtifactService(BaseArtifactService):
   """Artifact service backed by any ``fsspec``-compatible filesystem.
@@ -206,8 +136,13 @@ class FsspecArtifactService(BaseArtifactService):
   ``file_data`` URI references, and non-empty ``custom_metadata`` are rejected
   with ``InputValidationError``, ``inline_data.display_name`` is not persisted,
   and empty (``0``-byte) payloads with no stored content type load as ``None``
-  so session-rewind tombstones work without object metadata. Backend-specific
-  custom metadata normalization for S3 and Azure is not implemented yet.
+  so session-rewind tombstones work without object metadata.
+
+  S3 (``s3fs``) also stores content type and custom metadata. Its
+  ``custom_metadata`` keys come back lowercased with ``_`` turned into ``-``.
+  ``custom_metadata`` keys and values must be ASCII, and caller keys that S3
+  would read back as ADK's own keys are rejected. Azure metadata is not
+  supported yet.
 
   Requires ``fsspec`` (``pip install "google-adk[fsspec]"``) and the backend
   implementation for the target storage protocol, such as ``gcsfs`` for
@@ -277,26 +212,7 @@ class FsspecArtifactService(BaseArtifactService):
     # return an absolute "/path" whose leading slash is significant. A bare
     # "/" root becomes "" so that joined paths stay absolute ("/app/...").
     self._root: str = str(root).rstrip("/")
-
-  def _is_gcs(self) -> bool:
-    """Returns True when ``self._fs`` handles GCS protocols."""
-    return not _GCS_PROTOCOLS.isdisjoint(_fs_protocols(self._fs))
-
-  def _is_local(self) -> bool:
-    """Returns True when ``self._fs`` handles local filesystem protocols."""
-    return not _LOCAL_PROTOCOLS.isdisjoint(_fs_protocols(self._fs))
-
-  def _is_rapid_gcs_bucket(self, key: str) -> bool:
-    """Returns True when ``self._fs`` is gcsfs targeting a Rapid bucket.
-
-    Rapid buckets report the ``ZONAL_HIERARCHICAL`` bucket type in gcsfs.
-    """
-    lookup = getattr(self._fs, "_sync_lookup_bucket_type", None)
-    split_path = getattr(self._fs, "split_path", None)
-    if not (callable(lookup) and callable(split_path)):
-      return False
-    bucket, _, _ = split_path(key)
-    return str(lookup(bucket)).endswith("ZONAL_HIERARCHICAL")
+    self._backend_adapter: _BackendAdapter = _BackendAdapter.for_filesystem(fs)
 
   def _canonical_uri(self, key: str) -> str:
     """Returns the canonical URI for ``key``, preserving ``base_url`` scheme."""
@@ -357,85 +273,6 @@ class FsspecArtifactService(BaseArtifactService):
         and (stripped := self._fs._strip_protocol(name)).startswith(prefix)
     }
 
-  def _remove_failed_version(self, key: str) -> None:
-    """Best-effort removal of a version object left behind by a failed save.
-
-    A failed save must not leave a partial or metadata-less object that later
-    loads as a corrupt version. Removal errors are logged, not raised, so the
-    original failure is what the caller sees.
-    """
-    try:
-      self._fs.rm_file(key)
-    except Exception:  # pylint: disable=broad-exception-caught
-      logger.warning(
-          "Could not remove artifact version %s after a failed save.",
-          key,
-          exc_info=True,
-      )
-    self._fs.invalidate_cache(key)
-
-  def _write_version(
-      self,
-      key: str,
-      data: bytes,
-      content_type: Optional[str],
-      blob_metadata: dict[str, str],
-  ) -> None:
-    """Writes one version object with exclusive-create semantics."""
-    if not self._is_gcs():
-      if self._is_local():
-        with self._fs.open(key, "xb") as stream:
-          stream.write(data)
-      else:
-        self._fs.pipe_file(key, data, mode="create")
-      return
-
-    if self._is_rapid_gcs_bucket(key):
-      reserved = sorted(_RAPID_SETXATTRS_RESERVED_KEYS & blob_metadata.keys())
-      if reserved:
-        raise InputValidationError(
-            "custom_metadata keys are not supported on Rapid GCS buckets:"
-            f" {', '.join(reserved)}."
-        )
-      # ExtendedGcsFileSystem._pipe_file ignores mode="create", leaves objects
-      # unfinalized, and drops content_type and metadata during gRPC upload.
-      # Open with generation=0 (exclusive create) and finalize_on_close=True,
-      # then patch contentType (including GCS's HTTP octet-stream default) and
-      # metadata via setxattrs. The object is briefly visible without metadata
-      # between the two steps; gcsfs offers no single-step alternative.
-      stream = self._fs.open(key, "wb", generation=0, finalize_on_close=True)
-      try:
-        if data:
-          stream.write(data)
-        stream.close()
-      except Exception as exc:
-        # Prevent __del__() from calling close() to re-flush a failed stream.
-        stream.closed = True
-        if type(exc).__name__ in _RAPID_PRECONDITION_ERROR_NAMES:
-          raise FileExistsError(key) from exc
-        # The appendable writer is only set once the exclusive create
-        # succeeded, so the (unfinalized) object is ours to remove.
-        if getattr(stream, "aaow", None) is not None:
-          self._remove_failed_version(key)
-        raise
-      try:
-        self._fs.setxattrs(
-            key,
-            content_type=content_type or _DEFAULT_MIME_TYPE,
-            **blob_metadata,
-        )
-      except Exception:
-        self._remove_failed_version(key)
-        raise
-      return
-
-    write_kwargs: dict[str, Any] = {"mode": "create"}
-    if content_type is not None:
-      write_kwargs["content_type"] = content_type
-    if blob_metadata:
-      write_kwargs["metadata"] = blob_metadata
-    self._fs.pipe_file(key, data, **write_kwargs)
-
   @override
   async def save_artifact(
       self,
@@ -480,10 +317,10 @@ class FsspecArtifactService(BaseArtifactService):
     if part.inline_data is not None:
       if part.inline_data.data is None:
         raise InputValidationError("Artifact inline_data must contain data.")
-      if blob_metadata and not self._is_gcs():
+      if blob_metadata and not self._backend_adapter.stores_custom_metadata:
         raise InputValidationError(
             "Saving custom_metadata requires a filesystem backend that"
-            " persists custom object metadata (such as gs://)."
+            " persists custom object metadata (such as gs:// or s3://)."
         )
       data = part.inline_data.data
       content_type = part.inline_data.mime_type
@@ -492,10 +329,10 @@ class FsspecArtifactService(BaseArtifactService):
             part.inline_data.display_name
         )
     elif part.text is not None:
-      if not self._is_gcs():
+      if not self._backend_adapter.stores_custom_metadata:
         raise InputValidationError(
             "Saving text artifacts requires a filesystem backend that"
-            " persists custom object metadata (such as gs://)."
+            " persists custom object metadata (such as gs:// or s3://)."
         )
       data = part.text.encode("utf-8")
       content_type = "text/plain"
@@ -504,10 +341,10 @@ class FsspecArtifactService(BaseArtifactService):
       file_uri = part.file_data.file_uri
       if not file_uri:
         raise InputValidationError("Artifact file_data must have a file_uri.")
-      if not self._is_gcs():
+      if not self._backend_adapter.stores_custom_metadata:
         raise InputValidationError(
             "Saving file_data URI references requires a filesystem backend"
-            " that persists custom object metadata (such as gs://)."
+            " that persists custom object metadata (such as gs:// or s3://)."
         )
       if artifact_util.is_artifact_ref(part):
         parsed_uri = artifact_util.parse_artifact_uri(file_uri)
@@ -533,22 +370,19 @@ class FsspecArtifactService(BaseArtifactService):
           "Artifact must have either inline_data, text, or file_data."
       )
 
-    if not self._is_gcs() and getattr(self._fs, "auto_mkdir", True) is False:
-      self._fs.makedirs(artifact_path, exist_ok=True)
-
     versions = self._versions_under(artifact_path)
     version = 0 if not versions else max(versions) + 1
 
     # Listing versions does not reserve one, so a concurrent save can choose the
-    # same number. Exclusive create is atomic on GCS (generation=0), file://
-    # (open with "xb"), and memory://; generic fsspec backends inherit
-    # AbstractFileSystem.pipe_file(mode="create"), which uses a non-atomic
-    # exists() check before open("wb"). On FileExistsError, advance and retry.
+    # same number. ``create_object`` is exclusive, so on FileExistsError,
+    # advance and retry.
     attempts_left = _MAX_SAVE_VERSION_ATTEMPTS
     while True:
       key = f"{artifact_path}/{version}"
       try:
-        self._write_version(key, data, content_type, blob_metadata)
+        self._backend_adapter.create_object(
+            key, data, content_type=content_type, metadata=blob_metadata
+        )
       except FileExistsError:
         attempts_left -= 1
         if not attempts_left:
@@ -598,21 +432,11 @@ class FsspecArtifactService(BaseArtifactService):
       return None
     key = f"{artifact_path}/{version}"
 
-    self._fs.invalidate_cache(key)
-    try:
-      info = self._fs.info(key)
-    except (FileNotFoundError, NotADirectoryError):
+    metadata = self._backend_adapter.read_metadata(key)
+    if metadata is None:
       return None
-    if info.get("type", "file") != "file":
-      return None
-    stored_content_type = (
-        info.get("contentType") or info.get("ContentType") or None
-    )
-    metadata: Mapping[str, Any] = info.get("metadata") or {}
 
-    file_uri = metadata.get(_ADK_FILE_URI_METADATA_KEY) or metadata.get(
-        _LEGACY_FILE_URI_METADATA_KEY
-    )
+    file_uri = metadata.file_uri
     if file_uri:
       if file_uri.startswith("artifact://"):
         parsed_uri = artifact_util.resolve_artifact_reference(
@@ -633,8 +457,7 @@ class FsspecArtifactService(BaseArtifactService):
       return types.Part(
           file_data=types.FileData(
               file_uri=file_uri,
-              mime_type=metadata.get(_ADK_FILE_MIME_TYPE_METADATA_KEY)
-              or stored_content_type,
+              mime_type=metadata.file_mime_type or metadata.content_type,
           )
       )
 
@@ -643,13 +466,13 @@ class FsspecArtifactService(BaseArtifactService):
     except (FileNotFoundError, NotADirectoryError):
       # Deleted between info() and cat_file().
       return None
-    if metadata.get(_ADK_IS_TEXT_METADATA_KEY) == "true":
+    if metadata.is_text:
       return types.Part(text=data.decode("utf-8"))
     artifact = types.Part(
         inline_data=types.Blob(
             data=data,
-            mime_type=stored_content_type or _guess_mime(filename),
-            display_name=metadata.get(_ADK_DISPLAY_NAME_METADATA_KEY) or None,
+            mime_type=metadata.content_type or _guess_mime(filename),
+            display_name=metadata.display_name,
         )
     )
     # A session rewind removes an artifact by saving a marker part as its
@@ -658,7 +481,9 @@ class FsspecArtifactService(BaseArtifactService):
     # octet-stream content type, so an empty payload with no stored content
     # type is also treated as a tombstone there.
     if artifact_util._is_rewind_tombstone(artifact) or (
-        not self._is_gcs() and not data and stored_content_type is None
+        not self._backend_adapter.stores_custom_metadata
+        and not data
+        and metadata.content_type is None
     ):
       return None
     return artifact
@@ -770,27 +595,19 @@ class FsspecArtifactService(BaseArtifactService):
       version: int,
       key: str,
       filename: str,
-      info: Mapping[str, Any],
+      metadata: _ObjectMetadata,
   ) -> ArtifactVersion:
-    """Constructs an ``ArtifactVersion`` from an fsspec ``info()`` mapping."""
-    stored_content_type = (
-        info.get("contentType") or info.get("ContentType") or None
-    )
-    metadata: Mapping[str, Any] = info.get("metadata") or {}
-    if metadata.get(_ADK_FILE_URI_METADATA_KEY) or metadata.get(
-        _LEGACY_FILE_URI_METADATA_KEY
-    ):
-      mime_type = (
-          metadata.get(_ADK_FILE_MIME_TYPE_METADATA_KEY) or stored_content_type
-      )
+    """Constructs an ``ArtifactVersion`` from normalized object metadata."""
+    if metadata.file_uri:
+      mime_type = metadata.file_mime_type or metadata.content_type
     else:
-      mime_type = stored_content_type or _guess_mime(filename)
+      mime_type = metadata.content_type or _guess_mime(filename)
     return ArtifactVersion(
         version=version,
         canonical_uri=self._canonical_uri(key),
-        create_time=_parse_timestamp(info),
+        create_time=metadata.create_time,
         mime_type=mime_type,
-        custom_metadata=_user_metadata(metadata),
+        custom_metadata=metadata.user_metadata,
     )
 
   @override
@@ -814,15 +631,19 @@ class FsspecArtifactService(BaseArtifactService):
       filename: str,
   ) -> list[ArtifactVersion]:
     artifact_path = self._artifact_path(app_name, user_id, session_id, filename)
-    artifact_versions = []
+    entries: dict[str, Mapping[str, Any]] = {}
+    versions: dict[str, int] = {}
     for suffix, info in self._find_detail(artifact_path).items():
       version = None if "/" in suffix else _parse_version(suffix)
-      if version is None:
-        continue
-      key = f"{artifact_path}/{version}"
-      artifact_versions.append(
-          self._build_artifact_version(version, key, filename, info)
-      )
+      if version is not None:
+        key = f"{artifact_path}/{version}"
+        entries[key] = info
+        versions[key] = version
+    listed = self._backend_adapter.read_listing_metadata(entries)
+    artifact_versions = [
+        self._build_artifact_version(versions[key], key, filename, metadata)
+        for key, metadata in listed.items()
+    ]
     artifact_versions.sort(key=lambda av: av.version)
     return artifact_versions
 
@@ -863,11 +684,7 @@ class FsspecArtifactService(BaseArtifactService):
       return None
     key = f"{artifact_path}/{version}"
 
-    self._fs.invalidate_cache(key)
-    try:
-      info = self._fs.info(key)
-    except (FileNotFoundError, NotADirectoryError):
+    metadata = self._backend_adapter.read_metadata(key)
+    if metadata is None:
       return None
-    if info.get("type", "file") != "file":
-      return None
-    return self._build_artifact_version(version, key, filename, info)
+    return self._build_artifact_version(version, key, filename, metadata)

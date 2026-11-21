@@ -126,6 +126,8 @@ except SessionPersistenceError as err:
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `retry_config` | `RetryConfig` | `RetryConfig(max_attempts=1)` | How a failed write is retried. Off by default. |
+| `max_write_delay` | `timedelta` | `timedelta(0)` | How long the first queued write of a session waits for others to join it. |
+| `max_batch_events` | `int` | `50` | The most events sent in one `append_events` call. |
 
 ```python
 from google.adk.sessions import BufferedSessionServiceConfig
@@ -143,6 +145,18 @@ off by default because a retry can resend an event that the store already
 committed. Turn them on only for a store that keeps such an event once.
 `DatabaseSessionService` rejects the resent event as stale instead of storing
 it twice, so the write is reported as failed although the store has it.
+
+When the wrapped store overrides `BaseSessionService.append_events(session,
+events)`, the writer sends a session's queued events in one call, up to
+`max_batch_events` per call. An override must store all of the events or none of
+them, in order, with the same effect on `session` and the store as calling
+`append_event` for each event. The base method appends events one at a time, and
+ADK's built-in session services keep it, so for them each event is sent in its
+own `append_event` call.
+
+`max_write_delay` holds back the first queued write of a session so that nearby
+events join it in one `append_events` call. A flush or read that waits on the
+session sends queued writes right away without waiting out the delay.
 
 ## Advanced applications
 

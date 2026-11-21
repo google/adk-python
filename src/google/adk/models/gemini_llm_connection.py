@@ -18,6 +18,7 @@ import logging
 from typing import AsyncGenerator
 from typing import cast
 from typing import Final
+from typing import Optional
 
 from google.genai import types
 
@@ -681,6 +682,29 @@ class GeminiLlmConnection(BaseLlmConnection):
             model_version=self._model_version,
             live_session_id=self._gemini_session.session_id,
         )
+
+  async def send_context_update(
+      self,
+      *,
+      system_instruction: Optional[str] = None,
+      tools: Optional[types.ToolListUnion] = None,
+  ) -> None:
+    if not self._is_gemini_3_x_live:
+      raise RuntimeError(
+          'Context updates need a Gemini 3.x Live model, not'
+          f' {self._model_version}.'
+      )
+    await self._gemini_session.send_context_update(
+        system_instruction=(
+            types.Content(
+                role='system',
+                parts=[types.Part.from_text(text=system_instruction)],
+            )
+            if system_instruction
+            else None
+        ),
+        tools=tools,
+    )
 
   async def close(self) -> None:
     """Closes the llm server connection."""

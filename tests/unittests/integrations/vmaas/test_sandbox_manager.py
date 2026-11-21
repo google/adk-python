@@ -20,11 +20,14 @@ deletes sandboxes created only from templates or snapshots.
 """
 
 import asyncio
+import copy
 import enum
+import pickle
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import cloudpickle
 from google.adk.integrations.vmaas import _sandbox_manager
 from google.adk.integrations.vmaas._sandbox_manager import SandboxManager
 from google.genai.errors import ClientError
@@ -710,3 +713,87 @@ async def test_waiting_for_sandbox_times_out():
     await SandboxManager(client=client).wait_until_running(
         name, timeout_seconds=0
     )
+
+
+# --- Pickling ---
+
+# Ways a manager gets copied: pickling, and the deepcopy that the Agent
+# Platform SDK's AdkApp.clone() makes of an agent before deploying it.
+_COPIERS = pytest.mark.parametrize(
+    "copier",
+    [
+        lambda obj: pickle.loads(pickle.dumps(obj)),
+        lambda obj: pickle.loads(cloudpickle.dumps(obj)),
+        copy.deepcopy,
+    ],
+    ids=["pickle", "cloudpickle", "deepcopy"],
+)
+
+
+class _PicklableClient:
+  """A client stand-in that can be pickled, unlike a real client."""
+
+  def __init__(self) -> None:
+    self.sandboxes = _FakeSandboxes()
+
+
+@_COPIERS
+async def test_manager_that_created_its_client_copies_after_use(
+    monkeypatch, copier
+):
+  """A manager copies after creating a client and contending for locks.
+
+  Setup: a manager without a client creates one that, like a real client,
+    holds a lock; concurrent requests for the agent engine and the template,
+    and concurrent resumes of a sandbox, contend for the manager's locks.
+  Act: copy the manager, then resolve the template and pause the sandbox
+    through the copy.
+  Assert: the copy creates a client of its own, and reuses the
+    agent engine and the template.
+  """
+  api = _make_client()
+  created = []
+
+  def _create_client(**kwargs):
+    client = SimpleNamespace(
+        runtimes=api.runtimes, sandboxes=api.sandboxes, lock=threading.Lock()
+    )
+    created.append(client)
+    return client
+
+  monkeypatch.setattr("agentplatform.Client", _create_client)
+  manager = SandboxManager(project_id="p")
+  await asyncio.gather(*(manager.get_agent_engine_name() for _ in range(3)))
+  [template, *_] = await asyncio.gather(
+      *(manager.get_shell_template_name() for _ in range(3))
+  )
+  name = await manager.create_sandbox(template_name=template)
+  api.sandboxes.sandboxes[name].state = "STATE_PAUSED"
+  await asyncio.gather(
+      *(manager.resume_sandbox_if_paused(name) for _ in range(3))
+  )
+
+  restored = copier(manager)
+  template_again = await restored.get_shell_template_name()
+  paused = await restored.pause_sandbox(name)
+
+  assert len(created) == 2
+  assert template_again == template
+  assert paused
+  api.runtimes.create.assert_called_once()
+  assert len(api.sandboxes.templates.create_calls) == 1
+
+
+@_COPIERS
+def test_manager_given_a_client_cannot_be_copied(copier):
+  """A manager given a client refuses to be pickled, saying what to pass.
+
+  Setup: a manager given a client, one that could itself be pickled.
+  Act: copy the manager.
+  Assert: a TypeError tells the caller to pass project_id and location
+    instead, rather than the copy creating a default client.
+  """
+  manager = SandboxManager(client=_PicklableClient(), agent_engine_name=_ENGINE)
+
+  with pytest.raises(TypeError, match="Pass project_id and location"):
+    copier(manager)

@@ -25,11 +25,13 @@ from __future__ import annotations
 import asyncio
 import collections
 import copy
+import datetime
 import gc
 import logging
 import random
 import threading
 from typing import Any
+from unittest import mock
 
 from google.adk import platform as adk_platform
 from google.adk.errors import SessionPersistenceError
@@ -37,6 +39,7 @@ from google.adk.errors import StaleSessionError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.platform.thread import create_thread
 from google.adk.sessions import BufferedSessionService
 from google.adk.sessions import BufferedSessionServiceConfig
 from google.adk.sessions import DatabaseSessionService
@@ -2172,6 +2175,633 @@ async def test_call_from_another_loop_while_writes_are_in_flight_raises():
 
   gate.set()
   await _flush(service)
+
+
+# --- Coalesced writes ---
+
+
+class _BatchStore(_Store):
+  """A store that can append several events atomically, and records calls."""
+
+  def __init__(self) -> None:
+    super().__init__()
+    self.batches: list[list[str]] = []
+    self.single_appends = 0
+
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    ids = [e.id for e in events]
+    self.attempts.extend(ids)
+    self.started[session.id].set()
+    gate = self.gates.get(session.id)
+    if gate is not None:
+      await gate.wait()
+    if self.failures:
+      raise self.failures.pop(0)
+    self.batches.append(ids)
+    for event in events:
+      await InMemorySessionService.append_event(self, session, event)
+    return events
+
+  async def append_event(self, session: Session, event: Event) -> Event:
+    self.single_appends += 1
+    result = await super().append_event(session, event)
+    self.batches.append([event.id])
+    return result
+
+
+def _batch_service(store: _BatchStore, **config: Any) -> BufferedSessionService:
+  config.setdefault('retry_config', RetryConfig(initial_delay=0.0))
+  return BufferedSessionService(
+      store, config=BufferedSessionServiceConfig(**config)
+  )
+
+
+async def test_flush_appends_during_a_write_go_out_in_one_call():
+  """Events appended while a write is in flight are sent in one call."""
+  store = _BatchStore()
+  service = _batch_service(store)
+  session = await _create(service)
+  gate = store.hold()
+  await service.append_event(session, _event('e1'))
+  await store.started['s1'].wait()
+
+  for event_id in ('e2', 'e3', 'e4'):
+    await service.append_event(session, _event(event_id))
+  gate.set()
+  await _flush(service)
+
+  assert store.batches == [['e1'], ['e2', 'e3', 'e4']]
+  assert store.stored_ids() == ['e1', 'e2', 'e3', 'e4']
+
+
+async def test_flush_max_batch_events_one_sends_one_event_per_call():
+  """With `max_batch_events=1`, every event is sent in its own call."""
+  store = _BatchStore()
+  service = _batch_service(store, max_batch_events=1)
+  session = await _create(service)
+  gate = store.hold()
+  await service.append_event(session, _event('e1'))
+  await store.started['s1'].wait()
+
+  await service.append_event(session, _event('e2'))
+  await service.append_event(session, _event('e3'))
+  gate.set()
+  await _flush(service)
+
+  assert store.batches == [['e1'], ['e2'], ['e3']]
+
+
+async def test_get_session_during_write_delay_sends_the_writes_it_waits_for():
+  """A read starts the writes it waits for without waiting out the delay."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  session = await _create(service)
+  await service.append_event(session, _event('e1'))
+
+  read = await asyncio.wait_for(
+      service.get_session(app_name=_APP, user_id=_USER, session_id='s1'),
+      timeout=5,
+  )
+
+  assert [e.id for e in read.events] == ['e1']
+
+
+async def test_flush_write_delay_collects_the_events_appended_meanwhile():
+  """A positive write delay sends the events appended during it together."""
+  store = _BatchStore()
+  service = _batch_service(
+      store, max_write_delay=datetime.timedelta(seconds=0.05)
+  )
+  session = await _create(service)
+
+  for event_id in ('e1', 'e2'):
+    await service.append_event(session, _event(event_id))
+  await asyncio.wait_for(store.started['s1'].wait(), timeout=5)
+  await _flush(service)
+
+  assert store.batches == [['e1', 'e2']]
+
+
+async def test_flush_shared_state_changes_of_one_session_share_a_call():
+  """Two shared state changes of one session can go out in one call."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  session = await _create(service)
+
+  await service.append_event(session, _event('e1', **{'user:k': 1}))
+  await service.append_event(session, _event('e2', **{'user:k': 2}))
+  await _flush(service)
+
+  assert store.batches == [['e1', 'e2']]
+  assert await store.get_user_state(app_name=_APP, user_id=_USER) == {'k': 2}
+
+
+async def test_flush_alternating_shared_state_changes_keep_append_order():
+  """A call stops before a shared state change that waits on another session."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  s1 = await _create(service, 's1')
+  s2 = await _create(service, 's2')
+
+  await service.append_event(s1, _event('a', **{'user:k': 'a'}))
+  await service.append_event(s2, _event('b', **{'user:k': 'b'}))
+  await service.append_event(s1, _event('c', **{'user:k': 'c'}))
+  await asyncio.wait_for(service.flush(), timeout=5)
+
+  assert store.attempts == ['a', 'b', 'c']
+  assert store.batches == [['a'], ['b'], ['c']]
+  assert await store.get_user_state(app_name=_APP, user_id=_USER) == {'k': 'c'}
+
+
+async def test_flush_batch_takes_writes_whose_other_session_dependency_is_done():
+  """A later shared state change joins the call once its dependency is done."""
+  store = _BatchStore()
+  service = _batch_service(store)
+  s1 = await _create(service, 's1')
+  s2 = await _create(service, 's2')
+  gate = store.hold('s1')
+  await service.append_event(s1, _event('a'))
+  await store.started['s1'].wait()
+
+  await service.append_event(s2, _event('b', **{'user:k': 'b'}))
+  await _flush(service, 's2')
+  await service.append_event(s1, _event('c'))
+  await service.append_event(s1, _event('d', **{'user:k': 'd'}))
+  gate.set()
+  await service.flush()
+
+  assert store.batches == [['b'], ['a'], ['c', 'd']]
+
+
+async def test_flush_failed_batch_fails_every_event_of_it():
+  """A failed call fails all its events, and the session reports it once."""
+  store = _BatchStore()
+  service = _batch_service(
+      store,
+      retry_config=RetryConfig(max_attempts=1, initial_delay=0.0),
+      max_write_delay=datetime.timedelta(hours=1),
+  )
+  session = await _create(service)
+  await service.append_event(session, _event('e1'))
+  await _flush(service)
+  store.failures = [RuntimeError('unavailable')]
+
+  await service.append_event(session, _event('e2'))
+  await service.append_event(session, _event('e3'))
+  with pytest.raises(SessionPersistenceError):
+    await _flush(service)
+  await _flush(service)
+
+  assert store.attempts == ['e1', 'e2', 'e3']
+  assert store.stored_ids() == ['e1']
+
+
+async def test_flush_store_keeping_the_base_append_events_is_not_batched():
+  """A store that does not override `append_events` gets one call per event."""
+  store = _Store()
+  service = _service(store)
+  session = await _create(service)
+  gate = store.hold()
+  await service.append_event(session, _event('e1'))
+  await store.started['s1'].wait()
+
+  await service.append_event(session, _event('e2'))
+  await service.append_event(session, _event('e3'))
+  gate.set()
+  await _flush(service)
+
+  assert store.attempts == ['e1', 'e2', 'e3']
+  assert store.stored_ids() == ['e1', 'e2', 'e3']
+  assert not service._batch_writes  # pylint: disable=protected-access
+
+
+async def test_mock_store_without_append_events_defined_is_not_batched():
+  """A mock store is not sent batches, since its class defines none."""
+  store = mock.AsyncMock()
+  service = BufferedSessionService(store)
+  session = Session(id='s1', app_name=_APP, user_id=_USER)
+  gate = asyncio.Event()
+
+  async def held_append(session: Session, event: Event) -> Event:
+    await gate.wait()
+    return event
+
+  store.append_event.side_effect = held_append
+  await service.append_event(session, _event('e1'))
+  await asyncio.sleep(0)
+  await service.append_event(session, _event('e2'))
+  await service.append_event(session, _event('e3'))
+  gate.set()
+  await _flush(service)
+
+  assert store.append_event.await_count == 3
+  store.append_events.assert_not_called()
+
+
+async def test_flush_one_session_sends_the_earlier_change_it_follows():
+  """Flushing a session also sends the other session's write it waits for."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  s1 = await _create(service, 's1')
+  s2 = await _create(service, 's2')
+  await service.append_event(s1, _event('a', **{'user:k': 'a'}))
+  await service.append_event(s2, _event('b', **{'user:k': 'b'}))
+
+  await asyncio.wait_for(_flush(service, 's2'), timeout=5)
+
+  assert store.attempts == ['a', 'b']
+
+
+async def test_flush_writer_stopping_after_a_write_held_by_write_delay():
+  """A writer that stops while one of its writes waits for another session's
+  write, held back by a write delay, gets that write sent and ends."""
+
+  canceled = asyncio.Event()
+
+  class _CancelsS2(_BatchStore):
+
+    async def append_events(
+        self, session: Session, events: list[Event]
+    ) -> list[Event]:
+      if session.id == 's2':
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        canceled.set()
+        await asyncio.sleep(0)
+      return await super().append_events(session, events)
+
+  store = _CancelsS2()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  s1 = await _create(service, 's1')
+  s2 = await _create(service, 's2')
+  gate = store.hold('s1')
+  await service.append_event(s1, _event('a'))
+  sending = asyncio.create_task(_flush(service, 's1'))
+  await store.started['s1'].wait()
+  await service.append_event(s1, _event('b', **{'user:k': 's1'}))
+  await service.append_event(s2, _event('c'))
+  await service.append_event(s2, _event('d', **{'user:k': 's2'}))
+
+  stopping = asyncio.create_task(_flush(service, 's2'))
+  await canceled.wait()
+  # Lets s2's writer reach the write it waits for while s1 still sends.
+  for _ in range(5):
+    await asyncio.sleep(0)
+  gate.set()
+  await sending
+  with pytest.raises(SessionPersistenceError):
+    await asyncio.wait_for(stopping, timeout=5)
+
+  assert store.stored_ids('s1') == ['a', 'b']
+
+
+async def test_flush_batch_never_mixes_two_session_objects_out_of_step():
+  """Writes of a session object behind another go out in their own call."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  await _create(service)
+  first = await service.get_session(
+      app_name=_APP, user_id=_USER, session_id='s1'
+  )
+  behind = await service.get_session(
+      app_name=_APP, user_id=_USER, session_id='s1'
+  )
+
+  await service.append_event(first, _event('e1'))
+  await service.append_event(behind, _event('e2'))
+  await _flush(service)
+
+  assert store.batches == [['e1'], ['e2']]
+
+
+async def test_flush_queued_writes_of_a_stopped_service_are_reported():
+  """Writes waiting for a flush are reported once the service stops."""
+
+  class _Fatal(BaseException):
+    pass
+
+  class _FatalOnS0(_BatchStore):
+
+    async def append_events(
+        self, session: Session, events: list[Event]
+    ) -> list[Event]:
+      if session.id == 's0':
+        raise _Fatal()
+      return await super().append_events(session, events)
+
+  store = _FatalOnS0()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  s0 = await _create(service, 's0')
+  s1 = await _create(service, 's1')
+  await service.append_event(s1, _event('e1'))
+  await service.append_event(s0, _event('e0'))
+  with pytest.raises(SessionPersistenceError):
+    await _flush(service, 's0')
+
+  with pytest.raises(SessionPersistenceError):
+    await asyncio.wait_for(_flush(service, 's1'), timeout=5)
+
+  assert 'e1' not in store.attempts
+
+
+async def test_flush_before_the_write_delay_ends_sends_at_once():
+  """A flush sends writes held by a write delay without waiting it out."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  session = await _create(service)
+  await service.append_event(session, _event('e1'))
+  await service.append_event(session, _event('e2'))
+  for _ in range(5):
+    await asyncio.sleep(0)
+  sent_before_flush = list(store.attempts)
+
+  await asyncio.wait_for(_flush(service), timeout=5)
+
+  assert sent_before_flush == []
+  assert store.batches == [['e1', 'e2']]
+
+
+async def test_base_append_events_appends_each_event_in_order():
+  """The base `append_events` appends the events one at a time."""
+  store = InMemorySessionService()
+  session = await store.create_session(
+      app_name=_APP, user_id=_USER, session_id='s1'
+  )
+
+  await store.append_events(session, [_event('e1', k=1), _event('e2', k=2)])
+
+  stored = await store.get_session(
+      app_name=_APP, user_id=_USER, session_id='s1'
+  )
+  assert [e.id for e in stored.events] == ['e1', 'e2']
+  assert stored.state['k'] == 2
+
+
+async def test_flush_batch_stops_at_max_batch_events():
+  """A coalesced write sends at most `max_batch_events` events."""
+  store = _BatchStore()
+  service = _batch_service(store, max_batch_events=2)
+  session = await _create(service)
+  gate = store.hold()
+  await service.append_event(session, _event('e1'))
+  await store.started['s1'].wait()
+
+  for event_id in ('e2', 'e3', 'e4', 'e5', 'e6'):
+    await service.append_event(session, _event(event_id))
+  gate.set()
+  await _flush(service)
+
+  assert store.batches == [['e1'], ['e2', 'e3'], ['e4', 'e5'], ['e6']]
+  assert store.stored_ids() == ['e1', 'e2', 'e3', 'e4', 'e5', 'e6']
+
+
+class _MergingBatchStore(_MergingStore):
+  """Merges on a conflict, as `_MergingStore` does, and takes batches."""
+
+  async def append_events(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    for event in events:
+      await self.append_event(session, event)
+    return events
+
+
+async def test_flush_store_merged_into_a_batch_updates_the_session():
+  """Events a store merges in go before the batch's events."""
+  store = _MergingBatchStore()
+  service = BufferedSessionService(store)
+  session = await _create(service)
+  other = await store.get_session(app_name=_APP, user_id=_USER, session_id='s1')
+  theirs = _event('theirs', extra='x')
+  theirs.timestamp = session.last_update_time + 1
+  await store.append_event(other, theirs)
+  first = _event('first')
+  first.timestamp = session.last_update_time + 2
+  second = _event('second')
+  second.timestamp = session.last_update_time + 3
+
+  await service.append_event(session, first)
+  await service.append_event(session, second)
+  await _flush(service)
+
+  assert [e.id for e in session.events] == ['theirs', 'first', 'second']
+  assert session.state['extra'] == 'x'
+  stored = await store.get_session(
+      app_name=_APP, user_id=_USER, session_id='s1'
+  )
+  assert [e.id for e in stored.events] == ['theirs', 'first', 'second']
+
+
+async def test_flush_single_queued_event_goes_through_append_events():
+  """A store that takes batches gets even a single event as a batch."""
+  store = _BatchStore()
+  service = _batch_service(store)
+  session = await _create(service)
+
+  await service.append_event(session, _event('e1'))
+  await _flush(service)
+
+  assert store.single_appends == 0
+  assert store.batches == [['e1']]
+
+
+async def test_mock_store_with_a_batch_store_spec_is_batched():
+  """A mock specced as a store that takes batches gets batches."""
+  store = mock.AsyncMock(spec=_BatchStore)
+  service = BufferedSessionService(
+      store,
+      config=BufferedSessionServiceConfig(
+          max_write_delay=datetime.timedelta(hours=1)
+      ),
+  )
+  session = Session(id='s1', app_name=_APP, user_id=_USER)
+
+  await service.append_event(session, _event('e1'))
+  await service.append_event(session, _event('e2'))
+  await _flush(service)
+
+  store.append_events.assert_awaited_once()
+  assert [e.id for e in store.append_events.await_args.args[1]] == ['e1', 'e2']
+
+
+async def test_flush_failed_batch_is_retried_whole():
+  """A batch that fails once is sent again whole and stored once."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  session = await _create(service)
+  await service.append_event(session, _event('e1'))
+  await service.append_event(session, _event('e2'))
+  store.failures = [RuntimeError('unavailable')]
+
+  await _flush(service)
+
+  assert store.attempts == ['e1', 'e2', 'e1', 'e2']
+  assert store.stored_ids() == ['e1', 'e2']
+
+
+async def test_append_event_session_of_a_failed_batch_is_rejected():
+  """A session object whose batch failed rejects later appends."""
+  store = _BatchStore()
+  service = _batch_service(
+      store,
+      retry_config=RetryConfig(max_attempts=1, initial_delay=0.0),
+      max_write_delay=datetime.timedelta(hours=1),
+  )
+  session = await _create(service)
+  await service.append_event(session, _event('e1'))
+  await service.append_event(session, _event('e2'))
+  store.failures = [RuntimeError('unavailable')]
+  with pytest.raises(SessionPersistenceError):
+    await _flush(service)
+
+  with pytest.raises(SessionPersistenceError, match='Read the session again'):
+    await service.append_event(session, _event('e3'))
+
+
+async def test_flush_batch_gives_its_version_only_to_the_session_holding_it():
+  """After a batch, only the session object with all its events gets the
+  stored version, so an older copy stays stale."""
+
+  class _RevisionBatchStore(_BatchStore):
+    """Rejects a write whose revision marker is not the stored one."""
+
+    revision = 0
+
+    async def append_events(
+        self, session: Session, events: list[Event]
+    ) -> list[Event]:
+      if session._storage_update_marker != str(self.revision):
+        raise StaleSessionError('stale')
+      await super().append_events(session, events)
+      self.revision += 1
+      session._storage_update_marker = str(self.revision)
+      return events
+
+  store = _RevisionBatchStore()
+  service = _batch_service(
+      store,
+      retry_config=RetryConfig(max_attempts=1, initial_delay=0.0),
+      max_write_delay=datetime.timedelta(hours=1),
+  )
+  first = await _create(service)
+  first._storage_update_marker = '0'
+  await service.append_event(first, _event('e1'))
+  second = first.model_copy(deep=True)
+  await service.append_event(second, _event('e2'))
+  await _flush(service)
+
+  await service.append_event(first, _event('e3'))
+  with pytest.raises(SessionPersistenceError) as raised:
+    await _flush(service)
+
+  assert isinstance(raised.value.__cause__, StaleSessionError)
+
+  # The newer copy `second` still batches and persists subsequent writes.
+  await service.append_event(second, _event('e4'))
+  await service.append_event(second, _event('e5'))
+  await _flush(service)
+  assert store.stored_ids() == ['e1', 'e2', 'e4', 'e5']
+
+
+@pytest.mark.parametrize(
+    ('delay', 'never_sent'),
+    [
+        (datetime.timedelta(hours=1), True),
+        (datetime.timedelta(milliseconds=10), False),
+    ],
+    ids=['long_delay', 'short_delay'],
+)
+def test_loop_ending_with_writes_behind_an_unstarted_writer_does_not_hang(
+    delay: datetime.timedelta, never_sent: bool
+):
+  """A loop that ends while a canceled write follows a write that never
+  started still ends, without starting that write."""
+  store = _BatchStore()
+  service = _batch_service(store, max_write_delay=delay)
+
+  async def leave_writes_behind() -> None:
+    s1 = await _create(service, 's1')
+    s2 = await _create(service, 's2')
+    store.hold('s2')
+    await service.append_event(s1, _event('a', **{'user:k': 'a'}))
+    await service.append_event(s2, _event('b1'))
+    service_flush = asyncio.ensure_future(_flush(service, 's2'))
+    await store.started['s2'].wait()
+    await service.append_event(s2, _event('b2', **{'user:k': 'b'}))
+    del service_flush
+
+  finished = threading.Event()
+
+  def run() -> None:
+    asyncio.run(leave_writes_behind())
+    finished.set()
+
+  thread = create_thread(run)
+  thread.daemon = True
+  thread.start()
+  thread.join(timeout=10)
+
+  assert finished.is_set()
+  if never_sent:
+    assert 'a' not in store.attempts
+
+
+async def test_flush_stopped_service_drops_writes_held_by_a_write_delay():
+  """Stopping the service drops writes still waiting out a write delay."""
+
+  class _Fatal(BaseException):
+    pass
+
+  class _FatalOnS0(_BatchStore):
+
+    async def append_events(
+        self, session: Session, events: list[Event]
+    ) -> list[Event]:
+      if session.id == 's0':
+        raise _Fatal()
+      return await super().append_events(session, events)
+
+  store = _FatalOnS0()
+  service = _batch_service(store, max_write_delay=datetime.timedelta(hours=1))
+  s0 = await _create(service, 's0')
+  s1 = await _create(service, 's1')
+  await service.append_event(s1, _event('e1'))
+  await service.append_event(s0, _event('e0'))
+  with pytest.raises(SessionPersistenceError):
+    await _flush(service, 's0')
+
+  with pytest.raises(SessionPersistenceError):
+    await asyncio.wait_for(_flush(service, 's1'), timeout=5)
+
+  assert 'e1' not in store.attempts
+
+
+async def test_write_delay_does_not_hold_back_a_store_without_batches():
+  """A store that takes one event per call gets each event at once, whatever
+  the write delay, since a delay would save no call."""
+  store = _Store()
+  service = BufferedSessionService(
+      store,
+      config=BufferedSessionServiceConfig(
+          max_write_delay=datetime.timedelta(hours=1)
+      ),
+  )
+  session = await _create(service)
+
+  await service.append_event(session, _event('e1'))
+  await asyncio.wait_for(store.started['s1'].wait(), timeout=5)
+
+  assert store.attempts == ['e1']
+  await _flush(service)
+
+
+def test_config_negative_write_delay_raises():
+  """A negative `max_write_delay` is rejected."""
+  with pytest.raises(ValueError, match='max_write_delay'):
+    BufferedSessionServiceConfig(max_write_delay=datetime.timedelta(seconds=-1))
 
 
 # --- Configuration ---

@@ -83,10 +83,12 @@ def _sees(key: SessionKey, scope: _Scope) -> bool:
   )
 
 
-PersistFn = Callable[[Session, Event], Awaitable[BaseException | None]]
-"""Writes one event through a store session.
+PersistFn = Callable[
+    [Session, Sequence[Event]], Awaitable[BaseException | None]
+]
+"""Writes events, in order and all or none, through a store session.
 
-Returns the error that stopped the write once retries ran out, or None.
+Returns the error that stopped them once retries ran out, or None.
 """
 
 
@@ -167,11 +169,15 @@ class _SessionWriter:
     self.key = key
     self._buffer = buffer
     self._queue: collections.deque[_Write] = collections.deque()
-    # The write being sent or dropped, which has left the queue.
-    self._current: _Write | None = None
+    # The writes being sent or dropped, which have left the queue.
+    self._current: list[_Write] = []
     self.last_write: _Write | None = None
     self._task: asyncio.Task[None] | None = None
     self._task_started = False
+    # Starts the task once `max_write_delay` has passed.
+    self._timer: asyncio.TimerHandle | None = None
+    # Set once stopped; the writer then drops its writes.
+    self._stopping = False
     # Once a non-stale write fails, every later write of this writer fails too.
     self._failure: BaseException | None = None
     # Chains that failed with StaleSessionError, by id(store_session).
@@ -233,25 +239,80 @@ class _SessionWriter:
     chain_failure = self.chain_failure(store_session)
     if chain_failure is not None and write.live_session is not None:
       self._buffer.mark_failed_live_session(write.live_session, chain_failure)
-    if self._task is None or self._task.done():
-      if self._task is not None and not self._task_started:
-        # The last task was canceled before it ran, and the writes it left
-        # still wait. They fail, and so does this one, in order.
-        self._fail(asyncio.CancelledError())
-      self._start_task()
+    if self._task is not None and self._task.done() and not self._task_started:
+      # The last task was canceled before it ran, and the writes it left
+      # still wait. They fail, and so does this one, in order.
+      self._fail(asyncio.CancelledError())
+    self._schedule()
     return write
+
+  def flush_now(self) -> None:
+    """Starts sending queued writes now, bypassing `max_write_delay`."""
+    self._start()
+
+  def stop(self, error: BaseException) -> None:
+    """Stops the writer: cancels its task, or else drops its queued writes."""
+    self._stopping = True
+    if self._task is not None and not self._task.done():
+      if self._task is not asyncio.current_task():
+        self._task.cancel()
+    elif self._queue:
+      # Nothing sends the queued writes yet, so a task drops them.
+      self._fail(error)
+      self._start()
+    else:
+      self._cancel_timer()
 
   @property
   def failed(self) -> bool:
     """Whether a write failed, so the writer only drops writes now."""
     return self._failure is not None
 
+  @property
+  def is_sending(self) -> bool:
+    """Whether a task of the writer is running."""
+    return self._task is not None and not self._task.done()
+
   def pending_writes(self) -> list[_Write]:
     """Returns the writes not completed yet, in order."""
-    current = [self._current] if self._current is not None else []
-    return current + list(self._queue)
+    return self._current + list(self._queue)
+
+  def _schedule(self) -> None:
+    if self._task is not None and not self._task.done():
+      # The running task takes the new write with its next batch.
+      return
+    delay = self._buffer.max_write_delay
+    has_failed_write = bool(
+        self._queue and self.chain_failure(self._queue[-1].store_session)
+    )
+    if self._failure is not None or has_failed_write or delay <= 0:
+      # A failed writer or chain drops its writes without delay.
+      self._start()
+    elif self._timer is None:
+      self._timer = asyncio.get_running_loop().call_later(delay, self._start)
+
+  def _start(self) -> None:
+    self._cancel_timer()
+    if self._task is not None and not self._task.done():
+      return
+    if self._queue:
+      self._start_task()
+
+  def _cancel_timer(self) -> None:
+    if self._timer is not None:
+      self._timer.cancel()
+      self._timer = None
+
+  def forget_timer(self) -> None:
+    """Drops the timer of a writer whose loop closed, without touching it."""
+    self._timer = None
 
   def _start_task(self) -> None:
+    if self._task is not None and self._task.done() and not self._task_started:
+      # The last task was canceled before it ran, so the writes it left fail,
+      # whichever path starts the next task.
+      self._stopping = True
+      self._fail(asyncio.CancelledError())
     self._task_started = False
     self._task = asyncio.get_running_loop().create_task(self._send_queued())
     self._task.add_done_callback(self._on_task_done)
@@ -289,25 +350,26 @@ class _SessionWriter:
   async def _send_queued(self) -> None:
     self._task_started = True
     try:
+      if self._stopping:
+        await self._drop_pending_ignoring_cancellation()
+        return
       while self._queue and not self.abandoned:
-        write = self._current = self._queue.popleft()
-        # Even a write that will be dropped waits, so that it completes, and
-        # releases the shared scopes it changes, only after the writes of
-        # other sessions it follows. Otherwise a later change to those scopes
-        # could overtake them.
-        await self._wait_for_earlier_shared_state_writes(write)
-        write_failure = self.chain_failure(write.store_session)
-        if write_failure is None:
-          write_failure = await self._persist(write)
-          if write_failure is not None:
-            if isinstance(write_failure, StaleSessionError):
-              self._fail_chain(write.store_session, write_failure)
+        batch = self._current = self._next_batch()
+        # Waits even for writes that will be dropped, to keep scope order.
+        await self._wait_for_earlier_shared_state_writes(batch)
+        batch_failure = self.chain_failure(batch[0].store_session)
+        if batch_failure is None:
+          batch_failure = await self._persist(batch)
+          if batch_failure is not None:
+            if isinstance(batch_failure, StaleSessionError):
+              self._fail_chain(batch[0].store_session, batch_failure)
             else:
-              self._fail(write_failure)
+              self._fail(batch_failure)
         if self.abandoned:
           return
-        self._current = None
-        self._complete(write, write_failure)
+        self._current = []
+        for write in batch:
+          self._complete(write, batch_failure)
     except GeneratorExit:
       # The loop closed with this task pending and is being collected. The
       # buffer failed these writes when it moved to the next loop.
@@ -317,6 +379,7 @@ class _SessionWriter:
       # bug outside the store call. Only the second stops every writer.
       if self.abandoned:
         raise
+      self._stopping = True
       self._fail(e)
       if not isinstance(e, (Exception, asyncio.CancelledError)):
         self._buffer.stop_on(e)
@@ -326,17 +389,40 @@ class _SessionWriter:
       # Not raised further: nothing awaits this task, and every caller that
       # waits for one of its writes gets the failure instead.
 
-  async def _persist(self, write: _Write) -> BaseException | None:
-    """Sends the write and returns its failure, or None."""
-    store_session = write.store_session
+  def _next_batch(self) -> list[_Write]:
+    """Takes the writes for the next call.
+
+    A batch holds up to `max_batch_events` writes of one chain and stops before
+    a write that waits for another session, so writers never wait for each
+    other.
+    """
+    batch = [self._queue.popleft()]
+    in_batch = set(batch)
+    while self._queue and len(batch) < self._buffer.max_batch_events:
+      write = self._queue[0]
+      if write.store_session is not batch[0].store_session or not all(
+          earlier.done or earlier in in_batch for earlier in write.after
+      ):
+        break
+      self._queue.popleft()
+      batch.append(write)
+      in_batch.add(write)
+    return batch
+
+  async def _persist(self, batch: Sequence[_Write]) -> BaseException | None:
+    """Sends the batch, which the store keeps whole or not at all."""
+    store_session = batch[0].store_session
     if store_session is None:
       # Only a write abandoned with a closed loop has none.
       return RuntimeError('The write was abandoned.')
-    failure = await self._buffer.persist(store_session, write.event)
+    failure = await self._buffer.persist(
+        store_session, [w.event for w in batch]
+    )
     # The store adds each event it persists to the store session, after any
     # events of other writers that it merged in on a conflict. The live
     # session holds its own events already, so the store session keeps none.
-    merged = [e for e in store_session.events if e.id != write.event.id]
+    batch_ids = {w.event.id for w in batch}
+    merged = [e for e in store_session.events if e.id not in batch_ids]
     store_session.events.clear()
     if failure is not None:
       logger.warning(
@@ -345,27 +431,28 @@ class _SessionWriter:
       )
     else:
       if merged:
-        self._merge_into_live_session(write, store_session, merged)
-      self._sync_live_session(write, store_session)
+        self._merge_into_live_session(batch, store_session, merged)
+      self._sync_live_session(batch[-1], store_session)
     return failure
 
   def _merge_into_live_session(
-      self, write: _Write, store_session: Session, merged: list[Event]
+      self, batch: Sequence[_Write], store_session: Session, merged: list[Event]
   ) -> None:
     """Copies what a store merged in on a conflict to the caller's session.
 
-    The merged events go before the write's event, as the store put them. The
+    The merged events go before the batch's events, as the store put them. The
     merged state replaces the caller's, except for `temp:` state and keys that
-    the caller's queued writes still change.
+    the caller's queued writes still change. Only the last write's session
+    holds every event of the batch, so only it gets them.
     """
-    live = write.live_session
+    live = batch[-1].live_session
     if live is None:
       return
     version_before = _version_of(live)
     known = {e.id for e in live.events}
     new_events = [e for e in merged if e.id not in known]
     at = next(
-        (i for i, e in enumerate(live.events) if e.id == write.event.id),
+        (i for i, e in enumerate(live.events) if e.id == batch[0].event.id),
         len(live.events),
     )
     live.events[at:at] = new_events
@@ -382,9 +469,9 @@ class _SessionWriter:
       del self._chains[version_before]
       self._chains[_version_of(live)] = store_session
 
-  def _sync_live_session(self, write: _Write, store_session: Session) -> None:
-    """Copies the stored version to the caller's session."""
-    live = write.live_session
+  def _sync_live_session(self, last: _Write, store_session: Session) -> None:
+    """Copies the stored version to the session of the batch's last write."""
+    live = last.live_session
     if live is None or any(w.live_session is live for w in self._queue):
       return
     version_before = _version_of(live)
@@ -393,26 +480,47 @@ class _SessionWriter:
       del self._chains[version_before]
       self._chains[_version_of(live)] = store_session
 
-  async def _wait_for_earlier_shared_state_writes(self, write: _Write) -> None:
-    # A failed write of another session does not drop this one: the shared
-    # state change is this session's own, so it is still sent.
-    for earlier in write.after:
-      await earlier.join()
+  async def _wait_for_earlier_shared_state_writes(
+      self, batch: Sequence[_Write]
+  ) -> None:
+    # A failed write of another session does not drop these: the shared state
+    # changes are this session's own, so they are still sent.
+    in_batch = set(batch)
+    earlier_writes: list[_Write] = []
+    for write in batch:
+      for earlier_write in write.after:
+        if earlier_write not in in_batch and not earlier_write.done:
+          earlier_writes.append(earlier_write)
+    for earlier_write in earlier_writes:
+      # Its writer may still be waiting out `max_write_delay`.
+      earlier_write.writer.flush_now()
+    for earlier_write in earlier_writes:
+      await earlier_write.join()
 
   async def _drop_pending_ignoring_cancellation(self) -> None:
-    """Fails the pending writes in order, after the writes they wait for."""
+    """Fails the pending writes in order, after the writes they wait for.
+
+    Writers they wait for that have not started are stopped rather than
+    started, so a stopping service makes no new store call.
+    """
+    self._cancel_timer()
     while not self.abandoned and (self._current or self._queue):
-      write = self._current or self._queue.popleft()
-      self._current = write
+      if not self._current:
+        self._current = [self._queue.popleft()]
+      write = self._current[0]
       for earlier in write.after:
         while not earlier.done:
+          if earlier.writer.is_sending:
+            earlier.writer.flush_now()
+          else:
+            earlier.writer.stop(self._failure or asyncio.CancelledError())
           try:
             await earlier.join()
           except asyncio.CancelledError:
             pass
       if self.abandoned:
         return
-      self._current = None
+      self._current.pop(0)
       self._complete(write, self._failure)
 
   def _on_task_done(self, task: asyncio.Task[None]) -> None:
@@ -422,6 +530,7 @@ class _SessionWriter:
     if self.pending_writes():
       # Canceled before its first step, so its body never ran. A new task
       # drops the writes it left, in order.
+      self._stopping = True
       self._fail(asyncio.CancelledError())
       self._start_task()
 
@@ -485,9 +594,13 @@ class SessionWriteBuffer:
       self,
       persist: PersistFn,
       *,
+      max_write_delay: float = 0.0,
+      max_batch_events: int = 1,
       max_unreported_failures: int = MAX_UNREPORTED_FAILURES,
   ) -> None:
     self.persist = persist
+    self.max_write_delay = max_write_delay
+    self.max_batch_events = max_batch_events
     self._max_unreported_failures = max_unreported_failures
     self._loop: asyncio.AbstractEventLoop | None = None
     self._is_closed = False
@@ -543,6 +656,7 @@ class SessionWriteBuffer:
     self._last_write_by_scope.clear()
     for writer in abandoned.values():
       writer.abandoned = True
+      writer.forget_timer()
       for write in writer.pending_writes():
         if write.live_session is not None:
           self.mark_failed_live_session(write.live_session, failure)
@@ -641,7 +755,7 @@ class SessionWriteBuffer:
     waited = writer.last_write if writer else None
     waited_failure = None
     if waited is not None:
-      await waited.join()
+      await self._await([waited])
       waited_failure = waited.failure
     await before_report()
     self._report_failure(key, waited_failure)
@@ -692,9 +806,11 @@ class SessionWriteBuffer:
       return
     self._stopped_by = error
     current = asyncio.current_task()
-    for task in list(self._tasks):
-      if task is not current:
+    for task, writer in list(self._tasks.items()):
+      if task is not current and self._writers.get(writer.key) is not writer:
         task.cancel()
+    for writer in list(self._writers.values()):
+      writer.stop(error)
 
   def track_task(
       self, task: asyncio.Task[None], writer: _SessionWriter
@@ -724,9 +840,11 @@ class SessionWriteBuffer:
       raise canceled
 
   async def _await(self, writes: Sequence[_Write | None]) -> None:
-    for w in writes:
-      if w is not None and not w.done:
-        await w.join()
+    pending = [w for w in writes if w is not None and not w.done]
+    for w in pending:
+      w.writer.flush_now()
+    for w in pending:
+      await w.join()
 
   def before_complete(
       self,
