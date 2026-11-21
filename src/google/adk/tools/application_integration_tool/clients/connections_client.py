@@ -944,7 +944,7 @@ class ConnectionsClient:
       raise ValueError(f"Request error: {e}") from e
 
     except Exception as e:
-      raise Exception(f"An unexpected error occurred: {e}") from e
+      raise ValueError(f"An unexpected error occurred: {e}") from e
 
   @staticmethod
   def _response_json(response: requests.Response) -> dict[str, Any]:
