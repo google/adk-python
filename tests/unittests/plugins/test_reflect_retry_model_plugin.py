@@ -273,10 +273,10 @@ class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
         response3.content.parts[0].function_call.args["retry_count"], 3
     )
 
-  async def test_after_model_callback_returns_response_when_retry_limit_reached(
+  async def test_after_model_callback_leaves_response_unchanged_when_retry_limit_reached(
       self,
   ):
-    """Checks that after_model_callback returns the failed response when retry limit is reached and throw_exception_if_retry_exceeded is False."""
+    """Checks that after_model_callback leaves the failed response unchanged when retry limit is reached and throw_exception_if_retry_exceeded is False."""
     mock_agent = Mock(spec=LlmAgent)
     mock_agent.canonical_model = Mock()
     mock_agent.canonical_model.model = "TEST_MODEL_NAME"
@@ -310,9 +310,7 @@ class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
         callback_context=mock_callback_context,
         llm_response=llm_response,
     )
-    self.assertEqual(response2.error_code, llm_response.error_code)
-    self.assertEqual(response2.error_message, llm_response.error_message)
-    self.assertEqual(response2.finish_reason, llm_response.finish_reason)
+    self.assertIsNone(response2)
 
   async def test_after_model_callback_throws_when_retry_limit_reached(self):
     """Checks that after_model_callback raises an Exception when retry limit is reached and throw_exception_if_retry_exceeded is True."""
@@ -944,3 +942,34 @@ class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
     )
     await runner_aborted.run_async("go")
     self.assertEqual(plugin_aborted._tracker._scoped_failure_counters, {})
+
+
+def test_agent_after_model_callback_runs_when_retry_limit_is_exceeded():
+  """The plugin does not short-circuit the agent's after_model_callback."""
+  seen = []
+
+  def after_model_callback(callback_context, llm_response):
+    seen.append(llm_response.error_message)
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+              error_message="TEST_ERROR_MESSAGE",
+              finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+          )
+      ]
+  )
+  agent = LlmAgent(
+      name="root_agent",
+      model=mock_model,
+      after_model_callback=after_model_callback,
+  )
+  plugin = ReflectAndRetryModelPlugin(
+      max_retries=0, throw_exception_if_retry_exceeded=False
+  )
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+
+  runner.run("hi")
+
+  assert seen == ["TEST_ERROR_MESSAGE"]
