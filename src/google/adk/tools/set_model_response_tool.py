@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
+import logging
 import types as typing_types
 from typing import Any
 from typing import cast
@@ -35,10 +37,14 @@ from typing_extensions import override
 
 from ..utils._schema_utils import get_list_inner_type
 from ..utils._schema_utils import is_basemodel_schema
+from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import SchemaType
 from ._automatic_function_calling_util import build_function_declaration
+from ._gemini_schema_util import _to_gemini_schema
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _merge_json_schema_descriptions(
@@ -113,6 +119,68 @@ def _apply_nested_descriptions(prop: types.Schema, annotation: Any) -> None:
         _apply_nested_descriptions(prop, arg)
 
 
+def _point_refs_at_json_schema_defs(json_schema: dict[str, Any]) -> None:
+  """Rewrites ``#/defs/...`` refs as ``#/$defs/...``, in place.
+
+  A types.Schema keeps its definitions in ``defs``, which JSON Schema calls
+  ``$defs``. Only ``properties``, ``items`` and ``anyOf`` are followed,
+  because those are the subschemas that ``Schema.json_schema`` converts.
+  """
+  ref = json_schema.get('$ref')
+  if isinstance(ref, str) and ref.startswith('#/defs/'):
+    json_schema['$ref'] = '#/$defs/' + ref.removeprefix('#/defs/')
+  subschemas = [
+      *json_schema.get('properties', {}).values(),
+      *json_schema.get('anyOf', []),
+  ]
+  if 'items' in json_schema:
+    subschemas.append(json_schema['items'])
+  for subschema in subschemas:
+    _point_refs_at_json_schema_defs(subschema)
+
+
+def _gemini_schema_to_json_schema(schema: types.Schema) -> dict[str, Any]:
+  """Returns the JSON Schema form of a types.Schema.
+
+  ``Schema.json_schema`` converts ``properties``, ``items`` and ``any_of``
+  but copies ``defs`` and ``additional_properties`` unconverted, so each
+  definition is converted here, type names are lowercased, and refs into
+  ``defs`` are pointed at ``$defs``.
+  """
+  json_schema = schema.model_copy(update={'defs': None}).json_schema.model_dump(
+      mode='json', exclude_none=True, by_alias=True
+  )
+  lowercase_schema_types(json_schema)
+  _point_refs_at_json_schema_defs(json_schema)
+  if schema.defs:
+    json_schema['$defs'] = {
+        name: _gemini_schema_to_json_schema(definition)
+        for name, definition in schema.defs.items()
+    }
+  return json_schema
+
+
+def _response_json_schema(
+    output_schema: dict[str, Any] | types.Schema,
+) -> dict[str, Any]:
+  """Returns a JSON Schema copy of a dict or types.Schema output schema."""
+  if isinstance(output_schema, types.Schema):
+    return _gemini_schema_to_json_schema(output_schema)
+  json_schema = copy.deepcopy(output_schema)
+  # A dict may spell types in Gemini's uppercase dialect, such as `OBJECT`.
+  lowercase_schema_types(json_schema)
+  return json_schema
+
+
+def _response_gemini_schema(
+    output_schema: dict[str, Any] | types.Schema,
+) -> types.Schema:
+  """Returns a types.Schema copy of a dict or types.Schema output schema."""
+  if isinstance(output_schema, types.Schema):
+    return output_schema.model_copy(deep=True)
+  return _to_gemini_schema(_response_json_schema(output_schema))
+
+
 _SET_MODEL_RESPONSE_TOOL_NAME: Final[str] = 'set_model_response'
 
 
@@ -137,6 +205,13 @@ class SetModelResponseTool(BaseTool):
         - dict: Raw dict schemas
         - Schema: Google's Schema type
     """
+    # A dict or types.Schema cannot be a parameter annotation, so `response`
+    # is annotated as a plain dict below. Keep the schema to declare it.
+    self._response_schema: dict[str, Any] | types.Schema | None = (
+        output_schema
+        if isinstance(output_schema, (dict, types.Schema))
+        else None
+    )
     # Convert types.Schema instance to raw dict to avoid unhashable crash
     if isinstance(output_schema, types.Schema):
       output_schema = output_schema.model_dump(exclude_none=True)
@@ -265,6 +340,55 @@ class SetModelResponseTool(BaseTool):
               items_schema.items.properties, inner_type.model_fields
           )
 
+  def _declare_response_schema(
+      self, function_decl: types.FunctionDeclaration
+  ) -> None:
+    """Declares a dict or types.Schema output schema as ``response``.
+
+    ``response`` is annotated as a plain ``dict``, so
+    ``build_function_declaration`` declares it as an object that takes any
+    properties. Put the output schema in its place, in the form the builder
+    used: JSON Schema, or ``types.Schema`` when JSON_SCHEMA_FOR_FUNC_DECL is
+    off.
+    """
+    if self._response_schema is None:
+      return
+    if function_decl.parameters_json_schema is not None:
+      response_schema = _response_json_schema(self._response_schema)
+      # Nested under `response`, the schema is no longer the document root.
+      # `$ref` pointers such as `#/$defs/X` resolve from the root, so the
+      # definitions move up there. `$schema` may only appear at a root, and a
+      # nested `$id` would make the pointers resolve against the nested schema
+      # instead, so both are dropped.
+      response_schema.pop('$schema', None)
+      response_schema.pop('$id', None)
+      parameters = function_decl.parameters_json_schema
+      for defs_key in ('$defs', 'definitions'):
+        if defs_key in response_schema:
+          parameters[defs_key] = response_schema.pop(defs_key)
+      parameters['properties']['response'] = response_schema
+    elif (
+        function_decl.parameters is not None
+        and function_decl.parameters.properties
+    ):
+      try:
+        gemini_schema = _response_gemini_schema(self._response_schema)
+      except (TypeError, ValueError) as e:
+        # The converter rejects schemas that types.Schema cannot express, such
+        # as draft-07 tuple `items`. Keep `response` as any object then.
+        logger.warning(
+            'Could not convert the output schema to a types.Schema, so'
+            ' set_model_response declares it as any object: %s',
+            e,
+        )
+        return
+      # `defs` is only allowed at the root of a types.Schema, and `ref`
+      # resolves against the root, so the definitions move up there.
+      if gemini_schema.defs:
+        function_decl.parameters.defs = gemini_schema.defs
+        gemini_schema.defs = None
+      function_decl.parameters.properties['response'] = gemini_schema
+
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool."""
@@ -276,6 +400,7 @@ class SetModelResponseTool(BaseTool):
         )
     )
     self._preserve_output_schema_field_descriptions(function_decl)
+    self._declare_response_schema(function_decl)
     return function_decl
 
   @override
