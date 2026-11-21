@@ -249,3 +249,59 @@ async def test_run_live_dedupes_base_node_task_completed_tool(
 
   assert sub_agent.tools == [task_completed]
   assert sub_agent.instruction == 'initial'
+
+
+@pytest.mark.asyncio
+async def test_run_live_does_not_mutate_sub_agent_configuration(
+    request: pytest.FixtureRequest,
+):
+  """The completion tool and instruction stay local to the live run."""
+  seen = {}
+
+  class _LiveLlmSubAgent(LlmAgent):
+
+    @override
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      instruction = self.instruction
+      if callable(instruction):
+        instruction = await instruction(ctx)
+      seen[self.name] = {
+          'tools': [getattr(tool, '__name__', None) for tool in self.tools],
+          'instruction': instruction,
+      }
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='live')]),
+      )
+
+  async def provider(readonly_context) -> str:
+    return 'provided'
+
+  agent_1 = _LiveLlmSubAgent(name='live_agent_1', instruction='initial')
+  agent_2 = _LiveLlmSubAgent(name='live_agent_2', instruction=provider)
+  sequential_agent = SequentialAgent(
+      name='seq_agent',
+      sub_agents=[agent_1, agent_2],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, sequential_agent
+  )
+
+  _ = [e async for e in sequential_agent.run_live(parent_ctx)]
+
+  # The live run itself still offers the completion tool and instruction.
+  assert seen['live_agent_1']['tools'] == ['task_completed']
+  assert 'task_completed' in seen['live_agent_1']['instruction']
+  assert seen['live_agent_2']['tools'] == ['task_completed']
+  assert seen['live_agent_2']['instruction'].startswith('provided')
+  assert 'task_completed' in seen['live_agent_2']['instruction']
+
+  # The agents the caller still holds are unchanged, so a later non-live run
+  # of the same tree does not offer a live-only tool.
+  assert agent_1.tools == []
+  assert agent_1.instruction == 'initial'
+  assert agent_2.tools == []
+  assert agent_2.instruction is provider
