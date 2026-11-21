@@ -899,6 +899,14 @@ class Runner:
     if ic._abort_state.event_synthesized or ic.session is None:  # pylint: disable=protected-access
       return []
     ic._abort_state.event_synthesized = True  # pylint: disable=protected-access
+    # Record the real results of calls that finished before the abort first,
+    # so only the calls that were still running are sealed as aborted.
+    kept_events = ic._abort_state.kept_function_response_events  # pylint: disable=protected-access
+    ic._abort_state.kept_function_response_events = []  # pylint: disable=protected-access
+    recorded = [
+        await self._process_and_append_event(event=e, invocation_context=ic)
+        for e in kept_events
+    ]
     abort_events = _build_abort_events(
         ic.session.events,
         invocation_id=ic.invocation_id,
@@ -906,7 +914,7 @@ class Runner:
         branch=ic.branch,
         keep_open=keep_open,
     )
-    return [
+    return recorded + [
         await self._process_and_append_event(event=e, invocation_context=ic)
         for e in abort_events
     ]

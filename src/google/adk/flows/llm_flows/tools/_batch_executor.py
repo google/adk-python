@@ -281,6 +281,22 @@ async def _execute_prepared_function_calls(
     ) is not None:
       setattr(e, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR, kept_event)
     raise
+  except asyncio.CancelledError:
+    # The invocation was aborted or its task cancelled while calls were still
+    # running. Calls that had already finished may have had side effects, so
+    # keep their real results for abort sealing to record; only the calls
+    # still running are sealed as aborted.
+    if (
+        invocation_context.live_request_queue is None
+        and (
+            kept_event := _merge_completed_responses(invocation_context, tasks)
+        )
+        is not None
+    ):
+      invocation_context._abort_state.kept_function_response_events.append(  # pylint: disable=protected-access
+          kept_event
+      )
+    raise
 
   # Filter out None results
   function_response_events = [
@@ -315,6 +331,14 @@ def _keep_completed_responses(
       or invocation_context.is_aborted
   ):
     return None
+  return _merge_completed_responses(invocation_context, tasks)
+
+
+def _merge_completed_responses(
+    invocation_context: InvocationContext,
+    tasks: list[asyncio.Task[Event | None]],
+) -> Event | None:
+  """Merges the plain results of the calls in `tasks` that finished."""
   finished = [
       t.result()
       for t in tasks
