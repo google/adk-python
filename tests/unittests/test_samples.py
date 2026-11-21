@@ -141,6 +141,7 @@ SKIP_LOAD = {
         "needs the toolbox-adk package and a toolbox server"
     ),
     "multimodal/computer_use": "needs the playwright package",
+    "plugins/spend_budget": "needs the llm-agent-budget package",
     "integrations/gepa": "experiment package, exposes no root_agent",
     "integrations/slack_agent": (
         "builds its agent inside main(), no module-level root_agent"
