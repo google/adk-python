@@ -30,6 +30,7 @@ from google.adk.integrations.google_maps import GoogleMapsConfig
 from google.adk.integrations.google_maps import GoogleMapsToolset
 from google.adk.integrations.google_maps._models import AddressType
 from google.adk.integrations.google_maps._services import _BoundedLRUCache
+from google.adk.integrations.google_maps._services import _RedactApiKeyFilter
 from google.adk.integrations.google_maps._services import calculate_compass_bearing
 from google.adk.integrations.google_maps._services import classify_property_address_async
 from google.adk.integrations.google_maps._services import clear_caches
@@ -504,11 +505,18 @@ class TestServicesAndTools(unittest.IsolatedAsyncioTestCase):
           json={"status": "OK", "results": [{"formatted_address": "1 Main"}]},
       )
 
+    # Other libraries add their own httpx filters (litellm redacts `key=`
+    # too), so keep only ours to check what it writes.
+    httpx_logger = logging.getLogger("httpx")
+    own_filters = [
+        f for f in httpx_logger.filters if isinstance(f, _RedactApiKeyFilter)
+    ]
     with (
         patch(
             f"{_SERVICES}._mtls_utils.client_cert_httpx_kwargs",
             return_value={"transport": httpx.MockTransport(handler)},
         ),
+        patch.object(httpx_logger, "filters", own_filters),
         self.assertLogs("httpx", level=logging.INFO) as logs,
     ):
       addr = await reverse_geocode_coordinates_async(
