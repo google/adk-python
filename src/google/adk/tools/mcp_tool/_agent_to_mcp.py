@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import logging
 from typing import Any
 from typing import MutableMapping
 from typing import Optional
 import weakref
 
+import anyio
 from google.genai import types
 
 from ...agents.base_agent import BaseAgent
@@ -309,7 +312,8 @@ def to_mcp_server(
     name: The MCP server and tool name. Defaults to the agent's name.
     instructions: Optional instructions the MCP host may show to its model.
     runner: A pre-built Runner. If omitted, one is created with in-memory
-      services.
+      services and closed when the server's last active lifecycle ends.
+      A caller-supplied runner remains the caller's responsibility to close.
 
   Returns:
     A ``FastMCP`` server exposing the agent as a single tool.
@@ -321,8 +325,34 @@ def to_mcp_server(
       server.run(transport="stdio")
   """
   tool_name = name or agent.name or "adk_agent"
-  server = FastMCP(name=tool_name, instructions=instructions)
   agent_runner = runner if runner is not None else _build_runner(agent)
+  active_lifespans = 0
+  lifespan_lock = asyncio.Lock()
+
+  @asynccontextmanager
+  async def runner_lifespan(_: FastMCP) -> AsyncIterator[None]:
+    nonlocal active_lifespans
+    async with lifespan_lock:
+      active_lifespans += 1
+    try:
+      yield None
+    finally:
+      # SSE enters the SDK lifespan per connection. Only the final exit may
+      # close their shared runner. Hold the lock through cleanup so a new
+      # connection cannot open tools that the previous cleanup then closes.
+      # The SDK may exit inside a cancelled AnyIO scope; cleanup must still
+      # reach its asynchronous resource releases.
+      with anyio.CancelScope(shield=True):
+        async with lifespan_lock:
+          active_lifespans -= 1
+          if active_lifespans == 0:
+            await agent_runner.close()
+
+  server = FastMCP(
+      name=tool_name,
+      instructions=instructions,
+      lifespan=runner_lifespan if runner is None else None,
+  )
   reap_sessions = isinstance(
       agent_runner.session_service, InMemorySessionService
   )
