@@ -21,6 +21,7 @@ from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
+import tenacity
 from typing_extensions import override
 
 from ...models.base_llm import BaseLlm
@@ -29,6 +30,7 @@ from ...models.llm_response import LlmResponse
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
 from .._retry_options_utils import add_default_retry_options_if_not_present
+from .._retry_options_utils import timeout_retry_kwargs
 from ..eval_case import ConversationScenario
 from ..eval_case import Invocation
 from ..eval_metrics import EvalMetric
@@ -398,8 +400,13 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     )
 
   async def _sample_llm(self, llm_request: LlmRequest) -> AutoRaterScore:
-    async with Aclosing(self._llm.generate_content_async(llm_request)) as agen:
-      async for llm_response in agen:
-        # Non-streaming call, so there is only one response content.
-        return self._convert_llm_response_to_score(llm_response)
+    retry_kwargs = timeout_retry_kwargs(llm_request, self._llm)
+    async for attempt in tenacity.AsyncRetrying(**retry_kwargs):
+      with attempt:
+        async with Aclosing(
+            self._llm.generate_content_async(llm_request)
+        ) as agen:
+          async for llm_response in agen:
+            # Non-streaming call, so there is only one response content.
+            return self._convert_llm_response_to_score(llm_response)
     return AutoRaterScore()
