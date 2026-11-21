@@ -193,6 +193,49 @@ async def test_output_schema_request_processor(output_schema_and_tools):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'output_schema',
+    [
+        {'type': 'array', 'items': {'type': 'string'}},
+        types.Schema(
+            type=types.Type.ARRAY, items=types.Schema(type=types.Type.STRING)
+        ),
+    ],
+    ids=['raw_dict', 'schema_instance'],
+)
+async def test_output_schema_request_processor_declares_non_model_schema(
+    output_schema,
+):
+  """The request tells the model a dict or types.Schema output_schema."""
+  from google.adk.flows.llm_flows.prompt._schema import _OutputSchemaRequestProcessor
+
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=output_schema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  async for _ in _OutputSchemaRequestProcessor().run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  declaration = next(
+      declaration
+      for tool in llm_request.config.tools
+      for declaration in tool.function_declarations
+      if declaration.name == 'set_model_response'
+  )
+  assert declaration.parameters_json_schema['properties']['response'] == {
+      'type': 'array',
+      'items': {'type': 'string'},
+  }
+
+
+@pytest.mark.asyncio
 async def test_set_model_response_tool():
   """Test the set_model_response tool functionality."""
   from google.adk.tools.set_model_response_tool import SetModelResponseTool

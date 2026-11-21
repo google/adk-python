@@ -14,6 +14,7 @@
 
 """Tests for SetModelResponseTool."""
 
+import copy
 import inspect
 from typing import Optional
 
@@ -26,6 +27,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+import jsonschema
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -767,6 +769,385 @@ def test_tool_initialization_schema_instance():
   declaration = tool._get_declaration()
   assert declaration is not None
   assert declaration.name == 'set_model_response'
+
+
+@pytest.mark.parametrize(
+    'raw_schema',
+    [
+        {
+            'type': 'object',
+            'properties': {
+                'city': {'type': 'string'},
+                'unit': {'type': 'string', 'enum': ['celsius', 'fahrenheit']},
+            },
+            'required': ['city'],
+        },
+        {'type': 'array', 'items': {'type': 'string'}},
+        {'type': 'string', 'enum': ['yes', 'no']},
+    ],
+    ids=['object', 'array', 'string_enum'],
+)
+def test_get_declaration_declares_raw_dict_schema_as_response(raw_schema):
+  """The `response` parameter is declared with the raw dict schema itself."""
+  tool = SetModelResponseTool(raw_schema)
+
+  declaration = tool._get_declaration()
+
+  parameters = declaration.parameters_json_schema
+  assert parameters['properties']['response'] == raw_schema
+  assert parameters['required'] == ['response']
+
+
+@pytest.mark.parametrize(
+    ('schema_instance', 'expected_response_schema'),
+    [
+        (
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={'city': types.Schema(type=types.Type.STRING)},
+                required=['city'],
+            ),
+            {
+                'type': 'object',
+                'properties': {'city': {'type': 'string'}},
+                'required': ['city'],
+            },
+        ),
+        (
+            types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+            ),
+            {'type': 'array', 'items': {'type': 'string'}},
+        ),
+    ],
+    ids=['object', 'array'],
+)
+def test_get_declaration_declares_schema_instance_as_response(
+    schema_instance, expected_response_schema
+):
+  """A types.Schema output_schema is declared as the matching JSON Schema."""
+  tool = SetModelResponseTool(schema_instance)
+
+  declaration = tool._get_declaration()
+
+  assert (
+      declaration.parameters_json_schema['properties']['response']
+      == expected_response_schema
+  )
+
+
+def test_get_declaration_resolves_raw_dict_schema_refs():
+  """$ref pointers in a raw dict schema still resolve once it is nested."""
+
+  class Address(BaseModel):
+    zip_code: str
+
+  class Person(BaseModel):
+    name: str
+    home: Address
+
+  tool = SetModelResponseTool(Person.model_json_schema())
+
+  declaration = tool._get_declaration()
+
+  validator = jsonschema.Draft202012Validator(
+      declaration.parameters_json_schema
+  )
+  assert validator.is_valid(
+      {'response': {'name': 'Ada', 'home': {'zip_code': '94043'}}}
+  )
+  assert not validator.is_valid({'response': {'name': 'Ada', 'home': {}}})
+
+
+def test_get_declaration_resolves_raw_dict_schema_draft_07_refs():
+  """Draft-07 `definitions` also move to the root, so their refs resolve."""
+  tool = SetModelResponseTool({
+      'type': 'object',
+      'properties': {'home': {'$ref': '#/definitions/Address'}},
+      'required': ['home'],
+      'definitions': {
+          'Address': {
+              'type': 'object',
+              'properties': {'zip_code': {'type': 'string'}},
+              'required': ['zip_code'],
+          }
+      },
+  })
+
+  declaration = tool._get_declaration()
+
+  validator = jsonschema.Draft7Validator(declaration.parameters_json_schema)
+  assert validator.is_valid({'response': {'home': {'zip_code': '94043'}}})
+  assert not validator.is_valid({'response': {'home': {}}})
+
+
+def test_get_declaration_converts_schema_instance_defs():
+  """The defs of a types.Schema are converted and kept at the root."""
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'home': types.Schema(ref='#/$defs/Address')},
+      defs={
+          'Address': types.Schema(
+              type=types.Type.OBJECT,
+              properties={
+                  'zip_code': types.Schema(
+                      type=types.Type.STRING, nullable=True
+                  ),
+              },
+              required=['zip_code'],
+          )
+      },
+  )
+
+  declaration = SetModelResponseTool(schema_instance)._get_declaration()
+
+  parameters = declaration.parameters_json_schema
+  assert parameters['$defs'] == {
+      'Address': {
+          'type': 'object',
+          'properties': {'zip_code': {'type': ['null', 'string']}},
+          'required': ['zip_code'],
+      }
+  }
+  assert parameters['properties']['response'] == {
+      'type': 'object',
+      'properties': {'home': {'$ref': '#/$defs/Address'}},
+  }
+
+
+def test_get_declaration_resolves_schema_instance_refs_into_defs():
+  """A types.Schema ref spelled `#/defs/...` still resolves under `$defs`."""
+  address_ref = types.Schema(ref='#/defs/Address')
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          'home': address_ref,
+          'past': types.Schema(type=types.Type.ARRAY, items=address_ref),
+          'work': types.Schema(
+              any_of=[address_ref, types.Schema(type=types.Type.STRING)]
+          ),
+      },
+      defs={
+          'Address': types.Schema(
+              type=types.Type.OBJECT,
+              properties={'zip_code': types.Schema(type=types.Type.STRING)},
+              required=['zip_code'],
+          )
+      },
+  )
+
+  declaration = SetModelResponseTool(schema_instance)._get_declaration()
+
+  validator = jsonschema.Draft202012Validator(
+      declaration.parameters_json_schema
+  )
+  assert validator.is_valid({
+      'response': {
+          'home': {'zip_code': '94043'},
+          'past': [{'zip_code': '10001'}],
+          'work': 'remote',
+      }
+  })
+  assert not validator.is_valid({'response': {'home': {}}})
+  assert not validator.is_valid({'response': {'past': [{}]}})
+  assert not validator.is_valid({'response': {'work': {}}})
+
+
+def test_get_declaration_lowercases_schema_instance_additional_properties():
+  """A schema in additional_properties is declared with lowercase types."""
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      additional_properties=types.Schema(type=types.Type.STRING),
+  )
+
+  declaration = SetModelResponseTool(schema_instance)._get_declaration()
+
+  assert declaration.parameters_json_schema['properties']['response'] == {
+      'type': 'object',
+      'additionalProperties': {'type': 'string'},
+  }
+
+
+def test_get_declaration_drops_document_keywords_from_raw_dict_schema():
+  """$schema and $id, which belong at a document root, are not nested."""
+  tool = SetModelResponseTool({
+      '$schema': 'https://json-schema.org/draft/2020-12/schema',
+      '$id': 'https://example.com/answer.json',
+      'type': 'object',
+      'properties': {'answer': {'type': 'string'}},
+  })
+
+  declaration = tool._get_declaration()
+
+  assert declaration.parameters_json_schema['properties']['response'] == {
+      'type': 'object',
+      'properties': {'answer': {'type': 'string'}},
+  }
+
+
+def test_get_declaration_lowercases_raw_dict_schema_types():
+  """A dict that uses Gemini's uppercase type names gets JSON Schema types."""
+  tool = SetModelResponseTool({
+      'type': 'OBJECT',
+      'properties': {'tags': {'type': 'ARRAY', 'items': {'type': 'STRING'}}},
+  })
+
+  declaration = tool._get_declaration()
+
+  assert declaration.parameters_json_schema['properties']['response'] == {
+      'type': 'object',
+      'properties': {'tags': {'type': 'array', 'items': {'type': 'string'}}},
+  }
+
+
+@pytest.mark.parametrize('json_schema_for_func_decl', [True, False])
+@pytest.mark.parametrize(
+    'output_schema',
+    [
+        {
+            '$schema': 'https://json-schema.org/draft/2020-12/schema',
+            'type': 'OBJECT',
+            'properties': {'home': {'$ref': '#/$defs/Address'}},
+            '$defs': {'Address': {'type': 'STRING'}},
+        },
+        types.Schema(
+            type=types.Type.ARRAY,
+            items=types.Schema(type=types.Type.STRING),
+        ),
+    ],
+    ids=['raw_dict', 'schema_instance'],
+)
+def test_get_declaration_leaves_output_schema_unchanged(
+    output_schema, json_schema_for_func_decl
+):
+  """Building the declaration does not modify the caller's output_schema."""
+  original = copy.deepcopy(output_schema)
+
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_for_func_decl
+  ):
+    SetModelResponseTool(output_schema)._get_declaration()
+
+  assert output_schema == original
+
+
+@pytest.mark.parametrize(
+    ('raw_schema', 'expected_response_schema'),
+    [
+        (
+            {
+                'type': 'object',
+                'properties': {'city': {'type': 'string'}},
+                'required': ['city'],
+            },
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={'city': types.Schema(type=types.Type.STRING)},
+                required=['city'],
+            ),
+        ),
+        (
+            {'type': 'array', 'items': {'type': 'string'}},
+            types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+            ),
+        ),
+        (
+            {'type': 'string', 'enum': ['yes', 'no']},
+            types.Schema(type=types.Type.STRING, enum=['yes', 'no']),
+        ),
+        (
+            {'type': 'OBJECT', 'properties': {'a': {'type': 'STRING'}}},
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={'a': types.Schema(type=types.Type.STRING)},
+            ),
+        ),
+        (
+            {
+                'type': 'object',
+                'properties': {'home': {'$ref': '#/$defs/Address'}},
+                '$defs': {'Address': {'type': 'string'}},
+            },
+            types.Schema(
+                type=types.Type.OBJECT,
+                properties={'home': types.Schema(type=types.Type.STRING)},
+            ),
+        ),
+    ],
+    ids=['object', 'array', 'string_enum', 'uppercase_types', 'refs'],
+)
+def test_get_declaration_declares_raw_dict_schema_without_json_schema(
+    raw_schema, expected_response_schema
+):
+  """With JSON_SCHEMA_FOR_FUNC_DECL off, a raw dict becomes a types.Schema."""
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    declaration = SetModelResponseTool(raw_schema)._get_declaration()
+
+  assert declaration.parameters_json_schema is None
+  assert (
+      declaration.parameters.properties['response'] == expected_response_schema
+  )
+
+
+def test_get_declaration_declares_schema_instance_without_json_schema():
+  """With JSON_SCHEMA_FOR_FUNC_DECL off, a types.Schema is declared as is."""
+  schema_instance = types.Schema(
+      type=types.Type.ARRAY,
+      items=types.Schema(type=types.Type.STRING),
+  )
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    declaration = SetModelResponseTool(schema_instance)._get_declaration()
+
+  assert declaration.parameters.properties['response'] == schema_instance
+
+
+def test_get_declaration_moves_schema_instance_defs_without_json_schema():
+  """With JSON_SCHEMA_FOR_FUNC_DECL off, defs move to the parameters root."""
+  address = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'zip_code': types.Schema(type=types.Type.STRING)},
+  )
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'home': types.Schema(ref='#/defs/Address')},
+      defs={'Address': address},
+  )
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    declaration = SetModelResponseTool(schema_instance)._get_declaration()
+
+  assert declaration.parameters.defs == {'Address': address}
+  assert declaration.parameters.properties['response'] == types.Schema(
+      type=types.Type.OBJECT,
+      properties={'home': types.Schema(ref='#/defs/Address')},
+  )
+  assert schema_instance.defs == {'Address': address}
+
+
+def test_get_declaration_keeps_any_object_for_unconvertible_raw_dict_schema(
+    caplog,
+):
+  """A dict that types.Schema cannot express keeps `response` as any object."""
+  # Draft-07 tuple validation: `items` is a list, which types.Schema lacks.
+  raw_schema = {
+      'type': 'array',
+      'items': [{'type': 'integer'}, {'type': 'string'}],
+  }
+
+  with (
+      temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False),
+      caplog.at_level('WARNING', logger='google_adk'),
+  ):
+    declaration = SetModelResponseTool(raw_schema)._get_declaration()
+
+  assert declaration.parameters.properties['response'] == types.Schema(
+      type=types.Type.OBJECT
+  )
+  assert 'Could not convert the output schema' in caplog.text
 
 
 class SubSchema(BaseModel):
