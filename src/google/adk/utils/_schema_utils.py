@@ -423,7 +423,7 @@ def validate_node_data(
 
   def _to_serializable(val: Any) -> Any:
     if isinstance(val, BaseModel):
-      return val.model_dump(exclude_none=True)
+      return val.model_dump(exclude_none=True, mode='json')
     if isinstance(val, list):
       return [_to_serializable(item) for item in val]
     if isinstance(val, dict):
