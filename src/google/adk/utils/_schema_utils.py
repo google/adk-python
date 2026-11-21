@@ -35,6 +35,7 @@ from typing import get_origin
 from typing import Union
 
 from google.genai import types
+import jsonschema
 from pydantic import AliasChoices
 from pydantic import AliasPath
 from pydantic import BaseModel
@@ -307,6 +308,27 @@ def _strip_json_code_fence(json_text: str) -> str:
   return json_text
 
 
+def _expand_nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+  """Translates Gemini nullable subschemas without touching literal values."""
+  for key in ("properties", "defs", "$defs"):
+    if isinstance(children := schema.get(key), dict):
+      for name, child in children.items():
+        if isinstance(child, dict):
+          children[name] = _expand_nullable_schema(child)
+  for key in ("items", "additionalProperties"):
+    if isinstance(child := schema.get(key), dict):
+      schema[key] = _expand_nullable_schema(child)
+  for key in ("anyOf", "allOf", "oneOf"):
+    if isinstance(children := schema.get(key), list):
+      schema[key] = [
+          _expand_nullable_schema(child) if isinstance(child, dict) else child
+          for child in children
+      ]
+  if schema.pop("nullable", False):
+    return {"anyOf": [schema, {"type": "null"}]}
+  return schema
+
+
 def validate_schema(schema: SchemaType, json_text: str) -> Any:
   """Validate JSON text against a schema and return the result.
 
@@ -319,6 +341,12 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
       - dict for BaseModel
       - list of dicts for list[BaseModel]
       - raw value for other schema types (list[str], dict, etc.)
+
+  Raises:
+    ValidationError: If schema is a BaseModel/list[BaseModel] or a generic
+      alias (e.g. list[str], dict[str, int]) and json_text does not conform.
+    jsonschema.ValidationError: If schema is a raw JSON Schema dict or a
+      ``types.Schema`` and json_text does not conform.
   """
   json_text = _strip_json_code_fence(json_text)
 
@@ -334,9 +362,25 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
     validated = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
+  elif isinstance(schema, (dict, types.Schema)):
+    # For raw JSON Schema dicts and Schema objects, validate the parsed
+    # value against the JSON Schema (Schema uses uppercase type names, so
+    # lowercase them first to match the JSON Schema vocabulary).
+    parsed = _json_utils.safe_json_loads(json_text, context="schema value")
+    json_schema = (
+        schema
+        if isinstance(schema, dict)
+        else schema.model_dump(exclude_none=True, mode="json", by_alias=True)
+    )
+    if not isinstance(schema, dict):
+      lowercase_schema_types(json_schema)
+      json_schema = _expand_nullable_schema(json_schema)
+    jsonschema.validate(instance=parsed, schema=json_schema)
+    return parsed
   else:
-    # For other schema types (list[str], dict, Schema, etc.),
-    return _json_utils.safe_json_loads(json_text, context="schema value")
+    # For other generic alias schema types (list[str], dict[str, int], etc.),
+    # use TypeAdapter to validate.
+    return TypeAdapter(schema).validate_json(json_text)
 
 
 def _strip_annotated(tp: Any) -> Any:
