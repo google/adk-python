@@ -65,8 +65,8 @@ def build_auth_headers(
       # Handle basic auth
       if (
           credential.http.credentials
-          and credential.http.credentials.username
-          and credential.http.credentials.password
+          and credential.http.credentials.username is not None
+          and credential.http.credentials.password is not None
       ):
         credentials_str = (
             f"{credential.http.credentials.username}"
