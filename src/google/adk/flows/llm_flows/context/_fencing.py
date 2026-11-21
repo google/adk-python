@@ -269,6 +269,37 @@ def _elide_relayed_part_markers(part: types.Part) -> types.Part:
   return elided
 
 
+def _function_response_media_parts(
+    function_response: types.FunctionResponse,
+) -> list[types.Part]:
+  """Returns the media a tool result carries, as standalone parts.
+
+  `display_name` is not carried over: on a plain part the Gemini API only
+  accepts it when server-side tools are enabled.
+  """
+  media_parts = []
+  for response_part in function_response.parts or []:
+    if response_part.inline_data:
+      media_parts.append(
+          types.Part(
+              inline_data=types.Blob(
+                  mime_type=response_part.inline_data.mime_type,
+                  data=response_part.inline_data.data,
+              )
+          )
+      )
+    elif response_part.file_data:
+      media_parts.append(
+          types.Part(
+              file_data=types.FileData(
+                  mime_type=response_part.file_data.mime_type,
+                  file_uri=response_part.file_data.file_uri,
+              )
+          )
+      )
+  return media_parts
+
+
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   """Whether the event is a reply from another agent."""
   # In live/bidi mode, all events from any agents, including the current
@@ -373,6 +404,15 @@ def _present_other_agent_message(
                   ' tool returned result:\n'
                   + quote_untrusted(str(part.function_response.response))
               )
+          )
+      )
+      # Media a tool returned lives in `parts`, not in `response`, so the text
+      # above leaves it out. It follows on its own part types, as media in a
+      # message does below.
+      content.parts.extend(
+          _elide_relayed_part_markers(media_part)
+          for media_part in _function_response_media_parts(
+              part.function_response
           )
       )
     elif (
