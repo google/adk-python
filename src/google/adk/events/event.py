@@ -15,9 +15,7 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
-from typing import Union
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
@@ -195,36 +193,34 @@ class Event(LlmResponse):
     def __init__(
         self,
         *,
-        model_version: Optional[str] = ...,
-        content: Optional[types.Content] = ...,
-        grounding_metadata: Optional[types.GroundingMetadata] = ...,
-        partial: Optional[bool] = ...,
-        turn_complete: Optional[bool] = ...,
-        turn_complete_reason: Optional[types.TurnCompleteReason] = ...,
-        interaction_status: Optional[types.InteractionStatus] = ...,
-        finish_reason: Optional[types.FinishReason] = ...,
-        error_code: Optional[str] = ...,
-        error_message: Optional[str] = ...,
-        interrupted: Optional[bool] = ...,
-        custom_metadata: Optional[dict[str, Any]] = ...,
-        usage_metadata: Optional[
-            types.GenerateContentResponseUsageMetadata
-        ] = ...,
-        cache_creation_token_count: Optional[int] = ...,
-        live_session_resumption_update: Optional[
-            types.LiveServerSessionResumptionUpdate
-        ] = ...,
-        live_session_id: Optional[str] = ...,
-        go_away: Optional[types.LiveServerGoAway] = ...,
-        voice_activity: Optional[types.VoiceActivity] = ...,
-        input_transcription: Optional[types.Transcription] = ...,
-        output_transcription: Optional[types.Transcription] = ...,
-        avg_logprobs: Optional[float] = ...,
-        logprobs_result: Optional[types.LogprobsResult] = ...,
-        cache_metadata: Optional[CacheMetadata] = ...,
-        citation_metadata: Optional[types.CitationMetadata] = ...,
-        interaction_id: Optional[str] = ...,
-        environment_id: Optional[str] = ...,
+        model_version: str | None = ...,
+        content: types.Content | None = ...,
+        grounding_metadata: types.GroundingMetadata | None = ...,
+        partial: bool | None = ...,
+        turn_complete: bool | None = ...,
+        turn_complete_reason: types.TurnCompleteReason | None = ...,
+        interaction_status: types.InteractionStatus | None = ...,
+        finish_reason: types.FinishReason | None = ...,
+        error_code: str | None = ...,
+        error_message: str | None = ...,
+        interrupted: bool | None = ...,
+        custom_metadata: dict[str, Any] | None = ...,
+        usage_metadata: types.GenerateContentResponseUsageMetadata | None = ...,
+        cache_creation_token_count: int | None = ...,
+        live_session_resumption_update: (
+            types.LiveServerSessionResumptionUpdate | None
+        ) = ...,
+        live_session_id: str | None = ...,
+        go_away: types.LiveServerGoAway | None = ...,
+        voice_activity: types.VoiceActivity | None = ...,
+        input_transcription: types.Transcription | None = ...,
+        output_transcription: types.Transcription | None = ...,
+        avg_logprobs: float | None = ...,
+        logprobs_result: types.LogprobsResult | None = ...,
+        cache_metadata: CacheMetadata | None = ...,
+        citation_metadata: types.CitationMetadata | None = ...,
+        interaction_id: str | None = ...,
+        environment_id: str | None = ...,
         invocation_id: str = ...,
         author: str = ...,
         actions: EventActions = ...,
@@ -237,7 +233,7 @@ class Event(LlmResponse):
         timestamp: float = ...,
         message: types.ContentUnion | None = None,
         state: dict[str, Any] | None = None,
-        route: Union[bool, int, str, list[Union[bool, int, str]]] | None = None,
+        route: bool | int | str | list[bool | int | str] | None = None,
         node_path: str | None = None,
     ) -> None:
       ...

@@ -17,7 +17,6 @@
 import ast
 import inspect
 from typing import Any
-from typing import Optional
 
 from google.adk.events import event as event_module
 from google.adk.events.event import Event
@@ -78,7 +77,7 @@ def test_type_checking_init_convenience_kwarg_types_match_targets():
   # t_content), so only its name is checked.
   annotations = _type_checking_init_annotations()
   assert {k: annotations[k] for k in ('state', 'route', 'node_path')} == {
-      'state': Optional[EventActions.model_fields['state_delta'].annotation],
-      'route': Optional[EventActions.model_fields['route'].annotation],
-      'node_path': Optional[NodeInfo.model_fields['path'].annotation],
+      'state': EventActions.model_fields['state_delta'].annotation | None,
+      'route': EventActions.model_fields['route'].annotation | None,
+      'node_path': NodeInfo.model_fields['path'].annotation | None,
   }
