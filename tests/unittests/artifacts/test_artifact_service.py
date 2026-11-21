@@ -22,6 +22,7 @@ from datetime import timedelta
 from datetime import timezone
 import enum
 import json
+import os
 from pathlib import Path
 import stat
 import threading
@@ -1389,6 +1390,110 @@ async def test_delete_artifact_keeps_nested_artifact(
       )
       == nested
   )
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="Requires POSIX permissions enforced for an unprivileged process",
+)
+async def test_file_delete_reports_permission_failure(tmp_path: Path) -> None:
+  """A failed deletion reports its permission error and preserves the artifact."""
+  service = FileArtifactService(tmp_path)
+  scope = dict(app_name="app", user_id="user", session_id="session")
+  content = types.Part(text="saved")
+  await service.save_artifact(**scope, filename="doc", artifact=content)
+  versions = (
+      tmp_path / "apps/app/users/user/sessions/session/artifacts/doc/versions"
+  )
+  version_dir = versions / "0"
+  mode = version_dir.stat().st_mode
+  version_dir.chmod(0o500)
+
+  try:
+    with pytest.raises(PermissionError):
+      await service.delete_artifact(**scope, filename="doc")
+  finally:
+    version_dir.chmod(mode)
+
+  assert await service.load_artifact(**scope, filename="doc") == content
+
+
+async def test_file_delete_continues_after_payload_disappears(
+    tmp_path: Path,
+) -> None:
+  """A disappearing payload does not leave the remaining version files behind."""
+  service = FileArtifactService(tmp_path)
+  scope = dict(app_name="app", user_id="user", session_id="session")
+  await service.save_artifact(
+      **scope, filename="doc", artifact=types.Part(text="parent")
+  )
+  unlink = os.unlink
+  removed_payload = False
+
+  def unlink_after_other_deleter(path, *args, **kwargs):
+    nonlocal removed_payload
+    if Path(path).name == "doc" and not removed_payload:
+      unlink(path, *args, **kwargs)
+      removed_payload = True
+    return unlink(path, *args, **kwargs)
+
+  with mock.patch.object(os, "unlink", side_effect=unlink_after_other_deleter):
+    await service.delete_artifact(**scope, filename="doc")
+
+  assert removed_payload
+  assert await service.list_versions(**scope, filename="doc") == []
+
+
+@pytest.mark.parametrize("session_id", [None, "session"])
+async def test_file_concurrent_deletes_preserve_nested_artifact(
+    tmp_path: Path, session_id: str | None
+) -> None:
+  """Two deletions both succeed without removing a nested artifact.
+
+  Setup: two services share a root containing a parent and nested artifact.
+  Act: both deletions pass the existence check before either removes versions.
+  Assert: both calls succeed, and the nested artifact remains readable.
+  """
+  first = FileArtifactService(tmp_path)
+  second = FileArtifactService(tmp_path)
+  scope = dict(app_name="app", user_id="user", session_id=session_id)
+  nested = types.Part(text="nested")
+  await first.save_artifact(
+      **scope, filename="doc", artifact=types.Part(text="parent")
+  )
+  await first.save_artifact(**scope, filename="doc/nested", artifact=nested)
+  both_entered = threading.Barrier(2)
+  first_finished = threading.Event()
+  remove_tree = file_artifact_service.shutil.rmtree
+
+  def remove_after_both_enter(path: Path, **kwargs: Any) -> None:
+    turn = both_entered.wait(timeout=5)
+    if turn == 0:
+      try:
+        remove_tree(path, **kwargs)
+      finally:
+        first_finished.set()
+    else:
+      assert first_finished.wait(timeout=5)
+      remove_tree(path, **kwargs)
+
+  with mock.patch.object(
+      file_artifact_service.shutil,
+      "rmtree",
+      side_effect=remove_after_both_enter,
+  ):
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(
+            first.delete_artifact(**scope, filename="doc"),
+            second.delete_artifact(**scope, filename="doc"),
+            return_exceptions=True,
+        ),
+        timeout=10,
+    )
+
+  assert outcomes == [None, None]
+  assert await first.list_versions(**scope, filename="doc") == []
+  assert await first.load_artifact(**scope, filename="doc/nested") == nested
 
 
 @pytest.mark.asyncio

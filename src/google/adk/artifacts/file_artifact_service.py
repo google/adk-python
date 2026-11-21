@@ -20,6 +20,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from pathlib import PureWindowsPath
 import shutil
+import sys
 import tempfile
 from typing import Any
 
@@ -764,10 +765,26 @@ class FileArtifactService(BaseArtifactService):
     versions_dir = _versions_dir(artifact_dir)
     if not versions_dir.exists():
       return
+
     # Only this artifact's own versions go. Its directory may also be the
     # parent of a nested artifact ("doc" vs "doc/nested"), so it is pruned
     # separately and only if nothing is left under it.
-    shutil.rmtree(versions_dir)
+    def on_remove_error(
+        _function: object, _path: object, error: BaseException
+    ) -> None:
+      # Concurrent deleters may remove entries at any level of the tree.
+      if not isinstance(error, FileNotFoundError):
+        raise error
+
+    if sys.version_info >= (3, 12):
+      shutil.rmtree(versions_dir, onexc=on_remove_error)
+    else:
+      shutil.rmtree(
+          versions_dir,
+          onerror=lambda function, path, exc_info: on_remove_error(
+              function, path, exc_info[1]
+          ),
+      )
     scope_root = self._scope_root(
         self._base_root(app_name, user_id), session_id, filename
     )
