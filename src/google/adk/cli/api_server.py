@@ -101,6 +101,7 @@ from ..sessions.session import Session
 from ..telemetry._web_ui import WebUiLogExporter
 from ..telemetry.setup import maybe_set_otel_providers
 from ..telemetry.setup import OTelHooks
+from ..utils._error_reporting import report_error
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
@@ -1434,10 +1435,15 @@ class ApiServer:
     except (ValueError, TypeError) as e:
       raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-      logger.error(
-          "Internal server error during session creation: %s", e, exc_info=True
-      )
-      raise HTTPException(status_code=500, detail=str(e)) from e
+      raise HTTPException(
+          status_code=500,
+          detail=report_error(
+              logger,
+              e,
+              summary="Session creation failed.",
+              log_message="Internal server error during session creation",
+          ),
+      ) from e
 
   def get_fast_api_app(
       self,
