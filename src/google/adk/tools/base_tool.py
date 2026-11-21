@@ -250,12 +250,27 @@ class BaseTool(ABC):
         # Get the actual type T of the parameter if it's Optional[T]. Before
         # Python 3.14, `T | None` has origin UnionType rather than Union.
         if get_origin(param_type) in (Union, UnionType):
-          # This is Optional[T] which is Union[T, None]
-          args = get_args(param_type)
-          if len(args) == 2 and type(None) in args:
+          union_args = get_args(param_type)
+          if len(union_args) == 2 and type(None) in union_args:
             # Get the non-None type
-            actual_type = args[0] if args[1] is type(None) else args[1]
+            actual_type = (
+                union_args[0] if union_args[1] is type(None) else union_args[1]
+            )
             param_type = actual_type
+          elif any(_is_callable_annotation(a) for a in union_args) or bool in union_args:
+            if isinstance(value, bool) and bool in union_args:
+              kwargs[param_name] = value
+              continue
+            elif isinstance(value, str) and any(
+                _is_callable_annotation(a) for a in union_args
+            ):
+              kwargs[param_name] = (
+                  config_agent_utils.resolve_fully_qualified_name(value)
+              )
+              continue
+            elif value is None and type(None) in union_args:
+              kwargs[param_name] = None
+              continue
 
         if param_type in (int, str, bool, float):
           kwargs[param_name] = value
