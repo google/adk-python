@@ -278,6 +278,49 @@ def test_dedupe_param_names(sample_operation):
   assert parser._params[2].py_name == 'test_1'
 
 
+@pytest.mark.parametrize('preserve_property_names', [False, True])
+@pytest.mark.parametrize(
+    'names',
+    [
+        ['id', 'id', 'id_0', 'id_1'],
+        ['id_0', 'id_1', 'id', 'id'],
+    ],
+)
+def test_duplicate_parameters_do_not_shadow_suffixed_names(
+    names, preserve_property_names
+):
+  """Every parameter keeps its own declaration, even with reserved suffixes."""
+  operation = Operation(
+      operationId='lookup',
+      parameters=[
+          Parameter(**{
+              'name': name,
+              'in': location,
+              'required': True,
+              'schema': {'type': 'string', 'description': location},
+          })
+          for name, location in zip(
+              names, ['query', 'header', 'cookie', 'path']
+          )
+      ],
+  )
+
+  parser = OperationParser(
+      operation, preserve_property_names=preserve_property_names
+  )
+  schema = parser.get_json_schema()
+
+  assert set(schema['properties']) == {'id', 'id_0', 'id_1', 'id_2'}
+  assert len(set(schema['required'])) == 4
+  for param in parser.get_parameters():
+    assert (
+        schema['properties'][param.py_name]['description']
+        == param.param_location
+    )
+    if param.original_name in ('id_0', 'id_1'):
+      assert param.py_name == param.original_name
+
+
 def test_process_return_value(sample_operation):
   """Test _process_return_value method."""
   parser = OperationParser(sample_operation, should_parse=False)
