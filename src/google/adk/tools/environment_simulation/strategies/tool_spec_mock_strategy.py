@@ -181,7 +181,8 @@ class ToolSpecMockStrategy(MockStrategy):
           continue
         if generated_content.parts:
           for part in generated_content.parts:
-            if part.text:
+            # Thought text is not part of the JSON answer.
+            if part.text and not part.thought:
               response_text += part.text
 
     try:

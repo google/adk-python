@@ -121,7 +121,8 @@ class ToolConnectionAnalyzer:
         if not generated_content.parts:
           continue
         for part in generated_content.parts:
-          if part.text:
+          # Thought text is not part of the JSON answer.
+          if part.text and not part.thought:
             response_text += part.text
 
     try:
