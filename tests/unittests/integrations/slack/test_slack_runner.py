@@ -178,6 +178,41 @@ class TestSlackRunner(unittest.IsolatedAsyncioTestCase):
     )
 
   @patch("google.adk.integrations.slack.slack_runner.logger")
+  async def test_handle_message_skips_thought_parts(self, mock_logger):
+    mock_say = AsyncMock()
+    mock_say.return_value = {"ts": "thinking_ts"}
+    event = {
+        "text": "Hello bot",
+        "user": "U12345",
+        "channel": "C67890",
+        "ts": "1234567890.123456",
+    }
+    mock_event = MagicMock()
+    mock_event.content = types.Content(
+        role="model",
+        parts=[
+            types.Part(text="Private reasoning.", thought=True),
+            types.Part(text="Hi user!"),
+        ],
+    )
+
+    async def mock_run_async(*args, **kwargs):
+      yield mock_event
+
+    self.mock_runner.run_async.side_effect = mock_run_async
+
+    await self.slack_runner._handle_message(event, mock_say)
+
+    self.mock_slack_app.client.chat_update.assert_called_once_with(
+        channel="C67890",
+        ts="thinking_ts",
+        text="Hi user!",
+    )
+    mock_say.assert_called_once_with(
+        text="_Thinking..._", thread_ts="1234567890.123456"
+    )
+
+  @patch("google.adk.integrations.slack.slack_runner.logger")
   async def test_handle_message_error(self, mock_logger):
     mock_say = AsyncMock()
     mock_say.return_value = {"ts": "thinking_ts"}
