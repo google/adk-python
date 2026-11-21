@@ -337,6 +337,8 @@ class ContainerCodeExecutor(BaseCodeExecutor):
           f'Code execution timed out after {self.timeout_seconds} seconds.'
       )
       error = f'{error}\n{timed_out}' if error else timed_out
+    elif exec_result.exit_code and not error:
+      error = f'Code execution exited with status {exec_result.exit_code}.'
 
     output_files = self._get_output_files()
 
