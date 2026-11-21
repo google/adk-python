@@ -21,6 +21,7 @@ from ..utils import _lazy
 if TYPE_CHECKING:
   from ._callback_metadata import CallbackInfo
   from ._callback_metadata import CallbackType
+  from ._caller_principal import CallerPrincipal
   from ._managed_agent import ManagedAgent
   from .base_agent import BaseAgent
   from .base_agent_config import BaseAgentConfig
@@ -46,6 +47,7 @@ _LAZY_MEMBERS: dict[str, str] = {
     'BaseAgentConfig': '.base_agent_config',
     'CallbackInfo': '._callback_metadata',
     'CallbackType': '._callback_metadata',
+    'CallerPrincipal': '._caller_principal',
     'Context': '.context',
     'InvocationContext': '.invocation_context',
     'LiveRequest': '.live_request_queue',
@@ -74,6 +76,7 @@ __all__ = [
     'McpInstructionProvider',
     'ParallelAgent',
     'SequentialAgent',
+    'CallerPrincipal',
     'InvocationContext',
     'LiveRequest',
     'LiveRequestQueue',
