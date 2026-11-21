@@ -1137,3 +1137,202 @@ async def test_add_session_to_memory_skips_rewound_events():
   )
   assert not rewound.memories
   assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']
+
+
+def _invocation_event(event_id: str, invocation_id: str, text: str) -> Event:
+  return Event(
+      id=event_id,
+      invocation_id=invocation_id,
+      author='user',
+      timestamp=1.0,
+      content=types.Content(parts=[types.Part(text=text)]),
+  )
+
+
+def _boundary_event(event_id: str, invocation_id: str) -> Event:
+  return Event(id=event_id, invocation_id=invocation_id, author='user')
+
+
+async def _ingest_deltas(
+    memory_service: InMemoryMemoryService,
+    events: list[Event],
+    session_id: str | None = None,
+) -> None:
+  for event in events:
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        session_id=session_id,
+        events=[event],
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_applies_rewind_deltas():
+  """A rewind marker ingested as a delta removes the turns it undid."""
+  memory_service = InMemoryMemoryService()
+  await _ingest_deltas(
+      memory_service,
+      [
+          Event(
+              invocation_id='inv-old',
+              author='user',
+              content=types.Content(
+                  parts=[types.Part(text='address is baker street')]
+              ),
+          ),
+          _rewind_event('inv-old'),
+      ],
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='baker'
+  )
+  assert not result.memories
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_agrees_with_add_session_to_memory():
+  """Ingesting deltas one by one stores the same facts as the full session."""
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-deltas',
+      events=[
+          _text_event('kept', 'trip to paris'),
+          _text_event('rewound', 'address is baker street'),
+          _rewind_event('inv-rewound'),
+      ],
+  )
+  full_service = InMemoryMemoryService()
+  await full_service.add_session_to_memory(session)
+
+  delta_service = InMemoryMemoryService()
+  await _ingest_deltas(delta_service, session.events, session_id='deltas')
+
+  for service in (full_service, delta_service):
+    rewound = await service.search_memory(
+        app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='baker'
+    )
+    kept = await service.search_memory(
+        app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paris'
+    )
+    assert not rewound.memories
+    assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_rewind_delta_removes_later_turns():
+  """A rewind delta also removes invocations after the rewound one."""
+  memory_service = InMemoryMemoryService()
+  await _ingest_deltas(
+      memory_service,
+      [
+          _text_event('early', 'address is baker street'),
+          _text_event('late', 'station is paddington'),
+          _rewind_event('inv-early'),
+      ],
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paddington'
+  )
+  assert not result.memories
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_keeps_anchor_for_contentless_invocation():
+  """A contentless invocation still anchors a later rewind delta."""
+  memory_service = InMemoryMemoryService()
+  await _ingest_deltas(
+      memory_service,
+      [
+          _boundary_event('anchor', 'inv-anchor'),
+          _text_event('after', 'station is paddington'),
+          _rewind_event('inv-anchor'),
+      ],
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paddington'
+  )
+  assert not result.memories
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_deleted_payload_keeps_only_anchor():
+  """A deleted payload stays unsearchable but still anchors a rewind."""
+  memory_service = InMemoryMemoryService()
+  deleted = _text_event('gone', 'address is baker street')
+  await _ingest_deltas(memory_service, [deleted])
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id=deleted.id
+  )
+  await _ingest_deltas(
+      memory_service,
+      [
+          deleted,
+          _text_event('after', 'station is paddington'),
+          _rewind_event('inv-gone'),
+      ],
+  )
+
+  deleted_hits = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='baker'
+  )
+  later_hits = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paddington'
+  )
+  assert not deleted_hits.memories
+  assert not later_hits.memories
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_rewind_delta_stays_in_its_session():
+  """A rewind delta only resolves against its own session bucket."""
+  memory_service = InMemoryMemoryService()
+  await _ingest_deltas(
+      memory_service,
+      [_text_event('fact', 'address is baker street')],
+      session_id='session-a',
+  )
+  await _ingest_deltas(
+      memory_service,
+      [
+          _text_event('fact', 'address is baker street'),
+          _rewind_event('inv-fact'),
+      ],
+      session_id='session-b',
+  )
+
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
+  session_memory = memory_service._session_events[user_key]
+  assert [e.id for e in session_memory['session-a']] == ['event-fact']
+  assert not session_memory['session-b']
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='baker'
+  )
+  assert [m.content.parts[0].text for m in result.memories] == [
+      'address is baker street'
+  ]
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_anchor_does_not_reserve_event_id():
+  """An anchor keeps its id available for a later payload delivery."""
+  memory_service = InMemoryMemoryService()
+  boundary = _boundary_event('reused', 'inv-a')
+  await _ingest_deltas(memory_service, [boundary, boundary])
+  payload = _invocation_event('reused', 'inv-a', 'station is paddington')
+  await _ingest_deltas(memory_service, [payload])
+
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
+  bucket = memory_service._session_events[user_key][None]
+  assert [event.id for event in bucket] == ['reused', 'reused']
+  assert [event.content is None for event in bucket] == [True, False]
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paddington'
+  )
+  assert [m.content.parts[0].text for m in result.memories] == [
+      'station is paddington'
+  ]
