@@ -16,6 +16,7 @@
 
 import asyncio
 from typing import AsyncGenerator
+from typing import get_type_hints
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -34,6 +35,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types
+from opentelemetry import trace
 import pytest
 
 from .... import testing_utils
@@ -1092,3 +1094,15 @@ def test_has_meaningful_content_file_data():
       )
   )
   assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_model_error_and_cancellation_helpers_resolve_type_hints():
+  scope_hints = get_type_hints(
+      _model_response_finalizer._model_error_callback_scope
+  )
+  notify_hints = get_type_hints(
+      _model_response_finalizer._notify_model_cancelled
+  )
+
+  assert scope_hints["call_llm_span"] == (trace.Span | None)
+  assert notify_hints["call_llm_span"] == (trace.Span | None)
