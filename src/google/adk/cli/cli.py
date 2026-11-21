@@ -21,8 +21,11 @@ import logging
 from pathlib import Path
 import queue
 import re
+import signal
 import sys
+import threading
 import traceback
+from types import FrameType
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -253,6 +256,34 @@ async def _prompt_for_function_call(
   )
 
 
+async def _run_interruptible_turn(turn: Awaitable[None]) -> bool:
+  """Run a turn, returning False only when SIGINT cancels it."""
+  task = asyncio.ensure_future(turn)
+  interrupted = False
+  previous_handler = None
+  on_main_thread = threading.current_thread() is threading.main_thread()
+
+  def interrupt_turn(signum: int, frame: FrameType | None) -> None:
+    nonlocal interrupted
+    interrupted = True
+    task.cancel()
+
+  if on_main_thread:
+    previous_handler = signal.signal(signal.SIGINT, interrupt_turn)
+  try:
+    await task
+    return not interrupted
+  except asyncio.CancelledError:
+    # Cancellation by a caller must still terminate the interactive session.
+    current_task = asyncio.current_task()
+    if not interrupted or (current_task and current_task.cancelling()):
+      raise
+    return False
+  finally:
+    if on_main_thread:
+      signal.signal(signal.SIGINT, previous_handler)
+
+
 async def run_interactively(
     root_agent_or_app: Union[BaseNode, App],
     artifact_service: BaseArtifactService,
@@ -332,12 +363,17 @@ async def run_interactively(
           if not line:
             break
           loop.call_soon_threadsafe(input_queue.put_nowait, line)
+      except (RuntimeError, EOFError, KeyboardInterrupt):
+        pass
       except Exception:
         print('[ERROR] Exception in stdin reader thread:', file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
       finally:
         if not loop.is_closed():
-          loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
+          try:
+            loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
+          except RuntimeError:
+            pass
 
     t = create_thread(target=_read_input)
     t.daemon = True
@@ -355,103 +391,134 @@ async def run_interactively(
     assert isinstance(line, str)
     return line.rstrip('\n')
 
-  next_message = None
-  resume_invocation_id = None
-  while True:
-    if next_message is None:
-      if not reload_agents or reload_event is None:
-        query = input('[user]: ')
-      else:
-        input_task = asyncio.create_task(_next_line())
-        reload_task = asyncio.create_task(reload_event.wait())
-        done, pending_tasks = await asyncio.wait(
-            [input_task, reload_task], return_when=asyncio.FIRST_COMPLETED
-        )
-
-        if input_task in done:
-          reload_task.cancel()
-          raw_input = input_task.result()
-          if raw_input is _EOF_SENTINEL:
-            break
-          assert isinstance(raw_input, str)
-          query = raw_input.rstrip('\n')
-          if reload_event.is_set():
-            reload_event.clear()
-            await _handle_reload()
-        else:
-          input_task.cancel()
-          reload_event.clear()
-
-          await _handle_reload()
-
-          _prompt_user(new_line=True)
-          continue
-
-      if not query or not query.strip():
-        if reload_agents:
-          _prompt_user()
-        continue
-      if query.strip() == 'exit':
-        break
-      next_message = types.Content(role='user', parts=[types.Part(text=query)])
-
-    collected_events = []
-    invocation_id = None
-
-    async def run_and_print() -> None:
-      nonlocal invocation_id
-      async with Aclosing(
-          runner.run_async(
-              user_id=session.user_id,
-              session_id=session.id,
-              new_message=next_message,
-              invocation_id=resume_invocation_id,
-          )
-      ) as agen:
-        async for event in agen:
-          collected_events.append(event)
-          if getattr(event, 'invocation_id', None):
-            invocation_id = event.invocation_id
-          _print_event(event, jsonl=jsonl, session_id=session.id)
-
-    try:
-      if timeout:
-        seconds = _parse_timeout(timeout)
-        await asyncio.wait_for(run_and_print(), timeout=seconds)
-      else:
-        await run_and_print()
-    except asyncio.TimeoutError:
-      click.secho(
-          f'Error: Command timed out after {timeout}', fg='red', err=True
-      )
-      next_message = None
-      resume_invocation_id = None
-      if reload_agents:
-        _prompt_user(new_line=True)
-      continue
-
+  try:
     next_message = None
     resume_invocation_id = None
+    while True:
+      if next_message is None:
+        if not reload_agents or reload_event is None:
+          try:
+            query = input('[user]: ')
+          except (KeyboardInterrupt, EOFError):
+            click.echo()
+            break
+        else:
+          input_task = asyncio.create_task(_next_line())
+          reload_task = asyncio.create_task(reload_event.wait())
+          try:
+            done, pending_tasks = await asyncio.wait(
+                [input_task, reload_task], return_when=asyncio.FIRST_COMPLETED
+            )
+          except (KeyboardInterrupt, asyncio.CancelledError):
+            input_task.cancel()
+            reload_task.cancel()
+            click.echo()
+            break
 
-    # Check for pending HITL function calls that need user input.
-    pending = _collect_pending_function_calls(collected_events)
-    if pending:
-      # Handle each pending function call. If there are multiple,
-      # collect all responses into a single Content with multiple parts.
-      parts: list[types.Part] = []
-      for fc_id, fc_name, args in pending:
-        response_content = await _prompt_for_function_call(
-            fc_id, fc_name, args, _read_line
+          if input_task in done:
+            reload_task.cancel()
+            raw_input = input_task.result()
+            if raw_input is _EOF_SENTINEL:
+              break
+            assert isinstance(raw_input, str)
+            query = raw_input.rstrip('\n')
+            if reload_event.is_set():
+              reload_event.clear()
+              await _handle_reload()
+          else:
+            input_task.cancel()
+            reload_event.clear()
+
+            await _handle_reload()
+
+            _prompt_user(new_line=True)
+            continue
+
+        if not query or not query.strip():
+          if reload_agents:
+            _prompt_user()
+          continue
+        if query.strip() == 'exit':
+          break
+        next_message = types.Content(
+            role='user', parts=[types.Part(text=query)]
         )
-        if response_content.parts:
-          parts.extend(response_content.parts)
-      next_message = types.Content(role='user', parts=parts)
-      resume_invocation_id = invocation_id
 
-    if reload_agents and next_message is None:
-      _prompt_user(new_line=True)
+      collected_events = []
+      invocation_id = None
 
-  await runner.close()
+      async def run_and_print() -> None:
+        nonlocal invocation_id
+        async with Aclosing(
+            runner.run_async(
+                user_id=session.user_id,
+                session_id=session.id,
+                new_message=next_message,
+                invocation_id=resume_invocation_id,
+            )
+        ) as agen:
+          async for event in agen:
+            collected_events.append(event)
+            if getattr(event, 'invocation_id', None):
+              invocation_id = event.invocation_id
+            _print_event(event, jsonl=jsonl, session_id=session.id)
+
+      try:
+        seconds = _parse_timeout(timeout) if timeout else None
+        turn = run_and_print()
+        if seconds is not None:
+          turn = asyncio.wait_for(turn, timeout=seconds)
+        if not await _run_interruptible_turn(turn):
+          click.echo()
+          next_message = None
+          resume_invocation_id = None
+          if reload_agents:
+            _prompt_user(new_line=True)
+          continue
+      except asyncio.TimeoutError:
+        click.secho(
+            f'Error: Command timed out after {timeout}', fg='red', err=True
+        )
+        next_message = None
+        resume_invocation_id = None
+        if reload_agents:
+          _prompt_user(new_line=True)
+        continue
+      except KeyboardInterrupt:
+        click.echo()
+        next_message = None
+        resume_invocation_id = None
+        if reload_agents:
+          _prompt_user(new_line=True)
+        continue
+
+      next_message = None
+      resume_invocation_id = None
+
+      # Check for pending HITL function calls that need user input.
+      pending = _collect_pending_function_calls(collected_events)
+      if pending:
+        try:
+          # Handle each pending function call. If there are multiple,
+          # collect all responses into a single Content with multiple parts.
+          parts: list[types.Part] = []
+          for fc_id, fc_name, args in pending:
+            response_content = await _prompt_for_function_call(
+                fc_id, fc_name, args, _read_line
+            )
+            if response_content.parts:
+              parts.extend(response_content.parts)
+          next_message = types.Content(role='user', parts=parts)
+          resume_invocation_id = invocation_id
+        except (KeyboardInterrupt, EOFError):
+          click.echo()
+          break
+
+      if reload_agents and next_message is None:
+        _prompt_user(new_line=True)
+
+  finally:
+    await runner.close()
 
 
 def _override_default_llm_model(default_llm_model: str) -> None:
@@ -751,7 +818,11 @@ async def run_cli(
       )
 
     if save_session:
-      session_id = session_id or input('Session ID to save: ')
+      try:
+        session_id = session_id or input('Session ID to save: ')
+      except (KeyboardInterrupt, EOFError):
+        click.echo('\nSession not saved.')
+        return
       session_path = agent_root / f'{session_id}.session.json'
 
       # Fetch the session again to get all the details.
@@ -1021,6 +1092,9 @@ async def run_once_cli(
   except asyncio.TimeoutError:
     click.secho(f'Error: Command timed out after {timeout}', fg='red', err=True)
     return 1
+  except KeyboardInterrupt:
+    click.echo('\nAborted.', err=True)
+    return 130
   except Exception as e:
     click.secho(f'Error: {e}', fg='red', err=True)
     return 1

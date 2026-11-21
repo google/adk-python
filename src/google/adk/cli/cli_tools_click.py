@@ -347,8 +347,8 @@ class TelemetryGroup(click.Group):
       )
       raise
     except BaseException as e:
-      if isinstance(e, KeyboardInterrupt) and ctx.meta.get("server_started"):
-        exit_code = 0
+      if isinstance(e, KeyboardInterrupt):
+        exit_code = 0 if ctx.meta.get("server_started") else 130
         exception_type = ""
       else:
         exit_code = 1
@@ -1171,49 +1171,55 @@ def cli_run(
   if query is not None:
     from .cli import run_once_cli
 
-    exit_code = asyncio.run(
-        run_once_cli(
-            agent_parent_dir=agent_parent_folder,
-            agent_folder_name=agent_folder_name,
-            query=query,
-            state_str=state_str,
-            session_id=session_id,
-            replay=replay,
-            timeout=timeout,
-            in_memory=in_memory,
-            jsonl=jsonl,
-            session_service_uri=session_service_uri,
-            artifact_service_uri=artifact_service_uri,
-            memory_service_uri=memory_service_uri,
-            use_local_storage=use_local_storage,
-            default_llm_model=default_llm_model,
-        )
-    )
+    try:
+      exit_code = asyncio.run(
+          run_once_cli(
+              agent_parent_dir=agent_parent_folder,
+              agent_folder_name=agent_folder_name,
+              query=query,
+              state_str=state_str,
+              session_id=session_id,
+              replay=replay,
+              timeout=timeout,
+              in_memory=in_memory,
+              jsonl=jsonl,
+              session_service_uri=session_service_uri,
+              artifact_service_uri=artifact_service_uri,
+              memory_service_uri=memory_service_uri,
+              use_local_storage=use_local_storage,
+              default_llm_model=default_llm_model,
+          )
+      )
+    except KeyboardInterrupt:
+      exit_code = 130
     sys.exit(exit_code)
   else:
     # Legacy interactive mode
     from .cli import run_cli
 
-    asyncio.run(
-        run_cli(
-            agent_parent_dir=agent_parent_folder,
-            agent_folder_name=agent_folder_name,
-            input_file=replay,
-            saved_session_file=resume,
-            save_session=save_session,
-            session_id=session_id,
-            state_str=state_str,
-            timeout=timeout,
-            in_memory=in_memory,
-            jsonl=jsonl,
-            reload_agents=reload_agents,
-            session_service_uri=session_service_uri,
-            artifact_service_uri=artifact_service_uri,
-            memory_service_uri=memory_service_uri,
-            use_local_storage=use_local_storage,
-            default_llm_model=default_llm_model,
-        )
-    )
+    try:
+      asyncio.run(
+          run_cli(
+              agent_parent_dir=agent_parent_folder,
+              agent_folder_name=agent_folder_name,
+              input_file=replay,
+              saved_session_file=resume,
+              save_session=save_session,
+              session_id=session_id,
+              state_str=state_str,
+              timeout=timeout,
+              in_memory=in_memory,
+              jsonl=jsonl,
+              reload_agents=reload_agents,
+              session_service_uri=session_service_uri,
+              artifact_service_uri=artifact_service_uri,
+              memory_service_uri=memory_service_uri,
+              use_local_storage=use_local_storage,
+              default_llm_model=default_llm_model,
+          )
+      )
+    except (KeyboardInterrupt, EOFError):
+      sys.exit(0)
 
 
 @main.command(
