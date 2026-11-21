@@ -34,6 +34,7 @@ from ..utils._agent_mode import DELEGATED_TASK_MODES
 from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
+from ._errors import DynamicNodeFailError
 from ._errors import WorkflowConfigurationError
 from ._errors import WorkflowInvariantError
 
@@ -274,14 +275,25 @@ async def _dispatch_task_fc(
 
   wrapped_target = build_node(target_agent)
   cast(Any, wrapped_target).parent_agent = target_agent.parent_agent
-  return await ctx.run_node(
-      wrapped_target,
-      node_input=fc.args,
-      run_id=fc.id,
-      use_sub_branch=True,
-      override_isolation_scope=fc.id,
-      raise_on_wait=True,
-  )
+  try:
+    return await ctx.run_node(
+        wrapped_target,
+        node_input=fc.args,
+        run_id=fc.id,
+        use_sub_branch=True,
+        override_isolation_scope=fc.id,
+        raise_on_wait=True,
+    )
+  except DynamicNodeFailError as e:
+    # A miswired agent tree is not the task's answer; let it fail the run.
+    if isinstance(
+        e.error, (WorkflowConfigurationError, WorkflowInvariantError)
+    ):
+      raise
+    # Answer the call with the error, so the parent's model can react to it.
+    # Raising would leave the call unanswered in the session, and every later
+    # turn would dispatch it again before reaching the model.
+    return {'error': f'{type(e.error).__name__}: {e.error}', 'is_error': True}
 
 
 def _synthesize_task_fr_event(fc: types.FunctionCall, output: Any) -> Event:
