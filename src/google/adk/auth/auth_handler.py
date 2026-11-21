@@ -14,8 +14,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from typing import TYPE_CHECKING
+import weakref
 
 from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
@@ -45,6 +48,48 @@ except ImportError:
   AUTHLIB_AVAILABLE = False
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Event-loop-local locks that serialize the exchange of one stored credential.
+# Two tool calls in the same turn can reach `get_auth_response_async` at the
+# same time; without a lock both try to redeem the same single-use
+# authorization code, and the loser overwrites the winner's token.
+#
+# The lock is scoped to the session that owns the credential, so that
+# credentials of different users do not queue behind each other's token
+# request.
+_credential_locks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    weakref.WeakValueDictionary[tuple[str, str, tuple[str, ...]], asyncio.Lock],
+] = weakref.WeakKeyDictionary()
+_credential_locks_guard = threading.Lock()
+
+
+def _get_credential_lock(
+    credential_key: str,
+    state_key: str,
+    lock_scope: tuple[str, ...] = (),
+) -> asyncio.Lock:
+  """Returns the event-loop-local lock that guards one stored credential.
+
+  Args:
+    credential_key: The key of the credential being exchanged.
+    state_key: The state key the credential is stored under.
+    lock_scope: Identifies the owner of the credential, e.g. the app name, the
+      user id and the session id. Two credentials of different owners are
+      exchanged independently.
+  """
+  loop = asyncio.get_running_loop()
+  lock_key = (credential_key, state_key, lock_scope)
+  with _credential_locks_guard:
+    locks_for_loop = _credential_locks.get(loop)
+    if locks_for_loop is None:
+      locks_for_loop = weakref.WeakValueDictionary()
+      _credential_locks[loop] = locks_for_loop
+    lock = locks_for_loop.get(lock_key)
+    if lock is None:
+      lock = asyncio.Lock()
+      locks_for_loop[lock_key] = lock
+    return lock
 
 
 def _normalize_oauth_scopes(
@@ -251,10 +296,29 @@ class AuthHandler:
     state[key] = _credential_without_client_secret(exchange_result.credential)
     return exchange_result.credential
 
-  async def _get_auth_response_async(
-      self, state: State
+  async def get_auth_response_async(
+      self,
+      state: State,
+      lock_scope: tuple[str, ...] | None = None,
   ) -> AuthCredential | None:
-    """Same as `get_auth_response`, awaiting the token request in place."""
+    """Same as `get_auth_response`, but awaits the token request in place.
+
+    The token request is awaited instead of blocking the calling thread, so
+    callers on an event loop keep running while the exchange is in flight.
+
+    The read, the exchange and the write-back are guarded by a per-credential
+    lock: an authorization code can only be redeemed once, so two concurrent
+    callers must not both exchange it. The second caller waits for the first
+    one and then finds the already exchanged credential.
+
+    Args:
+      state: The session state holding the stored auth response.
+      lock_scope: Identifies the owner of the credential, e.g. the app name,
+        the user id and the session id. Credentials of different owners are
+        exchanged independently, so one user's token request does not delay
+        another user's. Callers that don't pass a scope share one lock per
+        credential key.
+    """
     stored = self._read_stored_credential(state)
     if stored is None:
       return None
@@ -267,11 +331,36 @@ class AuthHandler:
     if not self._is_exchangeable(credential, allow_public=True):
       return credential
 
-    exchange_result = await OAuth2CredentialExchanger().exchange(
-        credential, self.auth_config.auth_scheme
-    )
-    state[key] = _credential_without_client_secret(exchange_result.credential)
-    return exchange_result.credential
+    async with _get_credential_lock(
+        self.auth_config.credential_key or "", key, lock_scope or ()
+    ):
+      # Re-read under the lock: another caller may have redeemed the code
+      # while this one was waiting for the lock.
+      stored = self._read_stored_credential(state)
+      if stored is None:
+        return None
+
+      key, credential = stored
+      credential = _with_configured_client(
+          credential=credential,
+          raw_credential=self.auth_config.raw_auth_credential,
+      )
+      if not self._is_exchangeable(credential, allow_public=True):
+        return credential
+
+      exchange_result = await OAuth2CredentialExchanger().exchange(
+          credential, self.auth_config.auth_scheme
+      )
+      state[key] = _credential_without_client_secret(exchange_result.credential)
+      return exchange_result.credential
+
+  async def _get_auth_response_async(
+      self,
+      state: State,
+      lock_scope: tuple[str, ...] | None = None,
+  ) -> AuthCredential | None:
+    """Same as `get_auth_response`, awaiting the token request in place."""
+    return await self.get_auth_response_async(state, lock_scope=lock_scope)
 
   def generate_auth_request(self) -> AuthConfig:
     return _without_configured_secrets(self._generate_auth_request())
