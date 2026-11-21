@@ -337,6 +337,29 @@ class TestBuildFunctionDeclarationLegacy:
 
     assert function_decl.parameters.required == ['input_str']
 
+  def test_build_declaration_marks_optional_without_default_as_required(self):
+    def optional_no_default(name: str, nickname: str | None) -> str:
+      return name
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=optional_no_default
+    )
+
+    # `nickname` may be None but has no default, so it is still a required
+    # argument at call time and must be advertised as such to the model.
+    assert function_decl.parameters.required == ['name', 'nickname']
+
+  def test_build_declaration_omits_optional_with_none_default(self):
+    def optional_none_default(name: str, nickname: str | None = None) -> str:
+      return name
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=optional_none_default
+    )
+
+    # An explicit `= None` default makes the argument optional.
+    assert function_decl.parameters.required == ['name']
+
   def test_all_parameters_ignored_results_in_no_parameters_schema(self):
     def only_context(tool_context: ToolContext) -> str:
       return ''
