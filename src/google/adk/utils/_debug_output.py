@@ -89,8 +89,13 @@ def print_event(event: Event, *, verbose: bool = False) -> None:
           )
         # Handle executable code parts
         elif part.executable_code:
-          lang = part.executable_code.language or 'code'
-          print(f'{event.author} > [Executing {lang} code...]')
+          # Use the enum's value; formatting the enum includes its class name.
+          lang = part.executable_code.language
+          lang = getattr(lang, 'value', lang)
+          if lang in (None, 'LANGUAGE_UNSPECIFIED'):
+            print(f'{event.author} > [Executing code (language unknown)...]')
+          else:
+            print(f'{event.author} > [Executing {lang} code...]')
         # Handle code execution result parts
         elif part.code_execution_result:
           output = part.code_execution_result.output or 'result'
