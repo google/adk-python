@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 from unittest import mock
 
 from google.adk.features._feature_registry import FeatureName
@@ -34,6 +35,34 @@ from ._sdk_compat import field
 
 class TestAdkToMcpToolType:
   """Tests for adk_to_mcp_tool_type function."""
+
+  @pytest.mark.parametrize("json_schema_enabled", [False, True])
+  @pytest.mark.parametrize(
+      "arguments",
+      [
+          {"query": None, "related_queries": ["rice"]},
+          {"query": "rice", "related_queries": [None]},
+          {"query": "rice", "related_queries": ["soup"]},
+      ],
+  )
+  def test_function_tool_nullable_arguments_remain_valid(
+      self, env_variables, json_schema_enabled, arguments
+  ):
+    """MCP clients accept null wherever the exported function allows it."""
+
+    def lookup(query: str | None, related_queries: list[str | None]) -> str:
+      """Look up records, optionally without a search query."""
+      return query or "all"
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_enabled
+    ):
+      result = adk_to_mcp_tool_type(FunctionTool(lookup))
+    validator = Draft202012Validator(field(result, "inputSchema"))
+
+    validator.validate(arguments)
+    assert not validator.is_valid({"query": 7, "related_queries": []})
+    assert not validator.is_valid({"query": "rice", "related_queries": [7]})
 
   @pytest.mark.parametrize("json_schema_enabled", [False, True])
   @pytest.mark.parametrize("record_id", ["record-7", 7])
@@ -74,6 +103,37 @@ class TestAdkToMcpToolType:
     assert result.name == "test_tool"
     assert result.description == "Test tool"
     assert field(result, "inputSchema") == {}
+
+  def test_nullable_json_schema_preserves_data_and_source(self):
+    """Schema conversion leaves user defaults and the declaration intact."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "payload": {
+                "type": "object",
+                "nullable": True,
+                "default": {"nullable": True, "type": "STRING"},
+                "properties": {"nullable": {"type": "boolean"}},
+            }
+        },
+    }
+    original = copy.deepcopy(schema)
+    mock_tool = mock.Mock(spec=BaseTool)
+    mock_tool.name = "store"
+    mock_tool.description = "Store a payload"
+    declaration = types.FunctionDeclaration(parameters_json_schema=schema)
+    mock_tool._get_declaration.return_value = declaration
+
+    result = adk_to_mcp_tool_type(mock_tool)
+    exported = field(result, "inputSchema")
+    validator = Draft202012Validator(exported)
+    validator.validate({"payload": None})
+    validator.validate({"payload": {"nullable": False}})
+    assert exported["properties"]["payload"]["anyOf"][0]["default"] == {
+        "nullable": True,
+        "type": "STRING",
+    }
+    assert declaration.parameters_json_schema == original
 
   def test_tool_with_parameters_schema(self):
     """Test conversion when tool has parameters Schema object."""
@@ -301,13 +361,28 @@ class TestGeminiToJsonSchema:
         "example": "Rome",
     }
 
-  def test_nullable_true_is_emitted(self):
+  def test_nullable_true_accepts_null(self):
     schema = types.Schema(type=types.Type.STRING, nullable=True)
 
     assert gemini_to_json_schema(schema) == {
-        "type": "string",
-        "nullable": True,
+        "anyOf": [{"type": "string"}, {"type": "null"}],
     }
+
+  @pytest.mark.parametrize(
+      "schema",
+      [
+          types.Schema(type=types.Type.STRING, enum=["red"], nullable=True),
+          types.Schema(
+              any_of=[types.Schema(type=types.Type.INTEGER, minimum=1)],
+              nullable=True,
+          ),
+      ],
+  )
+  def test_nullable_constraints_still_accept_null(self, schema):
+    """The null alternative is independent of enum and union constraints."""
+    validator = Draft202012Validator(gemini_to_json_schema(schema))
+    assert validator.is_valid(None)
+    assert not validator.is_valid("blue")
 
   def test_nullable_false_is_omitted(self):
     """Only an explicit True is meaningful; False is the default already."""
