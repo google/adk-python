@@ -10,7 +10,7 @@ The Google Security Team will process your report within a day, and respond with
 
 ## ADK threat model
 
-![ADK Threat Model Diagram](./adk-threat-model.svg)
+![ADK Threat Model Diagram](/.github/adk-threat-model.svg)
 
 ### Trust boundaries
 
