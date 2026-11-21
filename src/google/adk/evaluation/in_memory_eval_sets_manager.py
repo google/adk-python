@@ -48,7 +48,8 @@ class InMemoryEvalSetsManager(EvalSetsManager):
   @override
   def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
     self._ensure_app_exists(app_name)
-    return self._eval_sets[app_name].get(eval_set_id, None)
+    eval_set = self._eval_sets[app_name].get(eval_set_id)
+    return eval_set.model_copy(deep=True) if eval_set is not None else None
 
   @override
   def create_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
@@ -65,7 +66,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
     )
     self._eval_sets[app_name][eval_set_id] = new_eval_set
     self._eval_cases[app_name][eval_set_id] = {}
-    return new_eval_set
+    return new_eval_set.model_copy(deep=True)
 
   @override
   def list_eval_sets(self, app_name: str) -> list[str]:
@@ -82,7 +83,8 @@ class InMemoryEvalSetsManager(EvalSetsManager):
       return None
     if eval_set_id not in self._eval_cases[app_name]:
       return None
-    return self._eval_cases[app_name][eval_set_id].get(eval_case_id)
+    eval_case = self._eval_cases[app_name][eval_set_id].get(eval_case_id)
+    return eval_case.model_copy(deep=True) if eval_case is not None else None
 
   @override
   def add_eval_case(
@@ -99,6 +101,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
           f" {eval_set_id} for app {app_name}."
       )
 
+    eval_case = eval_case.model_copy(deep=True)
     self._eval_cases[app_name][eval_set_id][eval_case.eval_id] = eval_case
     # Also update the list in the EvalSet object
     self._eval_sets[app_name][eval_set_id].eval_cases.append(eval_case)
@@ -119,6 +122,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
       )
 
     # Full replace
+    updated_eval_case = updated_eval_case.model_copy(deep=True)
     self._eval_cases[app_name][eval_set_id][
         updated_eval_case.eval_id
     ] = updated_eval_case
