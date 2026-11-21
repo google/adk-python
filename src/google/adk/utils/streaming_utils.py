@@ -38,7 +38,7 @@ _JSON_PATH_TOKEN_RE = re.compile(
     re.VERBOSE,
 )
 
-_JSON_HIGH_SURROGATE_ESCAPE_RE = re.compile(r'\\u[dD][89aAbB][0-9a-fA-F]{2}')
+_JSON_HIGH_SURROGATE_ESCAPE_RE = re.compile(r"\\u[dD][89aAbB][0-9a-fA-F]{2}")
 
 
 def _unescape_json_path_string(s: str) -> str:
@@ -47,21 +47,21 @@ def _unescape_json_path_string(s: str) -> str:
       return chr(int(match.group(1), 16))
     ch = match.group(2)
     escapes = {
-        'n': '\n',
-        'r': '\r',
-        't': '\t',
-        'b': '\b',
-        'f': '\f',
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "b": "\b",
+        "f": "\f",
     }
     return escapes.get(ch, ch)
 
-  return re.sub(r'\\u([0-9a-fA-F]{4})|\\(.)', replace, s)
+  return re.sub(r"\\u([0-9a-fA-F]{4})|\\(.)", replace, s)
 
 
 def _parse_json_path(json_path: str) -> list[str | int]:
-  if json_path.startswith('$.'):
+  if json_path.startswith("$."):
     path = json_path[2:]
-  elif json_path.startswith('$'):
+  elif json_path.startswith("$"):
     path = json_path[1:]
   else:
     path = json_path
@@ -80,16 +80,16 @@ def _parse_json_path(json_path: str) -> list[str | int]:
 
 
 def _append_json_path_key(path: str, key: str) -> str:
-  if re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*', key):
-    return f'{path}.{key}'
+  if re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", key):
+    return f"{path}.{key}"
   escaped = (
-      key.replace('\\', '\\\\')
+      key.replace("\\", "\\\\")
       .replace("'", "\\'")
-      .replace('\n', '\\n')
-      .replace('\r', '\\r')
-      .replace('\t', '\\t')
-      .replace('\b', '\\b')
-      .replace('\f', '\\f')
+      .replace("\n", "\\n")
+      .replace("\r", "\\r")
+      .replace("\t", "\\t")
+      .replace("\b", "\\b")
+      .replace("\f", "\\f")
   )
   return f"{path}['{escaped}']"
 
@@ -178,6 +178,9 @@ class StreamingResponseAggregator:
   def __init__(self) -> None:
     self._text: list[str] = []
     self._thought_text: list[str] = []
+    # Tracks whether any content was ever accumulated, for close() to
+    # distinguish an empty MAX_TOKENS response from one that has text.
+    self._has_content: bool = False
     self._usage_metadata: types.GenerateContentResponseUsageMetadata | None = (
         None
     )
@@ -207,7 +210,7 @@ class StreamingResponseAggregator:
     makes it redo the reasoning the signature stood for.
     """
     if self._current_text_buffer:
-      buffered_text = ''.join(self._current_text_buffer)
+      buffered_text = "".join(self._current_text_buffer)
       if self._current_text_is_thought:
         merged_part = types.Part(text=buffered_text, thought=True)
       else:
@@ -244,7 +247,7 @@ class StreamingResponseAggregator:
       )
       self._active_function_call.arg_chunks[json_path] = chunks
       # Reserve the key so the flushed args keep their arrival order.
-      self._set_value_by_json_path(json_path, '')
+      self._set_value_by_json_path(json_path, "")
 
     chunks.append(string_chunk)
 
@@ -303,7 +306,7 @@ class StreamingResponseAggregator:
 
     # Join the buffered string chunks into their final values
     for json_path, chunks in state.arg_chunks.items():
-      self._set_value_by_json_path(json_path, ''.join(chunks))
+      self._set_value_by_json_path(json_path, "".join(chunks))
 
     # Create function call part with accumulated args
     fc_part = types.Part.from_function_call(
@@ -444,6 +447,8 @@ class StreamingResponseAggregator:
     # results = []
     self._response = response
     llm_response = LlmResponse.create(response)
+    if llm_response.content and llm_response.content.parts:
+      self._has_content = True
     # Usage is typically reported on a single chunk; keep the last reported
     # value rather than letting a usage-less trailing chunk erase it.
     if llm_response.usage_metadata:
@@ -505,11 +510,13 @@ class StreamingResponseAggregator:
         and llm_response.content.parts[0].text
     ):
       part0 = llm_response.content.parts[0]
-      part_text = part0.text or ''
+      part_text = part0.text or ""
       if part0.thought:
         self._thought_text.append(part_text)
+        self._has_content = True
       else:
         self._text.append(part_text)
+        self._has_content = True
       llm_response.partial = True
     elif (self._thought_text or self._text) and (
         not llm_response.content
@@ -519,9 +526,9 @@ class StreamingResponseAggregator:
     ):
       parts = []
       if self._thought_text:
-        parts.append(types.Part(text=''.join(self._thought_text), thought=True))
+        parts.append(types.Part(text="".join(self._thought_text), thought=True))
       if self._text:
-        parts.append(types.Part.from_text(text=''.join(self._text)))
+        parts.append(types.Part.from_text(text="".join(self._text)))
       yield LlmResponse(
           content=types.ModelContent(parts=parts),
           usage_metadata=llm_response.usage_metadata,
@@ -547,7 +554,7 @@ class StreamingResponseAggregator:
     deduped_parts: list[types.Part] = []
     for part in parts:
       fc = part.function_call
-      if fc and fc.id and not fc.id.startswith('adk-'):
+      if fc and fc.id and not fc.id.startswith("adk-"):
         if fc.id in seen_fc_ids:
           continue
         seen_fc_ids.add(fc.id)
@@ -576,8 +583,13 @@ class StreamingResponseAggregator:
     error_code: str | None = None
     error_message = None
     if finish_reason and finish_reason != types.FinishReason.STOP:
-      error_code = finish_reason
-      error_message = candidate.finish_message if candidate else None
+      # Match the non-streaming path in LlmResponse.create: only set
+      # error_code when the aggregated response carries no content. A
+      # MAX_TOKENS response with text should report finish_reason but not
+      # error_code (issue #7973).
+      if not self._has_content:
+        error_code = finish_reason
+        error_message = candidate.finish_message if candidate else None
     elif not candidate and self._response.prompt_feedback:
       error_code = self._response.prompt_feedback.block_reason
       error_message = self._response.prompt_feedback.block_reason_message
@@ -609,9 +621,9 @@ class StreamingResponseAggregator:
     # ========== Non-Progressive SSE Streaming (old behavior) ==========
     parts = []
     if self._thought_text:
-      parts.append(types.Part(text=''.join(self._thought_text), thought=True))
+      parts.append(types.Part(text="".join(self._thought_text), thought=True))
     if self._text:
-      parts.append(types.Part.from_text(text=''.join(self._text)))
+      parts.append(types.Part.from_text(text="".join(self._text)))
 
     content = types.ModelContent(parts=parts) if parts else None
 
@@ -634,7 +646,7 @@ class _JsonPathTracker:
   def __init__(self) -> None:
     self.accumulated_parts: list[str] = []
     self.previous_dict: dict[str, Any] = {}
-    self.previous_completed = ''
+    self.previous_completed = ""
     self.need_reset = False
     self._stack: list[str] = []
     self._in_string = False
@@ -651,7 +663,7 @@ class _JsonPathTracker:
 
     if self.need_reset:
       self.accumulated_parts = []
-      self.previous_completed = ''
+      self.previous_completed = ""
       self.previous_dict = {}
       self.need_reset = False
       self._stack = []
@@ -670,14 +682,14 @@ class _JsonPathTracker:
         and self._current_path is not None
         and self._parsed_current_path is not None
         and '"' not in chunk
-        and '\\' not in chunk
+        and "\\" not in chunk
     ):
       self.accumulated_parts.append(chunk)
       existing_val, found = _get_value_by_json_path(
           self.previous_dict, self._parsed_current_path
       )
       new_val = (
-          existing_val if (found and isinstance(existing_val, str)) else ''
+          existing_val if (found and isinstance(existing_val, str)) else ""
       ) + chunk
       _set_value_by_json_path(
           self.previous_dict, self._parsed_current_path, new_val
@@ -698,20 +710,20 @@ class _JsonPathTracker:
       if self._in_string:
         if self._escaped:
           self._escaped = False
-        elif char == '\\':
+        elif char == "\\":
           self._escaped = True
         elif char == '"':
           self._in_string = False
       else:
         if char == '"':
           self._in_string = True
-        elif char in '{[':
+        elif char in "{[":
           self._stack.append(char)
           self._seen_open = True
-        elif char in '}]':
+        elif char in "}]":
           if self._stack and (
-              (char == '}' and self._stack[-1] == '{')
-              or (char == ']' and self._stack[-1] == '[')
+              (char == "}" and self._stack[-1] == "{")
+              or (char == "]" and self._stack[-1] == "[")
           ):
             self._stack.pop()
 
@@ -729,7 +741,7 @@ class _JsonPathTracker:
         return [
             types.PartialArg(
                 json_path=closed_path,
-                string_value='',
+                string_value="",
                 will_continue=False,
             )
         ]
@@ -760,7 +772,7 @@ class _JsonPathTracker:
           0,
           types.PartialArg(
               json_path=self._open_string_path,
-              string_value='',
+              string_value="",
               will_continue=False,
           ),
       )
@@ -784,12 +796,12 @@ class _JsonPathTracker:
 
   def _complete_json(self) -> str:
     if not self._seen_open:
-      return ''
+      return ""
 
     if self._in_string:
       if self._escaped:
-        return ''
-      prefix = ''.join(self.accumulated_parts)
+        return ""
+      prefix = "".join(self.accumulated_parts)
       # A high surrogate needs the following low surrogate before json.loads
       # can decode the pair into a character that can be serialized as UTF-8.
       # Escaped backslashes are literal text and must not delay streaming.
@@ -799,16 +811,16 @@ class _JsonPathTracker:
           prefix, escape_start
       ):
         i = escape_start - 1
-        while i >= 0 and prefix[i] == '\\':
+        while i >= 0 and prefix[i] == "\\":
           i -= 1
         if (escape_start - 1 - i) % 2 == 0:
-          return ''
-      suffix = '"' + ''.join(
-          '}' if op == '{' else ']' for op in reversed(self._stack)
+          return ""
+      suffix = '"' + "".join(
+          "}" if op == "{" else "]" for op in reversed(self._stack)
       )
       return prefix + suffix
 
-    last_non_ws = ''
+    last_non_ws = ""
     last_part_idx = -1
     last_char_idx = -1
     for i in range(len(self.accumulated_parts) - 1, -1, -1):
@@ -821,30 +833,30 @@ class _JsonPathTracker:
         break
 
     if not last_non_ws:
-      return ''
+      return ""
 
     # A dangling colon or a trailing numeric literal not yet terminated by
     # whitespace/delimiter must not be prematurely completed.
-    if last_non_ws == ':' or last_non_ws.isdigit():
-      return ''
-    elif (last_non_ws == '{' and len(self._stack) > 1) or last_non_ws == '[':
-      return ''
-    elif last_non_ws == ',':
-      prefix = ''.join(self.accumulated_parts[:last_part_idx]) + (
+    if last_non_ws == ":" or last_non_ws.isdigit():
+      return ""
+    elif (last_non_ws == "{" and len(self._stack) > 1) or last_non_ws == "[":
+      return ""
+    elif last_non_ws == ",":
+      prefix = "".join(self.accumulated_parts[:last_part_idx]) + (
           self.accumulated_parts[last_part_idx][:last_char_idx]
       )
-      suffix = ''.join(
-          '}' if op == '{' else ']' for op in reversed(self._stack)
+      suffix = "".join(
+          "}" if op == "{" else "]" for op in reversed(self._stack)
       )
       return prefix + suffix
     else:
-      suffix = ''.join(
-          '}' if op == '{' else ']' for op in reversed(self._stack)
+      suffix = "".join(
+          "}" if op == "{" else "]" for op in reversed(self._stack)
       )
-      return ''.join(self.accumulated_parts) + suffix
+      return "".join(self.accumulated_parts) + suffix
 
   def _get_diff(
-      self, prev: Any, curr: Any, path: str = '$'
+      self, prev: Any, curr: Any, path: str = "$"
   ) -> list[types.PartialArg]:
     diffs = []
     if isinstance(curr, dict) and isinstance(prev, dict):
@@ -856,7 +868,7 @@ class _JsonPathTracker:
           diffs.extend(self._get_diff(prev[k], v, curr_path))
     elif isinstance(curr, list) and isinstance(prev, list):
       for i, v in enumerate(curr):
-        curr_path = f'{path}[{i}]'
+        curr_path = f"{path}[{i}]"
         if i >= len(prev):
           diffs.extend(self._get_diff_new_value(curr_path, v))
         else:
@@ -895,7 +907,7 @@ class _JsonPathTracker:
         )
     elif isinstance(val, list) and val:
       for i, v in enumerate(val):
-        diffs.extend(self._get_diff_new_value(f'{path}[{i}]', v))
+        diffs.extend(self._get_diff_new_value(f"{path}[{i}]", v))
     else:
       diffs.append(self._create_partial_arg(path, val))
     return diffs
@@ -937,6 +949,6 @@ class _JsonPathTracker:
       )
     elif val is None:
       return types.PartialArg(
-          json_path=path, null_value='NULL_VALUE', will_continue=False
+          json_path=path, null_value="NULL_VALUE", will_continue=False
       )
     return types.PartialArg(json_path=path, will_continue=False)
