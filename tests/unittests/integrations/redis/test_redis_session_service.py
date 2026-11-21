@@ -397,6 +397,36 @@ async def test_list_sessions(session_service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("user_id", ["u1", None])
+async def test_list_sessions_omits_events(session_service, user_id):
+  """Listed sessions carry their state but not their event history."""
+  session = await session_service.create_session(
+      app_name="app1", user_id="u1", session_id="s1"
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(role="user", parts=[types.Part(text="hi")]),
+          actions=EventActions(state_delta={"k": "v"}),
+      ),
+  )
+
+  response = await session_service.list_sessions(
+      app_name="app1", user_id=user_id
+  )
+
+  assert [s.id for s in response.sessions] == ["s1"]
+  assert response.sessions[0].events == []
+  assert response.sessions[0].state == {"k": "v"}
+  fetched = await session_service.get_session(
+      app_name="app1", user_id="u1", session_id="s1"
+  )
+  assert len(fetched.events) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "user_id, expected",
     [
