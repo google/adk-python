@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+import re
 import ssl
 from typing import Any
 from typing import Callable
@@ -172,6 +173,31 @@ def _encode_path_param(*, name: str, value: str) -> str:
           " parent-directory segments."
       )
   return quote(value, safe="")
+
+
+_PATH_TEMPLATE_FIELD_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def _fill_path_template(path: str, path_params: dict[str, str]) -> str:
+  """Substitutes each ``{name}`` in an OpenAPI path template.
+
+  ``str.format`` reads ``.`` and ``[`` in a field name as attribute and index
+  access, so a template such as ``/files/{file.name}`` would look up
+  ``file`` instead of ``file.name``. Each name is looked up whole here.
+
+  Args:
+    path: The OpenAPI path template.
+    path_params: Encoded parameter values keyed by their original names.
+
+  Returns:
+    The path with every placeholder replaced.
+
+  Raises:
+    KeyError: If a placeholder has no value in ``path_params``.
+  """
+  return _PATH_TEMPLATE_FIELD_RE.sub(
+      lambda match: path_params[match.group(1)], path
+  )
 
 
 class RestApiTool(BaseTool):
@@ -535,7 +561,7 @@ class RestApiTool(BaseTool):
     base_url = self.endpoint.base_url or ""
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
     try:
-      formatted_path = self.endpoint.path.format(**path_params)
+      formatted_path = _fill_path_template(self.endpoint.path, path_params)
     except KeyError as e:
       missing_param = e.args[0] if e.args else str(e)
       for param in parameters:
