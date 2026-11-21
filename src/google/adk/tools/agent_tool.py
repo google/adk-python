@@ -50,6 +50,7 @@ if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..apps._configs import EventsCompactionConfig
+  from ..models.llm_request import LlmRequest
   from ..sessions.session import Session
 
 
@@ -146,6 +147,38 @@ def _get_output_schema(agent: BaseAgent) -> Optional[SchemaType]:
   return None
 
 
+async def _resolve_agent_description(
+    agent: BaseAgent, tool_context: ToolContext
+) -> Optional[str]:
+  """Returns the description to show the model for an agent that reads it lazily.
+
+  An agent like `RemoteA2aAgent` can only learn its description from the remote
+  agent's card, which takes a network call, so `agent.description` is empty
+  until then. ADK already resolves it that way when such an agent is a
+  `transfer_to_agent` target (see `_build_transfer_target_info`); this does the
+  same when the agent is exposed to the model as a tool. The result is reused
+  from the transfer path's per-invocation cache, falls back to
+  `agent.description` if the lookup fails, and keeps the same fencing of text
+  that arrived over the network.
+
+  Args:
+    agent: The agent the tool wraps.
+    tool_context: The tool context of the request being built.
+
+  Returns:
+    The resolved description, or None for an agent that has no such hook, which
+    keeps using `agent.description` as before.
+  """
+  if not callable(getattr(agent, '_get_transfer_description', None)):
+    return None
+  from ..flows.llm_flows.extensions._agent_transfer import _build_transfer_target_info
+
+  info = await _build_transfer_target_info(
+      agent, tool_context._invocation_context
+  )
+  return info.description
+
+
 class AgentTool(BaseTool):
   """A tool that wraps an agent.
 
@@ -196,6 +229,29 @@ class AgentTool(BaseTool):
     data['name'] = data['agent'].name
     return data
 
+  def _describe(self, agent_description: str) -> str:
+    """Returns the tool description to declare for the wrapped agent's own."""
+    return agent_description
+
+  @override
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    await super().process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+    # `_get_declaration` is synchronous and can only see `agent.description`.
+    # For an agent that reads it lazily, replace it in the declaration that was
+    # just added, so no shared state is touched.
+    description = await _resolve_agent_description(self.agent, tool_context)
+    if not description or description == self.agent.description:
+      return
+    for tool in reversed(llm_request.config.tools or []):
+      for declaration in reversed(tool.function_declarations or []):
+        if declaration.name == self.name:
+          declaration.description = self._describe(description)
+          return
+
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:
     from ..utils.variant_utils import GoogleLLMVariant
@@ -208,12 +264,12 @@ class AgentTool(BaseTool):
           func=input_schema, variant=self._api_variant
       )
       # Override the description with the agent's description
-      result.description = self.agent.description
+      result.description = self._describe(self.agent.description)
     else:
       if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
         result = types.FunctionDeclaration(
             name=self.name,
-            description=self.agent.description,
+            description=self._describe(self.agent.description),
             parameters_json_schema={
                 'type': 'object',
                 'properties': {
@@ -233,7 +289,7 @@ class AgentTool(BaseTool):
                 },
                 required=['request'],
             ),
-            description=self.agent.description,
+            description=self._describe(self.agent.description),
             name=self.name,
         )
 
@@ -645,6 +701,14 @@ class _TaskAgentTool(AgentTool):
     self._defers_response = True
 
   @override
+  def _describe(self, agent_description: str) -> str:
+    suffix = (
+        '\nIMPORTANT: This tool delegates execution to a specialized agent.'
+        ' Do NOT call this tool in parallel with any other tools.'
+    )
+    return f'{agent_description or ""}{suffix}'.strip()
+
+  @override
   def _get_declaration(self) -> types.FunctionDeclaration:
     from ..utils.variant_utils import GoogleLLMVariant
 
@@ -657,12 +721,7 @@ class _TaskAgentTool(AgentTool):
             func=input_schema
         )
     )
-    base_desc = self.agent.description or ''
-    suffix = (
-        '\nIMPORTANT: This tool delegates execution to a specialized agent.'
-        ' Do NOT call this tool in parallel with any other tools.'
-    )
-    result.description = f'{base_desc}{suffix}'.strip()
+    result.description = self._describe(self.agent.description)
     result.name = self.name
 
     if self._api_variant != GoogleLLMVariant.GEMINI_API:
