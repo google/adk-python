@@ -653,3 +653,102 @@ async def test_add_session_to_memory_skips_rewound_events(mocker, temp_dir):
   assert len(uploaded) == 1
   assert "sensitive memory" in uploaded[0]
   assert "rewound memory" not in uploaded[0]
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        pytest.param(
+            [[(1, "user", "question")], [(1, "model", "answer")]],
+            [("user", "question"), ("model", "answer")],
+            id="same-timestamp-different-author-and-text",
+        ),
+        pytest.param(
+            [[(1, "user", "first")], [(1, "user", "second")]],
+            [("user", "first"), ("user", "second")],
+            id="same-timestamp-different-text",
+        ),
+        pytest.param(
+            [[(1, "user", "hello")], [(1, "model", "hello")]],
+            [("user", "hello"), ("model", "hello")],
+            id="same-timestamp-different-author",
+        ),
+        pytest.param(
+            [[(1, "user", "question")], [(1, "user", "question")]],
+            [("user", "question")],
+            id="exact-overlap",
+        ),
+        pytest.param(
+            [
+                [(2, "user", "question")],
+                [(2, "user", "question"), (2, "model", "answer")],
+                [(2, "model", "answer"), (3, "model", "later")],
+                [(1, "user", "earlier"), (2, "user", "question")],
+            ],
+            [
+                ("user", "earlier"),
+                ("user", "question"),
+                ("model", "answer"),
+                ("model", "later"),
+            ],
+            id="transitive-overlap-with-stable-timestamp-order",
+        ),
+        pytest.param(
+            [
+                [(1, "user", "first")],
+                [(3, "model", "last")],
+                [(1, "user", "first"), (2, "model", "middle")],
+                [(2, "model", "middle"), (3, "model", "last")],
+            ],
+            [("user", "first"), ("model", "middle"), ("model", "last")],
+            id="bridge-merges-previously-disjoint-chunks",
+        ),
+        pytest.param(
+            [[(3, "user", "ranked-first")], [(1, "model", "ranked-second")]],
+            [("user", "ranked-first"), ("model", "ranked-second")],
+            id="disjoint-chunks-keep-retrieval-order",
+        ),
+    ],
+)
+async def test_search_memory_preserves_distinct_events_across_chunks(
+    mocker: MockerFixture,
+    chunks: list[list[tuple[int, str, str]]],
+    expected: list[tuple[str, str]],
+) -> None:
+  """Only identical transcript events are removed from overlapping chunks."""
+  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
+  source = _build_source_display_name("demo", "alice", "session-1")
+  fake_client = _async_client(mocker)
+  fake_client.rag.list_files.return_value = SimpleNamespace(
+      rag_files=[_rag_file("file-1", source)], next_page_token=None
+  )
+  fake_client.rag.retrieve_contexts.return_value = SimpleNamespace(
+      contexts=SimpleNamespace(
+          contexts=[
+              SimpleNamespace(
+                  source_display_name=source,
+                  text="\n".join(
+                      json.dumps({
+                          "timestamp": timestamp,
+                          "author": author,
+                          "text": text,
+                      })
+                      for timestamp, author, text in chunk
+                  ),
+              )
+              for chunk in chunks
+          ]
+      )
+  )
+  mocker.patch(
+      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
+  )
+
+  response = await memory_service.search_memory(
+      app_name="demo", user_id="alice", query="memory"
+  )
+
+  assert [
+      (memory.author, memory.content.parts[0].text)
+      for memory in response.memories
+  ] == expected
