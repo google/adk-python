@@ -816,7 +816,17 @@ class RestApiTool(BaseTool):
       )
     except ValueError:
       self._logger.debug("API Response (non-JSON): %s", response.text)
-      return {"text": response.text}  # Return text if not JSON
+      # A bare "text" leaves the model unable to tell an empty or non-JSON
+      # body from data, so say which one came back. The call still succeeded,
+      # so this goes under "message", never "error".
+      if response.text.strip():
+        message = "The response body was not valid JSON."
+      else:
+        message = "The response body was empty."
+      return {
+          "text": response.text,  # Return text if not JSON
+          "message": f"{message} Status Code: {response.status_code}",
+      }
 
   def _format_error_response(self, error_message: str) -> dict[str, str]:
     """Formats a tool execution error response dict."""
