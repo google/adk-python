@@ -2075,3 +2075,110 @@ def test_summarize_cross_run_criteria_is_empty_without_criteria():
   """Without cross-run criteria there is nothing to summarize."""
   assert not summarize_cross_run_criteria([_case_with_criteria("case1")])
   assert not summarize_cross_run_criteria([])
+
+
+def test_unscored_run_with_partial_invocation_scores_is_not_evaluated():
+  """A run whose overall metric is NOT_EVALUATED omits its invocation scores.
+
+  When a judge cannot score one turn of a multi-turn conversation, that run's
+  overall metric result is NOT_EVALUATED with no score. The aggregator must not
+  average only the scored turns across runs and falsely pass the metric.
+  """
+  def _make_partially_scored_run(index: int) -> EvalCaseResult:
+    inv1 = EvalMetricResultPerInvocation(
+        actual_invocation=Invocation(
+            user_content=genai_types.Content(parts=[genai_types.Part(text="q1")])
+        ),
+        eval_metric_results=[
+            EvalMetricResult(
+                metric_name="hallucinations_v1",
+                threshold=0.5,
+                score=1.0,
+                eval_status=EvalStatus.PASSED,
+            )
+        ],
+    )
+    inv2 = EvalMetricResultPerInvocation(
+        actual_invocation=Invocation(
+            user_content=genai_types.Content(parts=[genai_types.Part(text="q2")])
+        ),
+        eval_metric_results=[
+            EvalMetricResult(
+                metric_name="hallucinations_v1",
+                threshold=0.5,
+                score=None,
+                eval_status=EvalStatus.NOT_EVALUATED,
+            )
+        ],
+    )
+    return EvalCaseResult(
+        eval_set_id="set1",
+        eval_id="case1",
+        session_id=f"s{index}",
+        repetition_index=index,
+        final_eval_status=EvalStatus.NOT_EVALUATED,
+        overall_eval_metric_results=[
+            EvalMetricResult(
+                metric_name="hallucinations_v1",
+                threshold=0.5,
+                score=None,
+                eval_status=EvalStatus.NOT_EVALUATED,
+            )
+        ],
+        eval_metric_result_per_invocation=[inv1, inv2],
+    )
+
+  runs = [_make_partially_scored_run(i) for i in range(3)]
+  aggregated = aggregate_eval_case_results(runs)
+
+  metric = aggregated[0].overall_eval_metric_results[0]
+  assert metric.score is None
+  assert metric.eval_status == EvalStatus.NOT_EVALUATED
+  assert aggregated[0].final_eval_status == EvalStatus.NOT_EVALUATED
+
+  # In a mixed set of runs, an unscored run's partial invocation scores must not
+  # distort the mean of the scored runs.
+  def _make_scored_run(index: int, score: float) -> EvalCaseResult:
+    invs = [
+        EvalMetricResultPerInvocation(
+            actual_invocation=Invocation(
+                user_content=genai_types.Content(parts=[genai_types.Part(text=f"q{t}")])
+            ),
+            eval_metric_results=[
+                EvalMetricResult(
+                    metric_name="hallucinations_v1",
+                    threshold=0.5,
+                    score=score,
+                    eval_status=EvalStatus.PASSED,
+                )
+            ],
+        )
+        for t in (1, 2)
+    ]
+    return EvalCaseResult(
+        eval_set_id="set1",
+        eval_id="case1",
+        session_id=f"s{index}",
+        repetition_index=index,
+        final_eval_status=EvalStatus.PASSED,
+        overall_eval_metric_results=[
+            EvalMetricResult(
+                metric_name="hallucinations_v1",
+                threshold=0.5,
+                score=score,
+                eval_status=EvalStatus.PASSED,
+            )
+        ],
+        eval_metric_result_per_invocation=invs,
+    )
+
+  mixed_runs = [
+      _make_partially_scored_run(0),
+      _make_scored_run(1, 0.8),
+      _make_scored_run(2, 0.9),
+  ]
+  mixed_aggregated = aggregate_eval_case_results(mixed_runs)
+  mixed_metric = mixed_aggregated[0].overall_eval_metric_results[0]
+  assert mixed_metric.score == pytest.approx(0.85)
+  assert mixed_metric.eval_status == EvalStatus.PASSED
+  assert mixed_aggregated[0].final_eval_status == EvalStatus.PASSED

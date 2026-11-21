@@ -309,7 +309,9 @@ def _get_metric_run_result(
   """Returns one metric's result in one run, or None if the run lacks it.
 
   A run that crashed before it was scored has no result for the metric, and
-  is left out rather than counted as a run the metric did not score.
+  is left out rather than counted as a run the metric did not score. An
+  unscored run whose overall result is NOT_EVALUATED with no score omits its
+  invocation scores, so partial turns do not leak into cross-run aggregation.
   """
   invocation_scores = [
       metric_result.score
@@ -320,6 +322,12 @@ def _get_metric_run_result(
   overall = _get_overall_result(run, metric_name)
   if overall is None and not invocation_scores:
     return None
+  if (
+      overall is not None
+      and overall.eval_status == EvalStatus.NOT_EVALUATED
+      and overall.score is None
+  ):
+    invocation_scores = []
   return RunResult(
       status=overall.eval_status if overall else EvalStatus.NOT_EVALUATED,
       score=overall.score if overall else None,
