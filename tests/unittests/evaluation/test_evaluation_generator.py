@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 from typing import AsyncGenerator
+import warnings
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
@@ -48,6 +49,7 @@ from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -2023,10 +2025,13 @@ class TestGenerateInferencesFromRootAgentWithApp:
     assert id(app.plugins) == original_plugins_id
 
   @pytest.mark.asyncio
-  async def test_runner_falls_back_to_bare_agent_when_no_app(
+  async def test_runner_wraps_bare_agent_in_app_when_no_app(
       self, runner_cls, mock_session_service, stop_immediately_simulator
   ):
-    """When `app` is None, Runner is built with the legacy `agent=`/`plugins=` shape."""
+    """When `app` is None, the bare agent is wrapped in an App with the eval plugins.
+
+    Passing `plugins=` to Runner is deprecated, so the eval Runner must not use it.
+    """
     root_agent = BaseAgent(name="root_agent")
 
     await EvaluationGenerator._generate_inferences_from_root_agent(
@@ -2036,9 +2041,12 @@ class TestGenerateInferencesFromRootAgentWithApp:
 
     runner_cls.assert_called_once()
     kwargs = runner_cls.call_args.kwargs
-    assert "app" not in kwargs
-    assert kwargs["agent"] is root_agent
-    plugin_names = [p.name for p in kwargs["plugins"]]
+    assert "agent" not in kwargs
+    assert "plugins" not in kwargs
+    runner_app = kwargs["app"]
+    assert isinstance(runner_app, App)
+    assert runner_app.root_agent is root_agent
+    plugin_names = [p.name for p in runner_app.plugins]
     assert plugin_names == [
         "request_intercepter_plugin",
         "ensure_retry_options",
@@ -2063,6 +2071,35 @@ class TestGenerateInferencesFromRootAgentWithApp:
     assert runner_app.root_agent is sub_agent
     # User's App must be untouched.
     assert app.root_agent is full_root
+
+
+class TestBuildEvalRunnerKwargs:
+  """Tests that the eval Runner kwargs build a real Runner without warnings."""
+
+  @pytest.mark.parametrize(
+      "app_name",
+      # Eval app names come from the eval session (e.g. an eval case's
+      # `session_input.app_name`) and are not always valid App names. The
+      # legacy Runner path accepted them, so must this.
+      ["my_app", "my-agent.evalset"],
+  )
+  def test_no_app_builds_runner_without_deprecation_warning(self, app_name):
+    root_agent = BaseAgent(name="root_agent")
+    eval_plugin = _SpyPlugin(name="eval_plugin")
+
+    kwargs = evaluation_generator_module._build_eval_runner_kwargs(
+        root_agent=root_agent,
+        app_name=app_name,
+        app=None,
+        internal_eval_plugins=[eval_plugin],
+    )
+    with warnings.catch_warnings():
+      warnings.simplefilter("error", DeprecationWarning)
+      runner = Runner(**kwargs, session_service=InMemorySessionService())
+
+    assert runner.app_name == app_name
+    assert runner.agent is root_agent
+    assert [p.name for p in runner.plugin_manager.plugins] == ["eval_plugin"]
 
 
 # -----------------------------------------------------------------------------
