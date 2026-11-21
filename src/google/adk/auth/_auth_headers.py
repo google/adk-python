@@ -62,11 +62,13 @@ def build_auth_headers(
     ):
       headers = {"Authorization": f"Bearer {credential.http.credentials.token}"}
     elif credential.http.scheme.lower() == "basic":
-      # Handle basic auth
+      # Handle basic auth. Empty username or password values are valid
+      # (e.g. an API key as the username with an empty password), so only
+      # absent (None) values mean the credential is unusable.
       if (
           credential.http.credentials
-          and credential.http.credentials.username
-          and credential.http.credentials.password
+          and credential.http.credentials.username is not None
+          and credential.http.credentials.password is not None
       ):
         credentials_str = (
             f"{credential.http.credentials.username}"
