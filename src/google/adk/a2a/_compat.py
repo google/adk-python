@@ -450,6 +450,27 @@ def data_part_blob_bytes(p: Part) -> bytes:
     return blob
 
 
+def data_from_data_part_blob(raw_json: bytes) -> Any:
+  """Returns the structured data of a blob made by ``data_part_blob_bytes``.
+
+  1.x: the blob is the ``data`` itself.
+  0.3.x: the blob is the whole serialized ``DataPart``, so its ``data`` field
+  is returned.
+
+  Raises:
+    ValueError: If ``raw_json`` is not valid JSON, or on 0.3.x is not a
+      serialized ``DataPart``.
+  """
+  blob = json.loads(raw_json)
+  if IS_A2A_V1:
+    return blob
+  if not isinstance(blob, dict):
+    raise ValueError(
+        f"Expected a serialized DataPart, got {type(blob).__name__}"
+    )
+  return blob.get("data")
+
+
 # -----------------------------------------------------------------------------
 # Serialization helper (model_dump → MessageToDict)
 # -----------------------------------------------------------------------------

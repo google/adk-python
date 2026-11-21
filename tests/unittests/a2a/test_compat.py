@@ -568,6 +568,43 @@ def test_make_data_part_from_blob_adds_metadata_when_blob_has_none():
   assert restored.root.metadata == {'extra': 'e'}
 
 
+def test_data_from_data_part_blob_returns_the_data_of_the_blob():
+  part = _compat.make_data_part(
+      data={'data': 'inner', 'question': 'Proceed?'}, metadata={'m': 'v'}
+  )
+
+  data = _compat.data_from_data_part_blob(_compat.data_part_blob_bytes(part))
+
+  assert data == {'data': 'inner', 'question': 'Proceed?'}
+
+
+def test_data_from_data_part_blob_v1_returns_the_whole_blob(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+
+  data = _compat.data_from_data_part_blob(b'{"data": "inner", "kind": "x"}')
+
+  assert data == {'data': 'inner', 'kind': 'x'}
+
+
+def test_data_from_data_part_blob_v03_returns_the_data_field(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', False)
+
+  data = _compat.data_from_data_part_blob(
+      b'{"data": {"a": 1}, "metadata": {"m": "v"}, "kind": "data"}'
+  )
+
+  assert data == {'a': 1}
+
+
+def test_data_from_data_part_blob_v03_rejects_a_blob_that_is_not_a_data_part(
+    monkeypatch,
+):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', False)
+
+  with pytest.raises(ValueError, match='Expected a serialized DataPart'):
+    _compat.data_from_data_part_blob(b'["a"]')
+
+
 # -----------------------------------------------------------------------------
 # metadata_get
 # -----------------------------------------------------------------------------
