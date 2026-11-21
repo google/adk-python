@@ -20,6 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import PrivateAttr
 
 
 class Trigger(BaseModel):
@@ -42,4 +43,11 @@ class Trigger(BaseModel):
 
   ``None`` inherits the parent's branch; the empty string is a distinct value
   that overrides it with the root branch.
+  """
+
+  _sources: tuple[int, ...] = PrivateAttr(default=())
+  """Workflow-internal ids of the static runs whose completion produced this.
+
+  Set by the owning ``Workflow`` so it can tell which iteration of a loop a
+  run belongs to. Empty for triggers seeded from ``START``.
   """
