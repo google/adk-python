@@ -1097,6 +1097,21 @@ class CompletionsHTTPClient:
       yield response
 
 
+def _coerce_tool_call_args(args: Any) -> dict[str, Any]:
+  """Return tool-call args only when they are a JSON object.
+
+  Chat Completions `arguments` can be valid JSON that is not an object
+  (array, string, number, null). Those values are not valid FunctionCall.args.
+  """
+  if isinstance(args, dict):
+    return args
+  logger.warning(
+      'Tool call arguments must be a JSON object, got %s',
+      type(args).__name__,
+  )
+  return {}
+
+
 class ChatCompletionsResponseHandler:
   """Accumulates responses from the /chat/completions endpoint.
 
@@ -1519,9 +1534,11 @@ class ChatCompletionsResponseHandler:
         accumulated_args = ''.join(self._tool_call_deltas.get(index, []))
         if accumulated_args:
           try:
-            part.function_call.args = _json_utils.safe_json_loads(
-                accumulated_args,
-                context=f'tool call arguments: {accumulated_args}',
+            part.function_call.args = _coerce_tool_call_args(
+                _json_utils.safe_json_loads(
+                    accumulated_args,
+                    context=f'tool call arguments: {accumulated_args}',
+                )
             )
           except ValueError:
             # Fallback: try parsing individual deltas and merging them
@@ -1609,6 +1626,7 @@ class ChatCompletionsResponseHandler:
         args = _json_utils.safe_json_loads(
             args_delta, context=f'tool call arguments: {args_delta}'
         )
+        args = _coerce_tool_call_args(args)
         chunk_function_call.args = args
         if not function_call.args:
           function_call.args = dict(args)
