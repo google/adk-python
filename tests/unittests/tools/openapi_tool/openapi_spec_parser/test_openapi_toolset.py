@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 from typing import Any
 from typing import Dict
@@ -25,7 +26,9 @@ from fastapi.openapi.models import SecuritySchemeType
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
+from google.adk.tools.openapi_tool.openapi_spec_parser.operation_parser import OperationParser
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+import httpx
 import pytest
 import yaml
 
@@ -583,3 +586,152 @@ def test_openapi_toolset_disambiguates_when_suffixed_name_already_taken(
     tool = toolset.get_tool(name)
     assert tool is not None
     assert tool.endpoint.path == f"/items/{i}"
+
+
+@pytest.fixture
+def body_tool_factory():
+  """Build a real toolset with only the HTTP transport replaced."""
+
+  def build(schema, *, required=False, parameters=None):
+    requests = []
+
+    def respond(request):
+      requests.append(request)
+      return httpx.Response(200, json={"ok": True})
+
+    spec = {
+        "openapi": "3.0.3",
+        "info": {"title": "Body serialization", "version": "1"},
+        "servers": [{"url": "https://example.invalid"}],
+        "paths": {
+            "/labels": {
+                "post": {
+                    "operationId": "set_labels",
+                    "parameters": parameters or [],
+                    "requestBody": {
+                        "required": required,
+                        "content": {"application/json": {"schema": schema}},
+                    },
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+    }
+    toolset = OpenAPIToolset(
+        spec_dict=spec,
+        httpx_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(respond)
+        ),
+        allow_private_network_access=True,
+    )
+    return toolset.get_tool("set_labels"), requests
+
+  return build
+
+
+@pytest.mark.parametrize(
+    "schema,payload",
+    [
+        (
+            {"type": "object", "additionalProperties": {"type": "string"}},
+            {"owner": "alice", "team": "red"},
+        ),
+        (
+            {"type": "object", "additionalProperties": True},
+            {"enabled": True, "nested": {"count": 2}},
+        ),
+        ({"type": "object", "additionalProperties": {}}, {"count": 2}),
+        ({"type": "object"}, {"owner": "alice"}),
+        (
+            {"type": "object", "properties": {}, "additionalProperties": True},
+            {"owner": "alice"},
+        ),
+        ({"type": "object", "additionalProperties": {"type": "string"}}, {}),
+    ],
+)
+async def test_dictionary_request_body_preserves_entries(
+    body_tool_factory, schema, payload
+):
+  """A dictionary is sent whole, including an explicitly empty dictionary."""
+  tool, requests = body_tool_factory(schema)
+
+  await tool.run_async(args={"body": payload}, tool_context=None)
+
+  assert json.loads(requests[0].content) == payload
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_dictionary_body_declaration_retains_schema_and_requiredness(
+    body_tool_factory, required
+):
+  """The model can supply dictionary entries using one body argument."""
+  schema = {"type": "object", "additionalProperties": {"type": "string"}}
+  tool, _ = body_tool_factory(schema, required=required)
+
+  declaration = OperationParser(tool.operation).get_json_schema()
+
+  assert declaration["properties"]["body"]["additionalProperties"] == {
+      "type": "string"
+  }
+  assert declaration["required"] == (["body"] if required else [])
+
+
+async def test_dictionary_body_uses_deduplicated_parameter_name(
+    body_tool_factory,
+):
+  """A query named body does not replace or wrap the dictionary payload."""
+  tool, requests = body_tool_factory(
+      {"type": "object", "additionalProperties": True},
+      parameters=[
+          {"name": "body", "in": "query", "schema": {"type": "string"}}
+      ],
+  )
+
+  await tool.run_async(
+      args={"body": "filter", "body_0": {"owner": "alice"}},
+      tool_context=None,
+  )
+
+  assert requests[0].url.params["body"] == "filter"
+  assert json.loads(requests[0].content) == {"owner": "alice"}
+
+
+async def test_optional_dictionary_body_remains_absent(body_tool_factory):
+  """Omitting an optional dictionary does not send an empty JSON object."""
+  tool, requests = body_tool_factory(
+      {"type": "object", "additionalProperties": True}
+  )
+
+  await tool.run_async(args={}, tool_context=None)
+
+  assert requests[0].content == b""
+
+
+@pytest.mark.parametrize("additional_properties", [None, False, True])
+async def test_named_body_properties_keep_flat_arguments(
+    body_tool_factory, additional_properties
+):
+  """Named-property bodies retain their existing argument interface."""
+  schema = {"type": "object", "properties": {"owner": {"type": "string"}}}
+  if additional_properties is not None:
+    schema["additionalProperties"] = additional_properties
+  tool, requests = body_tool_factory(schema)
+
+  declaration = OperationParser(tool.operation).get_json_schema()
+  await tool.run_async(args={"owner": "alice"}, tool_context=None)
+
+  assert set(declaration["properties"]) == {"owner"}
+  assert json.loads(requests[0].content) == {"owner": "alice"}
+
+
+async def test_closed_empty_object_body_keeps_no_arguments(body_tool_factory):
+  """An object that forbids extra keys still has no body argument."""
+  tool, requests = body_tool_factory(
+      {"type": "object", "additionalProperties": False}
+  )
+
+  declaration = OperationParser(tool.operation).get_json_schema()
+  await tool.run_async(args={}, tool_context=None)
+
+  assert declaration["properties"] == {}
+  assert json.loads(requests[0].content) == {}
