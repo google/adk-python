@@ -20,6 +20,7 @@ import asyncio
 from collections.abc import Callable
 from functools import cached_property
 import threading
+import time
 from typing import Any
 from typing import cast
 from typing import Generic
@@ -40,6 +41,11 @@ class _NoRunningLoop:
 
 
 _NO_RUNNING_LOOP = _NoRunningLoop()
+_MISSING = object()
+
+# The clock entries are aged against. A module attribute so tests can replace it
+# without touching the clock the event loop itself runs on.
+_now = time.monotonic
 
 
 class _PerLoopCache(Generic[_T]):
@@ -77,6 +83,13 @@ class _PerLoopCache(Generic[_T]):
     self._values: weakref.WeakKeyDictionary[Any, _T] = (
         weakref.WeakKeyDictionary()
     )
+    # Bumped by `clear`, so a build under way across one does not cache a value
+    # that began before the caches were dropped.
+    self._generation = 0
+    # When each value's build began, on the `_now` clock.
+    self._built_at: weakref.WeakKeyDictionary[Any, float] = (
+        weakref.WeakKeyDictionary()
+    )
     self._build_locks: weakref.WeakKeyDictionary[Any, threading.Lock] = (
         weakref.WeakKeyDictionary()
     )
@@ -90,18 +103,55 @@ class _PerLoopCache(Generic[_T]):
     """
     return (_PerLoopCache, ())
 
-  def get(self, build: Callable[[], _T]) -> _T:
-    """Returns the value for the running loop, calling ``build`` on a miss."""
+  def clear(self) -> None:
+    """Drops every cached value, for every loop, so the next read rebuilds.
+
+    Like the sweep of closed loops, this runs no disposal hook on what it drops.
+    A caller that is still using a dropped value keeps it alive, and it is
+    released when that caller lets go of it. A build already under way when this
+    runs still returns its value to its own caller, but does not cache it.
+    """
+    with self._lock:
+      self._generation += 1
+      self._values.clear()
+      self._built_at.clear()
+
+  def _lookup(self, loop: Any, max_age: float | None) -> tuple[bool, Any]:
+    """Returns ``(True, value)`` when ``loop`` has a value young enough to reuse.
+
+    One lookup of the value, so a concurrent ``clear`` cannot land between a
+    membership test and the read that follows it.
+    """
+    value = self._values.get(loop, _MISSING)
+    if value is _MISSING:
+      return False, None
+    if max_age is not None:
+      built_at = self._built_at.get(loop)
+      if built_at is None or _now() - built_at >= max_age:
+        return False, None
+    return True, value
+
+  def get(self, build: Callable[[], _T], max_age: float | None = None) -> _T:
+    """Returns the value for the running loop, calling ``build`` on a miss.
+
+    Args:
+      build: Called to produce the value when the running loop has none.
+      max_age: When set, a value whose build began this many seconds ago or
+        longer is replaced by a fresh one rather than reused. The old value is
+        only dropped from the cache, never closed, so a caller still holding it
+        keeps a working value.
+    """
     try:
       loop: Any = asyncio.get_running_loop()
     except RuntimeError:
       loop = _NO_RUNNING_LOOP
 
-    # Membership rather than a default, so a cached value of None is a hit.
-    # The key is held by `loop` for as long as this call runs, so the entry
-    # cannot be collected between the two lookups.
-    if loop in self._values:
-      return self._values[loop]
+    # A tuple rather than a default, so a cached value of None is a hit. The key
+    # is held by `loop` for as long as this call runs, so the entry cannot be
+    # collected between the two lookups.
+    hit, value = self._lookup(loop, max_age)
+    if hit:
+      return cast(_T, value)
 
     # Only the miss path is guarded. A hit is an unlocked dictionary lookup,
     # and the entry it finds belongs to the running loop, which cannot be
@@ -112,8 +162,9 @@ class _PerLoopCache(Generic[_T]):
     # loop misses cold, so building under the shared lock would make loops
     # that share nothing queue behind each other.
     with self._lock:
-      if loop in self._values:
-        return self._values[loop]
+      hit, value = self._lookup(loop, max_age)
+      if hit:
+        return cast(_T, value)
       # Dropping an entry runs no disposal hook. An entry is only dropped once
       # its loop is closed or already collected, and neither state can run the
       # asynchronous teardown a client would need; the value releases its
@@ -128,6 +179,7 @@ class _PerLoopCache(Generic[_T]):
           if key is not _NO_RUNNING_LOOP and key.is_closed()
       ]:
         del self._values[stale]
+        self._built_at.pop(stale, None)
       build_lock = self._build_locks.setdefault(loop, threading.Lock())
 
     # Two threads missing the same key at once would otherwise each build a
@@ -135,11 +187,16 @@ class _PerLoopCache(Generic[_T]):
     # and nothing goes on to close it. Only reads made with no loop running
     # can collide that way, since they are the only ones that share a key.
     with build_lock:
-      if loop in self._values:
-        return self._values[loop]
+      hit, value = self._lookup(loop, max_age)
+      if hit:
+        return cast(_T, value)
+      generation = self._generation
+      started_at = _now()
       built = build()
       with self._lock:
-        self._values[loop] = built
+        if generation == self._generation:
+          self._values[loop] = built
+          self._built_at[loop] = started_at
       return built
 
 
@@ -157,7 +214,12 @@ def _cache_for(owner: Any, key: str) -> _PerLoopCache[Any]:
   return cast('_PerLoopCache[Any]', cache)
 
 
-def per_loop_value(owner: Any, key: str, build: Callable[[], _T]) -> _T:
+def per_loop_value(
+    owner: Any,
+    key: str,
+    build: Callable[[], _T],
+    max_age: float | None = None,
+) -> _T:
   """Returns a value for ``owner``, built once per running event loop.
 
   Args:
@@ -165,12 +227,25 @@ def per_loop_value(owner: Any, key: str, build: Callable[[], _T]) -> _T:
     key: The ``owner.__dict__`` entry holding the cache. Must not collide with a
       field name.
     build: Called to produce the value when the running loop has none.
+    max_age: When set, seconds after which a cached value is rebuilt on its
+      next read. ``None`` keeps a value for as long as its loop lives.
 
   Returns:
     The value belonging to the running event loop.
   """
   cache: _PerLoopCache[_T] = _cache_for(owner, key)
-  return cache.get(build)
+  return cache.get(build, max_age)
+
+
+def clear_per_loop_value(owner: Any, key: str) -> None:
+  """Drops every loop's cached value for ``key`` on ``owner``, if any.
+
+  The next read from any loop rebuilds. Nothing is closed: a caller still using
+  a dropped value keeps a working one. Does nothing when ``key`` was never read.
+  """
+  cache = owner.__dict__.get(key)
+  if cache is not None:
+    cache.clear()
 
 
 if TYPE_CHECKING:
@@ -201,6 +276,10 @@ else:
     attribute first, and deleting an assigned value uncovers the descriptor
     rather than clearing what it has cached.
 
+    An owner may define a ``_per_loop_max_age`` attribute holding a number of
+    seconds (or ``None``); a cached value older than that is rebuilt on its next
+    read. Owners without it keep their values for as long as their loop lives.
+
     A Pydantic owner must additionally list this class in
     ``model_config['ignored_types']``, because Pydantic exempts
     ``cached_property`` by module name rather than by type.
@@ -210,5 +289,8 @@ else:
       if instance is None:
         return self
       return per_loop_value(
-          instance, f'_per_loop_{self.attrname}', lambda: self.func(instance)
+          instance,
+          f'_per_loop_{self.attrname}',
+          lambda: self.func(instance),
+          getattr(instance, '_per_loop_max_age', None),
       )
