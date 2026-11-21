@@ -47,7 +47,9 @@ def adk_to_mcp_tool_type(tool: BaseTool) -> mcp_types.Tool:
     input_schema = {}
   elif tool_declaration.parameters_json_schema:
     # Use JSON schema directly if available
-    input_schema = tool_declaration.parameters_json_schema
+    input_schema = _convert_nullable_schema(
+        tool_declaration.parameters_json_schema
+    )
   elif tool_declaration.parameters:
     # Convert from Schema object
     input_schema = gemini_to_json_schema(tool_declaration.parameters)
@@ -58,6 +60,51 @@ def adk_to_mcp_tool_type(tool: BaseTool) -> mcp_types.Tool:
       description=tool.description,
       inputSchema=input_schema,
   )
+
+
+def _convert_nullable_schema(schema: Any) -> Any:
+  """Converts GenAI nullable fields without rewriting default/example data."""
+  if not isinstance(schema, dict):
+    return schema
+  result = dict(schema)
+  for key in (
+      "properties",
+      "patternProperties",
+      "$defs",
+      "definitions",
+      "dependentSchemas",
+  ):
+    children = result.get(key)
+    if isinstance(children, dict):
+      result[key] = {
+          name: _convert_nullable_schema(child)
+          for name, child in children.items()
+      }
+  for key in (
+      "items",
+      "additionalProperties",
+      "additionalItems",
+      "contains",
+      "propertyNames",
+      "not",
+      "if",
+      "then",
+      "else",
+      "unevaluatedProperties",
+      "unevaluatedItems",
+      "allOf",
+      "anyOf",
+      "oneOf",
+      "prefixItems",
+  ):
+    child = result.get(key)
+    if isinstance(child, list):
+      result[key] = [_convert_nullable_schema(item) for item in child]
+    elif isinstance(child, dict):
+      result[key] = _convert_nullable_schema(child)
+  if result.pop("nullable", False) is True:
+    return {"anyOf": [result, {"type": "null"}]}
+  return result
 
 
 def gemini_to_json_schema(gemini_schema: Schema) -> Dict[str, Any]:
@@ -96,10 +143,6 @@ def gemini_to_json_schema(gemini_schema: Schema) -> Dict[str, Any]:
       and not is_union_placeholder
   ):
     json_schema_dict["type"] = gemini_type.lower()
-
-  # Map Nullable
-  if getattr(gemini_schema, "nullable", None) == True:
-    json_schema_dict["nullable"] = True
 
   # --- Map direct fields ---
   direct_mappings = {
@@ -178,5 +221,10 @@ def gemini_to_json_schema(gemini_schema: Schema) -> Dict[str, Any]:
     json_schema_dict["anyOf"] = [
         gemini_to_json_schema(sub_schema) for sub_schema in any_of_list
     ]
+
+  # JSON Schema has no nullable keyword. Keep null outside all constraints,
+  # including enum and anyOf, so it remains a valid value for this schema.
+  if gemini_schema.nullable is True:
+    return {"anyOf": [json_schema_dict, {"type": "null"}]}
 
   return json_schema_dict
