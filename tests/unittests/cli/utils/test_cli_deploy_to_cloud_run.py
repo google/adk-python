@@ -72,6 +72,99 @@ def test_dockerfile_template_preserves_multiline_ca_certificates_run() -> None:
   assert "update-ca-certificates; \\\n" in content
 
 
+@pytest.mark.parametrize("provider", ["docker", "cloud_run"])
+@pytest.mark.parametrize(
+    "requirements,cacheable",
+    [
+        ("requests==2.32.4\npandas>=2\n", True),
+        ('requests[security]>=2; python_version >= "3.11"\n', True),
+        ("# Dependencies\n\n requests==2.32.4  # HTTP client\n", True),
+        ("\ufeffrequests==2.32.4\n", True),
+        ("", True),
+        (".\n", False),
+        ("./packages/helper\n", False),
+        ("../helper\n", False),
+        ("/app/agents/agent/helper\n", False),
+        ("-e ./helper\n", False),
+        ("--editable=./helper\n", False),
+        ("helper @ file:///app/agents/agent/helper\n", False),
+        ("helper @ ./helper\n", False),
+        ("helper-1.0-py3-none-any.whl\n", False),
+        ("helper-1.0.tar.gz\n", False),
+        ("helper.zip\n", False),
+        ("-r extra.txt\n", False),
+        ("--requirement=extra.txt\n", False),
+        ("-c constraints.txt\n", False),
+        ("--constraint=constraints.txt\n", False),
+        ("--find-links ./wheels\nrequests\n", False),
+        ("requests\n--index-url https://example.com/simple\n", False),
+        ("helper @ https://example.com/helper.whl\n", False),
+        ("${LOCAL_DEPENDENCY}\n", False),
+        ("requests \\\n  ==2.32.4\n", False),
+        ("# Continued comment \\\nrequests\n./helper\n", False),
+        (b"# coding: latin-1\n# \xe9\nrequests\n", False),
+        (None, False),
+    ],
+)
+def test_deploy_orders_dependency_installation_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider: str,
+    requirements: str | bytes | None,
+    cacheable: bool,
+) -> None:
+  """Source-independent requirements install before source; others after it."""
+  source = tmp_path / "source"
+  source.mkdir()
+  (source / "agent.py").write_text("# Agent source\n")
+  if requirements is not None:
+    (source / "requirements.txt").write_bytes(
+        requirements.encode("utf-8")
+        if isinstance(requirements, str)
+        else requirements
+    )
+  build = tmp_path / "build"
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", lambda *args, **kwargs: None)
+
+  cli_deploy.run(
+      agent_folder=str(source),
+      provider=provider,
+      project="project",
+      region="us-central1",
+      service_name="service",
+      app_name="agent",
+      temp_folder=str(build),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+  )
+
+  content = (build / "Dockerfile").read_text()
+  source_copy = (
+      'COPY --chown=myuser:myuser "agents/agent/" "/app/agents/agent/"'
+  )
+  requirements_copy = (
+      'COPY --chown=myuser:myuser "agents/agent/requirements.txt"'
+      ' "/app/agents/agent/requirements.txt"'
+  )
+  install = 'RUN ["pip", "install", "-r", "/app/agents/agent/requirements.txt"]'
+  assert content.count(source_copy) == 1
+  if requirements is None:
+    assert requirements_copy not in content
+    assert install not in content
+  elif cacheable:
+    assert content.index(requirements_copy) < content.index(install)
+    assert content.index(install) < content.index(source_copy)
+  else:
+    assert requirements_copy not in content
+    assert content.index(source_copy) < content.index(install)
+
+
 # Helpers
 def _parse_cmd_argv(dockerfile_content: str) -> List[str]:
   """Extracts and parses the JSON array from a Dockerfile CMD instruction."""

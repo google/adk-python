@@ -1469,6 +1469,7 @@ def run(
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
+        requirements_txt_path=requirements_txt_path,
         service_options=_get_service_options_by_adk_version(
             adk_version,
             session_service_uri,
@@ -2100,6 +2101,7 @@ def to_agent_engine(
           port=8080,
           command='api_server',
           install_agent_deps=install_agent_deps,
+          requirements_txt_path=requirements_txt_path,
           service_options=_get_service_options_by_adk_version(
               adk_version,
               session_service_uri or agent_engine_uri,
@@ -2316,6 +2318,7 @@ def to_gke(
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
+        requirements_txt_path=requirements_txt_path,
         service_options=_get_service_options_by_adk_version(
             adk_version,
             session_service_uri,
