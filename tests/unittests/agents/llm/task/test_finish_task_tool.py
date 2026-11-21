@@ -19,8 +19,10 @@ from __future__ import annotations
 from typing import Any
 from unittest import mock
 
+from google.adk.agents import LlmAgent
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
+from google.genai import types
 from pydantic import BaseModel
 import pytest
 
@@ -72,6 +74,28 @@ class TestFinishTaskTool:
     assert 'Signal that this agent has completed' in tool.description
     assert 'output data' in tool.description
 
+  def test_init_with_raw_dict_output_schema(self):
+    """Test FinishTaskTool initialization with a raw dict output schema."""
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+    agent = _make_task_agent(output_schema=schema)
+    tool = FinishTaskTool(task_agent=agent)
+    assert tool.name == FINISH_TASK_TOOL_NAME
+    assert tool.output_schema == schema
+    assert tool._adapter is None
+    assert tool._wrapper_key is None
+
+  def test_init_with_types_schema_output_schema(self):
+    """Test FinishTaskTool initialization with a types.Schema output schema."""
+    schema = types.Schema(
+        type="OBJECT", properties={"answer": types.Schema(type="STRING")}
+    )
+    agent = _make_task_agent(output_schema=schema)
+    tool = FinishTaskTool(task_agent=agent)
+    assert tool.name == FINISH_TASK_TOOL_NAME
+    assert tool.output_schema == schema
+    assert tool._adapter is None
+    assert tool._wrapper_key is None
+
   def test_get_declaration_without_output_schema(self):
     """Test function declaration generation without output schema."""
     agent = _make_task_agent()
@@ -96,6 +120,39 @@ class TestFinishTaskTool:
     schema = declaration.parameters_json_schema
     assert 'result' in schema.get('properties', {})
     assert 'count' in schema.get('properties', {})
+
+  def test_get_declaration_with_raw_dict_output_schema(self):
+    """Test function declaration generation with raw dict output schema."""
+    schema = {
+        'type': 'object',
+        'properties': {'answer': {'type': 'string'}},
+        'required': ['answer'],
+    }
+    agent = _make_task_agent(output_schema=schema)
+    tool = FinishTaskTool(task_agent=agent)
+    declaration = tool._get_declaration()
+
+    assert declaration is not None
+    assert declaration.name == FINISH_TASK_TOOL_NAME
+    assert declaration.parameters_json_schema == schema
+    # Verify original dict was not mutated
+    assert tool.output_schema == schema
+
+  def test_get_declaration_with_types_schema_output_schema(self):
+    """Test function declaration generation with types.Schema output schema."""
+    schema = types.Schema(
+        type='OBJECT', properties={'answer': types.Schema(type='STRING')}
+    )
+    agent = _make_task_agent(output_schema=schema)
+    tool = FinishTaskTool(task_agent=agent)
+    declaration = tool._get_declaration()
+
+    assert declaration is not None
+    assert declaration.name == FINISH_TASK_TOOL_NAME
+    assert declaration.parameters_json_schema == {
+        'type': 'object',
+        'properties': {'answer': {'type': 'string'}},
+    }
 
   @pytest.mark.asyncio
   async def test_run_async_returns_confirmation(self):
@@ -245,6 +302,16 @@ class TestFinishTaskToolAllSchemaTypes:
       [
           (SampleOutputSchema, None),
           (dict[str, Any], None),
+          ({'type': 'object', 'properties': {'x': {'type': 'string'}}}, None),
+          ({'type': 'string'}, 'result'),
+          (
+              types.Schema(
+                  type='OBJECT',
+                  properties={'x': types.Schema(type='STRING')},
+              ),
+              None,
+          ),
+          (types.Schema(type='STRING'), 'result'),
           (str, 'result'),
           (int, 'result'),
           (bool, 'result'),
@@ -256,6 +323,10 @@ class TestFinishTaskToolAllSchemaTypes:
       ids=[
           'BaseModel',
           'dict',
+          'raw_dict_object',
+          'raw_dict_string',
+          'types_schema_object',
+          'types_schema_string',
           'str',
           'int',
           'bool',
@@ -305,6 +376,21 @@ class TestFinishTaskToolAllSchemaTypes:
               {'result': 'done', 'count': 5},
           ),
           (dict[str, Any], {'key': 'value'}, {'key': 'value'}),
+          (
+              {'type': 'object', 'properties': {'answer': {'type': 'string'}}},
+              {'answer': 'hello'},
+              {'answer': 'hello'},
+          ),
+          ({'type': 'string'}, {'result': 'hello'}, 'hello'),
+          (
+              types.Schema(
+                  type='OBJECT',
+                  properties={'answer': types.Schema(type='STRING')},
+              ),
+              {'answer': 'hello'},
+              {'answer': 'hello'},
+          ),
+          (types.Schema(type='STRING'), {'result': 'hello'}, 'hello'),
           (str, {'result': 'hello'}, 'hello'),
           (int, {'result': 42}, 42),
           (bool, {'result': True}, True),
@@ -321,6 +407,10 @@ class TestFinishTaskToolAllSchemaTypes:
       ids=[
           'BaseModel',
           'dict',
+          'raw_dict_object',
+          'raw_dict_string',
+          'types_schema_object',
+          'types_schema_string',
           'str',
           'int',
           'bool',
@@ -361,3 +451,37 @@ class TestFinishTaskToolAllSchemaTypes:
     assert 'SampleOutputSchema' in schema['$defs']
     # The nested result schema should not contain $defs
     assert '$defs' not in schema['properties']['result']
+
+
+class TestFinishTaskToolLlmAgentIntegration:
+  """Integration tests constructing LlmAgent with mode='task'."""
+
+  def test_task_agent_with_raw_dict_output_schema(self):
+    schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}}}
+    agent = LlmAgent(
+        name='task_worker',
+        model='gemini-2.5-flash',
+        output_schema=schema,
+        mode='task',
+    )
+    assert agent.output_schema == schema
+    finish_tools = [t for t in agent.tools if isinstance(t, FinishTaskTool)]
+    assert len(finish_tools) == 1
+    assert finish_tools[0]._adapter is None
+    assert finish_tools[0]._wrapper_key is None
+
+  def test_task_agent_with_types_schema_output_schema(self):
+    schema = types.Schema(
+        type='OBJECT', properties={'answer': types.Schema(type='STRING')}
+    )
+    agent = LlmAgent(
+        name='task_worker',
+        model='gemini-2.5-flash',
+        output_schema=schema,
+        mode='task',
+    )
+    assert agent.output_schema == schema
+    finish_tools = [t for t in agent.tools if isinstance(t, FinishTaskTool)]
+    assert len(finish_tools) == 1
+    assert finish_tools[0]._adapter is None
+    assert finish_tools[0]._wrapper_key is None

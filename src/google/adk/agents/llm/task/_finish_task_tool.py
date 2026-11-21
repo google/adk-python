@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -91,12 +92,14 @@ class FinishTaskTool(BaseTool):
     self.output_schema: SchemaType = (
         output_schema if output_schema is not None else _DefaultTaskOutput
     )
-    self._adapter: TypeAdapter[Any] = TypeAdapter(self.output_schema)
-    raw_schema = self._adapter.json_schema()
+    if isinstance(self.output_schema, (dict, types.Schema)):
+      self._adapter: Optional[TypeAdapter[Any]] = None
+    else:
+      self._adapter = TypeAdapter(self.output_schema)
     # FunctionDeclaration parameters must be a JSON object schema.
     # If the schema is already an object (e.g. BaseModel), use it directly.
     # Otherwise wrap it in an object with a single key.
-    self._wrapper_key: str | None = get_output_wrapper_key(raw_schema)
+    self._wrapper_key: str | None = get_output_wrapper_key(self.output_schema)
 
     description = (
         'Signal that this agent has completed its delegated task. Call this'
@@ -113,7 +116,10 @@ class FinishTaskTool(BaseTool):
   @override
   def _get_declaration(self) -> types.FunctionDeclaration | None:
     """Get the function declaration for this tool."""
-    raw_schema = self._adapter.json_schema()
+    if self._adapter is not None:
+      raw_schema = self._adapter.json_schema()
+    else:
+      raw_schema = copy.deepcopy(schema_to_json_schema(self.output_schema))
     if self._wrapper_key:
       # Extract $defs to the root level so $ref pointers remain valid
       # after wrapping the schema inside an object property.
@@ -185,8 +191,11 @@ no accompanying text output."""
     """
     try:
       raw_value = args.get(self._wrapper_key) if self._wrapper_key else args
-      validated = self._adapter.validate_python(raw_value)
-      validated_output = self._adapter.dump_python(validated, mode='json')
+      if self._adapter is not None:
+        validated = self._adapter.validate_python(raw_value)
+        validated_output = self._adapter.dump_python(validated, mode='json')
+      else:
+        validated_output = raw_value
     except ValidationError as e:
       return {
           'error': (
