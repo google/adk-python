@@ -307,6 +307,40 @@ def _strip_json_code_fence(json_text: str) -> str:
   return json_text
 
 
+def _dump_keeping_required_nones(model: BaseModel) -> dict[str, Any]:
+  """Dumps a model, dropping ``None`` only where the schema allows it.
+
+  ``exclude_none=True`` alone removes *every* null, including the ones that
+  carry meaning: a field declared ``x: str | None`` without a default is
+  required, so a ``None`` in it is a value, not an absence. Removing the key
+  leaves the next node with a dict that no longer validates against the same
+  model ("Field required"), and the value the producer explicitly set is gone.
+
+  Fields that are optional (a default exists) keep the old behaviour and are
+  dropped when null, so the payload does not grow for schemas that never
+  relied on the key.
+  """
+  data = model.model_dump(exclude_none=True)
+  for name, field in type(model).model_fields.items():
+    value = getattr(model, name, None)
+    if value is None:
+      if field.is_required():
+        data[name] = None
+      continue
+    if name not in data:
+      continue
+    if isinstance(value, BaseModel):
+      data[name] = _dump_keeping_required_nones(value)
+    elif isinstance(value, (list, tuple)) and isinstance(data[name], list):
+      data[name] = [
+          _dump_keeping_required_nones(item)
+          if isinstance(item, BaseModel)
+          else dumped
+          for item, dumped in zip(value, data[name])
+      ]
+  return data
+
+
 def validate_schema(schema: SchemaType, json_text: str) -> Any:
   """Validate JSON text against a schema and return the result.
 
@@ -328,12 +362,12 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
       schema = get_args(schema)[0]
     # is_basemodel_schema verified schema is now a BaseModel subclass.
     model = cast(type[BaseModel], schema)
-    return model.model_validate_json(json_text).model_dump(exclude_none=True)
+    return _dump_keeping_required_nones(model.model_validate_json(json_text))
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
     type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
     validated = type_adapter.validate_json(json_text)
-    return [item.model_dump(exclude_none=True) for item in validated]
+    return [_dump_keeping_required_nones(item) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     return _json_utils.safe_json_loads(json_text, context="schema value")
@@ -423,7 +457,7 @@ def validate_node_data(
 
   def _to_serializable(val: Any) -> Any:
     if isinstance(val, BaseModel):
-      return val.model_dump(exclude_none=True)
+      return _dump_keeping_required_nones(val)
     if isinstance(val, list):
       return [_to_serializable(item) for item in val]
     if isinstance(val, dict):
