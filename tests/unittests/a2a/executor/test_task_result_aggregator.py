@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
 from unittest.mock import Mock
 
 from a2a.types import Message
 from google.adk.a2a import _compat
+from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
+from google.adk.events._abort_events import _INVOCATION_ABORTED
+import pytest
 
 
 def create_test_message(text: str):
@@ -351,3 +355,87 @@ class TestTaskResultAggregator:
     assert event.status.state == _compat.TS_WORKING
     if hasattr(event, "final"):
       assert event.final is False
+
+
+@pytest.mark.parametrize(
+    "states",
+    [
+        [_compat.TS_CANCELED],
+        [_compat.TS_FAILED, _compat.TS_CANCELED],
+        [_compat.TS_CANCELED, _compat.TS_FAILED],
+        [
+            _compat.TS_FAILED,
+            _compat.TS_CANCELED,
+            _compat.TS_AUTH_REQUIRED,
+            _compat.TS_INPUT_REQUIRED,
+            _compat.TS_WORKING,
+        ],
+    ],
+)
+@pytest.mark.parametrize("canceled_via_failure", [False, True])
+@pytest.mark.parametrize("has_message", [False, True])
+@pytest.mark.parametrize("reconcile", [None, False, True])
+def test_cancellation_overrides_failure_and_reconciliation(
+    states: list[Any],
+    has_message: bool,
+    reconcile: bool | None,
+    canceled_via_failure: bool,
+) -> None:
+  """Cancellation and its message survive later signals and failure reconciliation."""
+  aggregator = TaskResultAggregator()
+  cancel_message = create_test_message("Canceled") if has_message else None
+  for state in states:
+    message = (
+        cancel_message
+        if state == _compat.TS_CANCELED
+        else create_test_message("Other status")
+    )
+    event = _compat.make_task_status_update_event(
+        task_id="task",
+        context_id="context",
+        status=_compat.make_task_status(state, message=message),
+        final=True,
+    )
+    if state == _compat.TS_CANCELED and canceled_via_failure:
+      event.status.state = _compat.TS_FAILED
+      _compat.set_event_metadata(
+          event, {_get_adk_metadata_key("error_code"): _INVOCATION_ABORTED}
+      )
+    aggregator.process_event(event)
+    assert event.status.state == _compat.TS_WORKING
+    if hasattr(event, "final"):
+      assert event.final is False
+  if reconcile is not None:
+    aggregator._keep_failures(
+        [create_test_message("Unresolved")] if reconcile else []
+    )
+
+  assert aggregator.task_state == _compat.TS_CANCELED
+  assert aggregator.task_status_message == cancel_message
+
+
+@pytest.mark.parametrize(
+    "state",
+    [_compat.TS_WORKING, _compat.TS_INPUT_REQUIRED, _compat.TS_AUTH_REQUIRED],
+)
+def test_failure_reconciliation_preserves_non_canceled_state(
+    state: Any,
+) -> None:
+  """Dropping recovered failures still restores the non-failure state and message."""
+  aggregator = TaskResultAggregator()
+  message = create_test_message("Pending")
+  for signal, status_message in [
+      (state, message),
+      (_compat.TS_FAILED, create_test_message("Failed")),
+  ]:
+    aggregator.process_event(
+        _compat.make_task_status_update_event(
+            task_id="task",
+            context_id="context",
+            status=_compat.make_task_status(signal, message=status_message),
+        )
+    )
+  aggregator._keep_failures([])
+
+  assert aggregator.task_state == state
+  assert aggregator.task_status_message == message

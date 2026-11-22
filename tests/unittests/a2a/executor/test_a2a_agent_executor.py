@@ -2095,3 +2095,40 @@ async def test_task_fails_on_interceptor_failure_for_non_error_event() -> None:
   events = await _execute(force_new_version=False, agent=root, config=config)
 
   assert events[-1].status.state == _compat.TS_FAILED
+
+
+async def test_legacy_converter_cancellation_overrides_failure() -> None:
+  """A custom converter's later cancellation supplies the final state and message."""
+
+  def convert_event(*args: Any) -> list[A2AEvent]:
+    return [
+        _compat.make_task_status_update_event(
+            task_id="task-1",
+            context_id="ctx-1",
+            status=_compat.make_task_status(
+                state,
+                message=Message(
+                    message_id="status",
+                    role=_compat.ROLE_AGENT,
+                    parts=[_compat.make_text_part(text)],
+                ),
+            ),
+        )
+        for state, text in [
+            (_compat.TS_FAILED, "Failed"),
+            (_compat.TS_CANCELED, "Canceled by converter"),
+        ]
+    ]
+
+  root = _agent("root", _text_response("All good."))
+  events = await _execute(
+      force_new_version=False,
+      agent=root,
+      config=A2aAgentExecutorConfig(event_converter=convert_event),
+  )
+
+  final_event = events[-1]
+  assert isinstance(final_event, TaskStatusUpdateEvent)
+  assert final_event.status.state == _compat.TS_CANCELED
+  assert _status_text(final_event) == "Canceled by converter"
+  assert getattr(final_event, "final", True) is True

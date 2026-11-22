@@ -112,12 +112,12 @@ class TaskResultAggregator:
 
   @property
   def task_state(self) -> Any:
-    if self._failed:
+    if self._failed and self._task_state != _compat.TS_CANCELED:
       return _compat.TS_FAILED
     return self._task_state
 
   @property
   def task_status_message(self) -> Message | None:
-    if self._failed:
+    if self._failed and self._task_state != _compat.TS_CANCELED:
       return self._failure_message
     return self._task_status_message
