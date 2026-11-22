@@ -184,6 +184,15 @@ def build_node(
         )
       return cast(BaseNode, agent)
     else:
+      # The remote agent owns an interrupt it raised, so a transfer target has to
+      # rerun to send the answer back over A2A.
+      if (
+          _remote_a2a_agent_type is not None
+          and isinstance(node_like, _remote_a2a_agent_type)
+          and node_like.parent_agent is not None
+          and 'rerun_on_resume' not in node_like.model_fields_set
+      ):
+        kwargs.setdefault('rerun_on_resume', True)
       if kwargs:
         return node_like.model_copy(update=kwargs)
       return node_like

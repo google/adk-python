@@ -18,6 +18,7 @@ from unittest.mock import Mock
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+from google.adk.events.event import Event
 from google.adk.tools._node_tool import NodeTool
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
@@ -27,7 +28,10 @@ from google.adk.workflow._function_node import FunctionNode
 from google.adk.workflow._tool_node import _ToolNode
 from google.adk.workflow.utils._workflow_graph_utils import build_node
 from google.adk.workflow.utils._workflow_graph_utils import is_node_like
+from google.genai import types
 import pytest
+
+from ... import testing_utils
 
 
 class TestIsNodeLike:
@@ -229,6 +233,76 @@ class TestBuildNode:
     agent = DummyRemoteAgent(mode=None)
     built = build_node(agent)
     assert built == agent
+
+  @pytest.mark.parametrize(
+      "has_parent, kwargs, expected",
+      [
+          (True, {}, True),
+          (False, {}, False),
+          (True, {"rerun_on_resume": False}, False),
+      ],
+      ids=["transfer_target", "standalone", "explicit_opt_out"],
+  )
+  def test_build_node_remote_a2a_agent_rerun_on_resume(
+      self, has_parent, kwargs, expected
+  ):
+    """Only a transfer target reruns by default to answer the remote agent."""
+    agent = RemoteA2aAgent(name="dummy", agent_card="dummy_card", **kwargs)
+    if has_parent:
+      LlmAgent(name="coordinator", sub_agents=[agent])
+
+    assert build_node(agent).rerun_on_resume is expected
+
+  @pytest.mark.asyncio
+  async def test_remote_a2a_transfer_target_receives_interrupt_response(self):
+    """A transfer target runs again when the call it left open is answered."""
+    runs = []
+
+    class FakeRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        runs.append(ctx.session.events[-1].get_function_responses())
+        if len(runs) == 1:
+          call = types.Part.from_function_call(name="long_task", args={})
+          call.function_call.id = "call_long"
+          yield Event(
+              invocation_id=ctx.invocation_id,
+              author=self.name,
+              branch=ctx.branch,
+              content=types.ModelContent([call]),
+              long_running_tool_ids={"call_long"},
+          )
+        else:
+          yield Event(
+              invocation_id=ctx.invocation_id,
+              author=self.name,
+              branch=ctx.branch,
+              content=types.ModelContent("done"),
+          )
+
+    coordinator = LlmAgent(
+        name="coordinator",
+        model=testing_utils.MockModel.create(
+            responses=[
+                types.Part.from_function_call(
+                    name="transfer_to_agent", args={"agent_name": "remote"}
+                )
+            ]
+        ),
+        sub_agents=[FakeRemoteAgent(name="remote", agent_card="dummy_card")],
+    )
+    runner = testing_utils.InMemoryRunner(coordinator)
+    await runner.run_async("Hi")
+
+    answer = types.Part.from_function_response(
+        name="long_task", response={"result": "ok"}
+    )
+    answer.function_response.id = "call_long"
+    events = await runner.run_async(types.UserContent([answer]))
+
+    assert len(runs) == 2
+    assert [response.id for response in runs[1]] == ["call_long"]
+    assert [e.content.parts[0].text for e in events if e.content] == ["done"]
 
   def test_build_node_remote_a2a_agent_task(self):
     """build_node raises ValueError if RemoteA2aAgent mode is task."""
