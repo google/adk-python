@@ -442,3 +442,37 @@ class TestGcsEvalSetsManager:
   ):
     with pytest.raises(ValueError):
       gcs_eval_sets_manager.get_eval_set("test_app", eval_set_id)
+
+  @pytest.mark.parametrize(
+      "extra_name",
+      [
+          "test_app/evals/eval_sets_backup/ghost.evalset.json",
+          "test_app/evals/eval_sets/nested/ghost.evalset.json",
+          "test_app/evals/eval_sets/",
+          "test_app/evals/eval_sets/README.txt",
+          "test_app/evals/eval_sets/almost.evalset.json.bak",
+          "other_app/evals/eval_sets/ghost.evalset.json",
+      ],
+  )
+  def test_listing_only_direct_eval_files(
+      self, gcs_eval_sets_manager: GcsEvalSetsManager, extra_name: str
+  ) -> None:
+    manager = gcs_eval_sets_manager
+    expected_names = [
+        "test_app/evals/eval_sets/a.evalset.json",
+        "test_app/evals/eval_sets/z.evalset.json",
+    ]
+    for name in [*reversed(expected_names), extra_name]:
+      manager.bucket.blob(name).upload_from_string("{}")
+
+    ids = manager.list_eval_sets("test_app")
+
+    assert ids == ["a", "z"]
+    assert [
+        manager._get_eval_set_blob_name("test_app", id_) for id_ in ids
+    ] == expected_names
+
+  def test_list_eval_sets_empty(
+      self, gcs_eval_sets_manager: GcsEvalSetsManager
+  ) -> None:
+    assert gcs_eval_sets_manager.list_eval_sets("test_app") == []

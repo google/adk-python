@@ -122,8 +122,14 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
     eval_history_dir = self._get_eval_history_dir(app_name)
     eval_set_results = []
     try:
-      for blob in self.bucket.list_blobs(prefix=eval_history_dir):
-        eval_set_result_id = blob.name.split("/")[-1].removesuffix(
+      prefix = f"{eval_history_dir}/"
+      for blob in self.bucket.list_blobs(prefix=prefix):
+        filename = blob.name.removeprefix(prefix)
+        if "/" in filename or not filename.endswith(
+            _EVAL_SET_RESULT_FILE_EXTENSION
+        ):
+          continue
+        eval_set_result_id = filename.removesuffix(
             _EVAL_SET_RESULT_FILE_EXTENSION
         )
         eval_set_results.append(eval_set_result_id)

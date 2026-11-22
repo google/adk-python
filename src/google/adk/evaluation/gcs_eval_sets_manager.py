@@ -138,12 +138,12 @@ class GcsEvalSetsManager(EvalSetsManager):
     eval_sets_dir = self._get_eval_sets_dir(app_name)
     eval_sets = []
     try:
-      for blob in self.bucket.list_blobs(prefix=eval_sets_dir):
-        if not blob.name.endswith(_EVAL_SET_FILE_EXTENSION):
+      prefix = f"{eval_sets_dir}/"
+      for blob in self.bucket.list_blobs(prefix=prefix):
+        filename = blob.name.removeprefix(prefix)
+        if "/" in filename or not filename.endswith(_EVAL_SET_FILE_EXTENSION):
           continue
-        eval_set_id = blob.name.split("/")[-1].removesuffix(
-            _EVAL_SET_FILE_EXTENSION
-        )
+        eval_set_id = filename.removesuffix(_EVAL_SET_FILE_EXTENSION)
         eval_sets.append(eval_set_id)
       return sorted(eval_sets)
     except cloud_exceptions.NotFound as e:

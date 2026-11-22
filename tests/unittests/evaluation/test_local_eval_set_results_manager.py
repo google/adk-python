@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import shutil
 import tempfile
 import time
@@ -244,3 +245,25 @@ class TestLocalEvalSetResultsManager:
     )
 
     assert retrieved.multi_run_case_summaries == summaries
+
+  def test_listing_only_direct_result_suffixes(self, tmp_path: Path) -> None:
+    history = tmp_path / "app" / ".adk" / "eval_history"
+    history.mkdir(parents=True)
+    for name in [
+        "real.evalset_result.json",
+        "README.txt",
+        "almost.evalset_result.json.bak",
+    ]:
+      (history / name).write_text("{}")
+    nested = history / "nested"
+    nested.mkdir()
+    (nested / "ghost.evalset_result.json").write_text("{}")
+    backup = history.with_name("eval_history_backup")
+    backup.mkdir()
+    (backup / "ghost.evalset_result.json").write_text("{}")
+
+    results = LocalEvalSetResultsManager(str(tmp_path)).list_eval_set_results(
+        "app"
+    )
+
+    assert results == ["real"]
