@@ -1408,7 +1408,7 @@ class TestNewConstants:
 
 
 class TestThoughtSignaturePreservation:
-  """Tests for thought_signature preservation in function call conversions."""
+  """Tests for thought_signature preservation in part conversions."""
 
   def test_genai_function_call_with_thought_signature_to_a2a(self):
     """Test that thought_signature is preserved when converting GenAI to A2A."""
@@ -1887,3 +1887,86 @@ class TestBytesSerialization:
     if isinstance(restored, str):
       restored = base64.b64decode(restored)
     assert restored == expected
+
+
+@pytest.mark.parametrize(
+    "text,thought", [("answer", None), ("", False), ("reasoning", True)]
+)
+@pytest.mark.parametrize("signature", [b"\x00\xffopaque-signature", b"", None])
+@pytest.mark.parametrize(
+    "variant", [GoogleLLMVariant.GEMINI_API, GoogleLLMVariant.VERTEX_AI]
+)
+def test_text_thought_signature_round_trip(
+    text: str,
+    thought: bool | None,
+    signature: bytes | None,
+    variant: GoogleLLMVariant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Text, thought flags and opaque signatures survive both conversion steps."""
+  monkeypatch.setattr(part_converter, "get_google_llm_variant", lambda: variant)
+  original = genai_types.Part(
+      text=text, thought=thought, thought_signature=signature
+  )
+
+  converted = convert_genai_part_to_a2a_part(original)
+  assert converted is not None
+  metadata = _compat.part_metadata(converted)
+  key = _get_adk_metadata_key("thought_signature")
+  if signature is None:
+    assert key not in (metadata or {})
+  else:
+    assert metadata[key] == base64.b64encode(signature).decode("utf-8")
+  restored = convert_a2a_part_to_genai_part(converted)
+
+  assert restored is not None
+  assert restored.text == text
+  assert restored.thought == thought
+  assert restored.thought_signature == signature
+  if variant == GoogleLLMVariant.VERTEX_AI:
+    assert restored.part_metadata is None
+
+
+@pytest.mark.parametrize(
+    "signature,expected",
+    [
+        ("AP9zaWduYXR1cmU=", b"\x00\xffsignature"),
+        ("", b""),
+        (None, None),
+        ("not_valid_base64!!!", None),
+    ],
+)
+def test_text_decodes_external_thought_signature(
+    signature: str | None,
+    expected: bytes | None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Externally supplied text signatures use the function-call decoder contract."""
+  part = _compat.make_text_part("answer")
+  _compat.set_part_metadata(
+      part, {_get_adk_metadata_key("thought_signature"): signature}
+  )
+
+  restored = convert_a2a_part_to_genai_part(part)
+
+  assert restored is not None
+  assert restored.text == "answer"
+  assert restored.thought_signature == expected
+  if signature == "not_valid_base64!!!":
+    assert "Failed to decode thought_signature" in caplog.text
+
+
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1, reason="1.x protobuf metadata cannot hold raw bytes"
+)
+def test_text_decodes_raw_bytes_thought_signature() -> None:
+  """Legacy metadata accepts raw bytes, as it does for function calls."""
+  part = _compat.make_text_part("answer")
+  _compat.set_part_metadata(
+      part, {_get_adk_metadata_key("thought_signature"): b"raw-signature"}
+  )
+
+  restored = convert_a2a_part_to_genai_part(part)
+
+  assert restored is not None
+  assert restored.thought_signature == b"raw-signature"
