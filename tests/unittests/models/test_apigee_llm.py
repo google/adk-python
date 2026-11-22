@@ -956,8 +956,10 @@ def test_streaming_parallel_tool_calls_without_index_stay_apart() -> None:
 
 
 @pytest.mark.asyncio
-async def test_streaming_chat_completions_malformed_tool_call_args_raises():
-  """Malformed tool call arguments raise ValueError and abort the stream."""
+async def test_streaming_chat_completions_malformed_tool_call_args_are_reported() -> (
+    None
+):
+  """Malformed tool call arguments end the stream as a malformed call."""
   request = LlmRequest(
       model='apigee/openai/gpt-4o',
       contents=[],
@@ -985,10 +987,12 @@ async def test_streaming_chat_completions_malformed_tool_call_args_raises():
       return_value=http_client,
   ):
     client = CompletionsHTTPClient(base_url=PROXY_URL)
-    with pytest.raises(ValueError) as exc_info:
-      _ = [item async for item in client.generate_content_async(request, True)]
+    responses = [
+        item async for item in client.generate_content_async(request, True)
+    ]
 
-  assert 'tool call arguments: {"a":' in str(exc_info.value)
+  assert responses[-1].error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert not responses[-1].get_function_calls()
 
 
 @pytest.mark.asyncio

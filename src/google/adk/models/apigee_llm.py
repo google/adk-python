@@ -39,6 +39,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
+from . import _malformed_function_calls
 from ..integrations.openai import _openai_common
 from ..utils import _json_utils
 from ..utils import streaming_utils
@@ -429,6 +430,48 @@ def _parse_logprobs(
   return types.LogprobsResult(
       chosen_candidates=chosen_candidates, top_candidates=top_candidates
   )
+
+
+def _is_malformed_arguments(arguments: object) -> bool:
+  """Whether tool call arguments are given but are not a JSON object."""
+  if not isinstance(arguments, str) or not arguments:
+    return False
+  try:
+    return not isinstance(_json_utils.safe_json_loads(arguments), dict)
+  except ValueError:
+    return True
+
+
+def _without_malformed_tool_calls(
+    message: dict[str, Any],
+) -> tuple[dict[str, Any], list[object]]:
+  """Splits off the tool calls whose arguments are not a JSON object.
+
+  Args:
+    message: A complete chat completions message, left unchanged.
+
+  Returns:
+    The message without those calls, and their names.
+  """
+  tool_calls = list(message.get('tool_calls', []))
+  if message.get('function_call'):
+    tool_calls.append(
+        {'type': 'function', 'function': message['function_call']}
+    )
+  kept = []
+  names: list[object] = []
+  for tool_call in tool_calls:
+    function = tool_call.get('function', {})
+    # An unsupported call type stays on its existing error path.
+    if tool_call.get('type') in (None, 'function') and _is_malformed_arguments(
+        function.get('arguments')
+    ):
+      names.append(function.get('name'))
+    else:
+      kept.append(tool_call)
+  if not names:
+    return message, names
+  return {**message, 'tool_calls': kept, 'function_call': None}, names
 
 
 def _function_response_media_content_parts(
@@ -1087,6 +1130,7 @@ class ChatCompletionsResponseHandler:
     choice = choices[0]
     message = choice.get('message', {})
     incomplete_tool_args = False
+    malformed_calls: list[object] = []
     if choice.get('finish_reason') == 'length':
       tool_calls = list(message.get('tool_calls', []))
       if message.get('function_call'):
@@ -1113,6 +1157,10 @@ class ChatCompletionsResponseHandler:
           # Validate before _upsert_tool_call parses eagerly; retain text but
           # discard the whole batch without mutating the provider response.
           message = {**message, 'tool_calls': [], 'function_call': None}
+    else:
+      # Truncation above can corrupt the whole batch; other bad arguments
+      # spoil only their own call.
+      message, malformed_calls = _without_malformed_tool_calls(message)
     _, role = self._add_chat_completion_message(message)
     parts = self._get_content_parts()
 
@@ -1134,7 +1182,7 @@ class ChatCompletionsResponseHandler:
       if v is not None:
         custom_metadata[k] = v
 
-    return LlmResponse(
+    llm_response = LlmResponse(
         content=(
             None
             if incomplete_tool_args and not parts
@@ -1154,6 +1202,9 @@ class ChatCompletionsResponseHandler:
         logprobs_result=logprobs_result,
         model_version=response.get('model'),
         custom_metadata=custom_metadata,
+    )
+    return _malformed_function_calls.report_malformed_function_calls(
+        llm_response, malformed_calls
     )
 
   def process_chunk(
@@ -1249,7 +1300,8 @@ class ChatCompletionsResponseHandler:
           error_response.usage_metadata = None
         yield error_response
         return
-      yield LlmResponse(
+      malformed_calls = self._pop_malformed_tool_calls()
+      final_response = LlmResponse(
           content=types.Content(
               role=role,
               parts=self._get_content_parts(),
@@ -1259,6 +1311,9 @@ class ChatCompletionsResponseHandler:
           model_version=self.model,
           usage_metadata=usage_metadata,
           logprobs_result=logprobs_result,
+      )
+      yield _malformed_function_calls.report_malformed_function_calls(
+          final_response, malformed_calls
       )
       # Exit because the 'finish_reason' chunk is the final chunk.
       return
@@ -1282,6 +1337,26 @@ class ChatCompletionsResponseHandler:
       if not isinstance(parsed_args, dict):
         return True
     return False
+
+  def _pop_malformed_tool_calls(self) -> list[object]:
+    """Removes the calls whose streamed arguments are not a JSON object."""
+    names: list[object] = []
+    for index, part in list(self.tool_call_parts.items()):
+      if part.function_call and self._has_malformed_arguments(index):
+        names.append(part.function_call.name)
+        del self.tool_call_parts[index]
+    return names
+
+  def _has_malformed_arguments(self, index: int) -> bool:
+    """Whether the streamed arguments yield no object, merged per delta too."""
+    arguments = ''.join(self._tool_call_deltas.get(index, []))
+    if not arguments:
+      return False
+    try:
+      return not isinstance(_json_utils.safe_json_loads(arguments), dict)
+    except ValueError:
+      merged_args, _ = self._merge_tool_call_deltas(index)
+      return not merged_args
 
   def _merge_tool_call_deltas(self, index: int) -> tuple[dict[str, Any], bool]:
     """Merges per-delta JSON objects; the flag is False if any delta is bad."""
