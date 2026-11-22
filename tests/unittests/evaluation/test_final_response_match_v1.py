@@ -142,6 +142,42 @@ def test_calculate_rouge_1_scores_mixed_language_text():
   assert rouge_1_score.fmeasure == pytest.approx(2 / 7)
 
 
+@pytest.mark.parametrize(
+    "candidate, reference",
+    [
+        ("ราคา100", "ราคา 100"),  # Thai, then digits
+        ("ซื้อiPhone", "ซื้อ iPhone"),  # Thai, then a Latin word
+        ("ລາຄາ100", "ລາຄາ 100"),  # Lao, then digits
+        ("តម្លៃ100", "តម្លៃ 100"),  # Khmer, then digits
+        ("ဈေးနှုန်း100", "ဈေးနှုန်း 100"),  # Myanmar, then digits
+    ],
+)
+def test_calculate_rouge_1_scores_ignores_space_after_non_spaced_script(
+    candidate: str, reference: str
+):
+  """A digit or Latin word scores the same with or without a space before it."""
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+
+  assert rouge_1_score.fmeasure == pytest.approx(1)
+
+
+@pytest.mark.parametrize(
+    "candidate, reference",
+    [
+        ("ទេ។", "ទេ"),  # Khmer full stop (khan)
+        ("ဟုတ်ကဲ့။", "ဟုတ်ကဲ့"),  # Myanmar full stop (section)
+        ("฿100", "100"),  # Thai baht sign
+    ],
+)
+def test_calculate_rouge_1_scores_ignores_non_spaced_script_punctuation(
+    candidate: str, reference: str
+):
+  """Punctuation and symbols of non-spaced scripts are not scored as words."""
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+
+  assert rouge_1_score.fmeasure == pytest.approx(1)
+
+
 def test_unicode_aware_tokenizer_combining_marks_category_m():
   """Tests that combining marks (category 'M', e.g. Thai vowel signs) stay attached to base characters."""
   tokenizer = _UnicodeAwareTokenizer()
@@ -186,6 +222,12 @@ def test_unicode_aware_tokenizer_combining_marks_category_m():
         ("ល្អ", False, ["ល្", "អ"]),
         # Branch 2d: Non-spaced script (Myanmar)
         ("မင်္ဂလာ", False, ["မ", "င်္", "ဂ", "လာ"]),
+        # Branch 2e: Non-spaced script followed directly by digits or Latin
+        ("ราคา100บาท", False, ["ร", "า", "ค", "า", "100", "บ", "า", "ท"]),
+        ("ซื้อiPhone", True, ["ซื้", "อ", "iphon"]),
+        # Branch 2f: Non-spaced script punctuation and symbols
+        ("បាទ។", False, ["បា", "ទ"]),
+        ("ราคา฿100", False, ["ร", "า", "ค", "า", "100"]),
         # Branch 3a: Alphanumeric ASCII (with and without stemmer)
         ("Running jumped 123", True, ["run", "jump", "123"]),
         ("Running jumped 123", False, ["running", "jumped", "123"]),

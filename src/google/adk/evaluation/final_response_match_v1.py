@@ -152,13 +152,26 @@ class _UnicodeAwareTokenizer:
       if _is_cjk(char):
         processed_chars.extend([" ", char, " "])
       elif _is_non_spaced_script(char):
-        if unicodedata.category(char).startswith("M"):
+        category = unicodedata.category(char)
+        if category.startswith("M"):
           # Combining mark (vowel/tone mark): attach directly to previous base consonant!
           processed_chars.append(char)
+        elif category.startswith(("P", "S")):
+          # Punctuation and symbols of these scripts (e.g. Khmer "។", Myanmar
+          # "။", Thai "฿") separate words, like punctuation in any other script.
+          processed_chars.append(" ")
         else:
           # Base consonant: start a new grapheme cluster boundary by prepending a space!
           processed_chars.extend([" ", char])
       elif _is_word_char(char):
+        if (
+            char.isalnum()
+            and processed_chars
+            and _is_non_spaced_script(processed_chars[-1])
+        ):
+          # A cluster only gets a space before it, so a letter or digit of
+          # another script would otherwise join the cluster it follows.
+          processed_chars.append(" ")
         processed_chars.append(char)
       else:
         processed_chars.append(" ")
