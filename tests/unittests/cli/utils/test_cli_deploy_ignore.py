@@ -280,3 +280,33 @@ def test_to_gke_respects_ignore_files(
   assert not (
       agent_src_path / "ignored.txt"
   ).exists(), "Should respect .gitignore"
+
+
+def test_ignore_patterns_match_leading_double_star_in_any_directory(
+    tmp_path: Path,
+) -> None:
+  """A leading '**/' matches at any depth, as in .gitignore."""
+  agent_dir = tmp_path / "agent"
+  (agent_dir / "node_modules" / "pkg").mkdir(parents=True)
+  (agent_dir / "node_modules" / "pkg" / "index.js").write_text("ignored")
+  (agent_dir / "tools" / "__pycache__").mkdir(parents=True)
+  (agent_dir / "tools" / "__pycache__" / "tool.pyc").write_text("ignored")
+  (agent_dir / "tools" / "tool.py").write_text("keep")
+  (agent_dir / "agent.py").write_text("keep")
+  (agent_dir / ".gitignore").write_text(
+      "**/node_modules\n**/__pycache__/\n/**/*.log\n"
+  )
+  (agent_dir / "tools" / "debug.log").write_text("ignored")
+
+  copy_dir = tmp_path / "copy"
+  shutil.copytree(
+      agent_dir,
+      copy_dir,
+      ignore=cli_deploy._get_ignore_patterns_func(str(agent_dir)),
+  )
+
+  assert (copy_dir / "agent.py").exists()
+  assert (copy_dir / "tools" / "tool.py").exists()
+  assert not (copy_dir / "node_modules").exists()
+  assert not (copy_dir / "tools" / "__pycache__").exists()
+  assert not (copy_dir / "tools" / "debug.log").exists()
