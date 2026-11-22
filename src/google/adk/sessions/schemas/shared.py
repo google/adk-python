@@ -71,7 +71,8 @@ class KeyString(TypeDecorator[str]):  # type: ignore[misc]
   usually case- and accent-insensitive, so ``"alice"``, ``"Alice"`` and
   ``"ALICE"`` would be one key there. Key columns such as ``user_id`` separate
   users' sessions and state, so on those backends they use a binary collation.
-  Other backends keep a plain ``VARCHAR``.
+  SQL Server's default collation is case insensitive too, so it gets a binary
+  collation as well. Other backends keep a plain ``VARCHAR``.
 
   Tables created before this type was used keep their old collation until
   they are altered.
@@ -89,6 +90,14 @@ class KeyString(TypeDecorator[str]):  # type: ignore[misc]
               cast(String, self.impl_instance).length,
               charset="utf8mb4",
               collation=_mysql_exact_collation(dialect),
+          )
+      )
+    if dialect.name == "mssql":
+      # The SQL Server default collation is case insensitive as well.
+      return dialect.type_descriptor(
+          mssql.VARCHAR(
+              cast(String, self.impl_instance).length,
+              collation="Latin1_General_100_BIN2",
           )
       )
     return dialect.type_descriptor(self.impl_instance)

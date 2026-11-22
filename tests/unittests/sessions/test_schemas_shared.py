@@ -283,3 +283,16 @@ def test_v1_key_columns_use_exact_collation_on_mysql(table, key_columns):
         " NOT NULL"
         in ddl
     )
+
+
+def test_v1_key_columns_use_binary_collation_on_mssql():
+  """SQL Server's default collation would make "alice" and "Alice" one key."""
+  from sqlalchemy.dialects import mssql as mssql_dialect
+
+  ddl = str(
+      CreateTable(v1.StorageSession.__table__).compile(
+          dialect=mssql_dialect.dialect()
+      )
+  )
+
+  assert "user_id VARCHAR(128) COLLATE Latin1_General_100_BIN2 NOT NULL" in ddl
