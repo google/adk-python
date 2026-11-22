@@ -114,6 +114,7 @@ async def _emit_streaming_tool_event(
     tool: BaseTool,
     tool_context: ToolContext,
     invocation_context: InvocationContext,
+    active_tool: ActiveBackgroundTool,
 ) -> None:
   """Streams an Event yielded by a streaming tool to the user.
 
@@ -122,9 +123,12 @@ async def _emit_streaming_tool_event(
     tool: The tool that yielded it, named in the branch and in any warning.
     tool_context: The context of the call, for its function call id.
     invocation_context: The invocation to enqueue on.
+    active_tool: The call that must still own the output path.
   """
   content = _message_content_for_user(event, tool=tool)
   if content is None:
+    return
+  if not _is_current_background_tool(invocation_context, active_tool):
     return
   # Built fresh rather than copied, so the delivered event carries the message
   # and nothing else, and each delivery gets its own id and timestamp: a tool
@@ -161,31 +165,49 @@ def _new_input_stream(tool: FunctionTool) -> LiveRequestQueue | None:
   return None
 
 
+def _is_current_background_tool(
+    invocation_context: InvocationContext,
+    active_tool: ActiveBackgroundTool,
+) -> bool:
+  return (invocation_context._active_background_tools or {}).get(
+      active_tool.function_call_id
+  ) is active_tool
+
+
 async def _run_streaming_tool(
     invocation_context: InvocationContext,
     tool: FunctionTool,
     function_args: dict[str, Any],
     tool_context: ToolContext,
+    *,
+    active_tool: ActiveBackgroundTool,
 ) -> None:
   """Calls a streaming tool and sends each result it yields to the model."""
   live_request_queue = invocation_context.live_request_queue
   if live_request_queue is None:
     raise RuntimeError('Streaming tools require a live request queue.')
+  if not _is_current_background_tool(invocation_context, active_tool):
+    return
 
   res = await _call_tool_async(
       tool=tool,
       args=function_args,
       tool_context=tool_context,
   )
+  if not _is_current_background_tool(invocation_context, active_tool):
+    return
   if inspect.isasyncgen(res):
     async with Aclosing(res) as agen:
       async for result in agen:
+        if not _is_current_background_tool(invocation_context, active_tool):
+          break
         if isinstance(result, Event):
           await _emit_streaming_tool_event(
               result,
               tool=tool,
               tool_context=tool_context,
               invocation_context=invocation_context,
+              active_tool=active_tool,
           )
           continue
 
@@ -278,6 +300,8 @@ async def _process_function_live_helper(
         tool_context.function_call_id, tool.name
     )
 
+    entry: ActiveBackgroundTool
+
     async def run_tool_and_update_queue(
         tool: FunctionTool,
         function_args: dict[str, Any],
@@ -285,13 +309,18 @@ async def _process_function_live_helper(
     ) -> None:
       live_request_queue = invocation_context.live_request_queue
       if live_request_queue is None:
-        (invocation_context._active_background_tools or {}).pop(
-            function_call_id, None
-        )
+        if _is_current_background_tool(invocation_context, entry):
+          (invocation_context._active_background_tools or {}).pop(
+              function_call_id, None
+          )
         raise RuntimeError('Streaming tools require a live request queue.')
       try:
         await _run_streaming_tool(
-            invocation_context, tool, function_args, tool_context
+            invocation_context,
+            tool,
+            function_args,
+            tool_context,
+            active_tool=entry,
         )
       except asyncio.CancelledError:
         raise
@@ -311,11 +340,13 @@ async def _process_function_live_helper(
             },
             tool_context.function_call_id,
         )
-        live_request_queue.send_content(error_content, partial=False)
+        if _is_current_background_tool(invocation_context, entry):
+          live_request_queue.send_content(error_content, partial=False)
       finally:
-        (invocation_context._active_background_tools or {}).pop(
-            function_call_id, None
-        )
+        if _is_current_background_tool(invocation_context, entry):
+          (invocation_context._active_background_tools or {}).pop(
+              function_call_id, None
+          )
 
     # TODO: resolve `require_confirmation` before spawning the task. The
     # confirmation request is recorded on `tool_context.actions` by the
@@ -332,15 +363,14 @@ async def _process_function_live_helper(
     )
     # Registered before the task first runs (nothing awaits in between), so its
     # `finally` always finds the entry it removes.
-    invocation_context._add_background_tool(
-        ActiveBackgroundTool(
-            tool_name=tool.name,
-            function_call_id=function_call_id,
-            task=task,
-            input_stream=input_stream,
-            is_generator=True,
-        )
+    entry = ActiveBackgroundTool(
+        tool_name=tool.name,
+        function_call_id=function_call_id,
+        task=task,
+        input_stream=input_stream,
+        is_generator=True,
     )
+    invocation_context._add_background_tool(entry)
     function_response = _pending_response()
   else:
     # Check if we should run tools in thread pool to avoid blocking event loop
@@ -508,6 +538,7 @@ def _launch_function_call_live(
   """Runs one live function call in its own background task."""
   tool_name = function_call.name or ''
   function_call_id = _require_function_call_id(function_call.id, tool_name)
+  entry: ActiveBackgroundTool
 
   async def _background_task() -> None:
     stream_context: contextvars.Context | None = None
@@ -532,7 +563,8 @@ def _launch_function_call_live(
         )
       if function_response_event:
         function_response_event.live_session_id = live_session_id
-        function_response_queue.put_nowait(function_response_event)
+        if _is_current_background_tool(invocation_context, entry):
+          function_response_queue.put_nowait(function_response_event)
       if stream_context is not None:
         tool = cast('FunctionTool', prepared_call.tool)
         await asyncio.create_task(
@@ -541,6 +573,7 @@ def _launch_function_call_live(
                 tool,
                 prepared_call.function_args,
                 prepared_call.tool_context,
+                active_tool=entry,
             ),
             context=stream_context,
         )
@@ -552,19 +585,21 @@ def _launch_function_call_live(
           tool_name,
           function_call_id,
       )
-      function_response_queue.put_nowait(
-          _build_error_response_event(
-              invocation_context,
-              tools_dict.get(tool_name)
-              or BaseTool(name=tool_name or '<unnamed>', description=''),
-              function_call_id,
-              live_session_id,
-          )
-      )
+      if _is_current_background_tool(invocation_context, entry):
+        function_response_queue.put_nowait(
+            _build_error_response_event(
+                invocation_context,
+                tools_dict.get(tool_name)
+                or BaseTool(name=tool_name or '<unnamed>', description=''),
+                function_call_id,
+                live_session_id,
+            )
+        )
     finally:
-      (invocation_context._active_background_tools or {}).pop(
-          function_call_id, None
-      )
+      if _is_current_background_tool(invocation_context, entry):
+        (invocation_context._active_background_tools or {}).pop(
+            function_call_id, None
+        )
 
   task = asyncio.create_task(_background_task())
   tool = tools_dict.get(tool_name)
