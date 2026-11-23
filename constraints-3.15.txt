@@ -521,7 +521,7 @@ google-cloud-dataplex==2.21.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
     #   google-adk (pyproject.toml)
-google-cloud-discoveryengine==0.13.12
+google-cloud-discoveryengine==0.20.6
     # via
     #   -c constraints-3.15.txt.stable.tmp
     #   google-adk (pyproject.toml)
@@ -651,6 +651,7 @@ grpc-google-iam-v1==0.14.5
     #   -c constraints-3.15.txt.stable.tmp
     #   google-cloud-bigtable
     #   google-cloud-dataplex
+    #   google-cloud-discoveryengine
     #   google-cloud-kms
     #   google-cloud-logging
     #   google-cloud-parametermanager
@@ -671,6 +672,7 @@ grpcio==1.84.0
     #   google-cloud-bigquery-storage
     #   google-cloud-bigtable
     #   google-cloud-dataplex
+    #   google-cloud-discoveryengine
     #   google-cloud-eventarc-publishing
     #   google-cloud-firestore
     #   google-cloud-iamconnectorcredentials
