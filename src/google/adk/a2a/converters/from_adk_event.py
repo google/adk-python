@@ -18,10 +18,6 @@ from collections.abc import Callable
 from collections.abc import Sequence
 import logging
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Union
 import uuid
 
 from a2a.server.events import Event as A2AEvent
@@ -30,6 +26,7 @@ from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatusUpdateEvent
+from typing_extensions import TypeAlias
 
 from .. import _compat
 from ...events._internal_metadata import public_metadata
@@ -44,17 +41,17 @@ DEFAULT_ERROR_MESSAGE = "An error occurred during processing"
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
 
-A2AUpdateEvent = Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]
+A2AUpdateEvent: TypeAlias = TaskStatusUpdateEvent | TaskArtifactUpdateEvent
 
 AdkEventToA2AEventsConverter = Callable[
     [
         Event,
-        Optional[Dict[str, str]],
-        Optional[str],
-        Optional[str],
+        dict[str, str] | None,
+        str | None,
+        str | None,
         GenAIPartToA2APartConverter,
     ],
-    List[A2AUpdateEvent],
+    list[A2AUpdateEvent],
 ]
 """A callable that converts an ADK Event into a list of A2A events.
 
@@ -77,7 +74,7 @@ Returns:
 def _convert_adk_parts_to_a2a_parts(
     event: Event,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
-) -> Optional[List[A2APart]]:
+) -> list[A2APart] | None:
   """Converts an ADK event to an A2A parts list.
 
   Args:
@@ -114,8 +111,8 @@ def _convert_adk_parts_to_a2a_parts(
 
 def create_error_status_event(
     event: Event,
-    task_id: Optional[str] = None,
-    context_id: Optional[str] = None,
+    task_id: str | None = None,
+    context_id: str | None = None,
 ) -> TaskStatusUpdateEvent:
   """Creates a TaskStatusUpdateEvent for error scenarios.
 
@@ -146,11 +143,11 @@ def create_error_status_event(
 
 def convert_event_to_a2a_events(
     event: Event,
-    agents_artifacts: Optional[Dict[str, str]],
-    task_id: Optional[str] = None,
-    context_id: Optional[str] = None,
+    agents_artifacts: dict[str, str] | None,
+    task_id: str | None = None,
+    context_id: str | None = None,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
-) -> List[A2AUpdateEvent]:
+) -> list[A2AUpdateEvent]:
   """Converts a GenAI event to a list of A2A StatusUpdate and ArtifactUpdate events.
 
   Args:
@@ -230,7 +227,7 @@ def convert_event_to_a2a_events(
     raise
 
 
-def _serialize_value(value: Any) -> Optional[Any]:
+def _serialize_value(value: Any) -> Any | None:
   """Serializes a value and returns it if it contains meaningful content.
 
   Returns None if the value is empty or missing.
