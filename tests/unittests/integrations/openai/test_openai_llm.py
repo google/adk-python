@@ -32,6 +32,8 @@ from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletionChunk
 import pytest
 
 
@@ -1701,3 +1703,154 @@ def test_usage_metadata_maps_reasoning_tokens(details, expected):
   metadata = _usage_metadata(usage)
   assert metadata.thoughts_token_count == expected
   assert metadata.candidates_token_count == 50
+
+
+def _reasoning_completion(
+    field, reasoning="Let me think.", content="Hi", finish_reason="stop"
+):
+  """Builds a real ChatCompletion whose message carries a reasoning extra."""
+  return ChatCompletion.model_validate({
+      "id": "c1",
+      "object": "chat.completion",
+      "created": 0,
+      "model": "m",
+      "choices": [{
+          "index": 0,
+          "finish_reason": finish_reason,
+          "message": {
+              "role": "assistant",
+              "content": content,
+              field: reasoning,
+          },
+      }],
+  })
+
+
+def _reasoning_stream_chunk(
+    field=None, reasoning=None, content=None, finish_reason=None
+):
+  """Builds a real ChatCompletionChunk, optionally with a reasoning extra."""
+  delta = {"content": content}
+  if field:
+    delta[field] = reasoning
+  return ChatCompletionChunk.model_validate({
+      "id": "c1",
+      "object": "chat.completion.chunk",
+      "created": 0,
+      "model": "m",
+      "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+  })
+
+
+# SGLang and DeepSeek use ``reasoning_content``; vLLM main uses ``reasoning``.
+@pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+def test_response_maps_reasoning_to_thought_part(field):
+  """Reasoning on the message becomes a thought part before the answer."""
+  llm_response = _response_to_llm_response(_reasoning_completion(field))
+
+  parts = llm_response.content.parts
+  assert len(parts) == 2
+  assert parts[0].thought is True
+  assert parts[0].text == "Let me think."
+  assert not parts[1].thought
+  assert parts[1].text == "Hi"
+
+
+def test_response_without_reasoning_has_no_thought_part():
+  """A plain message (no reasoning extra) yields only the text part."""
+  response = ChatCompletion.model_validate({
+      "id": "c1",
+      "object": "chat.completion",
+      "created": 0,
+      "model": "m",
+      "choices": [{
+          "index": 0,
+          "finish_reason": "stop",
+          "message": {"role": "assistant", "content": "Hi"},
+      }],
+  })
+
+  parts = _response_to_llm_response(response).content.parts
+  assert len(parts) == 1
+  assert not parts[0].thought
+
+
+def test_response_reasoning_only_with_length_finish_is_error():
+  """Running out of tokens mid-reasoning is still a MAX_TOKENS error."""
+  llm_response = _response_to_llm_response(
+      _reasoning_completion(
+          "reasoning_content", content=None, finish_reason="length"
+      )
+  )
+
+  assert llm_response.error_code == types.FinishReason.MAX_TOKENS
+  assert llm_response.content is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+async def test_streaming_maps_reasoning_to_thought_parts(field):
+  """Reasoning deltas stream as thought partials and lead the final response."""
+  openai_llm = OpenAILlm(model="deepseek-reasoner", api_key="k")
+  llm_request = LlmRequest(
+      model="deepseek-reasoner",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  chunks = [
+      _reasoning_stream_chunk(field, reasoning="Let me "),
+      _reasoning_stream_chunk(field, reasoning="think."),
+      _reasoning_stream_chunk(content="Hello!", finish_reason="stop"),
+      _usage_only_chunk(),
+  ]
+
+  with _stream_client(chunks):
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert [r.partial for r in responses] == [True, True, True, False]
+  assert responses[0].content.parts[0].thought is True
+  assert responses[0].content.parts[0].text == "Let me "
+  assert responses[1].content.parts[0].thought is True
+  assert responses[1].content.parts[0].text == "think."
+  assert not responses[2].content.parts[0].thought
+  assert responses[2].content.parts[0].text == "Hello!"
+
+  final_parts = responses[3].content.parts
+  assert len(final_parts) == 2
+  assert final_parts[0].thought is True
+  assert final_parts[0].text == "Let me think."
+  assert not final_parts[1].thought
+  assert final_parts[1].text == "Hello!"
+  assert responses[3].finish_reason == types.FinishReason.STOP
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_only_with_length_finish_is_error():
+  """A stream cut off mid-reasoning is still surfaced as a MAX_TOKENS error."""
+  openai_llm = OpenAILlm(model="deepseek-reasoner", api_key="k")
+  llm_request = LlmRequest(
+      model="deepseek-reasoner",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  chunks = [
+      _reasoning_stream_chunk("reasoning_content", reasoning="Let me think."),
+      _reasoning_stream_chunk(finish_reason="length"),
+  ]
+
+  with _stream_client(chunks):
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert responses[0].partial is True
+  assert responses[0].content.parts[0].thought is True
+  final = responses[-1]
+  assert final.content is None
+  assert final.error_code == types.FinishReason.MAX_TOKENS

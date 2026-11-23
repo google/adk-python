@@ -282,6 +282,26 @@ def _usage_metadata(
   )
 
 
+# OpenAI-compatible servers return reasoning text in a field the OpenAI SDK
+# keeps as an untyped extra attribute: vLLM main uses ``reasoning``, while
+# SGLang, the DeepSeek API and older vLLM releases use ``reasoning_content``.
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def _extract_reasoning_text(message_or_delta: Any) -> str | None:
+  """Returns the reasoning text on a message or stream delta, if any."""
+  for field in _REASONING_FIELDS:
+    value = getattr(message_or_delta, field, None)
+    if isinstance(value, str) and value:
+      return value
+  return None
+
+
+def _has_visible_output(parts: list[types.Part]) -> bool:
+  """Returns True if any part is something other than a thought."""
+  return any(not part.thought for part in parts)
+
+
 def _tool_call_parts(message: ChatCompletionMessage) -> list[types.Part]:
   """Converts OpenAI tool calls on a message to ADK function-call parts."""
   parts: list[types.Part] = []
@@ -321,6 +341,9 @@ def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
   message = choice.message
 
   parts = []
+  reasoning_text = _extract_reasoning_text(message)
+  if reasoning_text:
+    parts.append(types.Part(text=reasoning_text, thought=True))
   if message.content:
     parts.append(types.Part.from_text(text=message.content))
   parts.extend(_tool_call_parts(message))
@@ -328,7 +351,10 @@ def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
   raw_finish_reason = getattr(choice, "finish_reason", None)
   finish_reason = _map_finish_reason(raw_finish_reason)
 
-  if not parts and finish_reason not in (None, types.FinishReason.STOP):
+  if not _has_visible_output(parts) and finish_reason not in (
+      None,
+      types.FinishReason.STOP,
+  ):
     # No usable content and the model stopped for an abnormal reason (e.g.
     # content filtering or hitting the token limit before emitting anything).
     # Mirror LlmResponse.create and surface it as an error. A truncated-but-
@@ -531,6 +557,7 @@ class OpenAILlm(BaseLlm):
     raw_stream = await self._openai_client.chat.completions.create(**kwargs)
 
     text_accumulated = ""
+    reasoning_accumulated = ""
     tool_calls_accumulated: dict[int, dict[str, Any]] = {}
     usage: CompletionUsage | None = None
     finish_reason: str | None = None
@@ -544,6 +571,17 @@ class OpenAILlm(BaseLlm):
       if getattr(choice, "finish_reason", None):
         finish_reason = choice.finish_reason
       delta = choice.delta
+
+      reasoning_delta = _extract_reasoning_text(delta)
+      if reasoning_delta:
+        reasoning_accumulated += reasoning_delta
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text=reasoning_delta, thought=True)],
+            ),
+            partial=True,
+        )
 
       if delta.content:
         text_accumulated += delta.content
@@ -601,6 +639,8 @@ class OpenAILlm(BaseLlm):
 
     # Yield final response with all accumulated content
     parts = []
+    if reasoning_accumulated:
+      parts.append(types.Part(text=reasoning_accumulated, thought=True))
     if text_accumulated:
       parts.append(types.Part.from_text(text=text_accumulated))
 
@@ -625,14 +665,14 @@ class OpenAILlm(BaseLlm):
 
     mapped_finish_reason = _map_finish_reason(finish_reason)
 
-    if not parts and mapped_finish_reason not in (
+    if not _has_visible_output(parts) and mapped_finish_reason not in (
         None,
         types.FinishReason.STOP,
     ):
-      # Nothing was streamed and the model stopped for an abnormal reason (e.g.
-      # content filtering, or hitting the token limit before emitting anything).
-      # Mirror the non-streaming path and surface it as an error rather than a
-      # silent empty final chunk.
+      # Nothing but reasoning (if anything) was streamed and the model stopped
+      # for an abnormal reason (e.g. content filtering, or hitting the token
+      # limit before emitting an answer). Mirror the non-streaming path and
+      # surface it as an error rather than a silent empty final chunk.
       yield LlmResponse(
           error_code=mapped_finish_reason,
           error_message=(
