@@ -69,7 +69,11 @@ whatever happens to be there is what made ``tools_dict`` crash the wrapper, and
 a private attribute added later could hold a lock or a session just as easily.
 """
 
-_UNSNAPSHOTTED_PRIVATE: tuple[str, ...] = ()
+_UNSNAPSHOTTED_PRIVATE: tuple[str, ...] = (
+    # Filled while the request is built and read by before_model_callback
+    # plugins. No model edits it, so there is nothing to restore.
+    '_transient_user_contents',
+)
 """The private attributes of ``LlmRequest`` a rollback deliberately leaves.
 
 Somewhere for an attribute that must not be copied — one holding a lock, a
