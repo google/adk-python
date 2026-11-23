@@ -13,8 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Union
-
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Artifact
 from a2a.types import TaskArtifactUpdateEvent
@@ -28,7 +26,7 @@ from ...converters.part_converter import convert_genai_part_to_a2a_part
 
 async def _after_agent(
     ctx: ExecutorContext, a2a_event: A2AEvent, adk_event: Event
-) -> Union[A2AEvent, list[A2AEvent]]:
+) -> A2AEvent | list[A2AEvent]:
   """After agent interceptor that includes artifacts in A2A events."""
   if isinstance(a2a_event, (TaskStatusUpdateEvent, TaskArtifactUpdateEvent)):
     artifact_service = ctx.runner.artifact_service

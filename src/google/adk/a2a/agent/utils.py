@@ -17,8 +17,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
-from typing import Union
 
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Message as A2AMessage
@@ -33,9 +31,9 @@ from .config import RequestInterceptor
 
 
 async def execute_before_card_request_interceptors(
-    card_request_interceptors: Optional[list[CardRequestInterceptor]],
-    ctx: Optional[InvocationContext],
-) -> Optional[dict[str, Any]]:
+    card_request_interceptors: list[CardRequestInterceptor] | None,
+    ctx: InvocationContext | None,
+) -> dict[str, Any] | None:
   """Builds httpx kwargs for the card request from the interceptors.
 
   Merges headers from each interceptor in list order (later wins on
@@ -55,10 +53,10 @@ async def execute_before_card_request_interceptors(
 
 
 async def execute_before_request_interceptors(
-    request_interceptors: Optional[list[RequestInterceptor]],
+    request_interceptors: list[RequestInterceptor] | None,
     ctx: InvocationContext,
     a2a_request: A2AMessage,
-) -> tuple[Union[A2AMessage, Event], ParametersConfig]:
+) -> tuple[A2AMessage | Event, ParametersConfig]:
   """Executes registered before_request interceptors."""
 
   params = ParametersConfig(
@@ -80,11 +78,11 @@ async def execute_before_request_interceptors(
 
 
 async def execute_after_request_interceptors(
-    request_interceptors: Optional[list[RequestInterceptor]],
+    request_interceptors: list[RequestInterceptor] | None,
     ctx: InvocationContext,
     a2a_response: A2AEvent | A2AClientEvent,
     event: Event,
-) -> Optional[Event]:
+) -> Event | None:
   """Executes registered after_request interceptors."""
   if request_interceptors:
     for interceptor in reversed(request_interceptors):

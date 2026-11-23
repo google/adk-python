@@ -19,7 +19,6 @@ from collections.abc import Callable
 import dataclasses
 import inspect
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from a2a.server.agent_execution.context import RequestContext
@@ -49,7 +48,7 @@ def _is_abort_adk_event(event: Any) -> bool:
 class _ActiveTaskRun:
   """Tracks in-flight state for a single A2A task execution."""
 
-  task_id: Optional[str]
+  task_id: str | None
   event_queue: EventQueue
   abort_signal: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
   done_event: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
@@ -63,7 +62,7 @@ class _ActiveTaskRegistry:
     self._runs: dict[str, _ActiveTaskRun] = {}
 
   def start(
-      self, task_id: Optional[str], event_queue: EventQueue
+      self, task_id: str | None, event_queue: EventQueue
   ) -> _ActiveTaskRun:
     """Registers an active run for ``task_id`` if present."""
     run = _ActiveTaskRun(task_id=task_id, event_queue=event_queue)
@@ -71,7 +70,7 @@ class _ActiveTaskRegistry:
       self._runs[task_id] = run
     return run
 
-  def get(self, task_id: Optional[str]) -> _ActiveTaskRun | None:
+  def get(self, task_id: str | None) -> _ActiveTaskRun | None:
     """Returns the active run for ``task_id`` if registered."""
     return self._runs.get(task_id) if task_id else None
 
@@ -184,7 +183,7 @@ def _require_user_id(run_request: AgentRunRequest) -> str:
 
 async def execute_before_agent_interceptors(
     context: RequestContext,
-    execute_interceptors: Optional[list[ExecuteInterceptor]],
+    execute_interceptors: list[ExecuteInterceptor] | None,
 ) -> RequestContext:
   if execute_interceptors:
     for interceptor in execute_interceptors:
@@ -197,7 +196,7 @@ async def execute_after_event_interceptors(
     a2a_event: A2AEvent,
     executor_context: ExecutorContext,
     adk_event: Event,
-    execute_interceptors: Optional[list[ExecuteInterceptor]],
+    execute_interceptors: list[ExecuteInterceptor] | None,
 ) -> list[A2AEvent]:
   events = [a2a_event]
   if execute_interceptors:
@@ -221,7 +220,7 @@ async def execute_after_event_interceptors(
 async def execute_after_agent_interceptors(
     executor_context: ExecutorContext,
     final_event: TaskStatusUpdateEvent,
-    execute_interceptors: Optional[list[ExecuteInterceptor]],
+    execute_interceptors: list[ExecuteInterceptor] | None,
 ) -> TaskStatusUpdateEvent:
   if execute_interceptors:
     for interceptor in reversed(execute_interceptors):
