@@ -254,7 +254,7 @@ class _ObjectMetadata:
 
   @property
   def display_name(self) -> Optional[str]:
-    """Returns the ``Blob.display_name`` recorded on the object, if any."""
+    """Returns the recorded blob or file display name, if any."""
     return self._get_reserved(_ADK_DISPLAY_NAME_METADATA_KEY) or None
 
   @property

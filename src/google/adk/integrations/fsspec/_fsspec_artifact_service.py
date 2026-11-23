@@ -368,6 +368,10 @@ class FsspecArtifactService(BaseArtifactService):
         blob_metadata[_ADK_FILE_MIME_TYPE_METADATA_KEY] = (
             part.file_data.mime_type
         )
+      if part.file_data.display_name:
+        blob_metadata[_ADK_DISPLAY_NAME_METADATA_KEY] = (
+            part.file_data.display_name
+        )
       data = b""
       content_type = part.file_data.mime_type or None
     else:
@@ -463,6 +467,7 @@ class FsspecArtifactService(BaseArtifactService):
           file_data=types.FileData(
               file_uri=file_uri,
               mime_type=metadata.file_mime_type or metadata.content_type,
+              display_name=metadata.display_name,
           )
       )
 

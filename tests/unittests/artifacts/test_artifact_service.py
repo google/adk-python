@@ -3542,6 +3542,51 @@ async def test_gcs_save_artifact_with_external_gcs_uri() -> None:
   assert loaded.file_data.mime_type == "application/pdf"
 
 
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+    ],
+)
+@pytest.mark.parametrize("display_name", [None, "Quarterly report (final).pdf"])
+async def test_uri_artifact_round_trip_preserves_display_name(
+    service_type: ArtifactServiceType,
+    display_name: str | None,
+    artifact_service_factory: Callable[
+        [ArtifactServiceType], BaseArtifactService
+    ],
+) -> None:
+  """Saving and loading an external URI retains its optional file label."""
+  service = artifact_service_factory(service_type)
+  artifact = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://my-bucket/report.pdf",
+          mime_type="application/pdf",
+          display_name=display_name,
+      )
+  )
+
+  await service.save_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="report.pdf",
+      artifact=artifact,
+  )
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="report.pdf",
+  )
+
+  assert loaded == artifact
+
+
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
 async def test_gcs_save_artifact_with_artifact_ref_uri() -> None:
   """GcsArtifactService saves and recursively loads an internal artifact:// URI reference."""

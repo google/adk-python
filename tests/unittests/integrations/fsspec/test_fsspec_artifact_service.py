@@ -959,16 +959,18 @@ async def test_untyped_file_data_preserves_none_mime_type(
                 "metadata": {
                     "adkFileUri": "gs://x/v.mp4",
                     "adkFileMimeType": "video/mp4",
-                    "adkDisplayName": "ignored",
+                    "adkDisplayName": "Reference video.mp4",
                 },
             },
             types.Part(
                 file_data=types.FileData(
-                    file_uri="gs://x/v.mp4", mime_type="video/mp4"
+                    file_uri="gs://x/v.mp4",
+                    mime_type="video/mp4",
+                    display_name="Reference video.mp4",
                 )
             ),
             "video/mp4",
-            id="file-reference-prefers-adk-mime",
+            id="file-reference-uses-adk-mime-and-display-name",
         ),
         pytest.param(
             "a.pdf",
