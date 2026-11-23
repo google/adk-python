@@ -166,7 +166,16 @@ A built-in development UI to help you test, evaluate, debug, and showcase your a
 
 ### Evaluate Agents
 
-Run the bundled evaluation sample from the repo root:
+Install the evaluation dependencies:
+
+```bash
+pip install "google-adk[eval]"
+```
+
+The bundled sample runs the agent against a live model. Set `GOOGLE_API_KEY`
+for the Gemini API, or configure Vertex AI. For details on how the sample runs,
+see the [evaluation samples guide](contributing/samples/evaluation/README.md).
+Then run the sample from the repo root:
 
 ```bash
 adk eval \
