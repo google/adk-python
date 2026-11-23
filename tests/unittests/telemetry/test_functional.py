@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from importlib import metadata
 from typing import Any
 from typing import AsyncGenerator
 
@@ -22,7 +23,6 @@ from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import tracing
 from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
-from opentelemetry.instrumentation.google_genai import version as instrumentor_version
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
@@ -269,20 +269,21 @@ def test_is_instrumented():
 
 
 @pytest.mark.parametrize(
-    ("installed_version", "expected"),
-    [
-        ("0.7b2", True),
-        ("0.7b1", True),
-        ("0.7b0", True),
-        ("1.0b0", False),
-        ("1.2b0", False),
-    ],
+    ("installed_util_version", "expected"),
+    [("0.3b0", True), ("1.2b0", True), ("1.3b0", True), ("1.4b0", False)],
 )
 def test_should_emit_inference_token_metrics_under_the_instrumentor(
-    monkeypatch: pytest.MonkeyPatch, installed_version: str, expected: bool
+    monkeypatch: pytest.MonkeyPatch, installed_util_version: str, expected: bool
 ):
-  """ADK records them beside an instrumentor verified not to record them."""
-  monkeypatch.setattr(instrumentor_version, "__version__", installed_version)
+  """ADK records them beside a util-genai verified not to record them."""
+  real_version = metadata.version
+  monkeypatch.setattr(
+      metadata,
+      "version",
+      lambda name: installed_util_version
+      if name == "opentelemetry-util-genai"
+      else real_version(name),
+  )
   instrumentor = GoogleGenAiSdkInstrumentor()
   if conflict := get_dependency_conflicts(
       instrumentor.instrumentation_dependencies()

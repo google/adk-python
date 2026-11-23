@@ -19,6 +19,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 import functools
+import sys
+import types as std_types
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
@@ -34,15 +36,25 @@ from google.adk.telemetry import tracing
 from google.adk.telemetry.context import TelemetryConfig
 from google.genai import types
 from google.genai.models import AsyncModels
+from google.genai.models import Models
+from opentelemetry import context as otel_context
 from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
-from opentelemetry.instrumentation.google_genai import version as google_genai_version
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
+import wrapt
+
+try:
+  from opentelemetry.util.genai.invocation import CLIENT_INFERENCE_CONTEXT_KEY
+
+  del CLIENT_INFERENCE_CONTEXT_KEY
+  _UTIL_GENAI_SUPPRESSES = True
+except ImportError:
+  _UTIL_GENAI_SUPPRESSES = False
 
 _MODEL = "gemini-2.0-flash"
 _ADK_SCOPE = "gcp.vertex.agent"
@@ -124,8 +136,12 @@ async def _run_inference(telemetry_config: TelemetryConfig) -> None:
 
 
 def _inference_span_scopes(exporter: InMemorySpanExporter) -> list[str]:
+  # Anything but ADK is the instrumentor: under 1.0b0, util-genai names the
+  # tracer after itself.
   return [
-      span.instrumentation_scope.name
+      _ADK_SCOPE
+      if span.instrumentation_scope.name == _ADK_SCOPE
+      else _INSTRUMENTOR_SCOPE
       for span in exporter.get_finished_spans()
       if span.name.startswith("generate_content")
   ]
@@ -199,6 +215,165 @@ async def test_skipping_the_instrumentor_keeps_a_wrapper_beneath_it(
     )
 
 
+def _passthrough(wrapped, instance, args, kwargs):
+  del instance  # Unused.
+  return wrapped(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_skipping_an_instrumentor_without_the_co_filename_stamp(
+    monkeypatch: pytest.MonkeyPatch, provider: TracerProvider
+) -> None:
+  """1.0b0 wraps with wrapt but predates stamping the SDK function."""
+  del provider  # Unused; it stubs the SDK.
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
+  calls: list[str] = []
+
+  def instrumentor_wrapper(wrapped, instance, args, kwargs):
+    calls.append("instrumentor")
+    return _passthrough(wrapped, instance, args, kwargs)
+
+  instrumentor_wrapper.__code__ = instrumentor_wrapper.__code__.replace(
+      co_filename=f"/site-packages/{_genai_instrumentor._MODULE_PATH}/x.py"
+  )
+  for cls in (Models, AsyncModels):
+    monkeypatch.setattr(
+        cls,
+        "generate_content",
+        wrapt.FunctionWrapper(
+            cls.__dict__["generate_content"], instrumentor_wrapper
+        ),
+    )
+
+  await _run_inference(TelemetryConfig())
+
+  assert (_genai_instrumentor.is_instrumented(), calls) == (True, [])
+
+
+@pytest.mark.asyncio
+async def test_skipping_a_pre_1_0_instrumentor_keeps_a_wrapt_wrapper_beneath_it(
+    monkeypatch: pytest.MonkeyPatch, provider: TracerProvider
+) -> None:
+  """< 1.0 replaces the SDK function outright, here an unbound wrapt proxy."""
+  del provider  # Unused; it stubs the SDK.
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
+  calls: list[str] = []
+
+  def foreign(wrapped, instance, args, kwargs):
+    calls.append("foreign")
+    return _passthrough(wrapped, instance, args, kwargs)
+
+  beneath = wrapt.FunctionWrapper(
+      AsyncModels.__dict__["generate_content"], foreign
+  )
+
+  @functools.wraps(beneath)
+  async def instrumentor(self: AsyncModels, **kwargs: object) -> object:
+    calls.append("instrumentor")
+    return await beneath(self, **kwargs)
+
+  instrumentor.__code__ = instrumentor.__code__.replace(
+      co_filename=f"/site-packages/{_genai_instrumentor._MODULE_PATH}/x.py"
+  )
+  monkeypatch.setattr(AsyncModels, "generate_content", instrumentor)
+
+  await _run_inference(TelemetryConfig())
+
+  assert calls == ["foreign"]
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_instrumentor_keeps_a_wrapt_wrapper_above_it(
+    monkeypatch: pytest.MonkeyPatch, provider: TracerProvider
+) -> None:
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
+  calls: list[str] = []
+
+  def foreign(wrapped, instance, args, kwargs):
+    calls.append("foreign")
+    return _passthrough(wrapped, instance, args, kwargs)
+
+  with _instrumented(monkeypatch, provider) as exporter:
+    # Undone before the instrumentor is, which restores what it found.
+    with pytest.MonkeyPatch.context() as wrapped_again:
+      wrapped_again.setattr(
+          AsyncModels,
+          "generate_content",
+          wrapt.FunctionWrapper(
+              AsyncModels.__dict__["generate_content"], foreign
+          ),
+      )
+      await _run_inference(TelemetryConfig())
+
+    assert (_inference_span_scopes(exporter), calls) == (
+        [_ADK_SCOPE],
+        ["foreign"],
+    )
+
+
+@pytest.mark.skipif(
+    not _UTIL_GENAI_SUPPRESSES, reason="util-genai < 1.3b0 can't suppress"
+)
+@pytest.mark.asyncio
+async def test_the_instrumentor_stands_down_beneath_any_wrapper(
+    monkeypatch: pytest.MonkeyPatch, provider: TracerProvider
+) -> None:
+  """A plain function over it hides it from ADK; util-genai still suppresses it."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
+
+  with _instrumented(monkeypatch, provider) as exporter:
+    instrumented = AsyncModels.generate_content
+
+    async def foreign(self: AsyncModels, **kwargs: object) -> object:
+      return await instrumented(self, **kwargs)
+
+    with pytest.MonkeyPatch.context() as wrapped_again:
+      wrapped_again.setattr(AsyncModels, "generate_content", foreign)
+      await _run_inference(TelemetryConfig())
+
+    assert _inference_span_scopes(exporter) == [_ADK_SCOPE]
+
+
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+@pytest.mark.asyncio
+async def test_inference_span_marks_and_clears_util_genai_context(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: TracerProvider,
+    schema_version: str,
+) -> None:
+  """ADK's inference span marks the OTel context for util-genai >= 1.3b0."""
+  del provider  # Unused; it stubs the SDK.
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  context_key = "test-client-inference-context-key"
+
+  class _FakeInferenceData:
+    pass
+
+  fake_invocation = std_types.ModuleType("opentelemetry.util.genai.invocation")
+  setattr(fake_invocation, "CLIENT_INFERENCE_CONTEXT_KEY", context_key)
+  setattr(fake_invocation, "InferenceData", _FakeInferenceData)
+  monkeypatch.setitem(
+      sys.modules, "opentelemetry.util.genai.invocation", fake_invocation
+  )
+
+  observed: list[object] = []
+
+  async def observing_stub(
+      self: AsyncModels, *, model: str, contents: object, config: object = None
+  ) -> types.GenerateContentResponse:
+    del self, model, contents, config  # Unused.
+    observed.append(otel_context.get_value(context_key))
+    return _RESPONSE
+
+  monkeypatch.setattr(AsyncModels, "generate_content", observing_stub)
+
+  await _run_inference(TelemetryConfig())
+
+  assert len(observed) == 1
+  assert isinstance(observed[0], _FakeInferenceData)
+  assert otel_context.get_value(context_key) is None
+
+
 @pytest.mark.asyncio
 async def test_adk_records_inference_tokens_when_it_skips_the_instrumentor(
     monkeypatch: pytest.MonkeyPatch, provider: TracerProvider
@@ -206,7 +381,15 @@ async def test_adk_records_inference_tokens_when_it_skips_the_instrumentor(
   """An instrumentor that may record the token metrics itself is skipped too."""
   monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
   monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", _EXPERIMENTAL)
-  monkeypatch.setattr(google_genai_version, "__version__", "1.0b0")
+  # A util-genai that records these metrics, so only ADK's own span emits them.
+  real_version = _genai_instrumentor.metadata.version
+  monkeypatch.setattr(
+      _genai_instrumentor.metadata,
+      "version",
+      lambda name: "1.4b0"
+      if name == "opentelemetry-util-genai"
+      else real_version(name),
+  )
   response = _RESPONSE.model_copy(
       update={
           "usage_metadata": types.GenerateContentResponseUsageMetadata(
