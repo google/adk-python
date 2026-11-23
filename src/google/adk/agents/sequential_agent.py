@@ -64,14 +64,23 @@ def _tool_name(tool: ToolUnion | BaseNode) -> str | None:
 def _append_instruction(
     instruction: str | InstructionProvider, suffix: str
 ) -> str | InstructionProvider:
+  def _join(base: str) -> str:
+    # Keep the two instructions as separate paragraphs instead of gluing
+    # them into one sentence (e.g. "You are helpful.If you finished...").
+    if not base:
+      return suffix
+    if base[-1].isspace():
+      return base + suffix
+    return base + '\n\n' + suffix
+
   if isinstance(instruction, str):
-    return instruction + suffix
+    return _join(instruction)
 
   async def combined(context: ReadonlyContext) -> str:
     resolved = instruction(context)
     if inspect.isawaitable(resolved):
       resolved = await resolved
-    return resolved + suffix
+    return _join(resolved)
 
   return combined
 
