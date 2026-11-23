@@ -65,6 +65,7 @@ class LlmRequest(BaseModel):
     tools_dict: The tools dictionary.
     cache_config: Context cache configuration for this request.
     cache_metadata: Cache metadata from previous requests, used for cache management.
+    session_id: The ID of the ADK session this request belongs to.
   """
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -111,6 +112,14 @@ class LlmRequest(BaseModel):
 
   Set only for models on the interactions API, which is the only path with a
   serving tier. `None` means the run asked for no tier, so the default applies.
+  """
+
+  session_id: str | None = Field(default=None, exclude=True)
+  """The ID of the ADK session this request belongs to.
+
+  Set by the LLM flow so that a model can forward it to a backend that groups
+  calls by conversation. Excluded from serialization, and None for a request
+  built outside of a Runner.
   """
 
   _dynamic_instructions: list[str] = PrivateAttr(default_factory=list)

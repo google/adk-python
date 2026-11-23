@@ -14477,3 +14477,138 @@ class TestParseToolCallArguments:
     with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
     assert "Repaired" not in caplog.text
+
+
+def _session_llm_request(
+    session_id: str | None = "session-123",
+    headers: dict[str, str] | None = None,
+) -> LlmRequest:
+  return LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(headers=headers) if headers else None
+      ),
+      session_id=session_id,
+  )
+
+
+async def _session_completion_kwargs(
+    mock_acompletion, lite_llm: LiteLlm, llm_request: LlmRequest
+) -> dict:
+  async for _ in lite_llm.generate_content_async(llm_request):
+    pass
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  return kwargs
+
+
+def test_llm_request_session_id_is_not_serialized():
+  llm_request = _session_llm_request()
+
+  assert llm_request.session_id == "session-123"
+  assert "session_id" not in llm_request.model_dump()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model, extra_kwargs",
+    [
+        ("litellm_proxy/gpt-4o", {}),
+        ("gpt-4o", {"custom_llm_provider": "litellm_proxy"}),
+    ],
+)
+async def test_generate_content_async_sends_session_id_header_to_proxy(
+    mock_acompletion, mock_client, model, extra_kwargs
+):
+  lite_llm = LiteLlm(model=model, llm_client=mock_client, **extra_kwargs)
+
+  kwargs = await _session_completion_kwargs(
+      mock_acompletion, lite_llm, _session_llm_request()
+  )
+
+  assert kwargs["extra_headers"] == {"x-litellm-session-id": "session-123"}
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_keeps_session_id_from_direct_provider(
+    mock_acompletion, mock_client
+):
+  lite_llm = LiteLlm(model="openai/gpt-4o", llm_client=mock_client)
+
+  kwargs = await _session_completion_kwargs(
+      mock_acompletion, lite_llm, _session_llm_request()
+  )
+
+  assert "extra_headers" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_without_session_id_sends_no_header(
+    mock_acompletion, mock_client
+):
+  lite_llm = LiteLlm(model="litellm_proxy/gpt-4o", llm_client=mock_client)
+
+  kwargs = await _session_completion_kwargs(
+      mock_acompletion, lite_llm, _session_llm_request(session_id=None)
+  )
+
+  assert "extra_headers" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_keeps_session_id_header_from_constructor(
+    mock_acompletion, mock_client
+):
+  lite_llm = LiteLlm(
+      model="litellm_proxy/gpt-4o",
+      llm_client=mock_client,
+      extra_headers={"X-LiteLLM-Session-Id": "caller-session"},
+  )
+
+  kwargs = await _session_completion_kwargs(
+      mock_acompletion, lite_llm, _session_llm_request()
+  )
+
+  assert kwargs["extra_headers"] == {"X-LiteLLM-Session-Id": "caller-session"}
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_keeps_session_id_header_from_http_options(
+    mock_acompletion, mock_client
+):
+  lite_llm = LiteLlm(model="litellm_proxy/gpt-4o", llm_client=mock_client)
+
+  kwargs = await _session_completion_kwargs(
+      mock_acompletion,
+      lite_llm,
+      _session_llm_request(headers={"x-litellm-session-id": "caller-session"}),
+  )
+
+  assert kwargs["extra_headers"] == {"x-litellm-session-id": "caller-session"}
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_adds_session_id_to_other_extra_headers(
+    mock_acompletion, mock_client
+):
+  constructor_headers = {"X-Api-Key": "secret-key"}
+  lite_llm = LiteLlm(
+      model="litellm_proxy/gpt-4o",
+      llm_client=mock_client,
+      extra_headers=constructor_headers,
+  )
+
+  kwargs = await _session_completion_kwargs(
+      mock_acompletion, lite_llm, _session_llm_request()
+  )
+
+  assert kwargs["extra_headers"] == {
+      "X-Api-Key": "secret-key",
+      "x-litellm-session-id": "session-123",
+  }
+  # The headers given at construction are not changed by a call.
+  assert constructor_headers == {"X-Api-Key": "secret-key"}

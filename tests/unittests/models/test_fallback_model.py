@@ -950,6 +950,7 @@ def test_every_public_field_is_accounted_for():
       'cacheable_contents_token_count',  # Response-side too.
       'previous_interaction_id',  # Set by the interactions processor pre-call.
       'service_tier',  # Set by the interactions processor pre-call too.
+      'session_id',  # Set by the flow before the call; models only read it.
   }
 
   assert (
