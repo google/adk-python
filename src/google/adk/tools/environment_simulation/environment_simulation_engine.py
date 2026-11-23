@@ -15,11 +15,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import random
 from typing import Any
 from typing import Dict
 from typing import Optional
+import weakref
 
 environment_simulation_logger = logging.getLogger(
     "environment_simulation_logger"
@@ -37,6 +40,8 @@ from google.adk.tools.environment_simulation.tool_connection_analyzer import Too
 from google.adk.tools.environment_simulation.tool_connection_map import ToolConnectionMap
 from google.genai import types as genai_types
 
+from ...utils._eval_run_context import EvalRunContext
+from ...utils._eval_run_context import get_eval_run_context
 from ...utils._event_loop_cache import per_loop_value
 from ...utils.model_name_utils import _with_gemini_4_thinking_level
 from ..tool_args_matcher._semantic_arg_matcher import SemanticArgMatcher
@@ -71,6 +76,29 @@ def _simulation_model_configuration(
       default_thinking_config=_DEFAULT_THINKING_CONFIG,
       thinking_level=genai_types.ThinkingLevel.MEDIUM,
   )
+
+
+def _eval_run_seed(
+    seed: int, run: EvalRunContext, tool_name: str, index: int
+) -> int:
+  """Returns the seed of an injection config's generator for one eval run.
+
+  The key is a SHA-256 digest of a JSON encoding, not Python's hash(), so it
+  is the same in every process.
+  """
+  key = json.dumps(
+      [
+          seed,
+          run.app_name,
+          run.eval_set_id,
+          run.eval_case_id,
+          run.repetition_index,
+          tool_name,
+          index,
+      ],
+      separators=(",", ":"),
+  )
+  return int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest(), "big")
 
 
 def _with_default_semantic_model(
@@ -137,6 +165,12 @@ class EnvironmentSimulationEngine:
           self._seeded_generators[(c.tool_name, i)] = random.Random(
               injection_config.random_seed
           )
+    # During an eval, each eval case run draws from its own generators instead,
+    # derived from the seed and the run, so a run's draws do not depend on the
+    # other runs this engine serves. They are dropped with the run's context.
+    self._eval_run_generators: weakref.WeakKeyDictionary[
+        EvalRunContext, dict[tuple[str, int], random.Random]
+    ] = weakref.WeakKeyDictionary()
     self._environment_data = config.environment_data
     self._tracing = config.tracing
 
@@ -192,10 +226,27 @@ class EnvironmentSimulationEngine:
       self, tool_name: str, index: int, injection_config: InjectionConfig
   ) -> bool:
     """Draws whether a matching injection config applies to this call."""
-    generator = self._seeded_generators.get(
-        (tool_name, index), self._random_generator
-    )
+    run = get_eval_run_context()
+    if run is not None and injection_config.random_seed is not None:
+      generator = self._eval_run_generator(
+          run, tool_name, index, injection_config.random_seed
+      )
+    else:
+      generator = self._seeded_generators.get(
+          (tool_name, index), self._random_generator
+      )
     return generator.random() < injection_config.injection_probability
+
+  def _eval_run_generator(
+      self, run: EvalRunContext, tool_name: str, index: int, seed: int
+  ) -> random.Random:
+    """Returns an injection config's seeded generator for one eval run."""
+    generators = self._eval_run_generators.setdefault(run, {})
+    if (tool_name, index) not in generators:
+      generators[(tool_name, index)] = random.Random(
+          _eval_run_seed(seed, run, tool_name, index)
+      )
+    return generators[(tool_name, index)]
 
   async def _match_remaining_configs(
       self,

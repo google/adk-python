@@ -74,6 +74,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
 from google.adk.utils._client_labels_utils import get_client_labels
+from google.adk.utils._eval_run_context import get_eval_run_context
 from google.genai import types as genai_types
 from mcp import StdioServerParameters
 import pytest
@@ -1705,6 +1706,45 @@ async def test_perform_inference_single_eval_item_failure(
   assert result.status == InferenceStatus.FAILURE
   assert result.error_message == "model crashed"
   assert result.inferences is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_perform_inference_single_eval_item_sets_eval_run_context(
+    eval_service, dummy_agent, mocker, fails
+):
+  """Inference runs inside its eval case run's context, reset afterwards."""
+  eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
+  runs_seen = []
+
+  async def generate(**kwargs):
+    del kwargs
+    runs_seen.append(get_eval_run_context())
+    if fails:
+      raise RuntimeError("model crashed")
+    return []
+
+  mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent",
+      side_effect=generate,
+  )
+
+  await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+      repetition_index=2,
+  )
+
+  [run] = runs_seen
+  assert run.app_name == "test_app"
+  assert run.eval_set_id == "test_eval_set"
+  assert run.eval_case_id == "case1"
+  assert run.repetition_index == 2
+  assert get_eval_run_context() is None
 
 
 @pytest.mark.asyncio

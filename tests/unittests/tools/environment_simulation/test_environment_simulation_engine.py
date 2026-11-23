@@ -32,6 +32,7 @@ from google.adk.tools.environment_simulation.environment_simulation_config impor
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy
 from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_engine import _eval_run_seed
 from google.adk.tools.environment_simulation.environment_simulation_engine import _MAX_CONCURRENT_ARG_MATCHES
 from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
 from google.adk.tools.function_tool import FunctionTool
@@ -40,6 +41,8 @@ from google.adk.tools.tool_args_matcher import ArgMatchResult
 from google.adk.tools.tool_args_matcher import BaseArgMatcher
 from google.adk.tools.tool_args_matcher import SemanticArgMatcher
 from google.adk.tools.tool_args_matcher import ToolArgsMatcher
+from google.adk.utils._eval_run_context import eval_run_context
+from google.adk.utils._eval_run_context import EvalRunContext
 from google.genai import types as genai_types
 from pydantic import PrivateAttr
 import pytest
@@ -300,6 +303,69 @@ class TestEnvironmentSimulationEngineSimulate:
     # A call that does not match draws nothing, so interleaving one leaves the
     # matching calls on the same sequence.
     assert await run_pattern(interleave_non_matching=True) == pattern
+
+  async def test_seeded_injection_in_eval_run_ignores_other_runs(
+      self, mock_create_strategy, mock_analyzer
+  ):
+    """Test that an eval case run's draws do not depend on other runs."""
+    del mock_create_strategy, mock_analyzer
+    config = EnvironmentSimulationConfig(
+        tool_simulation_configs=[
+            ToolSimulationConfig(
+                tool_name="test_tool",
+                injection_configs=[
+                    InjectionConfig(
+                        injection_probability=0.5,
+                        random_seed=42,
+                        injected_response={"injected": True},
+                    )
+                ],
+            )
+        ],
+    )
+    mock_tool = MagicMock()
+    mock_tool.name = "test_tool"
+
+    async def run_case(engine, eval_case_id, repetition_index=0):
+      with eval_run_context(
+          app_name="app",
+          eval_set_id="set",
+          eval_case_id=eval_case_id,
+          repetition_index=repetition_index,
+      ):
+        return [
+            await engine.simulate(mock_tool, {}, MagicMock())
+            == {"injected": True}
+            for _ in range(20)
+        ]
+
+    engine = EnvironmentSimulationEngine(config)
+    pattern = await run_case(engine, "case_a")
+    assert any(pattern)
+    assert not all(pattern)
+    # The same engine serving the case again, after another case, or
+    # concurrently with other cases, gives the case the same draws.
+    assert await run_case(engine, "case_a") == pattern
+    await run_case(engine, "case_b")
+    assert await run_case(engine, "case_a") == pattern
+    concurrent = await asyncio.gather(
+        run_case(engine, "case_b"),
+        run_case(engine, "case_a"),
+        run_case(engine, "case_b", repetition_index=1),
+    )
+    assert concurrent[1] == pattern
+    # Other cases and repetitions get streams of their own.
+    assert await run_case(engine, "case_b") != pattern
+    assert await run_case(engine, "case_a", repetition_index=1) != pattern
+    # Outside an eval run, the engine-wide sequence is left untouched.
+    fresh_engine = EnvironmentSimulationEngine(config)
+    expected = [
+        await fresh_engine.simulate(mock_tool, {}, MagicMock())
+        for _ in range(20)
+    ]
+    assert [
+        await engine.simulate(mock_tool, {}, MagicMock()) for _ in range(20)
+    ] == expected
 
   async def test_injected_latency_awaits_asyncio_sleep(
       self, mock_create_strategy, mock_analyzer
@@ -1297,3 +1363,19 @@ class TestEnvironmentSimulationEngineStateStore:
     await engine.simulate(_create_ticket_tool(), {}, _tool_context())
 
     assert strategy.seen_state == [{}, {"ticket_id": {"T-1": {"id": "T-1"}}}]
+
+
+def test_eval_run_seed_is_a_stable_sha256_of_the_run_key():
+  """The seed must not depend on the process, as Python's hash() does."""
+  run = EvalRunContext(
+      app_name="app",
+      eval_set_id="set",
+      eval_case_id="case_a",
+      repetition_index=0,
+  )
+  assert _eval_run_seed(42, run, "charge_card", 0) == int(
+      "277993cf49f1a527545f5d3cf1c5386b95d18e80e63ba326361135aa07f5476f", 16
+  )
+  assert _eval_run_seed(42, run, "charge_card", 1) != _eval_run_seed(
+      42, run, "charge_card", 0
+  )
