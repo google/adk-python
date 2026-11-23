@@ -31,7 +31,9 @@ from datetime import timezone
 import io
 import logging
 from pathlib import Path
+import sys
 import threading
+from types import SimpleNamespace
 from typing import Any
 from typing import Optional
 from unittest import mock
@@ -47,6 +49,7 @@ from google.adk.integrations.fsspec._fsspec_artifact_service import FsspecArtifa
 from google.genai import types
 import pytest
 
+from ...artifacts.test_artifact_service import FakeAzureObjectStore
 from ...artifacts.test_artifact_service import FakeFsspecObjectStore
 from ...artifacts.test_artifact_service import FakeS3ObjectStore
 from ...artifacts.test_artifact_service import FIXED_DATETIME
@@ -778,7 +781,9 @@ async def test_save_artifact_standard_gcs_lookup_passes_upload_kwargs() -> None:
 
 
 @pytest.mark.parametrize(
-    "store", [FakeFsspecObjectStore, FakeS3ObjectStore], indirect=True
+    "store",
+    [FakeFsspecObjectStore, FakeS3ObjectStore, FakeAzureObjectStore],
+    indirect=True,
 )
 async def test_save_artifact_reserves_concurrent_versions(
     store: FakeFsspecObjectStore, svc: FsspecArtifactService
@@ -1118,6 +1123,14 @@ async def test_listing_missing_prefix_returns_empty(
             {"timeCreated": "not-a-timestamp", "mtime": 1234.0},
             1234.0,
         ),
+        (
+            {
+                "creation_time": datetime(
+                    2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc
+                )
+            },
+            datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp(),
+        ),
         ({"timeCreated": None}, 9876.5),
     ],
 )
@@ -1322,6 +1335,244 @@ async def test_s3_version_deleted_during_read_is_missing(
 
   assert version_meta is None
   assert [av.version for av in versions] == [1]
+
+
+# ---------------------------------------------------------------------------
+# Azure metadata
+# ---------------------------------------------------------------------------
+
+
+async def test_azure_metadata_round_trips() -> None:
+  """ADK metadata round-trips through Azure's ASCII-only metadata."""
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+  parts = {
+      "notes": types.Part(text="hi"),
+      "chart": types.Part(
+          inline_data=types.Blob(
+              data=b"x",
+              mime_type="image/png",
+              display_name=" \u56fe 100%.png ",
+          )
+      ),
+      "ref": types.Part(
+          file_data=types.FileData(
+              file_uri="s3://other/\u56fe%20x.pdf", mime_type="application/pdf"
+          )
+      ),
+      "empty": types.Part.from_bytes(data=b"", mime_type="text/plain"),
+  }
+  for filename, part in parts.items():
+    await svc.save_artifact(
+        **SCOPE,
+        filename=filename,
+        artifact=part,
+        custom_metadata={"userId": "42", "trace_id": "abc"},
+    )
+
+  for filename, part in parts.items():
+    assert await svc.load_artifact(**SCOPE, filename=filename) == part
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="notes")
+  assert version_meta is not None
+  # Unlike S3, Azure keeps key case.
+  assert version_meta.custom_metadata == {"userId": "42", "trace_id": "abc"}
+  stored = [entry["metadata"] for _, entry in azure.objects.values()]
+  assert all("is_directory" not in metadata for metadata in stored)
+  # Azure only keeps ASCII and trims spaces from the ends of values.
+  assert all(
+      value.isascii() and value == value.strip()
+      for metadata in stored
+      for value in metadata.values()
+  )
+
+
+@pytest.mark.parametrize(
+    ("custom_metadata", "match"),
+    [
+        ({"x-trace": "1"}, "C# identifier keys"),
+        ({"note": "\u4f60\u597d"}, "ASCII values"),
+        ({"note": "x\t"}, "without spaces at either end"),
+        ({"adkistext": "true"}, "same key as 'adkIsText'"),
+        ({"is_directory": "true"}, "same key as 'is_directory'"),
+        ({"Is_Directory": "true"}, "same key as 'is_directory'"),
+        ({"hdi_isfolder": "true"}, "same key as 'hdi_isfolder'"),
+        ({"userId": "1", "userid": "2"}, "same key as 'userId'"),
+    ],
+)
+async def test_azure_rejects_metadata_it_cannot_store(
+    custom_metadata: dict[str, str], match: str
+) -> None:
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+
+  with pytest.raises(InputValidationError, match=match):
+    await svc.save_artifact(
+        **SCOPE,
+        filename="doc",
+        artifact=types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+        custom_metadata=custom_metadata,
+    )
+
+  assert not azure.objects
+
+
+@pytest.mark.parametrize(
+    ("error_code", "retried"),
+    [
+        ("BlobAlreadyExists", True),
+        ("ConditionNotMet", True),
+        ("ContainerBeingDeleted", False),
+    ],
+)
+async def test_azure_wrapped_conflict_retries_only_blob_exists(
+    error_code: str, retried: bool
+) -> None:
+  """Errors adlfs wraps in RuntimeError retry only when the blob exists."""
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+  azure_error = Exception(error_code)
+  azure_error.error_code = error_code
+  real_open = azure.open
+
+  class FailingWriter:
+    closed = False
+
+    def write(self, data: bytes) -> int:
+      return len(data)
+
+    def close(self) -> None:
+      raise RuntimeError("Failed to upload block!") from azure_error
+
+  def open_with_error(path: str, mode: str = "rb", **kwargs: Any) -> Any:
+    if path.endswith("/0"):
+      return FailingWriter()
+    return real_open(path, mode, **kwargs)
+
+  with mock.patch.object(azure, "open", side_effect=open_with_error):
+    if retried:
+      version = await svc.save_artifact(
+          **SCOPE, filename="doc", artifact=types.Part(text="hi")
+      )
+      assert version == 1
+    else:
+      with pytest.raises(RuntimeError, match="Failed to upload block"):
+        await svc.save_artifact(
+            **SCOPE, filename="doc", artifact=types.Part(text="hi")
+        )
+
+
+async def test_azure_artifact_nested_under_a_version_is_visible() -> None:
+  """adlfs find(path) returns [path] for a blob. Listings must not use it."""
+  svc = FsspecArtifactService("abfs://b", fs=FakeAzureObjectStore())
+  await svc.save_artifact(**SCOPE, filename="a", artifact=types.Part(text="a"))
+  await svc.save_artifact(
+      **SCOPE, filename="a/0", artifact=types.Part(text="child")
+  )
+
+  assert await svc.list_versions(**SCOPE, filename="a/0") == [0]
+  assert await svc.load_artifact(**SCOPE, filename="a/0") == types.Part(
+      text="child"
+  )
+  await svc.delete_artifact(**SCOPE, filename="a/0")
+  assert await svc.list_versions(**SCOPE, filename="a/0") == []
+  assert await svc.list_versions(**SCOPE, filename="a") == [0]
+
+
+async def test_azure_reads_adk_keys_in_any_case_and_hides_adlfs_keys() -> None:
+  """Metadata from other clients maps ADK keys back and hides adlfs's keys."""
+  azure = FakeAzureObjectStore()
+  # A listing of the parent cached before another client saved version 0.
+  azure.dircache["b/app/u/s/doc"] = []
+  azure.put(
+      "b/app/u/s/doc/0",
+      b"hi",
+      metadata={
+          "ADKISTEXT": "true",
+          "is_directory": "false",
+          "Hdi_isfolder": "false",
+          "userKey": "v",
+      },
+  )
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+
+  version_meta = await svc.get_artifact_version(
+      **SCOPE, filename="doc", version=0
+  )
+
+  assert await svc.load_artifact(**SCOPE, filename="doc") == types.Part(
+      text="hi"
+  )
+  assert version_meta is not None
+  assert version_meta.custom_metadata == {"userKey": "v"}
+
+
+@pytest.mark.parametrize(
+    ("adlfs_version", "rejected"),
+    [
+        ("2024.12.0", True),
+        ("2026.5.0", True),
+        ("2026.8.0", False),
+        ("UNKNOWN", False),
+    ],
+)
+async def test_azure_save_checks_adlfs_version(
+    adlfs_version: str, rejected: bool
+) -> None:
+  """adlfs before 2026.8.0 drops content_settings, so saving is rejected."""
+  adlfs = SimpleNamespace(__version__=adlfs_version)
+  with mock.patch.dict(sys.modules, {"adlfs": adlfs}):
+    svc = FsspecArtifactService("abfs://b", fs=FakeAzureObjectStore())
+
+  assert await svc.list_artifact_keys(**SCOPE) == []
+  save = svc.save_artifact(
+      **SCOPE, filename="doc", artifact=types.Part(text="hi")
+  )
+  if rejected:
+    with pytest.raises(ImportError, match="adlfs 2026.8.0"):
+      await save
+  else:
+    assert await save == 0
+
+
+async def test_azure_failed_write_is_not_committed_later() -> None:
+  """A failed write is not committed when its writer is finalized later."""
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+  writers = []
+  real_open = azure.open
+
+  def open_failing_writer(*args: Any, **kwargs: Any) -> Any:
+    writer = real_open(*args, **kwargs)
+    writer.write = mock.Mock(side_effect=OSError("network"))
+    writers.append(writer)
+    return writer
+
+  with mock.patch.object(azure, "open", side_effect=open_failing_writer):
+    with pytest.raises(OSError, match="network"):
+      await svc.save_artifact(
+          **SCOPE, filename="doc", artifact=types.Part(text="hi")
+      )
+  # Garbage collection calls __del__(), which commits an unclosed writer.
+  # The test's event loop keeps the writer alive, so call it directly.
+  writers.pop().__del__()
+
+  assert not azure.objects
+
+
+async def test_azure_empty_payload_conflict_retries_next_version() -> None:
+  """adlfs's ResourceExistsError for empty payloads retries the next version."""
+  azure = FakeAzureObjectStore()
+  azure.put("b/app/u/s/doc/0", b"")
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+
+  with mock.patch.object(azure, "find", return_value={}):
+    version = await svc.save_artifact(
+        **SCOPE,
+        filename="doc",
+        artifact=types.Part.from_bytes(data=b"", mime_type="text/plain"),
+    )
+
+  assert version == 1
 
 
 # ---------------------------------------------------------------------------

@@ -23,12 +23,16 @@ import concurrent.futures
 import dataclasses
 import datetime
 import logging
+import re
+import sys
 from typing import Any
 from typing import ClassVar
 from typing import Optional
 from typing import TYPE_CHECKING
 import urllib.parse
 
+from packaging.version import InvalidVersion
+from packaging.version import Version
 from typing_extensions import override
 
 from ...errors.input_validation_error import InputValidationError
@@ -44,6 +48,11 @@ _DEFAULT_MIME_TYPE = "application/octet-stream"
 _GCS_PROTOCOLS = frozenset({"gs", "gcs"})
 _LOCAL_PROTOCOLS = frozenset({"file", "local"})
 _S3_PROTOCOLS = frozenset({"s3", "s3a"})
+_AZURE_PROTOCOLS = frozenset({"abfs", "abfss", "az"})
+# Azure error codes that mean an exclusive create found an existing blob.
+_AZURE_CONFLICT_ERROR_CODES = frozenset(
+    {"BlobAlreadyExists", "ConditionNotMet"}
+)
 _RAPID_PRECONDITION_ERROR_NAMES = frozenset({
     "FailedPrecondition",
     "PreconditionFailed",
@@ -70,6 +79,7 @@ _ADK_FILE_URI_METADATA_KEY = "adkFileUri"
 _ADK_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
 # Only legacy key GcsArtifactService still reads; other snake_case names are
 # indistinguishable from caller-supplied custom metadata and are not honored.
+# Every backend honors it, for backward compatibility.
 _LEGACY_FILE_URI_METADATA_KEY = "file_uri"
 # Object metadata keys reserved for ADK's own bookkeeping. They are dropped
 # from custom_metadata on save and hidden from it on read.
@@ -87,6 +97,27 @@ _S3_INTERNAL_METADATA_KEYS = {
 # Printable ASCII except "%", left as is when percent-encoding ADK's own values.
 _S3_SAFE_METADATA_CHARS = "".join(
     chr(code) for code in range(0x20, 0x7F) if chr(code) != "%"
+)
+# Azure ignores case in metadata keys. Maps ADK's keys, lowercased, back.
+_AZURE_INTERNAL_METADATA_KEYS = {
+    key.lower(): key for key in _INTERNAL_METADATA_KEYS
+}
+# Metadata keys adlfs uses to tell files from directories.
+_ADLFS_DIRECTORY_METADATA_KEYS = frozenset({"is_directory", "hdi_isfolder"})
+# Lowercased keys caller metadata may not use on Azure, mapped to their owner.
+_AZURE_RESERVED_METADATA_KEYS = {
+    **{key: key for key in _ADLFS_DIRECTORY_METADATA_KEYS},
+    **_AZURE_INTERNAL_METADATA_KEYS,
+}
+# Azure metadata keys must be C# identifiers.
+_AZURE_METADATA_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Metadata values Azure keeps as given: printable ASCII without spaces at either
+# end, which the Azure SDK strips from header values.
+_AZURE_METADATA_VALUE_PATTERN = re.compile(r"(?:[!-~](?:[ -~]*[!-~])?)?")
+# Printable ASCII except space and "%", left as is when percent-encoding ADK's
+# own values for Azure. Spaces are encoded because the Azure SDK strips them.
+_AZURE_SAFE_METADATA_CHARS = "".join(
+    chr(code) for code in range(0x21, 0x7F) if chr(code) != "%"
 )
 
 
@@ -110,7 +141,14 @@ def _fs_protocols(fs: fsspec.AbstractFileSystem) -> tuple[str, ...]:
 
 def _parse_timestamp(info: Mapping[str, Any]) -> float:
   """Extracts a Unix creation timestamp from an fsspec info() mapping."""
-  for field in ("timeCreated", "created", "mtime", "LastModified", "updated"):
+  for field in (
+      "timeCreated",
+      "created",
+      "creation_time",
+      "mtime",
+      "LastModified",
+      "updated",
+  ):
     raw = info.get(field)
     if isinstance(raw, (int, float)):
       return float(raw)
@@ -128,6 +166,49 @@ def _parse_timestamp(info: Mapping[str, Any]) -> float:
         parsed = parsed.replace(tzinfo=datetime.timezone.utc)
       return parsed.timestamp()
   return platform_time.get_time()
+
+
+def _to_azure_metadata(metadata: Mapping[str, str]) -> dict[str, str]:
+  """Returns ``metadata`` in a form Azure stores and returns unchanged.
+
+  ADK's own values, such as display names and file URIs, are percent-encoded so
+  they round-trip. Caller metadata that Azure would reject or change is
+  rejected instead.
+
+  Args:
+    metadata: Metadata to store, including ADK's own keys.
+
+  Raises:
+    InputValidationError: If a caller key is not a C# identifier, a caller
+      value is not printable ASCII or has spaces at either end, or a caller key
+      matches ADK's or adlfs's own keys or another caller key, ignoring case.
+  """
+  encoded = {}
+  # Lowercased keys of caller metadata seen so far, mapped to the caller key.
+  seen: dict[str, str] = {}
+  for key, value in metadata.items():
+    if key in _INTERNAL_METADATA_KEYS:
+      encoded[key] = urllib.parse.quote(value, safe=_AZURE_SAFE_METADATA_CHARS)
+      continue
+    if not (
+        _AZURE_METADATA_KEY_PATTERN.fullmatch(key)
+        and _AZURE_METADATA_VALUE_PATTERN.fullmatch(value)
+    ):
+      raise InputValidationError(
+          "custom_metadata on Azure needs C# identifier keys and printable"
+          " ASCII values without spaces at either end, got"
+          f" {key!r}: {value!r}."
+      )
+    stored_as = key.lower()
+    owner = _AZURE_RESERVED_METADATA_KEYS.get(stored_as) or seen.get(stored_as)
+    if owner is not None:
+      raise InputValidationError(
+          f"custom_metadata key {key!r} is stored on Azure as the same key"
+          f" as {owner!r}."
+      )
+    seen[stored_as] = key
+    encoded[key] = value
+  return encoded
 
 
 @dataclasses.dataclass(frozen=True)
@@ -203,6 +284,8 @@ class _BackendAdapter(abc.ABC):
       return _GcsBackendAdapter(fs)
     if not _S3_PROTOCOLS.isdisjoint(protocols):
       return _S3BackendAdapter(fs)
+    if not _AZURE_PROTOCOLS.isdisjoint(protocols):
+      return _AzureBackendAdapter(fs)
     return _GenericBackendAdapter(fs)
 
   def read_metadata(self, key: str) -> Optional[_ObjectMetadata]:
@@ -225,6 +308,13 @@ class _BackendAdapter(abc.ABC):
         content_type=info.get("contentType") or info.get("ContentType") or None,
         create_time=_parse_timestamp(info),
     )
+
+  def find_detail(self, prefix: str) -> Mapping[str, Mapping[str, Any]]:
+    """Returns ``find(detail=True)`` entries for objects under ``prefix``."""
+    entries: Mapping[str, Mapping[str, Any]] = self._fs.find(
+        prefix, detail=True
+    )
+    return entries
 
   def read_listing_metadata(
       self, entries: Mapping[str, Mapping[str, Any]]
@@ -479,6 +569,110 @@ class _S3BackendAdapter(_BackendAdapter):
           "custom_metadata keys would read back as the same key on S3:"
           f" {', '.join(merged)}."
       )
+
+
+class _AzureBackendAdapter(_BackendAdapter):
+  """Reads and writes object metadata on Azure Blob Storage (``adlfs``).
+
+  ``adlfs`` returns ``metadata``, ``content_settings`` and ``creation_time`` in
+  both ``info()`` and listings. Its ``pipe_file`` cannot take metadata, so
+  objects are created with ``open(key, "xb", metadata=, content_settings=)``,
+  which commits with ``If-None-Match: *``. This needs adlfs 2026.8.0 or newer.
+  Older versions drop ``content_settings``, so saving with them is rejected.
+  adlfs treats a blob with a size as a file, so its ``is_directory`` marker is
+  not written. It is hidden on read, since artifacts saved through adlfs's
+  ``pipe_file`` carry it.
+
+  Azure metadata must be ASCII, and keys must be C# identifiers that are
+  compared without case. ADK's own values, such as display names and file
+  URIs, are percent-encoded so they round-trip. Caller metadata is rejected
+  if a key is not an identifier, a value is not printable ASCII or has spaces
+  at either end, or a key matches ADK's or adlfs's own keys or another caller
+  key, ignoring case.
+  """
+
+  stores_custom_metadata = True
+
+  def __init__(self, fs: fsspec.AbstractFileSystem) -> None:
+    super().__init__(fs)
+    # adlfs before 2026.8.0 accepts content_settings but silently drops it.
+    adlfs = sys.modules.get("adlfs")
+    try:
+      self._drops_content_type = adlfs is not None and (
+          Version(adlfs.__version__) < Version("2026.8.0")
+      )
+    except InvalidVersion:  # adlfs reports "UNKNOWN" when built from source.
+      self._drops_content_type = False
+
+  @override
+  def read_metadata(self, key: str) -> Optional[_ObjectMetadata]:
+    # adlfs invalidate_cache(key) keeps a cached parent listing, which info()
+    # would trust and report key as missing.
+    self._fs.invalidate_cache(self._fs._parent(key))
+    return super().read_metadata(key)
+
+  @override
+  def find_detail(self, prefix: str) -> Mapping[str, Mapping[str, Any]]:
+    # adlfs find(path) returns [path] when path is itself a blob, which a flat
+    # namespace allows next to blobs below it (a/0 and a/0/0). Listing from
+    # the container with prefix= skips that check.
+    container, _, path = prefix.partition("/")
+    entries: Mapping[str, Mapping[str, Any]] = self._fs.find(
+        container, prefix=path, detail=True
+    )
+    return entries
+
+  @override
+  def from_info(self, key: str, info: Mapping[str, Any]) -> _ObjectMetadata:
+    del key
+    raw_metadata = {}
+    for name, value in (info.get("metadata") or {}).items():
+      if name.lower() in _ADLFS_DIRECTORY_METADATA_KEYS:
+        continue
+      name = _AZURE_INTERNAL_METADATA_KEYS.get(name.lower(), name)
+      if name in _INTERNAL_METADATA_KEYS:
+        value = urllib.parse.unquote(value)
+      raw_metadata[name] = value
+    content_settings = info.get("content_settings") or {}
+    return _ObjectMetadata(
+        raw_metadata=raw_metadata,
+        content_type=content_settings.get("content_type") or None,
+        create_time=_parse_timestamp(info),
+    )
+
+  @override
+  def create_object(
+      self,
+      key: str,
+      data: bytes,
+      *,
+      content_type: Optional[str],
+      metadata: Mapping[str, str],
+  ) -> None:
+    if self._drops_content_type:
+      raise ImportError(
+          "Saving artifacts on Azure needs adlfs 2026.8.0 or newer. Upgrade it"
+          " with `pip install -U adlfs`."
+      )
+    open_kwargs: dict[str, Any] = {"metadata": _to_azure_metadata(metadata)}
+    if content_type is not None:
+      open_kwargs["content_settings"] = {"content_type": content_type}
+    stream = self._fs.open(key, "xb", **open_kwargs)
+    try:
+      stream.write(data)
+      stream.close()
+    except Exception as exc:
+      # Keep __del__() from calling close() and committing a failed write.
+      # discard() can't, since fsspec and adlfs implement it as a no-op.
+      stream.closed = True
+      # adlfs maps a conflicting commit to FileExistsError. Azure errors still
+      # come through raw from its fallback upload of empty payloads, or wrapped
+      # in RuntimeError, such as a 412.
+      for error in (exc, exc.__cause__):
+        code = getattr(error, "error_code", None)
+        if getattr(code, "value", code) in _AZURE_CONFLICT_ERROR_CODES:
+          raise FileExistsError(key) from exc
+      raise
 
 
 class _GenericBackendAdapter(_BackendAdapter):
