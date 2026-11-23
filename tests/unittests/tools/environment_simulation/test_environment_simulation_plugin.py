@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from collections.abc import AsyncGenerator
 import copy
 import json
@@ -34,6 +35,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
 from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_config import InjectedError
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy
 from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
@@ -225,3 +227,179 @@ async def test_eval_runs_do_not_share_simulated_state(mocker):
   assert [r.status for r in results] == [InferenceStatus.SUCCESS] * len(results)
   assert len(seen_state) == num_cases * num_runs
   assert seen_state == [{}] * len(seen_state)
+
+
+class _SeededFaultModel(BaseLlm):
+  """Makes the requested number of calls, then reports each tool outcome.
+
+  Reads only the current turn's messages, so one model can serve interleaved
+  case runs without sharing response counters or consulting the eval context.
+  """
+
+  model: str = "seeded-fault-test"
+
+  @override
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    # Give concurrent eval runs a chance to interleave their matching calls.
+    await asyncio.sleep(0)
+    outcomes = []
+    for content in reversed(llm_request.contents):
+      for part in content.parts or []:
+        if part.function_response:
+          response = part.function_response.response
+          outcomes.append("FAILED" if "error_code" in response else "OK")
+      if content.role == "user" and content.parts and content.parts[0].text:
+        num_calls = int(content.parts[0].text)
+        break
+    if len(outcomes) < num_calls:
+      content = types.ModelContent(
+          [types.Part.from_function_call(name="charge_card", args={})]
+      )
+    else:
+      content = types.ModelContent(",".join(reversed(outcomes)))
+    yield LlmResponse(content=content)
+
+
+def _seeded_fault_eval_service(
+    case_ids=("case_a", "case_b"), calls_per_turn=(8,)
+) -> LocalEvalService:
+  """Builds a real eval service with an offline model and seeded injection."""
+
+  def charge_card() -> dict[str, str]:
+    """Charges the card when the plugin does not inject an error."""
+    return {"status": "charged"}
+
+  agent = LlmAgent(name="agent", model=_SeededFaultModel(), tools=[charge_card])
+  plugin = EnvironmentSimulationFactory.create_plugin(
+      EnvironmentSimulationConfig(
+          tool_simulation_configs=[
+              ToolSimulationConfig(
+                  tool_name="charge_card",
+                  injection_configs=[
+                      InjectionConfig(
+                          injection_probability=0.5,
+                          random_seed=42,
+                          injected_error=InjectedError(
+                              injected_http_error_code=503,
+                              error_message="unavailable",
+                          ),
+                      )
+                  ],
+              )
+          ]
+      )
+  )
+  app = App(name="app", root_agent=agent, plugins=[plugin])
+  manager = InMemoryEvalSetsManager()
+  manager.create_eval_set("app", "set")
+  for case_id in case_ids:
+    manager.add_eval_case(
+        "app",
+        "set",
+        EvalCase(
+            eval_id=case_id,
+            conversation=[
+                Invocation(user_content=types.UserContent(str(num_calls)))
+                for num_calls in calls_per_turn
+            ],
+        ),
+    )
+  return LocalEvalService(root_agent=agent, eval_sets_manager=manager, app=app)
+
+
+async def _seeded_fault_patterns(
+    service: LocalEvalService, *, case_ids=None, parallelism=1, num_runs=3
+) -> dict[tuple[str, int], tuple[str, ...]]:
+  """Reads tool outcomes from actual eval results, keyed by case and run."""
+  patterns = {}
+  async for result in service.perform_inference(
+      InferenceRequest(
+          app_name="app",
+          eval_set_id="set",
+          eval_case_ids=case_ids,
+          inference_config=InferenceConfig(
+              parallelism=parallelism, num_runs=num_runs
+          ),
+      )
+  ):
+    assert result.status == InferenceStatus.SUCCESS, result.error_message
+    pattern = tuple(
+        outcome
+        for invocation in result.inferences
+        for outcome in invocation.final_response.parts[0].text.split(",")
+    )
+    patterns[(result.eval_case_id, result.repetition_index)] = pattern
+  assert patterns
+  observed_case_ids = {case_id for case_id, _ in patterns}
+  assert set(patterns) == {
+      (case_id, repetition_index)
+      for case_id in case_ids or observed_case_ids
+      for repetition_index in range(num_runs)
+  }
+  return patterns
+
+
+@pytest.mark.parametrize("case_ids", [None, ["case_a", "case_b"], ["case_a"]])
+@pytest.mark.parametrize("parallelism", [1, 4])
+async def test_seeded_faults_ignore_eval_case_selection(case_ids, parallelism):
+  """Selecting other cases leaves each repetition's fault pattern unchanged."""
+  baseline_service = _seeded_fault_eval_service()
+  selected_service = _seeded_fault_eval_service()
+
+  baseline = await _seeded_fault_patterns(baseline_service, case_ids=["case_a"])
+  selected = await _seeded_fault_patterns(
+      selected_service, case_ids=case_ids, parallelism=parallelism
+  )
+
+  for key, pattern in baseline.items():
+    assert selected[key] == pattern
+
+
+@pytest.mark.parametrize("parallelism", [1, 4])
+async def test_seeded_faults_ignore_eval_case_order(parallelism):
+  """Reordering stored cases leaves every case run's fault pattern unchanged."""
+  forward_service = _seeded_fault_eval_service(("case_a", "case_b"))
+  reverse_service = _seeded_fault_eval_service(("case_b", "case_a"))
+
+  forward = await _seeded_fault_patterns(
+      forward_service, parallelism=parallelism
+  )
+  reverse = await _seeded_fault_patterns(
+      reverse_service, parallelism=parallelism
+  )
+
+  assert reverse == forward
+
+
+@pytest.mark.parametrize("parallelism", [1, 4])
+async def test_seeded_faults_restart_when_eval_reuses_plugin(parallelism):
+  """Evaluating again with the same plugin restarts each case run's stream."""
+  service = _seeded_fault_eval_service()
+
+  first = await _seeded_fault_patterns(service, parallelism=parallelism)
+  second = await _seeded_fault_patterns(service, parallelism=parallelism)
+
+  assert second == first
+
+
+async def test_seeded_fault_stream_continues_across_eval_turns():
+  """Splitting matching calls across turns preserves the case run's stream."""
+  single_turn_service = _seeded_fault_eval_service(calls_per_turn=(8,))
+  multi_turn_service = _seeded_fault_eval_service(calls_per_turn=(2, 2, 2, 2))
+
+  single_turn = await _seeded_fault_patterns(single_turn_service, parallelism=4)
+  multi_turn = await _seeded_fault_patterns(multi_turn_service, parallelism=4)
+
+  assert multi_turn == single_turn
+  assert all(len(pattern) == 8 for pattern in multi_turn.values())
+
+
+async def test_seeded_faults_sample_different_eval_repetitions():
+  """Repeating a case samples distinct patterns instead of replaying one."""
+  service = _seeded_fault_eval_service(("case_a",))
+
+  patterns = await _seeded_fault_patterns(service, parallelism=4)
+
+  assert len(set(patterns.values())) > 1
