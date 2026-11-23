@@ -755,6 +755,13 @@ class RemoteA2aAgent(BaseAgent):
   plain ``transfer_to_agent`` target.
   """
 
+  rerun_on_resume: bool = True
+  """Controls behavior when resuming after an interrupt.
+
+  Defaults to True so that resumed A2A tasks (such as human-in-the-loop input or
+  authentication) re-execute and send the resume request over HTTP to the peer.
+  """
+
   def __init__(
       self,
       name: str,
