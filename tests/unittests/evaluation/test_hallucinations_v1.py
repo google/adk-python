@@ -23,6 +23,7 @@ from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import HallucinationsCriterion
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
+from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.hallucinations_v1 import _parse_sentences
 from google.adk.evaluation.hallucinations_v1 import _parse_validation_results
@@ -218,7 +219,7 @@ contradicting_excerpt: null
             val_gen(),
         ]
     )
-    score, _ = await metric._evaluate_nl_response("nl", "ctx")
+    score, _, _ = await metric._evaluate_nl_response("nl", "ctx")
     assert score is None
 
   @pytest.mark.asyncio
@@ -244,7 +245,7 @@ contradicting_excerpt: null
             val_gen(),
         ]
     )
-    score, _ = await metric._evaluate_nl_response("nl", "ctx")
+    score, _, _ = await metric._evaluate_nl_response("nl", "ctx")
     assert score is None
 
   async def _score_validator_reply(self, metric, mocker, validator_text):
@@ -263,7 +264,7 @@ contradicting_excerpt: null
     metric._judge_model.generate_content_async = mocker.MagicMock(
         side_effect=[seg_gen(), val_gen()]
     )
-    score, _ = await metric._evaluate_nl_response("nl", "ctx")
+    score, _, _ = await metric._evaluate_nl_response("nl", "ctx")
     return score
 
   @pytest.mark.asyncio
@@ -1153,21 +1154,31 @@ Agent2 response.
     async def mock_evaluate_nl_response(nl_response, context):
       if nl_response == "Hi, I am root.":
         assert context.strip() == expected_context0.strip()
-        return 1.0, json.dumps(
-            [{"sentence": "Hi, I am root.", "label": "supported"}]
+        return (
+            1.0,
+            json.dumps([{"sentence": "Hi, I am root.", "label": "supported"}]),
+            [],
         )
       elif nl_response == "Agent2 response.":
         assert context.strip() == expected_context5.strip()
-        return 0.5, json.dumps(
-            [{"sentence": "Agent2 response.", "label": "unsupported"}]
+        return (
+            0.5,
+            json.dumps(
+                [{"sentence": "Agent2 response.", "label": "unsupported"}]
+            ),
+            [],
         )
       elif nl_response == "Final agent tree response.":
         assert context.strip() == expected_context6.strip()
-        return 0.0, json.dumps([{
-            "sentence": "Final agent tree response.",
-            "label": "contradictory",
-        }])
-      return None, "error"
+        return (
+            0.0,
+            json.dumps([{
+                "sentence": "Final agent tree response.",
+                "label": "contradictory",
+            }]),
+            [],
+        )
+      return None, "error", []
 
     mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
@@ -1290,10 +1301,14 @@ Agent2 response.
       # Expect only the final response to be evaluated.
       assert nl_response == "Final agent tree response."
       assert context.strip() == expected_context.strip()
-      return 0.0, json.dumps([{
-          "sentence": "Final agent tree response.",
-          "label": "contradictory",
-      }])
+      return (
+          0.0,
+          json.dumps([{
+              "sentence": "Final agent tree response.",
+              "label": "contradictory",
+          }]),
+          [],
+      )
 
     mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
@@ -1550,19 +1565,27 @@ tool_outputs:
       if nl_response == response1:
         assert context.strip() == expected_context_1.strip()
         sentence1, sentence2, sentence3, _ = response1.split(".")
-        return 2.0 / 3.0, json.dumps([
-            {"sentence": sentence1, "label": "supported"},
-            {"sentence": sentence2, "label": "contradictory"},
-            {"sentence": sentence3, "label": "supported"},
-        ])
+        return (
+            2.0 / 3.0,
+            json.dumps([
+                {"sentence": sentence1, "label": "supported"},
+                {"sentence": sentence2, "label": "contradictory"},
+                {"sentence": sentence3, "label": "supported"},
+            ]),
+            [],
+        )
       elif nl_response == response2:
         assert context.strip() == expected_context_2.strip()
         sentence1, sentence2, _ = response2.split(".")
-        return 1.0, json.dumps([
-            {"sentence": sentence1, "label": "supported"},
-            {"sentence": sentence2, "label": "supported"},
-        ])
-      return None, "error"
+        return (
+            1.0,
+            json.dumps([
+                {"sentence": sentence1, "label": "supported"},
+                {"sentence": sentence2, "label": "supported"},
+            ]),
+            [],
+        )
+      return None, "error", []
 
     mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
@@ -1672,10 +1695,14 @@ tool_outputs:
       assert nl_response == response2
       assert context.strip() == expected_context.strip()
       sentence1, sentence2, _ = response2.split(".")
-      return 1.0, json.dumps([
-          {"sentence": sentence1, "label": "supported"},
-          {"sentence": sentence2, "label": "supported"},
-      ])
+      return (
+          1.0,
+          json.dumps([
+              {"sentence": sentence1, "label": "supported"},
+              {"sentence": sentence2, "label": "supported"},
+          ]),
+          [],
+      )
 
     mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
@@ -1743,19 +1770,31 @@ async def test_evaluate_invocations_success_path(hallucinations_metric, mocker):
 
   async def mock_evaluate_nl_response(nl_response, context):
     if nl_response == "Intermediate NL response.":
-      return 1.0, json.dumps(
-          [{"sentence": "Intermediate NL response.", "label": "supported"}]
+      return (
+          1.0,
+          json.dumps(
+              [{"sentence": "Intermediate NL response.", "label": "supported"}]
+          ),
+          [],
       )
     elif nl_response == "Another intermediate NL response.":
-      return 0.5, json.dumps([{
-          "sentence": "Another intermediate NL response.",
-          "label": "unsupported",
-      }])
-    elif nl_response == "Final response.":
-      return 0.0, json.dumps(
-          [{"sentence": "Final response.", "label": "contradictory"}]
+      return (
+          0.5,
+          json.dumps([{
+              "sentence": "Another intermediate NL response.",
+              "label": "unsupported",
+          }]),
+          [],
       )
-    return None, "error"
+    elif nl_response == "Final response.":
+      return (
+          0.0,
+          json.dumps(
+              [{"sentence": "Final response.", "label": "contradictory"}]
+          ),
+          [],
+      )
+    return None, "error", []
 
   mocker.patch(
       "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
@@ -1867,7 +1906,7 @@ async def test_evaluate_all_invocations_not_evaluated(
   )
 
   async def mock_evaluate_nl_response(nl_response, context):
-    return None, "Judge model error."
+    return None, "Judge model error.", []
 
   mocker.patch(
       "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
@@ -1937,12 +1976,16 @@ async def test_evaluate_invocations_partial_failure(
 
   async def mock_evaluate_nl_response(nl_response, context):
     if nl_response == "Intermediate NL response.":
-      return 0.8, json.dumps(
-          [{"sentence": "Intermediate NL response.", "label": "supported"}]
+      return (
+          0.8,
+          json.dumps(
+              [{"sentence": "Intermediate NL response.", "label": "supported"}]
+          ),
+          [],
       )
     elif nl_response == "Final response.":
-      return None, "some error during evaluation"
-    return None, "error"
+      return None, "some error during evaluation", []
+    return None, "error", []
 
   mocker.patch(
       "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
@@ -1997,8 +2040,8 @@ async def test_evaluate_invocations_unscored_step_still_fails_invocation(
 
   async def mock_evaluate_nl_response(nl_response, context):
     if nl_response == "Unscored response.":
-      return None, "some error during evaluation"
-    return 0.0, "[]"
+      return None, "some error during evaluation", []
+    return 0.0, "[]", []
 
   mocker.patch.object(
       metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
@@ -2042,10 +2085,10 @@ async def test_evaluate_invocations_unscored_invocation_leaves_case_unscored(
 
   async def mock_evaluate_nl_response(nl_response, context):
     if nl_response == "Good response.":
-      return 1.0, "[]"
+      return 1.0, "[]", []
     if nl_response == "Hallucinated response.":
-      return 0.0, "[]"
-    return None, "some error during evaluation"
+      return 0.0, "[]", []
+    return None, "some error during evaluation", []
 
   mocker.patch.object(
       metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
@@ -2076,6 +2119,161 @@ async def test_evaluate_invocations_unscored_invocation_leaves_case_unscored(
   ])
   assert result.overall_score == 1.0
   assert result.overall_eval_status == EvalStatus.PASSED
+
+
+def _script_judge(metric, segmenter_text, validator_text):
+  """Makes the judge answer the segmenter, then the validator, with text."""
+
+  async def reply(text):
+    yield LlmResponse(
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text=text)]
+        )
+    )
+
+  replies = iter([segmenter_text, validator_text])
+  metric._judge_model.generate_content_async = lambda llm_request: reply(
+      next(replies)
+  )
+
+
+def _final_response_invocation(text):
+  return Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="What is the capital of France?")]
+      ),
+      final_response=genai_types.Content(parts=[genai_types.Part(text=text)]),
+  )
+
+
+async def test_evaluate_invocations_returns_judge_rationale_per_sentence(
+    hallucinations_metric,
+):
+  """Each judged sentence comes back as a rubric score with its rationale."""
+  metric = hallucinations_metric
+  _script_judge(
+      metric,
+      "<sentence>Paris is in France.</sentence>"
+      "<sentence>It is the capital of Spain.</sentence>",
+      """sentence: Paris is in France.
+label: `supported`
+rationale: The context places Paris in France.
+supporting_excerpt: Paris, France.
+contradicting_excerpt: null
+
+sentence: It is the capital of Spain.
+label: contradictory
+rationale: The context says Paris is the capital of France.
+supporting_excerpt: null
+contradicting_excerpt: Paris is the capital of France.
+""",
+  )
+
+  result = await metric.evaluate_invocations([
+      _final_response_invocation(
+          "Paris is in France. It is the capital of Spain."
+      )
+  ])
+
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.score == 0.5
+  assert per_invocation_result.rubric_scores == [
+      RubricScore(
+          rubric_id="Paris is in France.",
+          rationale="supported: The context places Paris in France.",
+          score=1.0,
+      ),
+      RubricScore(
+          rubric_id="It is the capital of Spain.",
+          rationale=(
+              "contradictory: The context says Paris is the capital of France."
+          ),
+          score=0.0,
+      ),
+  ]
+
+
+async def test_evaluate_invocations_returns_no_rationale_for_unscored_response(
+    hallucinations_metric,
+):
+  """A response the judge left partly unlabelled yields no rubric scores."""
+  metric = hallucinations_metric
+  _script_judge(
+      metric,
+      "<sentence>Paris is in France.</sentence>"
+      "<sentence>It is the capital of Spain.</sentence>",
+      """sentence: Paris is in France.
+label: supported
+rationale: The context places Paris in France.
+supporting_excerpt: Paris, France.
+contradicting_excerpt: null
+""",
+  )
+
+  result = await metric.evaluate_invocations([
+      _final_response_invocation(
+          "Paris is in France. It is the capital of Spain."
+      )
+  ])
+
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.eval_status == EvalStatus.NOT_EVALUATED
+  assert per_invocation_result.rubric_scores == []
+
+
+async def test_evaluate_invocations_keeps_rationales_of_scored_steps_in_order(
+    hallucinations_metric, mocker
+):
+  """Rubric scores of every scored response are kept, in response order.
+
+  Setup: two intermediate responses and a final one; the second intermediate
+    response cannot be scored, which leaves the invocation unscored.
+  Act: evaluate the invocation.
+  Assert: the rubric scores of the first and the final responses are still
+    returned, in that order.
+  """
+  metric = hallucinations_metric
+  actual_invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User query.")]
+      ),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text=text)]
+                  ),
+              )
+              for text in ("First response.", "Unscored response.")
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final response.")]
+      ),
+  )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    if nl_response == "Unscored response.":
+      return None, "some error during evaluation", []
+    return (
+        1.0,
+        "[]",
+        [RubricScore(rubric_id=nl_response, rationale="supported", score=1.0)],
+    )
+
+  mocker.patch.object(
+      metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
+  )
+
+  result = await metric.evaluate_invocations([actual_invocation])
+
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.eval_status == EvalStatus.NOT_EVALUATED
+  assert [s.rubric_id for s in per_invocation_result.rubric_scores] == [
+      "First response.",
+      "Final response.",
+  ]
 
 
 @pytest.mark.asyncio

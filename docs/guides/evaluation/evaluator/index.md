@@ -186,7 +186,7 @@ Three things about that call catch people out.
 | `expected_invocation` | `Invocation \| None` | `None` | Its recorded counterpart, when the metric used one. |
 | `score` | `float \| None` | `None` | Score for this invocation. |
 | `eval_status` | `EvalStatus` | `NOT_EVALUATED` | Verdict for this invocation. |
-| `rubric_scores` | `list[RubricScore] \| None` | `None` | Per-rubric detail, for rubric-based metrics. |
+| `rubric_scores` | `list[RubricScore] \| None` | `None` | Per-rubric detail, for rubric-based metrics. `final_response_match_v2` returns the judge's reasoning here, and `hallucinations_v1` returns one entry per judged sentence. |
 
 `EvalStatus` has three members: `PASSED`, `FAILED`, and `NOT_EVALUATED`.
 

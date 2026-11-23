@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import ClassVar
@@ -25,6 +26,7 @@ from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalStatus
 from .eval_metrics import LlmAsAJudgeCriterion
+from .eval_rubrics import RubricScore
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .llm_as_judge import AutoRaterScore
@@ -75,6 +77,36 @@ The answer should be a json alone which follows the json structure below:
 }}
 Answer with assertiveness:
 """
+
+# Rubric id of the RubricScore that carries the judge's reasoning. It names the
+# field the judge was asked to decide.
+_VALIDITY_RUBRIC_ID = "is_the_agent_response_valid"
+
+
+def _parse_reasoning(response: str) -> str | None:
+  """Extracts the judge's reasoning from its critique.
+
+  Args:
+    response: model response
+
+  Returns:
+    The reasoning, or None if the critique has none.
+  """
+  # The critique is not always valid JSON (code fences, trailing commas, or a
+  # value wrapped in a list as the prompt template shows), so the field is
+  # matched directly rather than parsing the whole response.
+  reasoning_match = re.search(
+      r'"reasoning":\s*\[?\s*"((?:[^"\\]|\\.)*)"', response
+  )
+  if not reasoning_match:
+    return None
+  reasoning = reasoning_match.group(1)
+  try:
+    # Decode JSON escapes; strict=False keeps literal newlines in the value.
+    reasoning = json.loads(f'"{reasoning}"', strict=False)
+  except json.JSONDecodeError:
+    pass
+  return reasoning.strip() or None
 
 
 def _parse_critique(response: str) -> Label:
@@ -138,6 +170,10 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge[LlmAsAJudgeCriterion]):
   are aggregated by taking majority vote, and then the overall score is the
   fraction, ranging from 0 to 1, of valid samples. Higher values of overall
   score indicate better final response performance of the agent.
+
+  The judge's reasoning for the sample that decided an invocation is returned
+  as a single `RubricScore` in that invocation's `rubric_scores`, with the same
+  score as the invocation.
   """
 
   criterion_type: ClassVar[type[LlmAsAJudgeCriterion]] = LlmAsAJudgeCriterion
@@ -189,11 +225,23 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge[LlmAsAJudgeCriterion]):
       return AutoRaterScore()
     label = _parse_critique(response_text)
     if label == Label.VALID:
-      return AutoRaterScore(score=1.0)
+      score = 1.0
     elif label == Label.INVALID:
-      return AutoRaterScore(score=0.0)
+      score = 0.0
     else:
-      return AutoRaterScore()
+      score = None
+
+    reasoning = _parse_reasoning(response_text)
+    if reasoning is None:
+      return AutoRaterScore(score=score)
+    return AutoRaterScore(
+        score=score,
+        rubric_scores=[
+            RubricScore(
+                rubric_id=_VALIDITY_RUBRIC_ID, rationale=reasoning, score=score
+            )
+        ],
+    )
 
   @override
   def aggregate_per_invocation_samples(
