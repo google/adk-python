@@ -1710,8 +1710,9 @@ async def test_perform_inference_single_eval_item_failure(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("use_live", [False, True])
 async def test_perform_inference_single_eval_item_sets_eval_run_context(
-    eval_service, dummy_agent, mocker, fails
+    eval_service, dummy_agent, mocker, fails, use_live
 ):
   """Inference runs inside its eval case run's context, reset afterwards."""
   eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
@@ -1724,8 +1725,14 @@ async def test_perform_inference_single_eval_item_sets_eval_run_context(
       raise RuntimeError("model crashed")
     return []
 
+  generator_name = (
+      "_generate_inferences_from_root_agent_live"
+      if use_live
+      else "_generate_inferences_from_root_agent"
+  )
   mocker.patch(
-      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent",
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator."
+      + generator_name,
       side_effect=generate,
   )
 
@@ -1734,7 +1741,7 @@ async def test_perform_inference_single_eval_item_sets_eval_run_context(
       eval_set_id="test_eval_set",
       eval_case=eval_case,
       root_agent=dummy_agent,
-      use_live=False,
+      use_live=use_live,
       live_timeout_seconds=300,
       repetition_index=2,
   )
@@ -1745,6 +1752,65 @@ async def test_perform_inference_single_eval_item_sets_eval_run_context(
   assert run.eval_case_id == "case1"
   assert run.repetition_index == 2
   assert get_eval_run_context() is None
+
+
+@pytest.mark.parametrize("use_live", [False, True])
+async def test_cancelled_inference_clears_eval_run_context(
+    eval_service, dummy_agent, mocker, use_live
+):
+  """Cancelling inference clears its context before the worker task exits."""
+  eval_case = EvalCase(eval_id="case1", conversation=[])
+  entered = asyncio.Event()
+  runs_seen = []
+  after_cancellation = []
+
+  async def generate(**kwargs):
+    del kwargs
+    runs_seen.append(get_eval_run_context())
+    entered.set()
+    await asyncio.Event().wait()
+
+  generator_name = (
+      "_generate_inferences_from_root_agent_live"
+      if use_live
+      else "_generate_inferences_from_root_agent"
+  )
+  mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator."
+      + generator_name,
+      side_effect=generate,
+  )
+
+  async def worker():
+    try:
+      await eval_service._perform_inference_single_eval_item(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case=eval_case,
+          root_agent=dummy_agent,
+          use_live=use_live,
+          live_timeout_seconds=300,
+          repetition_index=2,
+      )
+    finally:
+      # Checking only the parent task would miss a leaked worker context.
+      after_cancellation.append(get_eval_run_context())
+
+  task = asyncio.create_task(worker())
+  try:
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+  finally:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await task
+
+  [run] = runs_seen
+  assert run.eval_case_id == "case1"
+  assert run.repetition_index == 2
+  assert after_cancellation == [None]
 
 
 @pytest.mark.asyncio
