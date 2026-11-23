@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import abc
-import collections
+from collections.abc import Callable
 from collections.abc import Mapping
 import concurrent.futures
 import dataclasses
@@ -94,10 +94,6 @@ _INTERNAL_METADATA_KEYS = frozenset({
 _S3_INTERNAL_METADATA_KEYS = {
     key.lower().replace("_", "-"): key for key in _INTERNAL_METADATA_KEYS
 }
-# Printable ASCII except "%", left as is when percent-encoding ADK's own values.
-_S3_SAFE_METADATA_CHARS = "".join(
-    chr(code) for code in range(0x20, 0x7F) if chr(code) != "%"
-)
 # Azure ignores case in metadata keys. Maps ADK's keys, lowercased, back.
 _AZURE_INTERNAL_METADATA_KEYS = {
     key.lower(): key for key in _INTERNAL_METADATA_KEYS
@@ -111,12 +107,14 @@ _AZURE_RESERVED_METADATA_KEYS = {
 }
 # Azure metadata keys must be C# identifiers.
 _AZURE_METADATA_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# Metadata values Azure keeps as given: printable ASCII without spaces at either
-# end, which the Azure SDK strips from header values.
-_AZURE_METADATA_VALUE_PATTERN = re.compile(r"(?:[!-~](?:[ -~]*[!-~])?)?")
+# S3 metadata keys are HTTP header names (RFC 9110 tokens).
+_HTTP_TOKEN_PATTERN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+# Metadata values the stores keep as given: printable ASCII without spaces at
+# either end, which stores and clients trim from header values.
+_METADATA_VALUE_PATTERN = re.compile(r"(?:[!-~](?:[ -~]*[!-~])?)?")
 # Printable ASCII except space and "%", left as is when percent-encoding ADK's
-# own values for Azure. Spaces are encoded because the Azure SDK strips them.
-_AZURE_SAFE_METADATA_CHARS = "".join(
+# own values. Spaces are encoded because stores trim them from header values.
+_ASCII_METADATA_CHARS = "".join(
     chr(code) for code in range(0x21, 0x7F) if chr(code) != "%"
 )
 
@@ -168,42 +166,53 @@ def _parse_timestamp(info: Mapping[str, Any]) -> float:
   return platform_time.get_time()
 
 
-def _to_azure_metadata(metadata: Mapping[str, str]) -> dict[str, str]:
-  """Returns ``metadata`` in a form Azure stores and returns unchanged.
+def _encode_ascii_metadata(
+    metadata: Mapping[str, str],
+    *,
+    store: str,
+    key_rule: str,
+    is_valid_key: Callable[[str], Any],
+    store_key: Callable[[str], str],
+    reserved: Mapping[str, str],
+) -> dict[str, str]:
+  """Returns ``metadata`` for stores that only keep ASCII metadata (S3, Azure).
 
   ADK's own values, such as display names and file URIs, are percent-encoded so
-  they round-trip. Caller metadata that Azure would reject or change is
+  they round-trip. Caller metadata that the store would reject or change is
   rejected instead.
 
   Args:
     metadata: Metadata to store, including ADK's own keys.
+    store: Store name for error messages.
+    key_rule: The store's rule for keys, for error messages.
+    is_valid_key: Returns whether the store accepts a caller key.
+    store_key: Returns a key in the form the store compares keys in.
+    reserved: Keys, in store form, that callers may not use, mapped to the key
+      that owns them.
 
   Raises:
-    InputValidationError: If a caller key is not a C# identifier, a caller
+    InputValidationError: If a caller key breaks ``is_valid_key``, a caller
       value is not printable ASCII or has spaces at either end, or a caller key
-      matches ADK's or adlfs's own keys or another caller key, ignoring case.
+      is stored as the same key as a reserved key or another caller key.
   """
   encoded = {}
-  # Lowercased keys of caller metadata seen so far, mapped to the caller key.
+  # Store-form keys of caller metadata seen so far, mapped to the caller key.
   seen: dict[str, str] = {}
   for key, value in metadata.items():
     if key in _INTERNAL_METADATA_KEYS:
-      encoded[key] = urllib.parse.quote(value, safe=_AZURE_SAFE_METADATA_CHARS)
+      encoded[key] = urllib.parse.quote(value, safe=_ASCII_METADATA_CHARS)
       continue
-    if not (
-        _AZURE_METADATA_KEY_PATTERN.fullmatch(key)
-        and _AZURE_METADATA_VALUE_PATTERN.fullmatch(value)
-    ):
+    if not (is_valid_key(key) and _METADATA_VALUE_PATTERN.fullmatch(value)):
       raise InputValidationError(
-          "custom_metadata on Azure needs C# identifier keys and printable"
+          f"custom_metadata on {store} needs {key_rule} keys and printable"
           " ASCII values without spaces at either end, got"
           f" {key!r}: {value!r}."
       )
-    stored_as = key.lower()
-    owner = _AZURE_RESERVED_METADATA_KEYS.get(stored_as) or seen.get(stored_as)
+    stored_as = store_key(key)
+    owner = reserved.get(stored_as) or seen.get(stored_as)
     if owner is not None:
       raise InputValidationError(
-          f"custom_metadata key {key!r} is stored on Azure as the same key"
+          f"custom_metadata key {key!r} is stored on {store} as the same key"
           f" as {owner!r}."
       )
     seen[stored_as] = key
@@ -456,9 +465,9 @@ class _S3BackendAdapter(_BackendAdapter):
   turned into ``-``. ADK's own keys are mapped back, caller keys are not.
 
   S3 metadata must be ASCII. ADK's own values, such as display names and file
-  URIs, are percent-encoded so they round-trip. Caller metadata must be ASCII,
-  and caller keys that would read back as ADK's own keys or as each other are
-  rejected.
+  URIs, are percent-encoded so they round-trip. Caller keys must be HTTP header
+  names, and caller values printable ASCII without spaces at either end. Caller
+  keys that would read back as ADK's own keys or as each other are rejected.
 
   Reading one version takes two HeadObject requests, ``info()`` for content
   type and time and ``metadata()`` for user metadata, because s3fs returns them
@@ -514,20 +523,20 @@ class _S3BackendAdapter(_BackendAdapter):
       content_type: Optional[str],
       metadata: Mapping[str, str],
   ) -> None:
-    metadata = {
-        name: (
-            urllib.parse.quote(value, safe=_S3_SAFE_METADATA_CHARS)
-            if name in _INTERNAL_METADATA_KEYS
-            else value
-        )
-        for name, value in metadata.items()
+    write_kwargs: dict[str, Any] = {
+        "mode": "create",
+        # S3 would default to binary/octet-stream. Match GCS and Azure.
+        "ContentType": content_type or _DEFAULT_MIME_TYPE,
     }
-    self._validate_metadata(metadata)
-    write_kwargs: dict[str, Any] = {"mode": "create"}
-    if content_type is not None:
-      write_kwargs["ContentType"] = content_type
     if metadata:
-      write_kwargs["Metadata"] = dict(metadata)
+      write_kwargs["Metadata"] = _encode_ascii_metadata(
+          metadata,
+          store="S3",
+          key_rule="HTTP header name",
+          is_valid_key=_HTTP_TOKEN_PATTERN.fullmatch,
+          store_key=lambda key: key.lower().replace("_", "-"),
+          reserved=_S3_INTERNAL_METADATA_KEYS,
+      )
     try:
       self._fs.pipe_file(key, data, **write_kwargs)
     except OSError as exc:
@@ -537,38 +546,6 @@ class _S3BackendAdapter(_BackendAdapter):
       if response.get("Error", {}).get("Code") == "ConditionalRequestConflict":
         raise FileExistsError(key) from exc
       raise
-
-  @staticmethod
-  def _validate_metadata(metadata: Mapping[str, str]) -> None:
-    """Rejects metadata that S3 cannot store or would read back differently."""
-    for key, value in metadata.items():
-      # botocore raises ParamValidationError on non-ASCII metadata.
-      if not (key.isascii() and value.isascii()):
-        raise InputValidationError(
-            "custom_metadata keys and values must be ASCII on S3, got"
-            f" {key!r}: {value!r}."
-        )
-    s3_keys = {key: key.lower().replace("_", "-") for key in metadata}
-    reserved = sorted(
-        key
-        for key, s3_key in s3_keys.items()
-        if key not in _INTERNAL_METADATA_KEYS
-        and s3_key in _S3_INTERNAL_METADATA_KEYS
-    )
-    if reserved:
-      raise InputValidationError(
-          "custom_metadata keys would read back as ADK keys on S3:"
-          f" {', '.join(reserved)}."
-      )
-    counts = collections.Counter(s3_keys.values())
-    merged = sorted(
-        key for key, s3_key in s3_keys.items() if counts[s3_key] > 1
-    )
-    if merged:
-      raise InputValidationError(
-          "custom_metadata keys would read back as the same key on S3:"
-          f" {', '.join(merged)}."
-      )
 
 
 class _AzureBackendAdapter(_BackendAdapter):
@@ -654,7 +631,16 @@ class _AzureBackendAdapter(_BackendAdapter):
           "Saving artifacts on Azure needs adlfs 2026.8.0 or newer. Upgrade it"
           " with `pip install -U adlfs`."
       )
-    open_kwargs: dict[str, Any] = {"metadata": _to_azure_metadata(metadata)}
+    open_kwargs: dict[str, Any] = {
+        "metadata": _encode_ascii_metadata(
+            metadata,
+            store="Azure",
+            key_rule="C# identifier",
+            is_valid_key=_AZURE_METADATA_KEY_PATTERN.fullmatch,
+            store_key=str.lower,
+            reserved=_AZURE_RESERVED_METADATA_KEYS,
+        )
+    }
     if content_type is not None:
       open_kwargs["content_settings"] = {"content_type": content_type}
     stream = self._fs.open(key, "xb", **open_kwargs)

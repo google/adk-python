@@ -1197,32 +1197,56 @@ async def test_s3_metadata_keys_follow_s3_key_rules() -> None:
         pytest.param(
             types.Part.from_bytes(data=b"x", mime_type="text/plain"),
             {"adkistext": "true"},
-            "read back as ADK keys",
+            "same key as 'adkIsText'",
             id="lowercased-adk-key",
         ),
         pytest.param(
             types.Part.from_bytes(data=b"x", mime_type="text/plain"),
             {"FILE_URI": "s3://x/y"},
-            "read back as ADK keys",
+            "same key as 'file_uri'",
             id="legacy-key-with-underscore",
         ),
         pytest.param(
             types.Part.from_bytes(data=b"x", mime_type="text/plain"),
             {"note": "\u4f60\u597d"},
-            "must be ASCII",
+            "ASCII values",
             id="non-ascii-value",
         ),
         pytest.param(
             types.Part.from_bytes(data=b"x", mime_type="text/plain"),
             {"userId": "1", "userid": "2"},
-            "same key",
+            "same key as 'userId'",
             id="keys-differing-in-case",
         ),
         pytest.param(
             types.Part.from_bytes(data=b"x", mime_type="text/plain"),
             {"a_b": "1", "a-b": "2"},
-            "same key",
+            "same key as 'a_b'",
             id="underscore-and-dash",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"bad key": "v"},
+            "HTTP header name keys",
+            id="key-with-space",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"": "v"},
+            "HTTP header name keys",
+            id="empty-key",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"note": "a\nb"},
+            "printable ASCII values",
+            id="control-character",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"note": " x"},
+            "without spaces at either end",
+            id="leading-space",
         ),
     ],
 )
@@ -1245,6 +1269,24 @@ async def test_s3_rejects_metadata_it_cannot_store(
   assert not s3.objects
 
 
+async def test_s3_keeps_caller_metadata_as_given() -> None:
+  """Token keys and values with "%" or inner spaces are stored unchanged."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+
+  await svc.save_artifact(
+      **SCOPE,
+      filename="doc",
+      artifact=types.Part(text="hi"),
+      custom_metadata={"a.b": "50% off, now"},
+  )
+
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="doc")
+  assert version_meta is not None
+  assert version_meta.custom_metadata == {"a.b": "50% off, now"}
+  assert s3.head_metadata["b/app/u/s/doc/0"]["a.b"] == "50% off, now"
+
+
 @pytest.mark.parametrize(
     "artifact",
     [
@@ -1253,7 +1295,7 @@ async def test_s3_rejects_metadata_it_cannot_store(
                 inline_data=types.Blob(
                     data=b"x",
                     mime_type="image/png",
-                    display_name="\u56fe 100%.png",
+                    display_name=" \u56fe 100%.png ",
                 )
             ),
             id="display-name",
@@ -1280,7 +1322,10 @@ async def test_s3_round_trips_non_ascii_adk_values(
 
   assert await svc.load_artifact(**SCOPE, filename="doc") == artifact
   stored = s3.head_metadata["b/app/u/s/doc/0"]
-  assert all(value.isascii() for value in stored.values())
+  # S3 only keeps ASCII and trims spaces from the ends of values.
+  assert all(
+      value.isascii() and value == value.strip() for value in stored.values()
+  )
 
 
 async def test_s3_conditional_request_conflict_retries_next_version() -> None:
@@ -1309,6 +1354,23 @@ async def test_s3_conditional_request_conflict_retries_next_version() -> None:
   assert await svc.load_artifact(**SCOPE, filename="doc") == types.Part(
       text="hi"
   )
+
+
+async def test_s3_untyped_content_gets_default_content_type() -> None:
+  """Untyped content is stored like on GCS and Azure, not as binary/..."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  await svc.save_artifact(
+      **SCOPE,
+      filename="ref",
+      artifact=types.Part(file_data=types.FileData(file_uri="s3://other/x")),
+  )
+
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="ref")
+
+  assert s3.info("b/app/u/s/ref/0")["ContentType"] == "application/octet-stream"
+  assert version_meta is not None
+  assert version_meta.mime_type == "application/octet-stream"
 
 
 @pytest.mark.parametrize("deleted_before", ["info", "metadata"])

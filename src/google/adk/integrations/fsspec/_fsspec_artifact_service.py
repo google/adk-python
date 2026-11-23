@@ -140,13 +140,13 @@ class FsspecArtifactService(BaseArtifactService):
 
   S3 (``s3fs``) also stores content type and custom metadata. Its
   ``custom_metadata`` keys come back lowercased with ``_`` turned into ``-``.
-  ``custom_metadata`` keys and values must be ASCII, and caller keys that S3
-  would read back as ADK's own keys are rejected.
+  ``custom_metadata`` keys must be HTTP header names, and caller keys that S3
+  would read back as ADK's own keys or as each other are rejected.
 
   Azure (``adlfs``) also stores content type and custom metadata. Its
   ``custom_metadata`` keys must be C# identifiers that stay distinct and do not
-  match ADK's or adlfs's own keys when case is ignored. Values must be
-  printable ASCII without spaces at either end.
+  match ADK's or adlfs's own keys when case is ignored. On both stores, values
+  must be printable ASCII without spaces at either end.
 
   Requires ``fsspec`` (``pip install "google-adk[fsspec]"``) and the backend
   implementation for the target storage protocol, such as ``gcsfs`` for
