@@ -20,6 +20,7 @@ from typing import AsyncGenerator
 from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import tracing
+from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.instrumentation.google_genai import version as instrumentor_version
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
@@ -253,6 +254,10 @@ async def test_who_records_the_inference_when_already_instrumented(
 
 def test_is_instrumented():
   instrumentor = GoogleGenAiSdkInstrumentor()
+  if conflict := get_dependency_conflicts(
+      instrumentor.instrumentation_dependencies()
+  ):
+    pytest.skip(str(conflict))
 
   assert not _genai_instrumentor.is_instrumented()
   try:
@@ -279,6 +284,10 @@ def test_should_emit_inference_token_metrics_under_the_instrumentor(
   """ADK records them beside an instrumentor verified not to record them."""
   monkeypatch.setattr(instrumentor_version, "__version__", installed_version)
   instrumentor = GoogleGenAiSdkInstrumentor()
+  if conflict := get_dependency_conflicts(
+      instrumentor.instrumentation_dependencies()
+  ):
+    pytest.skip(str(conflict))
 
   assert _genai_instrumentor.should_emit_inference_token_metrics(
       "gemini-2.5-flash"

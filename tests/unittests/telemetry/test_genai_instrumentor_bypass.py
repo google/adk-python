@@ -34,6 +34,7 @@ from google.adk.telemetry import tracing
 from google.adk.telemetry.context import TelemetryConfig
 from google.genai import types
 from google.genai.models import AsyncModels
+from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.instrumentation.google_genai import version as google_genai_version
 from opentelemetry.sdk.metrics import MeterProvider
@@ -80,11 +81,15 @@ def _instrumented(
     monkeypatch: pytest.MonkeyPatch, provider: TracerProvider
 ) -> Iterator[InMemorySpanExporter]:
   """Installs the real instrumentor over whatever the SDK method is now."""
+  instrumentor = GoogleGenAiSdkInstrumentor()
+  if conflict := get_dependency_conflicts(
+      instrumentor.instrumentation_dependencies()
+  ):
+    pytest.skip(str(conflict))
   exporter = InMemorySpanExporter()
   provider.add_span_processor(SimpleSpanProcessor(exporter))
   # `instrument()` sets this; delenv first so it is restored afterwards.
   monkeypatch.delenv("OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT", raising=False)
-  instrumentor = GoogleGenAiSdkInstrumentor()
   instrumentor.instrument(tracer_provider=provider)
   try:
     yield exporter
