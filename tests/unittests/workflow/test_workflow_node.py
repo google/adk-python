@@ -22,6 +22,7 @@ from typing import Any
 from unittest import mock
 
 from google.adk.agents import context as context_lib
+from google.adk.agents._caller_principal import CallerPrincipal
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
@@ -581,6 +582,124 @@ async def test_node_require_confirmation_workflow_execution(
     assert any(
         e.output == {"error": "This tool call is rejected."} for e in events2
     )
+
+
+class _ConfirmedFunctionNodeWorkflow:
+  """A Workflow with one `@node(require_confirmation=True)` node.
+
+  Mirrors `_ConfirmationWorkflow` in test_tool_node.py for the FunctionNode
+  confirmation path, which stores the resumed answer the same way.
+  """
+
+  def __init__(self) -> None:
+    from google.adk.apps.app import ResumabilityConfig
+
+    self.calls: list[str] = []
+    self.downstream_seen: list[object] = []
+
+    class RemoveResult(BaseModel):
+      removed: bool
+
+    @node(require_confirmation=True)
+    def remove_file() -> RemoveResult:
+      self.calls.append("removed")
+      return RemoveResult(removed=True)
+
+    def after_node(node_input):
+      self.downstream_seen.append(node_input)
+      return node_input
+
+    wf = Workflow(
+        name="confirm_wf",
+        edges=[(START, remove_file), (remove_file, after_node)],
+    )
+    self.runner = testing_utils.InMemoryRunner(
+        app=App(
+            name="test_confirm_wf",
+            root_agent=wf,
+            resumability_config=ResumabilityConfig(is_resumable=True),
+        )
+    )
+
+  async def start(self) -> Event:
+    """Runs the workflow and returns its confirmation request."""
+    from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+
+    from . import workflow_testing_utils
+
+    events = await self.runner.run_async("start")
+    request = workflow_testing_utils.find_function_call_event(
+        events, REQUEST_INPUT_FUNCTION_CALL_NAME
+    )
+    assert request is not None
+    assert not self.calls
+    return request
+
+  async def answer(
+      self, request: Event, *, caller_principal: CallerPrincipal
+  ) -> None:
+    """Approves the request on an invocation a serving layer attributed.
+
+    `caller_principal` stands in for what the serving layer would set on the
+    invocation that carries the answer.
+    """
+    from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+    [interrupt_id] = extract_event_interrupt_ids(request)
+    session = self.runner.session
+    async for _ in self.runner.runner.run_async(
+        user_id=session.user_id,
+        session_id=session.id,
+        invocation_id=request.invocation_id,
+        new_message=testing_utils.UserContent(
+            create_request_input_response(interrupt_id, {"confirmed": True})
+        ),
+        caller_principal=caller_principal,
+    ):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_node_require_confirmation_from_unauthenticated_caller_refused_in_strict_mode(
+    monkeypatch,
+):
+  """An approval the serving layer could not attribute is stored as a rejection.
+
+  Same decision as the agent confirmation flow and the tool node: with strict
+  mode on, a resume that arrives with an unauthenticated principal must not
+  run the function, and the node answers with the rejection output.
+  """
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  wf = _ConfirmedFunctionNodeWorkflow()
+  request = await wf.start()
+
+  await wf.answer(
+      request,
+      caller_principal=CallerPrincipal(authenticated=False, source="a2a"),
+  )
+
+  assert not wf.calls
+  assert wf.downstream_seen == [{"error": "This tool call is rejected."}]
+
+
+@pytest.mark.asyncio
+async def test_node_require_confirmation_from_authenticated_caller_runs_function(
+    monkeypatch,
+):
+  """An approval from a caller the serving layer verified is honored."""
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  wf = _ConfirmedFunctionNodeWorkflow()
+  request = await wf.start()
+
+  await wf.answer(
+      request,
+      caller_principal=CallerPrincipal(
+          authenticated=True, user_name="operator", source="a2a"
+      ),
+  )
+
+  assert wf.calls == ["removed"]
+  assert wf.downstream_seen == [{"removed": True}]
 
 
 @pytest.mark.parametrize(

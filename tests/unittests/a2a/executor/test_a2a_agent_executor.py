@@ -1700,9 +1700,10 @@ class TestA2aAgentExecutor:
         invocation_id=None,
         state_delta=None,
         run_config=None,
+        caller_principal=None,
     ):
       del user_id, session_id, new_message
-      del invocation_id, state_delta, run_config
+      del invocation_id, state_delta, run_config, caller_principal
       yield Event(
           invocation_id="inv-abort", author="abort_agent", error_code=error_code
       )
