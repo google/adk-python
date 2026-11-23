@@ -499,23 +499,26 @@ class StreamingResponseAggregator:
       return
 
     # ========== Non-Progressive SSE Streaming (old behavior) ==========
-    if (
-        llm_response.content
-        and llm_response.content.parts
-        and llm_response.content.parts[0].text
-    ):
-      part0 = llm_response.content.parts[0]
-      part_text = part0.text or ''
-      if part0.thought:
-        self._thought_text.append(part_text)
-      else:
-        self._text.append(part_text)
+    # Accumulate the text of every part in the chunk, not just the first
+    # one: a chunk can carry a thought part and a regular part together,
+    # and only looking at parts[0] would silently drop the rest.
+    text_parts = [
+        part
+        for part in (llm_response.content.parts if llm_response.content else [])
+        if part.text
+    ]
+    if text_parts:
+      for part in text_parts:
+        if part.thought:
+          self._thought_text.append(part.text)
+        else:
+          self._text.append(part.text)
       llm_response.partial = True
     elif (self._thought_text or self._text) and (
         not llm_response.content
         or not llm_response.content.parts
         # don't yield the merged text event when receiving audio data
-        or not llm_response.content.parts[0].inline_data
+        or not any(part.inline_data for part in llm_response.content.parts)
     ):
       parts = []
       if self._thought_text:
