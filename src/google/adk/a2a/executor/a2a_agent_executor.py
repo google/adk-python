@@ -260,13 +260,13 @@ class A2aAgentExecutor(AgentExecutor):
 
     async def _on_event(adk_event: Event) -> None:
       nonlocal aborted, last_adk_event
-      # Before last_adk_event: a nested finish_task is not this task.
+      # An abort that seals a nested finish_task is still this run's cancel.
+      if _is_abort_adk_event(adk_event):
+        aborted = True
       forwarded = without_nested_finish_task(adk_event)
       if forwarded is None:
         return
       last_adk_event = forwarded
-      if _is_abort_adk_event(forwarded):
-        aborted = True
       error_tracker.observe(forwarded)
       is_error_event = _is_error_event(forwarded)
       for a2a_event in self._config.event_converter(

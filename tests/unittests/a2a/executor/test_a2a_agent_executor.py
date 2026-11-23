@@ -1781,10 +1781,13 @@ class TestA2aAgentExecutor:
     middle = _text_event("middle", None)
     parallel = _finish_event("child", "par.child")
     root = _finish_event("reporter", None)
+    abort = _finish_event("inner", "inner@fc").model_copy(
+        update={"error_code": "INVOCATION_ABORTED"}
+    )
 
     async def mock_run_async(**kwargs):
       del kwargs
-      for item in (text, mixed, nested, middle, parallel, root):
+      for item in (text, mixed, nested, middle, parallel, root, abort):
         yield item
 
     self.mock_runner.run_async = mock_run_async
@@ -1803,6 +1806,8 @@ class TestA2aAgentExecutor:
     assert forwarded[1].get_function_calls() == []
     assert forwarded[1].content.parts[0].text == "kept"
     assert mixed.get_function_calls()
+    finals = _final_events(self.mock_event_queue.enqueue_event.call_args_list)
+    assert [event.status.state for event in finals] == [_compat.TS_CANCELED]
 
 
 # Tests for runs that emit an error event and then keep going: the task fails

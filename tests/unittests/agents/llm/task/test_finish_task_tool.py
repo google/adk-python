@@ -406,6 +406,7 @@ def test_without_nested_finish_task_keeps_sibling_parts():
   assert plain is not None and plain.content.parts == [text]
   retry_with_text = without_nested_finish_task(ev('inner@fc', [text, retry]))
   assert without_nested_finish_task(ev('inner@fc', [done])) is None
+  assert without_nested_finish_task(ev('w@1', [done])) is None
   assert without_nested_finish_task(ev('inner@fc', [retry])) is None
   assert retry_with_text is not None and retry_with_text.content.parts == [text]
   assert mixed is not None and mixed.content.parts == [text]

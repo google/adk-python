@@ -209,7 +209,7 @@ no accompanying text output."""
     return FINISH_TASK_SUCCESS_RESULT
 
 
-def _is_nested_finish_part(part: types.Part) -> bool:
+def _is_finish_task_part(part: types.Part) -> bool:
   """True for any finish_task call or response."""
   call = part.function_call
   if call is not None and call.name == FINISH_TASK_TOOL_NAME:
@@ -221,10 +221,11 @@ def _is_nested_finish_part(part: types.Part) -> bool:
 def without_nested_finish_task(event: Event) -> Event | None:
   """Drop a task-hop finish_task, keeping any other parts.
 
-  A branch with a run id is a nested task hop. Every finish_task part
-  on that branch is removed, call or response. ParallelAgent's
-  ``parent.child`` has no run id, and an unset branch is the served
-  root. Returns None when the event has nothing left to forward.
+  A branch with a run id is a nested task hop, including a parallel
+  worker (``name@run_id``). Every finish_task part on that branch is
+  removed, call or response. ParallelAgent's ``parent.child`` has no
+  run id, and an unset branch is the served root. Returns None when
+  the event has nothing left to forward.
   """
   branch = getattr(event, 'branch', None)
   if not branch or not _BranchPath.from_string(branch).run_ids:
@@ -232,7 +233,7 @@ def without_nested_finish_task(event: Event) -> Event | None:
   content = event.content
   if content is None or not content.parts:
     return event
-  kept = [part for part in content.parts if not _is_nested_finish_part(part)]
+  kept = [part for part in content.parts if not _is_finish_task_part(part)]
   if len(kept) == len(content.parts):
     return event
   if not kept:
