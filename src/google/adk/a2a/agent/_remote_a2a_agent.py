@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 import hashlib
 import ipaddress
 import json
@@ -24,8 +23,6 @@ from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Optional
-from typing import Union
 from urllib.parse import urlparse
 
 from a2a.client import Client as A2AClient
@@ -34,7 +31,6 @@ from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
-from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
@@ -181,7 +177,7 @@ _CARD_DESCRIPTION_TRUNCATION_SUFFIX = "... [truncated]"
 
 
 def _mark_a2a_task_failed_event(
-    event: Optional[Event],
+    event: Event | None,
     *,
     author: str,
     invocation_context: InvocationContext,
@@ -217,7 +213,7 @@ def _payload_is_auth_config(payload: Any) -> bool:
 
 def _is_credential_function_response(
     function_response: genai_types.FunctionResponse,
-    matched_call_names: Optional[set[str]] = None,
+    matched_call_names: set[str] | None = None,
 ) -> bool:
   """Whether a function_response carries credential material (fail closed)."""
   if matched_call_names and not matched_call_names.isdisjoint(
@@ -329,7 +325,7 @@ def _without_sibling_calls(
 
 
 def _adopted_card_description(
-    description: str, agent_card_source: Optional[str]
+    description: str, agent_card_source: str | None
 ) -> str:
   """Returns the description to adopt from a resolved agent card.
 
@@ -350,8 +346,8 @@ def _adopted_card_description(
 
 
 def _render_user_function_response(
-    response: Optional[dict[str, Any]],
-) -> Optional[str]:
+    response: dict[str, Any] | None,
+) -> str | None:
   """Renders a human-input response payload as text, or None if empty."""
   # ADK's mock path wraps the answer as {"result": <text>}; workflow producers
   # send the resolved parameters directly (e.g. {"company_name": "Okta"}).
@@ -369,7 +365,7 @@ def _render_user_function_response(
 
 def _sanitize_user_function_response_event(
     event: Event,
-    trusted_call_names_by_id: dict[Optional[str], set[str]],
+    trusted_call_names_by_id: dict[str | None, set[str]],
     id_less_call_is_ambiguous: bool,
     human_input_call_names: frozenset[str],
 ) -> Event:
@@ -432,7 +428,7 @@ def _sanitize_user_function_response_event(
   return new_event
 
 
-def _is_loopback_host(hostname: Optional[str]) -> bool:
+def _is_loopback_host(hostname: str | None) -> bool:
   """Returns whether a hostname names the local machine.
 
   Covers ``localhost`` and the reserved ``*.localhost`` names as well as any
@@ -450,7 +446,7 @@ def _is_loopback_host(hostname: Optional[str]) -> bool:
     return False
 
 
-def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
+def _url_origin(url: str) -> tuple[str, str, int | None]:
   """Returns the ``(scheme, host, port)`` origin triple for a URL.
 
   Raises:
@@ -465,7 +461,7 @@ def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
   )
 
 
-def _card_target_origin(url: str) -> tuple[str, str, Optional[int]]:
+def _card_target_origin(url: str) -> tuple[str, str, int | None]:
   """Returns the origin of url, with a Google API's mTLS host as its plain host.
 
   Requests to a ``*.googleapis.com`` host may be routed to its mTLS host, so
@@ -492,7 +488,7 @@ class A2AClientError(Exception):
   pass
 
 
-def _text_from_content(content: Optional[genai_types.Content]) -> Optional[str]:
+def _text_from_content(content: genai_types.Content | None) -> str | None:
   """Joins the text parts of a content, or None when there is no text."""
   if content is None or not content.parts:
     return None
@@ -505,7 +501,7 @@ def _create_finish_task_event(
     agent_name: str,
     *,
     output: Any = None,
-    error_message: Optional[str] = None,
+    error_message: str | None = None,
     is_error: bool = False,
 ) -> Event:
   """Creates a finish_task Event."""
@@ -590,7 +586,6 @@ def _find_finish_task_args_from_history(
     session: Session,
     isolation_scope: str | None = None,
     completed_fr_event: Event | None = None,
-    pending_events: Sequence[Event] = (),
 ) -> dict[str, Any] | None:
   """Search session events for the latest finish_task FC and return args."""
   matching_fc_id = None
@@ -642,359 +637,12 @@ def _find_finish_task_args_from_history(
     if (args := _args_from(completed_fr_event)) is not None:
       return args
 
-  for event in reversed(pending_events):
-    if (args := _args_from(event)) is not None:
-      return args
-
   for event in reversed(session.events):
     if isolation_scope and event.isolation_scope != isolation_scope:
       continue
     if (args := _args_from(event)) is not None:
       return args
   return None
-
-
-def _is_plain_text_part(part: genai_types.Part) -> bool:
-  """Returns whether ``part`` carries only non-thought text."""
-  return (
-      part.text is not None
-      and not part.thought
-      and part.function_call is None
-      and part.function_response is None
-      and part.inline_data is None
-      and part.file_data is None
-      and part.executable_code is None
-      and part.code_execution_result is None
-      and part.video_metadata is None
-  )
-
-
-def _is_boundary_response(
-    a2a_response: _compat.A2AClientEvent | A2AMessage,
-) -> bool:
-  """Returns whether ``a2a_response`` closes the current A2A interaction."""
-  if isinstance(a2a_response, A2AMessage):
-    return True
-  if not isinstance(a2a_response, tuple):
-    return False
-  task, update = a2a_response
-  if update is None:
-    status = getattr(task, "status", None)
-    return getattr(status, "state", None) in _TASK_RESPONSE_BOUNDARY_STATES
-  if isinstance(update, A2ATaskStatusUpdateEvent):
-    status = getattr(update, "status", None)
-    state = getattr(status, "state", None)
-    if state is not None:
-      return state in _TASK_RESPONSE_BOUNDARY_STATES
-    task_status = getattr(task, "status", None)
-    return getattr(task_status, "state", None) in _TASK_RESPONSE_BOUNDARY_STATES
-  return False
-
-
-def _stamp_a2a_exchange_metadata(
-    event: Event,
-    *,
-    a2a_request: A2AMessage | None,
-    a2a_response: _compat.A2AClientEvent | A2AMessage,
-) -> None:
-  """Attaches ``a2a:request`` and ``a2a:response`` metadata to ``event``."""
-  event.custom_metadata = event.custom_metadata or {}
-  if a2a_request is not None:
-    event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-        _compat.a2a_to_dict(a2a_request)
-    )
-  # If the response is a ClientEvent, record the task state; otherwise,
-  # record the message object.
-  if isinstance(a2a_response, tuple):
-    event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-        _compat.a2a_to_dict(a2a_response[0])
-    )
-  else:
-    event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-        _compat.a2a_to_dict(a2a_response)
-    )
-
-
-def _is_true_flag(obj: Any, attr: str) -> bool:
-  """Returns whether ``getattr(obj, attr, None)`` is an explicit ``True``."""
-  val = getattr(obj, attr, None)
-  return isinstance(val, bool) and val
-
-
-def _event_has_own_payload(event: Event | None) -> bool:
-  """Returns whether ``event`` already carries content parts or error fields."""
-  if event is None:
-    return False
-  content = getattr(event, "content", None)
-  if content is not None and getattr(content, "parts", None):
-    return True
-  return bool(
-      getattr(event, "error_message", None)
-      or getattr(event, "error_code", None)
-  )
-
-
-def _has_user_facing_parts(event: Event | None) -> bool:
-  """Returns whether ``event`` carries at least one non-thought content part."""
-  if event is None:
-    return False
-  content = getattr(event, "content", None)
-  parts = getattr(content, "parts", None) if content is not None else None
-  return any(not getattr(part, "thought", False) for part in parts or [])
-
-
-class _OpenArtifactBuffer:
-  """Accumulates streamed ``partial=True`` chunks for a single A2A artifact."""
-
-  def __init__(self, artifact_id: str) -> None:
-    self.artifact_id = artifact_id
-    self.fallback_event_id: str | None = None
-    self._parts: list[genai_types.Part] = []
-    self._role: str = "model"
-    self._custom_metadata: dict[str, Any] = {}
-    self._grounding_metadata: genai_types.GroundingMetadata | None = None
-    self._citation_metadata: genai_types.CitationMetadata | None = None
-    self._usage_metadata: (
-        genai_types.GenerateContentResponseUsageMetadata | None
-    ) = None
-    self._long_running_tool_ids: set[str] = set()
-    self._escalate: bool | None = None
-    self._skip_summarization: bool | None = None
-
-  def has_parts(self) -> bool:
-    """Returns whether any non-thought content part has been accumulated."""
-    return bool(self._parts)
-
-  def record_event(self, event: Event) -> None:
-    """Appends non-thought parts and metadata from ``event``."""
-    raw_event_id = getattr(event, "id", None)
-    if (
-        self.fallback_event_id is None
-        and isinstance(raw_event_id, str)
-        and raw_event_id
-    ):
-      self.fallback_event_id = raw_event_id
-    content = getattr(event, "content", None)
-    if content is not None:
-      role = getattr(content, "role", None)
-      if isinstance(role, str) and role:
-        self._role = role
-      for part in getattr(content, "parts", None) or []:
-        self._append_part(part)
-    custom_metadata = getattr(event, "custom_metadata", None)
-    if isinstance(custom_metadata, dict):
-      for key, value in custom_metadata.items():
-        if key in (
-            A2A_METADATA_PREFIX + "request",
-            A2A_METADATA_PREFIX + "response",
-        ):
-          continue
-        self._custom_metadata[key] = value
-    grounding_metadata = getattr(event, "grounding_metadata", None)
-    if isinstance(grounding_metadata, genai_types.GroundingMetadata):
-      self._grounding_metadata = grounding_metadata.model_copy(deep=True)
-    citation_metadata = getattr(event, "citation_metadata", None)
-    if isinstance(citation_metadata, genai_types.CitationMetadata):
-      self._citation_metadata = citation_metadata.model_copy(deep=True)
-    usage_metadata = getattr(event, "usage_metadata", None)
-    if isinstance(
-        usage_metadata, genai_types.GenerateContentResponseUsageMetadata
-    ):
-      self._usage_metadata = usage_metadata.model_copy(deep=True)
-    long_running_tool_ids = getattr(event, "long_running_tool_ids", None)
-    if long_running_tool_ids:
-      self._long_running_tool_ids.update(long_running_tool_ids)
-    actions = getattr(event, "actions", None)
-    if actions is not None:
-      escalate = getattr(actions, "escalate", None)
-      if isinstance(escalate, bool):
-        self._escalate = escalate
-      skip_summarization = getattr(actions, "skip_summarization", None)
-      if isinstance(skip_summarization, bool):
-        self._skip_summarization = skip_summarization
-
-  def _append_part(self, part: genai_types.Part) -> None:
-    """Appends ``part``, coalescing adjacent plain-text chunks."""
-    if part.thought:
-      return
-    copied = part.model_copy(deep=True)
-    if (
-        self._parts
-        and _is_plain_text_part(self._parts[-1])
-        and _is_plain_text_part(copied)
-    ):
-      prev = self._parts[-1]
-      if (
-          prev.thought_signature is None
-          or copied.thought_signature is None
-          or prev.thought_signature == copied.thought_signature
-      ):
-        prev.text = (prev.text or "") + (copied.text or "")
-        if (
-            prev.thought_signature is None
-            and copied.thought_signature is not None
-        ):
-          prev.thought_signature = copied.thought_signature
-        return
-    self._parts.append(copied)
-
-  def _build_content(self) -> genai_types.Content:
-    return genai_types.Content(
-        role=self._role,
-        parts=[part.model_copy(deep=True) for part in self._parts],
-    )
-
-  def apply_to_event(self, event: Event, ctx: InvocationContext) -> None:
-    """Populates ``event`` in place with the accumulated non-partial content."""
-    event.content = self._build_content()
-    event.partial = False
-    event_id = (
-        _artifact_event_id(self.artifact_id, ctx) or self.fallback_event_id
-    )
-    if event_id:
-      event.id = event_id
-    if self._custom_metadata:
-      event.custom_metadata = {
-          **self._custom_metadata,
-          **(event.custom_metadata or {}),
-      }
-    if (
-        event.grounding_metadata is None
-        and self._grounding_metadata is not None
-    ):
-      event.grounding_metadata = self._grounding_metadata.model_copy(deep=True)
-    if event.citation_metadata is None and self._citation_metadata is not None:
-      event.citation_metadata = self._citation_metadata.model_copy(deep=True)
-    if event.usage_metadata is None and self._usage_metadata is not None:
-      event.usage_metadata = self._usage_metadata.model_copy(deep=True)
-    if self._long_running_tool_ids:
-      merged_ids = set(event.long_running_tool_ids or set())
-      merged_ids.update(self._long_running_tool_ids)
-      event.long_running_tool_ids = merged_ids
-    actions = getattr(event, "actions", None)
-    if actions is not None:
-      if (
-          self._escalate is not None
-          and getattr(actions, "escalate", None) is None
-      ):
-        actions.escalate = self._escalate
-      if (
-          self._skip_summarization is not None
-          and getattr(actions, "skip_summarization", None) is None
-      ):
-        actions.skip_summarization = self._skip_summarization
-
-  def to_event(
-      self,
-      *,
-      author: str,
-      ctx: InvocationContext,
-  ) -> Event:
-    """Builds a standalone finalized ``Event`` from the accumulated buffer."""
-    event = Event(
-        author=author,
-        invocation_id=ctx.invocation_id,
-        branch=ctx.branch,
-    )
-    self.apply_to_event(event, ctx)
-    return event
-
-
-class _StreamingArtifactAggregator:
-  """Buffers streamed ``partial=True`` artifact updates per ``artifact_id``.
-
-  A2A servers (for example on A2A 1.x proto3 where ``last_chunk`` defaults to
-  ``False``) may stream ``TaskArtifactUpdateEvent`` chunks with
-  ``last_chunk=False`` and close the turn with a ``TaskStatusUpdateEvent``
-  instead of a closing ``last_chunk=True`` artifact update, or may emit a
-  delta-only closing chunk (``append=True, last_chunk=True``). Buffering open
-  partial chunks per ``artifact_id`` guarantees a finalized non-partial
-  ``Event`` with the full aggregated content while keeping interleaved
-  artifacts independent.
-  """
-
-  def __init__(self) -> None:
-    self._buffers: dict[str, _OpenArtifactBuffer] = {}
-
-  def has_open_buffers(self) -> bool:
-    """Returns whether any open artifact buffer holds non-thought parts."""
-    return any(buf.has_parts() for buf in self._buffers.values())
-
-  def has_open_buffer(self, artifact_id: str) -> bool:
-    """Returns whether ``artifact_id`` has an open buffer with parts."""
-    buf = self._buffers.get(artifact_id)
-    return buf is not None and buf.has_parts()
-
-  def discard_artifact(self, artifact_id: str) -> None:
-    """Drops any buffered state for ``artifact_id``."""
-    self._buffers.pop(artifact_id, None)
-
-  def discard_task_artifacts(self, task: A2ATask | None) -> None:
-    """Drops open buffers for artifacts already materialized on ``task``."""
-    if task is None:
-      return
-    for artifact in getattr(task, "artifacts", None) or ():
-      if getattr(artifact, "parts", None):
-        raw_id = getattr(artifact, "artifact_id", None)
-        self._buffers.pop(raw_id if isinstance(raw_id, str) else "", None)
-
-  def pop_buffer(self, artifact_id: str) -> _OpenArtifactBuffer | None:
-    """Removes and returns the open buffer for ``artifact_id``, if any."""
-    buf = self._buffers.pop(artifact_id, None)
-    return buf if buf is not None and buf.has_parts() else None
-
-  def record_partial(
-      self,
-      artifact_id: str,
-      event: Event,
-      *,
-      append: bool,
-  ) -> None:
-    """Records a ``partial=True`` event into ``artifact_id``'s buffer."""
-    if not append:
-      self._buffers[artifact_id] = _OpenArtifactBuffer(artifact_id)
-    buf = self._buffers.setdefault(
-        artifact_id, _OpenArtifactBuffer(artifact_id)
-    )
-    if not artifact_id and buf.fallback_event_id is not None:
-      event.id = buf.fallback_event_id
-    buf.record_event(event)
-    if not buf.has_parts():
-      self._buffers.pop(artifact_id, None)
-
-  def flush_all(
-      self,
-      *,
-      author: str,
-      ctx: InvocationContext,
-  ) -> list[Event]:
-    """Flushes all open buffers as standalone non-partial ``Event``s."""
-    open_buffers = [buf for buf in self._buffers.values() if buf.has_parts()]
-    self._buffers.clear()
-    return [buf.to_event(author=author, ctx=ctx) for buf in open_buffers]
-
-  def finalize_at_boundary(
-      self,
-      boundary_event: Event | None,
-      *,
-      author: str,
-      ctx: InvocationContext,
-  ) -> list[Event]:
-    """Flushes open buffers at a task/message boundary alongside ``boundary_event``."""
-    open_buffers = [buf for buf in self._buffers.values() if buf.has_parts()]
-    self._buffers.clear()
-    if not open_buffers:
-      return [boundary_event] if boundary_event is not None else []
-    if boundary_event is None:
-      return [buf.to_event(author=author, ctx=ctx) for buf in open_buffers]
-    if not _event_has_own_payload(boundary_event):
-      flushed = [
-          buf.to_event(author=author, ctx=ctx) for buf in open_buffers[:-1]
-      ]
-      open_buffers[-1].apply_to_event(boundary_event, ctx)
-      return [*flushed, boundary_event]
-    flushed = [buf.to_event(author=author, ctx=ctx) for buf in open_buffers]
-    return [*flushed, boundary_event]
 
 
 def _add_request_headers(
@@ -1021,7 +669,7 @@ def _add_request_headers(
   client_call_context.state = state
 
 
-def _remote_identity(agent_card: Union[AgentCard, str]) -> str:
+def _remote_identity(agent_card: AgentCard | str) -> str:
   """Returns the remote a credential is meant for: a URL, a path or a name."""
   if isinstance(agent_card, str):
     return agent_card.strip()
@@ -1030,7 +678,7 @@ def _remote_identity(agent_card: Union[AgentCard, str]) -> str:
   return _compat.agent_card_url(agent_card) or agent_card.name or ""
 
 
-def _namespaced_session_context_id(session: Optional[Session]) -> Optional[str]:
+def _namespaced_session_context_id(session: Session | None) -> str | None:
   """Derives a remote context ID that namespaces the session by app/user.
 
   ``session.id`` alone is not globally unique: two distinct local users (or
@@ -1054,7 +702,7 @@ def _namespaced_session_context_id(session: Optional[Session]) -> Optional[str]:
 
 
 def _names_its_own_credential_key(
-    auth_scheme: AuthScheme, auth_credential: Optional[AuthCredential]
+    auth_scheme: AuthScheme, auth_credential: AuthCredential | None
 ) -> bool:
   """Whether the scheme or credential carries a caller-set credential key."""
   for obj in (auth_credential, auth_scheme):
@@ -1087,7 +735,7 @@ def _build_auth_interceptors(
       ctx: InvocationContext,
       a2a_request: A2AMessage,
       parameters: ParametersConfig,
-  ) -> tuple[Union[A2AMessage, Event], ParametersConfig]:
+  ) -> tuple[A2AMessage | Event, ParametersConfig]:
     headers = _headers(ctx)
     if headers:
       _add_request_headers(parameters, headers)
@@ -1140,29 +788,30 @@ class RemoteA2aAgent(BaseAgent):
   def __init__(
       self,
       name: str,
-      agent_card: Union[AgentCard, str],
+      agent_card: AgentCard | str,
       *,
       description: str = "",
-      httpx_client: Optional[httpx.AsyncClient] = None,
+      httpx_client: httpx.AsyncClient | None = None,
       timeout: float = DEFAULT_TIMEOUT,
       genai_part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
       a2a_part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-      a2a_client_factory: Optional[A2AClientFactory] = None,
-      a2a_request_meta_provider: Optional[
-          Callable[[InvocationContext, A2AMessage], dict[str, Any]]
-      ] = None,
+      a2a_client_factory: A2AClientFactory | None = None,
+      a2a_request_meta_provider: (
+          Callable[[InvocationContext, A2AMessage], dict[str, Any]] | None
+      ) = None,
       full_history_when_stateless: bool = False,
-      context_builder: Optional[
+      context_builder: (
           Callable[
               [InvocationContext, str, GenAIPartToA2APartConverter],
-              tuple[list[A2APart], Optional[str]],
+              tuple[list[A2APart], str | None],
           ]
-      ] = None,
-      config: Optional[A2aRemoteAgentConfig] = None,
+          | None
+      ) = None,
+      config: A2aRemoteAgentConfig | None = None,
       use_legacy: bool = True,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      credential_key: Optional[str] = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      credential_key: str | None = None,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -1208,9 +857,9 @@ class RemoteA2aAgent(BaseAgent):
     if agent_card is None:
       raise ValueError("agent_card cannot be None")
 
-    self._agent_card: Optional[AgentCard] = None
-    self._agent_card_source: Optional[str] = None
-    self._a2a_client: Optional[A2AClient] = None
+    self._agent_card: AgentCard | None = None
+    self._agent_card_source: str | None = None
+    self._a2a_client: A2AClient | None = None
     # This is stored to support backward compatible usage of class.
     # In future, the client is expected to be present in the factory.
     self._httpx_client = httpx_client
@@ -1221,7 +870,7 @@ class RemoteA2aAgent(BaseAgent):
     self._is_resolved = False
     self._genai_part_converter = genai_part_converter
     self._a2a_part_converter = a2a_part_converter
-    self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
+    self._a2a_client_factory: A2AClientFactory | None = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless_param = full_history_when_stateless
     self._context_builder = context_builder
@@ -1254,7 +903,7 @@ class RemoteA2aAgent(BaseAgent):
       )
 
     # Set up after the card is validated: the derived credential key reads it.
-    self._auth_config: Optional[AuthConfig] = None
+    self._auth_config: AuthConfig | None = None
     if auth_scheme:
       self._auth_config = AuthConfig(
           auth_scheme=auth_scheme,
@@ -1305,7 +954,7 @@ class RemoteA2aAgent(BaseAgent):
 
   async def _resolve_auth_credential(
       self, ctx: InvocationContext
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Caches the credential for this invocation in ``ctx.credential_by_key``.
 
     Args:
@@ -1407,7 +1056,7 @@ class RemoteA2aAgent(BaseAgent):
     return self._httpx_client
 
   async def _resolve_agent_card_from_url(
-      self, url: str, ctx: Optional[InvocationContext] = None
+      self, url: str, ctx: InvocationContext | None = None
   ) -> AgentCard:
     """Resolve agent card from URL."""
     try:
@@ -1462,7 +1111,7 @@ class RemoteA2aAgent(BaseAgent):
       ) from e
 
   async def _resolve_agent_card(
-      self, ctx: Optional[InvocationContext] = None
+      self, ctx: InvocationContext | None = None
   ) -> AgentCard:
     """Resolve agent card from source."""
     if ctx is not None:
@@ -1634,7 +1283,7 @@ class RemoteA2aAgent(BaseAgent):
         )
 
   async def _ensure_resolved(
-      self, ctx: Optional[InvocationContext] = None
+      self, ctx: InvocationContext | None = None
   ) -> A2AClient:
     """Resolves the agent card and returns the A2A client for this invocation."""
     # Per the A2A spec, the authenticated (extended) agent card is scoped to a
@@ -1727,7 +1376,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _create_a2a_request_for_user_function_response(
       self, ctx: InvocationContext
-  ) -> Optional[A2AMessage]:
+  ) -> A2AMessage | None:
     """Create A2A request for user function response if applicable.
 
     Args:
@@ -1761,7 +1410,7 @@ class RemoteA2aAgent(BaseAgent):
 
     # Map every pending call to its id by the trusted function CALL name so
     # credential matching does not depend on the human-input set.
-    trusted_call_names_by_id: dict[Optional[str], set[str]] = {}
+    trusted_call_names_by_id: dict[str | None, set[str]] = {}
     id_less_call_is_ambiguous = False
     for fc in function_call_event.get_function_calls():
       if fc.name is None:
@@ -1819,7 +1468,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str]]:
+  ) -> tuple[list[A2APart], str | None]:
     """Construct A2A message parts from session events.
 
     Args:
@@ -1943,7 +1592,7 @@ class RemoteA2aAgent(BaseAgent):
         scrubbed_event = _without_sibling_calls(
             scrubbed_event, task_scope, remote_fc_ids
         )
-      processed_event: Optional[Event] = scrubbed_event
+      processed_event: Event | None = scrubbed_event
       if _is_other_agent_reply(self.name, scrubbed_event):
         processed_event = _present_other_agent_message(scrubbed_event)
 
@@ -1993,7 +1642,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _build_message_parts_for_request(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str]]:
+  ) -> tuple[list[A2APart], str | None]:
     """Build A2A message parts for the outgoing remote request.
 
     Uses ``context_builder`` when provided; otherwise falls back to
@@ -2004,8 +1653,8 @@ class RemoteA2aAgent(BaseAgent):
     return self._construct_message_parts_from_session(ctx)
 
   def _get_resumable_task_id(
-      self, ctx: InvocationContext, context_id: Optional[str]
-  ) -> Optional[str]:
+      self, ctx: InvocationContext, context_id: str | None
+  ) -> str | None:
     """Returns the latest paused task in the outgoing message's context."""
     if not context_id or not self._has_default_response_persistence():
       return None
@@ -2074,7 +1723,7 @@ class RemoteA2aAgent(BaseAgent):
       self,
       a2a_response: _compat.A2AClientEvent | A2AMessage,
       ctx: InvocationContext,
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Handle A2A response and convert to Event.
 
     Args:
@@ -2272,7 +1921,7 @@ class RemoteA2aAgent(BaseAgent):
       self,
       a2a_response: _compat.A2AClientEvent | A2AMessage,
       ctx: InvocationContext,
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Handle A2A response and convert to Event.
 
     Args:
@@ -2359,174 +2008,6 @@ class RemoteA2aAgent(BaseAgent):
           branch=ctx.branch,
       )
 
-  async def _run_after_request_interceptors(
-      self,
-      ctx: InvocationContext,
-      a2a_response: _compat.A2AClientEvent | A2AMessage,
-      event: Event,
-  ) -> Event | None:
-    """Runs the configured ``after_request`` interceptors on one event."""
-    return await execute_after_request_interceptors(
-        self._config.request_interceptors, ctx, a2a_response, event
-    )
-
-  async def _collect_artifact_update_events(
-      self,
-      ctx: InvocationContext,
-      a2a_response: _compat.A2AClientEvent | A2AMessage,
-      update: A2ATaskArtifactUpdateEvent,
-      event: Event | None,
-      aggregator: _StreamingArtifactAggregator,
-  ) -> list[Event]:
-    """Routes one artifact update through the per-artifact chunk aggregator.
-
-    Streamed ``partial=True`` chunks are recorded and passed through. When the
-    artifact closes (an empty ``last_chunk`` marker, a delta closing chunk, or
-    a full replacement) the aggregated ``partial=False`` event is emitted
-    exactly once, so the runner persists the whole artifact.
-
-    Args:
-      ctx: The invocation context.
-      a2a_response: The stream item carrying ``update``.
-      update: The artifact update to route.
-      event: The event the configured converter produced for ``update``, or
-        None when the update carried no convertible parts.
-      aggregator: The per-artifact chunk buffers for the current stream.
-
-    Returns:
-      The events to emit for this update, in order.
-    """
-    raw_artifact = getattr(update, "artifact", None)
-    raw_artifact_id = getattr(raw_artifact, "artifact_id", None)
-    artifact_id = raw_artifact_id if isinstance(raw_artifact_id, str) else ""
-    is_append = _is_true_flag(update, "append")
-    is_last_chunk = _is_true_flag(update, "last_chunk")
-    events: list[Event] = []
-
-    if event is None:
-      # An empty closing marker: flush whatever was streamed for the artifact.
-      buf = (
-          aggregator.pop_buffer(artifact_id)
-          if is_last_chunk and aggregator.has_open_buffer(artifact_id)
-          else None
-      )
-      if buf is not None:
-        closed = await self._run_after_request_interceptors(
-            ctx, a2a_response, buf.to_event(author=self.name, ctx=ctx)
-        )
-        if closed is not None:
-          events.append(closed)
-      return events
-
-    if _is_true_flag(event, "partial"):
-      intercepted = await self._run_after_request_interceptors(
-          ctx, a2a_response, event
-      )
-      if intercepted is None:
-        return events
-      aggregator.record_partial(artifact_id, intercepted, append=is_append)
-      events.append(intercepted)
-      return events
-
-    if is_append and aggregator.has_open_buffer(artifact_id):
-      # A delta closing chunk carries only the tail of the artifact: stream it
-      # as one more partial chunk, then emit the aggregated whole.
-      delta = event.model_copy(deep=True)
-      delta.partial = True
-      intercepted_delta = await self._run_after_request_interceptors(
-          ctx, a2a_response, delta
-      )
-      buf = aggregator.pop_buffer(artifact_id)
-      if intercepted_delta is not None:
-        if buf is not None:
-          buf.record_event(intercepted_delta)
-        events.append(intercepted_delta)
-      if buf is not None and buf.has_parts():
-        buf.apply_to_event(event, ctx)
-        final = await self._run_after_request_interceptors(
-            ctx, a2a_response, event
-        )
-        if final is not None:
-          events.append(final)
-      return events
-
-    # A full replacement (``append`` unset with ``last_chunk``) already carries
-    # the whole artifact, so any chunks streamed for it are superseded.
-    aggregator.discard_artifact(artifact_id)
-    intercepted = await self._run_after_request_interceptors(
-        ctx, a2a_response, event
-    )
-    if intercepted is not None:
-      events.append(intercepted)
-    return events
-
-  async def _collect_task_or_message_events(
-      self,
-      ctx: InvocationContext,
-      a2a_response: _compat.A2AClientEvent | A2AMessage,
-      event: Event | None,
-      aggregator: _StreamingArtifactAggregator,
-      *,
-      task: A2ATask | None,
-      is_task_snapshot: bool,
-      boundary_response: bool,
-  ) -> tuple[list[Event], Event | None]:
-    """Routes a task snapshot, status update or message past open buffers.
-
-    Args:
-      ctx: The invocation context.
-      a2a_response: The stream item being routed.
-      event: The event the configured converter produced for the item, or
-        None when it produced nothing.
-      aggregator: The per-artifact chunk buffers for the current stream.
-      task: The task the item belongs to, if any.
-      is_task_snapshot: Whether the item is a full task object rather than an
-        update or message.
-      boundary_response: Whether the item ends the current interaction.
-
-    Returns:
-      The events to emit, and the intercepted boundary event when the boundary
-      carried its own payload (for example a failure message), so task-mode
-      failure handling reads the failure reason rather than streamed text.
-    """
-    events: list[Event] = []
-    boundary_event: Event | None = None
-
-    if is_task_snapshot and _has_user_facing_parts(event):
-      # A full task snapshot that surfaces its artifacts supersedes the chunks
-      # streamed for them. A snapshot whose content is thought-only (a legacy
-      # ``working`` snapshot) or empty delivers nothing user-facing, so the
-      # streamed chunks stay buffered for the closing boundary.
-      aggregator.discard_task_artifacts(task)
-
-    if boundary_response:
-      had_own_payload = _event_has_own_payload(event)
-      candidates = aggregator.finalize_at_boundary(
-          event, author=self.name, ctx=ctx
-      )
-      for idx, candidate in enumerate(candidates):
-        intercepted = await self._run_after_request_interceptors(
-            ctx, a2a_response, candidate
-        )
-        if intercepted is None:
-          continue
-        events.append(intercepted)
-        if event is not None and had_own_payload and idx == len(candidates) - 1:
-          boundary_event = intercepted
-      return events, boundary_event
-
-    if event is not None:
-      intercepted = await self._run_after_request_interceptors(
-          ctx, a2a_response, event
-      )
-      if intercepted is not None:
-        if _is_true_flag(intercepted, "partial"):
-          # A partial produced by a custom converter or interceptor still
-          # needs a persisted response at the boundary.
-          aggregator.record_partial("", intercepted, append=True)
-        events.append(intercepted)
-    return events, boundary_event
-
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
@@ -2534,7 +2015,7 @@ class RemoteA2aAgent(BaseAgent):
     # Tracks whether task control should be released back to the parent
     # coordinator and any error output to emit on early termination.
     should_release_task_control = False
-    task_error_message: Optional[str] = None
+    task_error_message: str | None = None
     a2a_request = None
 
     try:
@@ -2631,9 +2112,7 @@ class RemoteA2aAgent(BaseAgent):
         # status/artifact updates are aggregated into a running task (matching the
         # 0.3.x client behavior).
         normalize_stream_item = _compat.make_stream_normalizer()
-        artifact_aggregator = _StreamingArtifactAggregator()
-        last_task: A2ATask | None = None
-        last_a2a_response: _compat.A2AClientEvent | A2AMessage | None = None
+        last_task = None
         async with Aclosing(
             _compat.send_message(
                 a2a_client,
@@ -2644,14 +2123,12 @@ class RemoteA2aAgent(BaseAgent):
         ) as agen:
           async for raw_a2a_response in agen:
             a2a_response = normalize_stream_item(raw_a2a_response)
-            last_a2a_response = a2a_response
             logger.debug(build_a2a_response_log(a2a_response))
 
             task = None
-            update = None
             metadata = None
             if isinstance(a2a_response, tuple):
-              task, update = a2a_response
+              task = a2a_response[0]
               if task:
                 metadata = task.metadata
                 last_task = task
@@ -2664,98 +2141,66 @@ class RemoteA2aAgent(BaseAgent):
               event = await self._handle_a2a_response_v2(a2a_response, ctx)
             else:
               event = await self._handle_a2a_response(a2a_response, ctx)
-
-            boundary_response = _is_boundary_response(a2a_response)
-            boundary_failure_event: Event | None = None
-            if isinstance(update, A2ATaskArtifactUpdateEvent):
-              events_to_emit = await self._collect_artifact_update_events(
-                  ctx, a2a_response, update, event, artifact_aggregator
-              )
-            else:
-              events_to_emit, boundary_failure_event = (
-                  await self._collect_task_or_message_events(
-                      ctx,
-                      a2a_response,
-                      event,
-                      artifact_aggregator,
-                      task=task,
-                      is_task_snapshot=(
-                          isinstance(a2a_response, tuple) and update is None
-                      ),
-                      boundary_response=boundary_response,
-                  )
-              )
-
-            if not events_to_emit:
+            if not event:
               continue
 
-            for emit_idx, emitted_event in enumerate(events_to_emit):
-              _stamp_a2a_exchange_metadata(
-                  emitted_event,
-                  a2a_request=a2a_request,
-                  a2a_response=a2a_response,
+            event = await execute_after_request_interceptors(
+                self._config.request_interceptors, ctx, a2a_response, event
+            )
+            if not event:
+              continue
+
+            # Add metadata about the request and response
+            event.custom_metadata = event.custom_metadata or {}
+            if a2a_request:
+              event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+                  _compat.a2a_to_dict(a2a_request)
+              )
+            # If the response is a ClientEvent, record the task state; otherwise,
+            # record the message object.
+            if isinstance(a2a_response, tuple):
+              event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                  _compat.a2a_to_dict(a2a_response[0])
+              )
+            else:
+              event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                  _compat.a2a_to_dict(a2a_response)
               )
 
-              if self.mode == AgentMode.TASK and is_finish_task_terminal_fr(
-                  emitted_event
-              ):
-                flushed_before_finish: list[Event] = []
-                for pending_event in artifact_aggregator.flush_all(
-                    author=self.name, ctx=ctx
-                ):
-                  intercepted_pending = (
-                      await self._run_after_request_interceptors(
-                          ctx, a2a_response, pending_event
-                      )
-                  )
-                  if intercepted_pending is None:
-                    continue
-                  _stamp_a2a_exchange_metadata(
-                      intercepted_pending,
-                      a2a_request=a2a_request,
-                      a2a_response=a2a_response,
-                  )
-                  flushed_before_finish.append(intercepted_pending)
-                  yield intercepted_pending
-                args = _find_finish_task_args_from_history(
-                    ctx.session,
-                    ctx.isolation_scope,
-                    completed_fr_event=emitted_event,
-                    pending_events=[
-                        *events_to_emit[:emit_idx],
-                        *flushed_before_finish,
-                    ],
-                )
-                if args is not None:
-                  wrapper_key = get_output_wrapper_key(self.output_schema)
-                  if wrapper_key and wrapper_key in args:
-                    emitted_event.output = args[wrapper_key]
-                  else:
-                    emitted_event.output = args
+            if self.mode == AgentMode.TASK and is_finish_task_terminal_fr(
+                event
+            ):
+              args = _find_finish_task_args_from_history(
+                  ctx.session, ctx.isolation_scope, completed_fr_event=event
+              )
+              if args is not None:
+                wrapper_key = get_output_wrapper_key(self.output_schema)
+                if wrapper_key and wrapper_key in args:
+                  event.output = args[wrapper_key]
                 else:
-                  # A custom A2A server may signal completion with the response
-                  # alone and never send the matching call, so there is nothing
-                  # to read an output from. The task still finished: leaving the
-                  # output unset would read as "still running" and strand the
-                  # delegation, so the parent never gets its turn back.
-                  emitted_event.output = {}
-                  logger.warning(
-                      "Could not find finish_task arguments for isolation scope"
-                      " '%s'. Completing the task with an empty output.",
-                      ctx.isolation_scope,
-                  )
-                # Yield the semantic output event so the parent runner can
-                # capture the final task output and record the tool response in
-                # history.
-                yield emitted_event
-                # Mark the agent as finished so parent coordinator regains
-                # control. Returning early terminates the stream reader,
-                # ignoring any legacy duplicate FRs sent by the server at the
-                # end of the run.
-                should_release_task_control = True
-                return
+                  event.output = args
+              else:
+                # A custom A2A server may signal completion with the response
+                # alone and never send the matching call, so there is nothing
+                # to read an output from. The task still finished: leaving the
+                # output unset would read as "still running" and strand the
+                # delegation, so the parent never gets its turn back.
+                event.output = {}
+                logger.warning(
+                    "Could not find finish_task arguments for isolation scope"
+                    " '%s'. Completing the task with an empty output.",
+                    ctx.isolation_scope,
+                )
+              # Yield the semantic output event so the parent runner can capture
+              # the final task output and record the tool response in history.
+              yield event
+              # Mark the agent as finished so parent coordinator regains control.
+              # Returning early terminates the stream reader, ignoring any legacy
+              # duplicate FRs sent by the server at the end of the run.
+              should_release_task_control = True
+              return
 
-              yield emitted_event
+            yield event
 
             if self.mode == AgentMode.TASK and task:
               if task.status and task.status.state in (
@@ -2768,18 +2213,12 @@ class RemoteA2aAgent(BaseAgent):
                     "releasing control.",
                     "canceled" if is_cancel else "failure",
                 )
-                failure_source_event = (
-                    boundary_failure_event
-                    if boundary_response
-                    else events_to_emit[-1]
-                )
                 error_text = "Unknown error"
                 if is_cancel:
                   error_text = "Task canceled"
-                elif failure_source_event is not None:
+                elif event:
                   error_text = (
-                      _text_from_content(failure_source_event.content)
-                      or "Unknown error"
+                      _text_from_content(event.content) or "Unknown error"
                   )
 
                 error_event, failure_event = _create_task_failure_events(
@@ -2794,36 +2233,11 @@ class RemoteA2aAgent(BaseAgent):
                 should_release_task_control = True
                 return
 
-        stream_unfinished = bool(
+        if (
             last_task
             and last_task.status
             and last_task.status.state in _UNFINISHED_TASK_STATES
-        )
-        if not stream_unfinished and artifact_aggregator.has_open_buffers():
-          # The stream closed on a finished task without a closing boundary for
-          # these artifacts (for example the task was already complete when
-          # the chunks arrived), so persist what was streamed.
-          fallback_response: _compat.A2AClientEvent | A2AMessage | None = (
-              (last_task, None) if last_task is not None else last_a2a_response
-          )
-          for flushed_event in artifact_aggregator.flush_all(
-              author=self.name, ctx=ctx
-          ):
-            if fallback_response is not None:
-              intercepted_flushed = await self._run_after_request_interceptors(
-                  ctx, fallback_response, flushed_event
-              )
-              if intercepted_flushed is None:
-                continue
-              flushed_event = intercepted_flushed
-              _stamp_a2a_exchange_metadata(
-                  flushed_event,
-                  a2a_request=a2a_request,
-                  a2a_response=fallback_response,
-              )
-            yield flushed_event
-
-        if stream_unfinished and last_task is not None:
+        ):
           task_error_message = (
               "A2A response stream ended before task"
               f" {last_task.id} reached a terminal state."

@@ -39,6 +39,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.utils.context_utils import Aclosing
 from google.genai import errors
@@ -524,6 +525,38 @@ async def test_screen_live_user_content_returns_blocked_event():
   assert blocked_event is not None
   assert blocked_event.turn_complete is True
   assert blocked_event.content == blocked_response.content
+
+
+def _added_tool() -> str:
+  return 'added'
+
+
+async def test_screen_live_user_content_does_not_mutate_live_request():
+  """A callback that edits the request does not change the live request."""
+  flow = _TestBaseLlmFlow()
+  tool = types.Tool(
+      function_declarations=[types.FunctionDeclaration(name='lookup')]
+  )
+  llm_request = LlmRequest(config=types.GenerateContentConfig(tools=[tool]))
+  llm_request.tools_dict['lookup'] = mock.Mock()
+
+  def _edit_request(context, request, event):
+    request.config.system_instruction = 'changed'
+    request.append_tools([FunctionTool(_added_tool)])
+    request.config.tools.clear()
+    request.tools_dict.clear()
+
+  with mock.patch.object(
+      flow, '_handle_before_model_callback', side_effect=_edit_request
+  ):
+    await _live_llm_flow.screen_live_user_content(
+        flow, _create_test_context(), types.Content(), llm_request
+    )
+
+  assert llm_request.config.system_instruction is None
+  assert llm_request.config.tools == [tool]
+  assert [d.name for d in tool.function_declarations] == ['lookup']
+  assert list(llm_request.tools_dict) == ['lookup']
 
 
 async def test_stop_background_tool_tasks_uses_timeout():

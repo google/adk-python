@@ -490,6 +490,15 @@ def test_auto_created_client_endpoint_matches_location(
   assert (options.api_endpoint if options else None) == expected_endpoint
 
 
+def test_limits_are_exposed_for_callers():
+  """The configured limits are readable, for callers sizing their facts."""
+  limits = GroundingLimits(max_facts=5, max_fact_chars=100)
+
+  client = CheckGroundingClient(project_id='test-project', limits=limits)
+
+  assert client.limits == limits
+
+
 def test_missing_project_raises_value_error(monkeypatch):
   """Construction fails clearly when no project is configured."""
   monkeypatch.delenv('GOOGLE_CLOUD_PROJECT', raising=False)

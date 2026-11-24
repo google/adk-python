@@ -554,11 +554,20 @@ class TestMCPSessionManager:
           "http://bigquery.googleapis.com/mcp",
       ],
   )
+  @pytest.mark.parametrize(
+      "env_var_name",
+      [
+          "GOOGLE_CLOUD_AGENT_ENGINE_ID",
+          "K_SERVICE",
+          "CLOUD_RUN_JOB",
+          "KUBERNETES_SERVICE_HOST",
+      ],
+  )
   def test_merge_headers_third_party_host_gets_no_runtime_tag(
-      self, monkeypatch, url
+      self, monkeypatch, url, env_var_name
   ):
     """Runtime suffixes stay out of requests to third-party MCP servers."""
-    monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "engine-id")
+    monkeypatch.setenv(env_var_name, "value")
     manager = MCPSessionManager(StreamableHTTPConnectionParams(url=url))
 
     merged = manager._merge_headers(None)  # pylint: disable=protected-access

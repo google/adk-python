@@ -787,77 +787,8 @@ bigquery_agent_analytics:
     assert bq_plugin.table_id == "test-table"
     assert bq_plugin.location == "US"
 
-    # Assert that the internal visual builder flag is set on the app
-    assert getattr(runner.app, "_is_visual_builder_app", False) is True
-
-
-def test_get_runner_async_accepts_internal_special_agent_name(
-    tmp_path,
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  from google.adk.cli.adk_web_server import AdkWebServer
-
-  special_app_name = "__adk_agent_builder_assistant"
-  special_agent = DummyAgent(name="agent_builder_assistant")
-  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
-
-  adk_web_server = AdkWebServer(
-      agent_loader=mock_agent_loader,
-      session_service=mock_session_service,
-      memory_service=mock_memory_service,
-      artifact_service=mock_artifact_service,
-      credential_service=MagicMock(),
-      eval_sets_manager=mock_eval_sets_manager,
-      eval_set_results_manager=mock_eval_set_results_manager,
-      agents_dir=str(tmp_path),
-  )
-
-  runner = asyncio.run(adk_web_server.get_runner_async(special_app_name))
-
-  assert runner.app.name == special_app_name
-  assert runner.app.root_agent is special_agent
-  mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
-
-
-def test_api_server_get_runner_async_rejects_internal_special_agent_name(
-    tmp_path,
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  from google.adk.cli.api_server import ApiServer
-
-  special_app_name = "__adk_agent_builder_assistant"
-  special_agent = DummyAgent(name="agent_builder_assistant")
-  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
-
-  api_server = ApiServer(
-      agent_loader=mock_agent_loader,
-      session_service=mock_session_service,
-      memory_service=mock_memory_service,
-      artifact_service=mock_artifact_service,
-      credential_service=MagicMock(),
-      eval_sets_manager=mock_eval_sets_manager,
-      eval_set_results_manager=mock_eval_set_results_manager,
-      agents_dir=str(tmp_path),
-  )
-
-  with pytest.raises(HTTPException) as exc_info:
-    asyncio.run(api_server.get_runner_async(special_app_name))
-
-  assert exc_info.value.status_code == 403
-  assert (
-      "Access to internal special agents is disabled in API server mode"
-      in exc_info.value.detail
-  )
+    # YAML agents are no longer tagged as Visual Builder apps for telemetry.
+    assert not hasattr(runner.app, "_is_visual_builder_app")
 
 
 _NO_EVAL_SETS_MANAGER = "Eval sets manager is not configured"
@@ -1070,54 +1001,6 @@ async def test_event_graph_for_workflow_root_is_empty(
 
   assert response.status_code == 200
   assert response.json() == {}
-
-
-@pytest.mark.parametrize(
-    ("web", "bind_host", "expected"),
-    [
-        (True, "127.0.0.1", True),
-        (True, "localhost", True),
-        (True, "::1", True),
-        (True, "0.0.0.0", False),
-        (True, "::", False),
-        (True, "192.168.1.10", False),
-        (True, None, False),
-        (False, "127.0.0.1", False),
-    ],
-)
-def test_special_agents_allowed_only_on_loopback_web_server(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-    web,
-    bind_host,
-    expected,
-):
-  # The agent builder assistant writes files the server imports, and the dev
-  # server is unauthenticated, so it must not be reachable off the machine.
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      web=web,
-      bind_host=bind_host,
-  )
-
-  assert mock_agent_loader._allow_special_agents is expected
-  if not expected:
-    # Refused by the server itself, not by a 500 from the loader.
-    response = client.get(
-        "/apps/__adk_agent_builder_assistant/app-info",
-        headers={"host": "127.0.0.1:8000"},
-    )
-    assert response.status_code == 403
-    assert "internal special agents" in response.json()["detail"]
 
 
 def test_get_fast_api_app_skips_span_processors_without_add_span_processor(
@@ -6303,114 +6186,6 @@ def test_patch_memory(test_app, create_test_session, mock_memory_service):
   logger.info("Add session to memory test completed successfully")
 
 
-@pytest.mark.parametrize(
-    "method, path, body",
-    [
-        ("GET", "/apps/__internal_assistant/app-info", None),
-        (
-            "POST",
-            "/run",
-            {
-                "app_name": "__internal_assistant",
-                "user_id": "u",
-                "session_id": "s",
-                "new_message": {"role": "user", "parts": [{"text": "hi"}]},
-            },
-        ),
-    ],
-)
-def test_special_agent_rejects_origin_allowed_only_by_wildcard(
-    method,
-    path,
-    body,
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """Internal agents write code, so a wildcard does not open them to sites."""
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      allow_origins=["*"],
-      bind_host="127.0.0.1",
-  )
-  headers = {"host": "127.0.0.1:8000", "origin": "https://evil.example"}
-
-  response = client.request(method, path, json=body, headers=headers)
-
-  assert response.status_code == 403
-  assert "own origin" in response.json()["detail"]
-
-
-def test_special_agent_allows_own_origin_with_wildcard(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """The dev UI keeps the builder assistant when allow_origins has '*'."""
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      allow_origins=["*"],
-      bind_host="127.0.0.1",
-  )
-
-  response = client.get(
-      "/apps/__internal_assistant/app-info",
-      headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
-  )
-
-  assert response.status_code == 200
-  assert response.json()["rootAgentName"] == "dummy_agent"
-
-
-def test_special_agent_allows_proxied_origin_without_allow_origins(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """Without a wildcard, the forwarded-host same-origin check still applies."""
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      allow_origins=None,
-      bind_host="127.0.0.1",
-  )
-
-  response = client.get(
-      "/apps/__internal_assistant/app-info",
-      headers={
-          "host": "127.0.0.1:8000",
-          "x-forwarded-host": "localhost:9000",
-          "origin": "http://localhost:9000",
-      },
-  )
-
-  assert response.status_code == 200
-  assert response.json()["rootAgentName"] == "dummy_agent"
-
-
 def test_remote_client_can_still_reach_read_only_endpoints(
     remote_dev_test_client,
 ):
@@ -6732,146 +6507,6 @@ def test_returns_404_without_auto_create(
   response = test_app.post(endpoint, json=payload)
   assert response.status_code == 404
   assert "Session not found" in response.json()["detail"]
-
-
-@pytest.mark.asyncio
-async def test_independent_telemetry_context(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-    monkeypatch,
-):
-  """Test that two agents have independent is_visual_builder context variables."""
-  from google.adk.utils._telemetry_context import _is_visual_builder
-  import httpx
-
-  # We use httpx.AsyncClient to send concurrent requests to the FastAPI app.
-  # This proves that is_visual_builder doesn't leak across concurrent requests.
-  captured_visual_builder_values = {}
-
-  async def run_async_capture(
-      self,
-      *,
-      user_id: str,
-      session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
-  ):
-    # Capture the value of is_visual_builder inside the request context
-    captured_visual_builder_values[self.app.name] = _is_visual_builder.get()
-
-    # Sleep to ensure both requests overlap in time
-    await asyncio.sleep(0.1)
-
-    # Read again to ensure it wasn't overwritten by the other concurrent request
-    captured_visual_builder_values[self.app.name + "_after_sleep"] = (
-        _is_visual_builder.get()
-    )
-
-    yield _event_1()
-
-  monkeypatch.setattr(Runner, "run_async", run_async_capture)
-
-  with (
-      patch.object(signal, "signal", autospec=True, return_value=None),
-      patch.object(
-          fast_api_module,
-          "create_session_service_from_options",
-          autospec=True,
-          return_value=mock_session_service,
-      ),
-      patch.object(
-          fast_api_module,
-          "create_artifact_service_from_options",
-          autospec=True,
-          return_value=mock_artifact_service,
-      ),
-      patch.object(
-          fast_api_module,
-          "create_memory_service_from_options",
-          autospec=True,
-          return_value=mock_memory_service,
-      ),
-      patch.object(
-          fast_api_module,
-          "AgentLoader",
-          autospec=True,
-          return_value=mock_agent_loader,
-      ),
-      patch.object(
-          fast_api_module,
-          "NestedAgentLoader",
-          autospec=True,
-          return_value=mock_agent_loader,
-      ),
-      patch.object(
-          fast_api_module,
-          "LocalEvalSetsManager",
-          autospec=True,
-          return_value=mock_eval_sets_manager,
-      ),
-      patch.object(
-          fast_api_module,
-          "LocalEvalSetResultsManager",
-          autospec=True,
-          return_value=mock_eval_set_results_manager,
-      ),
-      patch.object(
-          os.path,
-          "exists",
-          autospec=True,
-          side_effect=lambda p: "yaml_app" in str(p)
-          and str(p).endswith("root_agent.yaml"),
-      ),
-  ):
-    app = get_fast_api_app(
-        agents_dir=".",
-        web=True,
-        session_service_uri="",
-        artifact_service_uri="",
-        memory_service_uri="",
-        allow_origins=["*"],
-        a2a=False,
-        host="127.0.0.1",
-        port=8000,
-    )
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
-      # Send concurrent requests
-      req1 = client.post(
-          "/run",
-          json={
-              "app_name": "test_app",
-              "user_id": "test_user",
-              "session_id": "test_session",
-              "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
-          },
-      )
-      req2 = client.post(
-          "/run",
-          json={
-              "app_name": "yaml_app",
-              "user_id": "test_user",
-              "session_id": "test_session",
-              "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
-          },
-      )
-
-      await asyncio.gather(req1, req2)
-
-  assert captured_visual_builder_values.get("test_app") == False
-  assert captured_visual_builder_values.get("test_app_after_sleep") == False
-
-  assert captured_visual_builder_values.get("yaml_app") == True
-  assert captured_visual_builder_values.get("yaml_app_after_sleep") == True
 
 
 def test_default_app_name_middleware_and_resolution(
@@ -8227,107 +7862,6 @@ def test_span_buffers_filled_when_web_enabled(
   ) == ["ApiServerSpanExporter", "InMemoryExporter"]
 
 
-def test_app_info_serves_special_agent_only_on_loopback_dev_server(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """Internal `__` apps reach a loopback dev server, but not the api server."""
-  api_only_client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      web=False,
-  )
-
-  blocked = api_only_client.get("/apps/__internal_assistant/app-info")
-  assert blocked.status_code == 403
-  assert "internal special agents" in blocked.json()["detail"]
-
-  # Same request on a loopback-bound dev server gets past the guard and is
-  # answered on the merits of the loaded DummyAgent (200 with empty agents).
-  dev_client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      bind_host="127.0.0.1",
-  )
-  allowed = dev_client.get(
-      "/apps/__internal_assistant/app-info",
-      headers={"host": "127.0.0.1:8000"},
-  )
-  assert allowed.status_code == 200
-  assert allowed.json()["rootAgentName"] == "dummy_agent"
-
-
-@pytest.mark.parametrize("bind_host", ["0.0.0.0", None])
-def test_dev_server_rejects_special_agent_unless_bound_to_loopback(
-    bind_host,
-    tmp_path,
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """A dev server on a network address, or an unknown one, refuses `__` apps."""
-  agent_loader = AgentLoader(str(tmp_path))
-  client = _create_test_client(
-      mock_session_service,
-      mock_artifact_service,
-      mock_memory_service,
-      mock_agent_loader,
-      mock_eval_sets_manager,
-      mock_eval_set_results_manager,
-      agent_loader=agent_loader,
-      bind_host=bind_host,
-  )
-
-  response = client.get("/apps/__internal_assistant/app-info")
-
-  assert response.status_code == 403
-  assert "loopback" in response.json()["detail"]
-  # Eval runs load the app without a runner, so the loader must refuse it too.
-  with pytest.raises(PermissionError):
-    agent_loader.load_agent("__adk_agent_builder_assistant")
-
-
-def test_api_server_fallback_rejects_special_agent_even_on_loopback(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-):
-  """Packages that ship without dev_server.py get an ApiServer, which is closed."""
-  with patch.dict(sys.modules, {"google.adk.cli.dev_server": None}):
-    client = _create_test_client(
-        mock_session_service,
-        mock_artifact_service,
-        mock_memory_service,
-        mock_agent_loader,
-        mock_eval_sets_manager,
-        mock_eval_set_results_manager,
-        bind_host="127.0.0.1",
-    )
-
-  response = client.get("/apps/__internal_assistant/app-info")
-
-  assert response.status_code == 403
-  assert "internal special agents" in response.json()["detail"]
-
-
 def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
     dev_test_client,
 ):
@@ -8343,6 +7877,41 @@ def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
     rejected = dev_test_client.get(f"/dev/apps/{bad_name}/tests")
     assert rejected.status_code == 400, bad_name
     assert "must be valid" in rejected.json()["detail"]
+
+
+@pytest.mark.parametrize("web", [True, False])
+def test_app_info_rejects_reserved_double_underscore_name(
+    web,
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """`__` names are reserved, so an agents_dir entry cannot be reached by one."""
+  agent_dir = tmp_path / "__hidden_agent"
+  agent_dir.mkdir()
+  (agent_dir / "agent.py").write_text("root_agent = None\n")
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agent_loader=AgentLoader(str(tmp_path)),
+      web=web,
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__hidden_agent/app-info", headers={"host": "127.0.0.1:8000"}
+  )
+
+  assert response.status_code == 404
+  assert "reserved" in response.json()["detail"]
 
 
 def _create_dev_session(client, payload=None):

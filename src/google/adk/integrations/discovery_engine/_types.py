@@ -17,11 +17,15 @@
 from __future__ import annotations
 
 import enum
+import hashlib
+import json
+from typing import Any
 
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_validator
 
 
 class FactChunk(BaseModel):
@@ -42,6 +46,48 @@ class FactChunk(BaseModel):
   """Optional key-value metadata, returned with citations."""
 
 
+def _content_id(data: dict[str, Any]) -> str:
+  key = '\0'.join((
+      data.get('title') or '',
+      data.get('link') or '',
+      json.dumps(data.get('attributes') or {}, sort_keys=True),
+      (data.get('text') or '').strip(),
+  ))
+  return 'fact_' + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+class Fact(BaseModel):
+  """A piece of evidence that responses are checked against.
+
+  The plugin splits ``text`` into chunks that fit the backend's limits.
+  """
+
+  model_config = ConfigDict(extra='forbid')
+
+  text: str
+  """The fact text, of any length."""
+
+  title: str | None = None
+  """Optional title, used for citation attribution."""
+
+  link: str | None = None
+  """Optional source URI, used for citation attribution."""
+
+  attributes: dict[str, str] = Field(default_factory=dict)
+  """Optional key-value metadata, returned with citations."""
+
+  id: str = Field(default_factory=_content_id)
+  """Identifier. Defaults to a hash of the text, title, link and attributes,
+  so the same content always gets the same ID."""
+
+  @field_validator('text')
+  @classmethod
+  def _text_not_blank(cls, text: str) -> str:
+    if not text.strip():
+      raise ValueError('Fact text must not be empty.')
+    return text
+
+
 class GroundingLimits(BaseModel):
   """Capacity limits that a grounding backend enforces.
 
@@ -52,6 +98,9 @@ class GroundingLimits(BaseModel):
 
   max_facts: int = Field(default=200, gt=0)
   """Maximum number of fact chunks evaluated per check."""
+
+  max_fact_chars: int = Field(default=10_000, gt=0)
+  """Maximum character length of a single fact chunk."""
 
 
 class GroundingStatus(enum.StrEnum):
