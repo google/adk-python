@@ -5122,3 +5122,417 @@ def test_cli_deploy_agent_engine_rejects_conflicting_import_validation_flags(
       in result.output
   )
   mock_to_agent_engine.assert_not_called()
+
+
+def _make_runtime_entry(
+    name: str,
+    update_time: str = "2026-11-09T00:00:00Z",
+) -> Any:
+  """Builds a fake runtime list item with `api_resource.name` and `update_time`."""
+  return types.SimpleNamespace(
+      api_resource=types.SimpleNamespace(name=name, update_time=update_time)
+  )
+
+
+def _install_fake_runtimes_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    existing: Optional[List[Any]] = None,
+    list_error: Optional[Exception] = None,
+    update_error: Optional[Exception] = None,
+) -> Dict[str, List[Any]]:
+  """Installs a fake `agentplatform.Client` that records list/create/update/delete calls."""
+  calls: Dict[str, List[Any]] = {
+      "list": [],
+      "create": [],
+      "update": [],
+      "delete": [],
+  }
+  fake_agentplatform = types.ModuleType("agentplatform")
+
+  class _FakeRuntimes:
+    """Fake runtimes client."""
+
+    def list(self, *, config: Optional[Dict[str, Any]] = None) -> List[Any]:
+      calls["list"].append(config)
+      if list_error is not None:
+        raise list_error
+      return list(existing or [])
+
+    def create(self, **kwargs: Any) -> Any:
+      calls["create"].append(kwargs)
+      return _make_runtime_entry(
+          "projects/p/locations/l/reasoningEngines/newly-created"
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      calls["update"].append((name, config))
+      if update_error is not None:
+        raise update_error
+
+    def delete(self, *, name: str) -> None:
+      calls["delete"].append(name)
+
+  class _FakeAgentPlatformClient:
+    """Fake Agent Platform client."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args, kwargs
+      self.runtimes = _FakeRuntimes()
+
+  fake_agentplatform.Client = _FakeAgentPlatformClient
+  monkeypatch.setitem(sys.modules, "agentplatform", fake_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      fake_agentplatform,
+  )
+  return calls
+
+
+# pylint: disable=redefined-outer-name
+def test_to_agent_engine_no_existing_match_creates_without_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """When no runtime shares the display name, create runs without a duplicate warning."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(monkeypatch, existing=[])
+  src_dir = agent_dir(False, False)
+
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name='My "Quoted" Agent',
+        adk_version="1.2.0",
+    )
+
+  assert calls["list"] == [{"filter": 'display_name="My \\"Quoted\\" Agent"'}]
+  assert len(calls["create"]) == 1
+  assert (
+      calls["update"][0][0]
+      == "projects/p/locations/l/reasoningEngines/newly-created"
+  )
+  warnings_printed = [
+      c.args[0]
+      for c in mocked_secho.call_args_list
+      if c.args and "WARNING:" in str(c.args[0])
+  ]
+  assert not warnings_printed
+
+
+def test_to_agent_engine_warns_when_duplicate_display_name_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Without --update_if_exists, an existing same-name runtime triggers a stderr warning and still creates."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  existing_name = (
+      "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  )
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(existing_name, "2026-11-08T12:00:00Z")],
+  )
+  src_dir = agent_dir(False, False)
+
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+    )
+
+  assert len(calls["create"]) == 1
+  assert (
+      calls["update"][0][0]
+      == "projects/p/locations/l/reasoningEngines/newly-created"
+  )
+  warning_calls = [
+      c
+      for c in mocked_secho.call_args_list
+      if c.args and "WARNING:" in str(c.args[0])
+  ]
+  assert len(warning_calls) == 1
+  warning_text = warning_calls[0].args[0]
+  assert existing_name in warning_text
+  assert "2026-11-08T12:00:00Z" in warning_text
+  assert "re-run with --agent_engine_id=<ID>" in warning_text
+  assert "or --update_if_exists" not in warning_text
+  assert (
+      "--update_if_exists only works once extra duplicates are deleted down to"
+      " a single instance"
+      in warning_text
+  )
+  assert warning_calls[0].kwargs.get("err")
+
+
+def test_to_agent_engine_update_if_exists_updates_single_match_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True and exactly one match, update runs on that match without create."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  existing_name = (
+      "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  )
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(existing_name)],
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      adk_version="1.2.0",
+      update_if_exists=True,
+  )
+
+  assert not calls["create"]
+  assert len(calls["update"]) == 1
+  assert calls["update"][0][0] == existing_name
+
+
+def test_to_agent_engine_update_if_exists_creates_when_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True and zero matches, a new runtime is created."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(monkeypatch, existing=[])
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      adk_version="1.2.0",
+      update_if_exists=True,
+  )
+
+  assert len(calls["create"]) == 1
+  assert (
+      calls["update"][0][0]
+      == "projects/p/locations/l/reasoningEngines/newly-created"
+  )
+
+
+def test_to_agent_engine_update_if_exists_fails_on_ambiguous_matches(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True and multiple matches, ClickException lists candidates without creating."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  first = "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  second = "projects/my-gcp-project/locations/us-central1/reasoningEngines/222"
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(first), _make_runtime_entry(second)],
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  message = str(exc_info.value)
+  assert "2 Agent Runtimes" in message
+  assert first in message
+  assert second in message
+  assert "--agent_engine_id" in message
+  assert "replace --update_if_exists with --agent_engine_id" in message
+  assert not calls["create"]
+  assert not calls["update"]
+
+
+def test_to_agent_engine_update_if_exists_fails_in_express_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True in Express Mode, ClickException is raised before create."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(stdout="\n"),
+  )
+  calls = _install_fake_runtimes_client(monkeypatch)
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        api_key="fake-api-key",
+        project=None,
+        region=None,
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  message = str(exc_info.value)
+  assert "Express Mode" in message
+  assert "replace --update_if_exists with --agent_engine_id" in message
+  assert not calls["list"]
+  assert not calls["create"]
+  assert not calls["update"]
+  assert not (src_dir.parent / "tmp" / "Dockerfile").exists()
+
+
+def test_to_agent_engine_update_if_exists_fails_when_list_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True, runtimes.list failure raises instead of silently creating."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      list_error=RuntimeError("IAM permission denied"),
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  assert "IAM permission denied" in str(exc_info.value)
+  assert len(calls["list"]) == 1
+  assert not calls["create"]
+  assert not calls["update"]
+  assert not (src_dir.parent / "tmp" / "Dockerfile").exists()
+
+
+def test_find_runtimes_by_display_name_empty_display_name() -> None:
+  """Empty display_name returns [] by default and raises when strict."""
+  client = mock.Mock()
+  # pylint: disable=protected-access
+  assert not cli_deploy._find_runtimes_by_display_name(client, "")
+  with pytest.raises(click.ClickException, match="non-empty display name"):
+    cli_deploy._find_runtimes_by_display_name(client, "", raise_on_error=True)
+  # pylint: enable=protected-access
+  client.runtimes.list.assert_not_called()
+
+
+def test_to_agent_engine_update_if_exists_does_not_delete_preexisting_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """When updating a pre-existing runtime resolved via update_if_exists fails, it is not deleted."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  existing_name = (
+      "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  )
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(existing_name)],
+      update_error=RuntimeError("build failed"),
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(RuntimeError, match="build failed"):
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  assert not calls["create"]
+  assert not calls["delete"]
+
+
+def test_to_agent_engine_proceeds_when_duplicate_check_list_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """A failure in runtimes.list does not block deployment."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      list_error=RuntimeError("IAM permission denied"),
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      adk_version="1.2.0",
+  )
+
+  assert len(calls["list"]) == 1
+  assert len(calls["create"]) == 1
+  assert len(calls["update"]) == 1
+
+
+# pylint: enable=redefined-outer-name
+
+
+def test_cli_deploy_agent_engine_update_if_exists_and_conflict(
+    tmp_path: Path,
+) -> None:
+  """--update_if_exists forwards to to_agent_engine and conflicts with --agent_engine_id."""
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    ok_result = runner.invoke(
+        cli_tools_click.main,
+        ["deploy", "agent_engine", "--update_if_exists", str(agent_path)],
+        catch_exceptions=False,
+    )
+    assert ok_result.exit_code == 0
+    assert mock_to_agent_engine.call_args.kwargs["update_if_exists"]
+
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    bad_result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--agent_engine_id=123",
+            "--update_if_exists",
+            str(agent_path),
+        ],
+    )
+    assert bad_result.exit_code != 0
+    assert (
+        "Do not pass both --agent_engine_id and --update_if_exists."
+        in bad_result.output
+    )
+    mock_to_agent_engine.assert_not_called()
