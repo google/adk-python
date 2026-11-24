@@ -4791,6 +4791,44 @@ async def test_sampling_config_fits_installed_sdk_create_signature(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
+async def test_http_options_headers_and_timeout_reach_create(
+    stream, generate_content_response
+):
+  """Request http_options headers and timeout must reach messages.create."""
+  client = AsyncAnthropic(api_key="placeholder-not-a-real-key")
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              headers={"x-request-id": "abc123"}, timeout=1500
+          )
+      ),
+  )
+
+  async def reply(**kwargs):
+    if kwargs.get("stream"):
+      return _make_mock_stream_events([])
+    return generate_content_response
+
+  with mock.patch.object(
+      client.messages, "create", autospec=True, side_effect=reply
+  ) as create:
+    _ = [
+        resp
+        async for resp in llm.generate_content_async(request, stream=stream)
+    ]
+
+  create.assert_called_once()
+  kwargs = create.call_args.kwargs
+  assert kwargs["extra_headers"] == {"x-request-id": "abc123"}
+  # HttpOptions.timeout is milliseconds; the Anthropic SDK takes seconds.
+  assert kwargs["timeout"] == 1.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     ("header_name", "header_value"),
     [
