@@ -5958,3 +5958,172 @@ async def test_tool_config_none_mode_is_kept_with_thinking():
   )
 
   assert kwargs["tool_choice"] == {"type": "none"}
+
+
+def _cached_message_indices(messages) -> list[int]:
+  return [
+      i
+      for i, msg in enumerate(messages)
+      if any("cache_control" in block for block in msg["content"])
+  ]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "contents,expected_roles,expected_tail,expected_cached",
+    [
+        pytest.param(
+            [
+                Content(role="user", parts=[Part.from_text(text="Start")]),
+                Content(role="model", parts=[Part.from_text(text="iter_done")]),
+            ],
+            ["user", "assistant", "user", "user"],
+            "Continue processing",
+            [1],
+            id="after_model",
+        ),
+        pytest.param(
+            [], ["user", "user"], "Handle the requests", [], id="transient_only"
+        ),
+        pytest.param(
+            [
+                Content(role="user", parts=[Part.from_text(text="Turn 1")]),
+                Content(role="model", parts=[Part.from_text(text="Reply 1")]),
+                Content(role="user", parts=[Part.from_text(text="Turn 2")]),
+            ],
+            ["user", "assistant", "user", "user"],
+            "Turn 2",
+            [1],
+            id="mid_conversation",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_transient_content_continuation_and_cache_breakpoints(
+    stream, contents, expected_roles, expected_tail, expected_cached
+):
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=list(contents),
+      cache_config=ContextCacheConfig(),
+  )
+  llm_request._insert_transient_user_content(
+      [Content(role="user", parts=[Part.from_text(text="dynamic instruction")])]
+  )
+
+  kwargs = await _sent_anthropic_kwargs(llm_request, stream=stream)
+
+  messages = kwargs["messages"]
+  assert [m["role"] for m in messages] == expected_roles
+  assert expected_tail in messages[-1]["content"][0]["text"]
+  assert _cached_message_indices(messages) == expected_cached
+
+
+@pytest.mark.asyncio
+async def test_static_instruction_prefix_keeps_cache_breakpoint_on_conversation():
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      cache_config=ContextCacheConfig(),
+  )
+  static_prefix = llm_request.append_instructions(
+      Content(
+          parts=[
+              Part(
+                  inline_data=types.Blob(
+                      mime_type="application/pdf", data=b"%PDF-1.4 static"
+                  )
+              )
+          ]
+      )
+  )
+  llm_request.contents = [
+      Content(role="user", parts=[Part.from_text(text="Turn 1")]),
+      Content(role="model", parts=[Part.from_text(text="Reply 1")]),
+      Content(role="user", parts=[Part.from_text(text="Turn 2")]),
+  ]
+  llm_request._insert_transient_user_content(static_prefix)
+
+  messages = (await _sent_anthropic_kwargs(llm_request))["messages"]
+  assert _cached_message_indices(messages) == [3]
+
+  llm_request._insert_transient_user_content(
+      [Content(role="user", parts=[Part.from_text(text="dynamic instruction")])]
+  )
+  messages_with_dynamic = (await _sent_anthropic_kwargs(llm_request))[
+      "messages"
+  ]
+  assert _cached_message_indices(messages_with_dynamic) == [2]
+
+
+@pytest.mark.asyncio
+async def test_transient_assistant_tail_still_appends_user_turn_and_fixed_sig_subclass():
+  trailing_model = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Hi")]),
+          Content(
+              role="model",
+              parts=[Part.from_function_call(name="tool", args={})],
+          ),
+          Content(
+              role="user",
+              parts=[Part.from_function_response(name="tool", response={})],
+          ),
+      ],
+  )
+  trailing_model._insert_transient_user_content(
+      [Content(role="model", parts=[Part.from_text(text="prefill")])]
+  )
+  messages = (await _sent_anthropic_kwargs(trailing_model))["messages"]
+  assert [m["role"] for m in messages] == [
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+  ]
+
+  class _FixedSigAnthropic(AnthropicLlm):
+
+    def _build_anthropic_kwargs(
+        self, llm_request, messages, tools, tool_choice, thinking
+    ):
+      return super()._build_anthropic_kwargs(
+          llm_request, messages, tools, tool_choice, thinking
+      )
+
+    async def _generate_content_streaming(
+        self,
+        llm_request,
+        messages,
+        tools,
+        tool_choice,
+        thinking=NOT_GIVEN,
+        *,
+        output_schema_tool=None,
+    ):
+      async for r in super()._generate_content_streaming(
+          llm_request,
+          messages,
+          tools,
+          tool_choice,
+          thinking,
+          output_schema_tool=output_schema_tool,
+      ):
+        yield r
+
+  llm = _FixedSigAnthropic(model="claude-sonnet-4-20250514")
+  plain = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  for stream, result in (
+      (False, _cache_test_message()),
+      (True, _make_mock_stream_events([])),
+  ):
+    mock_client = mock.Mock(spec=["messages"])
+    mock_client.messages = mock.Mock(spec=["create"])
+    mock_client.messages.create = AsyncMock(return_value=result)
+    with mock.patch.object(llm, "_anthropic_client", mock_client):
+      _ = [r async for r in llm.generate_content_async(plain, stream=stream)]
+    assert mock_client.messages.create.called
