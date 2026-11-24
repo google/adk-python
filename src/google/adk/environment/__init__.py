@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from ._base_environment import BaseEnvironment
 from ._base_environment import ExecutionResult
+from ._environment_scope import EnvironmentScope
 from ._local_environment import LocalEnvironment
 
 __all__ = [
     'BaseEnvironment',
+    'EnvironmentScope',
     'ExecutionResult',
     'LocalEnvironment',
 ]

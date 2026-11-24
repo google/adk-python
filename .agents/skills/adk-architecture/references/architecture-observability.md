@@ -5,7 +5,7 @@ Node tracing lives in `telemetry/node_tracing.py`. Spans are **scope-based**:
 manager, so the span closes on the way out even if the node raises.
 
 ```python
-async with node_tracing.start_as_current_node_span(parent_ctx, node) as tel_ctx:
+async with node_tracing.start_as_current_node_span(parent_ctx, node, ctx) as tel_ctx:
   ctx._telemetry_context = tel_ctx
   await self._execute_node(ctx, node_input)
 ```

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from google.adk.live import CascadeLive
 from google.adk.models.base_llm import BaseLlm
+from google.adk.models.google_llm import Gemini
 from google.adk.utils import model_name_utils
 import pytest
 
@@ -88,3 +89,19 @@ def test_model_dump_carries_a_name_not_the_reasoner_instance():
   assert dumped['model'] == 'scripted'
   assert 'reasoner' not in dumped
   assert not any(isinstance(value, BaseLlm) for value in dumped.values())
+
+
+def test_supports_dynamic_instruction_routing_delegates_to_inner_llm():
+  supported = CascadeLive(
+      model=Gemini(model='gemini-2.5-flash'),
+      stt=FakeStt(),
+      tts=FakeTts(),
+  )
+  unsupported = CascadeLive(
+      model=Gemini(model='gemini-2.5-flash', use_interactions_api=True),
+      stt=FakeStt(),
+      tts=FakeTts(),
+  )
+
+  assert supported._supports_dynamic_instruction_routing()
+  assert not unsupported._supports_dynamic_instruction_routing()

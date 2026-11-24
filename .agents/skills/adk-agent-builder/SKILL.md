@@ -19,7 +19,7 @@ description: >-
 Read only the reference that matches the task. Loading the whole tree costs
 context and buries the part that matters.
 
-Every API below was checked against `google-adk` 2.6.2. If a symbol is missing
+Every API below was checked against `google-adk` 2.14.0. If a symbol is missing
 at runtime, read the source under `src/google/adk/` rather than guessing a
 neighbouring name.
 
@@ -65,7 +65,7 @@ neighbouring name.
   `Event` fields, and how state flows between nodes.
 - [session-and-state.md](references/session-and-state.md) — session services,
   artifacts, memory, and state key scoping.
-- [callbacks-and-plugins.md](references/callbacks-and-plugins.md) — the six
+- [callbacks-and-plugins.md](references/callbacks-and-plugins.md) — the eight
   agent callbacks and app-level plugins.
 - [testing.md](references/testing.md) — `pytest` with `InMemoryRunner`, faking a
   model, asserting on node output.

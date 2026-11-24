@@ -546,6 +546,53 @@ class TestMCPSessionManager:
     assert base_headers == original_base
     assert additional == original_additional
 
+  @pytest.mark.parametrize(
+      "url",
+      [
+          "https://example.com/mcp",
+          # A Google host over plain http does not count.
+          "http://bigquery.googleapis.com/mcp",
+      ],
+  )
+  @pytest.mark.parametrize(
+      "env_var_name",
+      [
+          "GOOGLE_CLOUD_AGENT_ENGINE_ID",
+          "K_SERVICE",
+          "CLOUD_RUN_JOB",
+          "KUBERNETES_SERVICE_HOST",
+      ],
+  )
+  def test_merge_headers_third_party_host_gets_no_runtime_tag(
+      self, monkeypatch, url, env_var_name
+  ):
+    """Runtime suffixes stay out of requests to third-party MCP servers."""
+    monkeypatch.setenv(env_var_name, "value")
+    manager = MCPSessionManager(StreamableHTTPConnectionParams(url=url))
+
+    merged = manager._merge_headers(None)  # pylint: disable=protected-access
+
+    expected = merge_tracking_headers({}, exclude_runtime_tag=True)
+    assert merged == expected
+    assert "+" not in merged["x-goog-api-client"].split()[0]
+    assert "+" not in merged["user-agent"].split()[0]
+
+  def test_merge_headers_googleapis_host_gets_runtime_tag(self, monkeypatch):
+    """Google API MCP endpoints get the runtime suffix."""
+    monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "engine-id")
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://bigquery.googleapis.com/mcp")
+    )
+
+    merged = manager._merge_headers(None)  # pylint: disable=protected-access
+
+    assert (
+        merged["x-goog-api-client"]
+        .split()[0]
+        .endswith("+remote_reasoning_engine")
+    )
+    assert merged["user-agent"].split()[0].endswith("+remote_reasoning_engine")
+
   def test_is_session_disconnected(self):
     """Test session disconnection detection."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)

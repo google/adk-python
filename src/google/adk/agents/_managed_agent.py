@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -189,7 +190,9 @@ class ManagedAgent(BaseAgent):
     no-env default is the Gemini Developer API. The enterprise backend is
     pinned to the ``global`` location (the Managed Agents API is only served
     from ``global``); the Developer API takes no ``location`` (it is
-    meaningless there).
+    meaningless there), and defaults to ``v1beta`` unless
+    ``GOOGLE_GENAI_API_VERSION`` is set. Caller-supplied clients keep their
+    own ``api_version``.
     """
     if self._api_client is None:
       from google.genai import Client
@@ -201,9 +204,12 @@ class ManagedAgent(BaseAgent):
             http_options=get_tracking_http_options(),
         )
       else:
+        http_options = get_tracking_http_options()
+        if not os.environ.get('GOOGLE_GENAI_API_VERSION'):
+          http_options.api_version = 'v1beta'
         self._api_client = Client(
             enterprise=False,
-            http_options=get_tracking_http_options(),
+            http_options=http_options,
         )
     return self._api_client
 
