@@ -301,7 +301,10 @@ recorded: '{recorded_call.name}'
 current: '{tool_name}'"""
       )
 
-    if recorded_call.args != tool_args:
+    # A recording that omits args loads as None, while a no-argument tool call
+    # arrives as {}. Treat both as "no arguments", like the other tool-call
+    # comparisons in trajectory evaluation and tool confirmation.
+    if (recorded_call.args or {}) != (tool_args or {}):
       raise ReplayVerificationError(
           f"""Tool args mismatch for agent '{agent_name}' at index {agent_index}:
 recorded: {recorded_call.args}
