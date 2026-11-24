@@ -175,8 +175,9 @@ currently not supported.
 
 **Mutating LLM requests and responses.** Callbacks in live may receive copies of
 `LlmRequest` and `LlmResponse` which are meant to be read-only. Changes a
-callback makes to the request's config and tools are discarded and do not reach
-the model. An `LlmResponse` can be returned to replace the turn.
+callback makes to the request's `config`, `live_connect_config` and tools,
+including in-place edits to nested values, are discarded and do not reach the
+model. An `LlmResponse` can be returned to replace the turn.
 `on_event_callback` can be used to annotate events.
 
 **Callback latency.** The callback is awaited inside the receive loop, so

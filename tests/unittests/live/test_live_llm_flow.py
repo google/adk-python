@@ -48,6 +48,7 @@ from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.utils.context_utils import Aclosing
 from google.genai import errors
 from google.genai import types
+import httpx
 from pydantic import BaseModel
 import pytest
 from websockets.exceptions import ConnectionClosed
@@ -561,6 +562,93 @@ async def test_screen_live_user_content_does_not_mutate_live_request():
   assert llm_request.config.tools == [tool]
   assert [d.name for d in tool.function_declarations] == ['lookup']
   assert list(llm_request.tools_dict) == ['lookup']
+
+
+async def test_screen_live_user_content_does_not_leak_in_place_edits():
+  """In-place edits to nested config and live_connect_config are discarded."""
+  flow = _TestBaseLlmFlow()
+  declaration = types.FunctionDeclaration(name='lookup', description='orig')
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(
+          tools=[types.Tool(function_declarations=[declaration])],
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(mode='AUTO')
+          ),
+          system_instruction=types.Content(
+              role='system', parts=[types.Part(text='orig')]
+          ),
+      ),
+      live_connect_config=types.LiveConnectConfig(
+          session_resumption=types.SessionResumptionConfig(handle='h1')
+      ),
+  )
+
+  def _edit_request(context, request, event):
+    request.config.tool_config.function_calling_config.mode = 'NONE'
+    request.config.tools[0].function_declarations[0].description = 'edited'
+    request.config.system_instruction.parts.append(types.Part(text='added'))
+    request.live_connect_config.session_resumption.handle = 'edited'
+    request.live_connect_config.temperature = 0.0
+
+  with mock.patch.object(
+      flow, '_handle_before_model_callback', side_effect=_edit_request
+  ):
+    await _live_llm_flow.screen_live_user_content(
+        flow, _create_test_context(), types.Content(), llm_request
+    )
+
+  config = llm_request.config
+  assert config.tool_config.function_calling_config.mode == 'AUTO'
+  assert declaration.description == 'orig'
+  assert [p.text for p in config.system_instruction.parts] == ['orig']
+  assert llm_request.live_connect_config.session_resumption.handle == 'h1'
+  assert llm_request.live_connect_config.temperature is None
+
+
+class _UncopyableTool:
+  """A callable tool, like an MCP session, that cannot be deep-copied."""
+
+  def __call__(self) -> str:
+    return 'ok'
+
+  def __deepcopy__(self, memo):
+    raise TypeError('cannot pickle')
+
+
+async def test_screen_live_user_content_shares_clients_and_callable_tools():
+  """Values that cannot be deep-copied are shared with the callback copy."""
+  flow = _TestBaseLlmFlow()
+  client = httpx.AsyncClient()
+  session = _UncopyableTool()
+  http_options = types.HttpOptions(
+      headers={'x': '1'}, httpx_async_client=client
+  )
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(
+          http_options=http_options, tools=[session]
+      ),
+      live_connect_config=types.LiveConnectConfig(
+          http_options=types.HttpOptions(headers={'x': '1'})
+      ),
+  )
+  seen = {}
+
+  def _edit_request(context, request, event):
+    seen['client'] = request.config.http_options.httpx_async_client
+    seen['tool'] = request.config.tools[0]
+    request.config.http_options.headers['x'] = 'edited'
+    request.live_connect_config.http_options.headers['x'] = 'edited'
+
+  with mock.patch.object(
+      flow, '_handle_before_model_callback', side_effect=_edit_request
+  ):
+    await _live_llm_flow.screen_live_user_content(
+        flow, _create_test_context(), types.Content(), llm_request
+    )
+
+  assert seen == {'client': client, 'tool': session}
+  assert llm_request.config.http_options.headers == {'x': '1'}
+  assert llm_request.live_connect_config.http_options.headers == {'x': '1'}
 
 
 async def test_stop_background_tool_tasks_uses_timeout():
