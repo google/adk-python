@@ -1371,6 +1371,7 @@ def _use_native_generate_content_span(
     set_operation_details_attributes_from_request(
         gc_span.operation_details_attributes,
         llm_request,
+        telemetry_config,
     )
     yield gc_span
 
