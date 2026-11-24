@@ -38,6 +38,14 @@ _COMPLETE_FINISH_REASONS = (
 )
 
 
+def _has_summary_text(content: Content) -> bool:
+  """Whether `content` has a non-blank text part that is not a thought."""
+  return any(
+      part.text and part.text.strip() and not part.thought
+      for part in content.parts or ()
+  )
+
+
 class LlmEventSummarizer(BaseEventsSummarizer):
   """An LLM-based event summarizer for sliding window compaction.
 
@@ -182,6 +190,14 @@ class LlmEventSummarizer(BaseEventsSummarizer):
           'Discarding summary that ended with finish reason %s; keeping the'
           ' uncompacted history.',
           summary_finish_reason,
+      )
+      return None
+
+    # An empty or thought-only summary would hide the history just the same.
+    if not _has_summary_text(summary_content):
+      logger.warning(
+          'Discarding summary without summary text; keeping the uncompacted'
+          ' history.'
       )
       return None
 

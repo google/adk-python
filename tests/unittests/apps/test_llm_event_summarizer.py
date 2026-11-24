@@ -176,6 +176,61 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
             'Summary',
         )
 
+  async def test_maybe_compact_events_rejects_summary_without_text(self):
+    events = [
+        self._create_event(1.0, 'The delivery address is 123 Maple Avenue.'),
+        self._create_event(2.0, 'Saved.', 'model'),
+    ]
+    for parts in (
+        None,
+        [],
+        [Part(text='')],
+        [Part(text=' \n')],
+        [Part(text='Summarizing the conversation.', thought=True)],
+        [Part(function_call=FunctionCall(name='lookup', args={}))],
+    ):
+      with self.subTest(parts=parts):
+        llm_response = LlmResponse(
+            content=Content(parts=parts),
+            finish_reason=types.FinishReason.STOP,
+        )
+
+        async def async_gen(response=llm_response):
+          yield response
+
+        self.mock_llm.generate_content_async.return_value = async_gen()
+
+        compacted_event = await self.compactor.maybe_summarize_events(
+            events=events
+        )
+
+        self.assertIsNone(compacted_event)
+
+  async def test_maybe_compact_events_accepts_summary_with_thoughts(self):
+    events = [
+        self._create_event(1.0, 'Hello', 'user'),
+        self._create_event(2.0, 'Hi there!', 'model'),
+    ]
+    parts = [
+        Part(text='Summarizing the conversation.', thought=True),
+        Part(text='Summary'),
+    ]
+    llm_response = LlmResponse(
+        content=Content(parts=parts), finish_reason=types.FinishReason.STOP
+    )
+
+    async def async_gen():
+      yield llm_response
+
+    self.mock_llm.generate_content_async.return_value = async_gen()
+
+    compacted_event = await self.compactor.maybe_summarize_events(events=events)
+
+    self.assertIsNotNone(compacted_event)
+    self.assertEqual(
+        compacted_event.actions.compaction.compacted_content.parts, parts
+    )
+
   async def test_maybe_compact_events_includes_usage_metadata(self):
     events = [
         self._create_event(1.0, 'Hello', 'user'),
