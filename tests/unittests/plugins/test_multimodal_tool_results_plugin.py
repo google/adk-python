@@ -799,3 +799,43 @@ async def test_session_retention_retains_parts_on_subsequent_model_calls_in_same
       callback_context=callback_context, llm_request=llm_request_2
   )
   assert llm_request_2.contents[-1].parts == [file_part]
+
+
+@pytest.mark.parametrize("retention", ["next_model_call", "session"])
+@pytest.mark.asyncio
+async def test_attaches_parts_to_non_transient_content_before_transient_tail(
+    retention: str,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+):
+  plugin = MultimodalToolResultsPlugin(retention=retention)
+  text_part = types.Part(text="tool output part")
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[text_part],
+  )
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  tool_response = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_function_response(name="tool", response={"ok": True})
+      ],
+  )
+  transient = types.Content(
+      role="user", parts=[types.Part.from_text(text="dynamic instruction")]
+  )
+  llm_request = LlmRequest(contents=[tool_response])
+  llm_request._insert_transient_user_content([transient])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[0].parts[-1] == text_part
+  assert llm_request.contents[1].parts == [
+      types.Part.from_text(text="dynamic instruction")
+  ]

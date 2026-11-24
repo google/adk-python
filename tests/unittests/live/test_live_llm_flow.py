@@ -28,6 +28,8 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.live import _live_llm_flow
 from google.adk.live._active_background_tool import ActiveBackgroundTool
@@ -36,9 +38,11 @@ from google.adk.live._visual_frames import unpack_visual_frames
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import InMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.utils.context_utils import Aclosing
 from google.genai import errors
@@ -1119,6 +1123,50 @@ async def test_run_live_does_not_synthesize_structured_response():
   agent_events = [e for e in events if e.author == agent.name and e.content]
   assert [bool(e.get_function_calls()) for e in agent_events] == [True, False]
   assert agent_events[1].get_function_responses()
+
+
+@pytest.mark.asyncio
+async def test_run_live_tool_instruction_does_not_start_a_turn() -> None:
+  """A tool's instruction stays in system_instruction on a new live session."""
+  model = testing_utils.MockModel.create([])
+  runner = InMemoryRunner(
+      agent=LlmAgent(
+          name='root_agent', model=model, tools=[load_artifacts_tool]
+      ),
+      app_name='app',
+  )
+  session = await runner.session_service.create_session(
+      app_name='app', user_id='u'
+  )
+  await runner.artifact_service.save_artifact(
+      app_name='app',
+      user_id='u',
+      session_id=session.id,
+      filename='report.txt',
+      artifact=types.Part.from_text(text='q3 numbers'),
+  )
+  queue = LiveRequestQueue()
+  queue.close()
+
+  async def _drain() -> None:
+    async with Aclosing(
+        runner.run_live(
+            user_id='u', session_id=session.id, live_request_queue=queue
+        )
+    ) as events:
+      async for _ in events:
+        pass
+
+  with (
+      temporary_feature_override(FeatureName.DYNAMIC_INSTRUCTION_ROUTING, True),
+      mock.patch.object(
+          testing_utils.MockLlmConnection, 'send_history', autospec=True
+      ) as send_history,
+  ):
+    await asyncio.wait_for(_drain(), timeout=5)
+
+  assert 'report.txt' in (model.requests[0].config.system_instruction or '')
+  send_history.assert_not_called()
 
 
 _END_OF_RECEIVE_STREAM = object()

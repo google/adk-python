@@ -39,6 +39,7 @@ from google.genai import types
 
 from ... import version
 from ...agents.callback_context import CallbackContext
+from ...models.llm_request import _is_transient_user_content
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...plugins.base_plugin import BasePlugin
@@ -369,6 +370,8 @@ def _latest_user_text_content(
     return None
   for content in reversed(llm_request.contents):
     if content.role != 'user':
+      continue
+    if _is_transient_user_content(llm_request, content):
       continue
     if _content_text(content):
       return content
