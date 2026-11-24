@@ -88,6 +88,10 @@ class CascadeLive(BaseLlm):
     """Returns the capabilities of the underlying LLM."""
     return self._resolve_llm().capabilities
 
+  @override
+  def _supports_dynamic_instruction_routing(self) -> bool:
+    return self._resolve_llm()._supports_dynamic_instruction_routing()  # pylint: disable=protected-access
+
   def _resolve_llm(self) -> BaseLlm:
     """Resolves and caches the inner text model."""
     if self._llm is not None:

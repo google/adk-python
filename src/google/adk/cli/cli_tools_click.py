@@ -3015,6 +3015,17 @@ def cli_migrate_session(
     ),
 )
 @click.option(
+    "--update_if_exists",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. If no --agent_engine_id is given and exactly one Agent"
+        " Runtime with the same display name exists in the project/region,"
+        " update it in place instead of creating a new instance. Fails if"
+        " multiple instances share the display name."
+    ),
+)
+@click.option(
     "--trace_to_cloud/--no-trace_to_cloud",
     type=bool,
     is_flag=True,
@@ -3255,6 +3266,7 @@ def cli_deploy_agent_engine(
     trigger_oidc_service_accounts: str | None = None,
     service_account: str | None = None,
     python_version: str | None = None,
+    update_if_exists: bool = False,
 ) -> None:
   """Deploys an agent to Agent Engine.
 
@@ -3285,6 +3297,10 @@ def cli_deploy_agent_engine(
   # `agentplatform_genai.agentengines`; raise the parent so neither is lost.
   logging.getLogger("agentplatform_genai").setLevel(logging.INFO)
   try:
+    if agent_engine_id and update_if_exists:
+      raise click.UsageError(
+          "Do not pass both --agent_engine_id and --update_if_exists."
+      )
     if validate_agent_import and skip_agent_import_validation_alias:
       raise click.UsageError(
           "Do not pass both --validate-agent-import and"
@@ -3324,6 +3340,7 @@ def cli_deploy_agent_engine(
         worker_pool=worker_pool,
         service_account=service_account,
         python_version=python_version,
+        update_if_exists=update_if_exists,
     )
   except (click.ClickException, click.Abort):
     raise
