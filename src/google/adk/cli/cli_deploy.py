@@ -56,6 +56,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_AGENT_LOADER_MIN_VERSION: Final[str] = '2.0.0'
 _GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
 # The deployed image runs `adk api_server`, which imports `agentplatform`, so
 # the staged requirements must resolve to the v2 SDK and not to a v1 release
@@ -1623,6 +1624,57 @@ def _print_gemini_enterprise_hint() -> None:
   )
 
 
+def _find_runtimes_by_display_name(
+    client: Any,
+    display_name: str | None,
+    *,
+    raise_on_error: bool = False,
+) -> list[Any]:
+  """Looks up existing Agent Runtimes with this display name.
+
+  When ``raise_on_error`` is False, errors or an empty ``display_name`` degrade
+  to an empty list so default creates are not blocked. When True, they raise
+  ``click.ClickException`` so ``--update_if_exists`` never silently creates a
+  duplicate instead of updating.
+
+  Args:
+    client: Initialized Agent Platform client exposing ``runtimes.list``.
+    display_name: Target Agent Runtime display name to filter on.
+    raise_on_error: Whether missing ``display_name`` or ``list()`` failures
+      should raise ``click.ClickException`` instead of returning ``[]``.
+
+  Returns:
+    Matching Agent Runtime objects returned by ``client.runtimes.list``.
+  """
+  if not display_name:
+    if raise_on_error:
+      raise click.ClickException(
+          'Cannot resolve existing Agent Runtimes for --update_if_exists'
+          ' without a non-empty display name.'
+      )
+    return []
+  escaped = display_name.replace('\\', '\\\\').replace('"', '\\"')
+  try:
+    return list(
+        client.runtimes.list(config={'filter': f'display_name="{escaped}"'})
+    )
+  except Exception as e:  # pylint: disable=broad-except
+    if raise_on_error:
+      raise click.ClickException(
+          'Failed to look up existing Agent Runtimes with display name '
+          f'"{display_name}" for --update_if_exists: {e}'
+      ) from e
+    logger.debug('Skipping duplicate-display-name check: %s', e)
+    return []
+
+
+def _format_runtime(runtime: Any) -> str:
+  res = getattr(runtime, 'api_resource', runtime)
+  name = getattr(res, 'name', str(runtime))
+  update_time = getattr(res, 'update_time', None) or '?'
+  return f'  {name}  (updated {update_time})'
+
+
 def to_agent_engine(
     *,
     agent_folder: str,
@@ -1654,6 +1706,7 @@ def to_agent_engine(
     worker_pool: Optional[str] = None,
     service_account: Optional[str] = None,
     python_version: Optional[str] = None,
+    update_if_exists: bool = False,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -1710,8 +1763,9 @@ def to_agent_engine(
     agent_engine_config_file (str): The filepath to the agent platform config
       file to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
-    skip_agent_import_validation (bool): Deprecated. This argument is no longer
-      required or used.
+    skip_agent_import_validation (bool): Optional. Whether to skip preloading
+      and validating `<app_name>` on the server's `AgentLoader` at container
+      startup before binding `PORT`.
     trigger_sources (str): Optional. Comma-separated list of trigger sources to
       enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for batch
       and event-driven agent invocations.
@@ -1746,7 +1800,16 @@ def to_agent_engine(
     python_version (str): Optional. The Python version for the container base
       image. Overrides ``python_version`` in ``.agent_engine_config.json``
       when both are present. When neither is set, ``3.11`` is used.
+    update_if_exists (bool): Optional. When `agent_engine_id` is not specified
+      and exactly one Agent Runtime with the resolved `display_name` exists in
+      `project`/`region`, update that instance in place instead of creating a
+      new one. Raises `click.ClickException` if multiple instances match,
+      lookup fails, or `project`/`region` are unavailable (Express Mode).
   """
+  if agent_engine_id and update_if_exists:
+    raise click.UsageError(
+        'Do not pass both --agent_engine_id and --update_if_exists.'
+    )
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
   )
@@ -2036,14 +2099,6 @@ def to_agent_engine(
           ' distribution.'
       )
 
-    if skip_agent_import_validation:
-      warnings.warn(
-          'WARNING: `--skip-agent-import-validation` is deprecated and will be'
-          ' removed in the future. Please drop it from the list of arguments.',
-          DeprecationWarning,
-          stacklevel=2,
-      )
-
     # Validated before the instance is created, so a failure cannot leak one.
     enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
     _validate_dockerfile_env_value(
@@ -2057,6 +2112,18 @@ def to_agent_engine(
       install_agent_deps = _render_install_agent_deps(
           app_name, requirements_txt_path, '# No requirements.txt found.'
       )
+      validate_agent_import = not skip_agent_import_validation
+      supports_agent_loader = parse(adk_version) >= parse(
+          _AGENT_LOADER_MIN_VERSION
+      )
+      if validate_agent_import and not supports_agent_loader:
+        click.secho(
+            'Omitting startup agent import validation as it requires'
+            f' adk_version {_AGENT_LOADER_MIN_VERSION} or later, and'
+            f' {adk_version} was requested',
+            fg='yellow',
+        )
+        validate_agent_import = False
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
@@ -2128,6 +2195,7 @@ def to_agent_engine(
           ),
           extra_env_vars=extra_env_vars,
           python_version=python_version,
+          validate_agent_import=validate_agent_import,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -2150,10 +2218,52 @@ def to_agent_engine(
     agent_config['agent_framework'] = 'google-adk'
 
     resource_name = agent_engine_id
+    created_here = False
     if not resource_name:
-      runtime = client.runtimes.create()
-      resource_name = runtime.api_resource.name
-      click.secho(f'Created a new instance: {resource_name}', fg='green')
+      if update_if_exists and not (project and region):
+        raise click.ClickException(
+            '--update_if_exists requires a Google Cloud project and region (not'
+            ' supported in Express Mode); replace --update_if_exists with'
+            ' --agent_engine_id, or pass --project and --region.'
+        )
+      resolved_display_name = agent_config.get('display_name') or display_name
+      if project and region:
+        matches = _find_runtimes_by_display_name(
+            client, resolved_display_name, raise_on_error=update_if_exists
+        )
+      else:
+        matches = []
+      if update_if_exists and len(matches) == 1:
+        resource_name = matches[0].api_resource.name
+        click.secho(
+            'Updating existing instance with display name '
+            f'"{resolved_display_name}": {resource_name}',
+            fg='green',
+        )
+      elif update_if_exists and len(matches) > 1:
+        raise click.ClickException(
+            f'{len(matches)} Agent Runtimes have display name '
+            f'"{resolved_display_name}"; replace --update_if_exists with '
+            '--agent_engine_id to pick one:\n'
+            + '\n'.join(_format_runtime(m) for m in matches)
+        )
+      else:
+        if matches:
+          click.secho(
+              f'WARNING: {len(matches)} Agent Runtime(s) with display name '
+              f'"{resolved_display_name}" already exist in '
+              f'{project}/{region}; a NEW instance will be created:\n'
+              + '\n'.join(_format_runtime(m) for m in matches)
+              + '\nTo update in place, re-run with --agent_engine_id=<ID> '
+              '(--update_if_exists only works once extra duplicates are '
+              'deleted down to a single instance).',
+              fg='yellow',
+              err=True,
+          )
+        runtime = client.runtimes.create()
+        resource_name = runtime.api_resource.name
+        created_here = True
+        click.secho(f'Created a new instance: {resource_name}', fg='green')
     elif project and region and not resource_name.startswith('projects/'):
       resource_name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
     click.echo('Creating Dockerfile...')
@@ -2165,7 +2275,7 @@ def to_agent_engine(
     except Exception as e:
       click.secho(f'Failed to deploy to Agent Platform: {e}', fg='red')
       # Only delete the instance if it was newly created in this function.
-      if agent_engine_id is None:
+      if created_here:
         client.runtimes.delete(name=resource_name)
         click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
       raise e

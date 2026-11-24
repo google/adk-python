@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Collection
 import contextlib
 import copy
 import dataclasses
@@ -58,6 +59,7 @@ from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
+from .llm_request import _is_transient_user_content
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
@@ -1339,6 +1341,8 @@ def _apply_cache_breakpoints(
 
 def _ensure_messages_end_with_user(
     messages: list[anthropic_types.MessageParam],
+    *,
+    transient_indices: Collection[int] = (),
 ) -> None:
   """Appends a user turn when the conversation does not end on one.
 
@@ -1348,10 +1352,23 @@ def _ensure_messages_end_with_user(
   which the other model classes call on `llm_request.contents`. This runs on
   the converted messages instead, so that a turn dropped for having no content
   is accounted for and the synthetic turn stays outside the cached prefix.
+
+  Args:
+    messages: Converted conversation messages, modified in place.
+    transient_indices: Message indices carrying request-scoped ADK content.
   """
-  if messages and messages[-1]["role"] == "user":
+  last_non_transient = None
+  for index in range(len(messages) - 1, -1, -1):
+    if index not in transient_indices:
+      last_non_transient = messages[index]
+      break
+  if (
+      last_non_transient is not None
+      and last_non_transient["role"] == "user"
+      and messages[-1]["role"] == "user"
+  ):
     return
-  if messages:
+  if last_non_transient is not None:
     text = (
         "Continue processing previous requests as instructed."
         " Exit or provide a summary if no more outputs are needed."
@@ -1422,6 +1439,8 @@ class AnthropicLlm(BaseLlm):
           | anthropic_types.ThinkingConfigAdaptiveParam
           | NotGiven
       ),
+      *,
+      transient_message_indices: Collection[int] = (),
   ) -> dict[str, Any]:
     system: str | NotGiven = NOT_GIVEN
     if llm_request.config:
@@ -1432,15 +1451,18 @@ class AnthropicLlm(BaseLlm):
     system_param: str | list[anthropic_types.TextBlockParam] | NotGiven = system
     cache_config = _prompt_cache.resolve_cache_config(llm_request)
     if cache_config is not None:
+      cache_end = min(transient_message_indices, default=len(messages))
       system_param = _apply_cache_breakpoints(
           cache_config=cache_config,
           system=system,
-          messages=messages,
+          messages=messages[:cache_end],
           tools=tools,
       )
 
     # After the cache breakpoints, so the synthetic turn is never cached.
-    _ensure_messages_end_with_user(messages)
+    _ensure_messages_end_with_user(
+        messages, transient_indices=transient_message_indices
+    )
 
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
@@ -1504,18 +1526,23 @@ class AnthropicLlm(BaseLlm):
     # Anthropic rejects a message with empty content. Sending one re-wedges the
     # session exactly as the NotImplementedError did: the offending part stays
     # in history, so every later turn fails the same way.
-    def _build_messages() -> list[anthropic_types.MessageParam]:
-      return [
-          message
-          for message in (
-              _content_to_message_param(content, sanitizer, downloads)
-              for content in llm_request.contents or []
-          )
-          if message["content"]
-      ]
+    def _build_messages() -> (
+        tuple[list[anthropic_types.MessageParam], set[int]]
+    ):
+      built_messages: list[anthropic_types.MessageParam] = []
+      transient_indices: set[int] = set()
+      for content in llm_request.contents or []:
+        message = _content_to_message_param(content, sanitizer, downloads)
+        if message["content"]:
+          if _is_transient_user_content(llm_request, content):
+            transient_indices.add(len(built_messages))
+          built_messages.append(message)
+      return built_messages, transient_indices
 
     # Converting a gs:// file part downloads it, which would block the loop.
-    messages = await asyncio.to_thread(_build_messages)
+    messages, transient_message_indices = await asyncio.to_thread(
+        _build_messages
+    )
     tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
     function_declarations: list[types.FunctionDeclaration] = []
     if llm_request.config and llm_request.config.tools:
@@ -1558,9 +1585,19 @@ class AnthropicLlm(BaseLlm):
 
     try:
       client = await self._get_anthropic_client()
+      transient_kwargs = (
+          {"transient_message_indices": transient_message_indices}
+          if transient_message_indices
+          else {}
+      )
       if not stream:
         kwargs = self._build_anthropic_kwargs(
-            llm_request, messages, tools, tool_choice, thinking
+            llm_request,
+            messages,
+            tools,
+            tool_choice,
+            thinking,
+            **transient_kwargs,
         )
         message = await client.messages.create(**kwargs)
         response = message_to_generate_content_response(message)
@@ -1575,6 +1612,7 @@ class AnthropicLlm(BaseLlm):
             tool_choice,
             thinking,
             output_schema_tool=output_schema_tool,
+            **transient_kwargs,
         ):
           yield response
     except RateLimitError as rate_limit_error:
@@ -1594,6 +1632,7 @@ class AnthropicLlm(BaseLlm):
       ) = NOT_GIVEN,
       *,
       output_schema_tool: _OutputSchemaTool | None = None,
+      transient_message_indices: Collection[int] = (),
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -1605,13 +1644,25 @@ class AnthropicLlm(BaseLlm):
       thinking: Optional thinking details.
       output_schema_tool: The tool carrying a requested response schema, whose
         call is streamed as the response text rather than as a function call.
+      transient_message_indices: Message indices carrying request-scoped ADK
+        content.
 
     Yields:
       Partial LlmResponse objects as content arrives, followed by
       a final aggregated LlmResponse with all content.
     """
+    transient_kwargs = (
+        {"transient_message_indices": transient_message_indices}
+        if transient_message_indices
+        else {}
+    )
     kwargs = self._build_anthropic_kwargs(
-        llm_request, messages, tools, tool_choice, thinking
+        llm_request,
+        messages,
+        tools,
+        tool_choice,
+        thinking,
+        **transient_kwargs,
     )
     client = await self._get_anthropic_client()
     raw_stream = await client.messages.create(

@@ -380,7 +380,14 @@ class OpenAIDecisionsClassifier(BaseClassifier):
         _PATH,
         cast_to=object,
         body=body,
-        options={'headers': {'User-Agent': ' '.join(get_client_labels())}},
+        # OpenAI is a third party, so the hosting runtime is not sent.
+        options={
+            'headers': {
+                'User-Agent': ' '.join(
+                    get_client_labels(exclude_runtime_tag=True)
+                )
+            }
+        },
     )
     if not isinstance(data, Mapping):
       raise ValueError('OpenAI did not return a JSON object.')

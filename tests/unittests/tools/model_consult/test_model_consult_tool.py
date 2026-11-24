@@ -715,6 +715,33 @@ async def test_thinking_level_none_sends_no_thinking_config():
 
 
 @pytest.mark.parametrize(
+    'config_level,expected',
+    [
+        (types.ThinkingLevel.HIGH, 'high'),
+        (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_thinking_level_reports_level_from_generate_content_config(
+    config_level: types.ThinkingLevel, expected: str | None
+):
+  """With thinking_level=None, the payload reports the config's own level."""
+  llm = _FakeAdvisorLlm()
+  tool = ModelConsultTool(
+      model=llm,
+      thinking_level=None,
+      generate_content_config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_level=config_level)
+      ),
+  )
+  ctx = _make_tool_context([_user_event('go')])
+
+  result = await _run(tool, ctx, question='Next?')
+
+  assert result['thinking_level'] == expected
+
+
+@pytest.mark.parametrize(
     'kwargs,error_match',
     [
         ({'thinking_level': 'turbo'}, 'thinking_level'),
@@ -1244,6 +1271,7 @@ async def test_thinking_config_rejection_falls_back_and_still_answers():
 
   assert result['status'] == 'ok'
   assert result['guidance'] == 'fallback advice'
+  assert result['thinking_level'] is None
   assert len(llm.requests) == 2
   assert llm.requests[0].config.thinking_config is not None
   assert llm.requests[1].config.thinking_config is None

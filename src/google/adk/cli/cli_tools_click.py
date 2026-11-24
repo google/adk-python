@@ -3015,6 +3015,17 @@ def cli_migrate_session(
     ),
 )
 @click.option(
+    "--update_if_exists",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. If no --agent_engine_id is given and exactly one Agent"
+        " Runtime with the same display name exists in the project/region,"
+        " update it in place instead of creating a new instance. Fails if"
+        " multiple instances share the display name."
+    ),
+)
+@click.option(
     "--trace_to_cloud/--no-trace_to_cloud",
     type=bool,
     is_flag=True,
@@ -3103,17 +3114,22 @@ def cli_migrate_session(
 )
 @click.option(
     "--validate-agent-import/--no-validate-agent-import",
-    default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    default=None,
+    help=(
+        "Optional. Validate that the agent can be loaded at container startup"
+        " before starting the server (enabled by default). Pass"
+        " `--no-validate-agent-import` to skip."
+    ),
 )
 @click.option(
     "--skip-agent-import-validation",
     "skip_agent_import_validation_alias",
     is_flag=True,
     default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    help=(
+        "Optional. Alias for `--no-validate-agent-import`; skips the"
+        " container startup agent import validation."
+    ),
 )
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
@@ -3233,7 +3249,10 @@ def cli_deploy_agent_engine(
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
-    validate_agent_import: bool = False,
+    # Defaults to `False` for backwards compatibility with direct Python
+    # callers; Click passes `None` from `@click.option(..., default=None)` on
+    # CLI invocations, which enables validation by default.
+    validate_agent_import: bool | None = False,
     skip_agent_import_validation_alias: bool = False,
     adk_version: str | None = None,
     trigger_sources: str | None = None,
@@ -3247,6 +3266,7 @@ def cli_deploy_agent_engine(
     trigger_oidc_service_accounts: str | None = None,
     service_account: str | None = None,
     python_version: str | None = None,
+    update_if_exists: bool = False,
 ) -> None:
   """Deploys an agent to Agent Engine.
 
@@ -3277,11 +3297,18 @@ def cli_deploy_agent_engine(
   # `agentplatform_genai.agentengines`; raise the parent so neither is lost.
   logging.getLogger("agentplatform_genai").setLevel(logging.INFO)
   try:
+    if agent_engine_id and update_if_exists:
+      raise click.UsageError(
+          "Do not pass both --agent_engine_id and --update_if_exists."
+      )
     if validate_agent_import and skip_agent_import_validation_alias:
       raise click.UsageError(
           "Do not pass both --validate-agent-import and"
           " --skip-agent-import-validation."
       )
+    should_skip_import_validation = skip_agent_import_validation_alias or (
+        validate_agent_import is not None and not validate_agent_import
+    )
     from . import cli_deploy
 
     cli_deploy.to_agent_engine(
@@ -3301,7 +3328,7 @@ def cli_deploy_agent_engine(
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
-        skip_agent_import_validation=not validate_agent_import,
+        skip_agent_import_validation=should_skip_import_validation,
         trigger_sources=trigger_sources,
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
@@ -3313,6 +3340,7 @@ def cli_deploy_agent_engine(
         worker_pool=worker_pool,
         service_account=service_account,
         python_version=python_version,
+        update_if_exists=update_if_exists,
     )
   except (click.ClickException, click.Abort):
     raise

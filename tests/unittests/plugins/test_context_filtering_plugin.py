@@ -494,9 +494,13 @@ async def test_filter_with_non_positive_invocations_to_keep_does_not_truncate(
 
 async def _filter_keeping_one_invocation(
     contents: list[types.Content],
+    *,
+    transient: list[types.Content] | None = None,
 ) -> list[types.Content]:
   plugin = ContextFilterPlugin(num_invocations_to_keep=1)
   llm_request = LlmRequest(contents=list(contents))
+  if transient:
+    llm_request._insert_transient_user_content(transient)
   await plugin.before_model_callback(
       callback_context=mock.create_autospec(CallbackContext, instance=True),
       llm_request=llm_request,
@@ -560,3 +564,29 @@ async def test_filter_keeps_everything_when_response_has_no_matching_call():
   ]
 
   assert await _filter_keeping_one_invocation(contents) == contents
+
+
+@pytest.mark.asyncio
+async def test_filter_skips_transient_user_content_as_invocation_start():
+  transient = _create_content("user", "dynamic instruction")
+  post_tool = [
+      _create_content("user", "question"),
+      _create_function_call_content("get_weather", "call_1"),
+      _create_function_response_content("get_weather", "call_1"),
+  ]
+  assert await _filter_keeping_one_invocation(
+      post_tool, transient=[transient]
+  ) == [*post_tool, transient]
+
+  multi_turn = [
+      _create_content("user", "old_prompt"),
+      _create_content("model", "old_answer"),
+      _create_content("user", "latest_prompt"),
+  ]
+  filtered = await _filter_keeping_one_invocation(
+      multi_turn, transient=[transient]
+  )
+  assert [c.parts[0].text for c in filtered] == [
+      "dynamic instruction",
+      "latest_prompt",
+  ]

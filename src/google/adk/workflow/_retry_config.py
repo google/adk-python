@@ -54,7 +54,9 @@ class RetryConfig(BaseModel):
       default=None,
       description="""Exceptions to retry on. Accepts exception class names as
       strings (e.g. ``['ValueError']``) or exception classes directly (e.g.
-      ``[ValueError]``). ``None`` means retry on all exceptions.""",
+      ``[ValueError]``). ``None`` means retry on all exceptions except
+      ``WorkflowConfigurationError`` and ``WorkflowInvariantError``, which are
+      never retried.""",
   )
 
   @field_validator('exceptions', mode='before')

@@ -31,6 +31,7 @@ from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.core._utils import as_llm_agent as _as_llm_agent
+from ..flows.llm_flows.core._utils import copy_request_scoped_fields
 from ..flows.llm_flows.core._utils import require_run_config as _require_run_config
 from ..flows.llm_flows.tools import _live_caller
 from ..models.base_llm_connection import BaseLlmConnection
@@ -67,7 +68,24 @@ async def screen_live_user_content(
     llm_request: LlmRequest,
 ) -> Optional[Event]:
   """Screens live user content with a before model callback."""
-  callback_llm_request = llm_request.model_copy(update={'contents': [content]})
+  config = copy_request_scoped_fields(llm_request.config)
+  if config.tools:
+    # `LlmRequest.append_tools` extends a tool's declarations in place.
+    config.tools = [
+        tool.model_copy(
+            update={'function_declarations': list(tool.function_declarations)}
+        )
+        if isinstance(tool, types.Tool) and tool.function_declarations
+        else tool
+        for tool in config.tools
+    ]
+  callback_llm_request = llm_request.model_copy(
+      update={
+          'contents': [content],
+          'config': config,
+          'tools_dict': dict(llm_request.tools_dict),
+      }
+  )
   callback_response_event = Event(
       id=Event.new_id(),
       invocation_id=invocation_context.invocation_id,
