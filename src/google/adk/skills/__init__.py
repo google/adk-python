@@ -25,6 +25,7 @@ from ._utils import _load_skill_from_dir as load_skill_from_dir
 from ._utils import _load_skill_from_dir_async as load_skill_from_dir_async
 from ._utils import _load_skill_from_gcs_dir as load_skill_from_gcs_dir
 from ._utils import _load_skill_from_gcs_dir_async as load_skill_from_gcs_dir_async
+from ._utils import _load_skill_from_markdown as load_skill_from_markdown
 from ._utils import _load_skills_from_dir as load_skills_from_dir
 from ._utils import _load_skills_from_dir_async as load_skills_from_dir_async
 from .models import Frontmatter
@@ -48,6 +49,7 @@ __all__ = [
     "load_skill_from_dir_async",
     "load_skill_from_gcs_dir",
     "load_skill_from_gcs_dir_async",
+    "load_skill_from_markdown",
     "load_skills_from_dir",
     "load_skills_from_dir_async",
 ]

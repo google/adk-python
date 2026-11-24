@@ -16,6 +16,7 @@
 
 from ._base_classifier import BaseClassifier
 from ._classifier_node import ClassifierNode
+from ._gemini_decisions_classifier import GeminiDecisionsClassifier
 from ._llm_classifier import LlmClassifier
 from ._types import Answer
 from ._types import Binary
@@ -40,6 +41,7 @@ __all__ = [
     'ClassifierNode',
     'ClassifierInput',
     'ClassifierResponse',
+    'GeminiDecisionsClassifier',
     'JSONContent',
     'LlmClassifier',
     'Question',

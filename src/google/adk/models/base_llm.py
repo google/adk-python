@@ -236,15 +236,33 @@ class BaseLlm(BaseModel):
     )
     yield  # AsyncGenerator requires a yield statement in function body.
 
+  @classmethod
+  def _supports_dynamic_instruction_routing_for_model(
+      cls, model: str
+  ) -> bool | None:
+    """Returns routing support for a model name, or None if an instance is needed."""
+    del model
+    if (
+        cls._supports_dynamic_instruction_routing
+        is BaseLlm._supports_dynamic_instruction_routing
+    ):
+      return True
+    return None
+
+  def _supports_dynamic_instruction_routing(self) -> bool:
+    """Returns whether tool dynamic instructions can ride in ``contents``."""
+    return True
+
   def _maybe_append_user_content(self, llm_request: LlmRequest) -> None:
     """Appends a user content, so that model can continue to output.
 
     Args:
       llm_request: LlmRequest, the request to send to the Gemini model.
     """
-    # If no content is provided, append a user content to hint model response
-    # using system instruction.
-    if not llm_request.contents:
+    from .llm_request import _last_non_transient_content
+
+    last_content = _last_non_transient_content(llm_request)
+    if last_content is None:
       llm_request.contents.append(
           types.Content(
               role='user',
@@ -260,9 +278,7 @@ class BaseLlm(BaseModel):
       )
       return
 
-    # Insert a user content to preserve user intent and to avoid empty
-    # model response.
-    if llm_request.contents[-1].role != 'user':
+    if last_content.role != 'user' or llm_request.contents[-1].role != 'user':
       llm_request.contents.append(
           types.Content(
               role='user',

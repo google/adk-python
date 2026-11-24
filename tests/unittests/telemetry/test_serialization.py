@@ -29,6 +29,7 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccountCredential
+from google.adk.plugins import debug_logging_plugin
 from google.adk.telemetry._serialization import safe_json_serialize
 from google.adk.telemetry._serialization import serialize_content
 from google.adk.telemetry.tracing import _serialize_tool_response
@@ -570,3 +571,83 @@ def test_is_credential_arg_name_splits_acronym_boundaries(name):
 def test_is_credential_arg_name_covers_every_auth_credential_secret_key(key):
   """The argument-capture name rule must not drift from `AuthCredential`."""
   assert is_credential_arg_name(key) is True
+
+
+# `DebugLoggingPlugin` names that are ordinary words in Python code, so the
+# argument-capture rule leaves them alone on purpose: a parameter called
+# `signature` is far more often an `inspect.Signature` than a URL signature,
+# and `google_access_id` is a service account email, not a secret.
+_DEBUG_LOGGING_KEYS_NOT_ARG_NAMES = frozenset(
+    {'google_access_id', 'sig', 'signature'}
+)
+
+
+@pytest.mark.parametrize(
+    'key',
+    sorted(
+        debug_logging_plugin._SENSITIVE_KEYS - _DEBUG_LOGGING_KEYS_NOT_ARG_NAMES
+    ),
+)
+def test_is_credential_arg_name_covers_every_debug_logging_sensitive_key(key):
+  """A value `DebugLoggingPlugin` redacts must not reach a span by name."""
+  assert is_credential_arg_name(key) is True
+
+
+@pytest.mark.parametrize(
+    'marker', sorted(debug_logging_plugin._SENSITIVE_SUBSTRINGS)
+)
+def test_is_credential_arg_name_covers_debug_logging_sensitive_substrings(
+    marker,
+):
+  """Each substring `DebugLoggingPlugin` redacts is caught bare and prefixed."""
+  assert is_credential_arg_name(marker) is True
+  assert is_credential_arg_name(f'db_{marker}') is True
+
+
+@pytest.mark.parametrize(
+    'suffix', sorted(debug_logging_plugin._SENSITIVE_SUFFIXES)
+)
+def test_is_credential_arg_name_covers_debug_logging_sensitive_suffixes(
+    suffix,
+):
+  """Each suffix `DebugLoggingPlugin` redacts is caught after a prefix."""
+  assert is_credential_arg_name(f'bearer{suffix}') is True
+
+
+@pytest.mark.parametrize(
+    'name',
+    [
+        'secret_key',
+        'secretKey',
+        'stripe_secret_key',
+        'db_secret_key',
+        'stripeSecretKey',
+        'aws_secret_access_key',
+        'AWS_SECRET_ACCESS_KEY',
+        'awsSecretAccessKey',
+        'secret_access_key',
+        'passwd',
+        'db_passwd',
+        'openai_api_key',
+        'service_account_credentials',
+    ],
+)
+def test_is_credential_arg_name_matches_secret_spellings(name):
+  """Spellings `DebugLoggingPlugin` documents as secrets are matched."""
+  assert is_credential_arg_name(name) is True
+
+
+@pytest.mark.parametrize(
+    'name',
+    [
+        'secretary',
+        'passage',
+        'key_count',
+        'prompt_token_count',
+        'signature',
+        'user',
+    ],
+)
+def test_is_credential_arg_name_leaves_ordinary_names_alone(name):
+  """Names that only contain a credential word are still captured."""
+  assert is_credential_arg_name(name) is False

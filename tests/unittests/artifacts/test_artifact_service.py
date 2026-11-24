@@ -66,6 +66,7 @@ class ArtifactServiceType(Enum):
   FSSPEC = "FSSPEC"
   FSSPEC_MEMORY = "FSSPEC_MEMORY"
   FSSPEC_S3 = "FSSPEC_S3"
+  FSSPEC_AZURE = "FSSPEC_AZURE"
 
 
 # memory:// has no object contentType or custom metadata, so contract cases
@@ -422,6 +423,144 @@ class FakeS3ObjectStore(FakeFsspecObjectStore):
     }
 
 
+class ResourceExistsError(Exception):
+  """Stands in for azure.core.exceptions.ResourceExistsError."""
+
+  error_code = "BlobAlreadyExists"
+
+
+class _FakeAzureWriter:
+  """Buffers an ``open(..., "wb"/"xb")`` write and commits it on close."""
+
+  def __init__(self, commit: Callable[[bytes], None]) -> None:
+    self._commit = commit
+    self._chunks: list[bytes] = []
+    self.closed = False
+
+  def write(self, data: bytes) -> int:
+    self._chunks.append(bytes(data))
+    return len(data)
+
+  def close(self) -> None:
+    if not self.closed:
+      self.closed = True
+      self._commit(b"".join(self._chunks))
+
+  def __enter__(self) -> "_FakeAzureWriter":
+    return self
+
+  def __exit__(self, *args: Any) -> None:
+    self.close()
+
+  def __del__(self) -> None:
+    # Like fsspec's AbstractBufferedFile, an unclosed writer commits on GC.
+    if not self.closed:
+      self.close()
+
+
+class FakeAzureObjectStore(FakeFsspecObjectStore):
+  """In-memory fsspec filesystem whose behavior matches adlfs.
+
+  ``pipe_file`` stores adlfs's ``{"is_directory": "false"}`` metadata and
+  cannot take ``metadata=``. ``open(path, "xb", metadata=, content_settings=)``
+  creates an object with metadata, and the content type defaults to
+  ``application/octet-stream``. ``info()`` and listings return ``metadata``,
+  ``content_settings`` and ``creation_time``, except that ``find`` returns
+  ``[path]`` when ``path`` is a file. As in adlfs, a conflicting exclusive
+  create of an empty payload raises ``ResourceExistsError`` instead of
+  ``FileExistsError``, and ``info()`` trusts a cached listing of the parent,
+  which ``invalidate_cache(path)`` drops only for ``path`` itself.
+  """
+
+  protocol: Any = ("abfs", "az", "abfss")
+
+  def invalidate_cache(self, path: str | None = None) -> None:
+    super().invalidate_cache(path)
+    if path is None:
+      self.dircache.clear()
+    else:
+      self.dircache.pop(self._strip_protocol(path), None)
+
+  def info(self, path: str, **kwargs: Any) -> dict[str, Any]:
+    key = self._strip_protocol(path)
+    listing = self.dircache.get(self._parent(key))
+    if listing is not None and all(entry["name"] != key for entry in listing):
+      raise FileNotFoundError(path)
+    return super().info(path, **kwargs)
+
+  def _store(
+      self,
+      key: str,
+      value: bytes,
+      metadata: dict[str, str],
+      content_settings: dict[str, Any] | None,
+      exclusive: bool,
+  ) -> None:
+    content_type = (content_settings or {}).get("content_type")
+    entry: dict[str, Any] = {
+        "name": key,
+        "size": len(value),
+        "type": "file",
+        "creation_time": datetime.fromtimestamp(
+            FIXED_DATETIME.timestamp(), tz=timezone.utc
+        ),
+        "metadata": dict(metadata),
+        "content_settings": {
+            "content_type": content_type or "application/octet-stream"
+        },
+    }
+    with self._lock:
+      if exclusive and key in self.objects:
+        raise ResourceExistsError(key) if not value else FileExistsError(key)
+      self.objects[key] = (bytes(value), entry)
+
+  def pipe_file(  # type: ignore[override]
+      self,
+      path: str,
+      value: bytes,
+      mode: str = "overwrite",
+      content_settings: dict[str, Any] | None = None,
+  ) -> None:
+    self._store(
+        self._strip_protocol(path),
+        value,
+        {"is_directory": "false"},
+        content_settings,
+        exclusive=mode == "create",
+    )
+
+  def find(self, path: str, prefix: str = "", **kwargs: Any) -> Any:
+    full_path = self._strip_protocol(path).strip("/")
+    if full_path in self.objects:
+      return [full_path]
+    target = f"{full_path}/{prefix.strip('/')}"
+    with self._lock:
+      return {
+          key: {**info, "metadata": dict(info.get("metadata") or {})}
+          for key, (_, info) in sorted(self.objects.items())
+          if key.startswith(target)
+      }
+
+  def open(  # type: ignore[override]
+      self,
+      path: str,
+      mode: str = "rb",
+      metadata: dict[str, str] | None = None,
+      content_settings: dict[str, Any] | None = None,
+      **kwargs: Any,
+  ) -> _FakeAzureWriter:
+    assert mode in ("wb", "xb"), mode
+    return _FakeAzureWriter(
+        lambda data: self._store(
+            self._strip_protocol(path),
+            data,
+            metadata or {"is_directory": "false"},
+            content_settings,
+            exclusive=mode == "xb",
+        )
+    )
+
+
 def mock_fsspec_artifact_service() -> FsspecArtifactService:
   with temporary_feature_override(FeatureName.FSSPEC_ARTIFACT_SERVICE, True):
     return FsspecArtifactService("gs://test_bucket", fs=FakeFsspecObjectStore())
@@ -430,6 +569,13 @@ def mock_fsspec_artifact_service() -> FsspecArtifactService:
 def mock_fsspec_s3_artifact_service() -> FsspecArtifactService:
   with temporary_feature_override(FeatureName.FSSPEC_ARTIFACT_SERVICE, True):
     return FsspecArtifactService("s3://test_bucket", fs=FakeS3ObjectStore())
+
+
+def mock_fsspec_azure_artifact_service() -> FsspecArtifactService:
+  with temporary_feature_override(FeatureName.FSSPEC_ARTIFACT_SERVICE, True):
+    return FsspecArtifactService(
+        "abfs://test_bucket", fs=FakeAzureObjectStore()
+    )
 
 
 def mock_fsspec_memory_artifact_service() -> FsspecArtifactService:
@@ -452,6 +598,8 @@ def artifact_service_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
       return mock_fsspec_artifact_service()
     if service_type == ArtifactServiceType.FSSPEC_S3:
       return mock_fsspec_s3_artifact_service()
+    if service_type == ArtifactServiceType.FSSPEC_AZURE:
+      return mock_fsspec_azure_artifact_service()
     if service_type == ArtifactServiceType.FSSPEC_MEMORY:
       return mock_fsspec_memory_artifact_service()
     if service_type == ArtifactServiceType.FILE:
@@ -470,6 +618,7 @@ def artifact_service_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -493,6 +642,7 @@ async def test_load_empty(service_type, artifact_service_factory):
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -856,6 +1006,7 @@ async def test_fsspec_memory_rejected_save_preserves_artifact_catalog(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -915,6 +1066,7 @@ async def test_file_allows_reserved_user_as_session_id(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1028,6 +1180,7 @@ def _artifact_reference_part(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -1057,6 +1210,7 @@ async def test_load_artifact_rejects_self_referential_artifact_reference(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -1101,6 +1255,7 @@ async def test_load_artifact_rejects_too_long_artifact_reference_chain(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1140,6 +1295,7 @@ async def test_list_keys(service_type, artifact_service_factory):
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1191,6 +1347,7 @@ async def test_list_versions(service_type, artifact_service_factory):
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1284,6 +1441,7 @@ async def test_nested_artifact_does_not_leak_versions_into_parent(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1321,6 +1479,7 @@ async def test_list_artifact_versions_excludes_nested_artifact(
       ArtifactServiceType.GCS,
       ArtifactServiceType.FSSPEC,
       ArtifactServiceType.FSSPEC_S3,
+      ArtifactServiceType.FSSPEC_AZURE,
       ArtifactServiceType.FSSPEC_MEMORY,
   ):
     assert versions[0].canonical_uri.endswith("/doc/0")
@@ -1335,6 +1494,7 @@ async def test_list_artifact_versions_excludes_nested_artifact(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1400,6 +1560,7 @@ async def test_delete_artifact_keeps_nested_artifact(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1438,6 +1599,7 @@ async def test_list_keys_includes_nested_artifact(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1500,6 +1662,7 @@ async def test_list_keys_preserves_user_prefix(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -1553,6 +1716,8 @@ async def test_list_artifact_versions_and_get_artifact_version(
         uri = (
             f"s3://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
         )
+      elif service_type == ArtifactServiceType.FSSPEC_AZURE:
+        uri = f"abfs://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
       else:
         uri = f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{i}"
       expected_artifact_versions.append(
@@ -1598,6 +1763,7 @@ async def test_list_artifact_versions_and_get_artifact_version(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -1648,6 +1814,8 @@ async def test_list_artifact_versions_with_user_prefix(
         uri = f"gs://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
       elif service_type == ArtifactServiceType.FSSPEC_S3:
         uri = f"s3://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
+      elif service_type == ArtifactServiceType.FSSPEC_AZURE:
+        uri = f"abfs://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
       else:
         uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{user_scoped_filename}/versions/{i}"
       expected_artifact_versions.append(
@@ -1670,6 +1838,7 @@ async def test_list_artifact_versions_with_user_prefix(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1694,6 +1863,7 @@ async def test_get_artifact_version_artifact_does_not_exist(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1768,6 +1938,7 @@ async def test_get_artifact_version_out_of_index(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -1810,6 +1981,7 @@ async def test_load_and_get_artifact_version_reject_negative_version(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -2124,6 +2296,7 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -2630,6 +2803,7 @@ INVALID_PATH_SEGMENT_CASES = (
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2672,6 +2846,7 @@ async def test_save_and_load_namespaced_user_id_succeeds(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2700,6 +2875,7 @@ async def test_save_artifact_rejects_traversal_in_app_name(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2728,6 +2904,7 @@ async def test_save_artifact_rejects_traversal_in_user_id(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2757,6 +2934,7 @@ async def test_save_artifact_rejects_traversal_in_session_id(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2783,6 +2961,7 @@ async def test_load_artifact_rejects_traversal_in_app_name(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2809,6 +2988,7 @@ async def test_load_artifact_rejects_traversal_in_user_id(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2836,6 +3016,7 @@ async def test_load_artifact_rejects_traversal_in_session_id(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2862,6 +3043,7 @@ async def test_delete_artifact_rejects_traversal_in_app_name(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2888,6 +3070,7 @@ async def test_delete_artifact_rejects_traversal_in_user_id(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2915,6 +3098,7 @@ async def test_delete_artifact_rejects_traversal_in_session_id(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2940,6 +3124,7 @@ async def test_list_artifact_keys_rejects_traversal_in_app_name(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -2965,6 +3150,7 @@ async def test_list_artifact_keys_rejects_traversal_in_user_id(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -3015,6 +3201,7 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -3066,6 +3253,7 @@ async def test_artifact_reference_allows_same_session_scope(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -3117,6 +3305,7 @@ async def test_artifact_reference_allows_same_user_user_scope(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -3161,6 +3350,7 @@ async def test_artifact_reference_rejects_cross_user_on_save(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -3205,6 +3395,7 @@ async def test_artifact_reference_rejects_cross_app_on_save(
         ArtifactServiceType.GCS,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -3257,7 +3448,10 @@ async def test_artifact_reference_rejects_cross_session_on_load(
     )
     blob = artifact_service.bucket.get_blob(blob_name)
     blob.metadata["adkFileUri"] = new_uri
-  elif service_type == ArtifactServiceType.FSSPEC:
+  elif service_type in (
+      ArtifactServiceType.FSSPEC,
+      ArtifactServiceType.FSSPEC_AZURE,
+  ):
     ref_key = "test_bucket/app0/user0/sess0/ref.txt/0"
     artifact_service._fs.objects[ref_key][1]["metadata"]["adkFileUri"] = new_uri
   elif service_type == ArtifactServiceType.FSSPEC_S3:
@@ -3970,6 +4164,7 @@ async def test_gcs_get_signed_url_cyclic_reference_raises_error() -> None:
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -4020,6 +4215,7 @@ async def test_save_artifact_with_camel_case_dict(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -4069,6 +4265,7 @@ async def test_save_artifact_with_snake_case_dict(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -4118,6 +4315,7 @@ async def test_load_artifact_preserves_inline_data_display_name(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -4184,6 +4382,7 @@ async def test_file_save_text_artifact_preserves_utf8_bytes(tmp_path, filename):
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -4223,6 +4422,7 @@ async def test_save_load_empty_text_artifact(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
@@ -4271,6 +4471,7 @@ _REWIND_TOMBSTONE = types.Part(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
@@ -4312,6 +4513,7 @@ async def test_artifact_removed_by_rewind_loads_as_none(
         ArtifactServiceType.FILE,
         ArtifactServiceType.FSSPEC,
         ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
         ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )

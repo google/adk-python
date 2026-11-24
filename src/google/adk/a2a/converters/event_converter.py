@@ -18,8 +18,6 @@ from collections.abc import Callable
 import json
 import logging
 from typing import Any
-from typing import List
-from typing import Optional
 
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Message
@@ -77,11 +75,11 @@ AdkEventToA2AEventsConverter = Callable[
     [
         Event,
         InvocationContext,
-        Optional[str],
-        Optional[str],
+        str | None,
+        str | None,
         GenAIPartToA2APartConverter,
     ],
-    List[A2AEvent],
+    list[A2AEvent],
 ]
 """A callable that converts an ADK Event into a list of A2A events.
 
@@ -227,8 +225,8 @@ def _process_long_running_tool(a2a_part: A2APart, event: Event) -> None:
 
 def convert_a2a_task_to_event(
     a2a_task: Task,
-    author: Optional[str] = None,
-    invocation_context: Optional[InvocationContext] = None,
+    author: str | None = None,
+    invocation_context: InvocationContext | None = None,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> Event:
   """Converts an A2A task to an ADK event.
@@ -322,8 +320,8 @@ def convert_a2a_task_to_event(
 
 def convert_a2a_message_to_event(
     a2a_message: Message,
-    author: Optional[str] = None,
-    invocation_context: Optional[InvocationContext] = None,
+    author: str | None = None,
+    invocation_context: InvocationContext | None = None,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> Event:
   """Converts an A2A message to an ADK event.
@@ -429,7 +427,7 @@ def convert_event_to_a2a_message(
     invocation_context: InvocationContext | None = None,
     role: Any = _compat.ROLE_AGENT,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
-) -> Optional[Message]:
+) -> Message | None:
   """Converts an ADK event to an A2A message.
 
   Args:
@@ -475,8 +473,8 @@ def convert_event_to_a2a_message(
 def _create_error_status_event(
     event: Event,
     invocation_context: InvocationContext,
-    task_id: Optional[str] = None,
-    context_id: Optional[str] = None,
+    task_id: str | None = None,
+    context_id: str | None = None,
 ) -> TaskStatusUpdateEvent:
   """Creates a TaskStatusUpdateEvent for error scenarios.
 
@@ -517,8 +515,8 @@ def _create_status_update_event(
     message: Message,
     invocation_context: InvocationContext,
     event: Event,
-    task_id: Optional[str] = None,
-    context_id: Optional[str] = None,
+    task_id: str | None = None,
+    context_id: str | None = None,
 ) -> TaskStatusUpdateEvent:
   """Creates a TaskStatusUpdateEvent for running scenarios.
 
@@ -579,10 +577,10 @@ def _create_status_update_event(
 def convert_event_to_a2a_events(
     event: Event,
     invocation_context: InvocationContext,
-    task_id: Optional[str] = None,
-    context_id: Optional[str] = None,
+    task_id: str | None = None,
+    context_id: str | None = None,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
-) -> List[A2AEvent]:
+) -> list[A2AEvent]:
   """Converts a GenAI event to a list of A2A events.
 
   Args:
@@ -603,7 +601,7 @@ def convert_event_to_a2a_events(
   if not invocation_context:
     raise ValueError("Invocation context cannot be None")
 
-  a2a_events: List[A2AEvent] = []
+  a2a_events: list[A2AEvent] = []
 
   try:
     # Handle error scenarios

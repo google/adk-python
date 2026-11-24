@@ -243,6 +243,34 @@ def _start_as_current_span(name: str, **kwargs: Any) -> Iterator[Span]:
       raise
 
 
+@contextmanager
+def _start_inference_span(llm_request: LlmRequest) -> Iterator[Span]:
+  """Opens ADK's own inference span, which OTel GenAI instrumentations defer to.
+
+  opentelemetry-util-genai >= 1.3b0 records nothing for an inference started
+  under a context that marks an enclosing inference, so the google-genai
+  instrumentor does not record the call this span already records, wherever
+  it sits among the SDK's wrappers. Older util-genai releases lack this, so for
+  them ADK unwraps the instrumentor instead.
+  """
+  with _start_as_current_span(
+      f"generate_content {llm_request.model or ''}".strip()
+  ) as span:
+    try:
+      from opentelemetry.util.genai.invocation import CLIENT_INFERENCE_CONTEXT_KEY
+      from opentelemetry.util.genai.invocation import InferenceData
+    except ImportError:
+      yield span
+      return
+    token = otel_context.attach(
+        otel_context.set_value(CLIENT_INFERENCE_CONTEXT_KEY, InferenceData())
+    )
+    try:
+      yield span
+    finally:
+      otel_context.detach(token)
+
+
 def trace_agent_invocation(
     span: trace.Span, agent: BaseAgent, ctx: InvocationContext
 ) -> None:
@@ -1278,9 +1306,7 @@ def _use_native_generate_content_span_stable_semconv(
 ) -> Iterator[GenerateContentSpan]:
   telemetry_config = telemetry_config or TelemetryConfig()
   system_name = _resolve_gen_ai_system_name(llm_request.model)
-  with _start_as_current_span(
-      f"generate_content {llm_request.model or ''}".strip()
-  ) as span:
+  with _start_inference_span(llm_request) as span:
     span.set_attribute(GEN_AI_SYSTEM, system_name)
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
@@ -1335,9 +1361,7 @@ def _use_native_generate_content_span(
       yield gc_span
     return
 
-  with _start_as_current_span(
-      f"generate_content {llm_request.model or ''}".strip()
-  ) as span:
+  with _start_inference_span(llm_request) as span:
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
     )
@@ -1347,6 +1371,7 @@ def _use_native_generate_content_span(
     set_operation_details_attributes_from_request(
         gc_span.operation_details_attributes,
         llm_request,
+        telemetry_config,
     )
     yield gc_span
 
