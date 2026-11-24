@@ -12832,8 +12832,39 @@ async def test_generate_content_async_passes_http_options_retry_options(
 
   mock_acompletion.assert_called_once()
   _, kwargs = mock_acompletion.call_args
+  # attempts counts the original request; num_retries does not.
   assert "num_retries" in kwargs
-  assert kwargs["num_retries"] == 3
+  assert kwargs["num_retries"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attempts", "expected_num_retries"), [(0, 0), (1, 0), (2, 1), (5, 4)]
+)
+async def test_generate_content_async_retry_attempts_include_first_request(
+    mock_acompletion, lite_llm_instance, attempts, expected_num_retries
+):
+  """attempts=1 means no retries, so LiteLLM must get num_retries=0."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              retry_options=types.HttpRetryOptions(attempts=attempts)
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["num_retries"] == expected_num_retries
 
 
 @pytest.mark.asyncio
