@@ -14,19 +14,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+import logging
 from typing import Any
-from typing import Sequence
 
 from google.genai import types
 import pydantic
 
+from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import _wrap_base_node_as_tool
 from ..agents.llm_agent import LlmAgent
 from ..agents.llm_agent import ToolUnion
 from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
+from ..workflow._base_node import _walk_static_nodes
 from ..workflow._base_node import BaseNode
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class AgentInfo(pydantic.BaseModel):
@@ -71,27 +76,52 @@ async def get_tools_info(
   ]
 
 
-async def get_agents_dict(agent: LlmAgent) -> dict[str, AgentInfo]:
-  """Returns a dict with info for the agent and its sub-agents."""
-  agents_dict = {}
+def _nearest_llm_sub_agent_names(agent: BaseAgent) -> list[str]:
+  """Returns the unique names of the nearest LlmAgent sub-agents of ``agent``.
 
-  async def _traverse(current_agent: LlmAgent) -> None:
-    if current_agent.name in agents_dict:
-      return
+  Non-LLM ``BaseAgent`` containers (e.g. ``SequentialAgent``) are flattened so
+  their LlmAgent children are reported directly.
+  """
+  names: dict[str, None] = {}
+  visited: set[int] = {id(agent)}
 
-    sub_agent_names = []
-    for sub_agent in current_agent.sub_agents:
+  def _collect(current: BaseAgent) -> None:
+    for sub_agent in current.sub_agents:
+      if id(sub_agent) in visited:
+        continue
+      visited.add(id(sub_agent))
       if isinstance(sub_agent, LlmAgent):
-        await _traverse(sub_agent)
-        sub_agent_names.append(sub_agent.name)
+        names[sub_agent.name] = None
+      else:
+        _collect(sub_agent)
 
-    agents_dict[current_agent.name] = AgentInfo(
-        name=current_agent.name,
-        description=current_agent.description,
-        instruction=current_agent.instruction,
-        tools=await get_tools_info(current_agent.tools),
-        sub_agents=sub_agent_names,
+  _collect(agent)
+  return list(names)
+
+
+# `LlmAgent | BaseNode` is redundant at runtime but keeps the breaking-change
+# detector from flagging the widening from the original `LlmAgent` annotation.
+async def get_agents_dict(agent: LlmAgent | BaseNode) -> dict[str, AgentInfo]:
+  """Returns a dict with info for every LlmAgent reachable from ``agent``."""
+  agents_dict: dict[str, AgentInfo] = {}
+
+  for node in _walk_static_nodes(agent):
+    if not isinstance(node, LlmAgent):
+      continue
+    if node.name in agents_dict:
+      logger.warning(
+          'Duplicate LlmAgent name %r encountered while collecting app info;'
+          ' keeping first agent.',
+          node.name,
+      )
+      continue
+
+    agents_dict[node.name] = AgentInfo(
+        name=node.name,
+        description=node.description,
+        instruction=node.instruction,
+        tools=await get_tools_info(node.tools),
+        sub_agents=_nearest_llm_sub_agent_names(node),
     )
 
-  await _traverse(agent)
   return agents_dict

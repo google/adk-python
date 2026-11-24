@@ -15,7 +15,6 @@
 """A2A Client for integration tests."""
 
 from typing import Literal
-from typing import Optional
 
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.extensions.common import HTTP_EXTENSION_HEADER
@@ -30,7 +29,7 @@ from .server import agent_card
 def create_client(
     app,
     streaming: bool = False,
-    mode: Optional[Literal["task"]] = None,
+    mode: Literal["task"] | None = None,
     use_legacy: bool = False,
 ) -> RemoteA2aAgent:
   """Creates a RemoteA2aAgent connected to the provided FastAPI app.

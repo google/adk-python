@@ -31,7 +31,6 @@ from typing import List
 from typing import Literal
 from typing import Mapping
 from typing import TypedDict
-from urllib.parse import urlparse
 
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
@@ -284,17 +283,6 @@ class Endpoint(TypedDict, total=False):
   createTime: str
   updateTime: str
   attributes: Dict[str, Any]
-
-
-def _is_google_api(url: str) -> bool:
-  """Checks if the given URL points to a Google API endpoint over https."""
-  parsed_url = urlparse(url)
-  if parsed_url.scheme != "https" or not parsed_url.hostname:
-    return False
-  return (
-      parsed_url.hostname == "googleapis.com"
-      or parsed_url.hostname.endswith(".googleapis.com")
-  )
 
 
 def _update_time_key(binding: Dict[str, Any]) -> tuple[str, str]:
@@ -843,7 +831,7 @@ class AgentRegistry:
       if (
           not auth_scheme
           and not auth_credential
-          and _is_google_api(endpoint_uri)
+          and _mtls_utils.is_googleapis_url(endpoint_uri)
       ):
         headers.update(await asyncio.to_thread(self._get_auth_headers))
       if self._header_provider:

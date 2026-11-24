@@ -112,10 +112,12 @@ def test_no_shipped_source_file_has_an_internal_link() -> None:
   )
 
 
-# Unlisted files in two packages, so relative imports resolve the way they do
+# Unlisted files in a few packages, so relative imports resolve the way they do
 # for real source files.
 _UNLISTED_IN_UTILS = 'src/google/adk/utils/_unlisted.py'
 _UNLISTED_IN_AUTH = 'src/google/adk/auth/_unlisted.py'
+_UNLISTED_IN_A2A = 'src/google/adk/a2a/_unlisted.py'
+_UNLISTED_IN_A2A_UTILS = 'src/google/adk/a2a/utils/_unlisted.py'
 
 
 @pytest.mark.parametrize(
@@ -151,6 +153,26 @@ _UNLISTED_IN_AUTH = 'src/google/adk/auth/_unlisted.py'
             'import google.adk.utils.feature_decorator as fd\n',
             _UNLISTED_IN_AUTH,
         ),
+        (
+            'from google.adk.a2a.experimental import a2a_experimental\n',
+            _UNLISTED_IN_AUTH,
+        ),
+        (
+            'from ..experimental import a2a_experimental\n',
+            _UNLISTED_IN_A2A_UTILS,
+        ),
+        ('from . import experimental\n', _UNLISTED_IN_A2A),
+        ('from google.adk.a2a import experimental\n', _UNLISTED_IN_AUTH),
+        ('import google.adk.a2a.experimental\n', _UNLISTED_IN_AUTH),
+        (
+            # Outside src/ a relative import resolves to nothing, and the
+            # check must still look at the imports after it.
+            (
+                'from .. import testing_utils\n'
+                'from google.adk.a2a.experimental import a2a_experimental\n'
+            ),
+            'tests/unittests/a2a/test_unlisted.py',
+        ),
     ],
 )
 def test_legacy_feature_decorator_import_detects_every_spelling(
@@ -161,14 +183,13 @@ def test_legacy_feature_decorator_import_detects_every_spelling(
   )
 
 
-def test_legacy_feature_decorator_import_allows_the_registry_decorators() -> (
-    None
-):
+def test_legacy_feature_decorator_import_allows_look_alike_imports() -> None:
   content = (
       'from ..features import FeatureName\n'
       'from ..features import experimental\n'
       'from google.adk.features._feature_decorator import stable\n'
       'from ..utils import env_utils  # was feature_decorator\n'
+      'from ..a2a.utils.agent_to_a2a import to_a2a\n'
       'MODULE = "google.adk.utils.feature_decorator"\n'
   )
   assert compliance_checks.check_legacy_feature_decorator_import(
@@ -176,11 +197,24 @@ def test_legacy_feature_decorator_import_allows_the_registry_decorators() -> (
   )
 
 
-def test_legacy_feature_decorator_import_skips_listed_files() -> None:
-  content = 'from ..utils.feature_decorator import experimental\n'
+@pytest.mark.parametrize(
+    ('content', 'filename'),
+    [
+        (
+            'from ..utils.feature_decorator import experimental\n',
+            'src/google/adk/optimization/gepa_root_agent_prompt_optimizer.py',
+        ),
+        (
+            'from google.adk.a2a.experimental import a2a_experimental\n',
+            'tests/unittests/a2a/test_experimental.py',
+        ),
+    ],
+)
+def test_legacy_feature_decorator_import_skips_listed_files(
+    content: str, filename: str
+) -> None:
   assert compliance_checks.check_legacy_feature_decorator_import(
-      content,
-      'src/google/adk/optimization/gepa_root_agent_prompt_optimizer.py',
+      content, filename
   )
 
 
@@ -201,6 +235,18 @@ def test_legacy_feature_decorator_users_are_all_still_needed() -> None:
   )
 
 
+def test_legacy_feature_decorator_home_files_all_exist() -> None:
+  missing = sorted(
+      path
+      for path in compliance_checks._LEGACY_FEATURE_DECORATOR_HOME
+      if not (_REPO_ROOT / path).is_file()
+  )
+  assert not missing, (
+      'These files no longer exist; drop them from'
+      f' _LEGACY_FEATURE_DECORATOR_HOME: {missing}'
+  )
+
+
 def test_no_unlisted_source_file_imports_the_legacy_feature_decorators() -> (
     None
 ):
@@ -213,9 +259,9 @@ def test_no_unlisted_source_file_imports_the_legacy_feature_decorators() -> (
     ):
       offenders.append(relative_path)
   assert not offenders, (
-      'These files import the legacy label-only decorators from'
-      ' google.adk.utils.feature_decorator; use google.adk.features instead:'
-      f' {offenders}'
+      'These files import a legacy label-only decorator module'
+      ' (google.adk.utils.feature_decorator or google.adk.a2a.experimental);'
+      f' use google.adk.features instead: {offenders}'
   )
 
 

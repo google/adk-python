@@ -7289,6 +7289,11 @@ class TestRemoteA2aAgentWorkflowOutput:
           "input-required",
           "auth-required",
           "unknown",
+          "TASK_STATE_SUBMITTED",
+          "TASK_STATE_WORKING",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_AUTH_REQUIRED",
+          "TASK_STATE_UNSPECIFIED",
       ],
   )
   def test_skips_non_final_task_states(self, state):
@@ -7300,6 +7305,23 @@ class TestRemoteA2aAgentWorkflowOutput:
     """
     agent = self._make_agent()
     event = self._make_text_event(text="in-progress chunk", task_state=state)
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
+
+  def test_skips_serialized_unknown_task_state(self):
+    """A2A 1.x drops the default UNSPECIFIED state from the serialized task."""
+    agent = self._make_agent()
+    event = self._make_text_event(text="unknown-state text")
+    task = _compat.make_task(
+        id="t",
+        context_id="c",
+        status=_compat.make_task_status(_compat.TS_UNKNOWN),
+    )
+    event.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": _compat.a2a_to_dict(task)
+    }
     event.node_info.path = self._NODE_PATH
 
     assert agent._promote_response_to_output(event, self._NODE_PATH) is False
@@ -7325,6 +7347,27 @@ class TestRemoteA2aAgentWorkflowOutput:
 
     assert agent._promote_response_to_output(event, self._NODE_PATH) is True
     assert event.output == "message reply"
+
+  @pytest.mark.parametrize("state", ["completed", "TASK_STATE_COMPLETED"])
+  def test_promotes_completed_task_with_error_code(self, state):
+    """A finish-reason code on a completed task does not drop the answer."""
+    agent = self._make_agent()
+    event = self._make_text_event(text="truncated answer", task_state=state)
+    event.error_code = "MAX_TOKENS"
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is True
+    assert event.output == "truncated answer"
+
+  @pytest.mark.parametrize("state", ["failed", "TASK_STATE_FAILED"])
+  def test_skips_failed_task_with_error_code(self, state):
+    agent = self._make_agent()
+    event = self._make_text_event(text="Token limit reached", task_state=state)
+    event.error_code = "MAX_TOKENS"
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
 
   @pytest.mark.asyncio
   async def test_run_impl_promotes_only_first_terminal_event(self):
@@ -9294,6 +9337,89 @@ async def test_after_request_metadata_overrides_are_preserved():
     assert turn[-1].custom_metadata["a2a:task_id"] == "caller-task"
     assert turn[-1].custom_metadata["a2a:context_id"] == "caller-context"
     assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
+
+
+def _failed_task_stream(*, streaming, use_v2, text):
+  """A task that works, then fails: a status update when streamed, the task
+  itself when not."""
+  message = _compat.make_message(
+      message_id="failure",
+      role="agent",
+      parts=[_compat.make_text_part(text)],
+  )
+  if streaming:
+    stream = _bare_task_stream(_compat.TS_FAILED, use_v2=use_v2)
+    status = _compat.make_task_status(_compat.TS_FAILED, message=message)
+    if _compat.IS_A2A_V1:
+      stream[-1].status_update.status.CopyFrom(status)
+    else:
+      stream[-1][0].status = status
+      stream[-1][1].status = status
+    return stream
+  task = _compat.make_task(
+      id="currency-task",
+      context_id="currency-context",
+      status=_compat.make_task_status(_compat.TS_FAILED, message=message),
+      metadata=(
+          {remote_a2a_agent._NEW_A2A_ADK_INTEGRATION_EXTENSION: True}
+          if use_v2
+          else None
+      ),
+  )
+  return [_make_stream_task(task)]
+
+
+@pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_failed_remote_task_in_workflow_is_not_promoted_to_output(
+    use_v2, streaming
+):
+  """A failed task in a workflow node is not promoted to event.output."""
+  from google.adk.apps.app import App
+  from google.adk.workflow._join_node import JoinNode
+  from google.adk.workflow._workflow import Workflow
+  from google.adk.workflow.utils import _rehydration_utils
+
+  from tests.unittests import testing_utils
+
+  agent = RemoteA2aAgent(
+      name="currency",
+      agent_card=create_test_agent_card(name="currency"),
+  )
+
+  async def send_message(client, **kwargs):
+    del client, kwargs
+    for response in _failed_task_stream(
+        streaming=streaming, use_v2=use_v2, text="claude exited with code 1"
+    ):
+      yield response
+
+  workflow = Workflow(
+      name="wf",
+      edges=[("START", agent, JoinNode(name="join"))],
+  )
+  runner = testing_utils.InMemoryRunner(app=App(name="t", root_agent=workflow))
+  with (
+      patch.object(agent, "_ensure_resolved", return_value=object()),
+      patch.object(_compat, "send_message", side_effect=send_message),
+  ):
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+
+  failures = [e for e in events if e.error_code == A2A_TASK_FAILED_ERROR_CODE]
+  assert len(failures) == 1
+  assert failures[0].output is None
+  assert failures[0].node_info.message_as_output is None
+  join_outputs = [
+      e.output
+      for e in events
+      if e.output is not None and "join" in (e.node_info.path or "")
+  ]
+  assert join_outputs == [{"currency": None}]
+  recovered = _rehydration_utils._reconstruct_node_states(
+      events, base_path="wf@1", invocation_id="", group_by_direct_child=True
+  )
+  assert recovered["currency@1"].error_code == A2A_TASK_FAILED_ERROR_CODE
+  assert recovered["currency@1"].output is None
 
 
 @pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "unary"])

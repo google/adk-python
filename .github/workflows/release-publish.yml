@@ -155,8 +155,15 @@ jobs:
           echo "Updated version.py to ${PEP440_VERSION}"
           grep __version__ src/google/adk/version.py
 
+      # Builds the wheel that is published. Keep pyproject.toml's 7-day
+      # exclude-newer cutoff in force here (do not set UV_EXCLUDE_NEWER): the
+      # build backend runs at build time, so a freshly compromised flit-core
+      # could inject code into the release.
       - name: Build package
         run: uv build
+
+      - name: Install upload tools
+        run: uv pip install --system --exclude-newer "7 days" "twine==6.1.0" "keyrings.google-artifactregistry-auth==1.1.2"
 
       - name: Authenticate to OSS Exit Gate
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -165,7 +172,6 @@ jobs:
 
       - name: Stage package in OSS Exit Gate Artifact Registry
         run: |
-          python -m pip install "twine==6.1.0" "keyrings.google-artifactregistry-auth==1.1.2"
           python -m twine upload --skip-existing \
             --repository-url https://us-python.pkg.dev/oss-exit-gate-prod/adk-python--pypi \
             dist/*

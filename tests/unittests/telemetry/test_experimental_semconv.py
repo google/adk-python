@@ -25,9 +25,11 @@ from google.adk.dependencies._mcp import Tool as McpTool
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry._experimental_semconv import _model_dump_to_tool_definition
+from google.adk.telemetry._experimental_semconv import _operation_details_attributes_no_content
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_request
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_response
 from google.adk.telemetry._stable_semconv import choice_body
+from google.adk.telemetry.context import ADK_TELEMETRY_IGNORE_RUN_CONFIG
 from google.adk.telemetry.context import ContentCapturingMode
 from google.adk.telemetry.context import TelemetryConfig
 from google.genai import types
@@ -498,3 +500,78 @@ class TestModelDumpToolDefinitionSchemaKey:
 
     assert definition['name'] == 'mcp_tool'
     assert definition.get('parameters') is None
+
+
+def _request_with_content_and_tool() -> LlmRequest:
+  def add(a: int, b: int) -> int:
+    """Adds two numbers."""
+    return a + b
+
+  return LlmRequest(
+      contents=[types.Content(role='user', parts=[types.Part(text='hi')])],
+      config=types.GenerateContentConfig(
+          system_instruction='be helpful',
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration.from_callable_with_api_option(
+                          callable=add
+                      )
+                  ]
+              )
+          ],
+      ),
+  )
+
+
+def test_set_operation_details_from_request_without_content(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Skipping content keeps exactly what survives no-content redaction."""
+  monkeypatch.delenv(ADK_TELEMETRY_IGNORE_RUN_CONFIG, raising=False)
+  llm_request = _request_with_content_and_tool()
+  full = {}
+  set_operation_details_attributes_from_request(full, llm_request)
+  without_content = {}
+  set_operation_details_attributes_from_request(
+      without_content,
+      llm_request,
+      TelemetryConfig(capture_message_content=ContentCapturingMode.NO_CONTENT),
+  )
+
+  assert GEN_AI_INPUT_MESSAGES in full
+  assert GEN_AI_INPUT_MESSAGES not in without_content
+  assert GEN_AI_SYSTEM_INSTRUCTIONS not in without_content
+  assert (
+      without_content[GEN_AI_TOOL_DEFINITIONS] == full[GEN_AI_TOOL_DEFINITIONS]
+  )
+  assert _operation_details_attributes_no_content(
+      without_content
+  ) == _operation_details_attributes_no_content(full)
+
+
+@pytest.mark.parametrize(
+    'mode',
+    [
+        ContentCapturingMode.EVENT_ONLY,
+        ContentCapturingMode.SPAN_ONLY,
+        ContentCapturingMode.SPAN_AND_EVENT,
+    ],
+)
+def test_set_operation_details_from_request_with_content_capture(
+    mode: ContentCapturingMode,
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Any content-capturing mode serializes the full request attributes."""
+  monkeypatch.delenv(ADK_TELEMETRY_IGNORE_RUN_CONFIG, raising=False)
+  llm_request = _request_with_content_and_tool()
+  full = {}
+  set_operation_details_attributes_from_request(full, llm_request)
+  with_content = {}
+  set_operation_details_attributes_from_request(
+      with_content,
+      llm_request,
+      TelemetryConfig(capture_message_content=mode),
+  )
+
+  assert with_content == full

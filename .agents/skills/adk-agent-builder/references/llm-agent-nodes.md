@@ -53,18 +53,17 @@ def process_code(node_input: dict) -> str:
   return node_input['code']
 ```
 
-Set `output_schema` whenever the downstream node needs fields rather than prose,
-and always when the agent feeds a `JoinNode` — the join parks partial results in
-session state, and a raw `types.Content` there breaks a database-backed session
-service.
+Set `output_schema` whenever the downstream node needs fields rather than prose.
 
 ### Do not assert on `event.output` for an LLM agent's own event
 
-The wrapper sets `event.output` internally, but the runner clears it on a copy
-before the event reaches your loop, so the same text is not rendered twice.
-`event.output` is therefore `None` when you read the agent's own event out of
-`runner.run_async(...)`. Assert on the downstream node's output, on
-`session.state[output_key]`, or on `event.content.parts[*].text` instead.
+For an agent without `output_schema`, the wrapper sets `event.output`
+internally, but the runner clears it on a copy before the event reaches your
+loop, so the same text is not rendered twice. `event.output` is therefore `None`
+when you read that agent's own event out of `runner.run_async(...)`; only an
+agent with `output_schema` keeps the validated dict there. Assert on the
+downstream node's output, on `session.state[output_key]`, or on
+`event.content.parts[*].text` instead.
 
 ## Auto-wrapping defaults
 
@@ -164,7 +163,8 @@ instances, and `BaseToolset` instances.
 ## Generation config
 
 Model-level knobs go in `generate_content_config`. Instructions, tools, and
-response schema do **not** — set those as agent fields, or they are ignored.
+response schema do **not** — set those as agent fields, or the constructor
+raises `ValueError`.
 
 ```python
 from google.genai import types

@@ -223,19 +223,17 @@ class InMemorySessionService(BaseSessionService):
     session = self.sessions[app_name][user_id][session_id]
     events = session.events
     if config:
+      if config.after_timestamp is not None:
+        events = [
+            event
+            for event in events
+            if event.timestamp >= config.after_timestamp
+        ]
       if config.num_recent_events is not None:
         if config.num_recent_events == 0:
           events = []
         else:
           events = events[-config.num_recent_events :]
-      if config.after_timestamp is not None:
-        i = len(events) - 1
-        while i >= 0:
-          if events[i].timestamp < config.after_timestamp:
-            break
-          i -= 1
-        if i >= 0:
-          events = events[i + 1 :]
     if events is not session.events:
       # Copy only the events being returned.
       session = session.model_copy(update={'events': events})

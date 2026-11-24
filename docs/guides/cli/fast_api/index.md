@@ -93,10 +93,10 @@ surprises.
     argument for it.
 5.  **The server class is chosen.** `web=False` gives `ApiServer` and the
     production-safe routes only. `web=True` gives `DevServer`, which adds the
-    Angular UI and the `/dev/...` endpoints for tracing, evaluation and the
-    agent builder on top of those, roughly tripling the route count, and also
-    switches on a denylist of YAML keys for config-defined agents. Some
-    production packages ship without the development server at all; there,
+    Angular UI and the `/dev/...` endpoints for tracing and evaluation on top
+    of those, roughly tripling the route count, and also switches on a denylist
+    of YAML keys for config-defined agents. Some production packages ship
+    without the development server at all; there,
     `web=True` logs a warning and falls back to `ApiServer`, so the UI and eval
     endpoints quietly disappear.
 6.  **A2A routes are mounted last.** With `a2a=True`, every subdirectory of the

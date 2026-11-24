@@ -37,4 +37,4 @@ deprecated, and it remains the path every agent's real logic runs through.
 - **`find_agent(name)` / `find_sub_agent(name)`** — search the agent tree.
 - **`root_agent`** — walk up to the top of the tree.
 - **`from_config(config, config_abs_path)`** — build an agent from a config
-  object. Both `@deprecated` and `@experimental`; do not build on it.
+  object. Marked `@deprecated`; do not build on it.

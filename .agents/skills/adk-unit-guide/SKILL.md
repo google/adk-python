@@ -219,8 +219,7 @@ only record of the decision, so a waiver without one leaves nothing to review.
 - Show what a developer would actually write. An example that only demonstrates
   the shape of an interface, or that drives a service the reader would normally
   reach through `Runner`, does not belong in a guide.
-- Do not set `model=` on a sample agent — guides stay model-agnostic, and no
-  guide in `docs/guides/` currently pins a model.
+- Do not set `model=` on a sample agent — guides stay model-agnostic.
 - For workflow nodes, show the logic as a plain Python function rather than a
   `BaseNode` subclass, unless the use case genuinely requires the subclass.
 - Wrap a function as a node with the `@node` decorator rather than

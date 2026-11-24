@@ -99,13 +99,45 @@ class SandboxManager:
         Format: projects/{project}/locations/{location}/reasoningEngines/{id}.
         If None, one is created on first use.
       client: Agent Platform client. If None, one is created on first use from
-        ``project_id`` and ``location``.
+        ``project_id`` and ``location``. A manager given a client cannot be
+        pickled, since an Agent Platform client cannot be; pass
+        ``project_id`` and ``location`` instead to pickle it, for example to
+        deploy it. A client the manager created is not pickled, and the
+        unpickled manager creates a new one.
     """
     self._project_id = project_id
     self._location = location
     self._agent_engine_name = agent_engine_name
     self._client = client
+    # Whether the manager creates its client, which then belongs to this
+    # process.
+    self._owns_client = client is None
     self._template_names: dict[str, str] = {}
+    self._init_local_state()
+
+  def __getstate__(self) -> dict[str, Any]:
+    if not self._owns_client:
+      # Dropping the client would make the unpickled manager create a default
+      # one, possibly for another location or project, without telling
+      # anyone.
+      raise TypeError(
+          "A SandboxManager given a client, such as the one of an"
+          " AgentEngineEnvironment given vertexai_client, cannot be pickled,"
+          " since an Agent Platform client cannot be. Pass project_id and"
+          " location instead of a client, for example to deploy the agent."
+      )
+    state = self.__dict__.copy()
+    # The locks belong to this process, and cannot be pickled.
+    for name in ("_agent_engine_lock", "_template_locks", "_sandbox_locks"):
+      del state[name]
+    state["_client"] = None
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._init_local_state()
+
+  def _init_local_state(self) -> None:
     self._agent_engine_lock = asyncio.Lock()
     # One lock per template display name, so creating the template of one
     # container configuration does not hold up the others.

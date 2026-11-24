@@ -512,6 +512,9 @@ class MockLlmConnection(BaseLlmConnection):
     self.mock_model.live_blobs.append(blob)
     self._input_event.set()
 
+  async def send_context_update(self, *, system_instruction=None, tools=None):
+    pass
+
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
     if self.wait_for_realtime_input:

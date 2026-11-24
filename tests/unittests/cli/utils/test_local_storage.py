@@ -97,17 +97,6 @@ async def test_per_agent_session_service_respects_app_name_alias(
       await service.close()
 
 
-@pytest.mark.asyncio
-async def test_per_agent_session_service_routes_built_in_agents_to_root_dot_adk(
-    tmp_path: Path,
-) -> None:
-  async with PerAgentDatabaseSessionService(agents_root=tmp_path) as service:
-    await service.create_session(app_name="__helper", user_id="user")
-
-    assert not (tmp_path / "__helper").exists()
-    assert (tmp_path / ".adk" / "session.db").exists()
-
-
 def test_create_local_database_session_service_returns_sqlite(
     tmp_path: Path,
 ) -> None:
@@ -211,24 +200,6 @@ async def test_per_agent_artifact_service_respects_app_name_alias(
 
   assert (tmp_path / folder_name / ".adk" / "artifacts").exists()
   assert not (tmp_path / logical_name).exists()
-
-
-@pytest.mark.asyncio
-async def test_per_agent_artifact_service_routes_built_in_agents_to_root_dot_adk(
-    tmp_path: Path,
-) -> None:
-  service = PerAgentFileArtifactService(agents_root=tmp_path)
-
-  await service.save_artifact(
-      app_name="__helper",
-      user_id="user",
-      session_id="session",
-      filename="file.txt",
-      artifact=types.Part.from_bytes(data=b"data", mime_type="text/plain"),
-  )
-
-  assert not (tmp_path / "__helper").exists()
-  assert (tmp_path / ".adk" / "artifacts").exists()
 
 
 def test_create_local_artifact_service_returns_file_service(
@@ -394,3 +365,40 @@ async def test_per_agent_artifact_service_delete_removes_legacy_copy(
   assert await service.load_artifact(filename="legacy.txt", **scope) is None
   assert await service.list_artifact_keys(**scope) == []
   assert await legacy.list_artifact_keys(**scope) == []
+
+
+@pytest.mark.asyncio
+async def test_per_agent_session_service_rejects_reserved_app_name(
+    tmp_path: Path,
+) -> None:
+  service = PerAgentDatabaseSessionService(agents_root=tmp_path)
+
+  with pytest.raises(ValueError, match="reserved"):
+    await service.create_session(app_name="__internal", user_id="user")
+
+  assert not (tmp_path / "__internal").exists()
+  assert not (tmp_path / ".adk").exists()
+
+
+@pytest.mark.asyncio
+async def test_per_agent_artifact_service_rejects_reserved_app_name(
+    tmp_path: Path,
+) -> None:
+  service = PerAgentFileArtifactService(agents_root=tmp_path)
+  artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+
+  with pytest.raises(ValueError, match="reserved"):
+    await service.save_artifact(
+        app_name="__internal",
+        user_id="user",
+        session_id="session",
+        filename="file.txt",
+        artifact=artifact,
+    )
+  with pytest.raises(ValueError, match="reserved"):
+    await service.list_artifact_keys(
+        app_name="__internal", user_id="user", session_id="session"
+    )
+
+  assert not (tmp_path / "__internal").exists()
+  assert not (tmp_path / ".adk").exists()

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Sequence
 import contextlib
@@ -47,12 +48,18 @@ from ...utils.model_name_utils import is_gemini_model
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-_THINKING_LEVEL_MAP: dict[str, types.ThinkingLevel] = {
-    'minimal': types.ThinkingLevel.MINIMAL,
-    'low': types.ThinkingLevel.LOW,
-    'medium': types.ThinkingLevel.MEDIUM,
-    'high': types.ThinkingLevel.HIGH,
-}
+
+def _thinking_levels_by_name(
+    levels: Iterable[types.ThinkingLevel],
+) -> dict[str, types.ThinkingLevel]:
+  return {
+      level.name.lower(): level
+      for level in levels
+      if level.name != 'THINKING_LEVEL_UNSPECIFIED'
+  }
+
+
+_THINKING_LEVEL_MAP = _thinking_levels_by_name(types.ThinkingLevel)
 
 
 class AdvisorError(RuntimeError):  # pylint: disable=g-bad-exception-name
@@ -140,6 +147,8 @@ class AdvisorResult:
     model_version: Provider-reported model version string, if available.
     usage: Token usage snapshot for the consultation.
     latency_ms: End-to-end wall-clock duration of the consultation in ms.
+    thinking_level: Thinking level sent on the request that produced `text`,
+      or `None` if that request set none.
   """
 
   text: str
@@ -147,6 +156,7 @@ class AdvisorResult:
   model_version: str | None
   usage: AdvisorUsage
   latency_ms: float
+  thinking_level: types.ThinkingLevel | None
 
 
 def resolve_thinking_level(
@@ -155,9 +165,10 @@ def resolve_thinking_level(
   """Maps a user-supplied thinking level to `types.ThinkingLevel`.
 
   Args:
-    level: One of `'minimal'`, `'low'`, `'medium'`, `'high'`
-      (case-insensitive), `'none'` / `'off'` / `''` / `None` to leave thinking
-      unset, or a `types.ThinkingLevel` enum value.
+    level: Case-insensitive name of a `types.ThinkingLevel` member (such as
+      `'minimal'`, `'low'`, `'medium'`, `'high'`, or `'xhigh'` when defined by
+      the installed `google-genai`), `'none'` / `'off'` / `''` / `None` to leave
+      thinking unset, or a `types.ThinkingLevel` enum value.
 
   Returns:
     The corresponding `types.ThinkingLevel`, or `None` if disabled.
@@ -423,7 +434,8 @@ async def call_advisor(
 
   Returns:
     An `AdvisorResult` with the advisor's visible response text, model info,
-    token usage, and wall-clock latency in milliseconds.
+    token usage, wall-clock latency in milliseconds, and the thinking level
+    actually sent, which is `None` after a retry without `thinking_config`.
 
   Raises:
     ValueError: If `timeout_seconds` is less than or equal to zero.
@@ -553,7 +565,16 @@ async def call_advisor(
       model_version=model_version,
       usage=usage,
       latency_ms=latency_ms,
+      thinking_level=_sent_thinking_level(req.config.thinking_config),
   )
+
+
+def _sent_thinking_level(
+    thinking_config: types.ThinkingConfig | None,
+) -> types.ThinkingLevel | None:
+  if thinking_config is None:
+    return None
+  return resolve_thinking_level(thinking_config.thinking_level)
 
 
 def _hit_output_cap(
