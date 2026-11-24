@@ -3,6 +3,15 @@
 ## [2.15.1](https://github.com/google/adk-python/compare/v2.15.0...v2.15.1) (2026-11-24)
 
 
+### Highlights
+
+This release focuses on stability and integration bug fixes across model sampling, agent-to-agent streaming, tool call validation, and instruction routing.
+
+* **Models**: Maintain compatibility across Anthropic SDK versions 1.x and 2.x when configuring Claude sampling settings. ([debf43d](https://github.com/google/adk-python/commit/debf43da4571dd8ba52a663d96e5ae2601030212))
+* **A2A**: Fix streamed output persistence behavior for RemoteA2aAgent calls to prevent incomplete output states. ([c4bdc84](https://github.com/google/adk-python/commit/c4bdc846f2646549425f5ac5d98ea0eb7faebd96))
+* **Tools**: Improve error reporting when Apigee tool calls receive arguments that are not JSON objects. ([6a4ba6a](https://github.com/google/adk-python/commit/6a4ba6adfd01d1c727729b4d6b05e93e23c454c7))
+* **Routing**: Ensure reliable dynamic instruction gating by tracking transient instructions correctly. ([347dca6](https://github.com/google/adk-python/commit/347dca6b282dc401ac6203c4581be7ab9e292b82))
+
 ### Bug Fixes
 
 * **a2a:** revert persisting streamed RemoteA2aAgent output without last_chunk ([c4bdc84](https://github.com/google/adk-python/commit/c4bdc846f2646549425f5ac5d98ea0eb7faebd96)), closes [#7255](https://github.com/google/adk-python/issues/7255)
