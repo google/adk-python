@@ -142,6 +142,7 @@ optional-dependencies.all = [
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
   "pillow>=10.3",
+  "plimsoll-client>=0.29,<1",
   "protobuf>=6",
   "pyarrow>=14",
   "pymongo>=4.9,<5",
@@ -321,6 +322,9 @@ optional-dependencies.otel = [
 # Incorrectly-named extra - never included anything GCP-specific.
 # Kept as a backward-compatible alias.
 optional-dependencies.otel-gcp = [ "google-adk[otel]" ]
+optional-dependencies.plimsoll = [
+  "plimsoll-client>=0.29,<1", # For PlimsollEnvironment self-hosted sandbox.
+]
 optional-dependencies.redis = [
   "redis>=4.2", # 4.2 is where redis.asyncio landed, the only API used.
 ]
@@ -406,6 +410,7 @@ optional-dependencies.test = [
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
   "pillow>=10.3",
+  "plimsoll-client>=0.29,<1",
   "protobuf>=6",
   "pyarrow>=14",
   "pypika>=0.50",
