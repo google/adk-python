@@ -35,6 +35,7 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models import anthropic_llm
 from google.adk.models import AnthropicGenerateContentConfig
 from google.adk.models.anthropic_llm import _AnthropicRateLimitError
+from google.adk.models.anthropic_llm import _ToolUseIdSanitizer
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.anthropic_llm import content_to_message_param
@@ -4415,6 +4416,200 @@ async def test_generate_content_async_pairs_invalid_tool_ids(
   ]
   assert len(set(use_ids)) == expected_unique
   assert set(use_ids) == set(result_ids)
+
+
+@pytest.mark.parametrize(
+    "call_id",
+    [
+        pytest.param("call.hivemind:1", id="id-present-but-invalid"),
+        pytest.param(None, id="id-absent"),
+        pytest.param("", id="id-empty"),
+    ],
+)
+def test_tool_use_id_sanitizer_pairs_id_less_result_with_call(
+    call_id: str | None,
+):
+  """An ID-less result pairs with a call whose ID was absent or invalid.
+
+  Regression test for issue #8297: a call whose ID was present but invalid was
+  only recorded in the id mapping, so the paired result that arrived without
+  an ID got a brand-new fallback and the converted request contained a
+  tool_result referencing an unknown tool_use_id (HTTP 400).
+  """
+  sanitizer = _ToolUseIdSanitizer()
+
+  assigned_call_id = sanitizer.sanitize(
+      is_call=True, tool_id=call_id, tool_name="get_weather"
+  )
+  assigned_result_id = sanitizer.sanitize(
+      is_call=False, tool_id="", tool_name="get_weather"
+  )
+
+  assert assigned_call_id == "toolu_fallback_0"
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", assigned_call_id)
+  assert assigned_result_id == assigned_call_id
+
+
+def test_tool_use_id_sanitizer_pairs_multiple_invalid_id_calls_in_order():
+  """Several invalid-ID calls pair with ID-less results in call order."""
+  sanitizer = _ToolUseIdSanitizer()
+  call_ids = [
+      sanitizer.sanitize(is_call=True, tool_id="bad:1", tool_name="t"),
+      sanitizer.sanitize(is_call=True, tool_id="bad:2", tool_name="t"),
+  ]
+  result_ids = [
+      sanitizer.sanitize(is_call=False, tool_id="", tool_name="t"),
+      sanitizer.sanitize(is_call=False, tool_id="", tool_name="t"),
+  ]
+
+  assert call_ids == ["toolu_fallback_0", "toolu_fallback_1"]
+  assert result_ids == call_ids
+
+
+def test_tool_use_id_sanitizer_does_not_let_a_stray_result_be_claimed():
+  """A result with an unknown invalid id never becomes a pairing target.
+
+  Only calls are pending: a result whose id was never seen gets a fallback of
+  its own, so a later ID-less result cannot be paired with it.
+  """
+  sanitizer = _ToolUseIdSanitizer()
+  stray_result_id = sanitizer.sanitize(
+      is_call=False, tool_id="bad:9", tool_name="t"
+  )
+  call_id = sanitizer.sanitize(is_call=True, tool_id=None, tool_name="t")
+  id_less_result_id = sanitizer.sanitize(
+      is_call=False, tool_id="", tool_name="t"
+  )
+
+  assert id_less_result_id == call_id
+  assert id_less_result_id != stray_result_id
+
+
+def test_tool_use_id_sanitizer_does_not_reclaim_an_answered_call():
+  """A call answered through its own invalid ID is not claimed again."""
+  sanitizer = _ToolUseIdSanitizer()
+  invalid_call_id = sanitizer.sanitize(
+      is_call=True, tool_id="bad:1", tool_name="t"
+  )
+  id_less_call_id = sanitizer.sanitize(
+      is_call=True, tool_id=None, tool_name="t"
+  )
+
+  answered_id = sanitizer.sanitize(
+      is_call=False, tool_id="bad:1", tool_name="t"
+  )
+  id_less_result_id = sanitizer.sanitize(
+      is_call=False, tool_id="", tool_name="t"
+  )
+
+  assert answered_id == invalid_call_id
+  assert id_less_result_id == id_less_call_id
+  assert id_less_result_id != invalid_call_id
+
+
+@pytest.mark.parametrize(
+    "call_ids, response_ids, expected_unique",
+    [
+        # The mixed form from issue #8297: invalid-but-present call id and a
+        # result that lost its id entirely.
+        pytest.param(["call.hivemind:1"], [""], 1, id="invalid-then-id-less"),
+        pytest.param(
+            ["bad:1", "bad:2"],
+            ["", ""],
+            2,
+            id="two-invalid-two-id-less",
+        ),
+        pytest.param(["bad:1", None], ["", ""], 2, id="invalid-and-absent"),
+        pytest.param([None], [""], 1, id="absent-then-id-less-control"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_generate_content_async_pairs_id_less_results_with_invalid_calls(
+    call_ids,
+    response_ids,
+    expected_unique,
+    generate_content_response,
+    generate_llm_response,
+):
+  """Converted requests keep every tool_result pointing at a tool_use."""
+  llm = AnthropicLlm(model="")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Hi")]),
+      Content(
+          role="model",
+          parts=[
+              _make_tool_call_part(f"tool_{i}", cid)
+              for i, cid in enumerate(call_ids)
+          ],
+      ),
+      Content(
+          role="user",
+          parts=[
+              _make_tool_response_part(f"tool_{i}", rid)
+              for i, rid in enumerate(response_ids)
+          ],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      block["id"]
+      for block in messages[1]["content"]
+      if block["type"] == "tool_use"
+  ]
+  result_ids = [
+      block["tool_use_id"]
+      for block in messages[2]["content"]
+      if block["type"] == "tool_result"
+  ]
+  assert len(set(use_ids)) == expected_unique
+  assert use_ids == result_ids
+  for tool_id in use_ids + result_ids:
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id)
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_pairs_id_less_result_across_turns(
+    generate_content_response,
+    generate_llm_response,
+):
+  """An invalid call id in one turn pairs with its ID-less result later."""
+  llm = AnthropicLlm(model="")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Question 1")]),
+      Content(
+          role="model",
+          parts=[_make_tool_call_part("get_weather", "call.hivemind:1")],
+      ),
+      Content(
+          role="user",
+          parts=[_make_tool_response_part("get_weather", "")],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      block["id"]
+      for message in messages
+      if message["role"] == "assistant"
+      for block in message["content"]
+      if block["type"] == "tool_use"
+  ]
+  result_ids = [
+      block["tool_use_id"]
+      for message in messages
+      if message["role"] == "user"
+      for block in message["content"]
+      if block["type"] == "tool_result"
+  ]
+  assert len(use_ids) == 1
+  assert use_ids == result_ids
 
 
 @pytest.mark.asyncio

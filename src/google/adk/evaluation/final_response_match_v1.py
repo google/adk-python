@@ -117,6 +117,19 @@ def _is_non_spaced_script(char: str) -> bool:
   )
 
 
+def _is_script_separator(char: str) -> bool:
+  """Checks if a character is punctuation or a symbol inside a script block.
+
+  The Thai, Lao, Khmer and Myanmar blocks also hold punctuation and symbols
+  (Khmer ។, Myanmar ။, Thai ฿). They separate words instead of being words
+  themselves, just like the punctuation of every other script, which this
+  tokenizer drops.
+  """
+  if not _is_non_spaced_script(char):
+    return False
+  return unicodedata.category(char)[0] in ("P", "S")
+
+
 def _is_word_char(char: str) -> bool:
   # Combining marks (e.g. Thai vowel signs, Devanagari matras) are not
   # alphanumeric on their own but must stay attached to their base character.
@@ -131,8 +144,10 @@ class _UnicodeAwareTokenizer:
   nothing and always scores 0. This tokenizer keeps Unicode word characters,
   normalizes Unicode variants (NFKC), splits non-spaced CJK characters at the
   character level, bundles non-spaced scripts by grapheme clusters (base
-  consonant + attached combining marks), and delegates ASCII tokens to the
-  default tokenizer.
+  consonant + attached combining marks), drops the punctuation and symbols of
+  those blocks, and delegates ASCII tokens to the default tokenizer. A cluster
+  is always closed before a following digit or Latin word, so the spacing
+  around such a word does not change the score.
 
   Note:
       Languages written without spaces (e.g. Thai, Chinese, Japanese) are
@@ -148,20 +163,41 @@ class _UnicodeAwareTokenizer:
   def tokenize(self, text: str) -> list[str]:
     text = unicodedata.normalize("NFKC", text).lower()
     processed_chars: list[str] = []
+    # Whether the text emitted so far ends inside a grapheme cluster of a
+    # non-spaced script (a base consonant plus its combining marks). Such a
+    # cluster is opened with a leading space, so it also needs a boundary
+    # after it.
+    in_unspaced_cluster = False
     for char in text:
       if _is_cjk(char):
         processed_chars.extend([" ", char, " "])
+        in_unspaced_cluster = False
       elif _is_non_spaced_script(char):
-        if unicodedata.category(char).startswith("M"):
+        if _is_script_separator(char):
+          # Punctuation and symbols of these blocks separate words instead of
+          # being words themselves (Khmer ទេ។ is the same answer as ទេ).
+          processed_chars.append(" ")
+          in_unspaced_cluster = False
+        elif unicodedata.category(char).startswith("M"):
           # Combining mark (vowel/tone mark): attach directly to previous base consonant!
           processed_chars.append(char)
+          in_unspaced_cluster = True
         else:
           # Base consonant: start a new grapheme cluster boundary by prepending a space!
           processed_chars.extend([" ", char])
+          in_unspaced_cluster = True
       elif _is_word_char(char):
+        # A digit or a Latin word written right after the cluster (ราคา100)
+        # has to be a token of its own, exactly as it already is when a space
+        # separates it (ราคา 100).
+        is_combining_mark = unicodedata.category(char).startswith("M")
+        if in_unspaced_cluster and not is_combining_mark:
+          processed_chars.append(" ")
+          in_unspaced_cluster = False
         processed_chars.append(char)
       else:
         processed_chars.append(" ")
+        in_unspaced_cluster = False
     words = "".join(processed_chars).split()
     tokens: list[str] = []
     for word in words:
