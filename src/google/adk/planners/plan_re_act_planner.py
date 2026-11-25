@@ -76,8 +76,11 @@ class PlanReActPlanner(BasePlanner):
     if first_fc_part_index >= 0:
       j = first_fc_part_index + 1
       while j < len(response_parts):
-        if response_parts[j].function_call:
-          preserved_parts.append(response_parts[j])
+        trailing_call = response_parts[j].function_call
+        if trailing_call:
+          # Same rule as for the first call: drop calls with empty names.
+          if trailing_call.name:
+            preserved_parts.append(response_parts[j])
           j += 1
         else:
           break
