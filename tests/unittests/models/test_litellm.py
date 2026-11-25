@@ -12810,7 +12810,7 @@ async def test_generate_content_async_converts_http_options_timeout_to_seconds(
 async def test_generate_content_async_passes_http_options_retry_options(
     mock_acompletion, lite_llm_instance
 ):
-  """Test that http_options.retry_options is forwarded to litellm."""
+  """HttpRetryOptions.attempts is converted to LiteLLM retry semantics."""
 
   llm_request = LlmRequest(
       contents=[
@@ -12833,7 +12833,34 @@ async def test_generate_content_async_passes_http_options_retry_options(
   mock_acompletion.assert_called_once()
   _, kwargs = mock_acompletion.call_args
   assert "num_retries" in kwargs
-  assert kwargs["num_retries"] == 3
+  assert kwargs["num_retries"] == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_disables_retries_for_one_attempt(
+    mock_acompletion, lite_llm_instance
+):
+  """attempts=1 means the original request only, so LiteLLM gets no retries."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              retry_options=types.HttpRetryOptions(attempts=1)
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["num_retries"] == 0
 
 
 @pytest.mark.asyncio

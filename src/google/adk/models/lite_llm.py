@@ -4959,8 +4959,11 @@ class LiteLlm(BaseLlm):
           http_opts.retry_options is not None
           and http_opts.retry_options.attempts is not None
       ):
-        # LiteLLM accepts num_retries as a top-level parameter.
-        completion_args["num_retries"] = http_opts.retry_options.attempts
+        # HttpRetryOptions.attempts includes the original request, while
+        # LiteLLM's num_retries only counts retries after that request.
+        completion_args["num_retries"] = max(
+            0, http_opts.retry_options.attempts - 1
+        )
 
       if http_opts.extra_body is not None:
         completion_args["extra_body"] = http_opts.extra_body
