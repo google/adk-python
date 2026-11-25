@@ -47,9 +47,10 @@ export ADK_DISABLE_JSON_SCHEMA_FOR_FUNC_DECL=1
 ```
 
 The variable name is `ADK_ENABLE_` or `ADK_DISABLE_` followed by the flag's
-name, which is the `FeatureName` member spelled exactly as it appears. Only the
-values `1` and `true`, case-insensitive, count as set. Any other value, with
-`yes`, `on` and `0` included, is treated as unset, which means the flag falls
+name, which is the value of its `FeatureName` member (for a public member, the
+member name itself). The values `1`, `true`, `yes` and `on` count as set,
+case-insensitively and with surrounding whitespace ignored. Any other value,
+with `0` and `false` included, is treated as unset, which means the flag falls
 through to the next rule rather than being forced off.
 
 Where environment variables are awkward, such as a notebook or a test, set the
@@ -77,8 +78,9 @@ that applies.
 1.  **A programmatic override.** If `override_feature_enabled` has been called
     for this flag, that value wins outright.
 2.  **Environment variables.** `ADK_ENABLE_<NAME>` is checked first and returns
-    `True` if set to `1` or `true`. Then `ADK_DISABLE_<NAME>` is checked and
-    returns `False` on the same values. Setting both means enable wins.
+    `True` if set to `1`, `true`, `yes` or `on`. Then `ADK_DISABLE_<NAME>` is
+    checked and returns `False` on the same values. Setting both means enable
+    wins.
 3.  **The registry default.** Each flag carries a stage and a default, and that
     default is the answer.
 
@@ -128,7 +130,8 @@ the form `[EXPERIMENTAL] <ClassName>: <message>`. Set
 `ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=1` to silence those warnings; the
 same variable also silences the registry's `[EXPERIMENTAL] feature <name>`
 warnings, but not its `[WIP] feature <name>` ones. New code does not use the
-legacy decorator, and a compliance check rejects new imports of it.
+legacy decorator or the A2A-only `a2a_experimental` built on it, and a
+compliance check rejects new imports of either.
 
 ## Functions and types
 
@@ -188,9 +191,10 @@ experimental feature you have decided not to take yet.
 *   **An override cannot be cleared.** The public API can set an override to
     `True` or `False`, but not remove it, so a process cannot return to
     environment-driven or default resolution once it has overridden a flag.
-*   **`ADK_ENABLE_X=0` does not disable.** Only `1` and `true` are recognized as
-    set, so a `0` reads as "not set" and resolution falls through to the
-    registry default. Use `ADK_DISABLE_X=1` to actually turn something off.
+*   **`ADK_ENABLE_X=0` does not disable.** Only `1`, `true`, `yes` and `on` are
+    recognized as set, so a `0` reads as "not set" and resolution falls through
+    to the registry default. Use `ADK_DISABLE_X=1` to actually turn something
+    off.
 *   **The flag set is not stable across releases.** Members are added and
     removed as features graduate, and a variable naming a flag that no longer
     exists is ignored, with no warning and no error.

@@ -22,9 +22,30 @@ from google.genai import types
 from typing_extensions import override
 
 from ....agents.invocation_context import InvocationContext
+from ....agents.run_config import RunConfig
 from ....events.event import Event
+from ....live.live_request_queue import LiveRequestQueue
+from ....models.base_llm import BaseLlm
 from ....models.llm_request import LlmRequest
 from .._base_llm_processor import BaseLlmRequestProcessor
+
+
+def _routes_into_contents(invocation_context: InvocationContext) -> bool:
+  """Returns whether tool dynamic instructions should route into contents."""
+  if isinstance(
+      getattr(invocation_context, 'live_request_queue', None), LiveRequestQueue
+  ):
+    return False
+  run_config = getattr(invocation_context, 'run_config', None)
+  if isinstance(run_config, RunConfig) and run_config.support_cfc:
+    return False
+
+  model = getattr(
+      getattr(invocation_context, 'agent', None), 'canonical_model', None
+  )
+  if isinstance(model, BaseLlm):
+    return bool(model._supports_dynamic_instruction_routing())  # pylint: disable=protected-access
+  return True
 
 
 async def finalize_dynamic_instructions(
@@ -40,8 +61,10 @@ async def finalize_dynamic_instructions(
   from ....features import FeatureName
   from ....features import is_feature_enabled
 
-  # TODO: Deprecate system_instruction fallback and make user content routing standard.
-  if is_feature_enabled(FeatureName.DYNAMIC_INSTRUCTION_ROUTING):
+  # Check routing support first: is_feature_enabled warns while EXPERIMENTAL.
+  if _routes_into_contents(invocation_context) and is_feature_enabled(
+      FeatureName.DYNAMIC_INSTRUCTION_ROUTING
+  ):
     from ..context._contents import _add_instructions_to_user_content
     from ._instructions import _label_dynamic_instruction
 

@@ -31,7 +31,9 @@ from datetime import timezone
 import io
 import logging
 from pathlib import Path
+import sys
 import threading
+from types import SimpleNamespace
 from typing import Any
 from typing import Optional
 from unittest import mock
@@ -42,12 +44,14 @@ from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.integrations import fsspec as fsspec_pkg
-from google.adk.integrations.fsspec import _fsspec_artifact_service
+from google.adk.integrations.fsspec import _backends
 from google.adk.integrations.fsspec._fsspec_artifact_service import FsspecArtifactService
 from google.genai import types
 import pytest
 
+from ...artifacts.test_artifact_service import FakeAzureObjectStore
 from ...artifacts.test_artifact_service import FakeFsspecObjectStore
+from ...artifacts.test_artifact_service import FakeS3ObjectStore
 from ...artifacts.test_artifact_service import FIXED_DATETIME
 from ...artifacts.test_artifact_service import mock_gcs_artifact_service
 
@@ -92,13 +96,13 @@ def _enable_feature() -> Iterator[None]:
 
 
 @pytest.fixture
-def store() -> FakeFsspecObjectStore:
-  return FakeFsspecObjectStore()
+def store(request: pytest.FixtureRequest) -> FakeFsspecObjectStore:
+  return getattr(request, "param", FakeFsspecObjectStore)()
 
 
 @pytest.fixture
 def svc(store: FakeFsspecObjectStore) -> FsspecArtifactService:
-  return FsspecArtifactService("gs://b", fs=store)
+  return FsspecArtifactService(f"{store.protocol[0]}://b", fs=store)
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +780,11 @@ async def test_save_artifact_standard_gcs_lookup_passes_upload_kwargs() -> None:
   )
 
 
+@pytest.mark.parametrize(
+    "store",
+    [FakeFsspecObjectStore, FakeS3ObjectStore, FakeAzureObjectStore],
+    indirect=True,
+)
 async def test_save_artifact_reserves_concurrent_versions(
     store: FakeFsspecObjectStore, svc: FsspecArtifactService
 ) -> None:
@@ -1114,6 +1123,14 @@ async def test_listing_missing_prefix_returns_empty(
             {"timeCreated": "not-a-timestamp", "mtime": 1234.0},
             1234.0,
         ),
+        (
+            {
+                "creation_time": datetime(
+                    2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc
+                )
+            },
+            datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp(),
+        ),
         ({"timeCreated": None}, 9876.5),
     ],
 )
@@ -1128,7 +1145,7 @@ async def test_get_artifact_version_parses_backend_timestamps(
   store.objects["b/app/u/s/f.txt/0"][1].update(info_fields)
 
   with mock.patch.object(
-      _fsspec_artifact_service.platform_time,
+      _backends.platform_time,
       "get_time",
       return_value=9876.5,
   ):
@@ -1136,6 +1153,488 @@ async def test_get_artifact_version_parses_backend_timestamps(
 
   assert version_meta is not None
   assert version_meta.create_time == expected_timestamp
+
+
+# ---------------------------------------------------------------------------
+# S3 metadata
+# ---------------------------------------------------------------------------
+
+
+async def test_s3_metadata_keys_follow_s3_key_rules() -> None:
+  """S3 returns keys lowercased with "_" as "-". ADK's keys are mapped back."""
+  s3 = FakeS3ObjectStore()
+  s3.pipe_file(
+      "b/app/u/s/legacy.pdf/0",
+      b"",
+      ContentType="application/pdf",
+      Metadata={"file_uri": "s3://other/legacy.pdf"},
+  )
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  await svc.save_artifact(
+      **SCOPE,
+      filename="notes",
+      artifact=types.Part(text="hi"),
+      custom_metadata={"userId": "42", "trace_id": "abc"},
+  )
+
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="notes")
+
+  assert await svc.load_artifact(**SCOPE, filename="notes") == types.Part(
+      text="hi"
+  )
+  assert version_meta is not None
+  assert version_meta.custom_metadata == {"userid": "42", "trace-id": "abc"}
+  assert await svc.load_artifact(**SCOPE, filename="legacy.pdf") == types.Part(
+      file_data=types.FileData(
+          file_uri="s3://other/legacy.pdf", mime_type="application/pdf"
+      )
+  )
+
+
+@pytest.mark.parametrize(
+    ("artifact", "custom_metadata", "match"),
+    [
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"adkistext": "true"},
+            "same key as 'adkIsText'",
+            id="lowercased-adk-key",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"FILE_URI": "s3://x/y"},
+            "same key as 'file_uri'",
+            id="legacy-key-with-underscore",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"note": "\u4f60\u597d"},
+            "ASCII values",
+            id="non-ascii-value",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"userId": "1", "userid": "2"},
+            "same key as 'userId'",
+            id="keys-differing-in-case",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"a_b": "1", "a-b": "2"},
+            "same key as 'a_b'",
+            id="underscore-and-dash",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"bad key": "v"},
+            "HTTP header name keys",
+            id="key-with-space",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"": "v"},
+            "HTTP header name keys",
+            id="empty-key",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"note": "a\nb"},
+            "printable ASCII values",
+            id="control-character",
+        ),
+        pytest.param(
+            types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+            {"note": " x"},
+            "without spaces at either end",
+            id="leading-space",
+        ),
+    ],
+)
+async def test_s3_rejects_metadata_it_cannot_store(
+    artifact: types.Part,
+    custom_metadata: Optional[dict[str, Any]],
+    match: str,
+) -> None:
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+
+  with pytest.raises(InputValidationError, match=match):
+    await svc.save_artifact(
+        **SCOPE,
+        filename="doc",
+        artifact=artifact,
+        custom_metadata=custom_metadata,
+    )
+
+  assert not s3.objects
+
+
+async def test_s3_keeps_caller_metadata_as_given() -> None:
+  """Token keys and values with "%" or inner spaces are stored unchanged."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+
+  await svc.save_artifact(
+      **SCOPE,
+      filename="doc",
+      artifact=types.Part(text="hi"),
+      custom_metadata={"a.b": "50% off, now"},
+  )
+
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="doc")
+  assert version_meta is not None
+  assert version_meta.custom_metadata == {"a.b": "50% off, now"}
+  assert s3.head_metadata["b/app/u/s/doc/0"]["a.b"] == "50% off, now"
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        pytest.param(
+            types.Part(
+                inline_data=types.Blob(
+                    data=b"x",
+                    mime_type="image/png",
+                    display_name=" \u56fe 100%.png ",
+                )
+            ),
+            id="display-name",
+        ),
+        pytest.param(
+            types.Part(
+                file_data=types.FileData(
+                    file_uri="s3://other/\u56fe%20x.pdf",
+                    mime_type="application/pdf",
+                )
+            ),
+            id="file-uri",
+        ),
+    ],
+)
+async def test_s3_round_trips_non_ascii_adk_values(
+    artifact: types.Part,
+) -> None:
+  """ADK's own values are percent-encoded so S3 stores ASCII only."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+
+  await svc.save_artifact(**SCOPE, filename="doc", artifact=artifact)
+
+  assert await svc.load_artifact(**SCOPE, filename="doc") == artifact
+  stored = s3.head_metadata["b/app/u/s/doc/0"]
+  # S3 only keeps ASCII and trims spaces from the ends of values.
+  assert all(
+      value.isascii() and value == value.strip() for value in stored.values()
+  )
+
+
+async def test_s3_conditional_request_conflict_retries_next_version() -> None:
+  """A 409 ConditionalRequestConflict moves the save to the next version."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  real_pipe_file = s3.pipe_file
+  conflicted = False
+
+  def pipe_file_with_conflict(path: str, value: bytes, **kwargs: Any) -> None:
+    nonlocal conflicted
+    if not conflicted:
+      conflicted = True
+      # s3fs raises a generic OSError caused by botocore's ClientError.
+      client_error = Exception("ConditionalRequestConflict")
+      client_error.response = {"Error": {"Code": "ConditionalRequestConflict"}}
+      raise OSError("conditional request conflict") from client_error
+    real_pipe_file(path, value, **kwargs)
+
+  with mock.patch.object(s3, "pipe_file", side_effect=pipe_file_with_conflict):
+    version = await svc.save_artifact(
+        **SCOPE, filename="doc", artifact=types.Part(text="hi")
+    )
+
+  assert version == 1
+  assert await svc.load_artifact(**SCOPE, filename="doc") == types.Part(
+      text="hi"
+  )
+
+
+async def test_s3_untyped_content_gets_default_content_type() -> None:
+  """Untyped content is stored like on GCS and Azure, not as binary/..."""
+  s3 = FakeS3ObjectStore()
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  await svc.save_artifact(
+      **SCOPE,
+      filename="ref",
+      artifact=types.Part(file_data=types.FileData(file_uri="s3://other/x")),
+  )
+
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="ref")
+
+  assert s3.info("b/app/u/s/ref/0")["ContentType"] == "application/octet-stream"
+  assert version_meta is not None
+  assert version_meta.mime_type == "application/octet-stream"
+
+
+@pytest.mark.parametrize("deleted_before", ["info", "metadata"])
+async def test_s3_version_deleted_during_read_is_missing(
+    deleted_before: str,
+) -> None:
+  """A version deleted before info() or HeadObject reads as missing."""
+  s3 = FakeS3ObjectStore()
+  for version in (0, 1):
+    s3.pipe_file(f"b/app/u/s/doc/{version}", b"x", ContentType="text/plain")
+  svc = FsspecArtifactService("s3://b", fs=s3)
+  real_call = getattr(s3, deleted_before)
+
+  def fail_for_version_0(path: str, **kwargs: Any) -> Any:
+    if path.endswith("/0"):
+      raise FileNotFoundError(path)
+    return real_call(path, **kwargs)
+
+  with mock.patch.object(s3, deleted_before, side_effect=fail_for_version_0):
+    version_meta = await svc.get_artifact_version(
+        **SCOPE, filename="doc", version=0
+    )
+    versions = await svc.list_artifact_versions(**SCOPE, filename="doc")
+
+  assert version_meta is None
+  assert [av.version for av in versions] == [1]
+
+
+# ---------------------------------------------------------------------------
+# Azure metadata
+# ---------------------------------------------------------------------------
+
+
+async def test_azure_metadata_round_trips() -> None:
+  """ADK metadata round-trips through Azure's ASCII-only metadata."""
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+  parts = {
+      "notes": types.Part(text="hi"),
+      "chart": types.Part(
+          inline_data=types.Blob(
+              data=b"x",
+              mime_type="image/png",
+              display_name=" \u56fe 100%.png ",
+          )
+      ),
+      "ref": types.Part(
+          file_data=types.FileData(
+              file_uri="s3://other/\u56fe%20x.pdf", mime_type="application/pdf"
+          )
+      ),
+      "empty": types.Part.from_bytes(data=b"", mime_type="text/plain"),
+  }
+  for filename, part in parts.items():
+    await svc.save_artifact(
+        **SCOPE,
+        filename=filename,
+        artifact=part,
+        custom_metadata={"userId": "42", "trace_id": "abc"},
+    )
+
+  for filename, part in parts.items():
+    assert await svc.load_artifact(**SCOPE, filename=filename) == part
+  version_meta = await svc.get_artifact_version(**SCOPE, filename="notes")
+  assert version_meta is not None
+  # Unlike S3, Azure keeps key case.
+  assert version_meta.custom_metadata == {"userId": "42", "trace_id": "abc"}
+  stored = [entry["metadata"] for _, entry in azure.objects.values()]
+  assert all("is_directory" not in metadata for metadata in stored)
+  # Azure only keeps ASCII and trims spaces from the ends of values.
+  assert all(
+      value.isascii() and value == value.strip()
+      for metadata in stored
+      for value in metadata.values()
+  )
+
+
+@pytest.mark.parametrize(
+    ("custom_metadata", "match"),
+    [
+        ({"x-trace": "1"}, "C# identifier keys"),
+        ({"note": "\u4f60\u597d"}, "ASCII values"),
+        ({"note": "x\t"}, "without spaces at either end"),
+        ({"adkistext": "true"}, "same key as 'adkIsText'"),
+        ({"is_directory": "true"}, "same key as 'is_directory'"),
+        ({"Is_Directory": "true"}, "same key as 'is_directory'"),
+        ({"hdi_isfolder": "true"}, "same key as 'hdi_isfolder'"),
+        ({"userId": "1", "userid": "2"}, "same key as 'userId'"),
+    ],
+)
+async def test_azure_rejects_metadata_it_cannot_store(
+    custom_metadata: dict[str, str], match: str
+) -> None:
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+
+  with pytest.raises(InputValidationError, match=match):
+    await svc.save_artifact(
+        **SCOPE,
+        filename="doc",
+        artifact=types.Part.from_bytes(data=b"x", mime_type="text/plain"),
+        custom_metadata=custom_metadata,
+    )
+
+  assert not azure.objects
+
+
+@pytest.mark.parametrize(
+    ("error_code", "retried"),
+    [
+        ("BlobAlreadyExists", True),
+        ("ConditionNotMet", True),
+        ("ContainerBeingDeleted", False),
+    ],
+)
+async def test_azure_wrapped_conflict_retries_only_blob_exists(
+    error_code: str, retried: bool
+) -> None:
+  """Errors adlfs wraps in RuntimeError retry only when the blob exists."""
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+  azure_error = Exception(error_code)
+  azure_error.error_code = error_code
+  real_open = azure.open
+
+  class FailingWriter:
+    closed = False
+
+    def write(self, data: bytes) -> int:
+      return len(data)
+
+    def close(self) -> None:
+      raise RuntimeError("Failed to upload block!") from azure_error
+
+  def open_with_error(path: str, mode: str = "rb", **kwargs: Any) -> Any:
+    if path.endswith("/0"):
+      return FailingWriter()
+    return real_open(path, mode, **kwargs)
+
+  with mock.patch.object(azure, "open", side_effect=open_with_error):
+    if retried:
+      version = await svc.save_artifact(
+          **SCOPE, filename="doc", artifact=types.Part(text="hi")
+      )
+      assert version == 1
+    else:
+      with pytest.raises(RuntimeError, match="Failed to upload block"):
+        await svc.save_artifact(
+            **SCOPE, filename="doc", artifact=types.Part(text="hi")
+        )
+
+
+async def test_azure_artifact_nested_under_a_version_is_visible() -> None:
+  """adlfs find(path) returns [path] for a blob. Listings must not use it."""
+  svc = FsspecArtifactService("abfs://b", fs=FakeAzureObjectStore())
+  await svc.save_artifact(**SCOPE, filename="a", artifact=types.Part(text="a"))
+  await svc.save_artifact(
+      **SCOPE, filename="a/0", artifact=types.Part(text="child")
+  )
+
+  assert await svc.list_versions(**SCOPE, filename="a/0") == [0]
+  assert await svc.load_artifact(**SCOPE, filename="a/0") == types.Part(
+      text="child"
+  )
+  await svc.delete_artifact(**SCOPE, filename="a/0")
+  assert await svc.list_versions(**SCOPE, filename="a/0") == []
+  assert await svc.list_versions(**SCOPE, filename="a") == [0]
+
+
+async def test_azure_reads_adk_keys_in_any_case_and_hides_adlfs_keys() -> None:
+  """Metadata from other clients maps ADK keys back and hides adlfs's keys."""
+  azure = FakeAzureObjectStore()
+  # A listing of the parent cached before another client saved version 0.
+  azure.dircache["b/app/u/s/doc"] = []
+  azure.put(
+      "b/app/u/s/doc/0",
+      b"hi",
+      metadata={
+          "ADKISTEXT": "true",
+          "is_directory": "false",
+          "Hdi_isfolder": "false",
+          "userKey": "v",
+      },
+  )
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+
+  version_meta = await svc.get_artifact_version(
+      **SCOPE, filename="doc", version=0
+  )
+
+  assert await svc.load_artifact(**SCOPE, filename="doc") == types.Part(
+      text="hi"
+  )
+  assert version_meta is not None
+  assert version_meta.custom_metadata == {"userKey": "v"}
+
+
+@pytest.mark.parametrize(
+    ("adlfs_version", "rejected"),
+    [
+        ("2024.12.0", True),
+        ("2026.5.0", True),
+        ("2026.8.0", False),
+        ("UNKNOWN", False),
+    ],
+)
+async def test_azure_save_checks_adlfs_version(
+    adlfs_version: str, rejected: bool
+) -> None:
+  """adlfs before 2026.8.0 drops content_settings, so saving is rejected."""
+  adlfs = SimpleNamespace(__version__=adlfs_version)
+  with mock.patch.dict(sys.modules, {"adlfs": adlfs}):
+    svc = FsspecArtifactService("abfs://b", fs=FakeAzureObjectStore())
+
+  assert await svc.list_artifact_keys(**SCOPE) == []
+  save = svc.save_artifact(
+      **SCOPE, filename="doc", artifact=types.Part(text="hi")
+  )
+  if rejected:
+    with pytest.raises(ImportError, match="adlfs 2026.8.0"):
+      await save
+  else:
+    assert await save == 0
+
+
+async def test_azure_failed_write_is_not_committed_later() -> None:
+  """A failed write is not committed when its writer is finalized later."""
+  azure = FakeAzureObjectStore()
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+  writers = []
+  real_open = azure.open
+
+  def open_failing_writer(*args: Any, **kwargs: Any) -> Any:
+    writer = real_open(*args, **kwargs)
+    writer.write = mock.Mock(side_effect=OSError("network"))
+    writers.append(writer)
+    return writer
+
+  with mock.patch.object(azure, "open", side_effect=open_failing_writer):
+    with pytest.raises(OSError, match="network"):
+      await svc.save_artifact(
+          **SCOPE, filename="doc", artifact=types.Part(text="hi")
+      )
+  # Garbage collection calls __del__(), which commits an unclosed writer.
+  # The test's event loop keeps the writer alive, so call it directly.
+  writers.pop().__del__()
+
+  assert not azure.objects
+
+
+async def test_azure_empty_payload_conflict_retries_next_version() -> None:
+  """adlfs's ResourceExistsError for empty payloads retries the next version."""
+  azure = FakeAzureObjectStore()
+  azure.put("b/app/u/s/doc/0", b"")
+  svc = FsspecArtifactService("abfs://b", fs=azure)
+
+  with mock.patch.object(azure, "find", return_value={}):
+    version = await svc.save_artifact(
+        **SCOPE,
+        filename="doc",
+        artifact=types.Part.from_bytes(data=b"", mime_type="text/plain"),
+    )
+
+  assert version == 1
 
 
 # ---------------------------------------------------------------------------

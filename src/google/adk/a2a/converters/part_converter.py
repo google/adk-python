@@ -22,9 +22,6 @@ import base64
 from collections.abc import Callable
 import logging
 from typing import Any
-from typing import List
-from typing import Optional
-from typing import Union
 
 from a2a import types as a2a_types
 from google.genai import types as genai_types
@@ -106,17 +103,17 @@ def _media_control_fields(meta: Any) -> tuple[dict[str, Any], Any]:
 
 A2APartToGenAIPartConverter = Callable[
     [a2a_types.Part],
-    Union[Optional[genai_types.Part], List[genai_types.Part]],
+    genai_types.Part | None | list[genai_types.Part],
 ]
 GenAIPartToA2APartConverter = Callable[
     [genai_types.Part],
-    Union[Optional[a2a_types.Part], List[a2a_types.Part]],
+    a2a_types.Part | None | list[a2a_types.Part],
 ]
 
 
 def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
-) -> Optional[genai_types.Part]:
+) -> genai_types.Part | None:
   """Convert an A2A Part to a Google GenAI Part."""
 
   # part_metadata is only accepted by the Gemini Developer API. In Vertex AI /
@@ -261,7 +258,7 @@ def convert_a2a_part_to_genai_part(
 
 def convert_genai_part_to_a2a_part(
     part: genai_types.Part,
-) -> Optional[a2a_types.Part]:
+) -> a2a_types.Part | None:
   """Convert a Google GenAI Part to an A2A Part.
 
   Version-agnostic: A2A parts are built through the ``_compat`` builders

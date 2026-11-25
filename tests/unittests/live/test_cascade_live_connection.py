@@ -1456,3 +1456,12 @@ def test_only_gemini_sends_google_tracking_headers():
   assert not _cascade_live_connection._sends_google_tracking_headers(
       ScriptedReasoner()
   )
+
+
+async def test_send_context_update_sends_nothing_to_models():
+  llm, stt, tts = mock.MagicMock(), mock.MagicMock(), mock.MagicMock()
+  connection = CascadeLiveConnection(LlmRequest(), llm, stt, tts)
+
+  await connection.send_context_update(system_instruction='Be brief.')
+
+  assert llm.mock_calls + stt.mock_calls + tts.mock_calls == []

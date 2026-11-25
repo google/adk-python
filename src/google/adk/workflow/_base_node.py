@@ -98,10 +98,15 @@ class BaseNode(BaseModel, abc.ABC):
   attempt had completed, at any depth below the node, instead of running
   them again.
 
-  On a ``Workflow``, a failure of any node inside it is a failure of the
-  workflow, so the whole sub-workflow is retried. Children that already
-  produced an output or a state change are replayed rather than run again;
-  a child that produced neither leaves nothing to replay and runs again.
+  On a ``Workflow``, static graph children that have no ``retry_config`` of
+  their own inherit this one. They take it when the workflow is built or
+  copied (``Workflow(...)``, ``node(workflow, retry_config=...)``); the field
+  is frozen on ``Workflow``, so assigning it to an existing workflow raises
+  ``pydantic.ValidationError``. A failed child is retried in place with its
+  own budget while its siblings keep running; once that budget is spent, the
+  workflow fails and is not retried on top. A failure of the workflow itself,
+  such as its ``timeout``, still retries the whole workflow; see the
+  RetryConfig guide for how that interacts with the children's budgets.
 
   On a parallel worker (``parallel_worker=True``), the policy applies to each
   item: a failed item is retried in place while the other items keep
