@@ -15610,11 +15610,12 @@ class TestEvalViews:
             "INVOCATION_COMPLETED",
             session_id="s-callable",
         ),
-        # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt,
+        # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt
+        # (so turn_view uses Turn 2's prompt while session_view keeps Turn 1's),
         # and sub_agent logs AGENT_STARTING with {"text_summary": ""} (to
         # exercise NULLIF(instruction, '') in AgentConfigs) without a new
-        # LLM_REQUEST; both still resolve to their earliest session
-        # system_prompt in turn_view and session_view.
+        # LLM_REQUEST (so both turn_view and session_view fall back to its
+        # earliest session system_prompt).
         event(
             "inv-callable-2",
             20,
@@ -15710,7 +15711,7 @@ class TestEvalViews:
         turn_rows["inv-callable-2"]["trace"]["agents"]["root_agent"][
             "instruction"
         ]
-        == "Earliest session system prompt."
+        == "Later turn 2 system prompt."
     )
     assert (
         session_rows["s-callable"]["trace"]["agents"]["sub_agent"][
@@ -17123,9 +17124,10 @@ class TestEvalViews:
     """A row that the where_clause picks keeps its session's earlier turns.
 
     The where_clause picks rows that are rebuilt from every event, so a turn
-    keeps its turn_index and the system prompt that its session logged first.
-    A raw_where_clause that drops the earlier turn's events rebuilds the
-    session without them.
+    keeps its turn_index and can fall back to the system prompt that its
+    session logged first when it logs no LLM_REQUEST of its own, while an agent
+    that logs a prompt in the turn keeps that turn's prompt. A raw_where_clause
+    that drops the earlier turn's events rebuilds the session without them.
     """
     event = self._event
     rows = []
@@ -17149,17 +17151,38 @@ class TestEvalViews:
           event(
               invocation_id,
               second + 3,
+              "AGENT_STARTING",
+              None,
+              agent="helper_agent",
+          ),
+      ]
+      if turn_index == 0:
+        rows.append(
+            event(
+                invocation_id,
+                second + 4,
+                "LLM_REQUEST",
+                {"system_prompt": "Helper prompt of turn 0"},
+                agent="helper_agent",
+            )
+        )
+      rows += [
+          event(
+              invocation_id,
+              second + 5,
               "AGENT_RESPONSE",
               {"response": "text: 'Done.'"},
           ),
-          event(invocation_id, second + 4, "INVOCATION_COMPLETED"),
+          event(invocation_id, second + 6, "INVOCATION_COMPLETED"),
       ]
     second_turn = "invocation_id = 'inv-1'"
 
-    def only_row(sql: str, column: str) -> tuple[Any, Any]:
-      """Returns ``column`` and the root agent's instruction of the one row."""
+    def only_row(
+        sql: str, column: str, agent: str = "root_agent"
+    ) -> tuple[Any, Any]:
+      """Returns ``column`` and ``agent``'s instruction of the one row."""
       (row,) = _EvalViewSqlEvaluator(sql).run(rows)
-      return row[column], row["trace"]["agents"]["root_agent"]["instruction"]
+      return row[column], row["trace"]["agents"][agent]["instruction"]
 
     build_session_query = (
         bigquery_agent_analytics_plugin.build_eval_session_query_sql
@@ -17168,10 +17191,20 @@ class TestEvalViews:
 
     assert only_row(
         build_turn_query("p.d.t", where_clause=second_turn), "turn_index"
-    ) == (1, "Prompt of turn 0")
+    ) == (1, "Prompt of turn 1")
+    assert only_row(
+        build_turn_query("p.d.t", where_clause=second_turn),
+        "turn_index",
+        agent="helper_agent",
+    ) == (1, "Helper prompt of turn 0")
     assert only_row(
         build_turn_query("p.d.t", raw_where_clause=second_turn), "turn_index"
     ) == (0, "Prompt of turn 1")
+    assert only_row(
+        build_turn_query("p.d.t", raw_where_clause=second_turn),
+        "turn_index",
+        agent="helper_agent",
+    ) == (0, "")
     assert only_row(
         build_session_query("p.d.t", where_clause="turn_count = 2"),
         "turn_count",
@@ -17700,7 +17733,7 @@ class TestEvalViews:
 
     # Two events at the same timestamp tested in both input orders: TurnRollup
     # picks lowest event_id (a-first) and AgentLatest picks highest event_id
-    # (b-second) for config fields.
+    # (b-second) for config fields and lowest event_id for scoped_system_prompt.
     same_ts_rows = [
         event(
             "inv-1",

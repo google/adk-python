@@ -507,12 +507,12 @@ def test_events_table_is_read_once_for_the_events_of_a_turn(
 def test_instruction_falls_back_to_the_logged_system_prompt(
     bodies: dict[str, str],
 ) -> None:
-  """An agent's instruction is its AGENT_STARTING text, else its prompt."""
+  """An agent's instruction prefers scoped prompt, then session prompt."""
   sql = _squash(bodies[_CTE_FILE])
 
   assert (
-      "'instruction', COALESCE(NULLIF(instruction, ''), logged_system_prompt,"
-      " '')"
+      "'instruction', COALESCE(NULLIF(instruction, ''), scoped_system_prompt,"
+      " logged_system_prompt, '')"
   ) in sql
 
 
@@ -640,6 +640,11 @@ def test_agent_latest_and_session_rollup_use_deterministic_tiebreakers(
         f"{column} IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1"
         in agent_latest_sql
     )
+  assert (
+      "system_prompt IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1"
+      in agent_latest_sql
+  )
+  assert "AS scoped_system_prompt" in agent_latest_sql
   assert (
       "user_id IGNORE NULLS ORDER BY turn_start_timestamp, invocation_id"
       " LIMIT 1"
