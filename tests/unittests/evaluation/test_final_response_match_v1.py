@@ -24,6 +24,7 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
 from google.adk.evaluation.final_response_match_v1 import _is_cjk
 from google.adk.evaluation.final_response_match_v1 import _is_non_spaced_script
+from google.adk.evaluation.final_response_match_v1 import _is_script_separator
 from google.adk.evaluation.final_response_match_v1 import _is_word_char
 from google.adk.evaluation.final_response_match_v1 import _UnicodeAwareTokenizer
 from google.adk.evaluation.final_response_match_v1 import RougeEvaluator
@@ -203,6 +204,102 @@ def test_unicode_aware_tokenizer_all_branches_coverage(
   """Verifies 100% branch coverage for all script types, combining marks, stemmer flag, and punctuation handling."""
   tokenizer = _UnicodeAwareTokenizer(use_stemmer=use_stemmer)
   assert tokenizer.tokenize(input_text) == expected_tokens
+
+
+@pytest.mark.parametrize(
+    "unspaced, spaced",
+    [
+        # A digit or a Latin word written right after the letters of a
+        # non-spaced script must tokenize like the same text with a space.
+        ("ราคา100", "ราคา 100"),
+        ("ซื้อiPhone", "ซื้อ iPhone"),
+        ("ລາຄາ100", "ລາຄາ 100"),
+        ("តម្លៃ100", "តម្លៃ 100"),
+        ("ဈေးနှုန်း100", "ဈေးနှုန်း 100"),
+        ("ดีabc", "ดี abc"),
+        # The reversed order already worked and has to keep working.
+        ("100บาท", "100 บาท"),
+        ("iPhoneซื้อ", "iPhone ซื้อ"),
+    ],
+)
+def test_unicode_aware_tokenizer_ignores_spacing_after_unspaced_script(
+    unspaced: str, spaced: str
+):
+  """Digits and Latin words after a cluster are tokens of their own."""
+  tokenizer = _UnicodeAwareTokenizer()
+  assert tokenizer.tokenize(unspaced) == tokenizer.tokenize(spaced)
+
+
+def test_unicode_aware_tokenizer_splits_digits_after_thai_word():
+  """ราคา100 tokenizes as ['ร', 'า', 'ค', 'า', '100'], not [..., 'า100']."""
+  assert _UnicodeAwareTokenizer().tokenize("ราคา100") == [
+      "ร",
+      "า",
+      "ค",
+      "า",
+      "100",
+  ]
+
+
+def test_unicode_aware_tokenizer_splits_latin_word_after_thai_word():
+  """ซื้อiPhone ends with the Latin word as its own token."""
+  assert _UnicodeAwareTokenizer().tokenize("ซื้อiPhone") == [
+      "ซื้",
+      "อ",
+      "iphone",
+  ]
+
+
+@pytest.mark.parametrize(
+    "with_punctuation, without",
+    [
+        # Khmer khan ends a sentence the way a full stop does.
+        ("ទេ។", "ទេ"),
+        # The Myanmar section sign plays the same role.
+        ("ဟုတ်ကဲ့။", "ဟုတ်ကဲ့"),
+        # The Thai baht sign is a currency symbol, not a word.
+        ("฿100", "100"),
+        # A separator after a space must not leave an empty token behind.
+        ("តម្លៃ 100 ។", "តម្លៃ 100"),
+    ],
+)
+def test_unicode_aware_tokenizer_drops_unspaced_script_punctuation(
+    with_punctuation: str, without: str
+):
+  """Punctuation and symbols of these blocks separate words as elsewhere."""
+  tokenizer = _UnicodeAwareTokenizer()
+  assert tokenizer.tokenize(with_punctuation) == tokenizer.tokenize(without)
+
+
+def test_unicode_aware_tokenizer_drops_khmer_and_myanmar_full_stops():
+  """The Khmer ។, Myanmar ။ and Thai ฿ characters are never tokens."""
+  tokenizer = _UnicodeAwareTokenizer()
+  assert tokenizer.tokenize("ទេ។") == ["ទេ"]
+  assert tokenizer.tokenize("฿100") == ["100"]
+  assert "។" not in tokenizer.tokenize("តម្លៃ។")
+  assert "။" not in tokenizer.tokenize("ဟုတ်ကဲ့။")
+
+
+@pytest.mark.parametrize(
+    "char, expected",
+    [
+        ("។", True),  # Khmer khan
+        ("៕", True),  # Khmer camnuc pii kuuh
+        ("၊", True),  # Myanmar comma
+        ("။", True),  # Myanmar section sign
+        ("฿", True),  # Thai baht sign
+        ("๏", True),  # Thai fongman
+        ("ส", False),  # Thai letter
+        ("ี", False),  # Thai combining mark
+        ("๐", False),  # Thai digit zero
+        ("ក", False),  # Khmer letter
+        ("a", False),
+        ("!", False),  # ASCII punctuation is not in these blocks
+    ],
+)
+def test_is_script_separator(char: str, expected: bool):
+  """Tests _is_script_separator for punctuation and symbols of these blocks."""
+  assert _is_script_separator(char) == expected
 
 
 @pytest.mark.parametrize(
@@ -424,3 +521,61 @@ def test_rouge_evaluator_ignores_thought_parts():
   evaluation_result = rouge_evaluator.evaluate_invocations([actual], [expected])
 
   assert evaluation_result.overall_score == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "answer, reference",
+    [
+        ("ราคา100", "ราคา 100"),
+        ("ซื้อiPhone", "ซื้อ iPhone"),
+        ("ລາຄາ100", "ລາຄາ 100"),
+        ("តម្លៃ100", "តម្លៃ 100"),
+        ("តម្លៃ 100 ។", "តម្លៃ 100"),
+        ("ဈေးနှုန်း100", "ဈေးနှုန်း 100"),
+        ("ទេ។", "ទេ"),
+        ("ဟုတ်ကဲ့။", "ဟုတ်ကဲ့"),
+        ("฿100", "100"),
+        ("价格100", "价格 100"),
+        ("$100.", "100"),
+    ],
+    ids=[
+        "thai-digits",
+        "thai-latin-word",
+        "lao-digits",
+        "khmer-digits",
+        "khmer-trailing-full-stop",
+        "myanmar-digits",
+        "khmer-full-stop",
+        "myanmar-full-stop",
+        "thai-baht-sign",
+        "chinese-digits-control",
+        "ascii-sign-control",
+    ],
+)
+def test_rouge_evaluator_ignores_spacing_and_punctuation_of_script_words(
+    answer: str, reference: str
+):
+  """The same answer written with or without a space or full stop scores 1.0.
+
+  Regression test for issue #8299: ROUGE-1 with the default 0.8 pass mark
+  failed correct Thai, Lao, Khmer and Myanmar answers that differed from the
+  reference only in this spacing or in a final full stop.
+  """
+  rouge_evaluator = _create_test_rouge_evaluator(threshold=0.8)
+  actual, expected = _create_test_invocations(answer, reference)
+
+  evaluation_result = rouge_evaluator.evaluate_invocations([actual], [expected])
+
+  assert evaluation_result.overall_score == pytest.approx(1.0)
+  assert evaluation_result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_rouge_evaluator_still_compares_digits_after_script_letters():
+  """Closing the cluster must not make different numbers look identical."""
+  rouge_evaluator = _create_test_rouge_evaluator(threshold=0.8)
+  actual, expected = _create_test_invocations("ราคา100", "ราคา 200")
+
+  evaluation_result = rouge_evaluator.evaluate_invocations([actual], [expected])
+
+  # Four of the five tokens are shared, so the digits are still compared.
+  assert evaluation_result.overall_score == pytest.approx(4 / 5)
