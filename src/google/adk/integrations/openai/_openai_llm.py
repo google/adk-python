@@ -149,6 +149,12 @@ def _content_to_openai_messages(
               else ""
           ),
       })
+    elif part.thought and role == "assistant":
+      # Don't replay the model's earlier reasoning, matching
+      # OpenAIResponsesLlm. Sent back as "Thought: ..." text it would read as
+      # part of the visible answer, and DeepSeek asks clients not to send
+      # reasoning_content back in later requests.
+      continue
     else:
       content_parts.append(_part_to_openai_content(part))
 

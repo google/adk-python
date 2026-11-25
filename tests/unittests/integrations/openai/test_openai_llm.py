@@ -1854,3 +1854,75 @@ async def test_streaming_reasoning_only_with_length_finish_is_error():
   final = responses[-1]
   assert final.content is None
   assert final.error_code == types.FinishReason.MAX_TOKENS
+
+
+def test_content_to_openai_messages_drops_assistant_thoughts():
+  """Earlier reasoning is not sent back as part of the assistant message."""
+  from google.adk.integrations.openai._openai_llm import _content_to_openai_messages
+
+  content = Content(
+      role="model",
+      parts=[
+          Part(text="Let me think.", thought=True),
+          Part.from_text(text="Paris."),
+      ],
+  )
+
+  assert _content_to_openai_messages(content) == [
+      {"role": "assistant", "content": "Paris."}
+  ]
+
+
+def test_content_to_openai_messages_keeps_tool_calls_after_dropped_thought():
+  """Dropping the thought keeps the tool call and sends no empty content."""
+  from google.adk.integrations.openai._openai_llm import _content_to_openai_messages
+
+  content = Content(
+      role="model",
+      parts=[
+          Part(text="I should look this up.", thought=True),
+          Part(
+              function_call=types.FunctionCall(
+                  id="call_1", name="get_weather", args={"city": "Paris"}
+              )
+          ),
+      ],
+  )
+
+  messages = _content_to_openai_messages(content)
+
+  assert len(messages) == 1
+  assert "content" not in messages[0]
+  assert messages[0]["tool_calls"][0]["id"] == "call_1"
+
+
+def test_content_to_openai_messages_thought_only_assistant_turn_is_skipped():
+  """An assistant turn with only reasoning produces no message at all."""
+  from google.adk.integrations.openai._openai_llm import _content_to_openai_messages
+
+  content = Content(
+      role="model", parts=[Part(text="Let me think.", thought=True)]
+  )
+
+  assert _content_to_openai_messages(content) == []
+
+
+@pytest.mark.asyncio
+async def test_parsed_reasoning_is_not_replayed_on_the_next_request():
+  """A thought part parsed from one response is not sent in the next request."""
+  openai_llm = OpenAILlm(model="deepseek-reasoner", api_key="k")
+  first = _response_to_llm_response(_reasoning_completion("reasoning_content"))
+  llm_request = LlmRequest(
+      model="deepseek-reasoner",
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Hi")]),
+          first.content,
+          Content(role="user", parts=[Part.from_text(text="And Spain?")]),
+      ],
+  )
+
+  kwargs = await _capture_chat_kwargs(openai_llm, llm_request)
+
+  assistant = [m for m in kwargs["messages"] if m["role"] == "assistant"]
+  assert assistant == [{"role": "assistant", "content": "Hi"}]
+  assert "Let me think." not in json.dumps(kwargs["messages"])
