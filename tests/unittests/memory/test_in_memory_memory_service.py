@@ -1137,3 +1137,26 @@ async def test_add_session_to_memory_skips_rewound_events():
   )
   assert not rewound.memories
   assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_keeps_turns_outside_a_truncated_session():
+  """Turns missing from a session loaded with num_recent_events stay stored."""
+  memory_service = InMemoryMemoryService()
+  older = _text_event('older', 'trip to paris')
+  recent = _text_event('recent', 'flight to london')
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-truncated',
+      events=[older, recent],
+  )
+  await memory_service.add_session_to_memory(session)
+
+  session.events = [recent]
+  await memory_service.add_session_to_memory(session)
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paris'
+  )
+  assert [m.content.parts[0].text for m in result.memories] == ['trip to paris']
