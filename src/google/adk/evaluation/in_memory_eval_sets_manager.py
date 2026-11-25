@@ -60,6 +60,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
 
     new_eval_set = EvalSet(
         eval_set_id=eval_set_id,
+        name=eval_set_id,
         eval_cases=[],
         creation_timestamp=time.time(),
     )
