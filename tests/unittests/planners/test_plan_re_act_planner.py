@@ -193,3 +193,19 @@ def test_preserves_parallel_function_calls_after_leading_text():
   )
 
   assert _function_call_names(result) == ["get_weather", "get_time"]
+
+
+def test_drops_empty_named_calls_in_trailing_parallel_group():
+  """Empty-named calls are dropped from the whole group, not only the first."""
+  planner = PlanReActPlanner()
+  response_parts = [
+      types.Part.from_function_call(name="get_weather", args={"city": "SF"}),
+      types.Part.from_function_call(name="", args={}),
+      types.Part.from_function_call(name="get_time", args={"city": "SF"}),
+  ]
+
+  result = planner.process_planning_response(
+      callback_context=None, response_parts=response_parts
+  )
+
+  assert _function_call_names(result) == ["get_weather", "get_time"]
