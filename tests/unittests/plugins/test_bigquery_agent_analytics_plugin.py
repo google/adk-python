@@ -17691,6 +17691,271 @@ class TestEvalViews:
         [[{"text": expected}]] if expected is not None else []
     )
 
+  def test_eval_tiebreakers_and_session_root_agent_are_deterministic(
+      self,
+  ) -> None:
+    """Ties use event_id/invocation_id and SessionRollup keeps Turn 1 root."""
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    # Two events at the same timestamp tested in both input orders: TurnRollup
+    # picks lowest event_id (a-first) and AgentLatest picks highest event_id
+    # (b-second) for config fields.
+    same_ts_rows = [
+        event(
+            "inv-1",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Hi"},
+            event_id="b-second",
+            user_id="user-b",
+            agent="agent-b",
+            attributes={"root_agent_name": "root-b"},
+        ),
+        event(
+            "inv-1",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Hello"},
+            event_id="a-first",
+            user_id="user-a",
+            agent="agent-a",
+            attributes={"root_agent_name": "root-a"},
+        ),
+        event(
+            "inv-1",
+            1,
+            "AGENT_STARTING",
+            None,
+            event_id="b-second",
+            agent="agent-a",
+            attributes={
+                "agent_description": "desc-b",
+                "sub_agents": ["sub-b"],
+            },
+        ),
+        event(
+            "inv-1",
+            1,
+            "AGENT_STARTING",
+            None,
+            event_id="a-first",
+            agent="agent-a",
+            attributes={
+                "agent_description": "desc-a",
+                "sub_agents": ["sub-a"],
+            },
+        ),
+        event(
+            "inv-1",
+            1,
+            "AGENT_STARTING",
+            {"text_summary": "inst-b"},
+            event_id="b-second",
+            agent="agent-c",
+        ),
+        event(
+            "inv-1",
+            1,
+            "AGENT_STARTING",
+            {"text_summary": "inst-a"},
+            event_id="a-first",
+            agent="agent-c",
+        ),
+        event(
+            "inv-1",
+            2,
+            "LLM_REQUEST",
+            {"system_prompt": "prompt-b"},
+            event_id="b-second",
+            agent="agent-a",
+            attributes={"tools": [{"name": "tool_b", "description": "B"}]},
+        ),
+        event(
+            "inv-1",
+            2,
+            "LLM_REQUEST",
+            {"system_prompt": "prompt-a"},
+            event_id="a-first",
+            agent="agent-a",
+            attributes={"tools": [{"name": "tool_a", "description": "A"}]},
+        ),
+        event(
+            "inv-1",
+            3,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Done.'"},
+            event_id="c-reply",
+            agent="agent-a",
+        ),
+        event("inv-1", 4, "INVOCATION_COMPLETED", event_id="d-done"),
+    ]
+    for rows in (same_ts_rows, same_ts_rows[::-1]):
+      (turn_row,) = turn_view.run(rows)
+      assert turn_row["user_id"] == "user-a"
+      assert turn_row["root_agent"] == "root-a"
+      assert [
+          e["content"]["parts"][0]["text"]
+          for e in turn_row["trace"]["turns"][0]["events"]
+      ] == ["Hello", "Hi", "Done."]
+      agent_cfg = turn_row["trace"]["agents"]["agent-a"]
+      assert agent_cfg["instruction"] == "prompt-a"
+      assert agent_cfg["description"] == "desc-b"
+      assert agent_cfg["sub_agents"] == ["sub-b"]
+      assert [
+          d["name"] for d in agent_cfg["tools"][0]["function_declarations"]
+      ] == ["tool_b"]
+      assert turn_row["trace"]["agents"]["agent-c"]["instruction"] == "inst-b"
+
+    # Same-timestamp events without root_agent_name must tie-break first_agent
+    # by event_id in both input orders.
+    no_root_attr_rows = [
+        event(
+            "inv-no-root",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Hi"},
+            event_id="b-second",
+            agent="agent-b",
+            attributes=None,
+        ),
+        event(
+            "inv-no-root",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Hello"},
+            event_id="a-first",
+            agent="agent-a",
+            attributes=None,
+        ),
+        event(
+            "inv-no-root",
+            1,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Done.'"},
+            event_id="c-reply",
+            agent="agent-a",
+            attributes=None,
+        ),
+        event(
+            "inv-no-root",
+            2,
+            "INVOCATION_COMPLETED",
+            event_id="d-done",
+            agent="agent-a",
+            attributes=None,
+        ),
+    ]
+    for rows in (no_root_attr_rows, no_root_attr_rows[::-1]):
+      (no_root_row,) = turn_view.run(rows)
+      assert no_root_row["root_agent"] == "agent-a"
+
+    # Multi-turn root_agent split: Turn 1 has no root_agent_name attribute and
+    # logs agent='root_agent', while Turn 2 sets root_agent_name='sub_agent'.
+    # SessionRollup must keep Turn 1's root_agent, and same-timestamp turns
+    # must tie-break by invocation_id.
+    split_rows = [
+        event(
+            "inv-2",
+            10,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Follow-up"},
+            session_id="s-split",
+            user_id="user-2",
+            agent="sub_agent",
+            attributes={"root_agent_name": "sub_agent"},
+        ),
+        event(
+            "inv-2",
+            11,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Sub reply.'"},
+            session_id="s-split",
+            agent="sub_agent",
+            attributes={"root_agent_name": "sub_agent"},
+        ),
+        event(
+            "inv-2",
+            12,
+            "INVOCATION_COMPLETED",
+            session_id="s-split",
+            agent="sub_agent",
+            attributes={"root_agent_name": "sub_agent"},
+        ),
+        event(
+            "inv-1",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Start"},
+            session_id="s-split",
+            user_id="user-1",
+            agent="root_agent",
+            attributes=None,
+        ),
+        event(
+            "inv-1",
+            1,
+            "AGENT_RESPONSE",
+            {"response": "text: 'Root reply.'"},
+            session_id="s-split",
+            agent="root_agent",
+            attributes=None,
+        ),
+        event(
+            "inv-1",
+            2,
+            "INVOCATION_COMPLETED",
+            session_id="s-split",
+            agent="root_agent",
+            attributes=None,
+        ),
+        # Two turns starting at the exact same timestamp in reversed order.
+        event(
+            "inv-b",
+            20,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "B"},
+            session_id="s-tie",
+            user_id="user-b",
+            agent="agent-b",
+            attributes={"root_agent_name": "agent-b"},
+        ),
+        event(
+            "inv-b",
+            21,
+            "AGENT_RESPONSE",
+            {"response": "text: 'B.'"},
+            session_id="s-tie",
+            agent="agent-b",
+        ),
+        event("inv-b", 22, "INVOCATION_COMPLETED", session_id="s-tie"),
+        event(
+            "inv-a",
+            20,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "A"},
+            session_id="s-tie",
+            user_id="user-a",
+            agent="agent-a",
+            attributes={"root_agent_name": "agent-a"},
+        ),
+        event(
+            "inv-a",
+            21,
+            "AGENT_RESPONSE",
+            {"response": "text: 'A.'"},
+            session_id="s-tie",
+            agent="agent-a",
+        ),
+        event("inv-a", 22, "INVOCATION_COMPLETED", session_id="s-tie"),
+    ]
+    for rows in (split_rows, split_rows[::-1]):
+      by_session = {r["session_id"]: r for r in session_view.run(rows)}
+      assert by_session["s-split"]["root_agent"] == "root_agent"
+      assert by_session["s-split"]["user_id"] == "user-1"
+      assert by_session["s-tie"]["root_agent"] == "agent-a"
+      assert by_session["s-tie"]["user_id"] == "user-a"
+
   @pytest.fixture
   def eval_sql_dir(self, tmp_path, monkeypatch):
     """Yields an empty SQL directory beside where the SQL module now is.

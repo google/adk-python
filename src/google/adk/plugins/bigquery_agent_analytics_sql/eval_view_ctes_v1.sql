@@ -554,13 +554,13 @@ WITH
       session_id,
       invocation_id,
       ARRAY_AGG(
-        user_id IGNORE NULLS ORDER BY timestamp LIMIT 1
+        user_id IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1
       )[SAFE_OFFSET(0)] AS user_id,
       ARRAY_AGG(
-        root_agent_name IGNORE NULLS ORDER BY timestamp LIMIT 1
+        root_agent_name IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1
       )[SAFE_OFFSET(0)] AS first_root_agent_name,
       ARRAY_AGG(
-        agent IGNORE NULLS ORDER BY timestamp LIMIT 1
+        agent IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1
       )[SAFE_OFFSET(0)] AS first_agent,
       MIN(timestamp) AS turn_start_timestamp,
       MAX(timestamp) AS turn_end_timestamp,
@@ -723,6 +723,7 @@ WITH
       invocation_id,
       agent AS agent_id,
       timestamp,
+      event_id,
       IF(
         event_type = 'AGENT_STARTING',
         COALESCE(
@@ -768,16 +769,18 @@ WITH
       {scope_columns},
       agent_id,
       ARRAY_AGG(
-        instruction IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+        instruction IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1
       )[SAFE_OFFSET(0)] AS instruction,
       ARRAY_AGG(
-        description IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+        description IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1
       )[SAFE_OFFSET(0)] AS description,
       ARRAY_AGG(
-        sub_agents IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+        sub_agents IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1
       )[SAFE_OFFSET(0)] AS sub_agents,
       ARRAY_AGG(
-        tool_declarations IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+        tool_declarations IGNORE NULLS
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT 1
       )[SAFE_OFFSET(0)] AS tool_declarations
     FROM
       AgentRows
