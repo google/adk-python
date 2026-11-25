@@ -18,8 +18,10 @@ from collections.abc import Iterator
 import copy
 import functools
 import logging
+import threading
 from typing import Any
 from typing import TYPE_CHECKING
+import weakref
 
 if TYPE_CHECKING:
   from pydantic import BaseModel
@@ -83,6 +85,31 @@ def _equals_its_json_form(value: Any) -> bool:
     return False
 
 
+class _NestedWriteTracker:
+  """Tracks automatically recorded keys across states sharing one delta."""
+
+  def __init__(self, delta: dict[str, Any]) -> None:
+    self.delta = delta
+    self.recorded: dict[str, Any] = {}
+
+
+_trackers: weakref.WeakValueDictionary[int, _NestedWriteTracker] = (
+    weakref.WeakValueDictionary()
+)
+_trackers_lock = threading.Lock()
+
+
+def _tracker_for(delta: dict[str, Any]) -> _NestedWriteTracker:
+  # Keep tracking metadata separate from the public, serialized delta. The
+  # weak registry releases it once no State referring to that delta remains.
+  with _trackers_lock:
+    tracker = _trackers.get(id(delta))
+    if tracker is None or tracker.delta is not delta:
+      tracker = _NestedWriteTracker(delta)
+      _trackers[id(delta)] = tracker
+    return tracker
+
+
 class State:
   """A state dict that maintains the current value and the pending-commit delta.
 
@@ -114,9 +141,7 @@ class State:
     self._delta = delta
     self._schema = schema
     self._snapshots: dict[str, tuple[Any, Any]] = {}
-    # TODO: recorded keys are per State, so a container another context over
-    # the same event re-records or makes non-JSON is not withdrawn.
-    self._recorded_nested_keys: set[str] = set()
+    self._nested_tracker = _tracker_for(delta)
 
   def __getitem__(self, key: str) -> Any:
     """Returns the value of the state dict for the given key."""
@@ -137,7 +162,7 @@ class State:
     self._value[key] = value
     self._delta[key] = value
     self._snapshots.pop(key, None)
-    self._recorded_nested_keys.discard(key)
+    self._nested_tracker.recorded.pop(key, None)
 
   def _take_snapshot(self, key: str, value: Any) -> None:
     """Keeps the container a read handed out beside a copy to compare it with.
@@ -172,13 +197,15 @@ class State:
         current = self._value[key]
       else:
         del self._snapshots[key]
-        self._recorded_nested_keys.discard(key)
+        if self._nested_tracker.recorded.get(key) is handed_out:
+          self._nested_tracker.recorded.pop(key, None)
         continue
       # Another context may have assigned the key since the read, and its
       # value wins; only the container this state handed out is tracked.
       if current is not handed_out:
         del self._snapshots[key]
-        self._recorded_nested_keys.discard(key)
+        if self._nested_tracker.recorded.get(key) is handed_out:
+          self._nested_tracker.recorded.pop(key, None)
         continue
       try:
         changed = bool(current != snapshot)
@@ -187,8 +214,8 @@ class State:
       if changed:
         if not _equals_its_json_form(current):
           del self._snapshots[key]
-          if key in self._recorded_nested_keys:
-            self._recorded_nested_keys.remove(key)
+          if self._nested_tracker.recorded.get(key) is current:
+            self._nested_tracker.recorded.pop(key, None)
             self._delta.pop(key, None)
             logger.debug(
                 "Nested write to state key %r withdrawn from the delta: its"
@@ -203,7 +230,7 @@ class State:
             )
           continue
         if key not in self._delta:
-          self._recorded_nested_keys.add(key)
+          self._nested_tracker.recorded[key] = current
         self._value[key] = current
         self._delta[key] = current
         self._take_snapshot(key, current)
@@ -250,7 +277,7 @@ class State:
     self._delta.update(delta)
     for key in delta:
       self._snapshots.pop(key, None)
-      self._recorded_nested_keys.discard(key)
+      self._nested_tracker.recorded.pop(key, None)
 
   def to_dict(self) -> dict[str, Any]:
     """Returns the state dict."""
