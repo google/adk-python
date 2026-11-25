@@ -15,6 +15,7 @@
 from typing import Any
 
 from google.adk import Agent
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -38,6 +39,11 @@ def ask_for_approval(
   }
 
 
+def needs_manager_approval(purpose: str, amount: float) -> bool:
+  """Require manager approval for reimbursements of $100 or more."""
+  return amount >= 100
+
+
 root_agent = Agent(
     name='reimbursement_agent',
     instruction="""
@@ -45,11 +51,14 @@ root_agent = Agent(
       the employees. If the amount is less than $100, you will automatically
       approve the reimbursement.
 
-      If the amount is greater than $100, you will
+      If the amount is at least $100, you will
       ask for approval from the manager. If the manager approves, you will
       call reimburse() to reimburse the amount to the employee. If the manager
       rejects, you will inform the employee of the rejection.
 """,
-    tools=[reimburse, LongRunningFunctionTool(func=ask_for_approval)],
+    tools=[
+        FunctionTool(reimburse, require_confirmation=needs_manager_approval),
+        LongRunningFunctionTool(func=ask_for_approval),
+    ],
     generate_content_config=types.GenerateContentConfig(temperature=0.1),
 )

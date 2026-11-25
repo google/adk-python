@@ -23,11 +23,6 @@ from google.adk.runners import Runner
 from google.genai import types
 import requests
 
-headers = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json",
-}
-
 
 def error_response(error_message: str) -> dict[str, Any]:
   return {"status": "error", "error_message": error_message}
@@ -35,6 +30,12 @@ def error_response(error_message: str) -> dict[str, Any]:
 
 def run_graphql_query(query: str, variables: dict[str, Any]) -> dict[str, Any]:
   """Executes a GraphQL query."""
+  if not GITHUB_TOKEN:
+    raise ValueError("GITHUB_TOKEN environment variable not set")
+  headers = {
+      "Authorization": f"token {GITHUB_TOKEN}",
+      "Accept": "application/vnd.github.v3+json",
+  }
   payload = {"query": query, "variables": variables}
   response = requests.post(
       GITHUB_GRAPHQL_URL, headers=headers, json=payload, timeout=60

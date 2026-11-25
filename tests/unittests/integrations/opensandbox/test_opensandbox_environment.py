@@ -282,8 +282,6 @@ async def test_close_resets_state_even_if_cleanup_raises(create_patch, sandbox):
     await env.close()
 
   assert env.is_initialized is False
-  with pytest.raises(RuntimeError, match="initialize"):
-    _ = env.working_dir
   await env.close()
   sandbox.destroy.assert_awaited_once()
 
@@ -301,11 +299,10 @@ async def test_close_attached_sandbox_releases_only_local_resources(
   sandbox.destroy.assert_not_awaited()
 
 
-def test_working_dir_requires_initialize():
+def test_working_dir_is_known_before_initialize():
   env = OpenSandboxEnvironment()
 
-  with pytest.raises(RuntimeError, match="initialize"):
-    _ = env.working_dir
+  assert env.working_dir == Path("/workspace")
 
 
 @pytest.mark.asyncio

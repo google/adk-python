@@ -175,15 +175,13 @@ class NodeRunner:
           ctx._telemetry_context = telemetry_context
           await self._execute_node(ctx, node_input)
           # A Workflow reports a failing child by setting an error on its own
-          # context rather than by raising, so a failure that happened inside
-          # a sub-workflow reaches the retry policy here and never through the
-          # handler below.
-          if ctx.error is None or not await self._attempt_retry(
-              ctx.error, attempt_count
-          ):
-            await self._flush_output_and_deltas(ctx)
-            logger.debug("node %s end.", ctx.node_path)
-            return ctx
+          # context rather than by raising. That error is not retried here:
+          # static children retry in place under their own or the inherited
+          # retry_config, so retrying the workflow on top would multiply their
+          # attempts.
+          await self._flush_output_and_deltas(ctx)
+          logger.debug("node %s end.", ctx.node_path)
+          return ctx
       except asyncio.CancelledError:
         logger.debug("node %s cancelled via signal.", ctx.node_path)
         raise

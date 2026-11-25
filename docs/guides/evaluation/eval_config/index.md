@@ -86,9 +86,9 @@ Keys may be written in `snake_case` or `camelCase`, so `match_type` and
 
 ## The metrics, and the criterion each one accepts
 
-Every metric name is one of the thirteen `PrebuiltMetrics` values, or a name you
-declared yourself under `custom_metrics`. The **criterion type** column says
-which set of keys that metric's evaluator accepts in the object form.
+Every metric name is one of the `PrebuiltMetrics` values, or a name you declared
+yourself under `custom_metrics`. The **criterion type** column says which set of
+keys that metric's evaluator accepts in the object form.
 
 Most of them group into four families, and the family a metric belongs to
 decides what it costs and what its score is worth.
@@ -113,6 +113,7 @@ specific quality a deterministic score cannot see.
 | Metric | Criterion type | Range | What it scores |
 | :--- | :--- | :--- | :--- |
 | `tool_trajectory_avg_score` | `ToolTrajectoryCriterion` | 0 to 1 | Exact match of tool name and arguments against the expected trajectory. |
+| `tool_parameter_match` | `ToolParameterMatchCriterion` | 0 to 1 | How correct the arguments of the expected tool calls were, with partial credit per argument. |
 | `response_match_score` | `BaseCriterion` | 0 to 1 | ROUGE-1 word overlap between the final response and the expected one. |
 | `response_evaluation_score` | `BaseCriterion` | **1 to 5** | How coherent the response was. |
 | `final_response_match_v2` | `LlmAsAJudgeCriterion` | 0 to 1 | Whether the response matches the expected one, judged by a model. |
@@ -159,6 +160,49 @@ do not want to pin down, and for `ANY_ORDER` when the calls are independent of
 each other, such as three separate reads whose results are combined at the end.
 Each step away from `EXACT` buys tolerance for a variation you consider harmless
 and gives up the ability to catch that variation when it is not.
+
+**`ToolParameterMatchCriterion`** adds two keys. `match_type` takes the same
+three values as above but defaults to `IN_ORDER`, and decides which actual call
+each expected call is paired with. `args_matcher` decides how each expected
+argument is compared, with one matcher per argument name:
+
+```json
+{
+  "criteria": {
+    "tool_parameter_match": {
+      "threshold": 0.8,
+      "match_type": "ANY_ORDER",
+      "args_matcher": {
+        "per_arg_matchers": {
+          "city": {"type": "casefold"},
+          "temperature": {"type": "numeric", "tolerance": 0.5},
+          "request_id": {"type": "ignore"}
+        }
+      }
+    }
+  }
+}
+```
+
+Each paired call scores the mean of its expected arguments' scores, and an
+expected call left unpaired scores 0.0, so one wrong argument costs part of the
+score rather than all of it. `EXACT` and `IN_ORDER` pair calls first and score
+only the paired calls, whereas `ANY_ORDER` scores every same-name pair (`n * m`
+pairs for a tool expected `n` times and called `m` times) to pick the
+highest-scoring pairing, which multiplies the cost of a model-backed argument
+matcher. Without `args_matcher`, arguments must be equal. The matchers are those
+of
+[`ToolArgsMatcher`](../../tools/tool_args_matcher/tool_args_matcher/index.md),
+so the metric needs the `TOOL_ARGS_MATCHER` feature, which is on by default.
+
+`IN_ORDER` here pairs calls by name alone, which makes it stricter than
+`IN_ORDER` on `tool_trajectory_avg_score`. That metric skips a same-name call
+whose arguments differ and looks for a later exact match; this one pairs the
+expected call with the first same-name call after the previous pair, whatever
+its arguments. So when the agent retries a call, the first attempt is scored:
+expecting `search(city="Rome")` against the calls `search(city="Paris")` and
+then `search(city="Rome")` scores 1.0 on `tool_trajectory_avg_score` but 0.0
+here. Use `ANY_ORDER` if a retry should be scored on its best attempt.
 
 **`LlmAsAJudgeCriterion`** adds `judge_model_options`, an object with four keys
 of its own:
@@ -291,7 +335,7 @@ audio settings of its own on top of them.
 | :--- | :--- | :--- | :--- |
 | `type` | `str` | `"llm_backed"` | Which simulator implementation to use. |
 | `model` | `str` | `"gemini-2.5-flash"` | Model that plays the user. |
-| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 | Generation config for the simulator's model. The default asks for thoughts, so overriding it with a bare `{}` turns thinking off. |
+| `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 (thinking level `MEDIUM` on Gemini 4 and later) | Generation config for the simulator's model. Overriding it with a bare `{}` drops the thinking settings, so the model thinks by its own default and returns no thoughts. |
 | `max_allowed_invocations` | `int` | `20` | Hard cap on conversation length. `-1` removes the cap, which is how a run-off conversation becomes a bill. |
 | `custom_instructions` | `str` | `null` | Replacement instructions for the simulator. It must contain the Jinja placeholders `{{ stop_signal }}`, `{{ conversation_plan }}` and `{{ conversation_history }}`, plus `{{ persona }}` if the scenario sets one; a validator rejects it otherwise. |
 | `include_function_calls` | `bool` | `false` | Whether the simulated user sees the agent's tool calls. |
@@ -494,6 +538,35 @@ method other than these two has no `threshold`, or when `pass_at_k` or
 `pass_hat_k` is used outside `cross_run_criteria`. `adk eval` checks `k`
 against the number of runs once `--num_runs` has been applied, and stops before
 any inference when `k` is more than that number.
+
+#### Across the eval set
+
+On a single case, pass@k and pass^k carry the same information as the pass
+rate: all three depend only on how many of its runs passed. Averaged over the
+cases of an eval set they do not. Two eval sets with the same mean pass rate of
+75% can have a mean `pass^4` of 0.5, when one case always passes and another
+passes half the time, or of 0, when every case fails one run in four. The mean
+shows whether failures are concentrated in a few cases or spread across all of
+them.
+
+So the `Eval Run Summary` of `adk eval` prints, under each eval set's pass and
+fail counts, the mean of every cross-run criterion over the eval set's cases:
+
+```text
+Eval Run Summary
+Each eval case was run 4 times and judged on all 4 runs.
+my_eval_set:
+  Tests passed: 10
+  Tests failed: 2
+  pass_rate: 0.75 (mean over 12 cases)
+  pass^4: 0.41 (mean over 11 of 12 cases)
+```
+
+A case with no value for a criterion is left out of its mean, and the line
+then says how many cases the mean covers, as `pass^4` does above. A criterion
+that no case has a value for prints `n/a`. The lines are a report only: the
+counts above them decide the exit code, and they are printed only when
+`cross_run_criteria` is configured.
 
 ### Crashed runs
 

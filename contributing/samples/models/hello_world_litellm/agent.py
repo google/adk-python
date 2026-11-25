@@ -60,11 +60,10 @@ async def check_prime(nums: list[int]) -> str:
 
 
 root_agent = Agent(
-    # model=LiteLlm(model="gemini/gemini-2.5-pro-exp-03-25"),
-    # model=LiteLlm(model="vertex_ai/gemini-2.5-pro-exp-03-25"),
     # model=LiteLlm(model="vertex_ai/claude-3-5-haiku"),
+    # model=LiteLlm(model="vertex_ai/claude-sonnet-4-5"),
     model=LiteLlm(model="openai/gpt-4o"),
-    # model=LiteLlm(model="anthropic/claude-3-sonnet-20240229"),
+    # model=LiteLlm(model="anthropic/claude-sonnet-4-5"),
     name="data_processing_agent",
     description=(
         "hello world agent that can roll a dice of 8 sides and check prime"

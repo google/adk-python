@@ -21,25 +21,34 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 import time
 import types as py_types
 from typing import Any
 from typing import AsyncIterator
 from typing import Iterator
+from unittest import mock
 
+import dotenv
 from google.adk.agents import config_agent_utils
 from google.adk.apps.app import App
 from google.adk.cli.agent_test_runner import test_agent_replay as _test_agent_replay
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.events import Event
 from google.adk.tools.computer_use.base_computer import ComputerState
+from google.auth.exceptions import DefaultCredentialsError
 from google.genai import types
 import pytest
 import requests
+import yaml
 
-CONTRIBUTING_DIR = Path(__file__).parent.parent.parent / "contributing"
+from . import testing_utils
+
+REPO_ROOT = Path(__file__).parent.parent.parent
+CONTRIBUTING_DIR = REPO_ROOT / "contributing"
 SAMPLES_DIR = CONTRIBUTING_DIR / "samples"
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 
 @pytest.fixture(autouse=True)
@@ -321,6 +330,194 @@ def _sample_module(sample_dir: Path, module_name: str) -> Iterator[Any]:
     for name in list(sys.modules):
       if name == prefix or name.startswith(prefix + "."):
         del sys.modules[name]
+
+
+@pytest.mark.parametrize(
+    "sample", ["human_in_loop", "tool_human_in_the_loop_config"]
+)
+@pytest.mark.parametrize("decision", [None, "rejected", "approved"])
+@pytest.mark.parametrize("amount", [100, 200])
+async def test_reimbursement_requires_confirmation(sample, decision, amount):
+  """Reimbursements of $100+ pause until the confirmation is answered."""
+  root_agent = _load_root_agent(SAMPLES_DIR / "hitl" / sample)
+  model = testing_utils.MockModel.create([])
+  root_agent.model = model
+  runner = testing_utils.InMemoryRunner(root_agent)
+  args = {"purpose": "travel", "amount": amount}
+  message = testing_utils.UserContent(f"Please reimburse ${amount} for travel")
+
+  if decision is not None:
+    model.responses.extend(
+        testing_utils.MockModel.create([
+            types.Part.from_function_call(name="ask_for_approval", args=args),
+            "Waiting for the manager.",
+        ]).responses
+    )
+    events = await runner.run_async(message)
+    approval_call = next(
+        call
+        for event in events
+        for call in event.get_function_calls()
+        if call.name == "ask_for_approval"
+    )
+    message = testing_utils.UserContent(
+        types.Part(
+            function_response=types.FunctionResponse(
+                id=approval_call.id,
+                name=approval_call.name,
+                response={
+                    "status": decision,
+                    "ticketId": "reimbursement-ticket-001",
+                },
+            )
+        )
+    )
+
+  model.responses.extend(
+      testing_utils.MockModel.create([
+          types.Part.from_function_call(name="reimburse", args=args),
+          "Done.",
+      ]).responses
+  )
+  events = await runner.run_async(message)
+  responses = [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+      if response.name == "reimburse"
+  ]
+  assert responses and all("error" in response for response in responses)
+  assert not any(
+      part.text
+      for event in events
+      if event.content
+      for part in event.content.parts or []
+  )
+  confirmation = next(
+      call
+      for event in events
+      for call in event.get_function_calls()
+      if call.name == "adk_request_confirmation"
+  )
+  events = await runner.run_async(
+      testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation.id,
+                  name=confirmation.name,
+                  response={"confirmed": decision == "approved"},
+              )
+          )
+      )
+  )
+  responses = [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+      if response.name == "reimburse"
+  ]
+  assert len(responses) == 1
+  if decision == "approved":
+    assert responses == [{"status": "ok"}]
+  else:
+    assert "error" in responses[0]
+
+
+@pytest.mark.parametrize(
+    "sample", ["human_in_loop", "tool_human_in_the_loop_config"]
+)
+async def test_small_reimbursement_needs_no_confirmation(sample):
+  """Reimbursements under $100 pay out without a confirmation."""
+  root_agent = _load_root_agent(SAMPLES_DIR / "hitl" / sample)
+  root_agent.model = testing_utils.MockModel.create([
+      types.Part.from_function_call(
+          name="reimburse", args={"purpose": "meals", "amount": 50}
+      ),
+      "Done.",
+  ])
+  events = await testing_utils.InMemoryRunner(root_agent).run_async(
+      "Please reimburse $50 for meals"
+  )
+  assert [
+      call.name for event in events for call in event.get_function_calls()
+  ] == ["reimburse"]
+  assert [
+      response.response
+      for event in events
+      for response in event.get_function_responses()
+  ] == [{"status": "ok"}]
+
+
+@pytest.mark.parametrize(
+    "approval, purpose, amount, calls, paid",
+    [
+        (False, "conference travel", 200, 1, 1),
+        (True, "conference travel", 200, 1, 2),
+        (True, " Conference Travel", 200, 1, 2),
+        (True, "conference travel", 300, 1, 1),
+        (True, "other travel", 200, 1, 1),
+        (True, "conference travel", 200, 2, 2),
+    ],
+)
+async def test_reimbursement_main_confirms_only_approved_ticket(
+    approval, purpose, amount, calls, paid, monkeypatch
+):
+  """main.py confirms only one reimbursement matching the approved ticket."""
+  sample_dir = SAMPLES_DIR / "hitl" / "human_in_loop"
+  responses = [
+      [
+          types.Part.from_function_call(
+              name="reimburse", args={"purpose": "meals", "amount": 50}
+          )
+      ],
+      [types.Part(text="Meals reimbursed.")],
+  ]
+  if approval:
+    responses.extend([
+        [
+            types.Part.from_function_call(
+                name="ask_for_approval",
+                args={"purpose": "conference travel", "amount": 200},
+            )
+        ],
+        [types.Part(text="Waiting for the manager.")],
+    ])
+  responses.append([
+      types.Part.from_function_call(
+          name="reimburse", args={"purpose": purpose, "amount": amount}
+      )
+      for _ in range(calls)
+  ])
+  responses.extend([[types.Part(text="Done.")]] * calls)
+  with _sample_module(sample_dir, "agent") as agent_module:
+    agent_module.root_agent.model = testing_utils.MockModel.create(responses)
+    # main.py imports agent directly so it can also be run as a script.
+    monkeypatch.setitem(sys.modules, "agent", agent_module)
+    with _sample_module(sample_dir, "main") as main_module:
+      await main_module.main()
+      session = await main_module.session_service.get_session(
+          app_name=main_module.APP_NAME,
+          user_id=main_module.USER_ID,
+          session_id=main_module.SESSION_ID,
+      )
+  assert (
+      sum(
+          response.name == "reimburse" and response.response == {"status": "ok"}
+          for event in session.events
+          for response in event.get_function_responses()
+      )
+      == paid
+  )
+  confirmations = [
+      response
+      for event in session.events
+      for response in event.get_function_responses()
+      if response.name == "adk_request_confirmation"
+  ]
+  assert len(confirmations) == calls
+  assert sum(response.response["confirmed"] for response in confirmations) == (
+      paid - 1
+  )
 
 
 @pytest.mark.parametrize(
@@ -663,3 +860,253 @@ async def test_playwright_computer_sleeps_asynchronously(
     await highlighted.highlight_mouse(10, 20)
     assert len(page.evaluated) == 1
     assert slept == [0.5, 1]
+
+
+def test_gemini_assistant_search_uses_adc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """search_gemini_api_docs uses ADC instead of parsing ADK_GCP_SA_KEY."""
+  monkeypatch.delenv("ADK_GCP_SA_KEY", raising=False)
+  monkeypatch.setenv("VERTEXAI_DATASTORE_ID", "dummy-datastore")
+  monkeypatch.setenv("GEMINI_API_DATASTORE_ID", "projects/p/dataStores/gemini")
+
+  class _FakeDocument:
+    derived_struct_data = {
+        "title": "Gemini API",
+        "link": "https://example.com/gemini",
+        "snippets": [{"snippet": "example snippet"}],
+    }
+
+  class _FakeItem:
+    document = _FakeDocument()
+
+  class _FakeResponse:
+    results = [_FakeItem()]
+
+  with mock.patch.object(dotenv, "load_dotenv", autospec=True):
+    with _sample_module(
+        SAMPLES_DIR / "adk_team" / "adk_answering_agent",
+        "gemini_assistant.agent",
+    ) as gemini_agent:
+      with mock.patch.object(
+          gemini_agent.discoveryengine, "SearchServiceClient", autospec=True
+      ) as mock_client_cls:
+        mock_client_cls.return_value.search.return_value = _FakeResponse()
+        result = gemini_agent.search_gemini_api_docs(["generate content"])
+
+  mock_client_cls.assert_called_once_with()
+  assert result == {
+      "status": "success",
+      "results": [{
+          "title": "Gemini API",
+          "url": "https://example.com/gemini",
+          "snippets": ["example snippet"],
+      }],
+  }
+
+
+def test_gemini_assistant_search_returns_error_without_adc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """search_gemini_api_docs returns an error dict when ADC is unavailable."""
+  monkeypatch.delenv("ADK_GCP_SA_KEY", raising=False)
+  monkeypatch.setenv("VERTEXAI_DATASTORE_ID", "dummy-datastore")
+  monkeypatch.setenv("GEMINI_API_DATASTORE_ID", "projects/p/dataStores/gemini")
+
+  with mock.patch.object(dotenv, "load_dotenv", autospec=True):
+    with _sample_module(
+        SAMPLES_DIR / "adk_team" / "adk_answering_agent",
+        "gemini_assistant.agent",
+    ) as gemini_agent:
+      with mock.patch.object(
+          gemini_agent.discoveryengine,
+          "SearchServiceClient",
+          autospec=True,
+          side_effect=DefaultCredentialsError("ADC not configured"),
+      ):
+        result = gemini_agent.search_gemini_api_docs(["generate content"])
+
+  assert result["status"] == "error"
+  assert "ADC not configured" in result["error_message"]
+
+
+def test_answering_agent_defers_github_token_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Importing adk_answering_agent does not require GITHUB_TOKEN until GraphQL calls."""
+  monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+  monkeypatch.setenv("VERTEXAI_DATASTORE_ID", "dummy-datastore")
+
+  with mock.patch.object(dotenv, "load_dotenv", autospec=True):
+    with _sample_module(
+        SAMPLES_DIR / "adk_team" / "adk_answering_agent", "utils"
+    ) as utils_module:
+      with pytest.raises(ValueError, match="GITHUB_TOKEN"):
+        utils_module.run_graphql_query("query { viewer { login } }", {})
+
+
+def test_answering_agent_sends_github_token_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """run_graphql_query sends the GITHUB_TOKEN authorization header."""
+  monkeypatch.setenv("GITHUB_TOKEN", "test-gh-token")
+  monkeypatch.setenv("VERTEXAI_DATASTORE_ID", "dummy-datastore")
+
+  with mock.patch.object(dotenv, "load_dotenv", autospec=True):
+    with _sample_module(
+        SAMPLES_DIR / "adk_team" / "adk_answering_agent", "utils"
+    ) as utils_module:
+      with mock.patch.object(
+          utils_module.requests, "post", autospec=True
+      ) as mock_post:
+        mock_post.return_value.json.return_value = {"data": {"ok": True}}
+        result = utils_module.run_graphql_query("query { ok }", {"x": 1})
+
+  assert result == {"data": {"ok": True}}
+  _, kwargs = mock_post.call_args
+  assert kwargs["headers"]["Authorization"] == "token test-gh-token"
+
+
+_CREDENTIAL_ACTIONS = (
+    "google-github-actions/auth@",
+    "webfactory/ssh-agent@",
+)
+_INSTALL_COMMAND_RE = re.compile(
+    r"\b(pip\s+install|uv\s+sync|uv\s+build)\b"
+    r"|scripts/verify_release_artifact\.py\b"
+)
+_RAW_PIP_INSTALL_RE = re.compile(r"(?<!uv\s)\bpip\s+install\b")
+_UV_SYSTEM_INSTALL_RE = re.compile(r"\buv\s+pip\s+install\b[^\n]*--system\b")
+
+
+def _secret_keys(mapping: object) -> list[str]:
+  if not isinstance(mapping, dict):
+    return []
+  return sorted(
+      key for key, value in mapping.items() if "secrets." in str(value)
+  )
+
+
+def _strip_shell_comments(script: str) -> str:
+  return "\n".join(
+      line for line in script.splitlines() if not line.lstrip().startswith("#")
+  )
+
+
+def _workflow_install_credential_violations(workflow_path: Path) -> list[str]:
+  """Returns violations where a workflow installs packages with auth/secrets."""
+  workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+  workflow_secrets = _secret_keys(workflow.get("env"))
+  violations: list[str] = []
+
+  for job_name, job in (workflow.get("jobs") or {}).items():
+    job_secrets = _secret_keys(job.get("env"))
+    prior_credential_steps: list[str] = []
+    for step in job.get("steps") or []:
+      step_name = step.get("name") or step.get("uses") or "<unnamed>"
+      uses = str(step.get("uses") or "")
+      step_with = step.get("with") or {}
+      step_secrets = _secret_keys(step.get("env")) + _secret_keys(step_with)
+
+      run_script = _strip_shell_comments(str(step.get("run") or ""))
+      if _INSTALL_COMMAND_RE.search(run_script):
+        if prior_credential_steps:
+          violations.append(
+              f"{job_name}/{step_name}: installs packages after"
+              f" {prior_credential_steps}"
+          )
+        exposed = workflow_secrets + job_secrets + step_secrets
+        if exposed:
+          violations.append(
+              f"{job_name}/{step_name}: installs packages with secrets in env"
+              f" {exposed}"
+          )
+        if _RAW_PIP_INSTALL_RE.search(run_script):
+          violations.append(
+              f"{job_name}/{step_name}: uses raw pip install instead of uv"
+          )
+        if (
+            _UV_SYSTEM_INSTALL_RE.search(run_script)
+            and "--exclude-newer" not in run_script
+        ):
+          violations.append(
+              f"{job_name}/{step_name}: uv pip install --system missing"
+              " --exclude-newer"
+          )
+
+      persisted_checkout = uses.startswith(
+          "actions/checkout@"
+      ) and step_with.get("persist-credentials", True) not in (False, "false")
+      if (
+          uses.startswith(_CREDENTIAL_ACTIONS)
+          or persisted_checkout
+          or step_secrets
+      ):
+        prior_credential_steps.append(step_name)
+  return violations
+
+
+def _get_workflow_files() -> list[Path]:
+  if not WORKFLOWS_DIR.exists():
+    return []
+  return sorted(
+      [*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")],
+      key=lambda p: p.name,
+  )
+
+
+@pytest.mark.parametrize(
+    "workflow_path",
+    _get_workflow_files(),
+    ids=lambda p: p.name,
+)
+def test_workflow_installs_dependencies_without_credentials(
+    workflow_path: Path,
+) -> None:
+  """Workflows install Python packages via uv before loading auth or secrets."""
+  assert not _workflow_install_credential_violations(workflow_path)
+
+
+def _step_env_keys(
+    workflow_name: str, job_name: str, step_name: str
+) -> set[str]:
+  workflow = yaml.safe_load(
+      (WORKFLOWS_DIR / workflow_name).read_text(encoding="utf-8")
+  )
+  for step in workflow["jobs"][job_name]["steps"]:
+    if step.get("name") == step_name:
+      return set((step.get("env") or {}).keys())
+  raise AssertionError(f"step {step_name!r} not found in {workflow_name}")
+
+
+def _get_forbidden_workflow_env_cases() -> list[tuple[str, str, str, str]]:
+  if not WORKFLOWS_DIR.exists():
+    return []
+  return [
+      (
+          "discussion_answering.yml",
+          "agent-answer-questions",
+          "Run Answering Script",
+          "ADK_GCP_SA_KEY",
+      ),
+      (
+          "upload-adk-docs-to-vertex-ai-search.yml",
+          "upload-adk-docs-to-vertex-ai-search",
+          "Run Answering Script",
+          "GITHUB_TOKEN",
+      ),
+  ]
+
+
+@pytest.mark.parametrize(
+    "workflow_name, job_name, step_name, forbidden_key",
+    _get_forbidden_workflow_env_cases(),
+)
+def test_answering_workflows_omit_unused_secrets(
+    workflow_name: str,
+    job_name: str,
+    step_name: str,
+    forbidden_key: str,
+) -> None:
+  """Answering bot workflows do not pass unused raw keys or PATs to scripts."""
+  assert forbidden_key not in _step_env_keys(workflow_name, job_name, step_name)

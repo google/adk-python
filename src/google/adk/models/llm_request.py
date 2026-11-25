@@ -15,18 +15,45 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
+from typing import TYPE_CHECKING
 
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
+from typing_extensions import Self
 
 from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
 from ..utils._schema_utils import SchemaType
 from ._service_tier import ServiceTier
 from .cache_metadata import CacheMetadata
+
+if TYPE_CHECKING:
+  from google.genai import Client
+  from google.genai._api_client import BaseApiClient
+
+
+def _is_transient_user_content(
+    llm_request: LlmRequest, content: types.Content
+) -> bool:
+  """Returns whether ADK inserted ``content`` rather than the user."""
+  transient = getattr(llm_request, "_transient_user_contents", None)
+  return type(transient) is list and any(
+      content is added for added in transient
+  )
+
+
+def _last_non_transient_content(
+    llm_request: LlmRequest,
+) -> types.Content | None:
+  """Returns the last content not inserted as transient ADK context."""
+  for content in reversed(llm_request.contents or ()):
+    if not _is_transient_user_content(llm_request, content):
+      return content
+  return None
 
 
 def _find_tool_with_function_declarations(
@@ -139,6 +166,15 @@ class LlmRequest(BaseModel):
   or they would push tool-triggered content in front of it and break the
   stable-prefix guarantee.
   """
+
+  _transient_user_contents: list[types.Content] = PrivateAttr(
+      default_factory=list
+  )
+  """Non-static transient user contents inserted by ``_insert_transient_user_content``."""
+
+  def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+    # Share one memo dict so model_copy(deep=True) keeps transient identities.
+    return super().__deepcopy__({} if memo is None else memo)
 
   def _append_dynamic_instructions(self, instructions: list[str]) -> None:
     """Appends dynamic instructions to the request."""
@@ -358,6 +394,8 @@ class LlmRequest(BaseModel):
       self._static_instruction_prefix_end_index = len(contents)
       return
 
+    self._transient_user_contents.extend(contents)
+
     insert_index = len(self.contents)
     for i in range(len(self.contents) - 1, -1, -1):
       content = self.contents[i]
@@ -405,3 +443,46 @@ class LlmRequest(BaseModel):
 
     self.config.response_schema = schema
     self.config.response_mime_type = "application/json"
+
+  def to_generate_content_body(
+      self,
+      *,
+      vertexai: bool | None = None,
+      api_client: Client | BaseApiClient | None = None,
+  ) -> dict[str, Any]:
+    """Returns this request as a ``generateContent`` request body.
+
+    ``config`` is one flat namespace, but its fields go to three different
+    places on the wire. Some sit at the top level, most belong inside
+    ``generationConfig``, and a few are consumed by the client library and
+    rejected by the endpoint. Getting that split wrong does not raise: bury
+    ``tools`` in ``generationConfig`` and the call returns 200 with no function
+    call in it, because none was ever offered.
+
+    Custom ``BaseLlm`` implementations that build their own request body should
+    use this rather than flattening ``config`` by hand.
+
+    Args:
+      vertexai: Whether the body is bound for Vertex AI rather than the Gemini
+        Developer API. Defaults to the backend ADK is configured for, which is
+        the Gemini Developer API unless ``GOOGLE_GENAI_USE_ENTERPRISE`` (or the
+        deprecated ``GOOGLE_GENAI_USE_VERTEXAI``) is enabled. Ignored when
+        ``api_client`` is given.
+      api_client: A genai ``Client`` or ``BaseApiClient``, if the caller has
+        one. Needed on Vertex AI to expand a short ``cached_content`` name.
+
+    Returns:
+      A JSON-serializable dict ready to send as the request body.
+
+    Raises:
+      ValueError: If a config field is not valid for the target API, or if
+        ``cached_content`` is a short name on Vertex AI and no ``api_client``
+        is given.
+    """
+    # Imported here rather than at module scope: this pulls in google.genai's
+    # model converters, which nothing else in this module needs.
+    from ._generate_content_body import to_generate_content_body
+
+    return to_generate_content_body(
+        self, vertexai=vertexai, api_client=api_client
+    )

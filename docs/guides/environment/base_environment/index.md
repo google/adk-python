@@ -92,16 +92,30 @@ An environment moves through four steps, always in this order.
     leaves a directory you supplied alone.
 
 `initialize` and `close` have no-op default implementations on the base class,
-and `read_file_stream` defaults to yielding the `read_file` result as one chunk,
-so an environment that needs none of them can leave them alone. The four core
-members, `working_dir`, `execute`, `read_file` and `write_file`, are abstract,
-and a subclass that does not provide all of them cannot be instantiated at all.
+`read_file_stream` defaults to yielding the `read_file` result as one chunk, and
+`working_dir` defaults to `None`, so an environment that needs none of them can
+leave them alone. The three core methods, `execute`, `read_file` and
+`write_file`, are abstract, and a subclass that does not provide all of them
+cannot be instantiated at all.
 
-`is_initialized` is a plain boolean property that each implementation sets for
-itself. Nothing in the framework checks it, so read it as a status report rather
-than as a guard that will stop you. Calling `execute` before `initialize` on
-`LocalEnvironment` raises `RuntimeError: `working_dir` is not set. Call
-initialize() first.`
+`working_dir` is `None` while the environment does not know its working
+directory, for example before `initialize` creates the temporary one of a
+`LocalEnvironment`. The remote sandbox environments use a fixed path and return
+it before `initialize`, so the model is told the working directory from the
+first request. A custom environment should also return `None` rather than
+raise, since the toolsets read it while building every model request. They
+treat a `RuntimeError` from `working_dir` as `None`, so an environment that
+still raises one before `initialize` keeps working.
+
+`is_initialized` is a plain boolean property. The tools of both toolsets call
+`initialize` whether or not it is set, and set it once `initialize` returns if
+the environment has not. Each toolset's `close()` clears it after closing the
+environment. The toolsets tell the model the working directory once
+`working_dir` is not `None`, whatever `is_initialized` says. No environment
+method checks `is_initialized`, so read it as a status report rather than as a
+guard that will stop you. Calling `execute` before
+`initialize` on `LocalEnvironment` raises `RuntimeError: `working_dir` is not
+set. Call initialize() first.`
 
 ### ExecutionResult
 
@@ -170,12 +184,14 @@ environment.
 ## Advanced applications
 
 The first section below is for backing the interface with something other than a
-subprocess, and the second is for the case where two toolsets have to agree on
-one working directory.
+subprocess, the second is for an environment that keeps a resource per session
+or user, and the third is for the case where two toolsets have to agree on one
+working directory.
 
 ### Write your own environment
 
-Writing an environment means implementing the four abstract members. The
+Writing an environment means implementing the three abstract methods, and
+overriding `working_dir` if it has one. The
 lifecycle hooks are optional, and the one detail worth getting right is that
 `initialize` and `close` may both be called more than once.
 
@@ -190,16 +206,30 @@ class MemoryEnvironment(BaseEnvironment):
   def working_dir(self) -> Path:
     return Path("/")
 
-  async def execute(self, command: str, *, timeout: float | None = None):
+  async def execute(
+      self,
+      command: str,
+      *,
+      timeout: float | None = None,
+      ctx: Context | None = None,
+  ):
     return ExecutionResult(exit_code=1, stderr="This environment has no shell.")
 
-  async def read_file(self, path: Path) -> bytes:
+  async def read_file(
+      self, path: Path, *, ctx: Context | None = None
+  ) -> bytes:
     try:
       return self._files[str(path)]
     except KeyError as e:
       raise FileNotFoundError(path) from e
 
-  async def write_file(self, path: Path, content: str | bytes) -> None:
+  async def write_file(
+      self,
+      path: Path,
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
+  ) -> None:
     self._files[str(path)] = (
         content.encode("utf-8") if isinstance(content, str) else content
     )
@@ -216,6 +246,102 @@ above works unchanged. Override it to yield the same bytes in chunks when files
 can be larger than you want to hold in memory; `LocalEnvironment`, E2B and
 Daytona do. Raise `FileNotFoundError` for a missing file here as well.
 
+Every method an agent run calls also takes a keyword-only `ctx` argument, and
+an override should accept it even when it ignores it, because the built-in
+tools always pass it. An override written before the argument existed still
+works for now: `BaseEnvironment` wraps it to drop `ctx` and raises a
+`DeprecationWarning` when the class is defined, but it will break once that
+support is removed in a future release. `initialize`, `execute`, `read_file`,
+`read_file_stream` and `write_file` receive the calling run's `Context`, so an
+environment can key a sandbox off `ctx.session.id` or `ctx.user_id`, keep the
+sandbox's name in `ctx.state`, or request credentials. The toolsets call
+`initialize` before every tool call that uses the environment, not while they
+build the model request, and pass that call's context, so state that
+`initialize` writes is saved with the tool call, and an environment that keeps a
+sandbox per session can create it on the session's first tool call. That makes
+the idempotence the lifecycle above asks for a requirement: once the environment
+is set up, `initialize` should return quickly. By default the toolsets run the
+calls for one environment one at a time, even when two toolsets share it, so
+concurrent tool calls do not set it up twice; an environment that keeps a
+resource per session or user can narrow that, as the next section describes.
+`close` and `working_dir` take no context. Code that drives an environment
+directly, as in the example under [Get started](#get-started), can leave `ctx`
+out.
+
+If `initialize` raises, for example because a sandbox cannot be created, the
+tool call raises the same exception rather than returning an error result. ADK
+handles it like any exception that a tool raises, which the `BaseTool` guide
+describes under
+[Errors raised by `run_async`](../../tools/base_tool/index.md#errors-raised-by-run_async).
+To let the model see the failure and carry on, return a result from
+`on_tool_error_callback`:
+
+```python
+def report_tool_error(tool, args, tool_context, error):
+  return {"status": "error", "error": f"{type(error).__name__}: {error}"}
+
+
+root_agent = Agent(
+    ...,
+    tools=[EnvironmentToolset(environment=environment)],
+    on_tool_error_callback=report_tool_error,
+)
+```
+
+The callback runs for every tool of the agent, so check `tool.name` or the
+exception type there to treat some failures differently. The next tool call
+calls `initialize` again.
+
+### Keep a resource per session or user
+
+An environment that gives each session or each user a resource of its own, such
+as a sandbox, says so through its `scope` property. The toolsets use it to
+decide which `initialize` calls wait for each other.
+
+| `EnvironmentScope` | Calls that run one at a time | Calls that run together |
+| :----------------- | :--------------------------- | :---------------------- |
+| `SHARED` (default) | All calls for the environment | None |
+| `USER` | Calls for one user, across the user's sessions | Calls for different users |
+| `SESSION` | Calls for one session | Calls for different sessions |
+
+The toolsets serialize these calls within one process. When the agent runs as
+several instances, calls that reach different instances are not serialized.
+
+```python
+from google.adk.agents import Context
+from google.adk.environment import BaseEnvironment
+from google.adk.environment import EnvironmentScope
+
+
+class SandboxPerSessionEnvironment(BaseEnvironment):
+
+  @property
+  def scope(self) -> EnvironmentScope:
+    return EnvironmentScope.SESSION
+
+  async def initialize(self, *, ctx: Context | None = None) -> None:
+    # Look up this session's sandbox in ctx.state and create it if missing.
+    ...
+```
+
+With the default `SHARED` scope, a session whose `initialize` is slow, for
+example because it is creating a sandbox, makes every other session's tool
+calls wait. With `USER` or `SESSION`, `initialize` runs for several users or
+sessions at once, possibly on different threads, so whatever those calls share
+inside the environment, such as a client or a cache, needs its own lock. A
+toolset's `close()` still waits for the `initialize` calls that are running,
+whatever user or session they are for, and holds back new ones until the
+environment is closed. A user is identified by app name and user ID, and a
+session by app name, user ID and session ID.
+
+Return the same scope for the whole life of the environment, and make a class
+that wraps another environment return the wrapped environment's `scope`;
+otherwise the wrapper is locked as `SHARED`, as is an environment whose `scope`
+is not an `EnvironmentScope` value.
+
+The scope does not change `working_dir`, which takes no context: such an
+environment uses the same path inside each of its resources.
+
 ### Share one environment across a conversation
 
 Construct the environment once and pass the same instance everywhere it is
@@ -226,21 +352,19 @@ one toolset is there when it looks through the other.
 Sharing comes with a catch that is worth understanding before you depend on it.
 Each toolset closes the environment in its own `close()`, and neither one checks
 whether the other is still using it. Close one toolset and the shared working
-directory is deleted out from under the other. Every tool on the surviving
-toolset then fails with the same message:
-
-```text
-`working_dir` is not set. Call initialize() first.
-```
-
-It will not recover on its own either, because it still believes it initialized
-the environment already. Either give each toolset an environment of its own, or
-close both at the same time.
+directory is deleted out from under the other. The surviving toolset's next tool
+call initializes the environment again, and a `LocalEnvironment` that created
+its own directory starts over in a new, empty one, so the files written earlier
+are gone. Either give each toolset an environment of its own, or close both at
+the same time.
 
 An environment's lifetime is therefore the lifetime of the object you built, and
 it has nothing to do with a session. An environment held in a module-level
 variable is shared by every user of the process, which is fine for a single-user
-command-line agent and wrong for a server.
+command-line agent and wrong for a server. None of the built-in environments
+isolate sessions, but one of your own can, by using the `ctx` its methods
+receive to choose a workspace per session or user; see
+[Keep a resource per session or user](#keep-a-resource-per-session-or-user).
 
 ## Limitations
 

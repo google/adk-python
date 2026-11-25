@@ -147,7 +147,7 @@ app = App(
 | Plugin | Module under `google.adk.plugins` | Purpose |
 |---|---|---|
 | `ContextFilterPlugin` | `context_filter_plugin` | Trims history to the last N invocations |
-| `SaveFilesAsArtifactsPlugin` | `save_files_as_artifacts_plugin` | Stores file outputs as session artifacts |
+| `SaveFilesAsArtifactsPlugin` | `save_files_as_artifacts_plugin` | Saves files embedded in user messages as session artifacts |
 | `GlobalInstructionPlugin` | `global_instruction_plugin` | Prepends an instruction to every agent |
 | `LoggingPlugin` | `logging_plugin` | Logs the invocation lifecycle |
 | `DebugLoggingPlugin` | `debug_logging_plugin` | Verbose request and response logging |

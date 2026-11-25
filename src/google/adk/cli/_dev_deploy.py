@@ -321,7 +321,7 @@ class _ContainerDeployRequest(_BaseDeployRequest):
   """Ship the dev UI alongside the API server.
 
   The image has `dev_server.py` removed, so the shipped UI can chat but its
-  Builder, Tests and Trace tabs call `/dev/*` routes that will not exist.
+  Tests and Trace tabs call `/dev/*` routes that will not exist.
   """
 
   @field_validator("service_name")

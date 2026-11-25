@@ -90,7 +90,8 @@ class InMemorySessionService(BaseSessionService):
 
   def __init__(self) -> None:
     # A map from app name to a map from user ID to a map from session ID to
-    # session.
+    # session. Deleting the last session drops the empty user and app maps, so
+    # read it with `.get(app_name, {}).get(user_id, {})`.
     self.sessions: dict[str, dict[str, dict[str, Session]]] = {}
     # A map from app name to a map from user ID to a map from key to the value.
     self.user_state: dict[str, dict[str, dict[str, Any]]] = {}
@@ -222,19 +223,17 @@ class InMemorySessionService(BaseSessionService):
     session = self.sessions[app_name][user_id][session_id]
     events = session.events
     if config:
+      if config.after_timestamp is not None:
+        events = [
+            event
+            for event in events
+            if event.timestamp >= config.after_timestamp
+        ]
       if config.num_recent_events is not None:
         if config.num_recent_events == 0:
           events = []
         else:
           events = events[-config.num_recent_events :]
-      if config.after_timestamp is not None:
-        i = len(events) - 1
-        while i >= 0:
-          if events[i].timestamp < config.after_timestamp:
-            break
-          i -= 1
-        if i >= 0:
-          events = events[i + 1 :]
     if events is not session.events:
       # Copy only the events being returned.
       session = session.model_copy(update={'events': events})
@@ -331,6 +330,10 @@ class InMemorySessionService(BaseSessionService):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
+    if not self.sessions[app_name][user_id]:
+      self.sessions[app_name].pop(user_id)
+    if not self.sessions[app_name]:
+      self.sessions.pop(app_name)
 
   @override
   async def get_user_state(

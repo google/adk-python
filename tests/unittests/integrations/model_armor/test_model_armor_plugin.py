@@ -227,6 +227,56 @@ async def test_thought_parts_are_left_out_of_the_screened_text():
   assert _screened(client) == [('input', 'the visible question')]
 
 
+@pytest.mark.asyncio
+async def test_prompt_is_screened_on_the_model_call_after_a_tool_result():
+  """Post-tool model calls screen the user's prompt, not a routed tool instruction."""
+  plugin, client = _plugin(response_template_name=None)
+  request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user', parts=[types.Part(text="What's the weather in SF?")]
+          ),
+          types.Content(
+              role='model',
+              parts=[
+                  types.Part.from_function_call(name='get_weather', args={})
+              ],
+          ),
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part.from_function_response(
+                      name='get_weather', response={'weather': 'sunny'}
+                  )
+              ],
+          ),
+      ]
+  )
+  request._insert_transient_user_content([
+      types.Content(
+          role='user', parts=[types.Part(text='You have artifacts: report.txt')]
+      )
+  ])
+
+  await _screen_input(plugin, request)
+
+  assert _screened(client) == [('input', "What's the weather in SF?")]
+
+
+@pytest.mark.asyncio
+async def test_user_text_matching_transient_instruction_is_still_screened():
+  plugin, client = _plugin()
+  text = 'You have a list of artifacts: ["report.txt"]'
+  request = _user_request(text)
+  request._insert_transient_user_content(
+      [types.Content(role='user', parts=[types.Part(text=text)])]
+  )
+
+  await _screen_input(plugin, request)
+
+  assert _screened(client) == [('input', text)]
+
+
 # --- Output screening -------------------------------------------------------
 
 
