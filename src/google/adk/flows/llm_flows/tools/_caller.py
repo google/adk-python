@@ -59,6 +59,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 # media, and the bound also stops a self-referential result being walked
 # forever.
 _MAX_MEDIA_CONTAINER_DEPTH = 1
+_STATE_WRITES_ATTR = '_adk_tool_state_writes'
 
 
 def _normalize_tool_result(function_result: object) -> dict[str, Any]:
@@ -398,13 +399,17 @@ def _build_response_event(
       content.parts.append(types.Part.from_text(text=result_text))
 
   # Builds the function response event.
-  return Event(
+  event = Event(
       invocation_id=invocation_context.invocation_id,
       author=_require_agent_name(invocation_context),
       content=content,
       actions=tool_context.actions,
       branch=invocation_context.branch,
   )
+  accesses = tool_context.state._accesses  # pylint: disable=protected-access
+  if accesses is not None:
+    setattr(event, _STATE_WRITES_ATTR, accesses.writes.copy())
+  return event
 
 
 @dataclasses.dataclass

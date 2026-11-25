@@ -231,3 +231,66 @@ async def test_parallel_scalar_writes_bypassing_state_keep_call_order():
   )
 
   assert state['done'] is True
+
+
+@pytest.mark.asyncio
+async def test_parallel_scalar_state_writes_follow_write_order():
+  c_written = asyncio.Event()
+  b_written = asyncio.Event()
+  a_written = asyncio.Event()
+  writes = []
+
+  async def increment(item: str, tool_context: ToolContext) -> None:
+    if item == 'a':
+      await asyncio.wait_for(b_written.wait(), timeout=5)
+    elif item == 'b':
+      await asyncio.wait_for(c_written.wait(), timeout=5)
+
+    state = tool_context.state
+    counter = state.get('counter', 0) + 1
+    if item == 'b':
+      state.update({'counter': counter})
+    else:
+      state['counter'] = counter
+    writes.append((item, counter))
+    tool_context.actions.state_delta['direct'] = item
+
+    if item == 'c':
+      c_written.set()
+      # Finish last even though this call wrote the first value.
+      await asyncio.wait_for(a_written.wait(), timeout=5)
+    elif item == 'b':
+      b_written.set()
+    else:
+      a_written.set()
+
+  state = await _run_parallel_calls(
+      increment, [{'item': 'a'}, {'item': 'b'}, {'item': 'c'}]
+  )
+
+  assert writes == [('c', 1), ('b', 2), ('a', 3)]
+  assert state == {'counter': 3, 'direct': 'c'}
+
+
+@pytest.mark.asyncio
+async def test_parallel_scalar_mixed_writes_to_one_key_keep_call_order():
+  c_written = asyncio.Event()
+  b_written = asyncio.Event()
+
+  async def set_value(item: str, tool_context: ToolContext) -> None:
+    if item == 'c':
+      tool_context.actions.state_delta['value'] = 'raw'
+      c_written.set()
+    elif item == 'b':
+      await asyncio.wait_for(c_written.wait(), timeout=5)
+      tool_context.state['value'] = 'b'
+      b_written.set()
+    else:
+      await asyncio.wait_for(b_written.wait(), timeout=5)
+      tool_context.state['value'] = 'a'
+
+  state = await _run_parallel_calls(
+      set_value, [{'item': 'a'}, {'item': 'b'}, {'item': 'c'}]
+  )
+
+  assert state['value'] == 'raw'
