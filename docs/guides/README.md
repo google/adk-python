@@ -75,6 +75,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [DaytonaEnvironment](integrations/daytona/daytona_environment/index.md) - Running agent code in a Daytona hosted sandbox instead of on your machine.
 * [E2BEnvironment](integrations/e2b/e2b_environment/index.md) - Running agent code in an E2B hosted sandbox, and what happens when the sandbox expires.
 * [FirestoreSessionService](integrations/firestore/firestore_session_service/index.md) - A durable multi-process session store built on Firestore documents and transactions.
+* [GeminiDecisionsClassifier](integrations/gemini_decisions/gemini_decisions_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with Gemini Decision 1 and the Gemini Decisions API, including inputs that the safety filters block.
 * [GCSToolset and GCSAdminToolset](integrations/gcs/gcs_toolset/index.md) - Giving an agent access to Cloud Storage objects and buckets, read-only until you say otherwise.
 * [GroundingPlugin](integrations/discovery_engine/grounding_plugin/index.md) - Verifying model responses against registered facts with the CheckGrounding API and attaching citations.
 * [LangchainTool](integrations/langchain/langchain_tool/index.md) - Wrapping a LangChain tool so an ADK agent can call it.
