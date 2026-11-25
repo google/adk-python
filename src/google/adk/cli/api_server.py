@@ -101,6 +101,8 @@ from ..sessions.session import Session
 from ..telemetry._web_ui import WebUiLogExporter
 from ..telemetry.setup import maybe_set_otel_providers
 from ..telemetry.setup import OTelHooks
+from ..utils._error_reporting import new_error_id
+from ..utils._error_reporting import redact_error
 from ..utils._error_reporting import report_error
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..utils._telemetry_config import read_telemetry_consent
@@ -131,6 +133,18 @@ else:
   from watchdog.observers import Observer
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _client_error_detail(exc: BaseException, *, summary: str) -> str:
+  """Returns the detail for a 4xx that must not echo the exception text.
+
+  Same response as `report_error`, but logged as a warning because the caller
+  caused it. `summary` must be a constant.
+  """
+  error_id = new_error_id()
+  logger.warning("%s [error_id=%s]", summary, error_id, exc_info=exc)
+  return redact_error(exc, summary=summary, error_id=error_id)
+
 
 _REGEX_PREFIX = "regex:"
 
@@ -1433,7 +1447,12 @@ class ApiServer:
           status_code=409, detail=f"Session already exists: {session_id}"
       ) from e
     except (ValueError, TypeError) as e:
-      raise HTTPException(status_code=400, detail=str(e)) from e
+      raise HTTPException(
+          status_code=400,
+          detail=_client_error_detail(
+              e, summary="Invalid session create request."
+          ),
+      ) from e
     except Exception as e:
       raise HTTPException(
           status_code=500,
@@ -1792,10 +1811,11 @@ class ApiServer:
       try:
         await asyncio.to_thread(client.finalize_credentials, finalize_request)
       except InvalidArgument as e:
-        logger.warning("Invalid argument during credential finalization: %s", e)
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid credentials request: {e}",
+            detail=_client_error_detail(
+                e, summary="Invalid credentials request."
+            ),
         ) from e
       except GoogleAPICallError as e:
         status_code = (
@@ -1803,15 +1823,21 @@ class ApiServer:
             if hasattr(e, "code") and e.code and 400 <= e.code < 500
             else 500
         )
-        logger.error("API error during agent identity finalization: %s", e)
+        summary = "Failed to finalize credentials."
         raise HTTPException(
             status_code=status_code,
-            detail=f"Failed to finalize credentials: {e}",
+            detail=(
+                report_error(logger, e, summary=summary)
+                if status_code >= 500
+                else _client_error_detail(e, summary=summary)
+            ),
         ) from e
       except Exception as e:  # pylint: disable=broad-except
-        logger.error("Failed to finalize agent identity credentials: %s", e)
         raise HTTPException(
-            status_code=500, detail=f"Failed to finalize credentials: {e}"
+            status_code=500,
+            detail=report_error(
+                logger, e, summary="Failed to finalize credentials."
+            ),
         ) from e
 
       return {"status": "ok"}
