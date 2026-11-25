@@ -1926,3 +1926,123 @@ async def test_parsed_reasoning_is_not_replayed_on_the_next_request():
   assistant = [m for m in kwargs["messages"] if m["role"] == "assistant"]
   assert assistant == [{"role": "assistant", "content": "Hi"}]
   assert "Let me think." not in json.dumps(kwargs["messages"])
+
+
+def _completion_with_message(message):
+  """Builds a real ChatCompletion around the given assistant message dict."""
+  return ChatCompletion.model_validate({
+      "id": "c1",
+      "object": "chat.completion",
+      "created": 0,
+      "model": "m",
+      "choices": [{"index": 0, "finish_reason": "stop", "message": message}],
+  })
+
+
+def test_response_with_both_reasoning_fields_uses_one_without_duplication():
+  """When a server sets both fields, reasoning_content wins and is not doubled."""
+  response = _completion_with_message({
+      "role": "assistant",
+      "content": "Hi",
+      "reasoning_content": "From reasoning_content.",
+      "reasoning": "From reasoning.",
+  })
+
+  parts = _response_to_llm_response(response).content.parts
+
+  thoughts = [p for p in parts if p.thought]
+  assert len(thoughts) == 1
+  assert thoughts[0].text == "From reasoning_content."
+
+
+def test_response_with_reasoning_and_tool_calls_keeps_both_in_order():
+  """Reasoning comes first, followed by the tool call it led to."""
+  response = _completion_with_message({
+      "role": "assistant",
+      "content": None,
+      "reasoning_content": "I should check the weather.",
+      "tool_calls": [{
+          "id": "call_1",
+          "type": "function",
+          "function": {
+              "name": "get_weather",
+              "arguments": '{"city": "Paris"}',
+          },
+      }],
+  })
+
+  parts = _response_to_llm_response(response).content.parts
+
+  assert len(parts) == 2
+  assert parts[0].thought is True
+  assert parts[0].text == "I should check the weather."
+  assert parts[1].function_call.name == "get_weather"
+  assert parts[1].function_call.args == {"city": "Paris"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_chunk_with_both_reasoning_fields_is_not_duplicated():
+  """A delta carrying both fields streams one thought, from reasoning_content."""
+  openai_llm = OpenAILlm(model="deepseek-reasoner", api_key="k")
+  llm_request = LlmRequest(
+      model="deepseek-reasoner",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  chunk = ChatCompletionChunk.model_validate({
+      "id": "c1",
+      "object": "chat.completion.chunk",
+      "created": 0,
+      "model": "m",
+      "choices": [{
+          "index": 0,
+          "delta": {"reasoning_content": "A.", "reasoning": "B."},
+          "finish_reason": None,
+      }],
+  })
+
+  with _stream_client([chunk, _reasoning_stream_chunk(content="Hi!")]):
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  final_thoughts = [p for p in responses[-1].content.parts if p.thought]
+  assert len(final_thoughts) == 1
+  assert final_thoughts[0].text == "A."
+
+
+@pytest.mark.asyncio
+async def test_streaming_chunk_with_reasoning_and_content_yields_both_in_order():
+  """One delta carrying reasoning and answer text streams thought, then text."""
+  openai_llm = OpenAILlm(model="deepseek-reasoner", api_key="k")
+  llm_request = LlmRequest(
+      model="deepseek-reasoner",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  chunks = [
+      _reasoning_stream_chunk(
+          "reasoning_content",
+          reasoning="Thinking.",
+          content="Answer.",
+          finish_reason="stop",
+      ),
+  ]
+
+  with _stream_client(chunks):
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert [r.partial for r in responses] == [True, True, False]
+  assert responses[0].content.parts[0].thought is True
+  assert responses[0].content.parts[0].text == "Thinking."
+  assert not responses[1].content.parts[0].thought
+  assert responses[1].content.parts[0].text == "Answer."
+  final_parts = responses[2].content.parts
+  assert [bool(p.thought) for p in final_parts] == [True, False]
+  assert [p.text for p in final_parts] == ["Thinking.", "Answer."]
