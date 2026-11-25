@@ -139,6 +139,43 @@ class TestStreamingResponseAggregator:
     )
     assert not closed_response.content.parts[1].thought
 
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("use_progressive_sse", [True, False])
+  async def test_process_response_keeps_all_text_parts_in_one_chunk(
+      self, use_progressive_sse
+  ):
+    """All text parts of a single chunk are accumulated, not just the first.
+
+    A chunk can carry a thought part and a regular part together (common
+    when thinking is enabled); the aggregated response must keep both.
+    """
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      response = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(text="Thinking...", thought=True),
+                          types.Part(text="Hello"),
+                      ]
+                  )
+              )
+          ]
+      )
+      async for _ in aggregator.process_response(response):
+        pass
+
+      closed_response = aggregator.close()
+      assert closed_response is not None
+      assert len(closed_response.content.parts) == 2
+      assert closed_response.content.parts[0].text == "Thinking..."
+      assert closed_response.content.parts[0].thought
+      assert closed_response.content.parts[1].text == "Hello"
+      assert not closed_response.content.parts[1].thought
+
   def test_close_with_no_responses(self):
     aggregator = streaming_utils.StreamingResponseAggregator()
     closed_response = aggregator.close()
