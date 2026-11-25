@@ -579,7 +579,8 @@ async def test_screen_live_user_content_does_not_leak_in_place_edits():
           ),
       ),
       live_connect_config=types.LiveConnectConfig(
-          session_resumption=types.SessionResumptionConfig(handle='h1')
+          session_resumption=types.SessionResumptionConfig(handle='h1'),
+          thinking_config=types.ThinkingConfig(thinking_budget=128),
       ),
   )
 
@@ -589,6 +590,8 @@ async def test_screen_live_user_content_does_not_leak_in_place_edits():
     request.config.system_instruction.parts.append(types.Part(text='added'))
     request.live_connect_config.session_resumption.handle = 'edited'
     request.live_connect_config.temperature = 0.0
+    request.live_connect_config.session_resumption.transparent = True
+    request.live_connect_config.thinking_config.thinking_budget = 0
 
   with mock.patch.object(
       flow, '_handle_before_model_callback', side_effect=_edit_request
@@ -603,6 +606,8 @@ async def test_screen_live_user_content_does_not_leak_in_place_edits():
   assert [p.text for p in config.system_instruction.parts] == ['orig']
   assert llm_request.live_connect_config.session_resumption.handle == 'h1'
   assert llm_request.live_connect_config.temperature is None
+  assert llm_request.live_connect_config.session_resumption.transparent is None
+  assert llm_request.live_connect_config.thinking_config.thinking_budget == 128
 
 
 class _UncopyableTool:
@@ -621,7 +626,9 @@ async def test_screen_live_user_content_shares_clients_and_callable_tools():
   client = httpx.AsyncClient()
   session = _UncopyableTool()
   http_options = types.HttpOptions(
-      headers={'x': '1'}, httpx_async_client=client
+      headers={'x': '1'},
+      extra_body={'metadata': {'key': 'original'}},
+      httpx_async_client=client,
   )
   llm_request = LlmRequest(
       config=types.GenerateContentConfig(
@@ -637,6 +644,7 @@ async def test_screen_live_user_content_shares_clients_and_callable_tools():
     seen['client'] = request.config.http_options.httpx_async_client
     seen['tool'] = request.config.tools[0]
     request.config.http_options.headers['x'] = 'edited'
+    request.config.http_options.extra_body['metadata']['key'] = 'edited'
     request.live_connect_config.http_options.headers['x'] = 'edited'
 
   with mock.patch.object(
@@ -648,6 +656,9 @@ async def test_screen_live_user_content_shares_clients_and_callable_tools():
 
   assert seen == {'client': client, 'tool': session}
   assert llm_request.config.http_options.headers == {'x': '1'}
+  assert llm_request.config.http_options.extra_body == {
+      'metadata': {'key': 'original'}
+  }
   assert llm_request.live_connect_config.http_options.headers == {'x': '1'}
 
 

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from typing import AsyncGenerator
 from typing import cast
@@ -77,13 +78,18 @@ def _copy_config_for_callback(config: _ConfigT) -> _ConfigT:
 
   Everything is deep-copied except two kinds of value that cannot be:
   ``http_options`` can hold a live HTTP client, so it gets the same partial
-  copy as request assembly uses, and a tool that is not a model (a callable
+  copy as request assembly uses (plus a deep copy of ``extra_body``), and a
+  tool that is not a model (a callable
   or an MCP session) is shared.
   """
   copied = config.model_copy(update={'http_options': None, 'tools': None})
   copied = copied.model_copy(deep=True)
   if config.http_options is not None:
-    copied.http_options = copy_http_options(config.http_options)
+    http_options = copy_http_options(config.http_options)
+    if http_options.extra_body is not None:
+      # Plain JSON request data, so nested values can be copied too.
+      http_options.extra_body = copy.deepcopy(http_options.extra_body)
+    copied.http_options = http_options
   if config.tools is not None:
     copied.tools = [
         tool.model_copy(deep=True) if isinstance(tool, BaseModel) else tool
