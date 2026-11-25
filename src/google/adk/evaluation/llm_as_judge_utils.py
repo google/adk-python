@@ -100,6 +100,60 @@ def get_text_from_content(
   return None
 
 
+def get_final_response_author(invocation: Invocation) -> Optional[str]:
+  """Returns the author of the event that carried the final response.
+
+  `EvaluationGenerator.convert_events_to_eval_invocations` keeps that event
+  among the invocation events. It sets the event's content to None, because
+  the content moves to `final_response`, unless the reply also carries a
+  function call: then the event keeps its content, which is the same content
+  as `final_response`. So the reply's event is taken to be the last agent
+  event whose content is None or, for a reply that carries a function call,
+  equal to `final_response`. An event with any other content is not it,
+  whether that is a tool call another agent made later in the turn or the
+  empty reply, a content object without parts, of an agent that ran after the
+  one that answered.
+
+  Known limit: the conversion also keeps events that never had a content
+  object. Those are a model call that failed after reporting usage (a reply
+  that came back with no content object at all is reported as such a failure),
+  an event with only grounding metadata, and a usage report with no model
+  event of its agent to merge into. When another agent leaves one of those
+  after the reply's event, in a later step or in parallel, that event is taken
+  for the reply's and its author is returned. The same happens when another
+  agent's later event has content identical to a reply that carries a function
+  call, down to the function call id: the model gave both calls the same id,
+  or an agent emitted the reply's content again.
+
+  When no agent event matches, as in an invocation that was put together some
+  other way, the last agent event is used.
+
+  Args:
+    invocation: The invocation whose final response is being attributed.
+
+  Returns:
+    The author, or None if the invocation has no agent events.
+  """
+  intermediate_data = invocation.intermediate_data
+  if not isinstance(intermediate_data, InvocationEvents):
+    return None
+  agent_events = [
+      event
+      for event in intermediate_data.invocation_events
+      if not (event.author and event.author.lower() == "user")
+  ]
+  final_response = invocation.final_response
+  reply_keeps_content = final_response is not None and any(
+      part.function_call for part in final_response.parts or []
+  )
+  for event in reversed(agent_events):
+    if event.content is None or (
+        reply_keeps_content and event.content == final_response
+    ):
+      return event.author
+  return agent_events[-1].author if agent_events else None
+
+
 def get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
   if score is None:
     return EvalStatus.NOT_EVALUATED

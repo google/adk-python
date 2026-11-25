@@ -23,13 +23,16 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_rubrics import RubricScore
+from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
+from google.adk.evaluation.llm_as_judge_utils import get_final_response_author
 from google.adk.evaluation.llm_as_judge_utils import get_grounding_metadata_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.evaluation.llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_tool_declarations_as_json_str
+from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
 
@@ -220,6 +223,340 @@ def test_get_text_from_content_skips_thought_parts_in_intermediate_responses():
   )
 
   assert text == "Let me check.\nDone."
+
+
+def _make_invocation_with_reply(
+    intermediate_data: IntermediateData | InvocationEvents | None,
+) -> Invocation:
+  """Returns an invocation that has a final response."""
+  return Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="How much do I owe?")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="You owe $42.")]
+      ),
+      intermediate_data=intermediate_data,
+  )
+
+
+def _make_tool_call_event(author: str) -> InvocationEvent:
+  """Returns an event in which `author` calls a tool."""
+  return InvocationEvent(
+      author=author,
+      content=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  function_call=genai_types.FunctionCall(name="a_tool", args={})
+              )
+          ]
+      ),
+  )
+
+
+def test_get_final_response_author_after_transfer():
+  """The reply belongs to the sub-agent, not the agent that handed off."""
+  invocation = _make_invocation_with_reply(
+      InvocationEvents(
+          invocation_events=[
+              _make_tool_call_event("router"),
+              # `convert_events_to_eval_invocations` keeps the final
+              # response's event, with its content moved to `final_response`.
+              InvocationEvent(author="billing_agent"),
+          ]
+      )
+  )
+
+  assert get_final_response_author(invocation) == "billing_agent"
+
+
+@pytest.mark.parametrize(
+    "later_event",
+    [
+        InvocationEvent(
+            author="billing_agent",
+            usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+                total_token_count=12
+            ),
+        ),
+        _make_tool_call_event("audit_agent"),
+    ],
+    ids=["usage_report_of_the_same_agent", "tool_call_of_another_agent"],
+)
+def test_get_final_response_author_with_later_event(later_event):
+  """A later event of these two kinds leaves the reply with its agent.
+
+  The usage report is itself an event without content, so it is the one the
+  helper picks. The label stays the same only because the same agent wrote it.
+  """
+  invocation = _make_invocation_with_reply(
+      InvocationEvents(
+          invocation_events=[
+              _make_tool_call_event("router"),
+              InvocationEvent(author="billing_agent"),
+              later_event,
+          ]
+      )
+  )
+
+  assert get_final_response_author(invocation) == "billing_agent"
+
+
+_USAGE = genai_types.GenerateContentResponseUsageMetadata(total_token_count=12)
+
+
+def _make_session_event(
+    author: str, *parts: genai_types.Part, **kwargs
+) -> Event:
+  """Returns a session event of `author` in one invocation."""
+  return Event(
+      invocation_id="inv1",
+      author=author,
+      content=genai_types.Content(role="model", parts=list(parts)),
+      **kwargs,
+  )
+
+
+def _make_transfer_events() -> list[Event]:
+  """Returns the events of a router handing the turn to billing_agent."""
+  return [
+      _make_session_event(
+          "router",
+          genai_types.Part(
+              function_call=genai_types.FunctionCall(
+                  name="transfer_to_agent", args={"agent_name": "billing_agent"}
+              )
+          ),
+      ),
+      _make_session_event(
+          "router",
+          genai_types.Part(
+              function_response=genai_types.FunctionResponse(
+                  name="transfer_to_agent", response={"result": None}
+              )
+          ),
+      ),
+  ]
+
+
+def _make_reply_event(author: str) -> Event:
+  """Returns the session event in which `author` answers the user."""
+  return _make_session_event(author, genai_types.Part(text="You owe $42."))
+
+
+def _make_reply_event_with_long_running_call(author: str) -> Event:
+  """Returns a reply of `author` that also starts a long-running tool.
+
+  The conversion keeps the content of a reply that carries a function call.
+  """
+  return _make_session_event(
+      author,
+      genai_types.Part(text="Checking, you owe $42."),
+      genai_types.Part(
+          function_call=genai_types.FunctionCall(
+              id="call1", name="lookup", args={}
+          )
+      ),
+      long_running_tool_ids={"call1"},
+  )
+
+
+def _make_failed_call_event(author: str) -> Event:
+  """Returns the session event of a model call of `author` that failed."""
+  return Event(
+      invocation_id="inv1",
+      author=author,
+      error_code="MALFORMED_FUNCTION_CALL",
+      usage_metadata=_USAGE,
+  )
+
+
+@pytest.mark.parametrize(
+    "agent_events, expected_author",
+    [
+        ([_make_reply_event("root_agent")], "root_agent"),
+        (
+            [*_make_transfer_events(), _make_reply_event("billing_agent")],
+            "billing_agent",
+        ),
+        (
+            [
+                *_make_transfer_events(),
+                _make_reply_event("billing_agent"),
+                _make_session_event(
+                    "audit_agent",
+                    genai_types.Part(
+                        function_call=genai_types.FunctionCall(
+                            name="log_reply", args={}
+                        )
+                    ),
+                ),
+                _make_session_event(
+                    "audit_agent",
+                    genai_types.Part(
+                        function_response=genai_types.FunctionResponse(
+                            name="log_reply", response={"result": None}
+                        )
+                    ),
+                ),
+            ],
+            "billing_agent",
+        ),
+        (
+            [
+                _make_reply_event("drafter"),
+                # The model of the agent that runs next returns no parts.
+                _make_session_event("critic", usage_metadata=_USAGE),
+            ],
+            "drafter",
+        ),
+        (
+            [
+                _make_session_event("fetcher", usage_metadata=_USAGE),
+                _make_reply_event("writer"),
+            ],
+            "writer",
+        ),
+        (
+            [_make_failed_call_event("fetcher"), _make_reply_event("writer")],
+            "writer",
+        ),
+        (
+            # Two agents answer with the same text; the later reply is final.
+            [_make_reply_event("drafter"), _make_reply_event("reviewer")],
+            "reviewer",
+        ),
+        (
+            [
+                _make_reply_event("drafter"),
+                # The next agent streams the same text and never completes.
+                _make_session_event(
+                    "critic",
+                    genai_types.Part(text="You owe $42."),
+                    partial=True,
+                ),
+            ],
+            "drafter",
+        ),
+        (
+            [
+                *_make_transfer_events(),
+                _make_reply_event_with_long_running_call("billing_agent"),
+            ],
+            "billing_agent",
+        ),
+        (
+            [
+                _make_failed_call_event("fetcher"),
+                _make_reply_event_with_long_running_call("writer"),
+            ],
+            "writer",
+        ),
+        (
+            [
+                _make_reply_event_with_long_running_call("alpha"),
+                # A parallel agent's model returns no parts after the reply.
+                _make_session_event("beta", usage_metadata=_USAGE),
+            ],
+            "alpha",
+        ),
+        (
+            [
+                _make_reply_event_with_long_running_call("alpha"),
+                # A parallel agent calls a tool after the reply.
+                _make_session_event(
+                    "beta",
+                    genai_types.Part(
+                        function_call=genai_types.FunctionCall(
+                            name="log_reply", args={}
+                        )
+                    ),
+                ),
+                _make_session_event(
+                    "beta",
+                    genai_types.Part(
+                        function_response=genai_types.FunctionResponse(
+                            name="log_reply", response={"result": None}
+                        )
+                    ),
+                ),
+            ],
+            "alpha",
+        ),
+    ],
+    ids=[
+        "single_agent",
+        "transfer",
+        "tool_call_of_a_later_agent",
+        "empty_reply_of_a_later_agent",
+        "empty_reply_of_an_earlier_agent",
+        "failed_call_of_an_earlier_agent",
+        "same_text_from_two_agents",
+        "same_text_in_a_partial_event_of_a_later_agent",
+        "reply_with_a_long_running_call",
+        "failed_call_before_a_reply_with_a_long_running_call",
+        "empty_reply_of_a_parallel_agent_after_a_long_running_call",
+        "tool_call_of_a_parallel_agent_after_a_long_running_call",
+    ],
+)
+def test_get_final_response_author_of_converted_session_events(
+    agent_events, expected_author
+):
+  """The reply's author is found in what the conversion really produces.
+
+  It is found again after the invocation has been written to JSON and read
+  back, as a stored eval case is.
+  """
+  user_event = Event(
+      invocation_id="inv1",
+      author="user",
+      content=genai_types.Content(
+          parts=[genai_types.Part(text="How much do I owe?")]
+      ),
+  )
+  (invocation,) = EvaluationGenerator.convert_events_to_eval_invocations(
+      [user_event, *agent_events]
+  )
+
+  stored_invocation = Invocation.model_validate_json(
+      invocation.model_dump_json()
+  )
+
+  assert invocation.final_response is not None
+  assert get_final_response_author(invocation) == expected_author
+  assert get_final_response_author(stored_invocation) == expected_author
+
+
+def test_get_final_response_author_without_event_for_the_reply():
+  """A hand-built invocation falls back to its last agent event."""
+  invocation = _make_invocation_with_reply(
+      InvocationEvents(
+          invocation_events=[
+              _make_tool_call_event("router"),
+              _make_tool_call_event("billing_agent"),
+              InvocationEvent(
+                  author="user",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text="Thanks.")]
+                  ),
+              ),
+          ]
+      )
+  )
+
+  assert get_final_response_author(invocation) == "billing_agent"
+
+
+@pytest.mark.parametrize(
+    "intermediate_data",
+    [None, IntermediateData(), InvocationEvents(invocation_events=[])],
+    ids=["no_intermediate_data", "legacy_intermediate_data", "no_events"],
+)
+def test_get_final_response_author_without_agent_events(intermediate_data):
+  """There is no author to report when the invocation has no agent events."""
+  invocation = _make_invocation_with_reply(intermediate_data)
+
+  assert get_final_response_author(invocation) is None
 
 
 def test_get_eval_status_with_none_score():

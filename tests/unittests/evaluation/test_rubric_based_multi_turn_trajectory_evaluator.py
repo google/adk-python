@@ -26,7 +26,9 @@ from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.eval_metrics import RubricsBasedCriterion
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.eval_rubrics import RubricContent
+from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.rubric_based_multi_turn_trajectory_evaluator import RubricBasedMultiTurnTrajectoryEvaluator
+from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
 
@@ -376,6 +378,118 @@ class TestDialogueAssembly:
     assert "USER TURN" not in evaluator._formatted_dialogue
     assert (
         "AGENT (agent) TURN 1: Agent response." in evaluator._formatted_dialogue
+    )
+
+  def test_final_reply_is_attributed_to_the_agent_that_wrote_it(
+      self, evaluator
+  ):
+    """After a transfer, the reply is labelled with the sub-agent's name."""
+    transfer_call = genai_types.Part(
+        function_call=genai_types.FunctionCall(
+            name="transfer_to_agent", args={"agent_name": "billing_agent"}
+        )
+    )
+    transfer_response = genai_types.Part(
+        function_response=genai_types.FunctionResponse(
+            name="transfer_to_agent", response={"result": None}
+        )
+    )
+    invocation = _make_invocation(
+        user_text="How much do I owe?",
+        agent_text="You owe $42.",
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(
+                    author="router",
+                    content=genai_types.Content(parts=[transfer_call]),
+                ),
+                InvocationEvent(
+                    author="router",
+                    content=genai_types.Content(parts=[transfer_response]),
+                ),
+                # `convert_events_to_eval_invocations` keeps the final
+                # response's event, with its content moved to
+                # `final_response`.
+                InvocationEvent(author="billing_agent"),
+            ]
+        ),
+    )
+
+    evaluator._assemble_dialogue_history([invocation])
+
+    assert evaluator._formatted_dialogue == (
+        "USER TURN 1: How much do I owe?\n"
+        "AGENT (router) TURN 1 (tool call):"
+        ' transfer_to_agent({"agent_name": "billing_agent"})\n'
+        "AGENT (router) TURN 1 (tool output):"
+        ' transfer_to_agent -> {"result": null}\n'
+        "AGENT (billing_agent) TURN 1: You owe $42."
+    )
+
+  def test_final_reply_of_converted_session_events_is_attributed_to_its_agent(
+      self, evaluator
+  ):
+    """The label holds for invocations built from session events.
+
+    The label is read from the event that
+    `convert_events_to_eval_invocations` leaves without content, so this goes
+    through that conversion instead of building its output by hand. If the
+    conversion stops keeping that event, this test fails.
+    """
+    events = [
+        Event(
+            invocation_id="inv1",
+            author="user",
+            content=genai_types.Content(
+                parts=[genai_types.Part(text="How much do I owe?")]
+            ),
+        ),
+        Event(
+            invocation_id="inv1",
+            author="router",
+            content=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        function_call=genai_types.FunctionCall(
+                            name="transfer_to_agent",
+                            args={"agent_name": "billing_agent"},
+                        )
+                    )
+                ]
+            ),
+        ),
+        Event(
+            invocation_id="inv1",
+            author="router",
+            content=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        function_response=genai_types.FunctionResponse(
+                            name="transfer_to_agent", response={"result": None}
+                        )
+                    )
+                ]
+            ),
+        ),
+        Event(
+            invocation_id="inv1",
+            author="billing_agent",
+            content=genai_types.Content(
+                parts=[genai_types.Part(text="You owe $42.")]
+            ),
+        ),
+    ]
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert evaluator._formatted_dialogue == (
+        "USER TURN 1: How much do I owe?\n"
+        "AGENT (router) TURN 1 (tool call):"
+        ' transfer_to_agent({"agent_name": "billing_agent"})\n'
+        "AGENT (router) TURN 1 (tool output):"
+        ' transfer_to_agent -> {"result": null}\n'
+        "AGENT (billing_agent) TURN 1: You owe $42."
     )
 
   def test_thought_parts_are_left_out_of_dialogue(self, evaluator):
