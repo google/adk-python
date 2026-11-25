@@ -502,12 +502,16 @@ def _empty_response_error(
   )
 
 
+def _base_media_type(mime_type: str) -> str:
+  return mime_type.split(";", 1)[0].strip().lower()
+
+
 def _is_image_part(part: types.Part) -> bool:
   inline_data = part.inline_data
   return bool(
       inline_data is not None
       and inline_data.mime_type is not None
-      and inline_data.mime_type.startswith("image/")
+      and _base_media_type(inline_data.mime_type).startswith("image/")
   )
 
 
@@ -516,7 +520,7 @@ def _is_pdf_part(part: types.Part) -> bool:
   return bool(
       inline_data is not None
       and inline_data.mime_type is not None
-      and inline_data.mime_type.split(";", 1)[0].strip() == "application/pdf"
+      and _base_media_type(inline_data.mime_type) == "application/pdf"
   )
 
 
@@ -560,7 +564,7 @@ def _is_content_free_signature(part: types.Part) -> bool:
 
 
 def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
-  normalized = mime_type.split(";", 1)[0].strip().lower()
+  normalized = _base_media_type(mime_type)
   if normalized not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
     raise ValueError(f"Unsupported Anthropic image MIME type: {mime_type}")
   return cast(_ImageMediaType, normalized)
@@ -589,7 +593,7 @@ def _function_response_media_blocks(
       mime_type, uri, raw = file_data.mime_type, file_data.file_uri, None
     else:
       continue
-    media_type = mime_type.split(";", 1)[0].strip().lower()
+    media_type = _base_media_type(mime_type)
     if (
         media_type not in _ANTHROPIC_IMAGE_MEDIA_TYPES
         and media_type != "application/pdf"
@@ -844,7 +848,7 @@ def _part_to_message_block(
   elif part.file_data:
     file_data = part.file_data
     uri = file_data.file_uri or ""
-    mime_type = (file_data.mime_type or "").split(";", 1)[0].strip().lower()
+    mime_type = _base_media_type(file_data.mime_type or "")
     # Claude rejects URL sources upstream, so gs:// objects are downloaded
     # and sent inline as base64. Any other URI scheme stays unsupported.
     if not uri.startswith("gs://"):
