@@ -837,3 +837,36 @@ def test_stream_normalizer_task_snapshot_with_artifacts_is_authoritative():
   task, _ = normalize(_v1_artifact_chunk('art-2', ' appended', append=True))
   by_id = {a.artifact_id: [p.text for p in a.parts] for a in task.artifacts}
   assert by_id == {'art-1': ['fresh'], 'art-2': ['other', ' appended']}
+
+
+@v1_only
+def test_build_agent_card_v1_adds_v03_interface_when_compat_enabled():
+  """v0.3 clients need a legacy protocolVersion on the card to resolve url (#8342)."""
+  card = _build_card(url='http://localhost:8001/')
+  versions = [iface.protocol_version for iface in card.supported_interfaces]
+  urls = [iface.url for iface in card.supported_interfaces]
+  bindings = [
+      getattr(iface.protocol_binding, 'value', iface.protocol_binding)
+      for iface in card.supported_interfaces
+  ]
+  assert '1.0' in versions
+  assert '0.3' in versions
+  assert urls == ['http://localhost:8001'] * len(urls)
+  assert all(
+      binding == 'JSONRPC' or binding == _compat.TP_JSONRPC
+      for binding in bindings
+  )
+
+
+@v1_only
+def test_build_agent_card_v1_omits_v03_interface_when_compat_disabled():
+  card = _build_card(url='http://localhost:8001', enable_v0_3_compat=False)
+  versions = [iface.protocol_version for iface in card.supported_interfaces]
+  assert versions == ['1.0']
+
+
+@v1_only
+def test_build_agent_card_v1_does_not_duplicate_existing_v03_interface():
+  card = _build_card(protocol_version='0.3', enable_v0_3_compat=True)
+  versions = [iface.protocol_version for iface in card.supported_interfaces]
+  assert versions == ['0.3']

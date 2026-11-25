@@ -1690,3 +1690,51 @@ class TestSkillSecuritySupport:
 
     # Assert
     mock_validate.assert_called_once_with([], {})
+
+
+@pytest.mark.skipif(
+    not _compat.IS_A2A_V1, reason="1.x supported_interfaces shape"
+)
+class TestAgentCardV03Compat:
+  """Agent cards must advertise a v0.3 interface when compat is on (#8342)."""
+
+  @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
+  @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
+  async def test_build_advertises_v03_interface_when_compat_enabled(
+      self, mock_build_sub_skills, mock_build_primary_skills
+  ):
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "hello_agent"
+    mock_agent.description = "An ADK Agent"
+    mock_build_primary_skills.return_value = []
+    mock_build_sub_skills.return_value = []
+
+    card = await AgentCardBuilder(
+        agent=mock_agent, rpc_url="http://localhost:8001"
+    ).build()
+
+    versions = [iface.protocol_version for iface in card.supported_interfaces]
+    urls = [iface.url for iface in card.supported_interfaces]
+    assert "1.0" in versions
+    assert "0.3" in versions
+    assert set(urls) == {"http://localhost:8001"}
+
+  @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
+  @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
+  async def test_build_omits_v03_interface_when_compat_disabled(
+      self, mock_build_sub_skills, mock_build_primary_skills
+  ):
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "hello_agent"
+    mock_agent.description = "An ADK Agent"
+    mock_build_primary_skills.return_value = []
+    mock_build_sub_skills.return_value = []
+
+    card = await AgentCardBuilder(
+        agent=mock_agent,
+        rpc_url="http://localhost:8001",
+        enable_v0_3_compat=False,
+    ).build()
+
+    versions = [iface.protocol_version for iface in card.supported_interfaces]
+    assert versions == ["1.0"]
