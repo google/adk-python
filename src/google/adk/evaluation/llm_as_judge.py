@@ -32,8 +32,8 @@ from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
-from ..utils.context_utils import Aclosing
 from ._retry_options_utils import add_default_retry_options_if_not_present
+from ._retry_options_utils import read_judge_response_with_retry
 from .common import EvalBaseModel
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
@@ -179,28 +179,24 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     Returns:
       A PerInvocationResult containing the evaluation score and status.
     """
-    async with Aclosing(
-        self._judge_model.generate_content_async(llm_request)
-    ) as agen:
-      async for llm_response in agen:
-        # Non-streaming call, so there is only one response content.
-        auto_rater_score = (
-            self._convert_auto_rater_response_to_score_for_invocation(
-                llm_response, actual=actual, expected=expected
-            )
+    llm_response = await read_judge_response_with_retry(
+        self._judge_model, llm_request
+    )
+    if llm_response is None:
+      raise RuntimeError(
+          "LLM evaluation failed: no response received from judge model"
+      )
+    auto_rater_score = (
+        self._convert_auto_rater_response_to_score_for_invocation(
+            llm_response, actual=actual, expected=expected
         )
-        return PerInvocationResult(
-            actual_invocation=actual,
-            expected_invocation=expected,
-            score=auto_rater_score.score,
-            eval_status=get_eval_status(
-                auto_rater_score.score, self._threshold
-            ),
-            rubric_scores=auto_rater_score.rubric_scores,
-        )
-    # If we reach here, the LLM didn't return any response
-    raise RuntimeError(
-        "LLM evaluation failed: no response received from judge model"
+    )
+    return PerInvocationResult(
+        actual_invocation=actual,
+        expected_invocation=expected,
+        score=auto_rater_score.score,
+        eval_status=get_eval_status(auto_rater_score.score, self._threshold),
+        rubric_scores=auto_rater_score.rubric_scores,
     )
 
   @override
