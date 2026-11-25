@@ -19,7 +19,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from collections.abc import Coroutine
+from itertools import count
 import logging
+from threading import Lock
 from typing import Any
 from typing import TYPE_CHECKING
 from typing import TypeVar
@@ -30,6 +32,7 @@ from google.genai import types
 from ....agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from ....events.event import Event
 from ....events.event_actions import EventActions
+from ....sessions.state import _StateAccesses
 from ....telemetry.tracing import trace_merged_tool_calls
 from ....telemetry.tracing import tracer
 from ....tools.base_tool import BaseTool
@@ -39,6 +42,7 @@ from ..core._utils import as_llm_agent as _as_llm_agent
 from ._caller import _execute_single_prepared_call_async
 from ._caller import _prepare_single
 from ._caller import _PreparedFunctionCall
+from ._caller import _STATE_WRITES_ATTR
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext
@@ -122,7 +126,7 @@ def _apply_latest_state_writes(
     function_response_events: list[Event],
     session_state: dict[str, Any],
 ) -> None:
-  """Re-applies the latest value of list and dict keys several calls wrote.
+  """Re-applies the latest shared-state values for keys several calls wrote.
 
   Calls share the session state, so a call that reads a key after another call
   wrote it builds on that write, which merging in call order alone can drop.
@@ -130,18 +134,37 @@ def _apply_latest_state_writes(
   merged_delta = merged_event.actions.state_delta
   latest_writes: dict[str, Any] = {}
   for key in merged_delta:
-    latest = session_state.get(key)
-    if not isinstance(latest, (dict, list)):
-      continue
-    writes = [
-        event.actions.state_delta[key]
+    writers = [
+        event
         for event in function_response_events
         if key in event.actions.state_delta
     ]
+    if len(writers) < 2:
+      continue
+    latest = session_state.get(key)
+    if not isinstance(latest, (dict, list)):
+      if _is_latest_scalar_state_write(key, latest, writers):
+        latest_writes[key] = latest
+      continue
     # State stores the same object in the session and in the call's delta.
-    if len(writes) > 1 and any(write is latest for write in writes):
+    if any(event.actions.state_delta[key] is latest for event in writers):
       latest_writes[key] = latest
   deep_merge_dicts(merged_delta, latest_writes)
+
+
+def _is_latest_scalar_state_write(
+    key: str, latest: Any, writers: list[Event]
+) -> bool:
+  """Checks that all competing writes came from State and the latest survived."""
+  latest_write = None
+  for event in writers:
+    write = getattr(event, _STATE_WRITES_ATTR, {}).get(key)
+    # Direct actions.state_delta writes keep their original call-order merge.
+    if write is None or write[1] is not event.actions.state_delta[key]:
+      return False
+    if latest_write is None or latest_write[0] < write[0]:
+      latest_write = write
+  return latest_write is not None and latest_write[1] is latest
 
 
 def _merge_and_trace_function_response_events(
@@ -155,6 +178,9 @@ def _merge_and_trace_function_response_events(
   _apply_latest_state_writes(
       merged_event, function_response_events, invocation_context.session.state
   )
+  # The merge reuses the original event when only one tool returned a result.
+  if hasattr(merged_event, _STATE_WRITES_ATTR):
+    delattr(merged_event, _STATE_WRITES_ATTR)
 
   # this is needed for debug traces of parallel calls
   # individual response with tool.name is traced in __build_response_event
@@ -262,6 +288,12 @@ async def _execute_prepared_function_calls(
   """Runs prepared calls in parallel and merges their response events."""
   if not prepared_calls:
     return None
+
+  if len(prepared_calls) > 1:
+    lock, sequence = Lock(), count()
+    for prepared_call in prepared_calls:
+      state = prepared_call.tool_context.state
+      state._accesses = _StateAccesses(lock, sequence)  # pylint: disable=protected-access
 
   # Create tasks for parallel execution
   tasks = [

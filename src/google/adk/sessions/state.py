@@ -17,7 +17,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 import copy
 import functools
+from itertools import count
 import logging
+from threading import Lock
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -83,6 +85,15 @@ def _equals_its_json_form(value: Any) -> bool:
     return False
 
 
+class _StateAccesses:
+  """Per-call state access provenance with a write order shared by the batch."""
+
+  def __init__(self, lock: Lock, sequence: count) -> None:
+    self.lock = lock
+    self.sequence = sequence
+    self.writes: dict[str, tuple[int, Any]] = {}
+
+
 class State:
   """A state dict that maintains the current value and the pending-commit delta.
 
@@ -114,6 +125,7 @@ class State:
     self._delta = delta
     self._schema = schema
     self._snapshots: dict[str, tuple[Any, Any]] = {}
+    self._accesses: _StateAccesses | None = None
     # TODO: recorded keys are per State, so a container another context over
     # the same event re-records or makes non-JSON is not withdrawn.
     self._recorded_nested_keys: set[str] = set()
@@ -134,10 +146,24 @@ class State:
       _validate_state_entry(self._schema, key, value)
     # TODO: make new change only store in delta, so that self._value is only
     #   updated at the storage commit time.
-    self._value[key] = value
-    self._delta[key] = value
-    self._snapshots.pop(key, None)
-    self._recorded_nested_keys.discard(key)
+    self._assign({key: value})
+
+  def _assign(self, updates: dict[str, Any]) -> None:
+    accesses = self._accesses
+    if accesses is None:
+      self._value.update(updates)
+      self._delta.update(updates)
+    else:
+      # Synchronous tools may run on different worker threads. Keep the
+      # sequence and the shared state update in the same critical section.
+      with accesses.lock:
+        self._value.update(updates)
+        self._delta.update(updates)
+        for key, value in updates.items():
+          accesses.writes[key] = (next(accesses.sequence), value)
+    for key in updates:
+      self._snapshots.pop(key, None)
+      self._recorded_nested_keys.discard(key)
 
   def _take_snapshot(self, key: str, value: Any) -> None:
     """Keeps the container a read handed out beside a copy to compare it with.
@@ -246,11 +272,7 @@ class State:
     if self._schema is not None and isinstance(self._schema, type):
       for key, value in delta.items():
         _validate_state_entry(self._schema, key, value)
-    self._value.update(delta)
-    self._delta.update(delta)
-    for key in delta:
-      self._snapshots.pop(key, None)
-      self._recorded_nested_keys.discard(key)
+    self._assign(delta)
 
   def to_dict(self) -> dict[str, Any]:
     """Returns the state dict."""
