@@ -196,3 +196,10 @@ def test_delete_eval_case_not_found(
   manager.create_eval_set(app_name, eval_set_id)
   with pytest.raises(NotFoundError):
     manager.delete_eval_case(app_name, eval_set_id, eval_case_id)
+
+
+def test_create_eval_set_sets_name_like_other_managers(
+    manager, app_name, eval_set_id
+):
+  eval_set = manager.create_eval_set(app_name, eval_set_id)
+  assert eval_set.name == eval_set_id
