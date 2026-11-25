@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import base64
 import inspect
 import logging
 import time
@@ -37,6 +38,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.context import _fencing
+from google.adk.flows.llm_flows.tools._caller import _extract_multimodal_parts
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
@@ -50,11 +52,16 @@ from google.adk.tools.mcp_tool.mcp_tool import ProgressCallbackFactory
 from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
+from google.genai.types import Content
 from google.genai.types import FunctionDeclaration
+from google.genai.types import FunctionResponse
 from google.genai.types import GroundingMetadata
+from google.genai.types import Part
 from mcp.types import CallToolResult
+from mcp.types import EmbeddedResource
 from mcp.types import ImageContent
 from mcp.types import TextContent
+from mcp.types import TextResourceContents
 from mcp.types import Tool as McpBaseTool
 import pytest
 
@@ -2854,20 +2861,34 @@ class TestResultDictKeys:
   async def test_nested_content_fields_keep_their_camel_case_keys(self):
     """The rename reaches inside the content list, not just the top level.
 
-    An image part carries `mimeType`, which 2.x spells `mime_type`. The list
-    goes to the model verbatim, so the nested keys are contractual too.
+    An embedded resource carries `mimeType`, which 2.x spells `mime_type`. The
+    list goes to the model verbatim, so the nested keys are contractual too.
+    Image items are no longer an example: they become parts (see
+    `TestImageContentParts`).
     """
     result = await self._run(
         CallToolResult(
             content=[
-                ImageContent(type="image", data="AA==", mimeType="image/png")
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri="file:///notes.txt",
+                        mimeType="text/plain",
+                        text="hello",
+                    ),
+                )
             ]
         )
     )
 
-    assert result["content"] == [
-        {"type": "image", "data": "AA==", "mimeType": "image/png"}
-    ]
+    assert result["content"] == [{
+        "type": "resource",
+        "resource": {
+            "uri": "file:///notes.txt",
+            "mimeType": "text/plain",
+            "text": "hello",
+        },
+    }]
 
   @pytest.mark.asyncio
   async def test_meta_stays_unprefixed(self):
@@ -2951,6 +2972,131 @@ class TestResultDictKeys:
 
     assert "resultType" not in result
     assert "result_type" not in result
+
+
+# The 1x1 PNG from the issue's repro.
+_PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d"
+    "0000000049454e44ae426082"
+)
+_PNG_B64 = base64.b64encode(_PNG_BYTES).decode()
+
+
+class TestImageContentParts:
+  """Pins that MCP image content reaches the model as media, not text.
+
+  A tool result has to be JSON, so an image left as a dict in `content` is
+  read by the model as a base64 string. As a part, the flow moves it into
+  `function_response.parts`, which every model adapter sends as media.
+  """
+
+  def setup_method(self):
+    self.mock_mcp_tool = MockMCPTool(name="test_tool")
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+  async def _run(self, mcp_response):
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+    return await tool._run_async_impl(
+        args={}, tool_context=tool_context, credential=None
+    )
+
+  async def _run_image_and_text(self):
+    return await self._run(
+        CallToolResult(
+            content=[
+                ImageContent(type="image", data=_PNG_B64, mimeType="image/png"),
+                TextContent(type="text", text="a red dot"),
+            ]
+        )
+    )
+
+  @pytest.mark.asyncio
+  async def test_image_content_becomes_a_part(self):
+    """The image item is replaced by a part holding the decoded bytes."""
+    result = await self._run_image_and_text()
+
+    image = result["content"][0]
+    assert isinstance(image, Part)
+    assert image.inline_data.data == _PNG_BYTES
+    assert image.inline_data.mime_type == "image/png"
+    assert result["content"][1] == {"type": "text", "text": "a red dot"}
+    assert result["isError"] is False
+
+  @pytest.mark.asyncio
+  async def test_gemini_path_gets_the_image_as_a_function_response_part(self):
+    """The flow lifts the part out of the result, leaving no base64 behind."""
+    result = await self._run_image_and_text()
+
+    remaining, parts = _extract_multimodal_parts(result)
+
+    assert len(parts) == 1
+    assert parts[0].inline_data.data == _PNG_BYTES
+    assert parts[0].inline_data.mime_type == "image/png"
+    assert remaining["content"] == [{"type": "text", "text": "a red dot"}]
+    assert "iVBOR" not in str(remaining)
+
+  @pytest.mark.asyncio
+  async def test_anthropic_path_sends_an_image_block(self):
+    """The tool result Claude receives holds an image block, not base64 text."""
+    pytest.importorskip("anthropic")
+    from google.adk.models.anthropic_llm import content_to_message_param
+
+    result = await self._run_image_and_text()
+    remaining, parts = _extract_multimodal_parts(result)
+    content = Content(
+        role="user",
+        parts=[
+            Part(
+                function_response=FunctionResponse(
+                    id="test-call-id",
+                    name="test_tool",
+                    response=remaining,
+                    parts=parts,
+                )
+            )
+        ],
+    )
+
+    message = content_to_message_param(content)
+
+    tool_result = message["content"][0]
+    assert tool_result["type"] == "tool_result"
+    blocks = tool_result["content"]
+    assert isinstance(blocks, list), f"tool_result content is text: {blocks}"
+    image_blocks = [b for b in blocks if b["type"] == "image"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["source"]["media_type"] == "image/png"
+    text = " ".join(b["text"] for b in blocks if b["type"] == "text")
+    assert "a red dot" in text
+    assert "iVBOR" not in text
+
+  @pytest.mark.asyncio
+  async def test_invalid_base64_image_stays_a_dict(self):
+    """Data that is not base64 is left as it was rather than failing the call."""
+    result = await self._run(
+        CallToolResult(
+            content=[
+                ImageContent(
+                    type="image", data="not base64!!", mimeType="image/png"
+                )
+            ]
+        )
+    )
+
+    assert result["content"] == [
+        {"type": "image", "data": "not base64!!", "mimeType": "image/png"}
+    ]
 
 
 class TestVendorExtensionFields:

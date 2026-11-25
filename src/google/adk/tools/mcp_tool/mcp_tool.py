@@ -29,6 +29,7 @@ import warnings
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from google.genai.types import GroundingMetadata
+from google.genai.types import Part
 from opentelemetry import propagate
 from pydantic import ValidationError
 from typing_extensions import override
@@ -173,6 +174,41 @@ def _dump_mcp_model(model: Any) -> dict[str, Any]:
     return unaliased
   aliased = model.model_dump(exclude_none=True, mode="json", by_alias=True)
   return cast(dict[str, Any], _restore_meta_keys(aliased))
+
+
+def _convert_image_content_to_parts(result: dict[str, Any]) -> None:
+  """Replaces image items in a dumped tool result's content with parts.
+
+  A tool result has to be JSON, so an image left as a dict reaches the model
+  as base64 text. A ``Part`` is the only way media reaches
+  ``function_response.parts``. The dump already keys items the same way under
+  both SDK majors, so ``mimeType`` is the one spelling to read.
+
+  An item whose data is not valid base64 is logged and left as it is.
+
+  Args:
+    result: The dumped tool result, changed in place.
+  """
+  content = result.get("content")
+  if not isinstance(content, list):
+    return
+  for index, item in enumerate(content):
+    if not isinstance(item, dict) or item.get("type") != "image":
+      continue
+    data = item.get("data")
+    mime_type = item.get("mimeType")
+    if not isinstance(data, str) or not data:
+      continue
+    if not isinstance(mime_type, str) or not mime_type:
+      continue
+    try:
+      decoded = base64.b64decode(data, validate=True)
+    except ValueError:
+      logger.warning(
+          "Leaving MCP image content as text: its data is not valid base64."
+      )
+      continue
+    content[index] = Part.from_bytes(data=decoded, mime_type=mime_type)
 
 
 def _read_field(model: Any, *names: str) -> Any:
@@ -758,6 +794,8 @@ class McpTool(BaseAuthenticatedTool):
     # could only be a server extra.
     if IS_MCP_SDK_V2:
       result.pop("resultType", None)
+
+    _convert_image_content_to_parts(result)
 
     # Push UI widget to the event actions if the tool supports it. Dump the
     # tool: `payload` is a plain dict, so a model left in it gets serialized by
