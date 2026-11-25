@@ -1588,6 +1588,68 @@ def test_part_to_message_block_rejects_unsupported_image_mime_type():
     part_to_message_block(part)
 
 
+@pytest.mark.parametrize(
+    "raw_mime_type, expected_media_type",
+    [
+        ("IMAGE/PNG", "image/png"),
+        (" image/jpeg; name=photo.jpg", "image/jpeg"),
+    ],
+)
+def test_part_to_message_block_normalizes_inline_image_mime_type(
+    raw_mime_type, expected_media_type
+):
+  image_data = b"fake-image-bytes"
+  part = Part(inline_data=types.Blob(mime_type=raw_mime_type, data=image_data))
+
+  result = part_to_message_block(part)
+
+  assert result["type"] == "image"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == expected_media_type
+  assert result["source"]["data"] == base64.b64encode(image_data).decode()
+
+
+@pytest.mark.parametrize(
+    "raw_mime_type",
+    ["Application/PDF", " APPLICATION/PDF ; name=doc.pdf"],
+)
+def test_part_to_message_block_normalizes_inline_pdf_mime_type(raw_mime_type):
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  part = Part(inline_data=types.Blob(mime_type=raw_mime_type, data=pdf_data))
+
+  result = part_to_message_block(part)
+
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+def test_part_to_message_block_rejects_uppercase_unsupported_image_mime_type():
+  part = Part(inline_data=types.Blob(mime_type="IMAGE/BMP", data=b"bitmap"))
+
+  with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
+    part_to_message_block(part)
+
+
+def test_content_to_message_param_skips_uppercase_media_on_assistant_turn():
+  content = Content(
+      role="model",
+      parts=[
+          Part.from_text(text="Done"),
+          Part.from_bytes(data=b"png-bytes", mime_type="IMAGE/PNG"),
+          Part.from_bytes(data=b"%PDF-1.4", mime_type="Application/PDF"),
+      ],
+  )
+
+  result = content_to_message_param(content)
+
+  assert result == {
+      "role": "assistant",
+      "content": [{"type": "text", "text": "Done"}],
+  }
+
+
 def test_part_to_message_block_with_gcs_pdf_document():
   """A gs:// PDF file part downloads the object and sends it inline."""
   pdf_data = b"%PDF-1.4 fake pdf content"
