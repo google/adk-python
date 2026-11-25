@@ -339,6 +339,8 @@ class GcsArtifactService(BaseArtifactService):
       blob_metadata[_GCS_FILE_URI_METADATA_KEY] = file_uri
       if file_data.mime_type:
         blob_metadata[_GCS_FILE_MIME_TYPE_METADATA_KEY] = file_data.mime_type
+      if file_data.display_name:
+        blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = file_data.display_name
       data = b""
       content_type = file_data.mime_type or None
     else:
@@ -412,6 +414,7 @@ class GcsArtifactService(BaseArtifactService):
 
     # If the artifact was saved as a file_data URI reference, restore or resolve it.
     file_uri = _get_file_uri(blob.metadata)
+    display_name = (blob.metadata or {}).get(_GCS_DISPLAY_NAME_METADATA_KEY)
 
     if file_uri:
       if file_uri.startswith("artifact://"):
@@ -439,15 +442,13 @@ class GcsArtifactService(BaseArtifactService):
           file_data=types.FileData(
               file_uri=file_uri,
               mime_type=mime_type,
+              display_name=display_name,
           )
       )
 
     artifact_bytes = blob.download_as_bytes()
     if blob.metadata and blob.metadata.get(_GCS_IS_TEXT_METADATA_KEY) == "true":
       return types.Part(text=artifact_bytes.decode("utf-8"))
-    display_name = None
-    if blob.metadata:
-      display_name = blob.metadata.get(_GCS_DISPLAY_NAME_METADATA_KEY)
     if display_name:
       return types.Part(
           inline_data=types.Blob(
