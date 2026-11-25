@@ -12865,6 +12865,8 @@ async def test_generate_content_async_retry_attempts_include_first_request(
   mock_acompletion.assert_called_once()
   _, kwargs = mock_acompletion.call_args
   assert kwargs["num_retries"] == expected_num_retries
+  # max_retries is only honored by OpenAI SDK routes, so it must not be used.
+  assert "max_retries" not in kwargs
 
 
 @pytest.mark.asyncio
