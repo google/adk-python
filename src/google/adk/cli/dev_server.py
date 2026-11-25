@@ -1081,82 +1081,86 @@ class DevServer(ApiServer):
       """Runs an eval given the details in the eval request."""
       # Create a mapping from eval set file to all the evals that needed to be
       # run.
+      #
+      # Only the eval imports are guarded: a `ModuleNotFoundError` raised
+      # later (e.g. by the user's agent importing a missing package) is not
+      # about the eval extra, and must not be reported as if it were.
       try:
         from ..evaluation.eval_config import append_default_efficiency_metrics
         from ..evaluation.local_eval_service import LocalEvalService
         from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
         from .cli_eval import _collect_eval_results
         from .cli_eval import _collect_inferences
-
-        eval_sets_manager = self._get_eval_sets_manager()
-        eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
-
-        if not eval_set:
-          raise HTTPException(
-              status_code=400, detail=f"Eval set `{eval_set_id}` not found."
-          )
-
-        agent_or_app = self.agent_loader.load_agent(app_name)
-        root_agent = self._get_root_agent(agent_or_app)
-        app = agent_or_app if isinstance(agent_or_app, App) else None
-
-        eval_case_results = []
-
-        # The request carries the config as a raw mapping (OpenAPI-safe), so
-        # validate it into the typed `UserSimulatorConfig` union here.
-        if req.user_simulator_config is not None:
-          user_simulator_provider = UserSimulatorProvider(
-              user_simulator_config=TypeAdapter(
-                  _UserSimulatorConfig
-              ).validate_python(req.user_simulator_config)
-          )
-        else:
-          user_simulator_provider = UserSimulatorProvider()
-
-        eval_service = LocalEvalService(
-            root_agent=root_agent,
-            eval_sets_manager=eval_sets_manager,
-            eval_set_results_manager=self.eval_set_results_manager,
-            session_service=self.session_service,
-            artifact_service=self.artifact_service,
-            user_simulator_provider=user_simulator_provider,
-            app=app,
-        )
-        if req.live_model_config:
-          inference_config = InferenceConfig(
-              use_live=True,
-              live_timeout_seconds=req.live_model_config.timeout_seconds,
-          )
-        else:
-          inference_config = InferenceConfig(use_live=False)
-
-        inference_results = await _collect_inferences(
-            inference_requests=[
-                InferenceRequest(
-                    app_name=app_name,
-                    eval_set_id=eval_set.eval_set_id,
-                    eval_case_ids=req.eval_case_ids or req.eval_ids,
-                    inference_config=inference_config,
-                )
-            ],
-            eval_service=eval_service,
-        )
-
-        # The request carries only what the user selected in the run dialog,
-        # and the efficiency metrics are not selectable there: they take no
-        # threshold, so the dialog has nothing to ask about. Adding them here
-        # is what makes "reported for every eval" hold for a run started from
-        # the Dev UI, and not only for one started from `adk eval`.
-        eval_case_results = await _collect_eval_results(
-            inference_results=inference_results,
-            eval_service=eval_service,
-            eval_metrics=append_default_efficiency_metrics(req.eval_metrics),
-        )
       except ModuleNotFoundError as e:
         logger.exception("%s", e)
         raise HTTPException(
             status_code=400, detail=MISSING_EVAL_DEPENDENCIES_MESSAGE
         ) from e
+
+      eval_sets_manager = self._get_eval_sets_manager()
+      eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
+
+      if not eval_set:
+        raise HTTPException(
+            status_code=400, detail=f"Eval set `{eval_set_id}` not found."
+        )
+
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      root_agent = self._get_root_agent(agent_or_app)
+      app = agent_or_app if isinstance(agent_or_app, App) else None
+
+      eval_case_results = []
+
+      # The request carries the config as a raw mapping (OpenAPI-safe), so
+      # validate it into the typed `UserSimulatorConfig` union here.
+      if req.user_simulator_config is not None:
+        user_simulator_provider = UserSimulatorProvider(
+            user_simulator_config=TypeAdapter(
+                _UserSimulatorConfig
+            ).validate_python(req.user_simulator_config)
+        )
+      else:
+        user_simulator_provider = UserSimulatorProvider()
+
+      eval_service = LocalEvalService(
+          root_agent=root_agent,
+          eval_sets_manager=eval_sets_manager,
+          eval_set_results_manager=self.eval_set_results_manager,
+          session_service=self.session_service,
+          artifact_service=self.artifact_service,
+          user_simulator_provider=user_simulator_provider,
+          app=app,
+      )
+      if req.live_model_config:
+        inference_config = InferenceConfig(
+            use_live=True,
+            live_timeout_seconds=req.live_model_config.timeout_seconds,
+        )
+      else:
+        inference_config = InferenceConfig(use_live=False)
+
+      inference_results = await _collect_inferences(
+          inference_requests=[
+              InferenceRequest(
+                  app_name=app_name,
+                  eval_set_id=eval_set.eval_set_id,
+                  eval_case_ids=req.eval_case_ids or req.eval_ids,
+                  inference_config=inference_config,
+              )
+          ],
+          eval_service=eval_service,
+      )
+
+      # The request carries only what the user selected in the run dialog,
+      # and the efficiency metrics are not selectable there: they take no
+      # threshold, so the dialog has nothing to ask about. Adding them here
+      # is what makes "reported for every eval" hold for a run started from
+      # the Dev UI, and not only for one started from `adk eval`.
+      eval_case_results = await _collect_eval_results(
+          inference_results=inference_results,
+          eval_service=eval_service,
+          eval_metrics=append_default_efficiency_metrics(req.eval_metrics),
+      )
 
       run_eval_results = []
       for eval_case_result in eval_case_results:

@@ -936,6 +936,56 @@ def test_run_eval_without_eval_set_results_manager_succeeds(
   assert response.json() == {"runEvalResults": []}
 
 
+def test_run_eval_agent_import_error_is_not_reported_as_missing_eval_deps(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+):
+  """An agent's own missing import surfaces as itself, not the eval hint."""
+  from google.adk.cli.dev_server import DevServer
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+  from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+
+  class MissingDependencyLoader(BaseAgentLoader):
+
+    def load_agent(self, agent_name: str):
+      raise ModuleNotFoundError(
+          f"Fail to load '{agent_name}' module. No module named 'some_llm_sdk'",
+          name="some_llm_sdk",
+      )
+
+    def list_agents(self) -> list[str]:
+      return ["test_app"]
+
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set("test_app", "s")
+  dev_server = DevServer(
+      agent_loader=MissingDependencyLoader(),
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=InMemoryCredentialService(),
+      eval_sets_manager=eval_sets_manager,
+      eval_set_results_manager=None,
+      agents_dir=str(tmp_path),
+  )
+  client = TestClient(
+      dev_server.get_fast_api_app(),
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+      raise_server_exceptions=False,
+  )
+
+  response = client.post(
+      "/dev/apps/test_app/eval-sets/s/run",
+      json={"eval_ids": [], "eval_metrics": []},
+  )
+
+  assert response.status_code == 500
+  assert "google-adk[eval]" not in response.text
+
+
 @pytest.fixture
 def workflow_root_client(
     tmp_path,
