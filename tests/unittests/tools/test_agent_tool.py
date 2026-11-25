@@ -2559,6 +2559,88 @@ def test_agent_tool_skip_summarization_handles_non_string_result(
   assert text_parts == ['{"value": 123}']
 
 
+class _StructuredAgentToolOutput(BaseModel):
+  value: int
+
+
+_CODE_EXECUTION_PARTS = (
+    Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code='print(42)'
+        )
+    ),
+    Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output='{"value": 99}\n'
+        )
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ('parts', 'output_schema', 'expected'),
+    [
+        pytest.param(
+            [Part(text='{"value": 4'), Part(text='2}')],
+            _StructuredAgentToolOutput,
+            {'value': 42},
+            id='split-json-token',
+        ),
+        pytest.param(
+            [
+                Part(text='{"value": 4'),
+                Part(text='thinking', thought=True),
+                *_CODE_EXECUTION_PARTS,
+                Part(text='2}'),
+            ],
+            _StructuredAgentToolOutput,
+            {'value': 42},
+            id='split-json-token-with-code',
+        ),
+        pytest.param(
+            [Part(text=' \n\t')],
+            _StructuredAgentToolOutput,
+            {'result': ''},
+            id='whitespace-only',
+        ),
+        # A trailing execution result would make the runner ask the model again.
+        pytest.param(
+            [Part(text=' \n\t'), _CODE_EXECUTION_PARTS[1], Part(text='')],
+            _StructuredAgentToolOutput,
+            {'result': ''},
+            id='whitespace-with-json-code-output',
+        ),
+        pytest.param(
+            [*_CODE_EXECUTION_PARTS, Part(text='')],
+            _StructuredAgentToolOutput,
+            {'result': ''},
+            id='code-only',
+        ),
+        pytest.param(
+            [Part(text='Answer:'), *_CODE_EXECUTION_PARTS, Part(text='Done.')],
+            None,
+            {'result': 'Answer:\nprint(42)\n{"value": 99}\nDone.'},
+            id='text-with-code',
+        ),
+    ],
+)
+def test_agent_tool_output_parts(
+    setup_skip_summarization_runner, parts, output_schema, expected
+):
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=[parts], tool_agent_output_schema=output_schema
+  )
+
+  events = runner.run('start')
+
+  responses = [
+      response
+      for event in events
+      for response in event.get_function_responses()
+  ]
+  assert [response.response for response in responses] == [expected]
+
+
 # ---------------------------------------------------------------------------
 # Tests for input_schema message wrapping
 # ---------------------------------------------------------------------------
