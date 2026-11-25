@@ -70,6 +70,7 @@ class AgentCardBuilder:
       agent_version: str | None = None,
       security_schemes: dict[str, SecurityScheme] | None = None,
       default_skill_security: list[dict[str, list[str]]] | None = None,
+      enable_v0_3_compat: bool = True,
   ):
     if not agent:
       raise ValueError('Agent cannot be None or empty.')
@@ -93,6 +94,7 @@ class AgentCardBuilder:
     self._provider = provider
     self._security_schemes = security_schemes
     self._default_skill_security = default_skill_security
+    self._enable_v0_3_compat = enable_v0_3_compat
     self._agent_version = agent_version or '0.0.1'
 
   async def build(self) -> AgentCard:
@@ -126,6 +128,7 @@ class AgentCardBuilder:
           default_input_modes=['text/plain'],
           default_output_modes=['text/plain'],
           supports_authenticated_extended_card=False,
+          enable_v0_3_compat=self._enable_v0_3_compat,
       )
     except Exception as e:
       raise RuntimeError(

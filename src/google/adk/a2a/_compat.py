@@ -496,6 +496,7 @@ def build_agent_card(
     url: str,
     protocol_binding: str,
     protocol_version: str | None = None,
+    enable_v0_3_compat: bool = True,
     skills: Any = (),
     capabilities: Any = None,
     provider: Any = None,
@@ -511,6 +512,10 @@ def build_agent_card(
          transport is ``preferredTransport``.
   1.x:   ``AgentCard`` is a proto message — RPC URL lives in
          ``supported_interfaces[i].url`` (with ``protocol_binding``).
+         When ``enable_v0_3_compat`` is true (the default, matching
+         ``attach_a2a_routes_to_app``), a second JSON-RPC interface with
+         ``protocol_version="0.3"`` is also advertised for the same URL so
+         a2a-sdk 0.3 clients can resolve the card's legacy ``url`` field.
 
   A caller that knows what the agent supports passes ``capabilities``. Callers
   that do not, such as a registry entry holding no card of its own, get a card
@@ -533,16 +538,26 @@ def build_agent_card(
   default_capabilities = {"streaming": False, "push_notifications": False}
 
   if IS_A2A_V1:
-    iface: dict[str, Any] = {
-        "url": url.rstrip("/"),
+    stripped_url = url.rstrip("/")
+    interfaces: list[dict[str, Any]] = [{
+        "url": stripped_url,
         "protocol_binding": protocol_binding,
         "protocol_version": resolved_protocol_version,
-    }
+    }]
+    # a2a-sdk 1.x only emits v0.3 card fields (url, preferredTransport,
+    # protocolVersion) when a legacy protocol version is listed, which is
+    # what 0.3 clients require to resolve the card. See #8342.
+    if enable_v0_3_compat and resolved_protocol_version not in ("0.3", "0.3.0"):
+      interfaces.append({
+          "url": stripped_url,
+          "protocol_binding": protocol_binding,
+          "protocol_version": "0.3",
+      })
     card_data: dict[str, Any] = {
         "name": name,
         "description": description,
         "version": version,
-        "supported_interfaces": [iface],
+        "supported_interfaces": interfaces,
         "skills": [_as_dict(skill) for skill in skills],
         "default_input_modes": list(default_input_modes),
         "default_output_modes": list(default_output_modes),
