@@ -148,3 +148,7 @@ def __getattr__(name: str) -> Any:
         ' Install with: pip install google-adk[extensions]'
     ) from e
   return getattr(module, name)
+
+
+def __dir__() -> list[str]:
+  return sorted(set(globals()) | set(__all__))

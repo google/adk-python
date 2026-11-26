@@ -343,6 +343,34 @@ for module_name in {_LAZY_PACKAGES!r}:
   assert result.returncode == 0, result.stderr
 
 
+# Packages that resolve their exports in a hand-written __getattr__ rather than
+# through _lazy.accessors, so each needs its own __dir__.
+_HAND_WRITTEN_LAZY_PACKAGES = (
+    'google.adk.a2a.agent',
+    'google.adk.apps',
+    'google.adk.artifacts',
+    'google.adk.code_executors',
+    'google.adk.evaluation.simulation',
+    'google.adk.memory',
+    'google.adk.models',
+    'google.adk.tools.retrieval',
+)
+
+
+@pytest.mark.parametrize('module_name', _HAND_WRITTEN_LAZY_PACKAGES)
+def test_hand_written_lazy_packages_list_their_exports(module_name):
+  """dir() lists every export, which Sphinx autodoc needs to document it."""
+  result = run_isolated(f"""
+import importlib
+
+package = importlib.import_module({module_name!r})
+missing = sorted(set(package.__all__) - set(dir(package)))
+assert not missing, missing
+""")
+
+  assert result.returncode == 0, result.stderr
+
+
 def test_lazy_packages_resolve_subpackages_as_attributes():
   """A subpackage stays reachable on its parent, as eager imports left it."""
   result = run_isolated("""

@@ -61,3 +61,7 @@ def __getattr__(name: str) -> object:
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
   raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def __dir__() -> list[str]:
+  return sorted(set(globals()) | set(__all__))

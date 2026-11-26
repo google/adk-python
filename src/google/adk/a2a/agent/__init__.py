@@ -68,3 +68,7 @@ def __getattr__(name: str) -> object:
     except ImportError as e:
       raise missing_extra("a2a-sdk", "a2a") from e
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+  return sorted(set(globals()) | set(__all__))
