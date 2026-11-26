@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import logging
 from typing import cast
-from typing import Optional
 from typing import Protocol
 
 from ..errors.not_found_error import NotFoundError
@@ -114,7 +113,7 @@ class MetricEvaluatorRegistry:
     evaluator_factory = cast(_EvalMetricEvaluatorFactory, evaluator_type)
     return evaluator_factory(eval_metric=eval_metric)
 
-  def _custom_function_path(self, eval_metric: EvalMetric) -> Optional[str]:
+  def _custom_function_path(self, eval_metric: EvalMetric) -> str | None:
     """Returns the module path to import for a custom metric, if known.
 
     Both sources are eval config entries: one recorded when the metric was
@@ -144,7 +143,7 @@ class MetricEvaluatorRegistry:
       self,
       metric_info: MetricInfo,
       evaluator: type[Evaluator],
-      custom_function_path: Optional[str],
+      custom_function_path: str | None,
   ) -> None:
     """Registers an evaluator, along with the function path it may need.
 
@@ -307,7 +306,7 @@ def _get_default_metric_info(
 
 def register_custom_metrics_from_config(
     eval_config: EvalConfig,
-    metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
+    metric_evaluator_registry: MetricEvaluatorRegistry | None = None,
 ) -> MetricEvaluatorRegistry:
   """Registers custom metrics declared in the given eval config.
 

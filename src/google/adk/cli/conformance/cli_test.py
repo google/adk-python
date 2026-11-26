@@ -19,7 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import textwrap
-from typing import Optional
 
 import click
 from google.genai import types
@@ -44,8 +43,8 @@ class _TestResult:
   category: str
   name: str
   success: bool
-  error_message: Optional[str] = None
-  description: Optional[str] = None
+  error_message: str | None = None
+  description: str | None = None
 
 
 @dataclass
@@ -130,7 +129,7 @@ class ConformanceTestRunner:
       test_case: TestCase,
   ) -> None:
     """Run all user messages for a test case."""
-    function_call_name_to_id_map: dict[Optional[str], list[Optional[str]]] = {}
+    function_call_name_to_id_map: dict[str | None, list[str | None]] = {}
     for user_message_index, user_message in enumerate(
         test_case.test_spec.user_messages
     ):
@@ -337,14 +336,14 @@ async def run_conformance_test(
     test_paths: list[Path],
     mode: str = "replay",
     generate_report: bool = False,
-    report_dir: Optional[str] = None,
-    streaming_mode: Optional[StreamingMode] = None,
+    report_dir: str | None = None,
+    streaming_mode: StreamingMode | None = None,
 ) -> None:
   """Run conformance tests."""
   _print_test_header(mode)
 
   test_summaries: list[_ConformanceTestSummary] = []
-  selected_streaming_mode: Optional[StreamingMode] = None
+  selected_streaming_mode: StreamingMode | None = None
   async with AdkWebServerClient() as client:
     modes_to_run = _SUPPORTED_STREAMING_MODES
     if streaming_mode and streaming_mode in _SUPPORTED_STREAMING_MODES:
@@ -390,7 +389,7 @@ def _print_test_result_details(result: _TestResult) -> None:
 
 def _print_test_summary(
     summaries: list[_ConformanceTestSummary],
-    selected_streaming_mode: Optional[StreamingMode] = None,
+    selected_streaming_mode: StreamingMode | None = None,
 ) -> None:
   """Print the conformance test summary results.
 

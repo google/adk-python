@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
-from typing import Union
 
 import graphviz
 
@@ -69,7 +68,7 @@ async def build_graph(
   light_gray = '#cccccc'
   white = '#ffffff'
 
-  def get_node_name(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
+  def get_node_name(tool_or_agent: BaseAgent | BaseTool) -> str:
     if isinstance(tool_or_agent, BaseAgent):
       # Added Workflow Agent checks for different agent types
       if isinstance(tool_or_agent, SequentialAgent):
@@ -87,7 +86,7 @@ async def build_graph(
     else:
       raise ValueError(f'Unsupported tool type: {tool_or_agent}')
 
-  def get_node_caption(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
+  def get_node_caption(tool_or_agent: BaseAgent | BaseTool) -> str:
 
     if isinstance(tool_or_agent, BaseAgent):
       return '🤖 ' + tool_or_agent.name
@@ -111,7 +110,7 @@ async def build_graph(
       )
       return f'❓ Unsupported tool type: {type(tool_or_agent)}'
 
-  def get_node_shape(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
+  def get_node_shape(tool_or_agent: BaseAgent | BaseTool) -> str:
     if isinstance(tool_or_agent, BaseAgent):
       return 'ellipse'
     elif retrieval_tool_module_loaded and isinstance(
@@ -133,7 +132,7 @@ async def build_graph(
       return 'cylinder'
 
   def should_build_agent_cluster(
-      tool_or_agent: Union[BaseAgent, BaseTool],
+      tool_or_agent: BaseAgent | BaseTool,
   ) -> bool:
     if isinstance(tool_or_agent, Workflow):
       return True
@@ -225,7 +224,7 @@ async def build_graph(
         fontcolor=light_gray,
     )
 
-  async def draw_node(tool_or_agent: Union[BaseAgent, BaseTool]) -> None:
+  async def draw_node(tool_or_agent: BaseAgent | BaseTool) -> None:
     name = get_node_name(tool_or_agent)
     shape = get_node_shape(tool_or_agent)
     caption = get_node_caption(tool_or_agent)

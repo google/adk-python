@@ -30,7 +30,6 @@ from typing import Any
 from typing import Callable
 from typing import Final
 from typing import Literal
-from typing import Optional
 import warnings
 
 import click
@@ -135,7 +134,7 @@ def _validate_worker_pool(worker_pool: str) -> str:
 
 def _apply_worker_pool_to_agent_config(
     agent_config: dict[str, Any],
-    worker_pool: Optional[str],
+    worker_pool: str | None,
 ) -> None:
   """Nests worker_pool into agent_config['build_config'].
 
@@ -225,7 +224,7 @@ def _validate_service_account(service_account: str) -> str:
 
 def _apply_service_account_to_agent_config(
     agent_config: dict[str, Any],
-    service_account: Optional[str],
+    service_account: str | None,
 ) -> None:
   """Sets top-level ``service_account`` on the Agent Engine update config.
 
@@ -262,7 +261,7 @@ def _apply_service_account_to_agent_config(
 
 def _resolve_python_version_from_agent_config(
     agent_config: dict[str, Any],
-    python_version: Optional[str],
+    python_version: str | None,
 ) -> str:
   """Resolves the container Python version for an Agent Engine deploy.
 
@@ -901,7 +900,7 @@ def _resolve_adk_version() -> str:
   return __version__
 
 
-def _resolve_project(project_in_option: Optional[str]) -> str:
+def _resolve_project(project_in_option: str | None) -> str:
   if project_in_option:
     return project_in_option
 
@@ -916,7 +915,7 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
-def _validate_dockerfile_env_value(name: str, value: Optional[str]) -> None:
+def _validate_dockerfile_env_value(name: str, value: str | None) -> None:
   """Validates a value before it is written into a Dockerfile ENV instruction.
 
   Args:
@@ -1054,10 +1053,10 @@ def _validate_agent_import(
 
 def _get_service_options_by_adk_version(
     adk_version: str,
-    session_uri: Optional[str],
-    artifact_uri: Optional[str],
-    memory_uri: Optional[str],
-    use_local_storage: Optional[bool] = None,
+    session_uri: str | None,
+    artifact_uri: str | None,
+    memory_uri: str | None,
+    use_local_storage: bool | None = None,
 ) -> list[str]:
   """Returns the service options based on adk_version, one per argv entry."""
   parsed_version = parse(adk_version)
@@ -1678,34 +1677,34 @@ def _format_runtime(runtime: Any) -> str:
 def to_agent_engine(
     *,
     agent_folder: str,
-    temp_folder: Optional[str] = None,
-    adk_app: Optional[str] = None,
-    staging_bucket: Optional[str] = None,
-    trace_to_cloud: Optional[bool] = None,
-    otel_to_cloud: Optional[bool] = None,
-    api_key: Optional[str] = None,
-    adk_app_object: Optional[str] = None,
-    agent_engine_id: Optional[str] = None,
+    temp_folder: str | None = None,
+    adk_app: str | None = None,
+    staging_bucket: str | None = None,
+    trace_to_cloud: bool | None = None,
+    otel_to_cloud: bool | None = None,
+    api_key: str | None = None,
+    adk_app_object: str | None = None,
+    agent_engine_id: str | None = None,
     absolutize_imports: bool = True,
-    project: Optional[str] = None,
-    region: Optional[str] = None,
-    display_name: Optional[str] = None,
-    description: Optional[str] = None,
-    requirements_file: Optional[str] = None,
-    env_file: Optional[str] = None,
-    agent_engine_config_file: Optional[str] = None,
+    project: str | None = None,
+    region: str | None = None,
+    display_name: str | None = None,
+    description: str | None = None,
+    requirements_file: str | None = None,
+    env_file: str | None = None,
+    agent_engine_config_file: str | None = None,
     skip_agent_import_validation: bool = True,
-    trigger_sources: Optional[str] = None,
-    trigger_oidc_audience: Optional[str] = None,
-    trigger_oidc_service_accounts: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    adk_version: Optional[str] = None,
-    extra_packages: Optional[list[str]] = None,
-    worker_pool: Optional[str] = None,
-    service_account: Optional[str] = None,
-    python_version: Optional[str] = None,
+    trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
+    memory_service_uri: str | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    adk_version: str | None = None,
+    extra_packages: list[str] | None = None,
+    worker_pool: str | None = None,
+    service_account: str | None = None,
+    python_version: str | None = None,
     update_if_exists: bool = False,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
@@ -2291,8 +2290,8 @@ def to_agent_engine(
 def to_gke(
     *,
     agent_folder: str,
-    project: Optional[str],
-    region: Optional[str],
+    project: str | None,
+    region: str | None,
     cluster_name: str,
     service_name: str,
     app_name: str,
@@ -2303,19 +2302,19 @@ def to_gke(
     with_ui: bool,
     log_level: str,
     adk_version: str,
-    allow_origins: Optional[list[str]] = None,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    allow_origins: list[str] | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = False,
     a2a: bool = False,
-    trigger_sources: Optional[str] = None,
-    trigger_oidc_audience: Optional[str] = None,
-    trigger_oidc_service_accounts: Optional[str] = None,
+    trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
-    extra_packages: Optional[list[str]] = None,
+    extra_packages: list[str] | None = None,
     python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).

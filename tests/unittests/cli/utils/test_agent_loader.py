@@ -32,13 +32,10 @@ class TestAgentLoader:
   """Unit tests for AgentLoader focusing on interface behavior."""
 
   @pytest.fixture(autouse=True)
-  def cleanup_sys_path(self):
-    """Ensure sys.path is restored after each test."""
-    original_path = sys.path.copy()
+  def restore_environ(self):
+    """Restores env vars after each test."""
     original_env = os.environ.copy()
     yield
-    sys.path[:] = original_path
-    # Restore environment variables
     os.environ.clear()
     os.environ.update(original_env)
 

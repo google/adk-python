@@ -37,9 +37,9 @@ class GcsEvalManagers(BaseModel):
       arbitrary_types_allowed=True,
   )
 
-  eval_sets_manager: 'GcsEvalSetsManager'
+  eval_sets_manager: GcsEvalSetsManager
 
-  eval_set_results_manager: 'GcsEvalSetResultsManager'
+  eval_set_results_manager: GcsEvalSetResultsManager
 
 
 def convert_session_to_eval_invocations(session: Session) -> list[Invocation]:

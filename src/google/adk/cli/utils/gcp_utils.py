@@ -19,10 +19,6 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 from typing import cast
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
 
 from google.adk.utils import _mtls_utils
 import google.auth
@@ -74,9 +70,9 @@ def _call_vertex_express_api(
     method: str,
     action: str,
     location: str = "us-central1",
-    data: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    data: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
   """Calls a Vertex AI Express API."""
   credentials, _ = google.auth.default()
   session = AuthorizedSession(credentials)
@@ -104,12 +100,12 @@ def _call_vertex_express_api(
     raise ValueError(f"Unsupported method: {method}")
 
   response.raise_for_status()
-  return cast(Dict[str, Any], response.json())
+  return cast(dict[str, Any], response.json())
 
 
 def retrieve_express_project(
     location: str = "us-central1",
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
   """Retrieves existing Express project info."""
   try:
     response = _call_vertex_express_api(
@@ -150,7 +146,7 @@ def check_express_eligibility(
 
 def sign_up_express(
     location: str = "us-central1",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Signs up for Express Mode."""
   project = _call_vertex_express_api(
       "POST",
@@ -169,7 +165,7 @@ def sign_up_express(
   }
 
 
-def list_gcp_projects(limit: int = 20) -> List[Tuple[str, str]]:
+def list_gcp_projects(limit: int = 20) -> list[tuple[str, str]]:
   """Lists GCP projects available to the user.
 
   Args:
@@ -190,7 +186,7 @@ def list_gcp_projects(limit: int = 20) -> List[Tuple[str, str]]:
     client = resourcemanager_v3.ProjectsClient()
     search_results = client.search_projects()
 
-    projects: List[Tuple[str, str]] = []
+    projects: list[tuple[str, str]] = []
     for project in search_results:
       if len(projects) >= limit:
         break
