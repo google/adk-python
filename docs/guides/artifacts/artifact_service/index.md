@@ -15,7 +15,7 @@ served from more than one machine.
 The artifact service is the answer to that. It stores a `types.Part` under a
 filename scoped to the app, the user, and (usually) the session, and hands back
 an integer version. The tool returns the filename and version — a few dozen
-bytes — and the payload is fetched only when something actually needs it. Three
+bytes — and the payload is fetched only when something actually needs it. Four
 implementations ship with ADK behind the same interface, and an agent's code
 does not change when you swap one for another; only the `artifact_service` you
 hand to the `Runner` does.
@@ -183,6 +183,7 @@ not something the interface can express.
 | `InMemoryArtifactService` | `InMemoryArtifactService()` | Tests and local development. Everything is lost when the process exits, and it is not safe under concurrent writers. |
 | `FileArtifactService` | `FileArtifactService(root_dir)` | A single machine that needs artifacts to survive a restart. Filenames may contain `/` and become nested directories. |
 | `GcsArtifactService` | `GcsArtifactService(bucket_name)` | Serving from more than one process or machine. Supports generating authenticated browser and time-limited signed URLs directly. Extra keyword arguments are forwarded to the Cloud Storage client. |
+| `FsspecArtifactService` | `FsspecArtifactService(base_url)` | Experimental. Any [fsspec](https://filesystem-spec.readthedocs.io/) filesystem chosen by URL, such as Amazon S3. See [Storing artifacts with `FsspecArtifactService`](#storing-artifacts-with-fsspecartifactservice). |
 
 `InMemoryRunner` picks `InMemoryArtifactService` for you, which is why artifact
 code works in tests without any wiring.
@@ -264,6 +265,48 @@ Key options for URL generation:
     artifact does not exist, or when it was saved as a `file_data` reference
     to an external URI (such as `gs://...`), since the service holds only the
     reference and not the bytes. Only `artifact://` references are followed.
+
+## Storing artifacts with `FsspecArtifactService`
+
+`FsspecArtifactService` stores artifacts on any fsspec filesystem, and the
+protocol in `base_url` picks the backend: `s3://`, `gs://`, `file://`,
+`memory://`, and others. It is experimental and turned off by default, so
+constructing one raises
+`RuntimeError: Feature FSSPEC_ARTIFACT_SERVICE is not enabled.` until
+`ADK_ENABLE_FSSPEC_ARTIFACT_SERVICE` is set to `1`.
+
+Install the `fsspec` extra together with the backend for your protocol, such as
+`s3fs` for `s3://` or `gcsfs` for `gs://`. Neither backend is installed with
+`google-adk`.
+
+```shell
+pip install "google-adk[fsspec]" s3fs
+```
+
+```python
+import os
+
+from google.adk.integrations.fsspec import FsspecArtifactService
+
+os.environ["ADK_ENABLE_FSSPEC_ARTIFACT_SERVICE"] = "1"
+
+artifact_service = FsspecArtifactService(base_url="s3://my-bucket/artifacts")
+```
+
+*   **Import path**: The class is in `google.adk.integrations.fsspec`, not
+    `google.adk.artifacts`.
+*   **Backend options**: Extra keyword arguments are forwarded to fsspec, for
+    example S3 credentials or an endpoint URL. To reuse a filesystem you have
+    already configured, pass it as `fs=` instead.
+*   **Local and in-memory filesystems store bytes only**: `file://` and
+    `memory://` cannot keep object metadata, so they accept only `inline_data`
+    parts. Saving a text part, a `file_data` reference, or `custom_metadata`
+    raises `InputValidationError`, and on load the MIME type is guessed from
+    the filename.
+*   **Not selected by `--artifact_service_uri`**: The built-in schemes create
+    `GcsArtifactService` for `gs://` and `FileArtifactService` for `file://`.
+    Pass `FsspecArtifactService` to the `Runner` yourself, or register a scheme
+    for it with [ServiceRegistry](../../cli/service_registry/index.md).
 
 ## Letting the model fetch an artifact
 
