@@ -1579,6 +1579,14 @@ class AnthropicLlm(BaseLlm):
         kwargs["max_tokens"] = llm_request.config.max_output_tokens
       else:
         kwargs["max_tokens"] = self.max_tokens
+
+      http_options = llm_request.config.http_options
+      if http_options:
+        if http_options.headers:
+          kwargs["extra_headers"] = dict(http_options.headers)
+        if http_options.timeout is not None:
+          # HttpOptions.timeout is in milliseconds; Anthropic takes seconds.
+          kwargs["timeout"] = http_options.timeout / 1000
     else:
       kwargs["max_tokens"] = self.max_tokens
 
