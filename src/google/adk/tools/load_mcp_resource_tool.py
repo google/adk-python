@@ -25,6 +25,7 @@ from typing_extensions import override
 
 from ..features import FeatureName
 from ..features import is_feature_enabled
+from ..models.llm_request import _last_non_transient_content
 from ..models.llm_request import LlmRequest
 from .base_tool import BaseTool
 
@@ -124,9 +125,13 @@ before answering questions related to the resources.
     except Exception as e:
       logger.warning("Failed to list MCP resources: %s", e)
 
-    # Attach content
-    if llm_request.contents and llm_request.contents[-1].parts:
-      for part in llm_request.contents[-1].parts:
+    # Attach content. The function response is in the last content that ADK did
+    # not insert itself: another resource tool or a memory tool may already
+    # have added request-scoped content after it.
+    last_content = _last_non_transient_content(llm_request)
+    transient = getattr(llm_request, "_transient_user_contents", None)
+    if last_content and last_content.parts:
+      for part in last_content.parts:
         function_response = part.function_response
         if function_response and function_response.name == self.name:
           response = function_response.response or {}
@@ -139,17 +144,18 @@ before answering questions related to the resources.
 
               for content in contents:
                 part = self._mcp_content_to_part(content, resource_name)
-                llm_request.contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_text(
-                                text=f"Resource {resource_name} is:"
-                            ),
-                            part,
-                        ],
-                    )
+                resource_content = types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(
+                            text=f"Resource {resource_name} is:"
+                        ),
+                        part,
+                    ],
                 )
+                llm_request.contents.append(resource_content)
+                if type(transient) is list:
+                  transient.append(resource_content)
             except Exception as e:
               logger.warning(
                   "Failed to read MCP resource '%s': %s", resource_name, e

@@ -264,3 +264,110 @@ class TestLoadMcpResourceTool:
         for c in session_manager.create_session.call_args_list
     )
     assert llm_request.contents[-1].parts[1].text == "hello"
+
+  def _tool(self, name, text):
+    toolset = Mock(spec=McpToolset)
+    toolset.list_resources = AsyncMock(return_value=[])
+    toolset.read_resource = AsyncMock(
+        return_value=[
+            TextResourceContents(
+                uri="file:///res", mimeType="text/plain", text=text
+            )
+        ]
+    )
+    tool = LoadMcpResourceTool(mcp_toolset=toolset)
+    tool.name = name  # as tool_name_prefix would
+    return tool
+
+  @staticmethod
+  def _response(tool_name, resource_name):
+    return types.Part(
+        function_response=types.FunctionResponse(
+            name=tool_name, response={"resource_names": [resource_name]}
+        )
+    )
+
+  @staticmethod
+  def _texts(contents):
+    return [p.text for c in contents for p in c.parts if p.text]
+
+  @pytest.mark.asyncio
+  async def test_process_llm_request_two_toolsets_in_one_response(self):
+    """Each toolset's resource is inserted when one response reads from both."""
+    tool_a = self._tool("a_load_mcp_resource", "POLICY TEXT")
+    tool_b = self._tool("b_load_mcp_resource", "CALENDAR TEXT")
+    llm_request = LlmRequest(
+        model="dummy",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    self._response(tool_a.name, "policy"),
+                    self._response(tool_b.name, "calendar"),
+                ],
+            )
+        ],
+    )
+
+    for tool in (tool_a, tool_b):
+      await tool.process_llm_request(
+          tool_context=self.mock_tool_context, llm_request=llm_request
+      )
+
+    assert self._texts(llm_request.contents[1:]) == [
+        "Resource policy is:",
+        "POLICY TEXT",
+        "Resource calendar is:",
+        "CALENDAR TEXT",
+    ]
+
+  @pytest.mark.asyncio
+  async def test_process_llm_request_skips_response_from_earlier_turn(self):
+    """A resource is not inserted again once a user message follows it."""
+    tool = self._tool("load_mcp_resource", "POLICY TEXT")
+    llm_request = LlmRequest(
+        model="dummy",
+        contents=[
+            types.Content(
+                role="user", parts=[self._response(tool.name, "policy")]
+            ),
+            types.Content(
+                role="user", parts=[types.Part.from_text(text="next question")]
+            ),
+        ],
+    )
+
+    await tool.process_llm_request(
+        tool_context=self.mock_tool_context, llm_request=llm_request
+    )
+
+    assert len(llm_request.contents) == 2
+    tool._mcp_toolset.read_resource.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_process_llm_request_after_transient_user_content(self):
+    """Transient content after the response does not hide the response."""
+    tool = self._tool("load_mcp_resource", "POLICY TEXT")
+    llm_request = LlmRequest(
+        model="dummy",
+        contents=[
+            types.Content(
+                role="user", parts=[self._response(tool.name, "policy")]
+            )
+        ],
+    )
+    llm_request._insert_transient_user_content([
+        types.Content(
+            role="user", parts=[types.Part.from_text(text="past memories")]
+        )
+    ])
+
+    await tool.process_llm_request(
+        tool_context=self.mock_tool_context, llm_request=llm_request
+    )
+
+    assert self._texts(llm_request.contents[1:]) == [
+        "past memories",
+        "Resource policy is:",
+        "POLICY TEXT",
+    ]
