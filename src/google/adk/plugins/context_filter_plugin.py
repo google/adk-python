@@ -22,6 +22,7 @@ from typing import Optional
 from google.genai import types
 
 from ..agents.callback_context import CallbackContext
+from ..models.llm_request import _is_transient_user_content
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from .base_plugin import BasePlugin
@@ -75,6 +76,8 @@ def _is_human_user_content(content: types.Content) -> bool:
 
 def _get_invocation_start_indices(
     contents: Sequence[types.Content],
+    *,
+    llm_request: LlmRequest | None = None,
 ) -> list[int]:
   """Returns indices that begin a user-started invocation.
 
@@ -84,6 +87,8 @@ def _get_invocation_start_indices(
 
   Args:
     contents: Full conversation contents in chronological order.
+    llm_request: Request owning ``contents``, used to skip transient
+      framework-inserted user contents.
 
   Returns:
     A list of indices where each index marks the beginning of an invocation.
@@ -91,6 +96,10 @@ def _get_invocation_start_indices(
   invocation_start_indices = []
   previous_was_human_user = False
   for i, content in enumerate(contents):
+    if llm_request is not None and _is_transient_user_content(
+        llm_request, content
+    ):
+      continue
     is_human_user = _is_human_user_content(content)
     if is_human_user and not previous_was_human_user:
       invocation_start_indices.append(i)
@@ -140,7 +149,9 @@ class ContextFilterPlugin(BasePlugin):
           self._num_invocations_to_keep is not None
           and self._num_invocations_to_keep > 0
       ):
-        invocation_start_indices = _get_invocation_start_indices(contents)
+        invocation_start_indices = _get_invocation_start_indices(
+            contents, llm_request=llm_request
+        )
         if (
             len(invocation_start_indices)
             >= self._num_invocations_to_keep + self._remove_amount
@@ -153,6 +164,10 @@ class ContextFilterPlugin(BasePlugin):
                   contents, split_index
               )
           )
+          while split_index > 0 and _is_transient_user_content(
+              llm_request, contents[split_index - 1]
+          ):
+            split_index -= 1
           contents = contents[split_index:]
 
       if self._custom_filter:

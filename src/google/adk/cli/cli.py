@@ -26,8 +26,6 @@ import traceback
 from typing import Any
 from typing import Awaitable
 from typing import Callable
-from typing import Optional
-from typing import Union
 
 import click
 from google.genai import types
@@ -119,7 +117,7 @@ class InputFile(BaseModel):
   queries: list[str]
 
 
-def _to_app(agent_or_app: Union[BaseNode, App], app_name: str) -> App:
+def _to_app(agent_or_app: BaseNode | App, app_name: str) -> App:
   """Wraps a BaseNode in an App if not already one."""
   if isinstance(agent_or_app, App):
     return agent_or_app
@@ -129,12 +127,12 @@ def _to_app(agent_or_app: Union[BaseNode, App], app_name: str) -> App:
 async def run_input_file(
     app_name: str,
     user_id: str,
-    agent_or_app: Union[BaseNode, App],
+    agent_or_app: BaseNode | App,
     artifact_service: BaseArtifactService,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
     input_path: str,
-    memory_service: Optional[BaseMemoryService] = None,
+    memory_service: BaseMemoryService | None = None,
 ) -> Session:
   app = _to_app(agent_or_app, app_name)
   runner = Runner(
@@ -267,18 +265,18 @@ async def _prompt_for_function_call(
 
 
 async def run_interactively(
-    root_agent_or_app: Union[BaseNode, App],
+    root_agent_or_app: BaseNode | App,
     artifact_service: BaseArtifactService,
     session: Session,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
-    memory_service: Optional[BaseMemoryService] = None,
-    timeout: Optional[str] = None,
+    memory_service: BaseMemoryService | None = None,
+    timeout: str | None = None,
     jsonl: bool = False,
     reload_agents: bool = False,
-    reload_event: Optional[asyncio.Event] = None,
-    agent_loader: Optional[AgentLoader] = None,
-    agent_folder_name: Optional[str] = None,
+    reload_event: asyncio.Event | None = None,
+    agent_loader: AgentLoader | None = None,
+    agent_folder_name: str | None = None,
 ) -> None:
   _enable_line_editing()
   app = _to_app(root_agent_or_app, session.app_name)
@@ -479,13 +477,13 @@ def _setup_runner_context(
     agent_parent_dir: str,
     agent_folder_name: str,
     in_memory: bool = False,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    default_llm_model: Optional[str] = None,
+    default_llm_model: str | None = None,
 ) -> tuple[
-    Union[BaseNode, App],
+    BaseNode | App,
     BaseSessionService,
     BaseArtifactService,
     BaseMemoryService,
@@ -559,7 +557,7 @@ def _setup_runner_context(
 
 
 def _print_event(
-    event: Event, jsonl: bool = False, session_id: Optional[str] = None
+    event: Event, jsonl: bool = False, session_id: str | None = None
 ) -> None:
   """Prints an event to the console.
 
@@ -615,20 +613,20 @@ async def run_cli(
     *,
     agent_parent_dir: str,
     agent_folder_name: str,
-    input_file: Optional[str] = None,
-    saved_session_file: Optional[str] = None,
+    input_file: str | None = None,
+    saved_session_file: str | None = None,
     save_session: bool,
-    session_id: Optional[str] = None,
-    state_str: Optional[str] = None,
-    timeout: Optional[str] = None,
+    session_id: str | None = None,
+    state_str: str | None = None,
+    timeout: str | None = None,
     in_memory: bool = False,
     jsonl: bool = False,
     reload_agents: bool = False,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    default_llm_model: Optional[str] = None,
+    default_llm_model: str | None = None,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
 
@@ -806,18 +804,18 @@ async def run_once_cli(
     *,
     agent_parent_dir: str,
     agent_folder_name: str,
-    query: Optional[str] = None,
-    state_str: Optional[str] = None,
-    session_id: Optional[str] = None,
-    replay: Optional[str] = None,
-    timeout: Optional[str] = None,
+    query: str | None = None,
+    state_str: str | None = None,
+    session_id: str | None = None,
+    replay: str | None = None,
+    timeout: str | None = None,
     in_memory: bool = False,
     jsonl: bool = False,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    default_llm_model: Optional[str] = None,
+    default_llm_model: str | None = None,
 ) -> int:
   """Runs an agent in query/automated mode."""
   (

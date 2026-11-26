@@ -18,7 +18,6 @@ from abc import ABC
 from abc import abstractmethod
 from enum import Enum
 from typing import AsyncGenerator
-from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -44,7 +43,7 @@ class EvaluateConfig(BaseModel):
       description="""The list of metrics to be used in Eval.""",
   )
 
-  multi_run_config: Optional[MultiRunConfig] = Field(
+  multi_run_config: MultiRunConfig | None = Field(
       default=None,
       description="""Optional configuration for aggregating results across
 multiple runs of each eval case.""",
@@ -70,7 +69,7 @@ class InferenceConfig(BaseModel):
       populate_by_name=True,
   )
 
-  labels: Optional[dict[str, str]] = Field(
+  labels: dict[str, str] | None = Field(
       default=None,
       description="""Labels with user-defined metadata to break down billed
 charges.""",
@@ -128,7 +127,7 @@ class InferenceRequest(BaseModel):
 
   eval_set_id: str = Field(description="""ID of the eval set.""")
 
-  eval_case_ids: Optional[list[str]] = Field(
+  eval_case_ids: list[str] | None = Field(
       default=None,
       description="""ID of the eval cases for which inferences need to be
 generated.
@@ -171,26 +170,24 @@ class InferenceResult(BaseModel):
       description="""ID of the eval case for which inferences were generated.""",
   )
 
-  inferences: Optional[list[Invocation]] = Field(
+  inferences: list[Invocation] | None = Field(
       default=None,
       description="""Inferences obtained from the Agent for the eval case.""",
   )
 
-  session_id: Optional[str] = Field(
-      description="""ID of the inference session."""
-  )
+  session_id: str | None = Field(description="""ID of the inference session.""")
 
   status: InferenceStatus = Field(
       default=InferenceStatus.UNKNOWN,
       description="""Status of the inference.""",
   )
 
-  error_message: Optional[str] = Field(
+  error_message: str | None = Field(
       default=None,
       description="""Error message if the inference failed.""",
   )
 
-  repetition_index: Optional[int] = Field(
+  repetition_index: int | None = Field(
       default=None,
       description="""0-based index of the run that produced this result, among
 the `InferenceConfig.num_runs` runs of the same eval case. None if the producer

@@ -20,8 +20,6 @@ from typing import Annotated
 from typing import Any
 from typing import get_args
 from typing import Literal
-from typing import Optional
-from typing import Union
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -49,7 +47,7 @@ logger = logging.getLogger("google_adk." + __name__)
 # deserialize into via the `type` discriminator. Add any new subclass to
 # this Union (each with a unique `Literal[...]` for its `type` field).
 _UserSimulatorConfig = Annotated[
-    Union[LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig],
+    LlmBackedUserSimulatorConfig | LlmAudioUserSimulatorConfig,
     Field(discriminator="type"),
 ]
 
@@ -73,7 +71,7 @@ class CustomMetricConfig(BaseModel):
           " function."
       )
   )
-  metric_info: Optional[MetricInfo] = Field(
+  metric_info: MetricInfo | None = Field(
       default=None,
       description="Metric info for the custom metric.",
   )
@@ -123,7 +121,7 @@ class MultiRunCriterion(BaseModel):
   It can also name a method declared in `custom_methods`.
   """
 
-  threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+  threshold: float | None = Field(default=None, ge=0.0, le=1.0)
   """The lowest value of `method` that passes, from 0.0 to 1.0.
 
   Required, except in a `PassKMultiRunCriterion`, whose value is only reported
@@ -167,10 +165,8 @@ def _cross_run_criterion_tag(value: Any) -> str:
 
 
 _CrossRunCriterion = Annotated[
-    Union[
-        Annotated[PassKMultiRunCriterion, Tag("PassKMultiRunCriterion")],
-        Annotated[MultiRunCriterion, Tag("MultiRunCriterion")],
-    ],
+    Annotated[PassKMultiRunCriterion, Tag("PassKMultiRunCriterion")]
+    | Annotated[MultiRunCriterion, Tag("MultiRunCriterion")],
     Discriminator(_cross_run_criterion_tag),
 ]
 
@@ -227,7 +223,7 @@ class MultiRunConfig(BaseModel):
       extra="forbid",
   )
 
-  num_runs: Optional[int] = Field(
+  num_runs: int | None = Field(
       default=None,
       ge=1,
       description=(
@@ -250,7 +246,7 @@ class MultiRunConfig(BaseModel):
       ),
   )
 
-  cross_run_scoring: Union[str, MultiRunCriterion] = Field(
+  cross_run_scoring: str | MultiRunCriterion = Field(
       default="mean_over_invocations",
       description=(
           "How each metric's run scores become its case score, unless"
@@ -268,19 +264,19 @@ class MultiRunConfig(BaseModel):
       ),
   )
 
-  cross_run_scoring_by_metric: Optional[
-      dict[str, Union[str, MultiRunCriterion]]
-  ] = Field(
-      default=None,
-      description=(
-          "Like `cross_run_scoring`, for individual metrics, keyed by metric"
-          " name. Each value takes either form of `cross_run_scoring` and"
-          " replaces it for that metric. Every key must be a metric in"
-          " `criteria`."
-      ),
+  cross_run_scoring_by_metric: dict[str, str | MultiRunCriterion] | None = (
+      Field(
+          default=None,
+          description=(
+              "Like `cross_run_scoring`, for individual metrics, keyed by"
+              " metric name. Each value takes either form of"
+              " `cross_run_scoring` and replaces it for that metric. Every key"
+              " must be a metric in `criteria`."
+          ),
+      )
   )
 
-  cross_run_criteria: Optional[list[_CrossRunCriterion]] = Field(
+  cross_run_criteria: list[_CrossRunCriterion] | None = Field(
       default=None,
       description=(
           "Rules that judge the eval case on its runs as a whole, on top of"
@@ -296,7 +292,7 @@ class MultiRunConfig(BaseModel):
       ),
   )
 
-  custom_methods: Optional[dict[str, CustomCrossRunMethodConfig]] = Field(
+  custom_methods: dict[str, CustomCrossRunMethodConfig] | None = Field(
       default=None,
       description=(
           "Methods of your own, keyed by name. `cross_run_scoring`,"
@@ -337,7 +333,7 @@ class MultiRunConfig(BaseModel):
     # Each rule as where it is written, the method it names, the rule itself
     # when it is written as an object, and whether it is in
     # `cross_run_criteria`.
-    rules: list[tuple[str, str, Optional[MultiRunCriterion], bool]] = []
+    rules: list[tuple[str, str, MultiRunCriterion | None, bool]] = []
     metric_rules = [
         ("cross_run_scoring", self.cross_run_scoring),
         *(
@@ -420,7 +416,7 @@ class EvalConfig(BaseModel):
       populate_by_name=True,
   )
 
-  criteria: dict[str, Union[Threshold, SerializeAsAny[BaseCriterion]]] = Field(
+  criteria: dict[str, Threshold | SerializeAsAny[BaseCriterion]] = Field(
       default_factory=dict,
       description="""A dictionary that maps criterion to be used for a metric.
 
@@ -449,7 +445,7 @@ the third one uses `LlmAsAJudgeCriterion`.
 """,
   )
 
-  custom_metrics: Optional[dict[str, CustomMetricConfig]] = Field(
+  custom_metrics: dict[str, CustomMetricConfig] | None = Field(
       default=None,
       description="""A dictionary mapping custom metric names to
 a CustomMetricConfig object.
@@ -497,7 +493,7 @@ Example:
 """,
   )
 
-  user_simulator_config: Optional[_UserSimulatorConfig] = Field(
+  user_simulator_config: _UserSimulatorConfig | None = Field(
       default=None,
       description=(
           "Config to be used by the user simulator. When authored as JSON,"
@@ -509,7 +505,7 @@ Example:
       ),
   )
 
-  live_model_config: Optional[LiveModelConfig] = Field(
+  live_model_config: LiveModelConfig | None = Field(
       default=None,
       description=(
           "Config for evaluating in live (bidirectional streaming) mode."
@@ -517,7 +513,7 @@ Example:
       ),
   )
 
-  multi_run_config: Optional[MultiRunConfig] = Field(
+  multi_run_config: MultiRunConfig | None = Field(
       default=None,
       description="""Config for running each eval case more than once.
 
@@ -655,7 +651,7 @@ _DEFAULT_EFFICIENCY_METRICS: tuple[str, ...] = (
 
 
 def get_evaluation_criteria_or_default(
-    eval_config_file_path: Optional[str],
+    eval_config_file_path: str | None,
 ) -> EvalConfig:
   """Returns EvalConfig read from the config file, if present.
 

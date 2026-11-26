@@ -16,9 +16,10 @@
 -- turn view, for a job that reads them without creating the view and so can
 -- narrow both the events that it reads and the rows that it returns.  An
 -- agent's instruction in a turn comes from its latest AGENT_STARTING event in
--- that turn, and falls back to the first system prompt that its session
--- logged for the agent.  The query ends without a semicolon, so the job can
--- append ORDER BY or LIMIT to it, or read it as a subquery.
+-- that turn, falling back to the first system prompt that turn logged for the
+-- agent and then to the first system prompt that its session logged for the
+-- agent.  The query ends without a semicolon, so the job can append ORDER BY
+-- or LIMIT to it, or read it as a subquery.
 --
 -- Substitution contract: strip this header (everything up to the first blank
 -- line), then replace each placeholder named below, a name in single braces,

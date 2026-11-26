@@ -21,7 +21,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 from typing import Mapping
-from typing import Optional
 
 from google.genai import types
 from typing_extensions import override
@@ -86,7 +85,7 @@ def create_local_session_service(
     *,
     base_dir: Path | str,
     per_agent: bool = False,
-    app_name_to_dir: Optional[Mapping[str, str]] = None,
+    app_name_to_dir: Mapping[str, str] | None = None,
 ) -> BaseSessionService:
   """Creates a local SQLite-backed session service.
 
@@ -118,7 +117,7 @@ def create_local_artifact_service(
     *,
     base_dir: Path | str,
     per_agent: bool = False,
-    app_name_to_dir: Optional[Mapping[str, str]] = None,
+    app_name_to_dir: Mapping[str, str] | None = None,
 ) -> BaseArtifactService:
   """Creates a file-backed artifact service that persists data in `.adk/artifacts` folders.
 
@@ -154,7 +153,7 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       self,
       *,
       agents_root: Path | str,
-      app_name_to_dir: Optional[Mapping[str, str]] = None,
+      app_name_to_dir: Mapping[str, str] | None = None,
   ):
     self._agents_root = Path(agents_root).resolve()
     self._app_name_to_dir = dict(app_name_to_dir or {})
@@ -187,8 +186,8 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, object]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, object] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     service = await self._get_service(app_name)
     return await service.create_session(
@@ -205,8 +204,8 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     service = await self._get_service(app_name)
     return await service.get_session(
         app_name=app_name,
@@ -220,7 +219,7 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       self,
       *,
       app_name: str,
-      user_id: Optional[str] = None,
+      user_id: str | None = None,
   ) -> ListSessionsResponse:
     service = await self._get_service(app_name)
     return await service.list_sessions(app_name=app_name, user_id=user_id)
@@ -278,12 +277,12 @@ class PerAgentFileArtifactService(BaseArtifactService):
       self,
       *,
       agents_root: Path | str,
-      app_name_to_dir: Optional[Mapping[str, str]] = None,
+      app_name_to_dir: Mapping[str, str] | None = None,
   ):
     self._agents_root = Path(agents_root).resolve()
     self._app_name_to_dir = dict(app_name_to_dir or {})
     self._services: dict[str, BaseArtifactService] = {}
-    self._legacy_service: Optional[BaseArtifactService] = None
+    self._legacy_service: BaseArtifactService | None = None
     self._service_lock = asyncio.Lock()
 
   async def _get_service(self, app_name: str) -> BaseArtifactService:
@@ -303,7 +302,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
       self._services[storage_key] = service
       return service
 
-  async def _get_legacy_service(self) -> Optional[BaseArtifactService]:
+  async def _get_legacy_service(self) -> BaseArtifactService | None:
     """Returns a reader for the pre-per-agent shared `.adk/artifacts` root.
 
     Returns None when no legacy directory exists, so reads fall back only when
@@ -327,8 +326,8 @@ class PerAgentFileArtifactService(BaseArtifactService):
       user_id: str,
       filename: str,
       artifact: types.Part | dict[str, Any],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     service = await self._get_service(app_name)
     return await service.save_artifact(
@@ -347,9 +346,9 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[types.Part]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> types.Part | None:
     service = await self._get_service(app_name)
     result = await service.load_artifact(
         app_name=app_name,
@@ -373,7 +372,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
+      self, *, app_name: str, user_id: str, session_id: str | None = None
   ) -> list[str]:
     service = await self._get_service(app_name)
     keys = await service.list_artifact_keys(
@@ -394,7 +393,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> None:
     service = await self._get_service(app_name)
     await service.delete_artifact(
@@ -421,7 +420,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[int]:
     service = await self._get_service(app_name)
     versions = await service.list_versions(
@@ -449,7 +448,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[ArtifactVersion]:
     service = await self._get_service(app_name)
     versions = await service.list_artifact_versions(
@@ -477,9 +476,9 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     service = await self._get_service(app_name)
     result = await service.get_artifact_version(
         app_name=app_name,

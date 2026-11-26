@@ -53,25 +53,31 @@ _EXCLUDED_FROM_MTLS = {
     'tests/unittests/workflow/utils/test_workflow_hitl_utils.py',
 }
 
-# Files that still import the legacy label-only decorators from
-# google.adk.utils.feature_decorator. A file belongs here only while it still
-# imports that module; once its units graduate or move to a FeatureName, drop
-# its entry so the check applies again. Do not add new files to this list. New
-# code gates features with the decorators in google.adk.features.
+# The legacy label-only decorator modules. google.adk.a2a.experimental builds
+# a2a_experimental on google.adk.utils.feature_decorator.
+_LEGACY_FEATURE_DECORATOR_MODULES = frozenset({
+    'google.adk.a2a.experimental',
+    'google.adk.utils.feature_decorator',
+})
+
+# Files that still import one of the legacy label-only decorator modules. A
+# file belongs here only while it still imports one; once its units graduate
+# or move to a FeatureName, drop its entry so the check applies again. Do not
+# add new files to this list. New code gates features with the decorators in
+# google.adk.features.
 _LEGACY_FEATURE_DECORATOR_USERS = {
     'src/google/adk/a2a/experimental.py',
     'src/google/adk/optimization/gepa_root_agent_optimizer.py',
     'src/google/adk/optimization/gepa_root_agent_prompt_optimizer.py',
 }
 
-# The legacy module itself and its own tests, which are not users of it.
+# google.adk.utils.feature_decorator itself and the legacy modules' own tests,
+# which are not users of the decorators.
 _LEGACY_FEATURE_DECORATOR_HOME = {
     'src/google/adk/utils/feature_decorator.py',
+    'tests/unittests/a2a/test_experimental.py',
     'tests/unittests/utils/test_feature_decorator.py',
 }
-
-_LEGACY_FEATURE_DECORATOR_PACKAGE = 'google.adk.utils'
-_LEGACY_FEATURE_DECORATOR_MODULE = 'google.adk.utils.feature_decorator'
 
 
 def check_logger(content: str) -> bool:
@@ -159,8 +165,9 @@ def _resolve_import_from(node: ast.ImportFrom, filename: str) -> str | None:
 
 
 def _imports_legacy_feature_decorator(content: str, filename: str) -> bool:
-  """Reports whether a file imports google.adk.utils.feature_decorator.
+  """Reports whether a file imports a legacy label-only decorator module.
 
+  Those are google.adk.utils.feature_decorator and google.adk.a2a.experimental.
   Relative imports are resolved against the file's package, so
   `from .feature_decorator import experimental` inside src/google/adk/utils/
   counts as well as the absolute and parenthesized spellings.
@@ -173,17 +180,18 @@ def _imports_legacy_feature_decorator(content: str, filename: str) -> bool:
   for node in ast.walk(tree):
     if isinstance(node, ast.Import):
       if any(
-          alias.name == _LEGACY_FEATURE_DECORATOR_MODULE
-          or alias.name.startswith(_LEGACY_FEATURE_DECORATOR_MODULE + '.')
+          alias.name == module or alias.name.startswith(module + '.')
           for alias in node.names
+          for module in _LEGACY_FEATURE_DECORATOR_MODULES
       ):
         return True
     elif isinstance(node, ast.ImportFrom):
       module = _resolve_import_from(node, filename)
-      if module == _LEGACY_FEATURE_DECORATOR_MODULE:
-        return True
-      if module == _LEGACY_FEATURE_DECORATOR_PACKAGE and any(
-          alias.name == 'feature_decorator' for alias in node.names
+      if module is None:
+        continue
+      if module in _LEGACY_FEATURE_DECORATOR_MODULES or any(
+          f'{module}.{alias.name}' in _LEGACY_FEATURE_DECORATOR_MODULES
+          for alias in node.names
       ):
         return True
   return False
@@ -195,7 +203,8 @@ def check_legacy_feature_decorator_import(content: str, filename: str) -> bool:
   The decorators in google.adk.utils.feature_decorator share their names with
   the registry-backed ones in google.adk.features but take a message instead
   of a FeatureName, so importing the wrong one compiles and quietly leaves the
-  unit ungated.
+  unit ungated. google.adk.a2a.experimental builds a2a_experimental on the same
+  module, for A2A code that has since graduated.
   """
   if (
       filename in _LEGACY_FEATURE_DECORATOR_USERS
@@ -333,9 +342,10 @@ def main() -> None:
 
     if not check_legacy_feature_decorator_import(content, f):
       print(
-          f'❌ {f}: Imports the legacy label-only decorators from'
-          ' google.adk.utils.feature_decorator. Gate new features with'
-          ' the decorators in google.adk.features, which take a FeatureName.'
+          f'❌ {f}: Imports a legacy label-only decorator module'
+          ' (google.adk.utils.feature_decorator or'
+          ' google.adk.a2a.experimental). Gate new features with the'
+          ' decorators in google.adk.features, which take a FeatureName.'
       )
       failed = True
 

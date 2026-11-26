@@ -24,9 +24,6 @@ from textwrap import dedent
 import time
 import types
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Tuple
 from unittest import mock
 
 import click
@@ -55,7 +52,7 @@ class _Recorder:
   """Callable that records every invocation."""
 
   def __init__(self) -> None:
-    self.calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+    self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
   def __call__(self, *args: Any, **kwargs: Any) -> None:
     self.calls.append((args, kwargs))
@@ -81,7 +78,7 @@ def _patch_types_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 
   class _Content:
 
-    def __init__(self, role: str, parts: List[_Part]) -> None:
+    def __init__(self, role: str, parts: list[_Part]) -> None:
       self.role = role
       self.parts = parts
 
@@ -161,7 +158,7 @@ async def test_run_input_file_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """run_input_file should echo user & assistant messages and return a populated session."""
-  recorder: List[str] = []
+  recorder: list[str] = []
 
   def _echo(msg: str) -> None:
     recorder.append(msg)
@@ -247,7 +244,7 @@ async def test_run_cli_app_uses_app_name_for_sessions(
 ) -> None:
   """run_cli should honor the App-provided name when creating sessions."""
   parent_dir, folder_name, app_name = fake_app_agent
-  created_app_names: List[str] = []
+  created_app_names: list[str] = []
 
   class _SpySessionService(InMemorySessionService):
 
