@@ -223,6 +223,7 @@ async def test_run_async_with_list_of_routes(request: pytest.FixtureRequest):
   node_b = TestingNode(name='NodeB', output='B')
   node_c = TestingNode(name='NodeC', output='C')
   node_d = TestingNode(name='NodeD', output='D')
+  join = JoinNode(name='Sink')
   graph = Graph(
       edges=[
           Edge(from_node=START, to_node=node_a),
@@ -241,6 +242,8 @@ async def test_run_async_with_list_of_routes(request: pytest.FixtureRequest):
               to_node=node_d,
               route='route_d',
           ),
+          Edge(from_node=node_b, to_node=join),
+          Edge(from_node=node_c, to_node=join),
       ],
   )
   agent = Workflow(
@@ -252,7 +255,11 @@ async def test_run_async_with_list_of_routes(request: pytest.FixtureRequest):
   runner = testing_utils.InMemoryRunner(app=app)
   events = await runner.run_async(testing_utils.get_user_content('start'))
 
-  simplified_events = simplify_events_with_node(events)
+  simplified_events = [
+      event
+      for event in simplify_events_with_node(events)
+      if not event[0].endswith('/Sink@1')
+  ]
 
   assert len(simplified_events) == 3
   assert simplified_events[0] == (
@@ -282,6 +289,7 @@ async def test_run_async_with_default_route(request: pytest.FixtureRequest):
   node_b = TestingNode(name='NodeB', output='B')
   node_c = TestingNode(name='NodeC', output='C')
   node_d = TestingNode(name='NodeD', output='D')
+  join = JoinNode(name='Sink')
 
   graph = Graph(
       edges=[
@@ -302,6 +310,8 @@ async def test_run_async_with_default_route(request: pytest.FixtureRequest):
               from_node=node_a,
               to_node=node_d,
           ),
+          Edge(from_node=node_c, to_node=join),
+          Edge(from_node=node_d, to_node=join),
       ],
   )
   agent = Workflow(
@@ -313,7 +323,11 @@ async def test_run_async_with_default_route(request: pytest.FixtureRequest):
   runner = testing_utils.InMemoryRunner(app=app)
   events = await runner.run_async(testing_utils.get_user_content('start'))
 
-  simplified_events = simplify_events_with_node(events)
+  simplified_events = [
+      event
+      for event in simplify_events_with_node(events)
+      if not event[0].endswith('/Sink@1')
+  ]
 
   assert len(simplified_events) == 3
   assert simplified_events[0] == (
@@ -390,6 +404,7 @@ async def test_run_async_with_untagged_edges(request: pytest.FixtureRequest):
   node_b = TestingNode(name='NodeB', output='B')
   node_c = TestingNode(name='NodeC', output='C')
   node_d = TestingNode(name='NodeD', output='D')
+  join = JoinNode(name='Sink')
   graph = Graph(
       edges=[
           Edge(from_node=START, to_node=node_a),
@@ -408,6 +423,8 @@ async def test_run_async_with_untagged_edges(request: pytest.FixtureRequest):
               from_node=node_a,
               to_node=node_d,
           ),
+          Edge(from_node=node_b, to_node=join),
+          Edge(from_node=node_d, to_node=join),
       ],
   )
   agent = Workflow(
@@ -419,7 +436,11 @@ async def test_run_async_with_untagged_edges(request: pytest.FixtureRequest):
   runner = testing_utils.InMemoryRunner(app=app)
   events = await runner.run_async(testing_utils.get_user_content('start'))
 
-  simplified_events = simplify_events_with_node(events)
+  simplified_events = [
+      event
+      for event in simplify_events_with_node(events)
+      if not event[0].endswith('/Sink@1')
+  ]
 
   assert len(simplified_events) == 3
   assert simplified_events[0] == (
