@@ -50,10 +50,10 @@ def format_skills_as_xml(
   for item in skills:
     lines.append("<skill>")
     lines.append("<name>")
-    lines.append(html.escape(item.name))
+    lines.append(html.escape(item.name, quote=False))
     lines.append("</name>")
     lines.append("<description>")
-    lines.append(html.escape(item.description))
+    lines.append(html.escape(item.description, quote=False))
     lines.append("</description>")
     lines.append("</skill>")
 
