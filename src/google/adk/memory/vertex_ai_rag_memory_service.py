@@ -406,11 +406,22 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
 
 def _merge_event_lists(event_lists: list[list[Event]]) -> list[list[Event]]:
-  """Merge event lists that have overlapping timestamps."""
+  """Merge timestamp-overlapping lists, deduplicating by transcript identity."""
+
+  def event_key(event: Event) -> tuple[float, str, str | None]:
+    return (
+        event.timestamp,
+        event.author,
+        event.content.parts[0].text
+        if event.content and event.content.parts
+        else None,
+    )
+
   merged = []
   while event_lists:
     current = event_lists.pop(0)
     current_ts = {event.timestamp for event in current}
+    current_keys = {event_key(event) for event in current}
     merge_found = True
 
     # Keep merging until no new overlap is found.
@@ -421,9 +432,11 @@ def _merge_event_lists(event_lists: list[list[Event]]) -> list[list[Event]]:
         other_ts = {event.timestamp for event in other}
         # Overlap exists, so we merge and use the merged list to check again
         if current_ts & other_ts:
-          new_events = [e for e in other if e.timestamp not in current_ts]
+          # Parsed copies have fresh Event IDs; use the uploaded fields.
+          new_events = [e for e in other if event_key(e) not in current_keys]
           current.extend(new_events)
           current_ts.update(e.timestamp for e in new_events)
+          current_keys.update(event_key(e) for e in new_events)
           merge_found = True
         else:
           remaining.append(other)
