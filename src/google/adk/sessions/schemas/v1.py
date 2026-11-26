@@ -30,6 +30,8 @@ from sqlalchemy import desc
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy import Index
+from sqlalchemy import Integer
+from sqlalchemy import text
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
@@ -179,6 +181,9 @@ class StorageEvent(Base):
   )
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
+  event_index: Mapped[int] = mapped_column(
+      Integer, default=0, server_default=text("0"), nullable=False
+  )
   timestamp: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
@@ -210,7 +215,9 @@ class StorageEvent(Base):
   )
 
   @classmethod
-  def from_event(cls, session: Session, event: Event) -> StorageEvent:
+  def from_event(
+      cls, session: Session, event: Event, event_index: int = 0
+  ) -> StorageEvent:
     """Creates a StorageEvent from an Event."""
     return StorageEvent(
         id=event.id,
@@ -220,6 +227,7 @@ class StorageEvent(Base):
         user_id=session.user_id,
         timestamp=timestamp_to_utc_datetime(event.timestamp),
         event_data=event.model_dump(exclude_none=True, mode="json"),
+        event_index=event_index,
     )
 
   def to_event(self) -> Event:
