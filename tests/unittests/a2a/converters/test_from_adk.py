@@ -224,9 +224,28 @@ class TestFromAdk:
       convert_event_to_a2a_events(self.mock_event, None)
 
   def test_convert_event_to_a2a_events_with_actions(self):
-    """Test conversion of event with actions to TaskStatusUpdateEvent."""
+    """An artifact-delta-only event emits no A2A event: it has no content
+    and no action a remote peer honors, so there is nothing to send. The
+    legacy executor behaves the same way for content-less events."""
     self.mock_event.actions = event_actions.EventActions()
     self.mock_event.actions.artifact_delta["image"] = 0
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    assert result == []
+
+  def test_convert_event_to_a2a_events_escalate_only(self):
+    """An escalate-only event emits one message-less WORKING update with the
+    actions on the update's own metadata — never a message with empty
+    parts, which the A2A spec forbids (Message.parts is REQUIRED)."""
+    self.mock_event.actions = event_actions.EventActions(escalate=True)
 
     agents_artifacts = {}
 
@@ -241,10 +260,67 @@ class TestFromAdk:
     assert isinstance(result[0], TaskStatusUpdateEvent)
     assert result[0].task_id == "task-123"
     assert result[0].context_id == "context-456"
+    assert result[0].status.state == _compat.TS_WORKING
+    assert _compat.normalize_message(result[0].status.message) is None
 
-    metadata = result[0].status.message.metadata
+    metadata = _compat.meta_to_dict(result[0].metadata)
     assert "adk_actions" in metadata
-    assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}
+    assert metadata["adk_actions"]["escalate"] is True
+
+  def test_convert_event_to_a2a_events_skip_summarization_only(self):
+    """A skip-summarization-only event emits one message-less WORKING update
+    with the actions on the update's own metadata."""
+    self.mock_event.actions = event_actions.EventActions(
+        skip_summarization=True
+    )
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], TaskStatusUpdateEvent)
+    assert _compat.normalize_message(result[0].status.message) is None
+
+    metadata = _compat.meta_to_dict(result[0].metadata)
+    assert "adk_actions" in metadata
+    assert metadata["adk_actions"]["skipSummarization"] is True
+
+  def test_convert_event_to_a2a_events_state_only(self):
+    """A state-only event emits no A2A event: state deltas are local to the
+    caller and no remote peer honors them back."""
+    self.mock_event.actions = event_actions.EventActions(state_delta={"k": "v"})
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    assert result == []
+
+  def test_convert_event_to_a2a_events_bare_empty_event(self):
+    """An event with no content and default actions emits no A2A event."""
+    self.mock_event.actions = event_actions.EventActions()
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    assert result == []
 
 
 class TestSerializeValue:
