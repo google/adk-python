@@ -16,7 +16,9 @@ from __future__ import annotations
 
 """Utility functions for converting examples to a string that can be used in system instructions in the prompt."""
 
+import json
 import logging
+from typing import Any
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
@@ -38,6 +40,23 @@ _FUNCTION_CALL_PREFIX = "```tool_code\n"
 _FUNCTION_CALL_SUFFIX = "\n```\n"
 _FUNCTION_RESPONSE_PREFIX = "```tool_outputs\n"
 _FUNCTION_RESPONSE_SUFFIX = "\n```\n"
+
+
+def _function_response_json(response: Any) -> str:
+  """Renders a function response as the JSON string the example promises.
+
+  ``FunctionResponse.__dict__`` is the model's internal storage, so it leaks
+  every unset optional field as ``None`` and renders nested values as their
+  Python repr, which for a pydantic model spans several lines and breaks the
+  fenced block around the example. Serializing the fields instead keeps the
+  example to the response shape the model is being shown.
+  """
+  try:
+    return json.dumps(response.model_dump(exclude_none=True), default=str)
+  except (TypeError, ValueError):
+    # Values the JSON encoder cannot represent fall back to their string form
+    # rather than failing the whole system-instruction build.
+    return str(response.model_dump(exclude_none=True))
 
 
 def convert_examples_to_text(examples: list[Example], model: str | None) -> str:
@@ -78,7 +97,10 @@ def convert_examples_to_text(examples: list[Example], model: str | None) -> str:
         # Convert function response part to json string
         elif part.function_response:
           prefix = _FUNCTION_PREFIX if is_gemini else _FUNCTION_RESPONSE_PREFIX
-          output += f"{prefix}{part.function_response.__dict__}{_FUNCTION_RESPONSE_SUFFIX}"
+          output += (
+              f"{prefix}{_function_response_json(part.function_response)}"
+              f"{_FUNCTION_RESPONSE_SUFFIX}"
+          )
         elif part.text:
           output += f"{part.text}\n"
 

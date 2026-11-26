@@ -339,7 +339,8 @@ def test_example_conversion_with_function_response(model):
       f"{example_util._EXAMPLE_START.format(1)}"
       f"{example_util._USER_PREFIX}test_input\n"
       f"{example_util._MODEL_PREFIX}{prefix}"
-      f"{test_function_response.__dict__}"
+      '{"name": "test_function", "response": {"test_string_argument":'
+      ' "test_value", "test_int_argument": 1}}'
       f"{example_util._FUNCTION_RESPONSE_SUFFIX}"
       f"{example_util._EXAMPLE_END}"
       f"{example_util._EXAMPLES_END}"
@@ -403,7 +404,8 @@ def test_example_conversion_with_function_call_response(model):
       "test_function(test_string_argument='test_value', test_int_argument=1)"
       f"{example_util._FUNCTION_CALL_SUFFIX}"
       f"{response_prefix}"
-      f"{test_function_response.__dict__}"
+      '{"name": "test_function", "response": {"test_string_argument":'
+      ' "test_value", "test_int_argument": 1}}'
       f"{example_util._FUNCTION_RESPONSE_SUFFIX}"
       f"{example_util._EXAMPLE_END}"
       f"{example_util._EXAMPLES_END}"
@@ -469,7 +471,8 @@ def test_example_conversion_with_text_and_function_call_response(model):
       "test_function(test_string_argument='test_value', test_int_argument=1)"
       f"{example_util._FUNCTION_CALL_SUFFIX}"
       f"{response_prefix}"
-      f"{test_function_response.__dict__}"
+      '{"name": "test_function", "response": {"test_string_argument":'
+      ' "test_value", "test_int_argument": 1}}'
       f"{example_util._FUNCTION_RESPONSE_SUFFIX}"
       f"{example_util._EXAMPLE_END}"
       f"{example_util._EXAMPLES_END}"
@@ -543,3 +546,72 @@ def test_building_si_from_base_example_provider(model):
       )
       == expected_output
   )
+
+
+def test_function_response_renders_json_without_unset_fields():
+  """A function response example is JSON and carries no unset optional fields.
+
+  ``FunctionResponse.__dict__`` used to leak ``will_continue``, ``scheduling``
+  and ``parts`` as ``None`` into every example and render nested values as a
+  multi-line Python repr. The example now shows the response shape only.
+  """
+  test_function_response = types.FunctionResponse(
+      name="test_function",
+      id="call_1",
+      response={"test_string_argument": "test_value", "test_int_argument": 1},
+  )
+  output_content = [
+      types.Content(
+          role="model",
+          parts=[types.Part(function_response=test_function_response)],
+      )
+  ]
+  test_example = example.Example(input=BASIC_INPUT, output=output_content)
+
+  rendered = example_util.convert_examples_to_text([test_example], "gemini")
+
+  assert (
+      '{"id": "call_1", "name": "test_function", "response":'
+      ' {"test_string_argument": "test_value", "test_int_argument": 1}}'
+      in rendered
+  )
+  # Unset optional fields must not reach the example.
+  assert "will_continue" not in rendered
+  assert "scheduling" not in rendered
+  assert "'parts': None" not in rendered
+  # It is JSON, not a Python repr.
+  assert "None" not in rendered
+
+
+def test_function_response_nested_values_render_as_json():
+  """Nested values inside a response do not introduce raw newlines.
+
+  A pydantic model in the response dict used to be rendered through its repr,
+  which spans several lines and breaks the fenced block around the example.
+  """
+  test_function_response = types.FunctionResponse(
+      name="test_function",
+      response={"nested": types.Part(text="nested_value")},
+  )
+  output_content = [
+      types.Content(
+          role="model",
+          parts=[types.Part(function_response=test_function_response)],
+      )
+  ]
+  test_example = example.Example(input=BASIC_INPUT, output=output_content)
+
+  rendered = example_util.convert_examples_to_text([test_example], "gemini")
+
+  assert '{"nested": {"text": "nested_value"}}' in rendered
+  # The rendered example must stay on one line inside the fence.
+  assert "Part(" not in rendered
+  payload_lines = [
+      line
+      for line in rendered.split("```")[1].splitlines()
+      if line.startswith("{")
+  ]
+  assert payload_lines == [
+      '{"name": "test_function", "response": {"nested": {"text":'
+      ' "nested_value"}}}'
+  ]
