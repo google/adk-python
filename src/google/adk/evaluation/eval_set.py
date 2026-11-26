@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel
 
 from .eval_case import EvalCase as EvalCase
@@ -27,10 +25,10 @@ class EvalSet(BaseModel):
   eval_set_id: str
   """Unique identifier for the eval set."""
 
-  name: Optional[str] = None
+  name: str | None = None
   """Name of the dataset."""
 
-  description: Optional[str] = None
+  description: str | None = None
   """Description of the dataset."""
 
   eval_cases: list[EvalCase]

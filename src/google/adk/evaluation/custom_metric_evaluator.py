@@ -20,7 +20,6 @@ import importlib
 import inspect
 from typing import Callable
 from typing import cast
-from typing import Optional
 
 from typing_extensions import override
 
@@ -38,8 +37,8 @@ def _get_metric_function(
     [
         EvalMetric,
         list[Invocation],
-        Optional[list[Invocation]],
-        Optional[ConversationScenario],
+        list[Invocation] | None,
+        ConversationScenario | None,
     ],
     EvaluationResult | Awaitable[EvaluationResult],
 ]:
@@ -57,8 +56,8 @@ def _get_metric_function(
             [
                 EvalMetric,
                 list[Invocation],
-                Optional[list[Invocation]],
-                Optional[ConversationScenario],
+                list[Invocation] | None,
+                ConversationScenario | None,
             ],
             EvaluationResult | Awaitable[EvaluationResult],
         ],
@@ -81,8 +80,8 @@ class _CustomMetricEvaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     eval_metric = self._eval_metric.model_copy(deep=True)
     eval_metric.threshold = None

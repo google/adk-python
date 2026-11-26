@@ -22,7 +22,6 @@ import re
 import sys
 import textwrap
 import threading
-from typing import Optional
 
 from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
@@ -140,8 +139,8 @@ class FakeEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")
@@ -181,8 +180,8 @@ class FakeSingleSidedEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     per_invocation_results = []
     for actual in actual_invocations:
@@ -218,8 +217,8 @@ class FakeInformationalEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     per_invocation_results = []
     for i, actual in enumerate(actual_invocations):

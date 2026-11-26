@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from abc import ABC
 import enum
-from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import alias_generators
@@ -38,7 +37,7 @@ class BaseUserSimulatorConfig(BaseModel):
   unique to that subclass (e.g. `Literal["llm_backed"]`).
   """
 
-  type: Optional[str] = Field(
+  type: str | None = Field(
       default=None,
       description=(
           "Discriminator for the concrete config subclass. Each concrete"
@@ -78,7 +77,7 @@ if the user simulator was able to successfully generate a message or why it was
 not able to do so."""
   )
 
-  user_message: Optional[genai_types.Content] = Field(
+  user_message: genai_types.Content | None = Field(
       description="""The next user message.""", default=None
   )
 
@@ -128,7 +127,7 @@ class UserSimulator(ABC):
 
   def get_simulation_evaluator(
       self,
-  ) -> Optional[Evaluator]:
+  ) -> Evaluator | None:
     """Returns an instance of an Evaluator that evaluates if the user simulation was successful or not."""
     raise NotImplementedError()
 
