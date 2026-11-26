@@ -53,6 +53,8 @@ def adk_to_mcp_tool_type(tool: BaseTool) -> mcp_types.Tool:
     input_schema = gemini_to_json_schema(tool_declaration.parameters)
   else:
     input_schema = {}
+  # MCP requires an object schema at the root; clients reject `{}`.
+  input_schema = {"type": "object", "properties": {}, **input_schema}
   return mcp_types.Tool(
       name=tool.name,
       description=tool.description,
