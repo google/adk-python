@@ -3070,15 +3070,69 @@ def test_build_anthropic_thinking_param_other_negative_uses_adaptive():
   )
 
 
-def test_build_anthropic_thinking_param_manual_budget_omits_display():
-  """``display`` belongs to adaptive thinking only, not to a manual budget."""
+@pytest.mark.parametrize(
+    ("include_thoughts", "display"),
+    [(None, "summarized"), (True, "summarized"), (False, "omitted")],
+)
+def test_build_anthropic_thinking_param_adaptive_display_follows_include_thoughts(
+    include_thoughts, display
+):
+  """Adaptive thinking hides the reasoning only when include_thoughts is False."""
   from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
 
   config = types.GenerateContentConfig(
-      thinking_config=types.ThinkingConfig(thinking_budget=2048),
+      thinking_config=types.ThinkingConfig(
+          thinking_budget=-1, include_thoughts=include_thoughts
+      ),
+  )
+  result = _build_anthropic_thinking_param(config)
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(
+      type="adaptive", display=display
+  )
+
+
+@pytest.mark.parametrize("include_thoughts", [None, True])
+def test_build_anthropic_thinking_param_manual_budget_omits_display(
+    include_thoughts,
+):
+  """A manual budget sends no ``display`` unless thoughts are excluded."""
+  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(
+          thinking_budget=2048, include_thoughts=include_thoughts
+      ),
   )
   result = _build_anthropic_thinking_param(config)
   assert "display" not in result
+
+
+def test_build_anthropic_thinking_param_manual_budget_omits_excluded_thoughts():
+  """include_thoughts=False hides the reasoning under a manual budget too."""
+  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(
+          thinking_budget=2048, include_thoughts=False
+      ),
+  )
+  result = _build_anthropic_thinking_param(config)
+  assert result == anthropic_types.ThinkingConfigEnabledParam(
+      type="enabled", budget_tokens=2048, display="omitted"
+  )
+
+
+def test_build_anthropic_thinking_param_disabled_ignores_include_thoughts():
+  """Disabled thinking sends no ``display``, which Claude rejects there."""
+  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(
+          thinking_budget=0, include_thoughts=False
+      ),
+  )
+  result = _build_anthropic_thinking_param(config)
+  assert result == anthropic_types.ThinkingConfigDisabledParam(type="disabled")
 
 
 def test_build_anthropic_thinking_param_no_config():
@@ -3259,6 +3313,43 @@ def test_message_to_generate_content_response_with_thinking():
   text_part = response.content.parts[2]
   assert text_part.text == "Here is my answer."
   assert text_part.thought is not True
+
+
+def test_omitted_thinking_block_is_sent_back_unchanged():
+  """A thinking block with empty text replays as the same thinking block.
+
+  ``display: "omitted"`` returns signed thinking blocks with empty text, and
+  Claude requires them back unchanged on the next request. They must not
+  turn into ``redacted_thinking`` blocks.
+  """
+  message = anthropic_types.Message(
+      id="msg_omitted",
+      content=[
+          anthropic_types.ThinkingBlock(
+              thinking="", signature="sig_omitted", type="thinking"
+          ),
+          anthropic_types.ToolUseBlock(
+              id="toolu_1", name="clock", input={}, type="tool_use"
+          ),
+      ],
+      model="claude-opus-4-7",
+      role="assistant",
+      stop_reason="tool_use",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(input_tokens=10, output_tokens=20),
+  )
+
+  response = message_to_generate_content_response(message)
+  replayed = content_to_message_param(response.content)
+
+  assert replayed == {
+      "role": "assistant",
+      "content": [
+          {"type": "thinking", "thinking": "", "signature": "sig_omitted"},
+          {"type": "tool_use", "id": "toolu_1", "name": "clock", "input": {}},
+      ],
+  }
 
 
 def test_message_to_generate_content_response_reports_cache_read_tokens():
@@ -3805,6 +3896,41 @@ async def test_non_streaming_passes_thinking_param():
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_requests_omitted_display_without_thoughts():
+  """include_thoughts=False asks Claude to omit the reasoning text."""
+  llm = AnthropicLlm(model="claude-opus-4-7")
+  mock_message = anthropic_types.Message(
+      id="msg_omit",
+      content=[
+          anthropic_types.TextBlock(text="Answer.", type="text", citations=None)
+      ],
+      model="claude-opus-4-7",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(input_tokens=5, output_tokens=2),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+  request = LlmRequest(
+      model="claude-opus-4-7",
+      contents=[Content(role="user", parts=[Part.from_text(text="Think")])],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(
+              thinking_budget=-1, include_thoughts=False
+          ),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["thinking"] == {"type": "adaptive", "display": "omitted"}
+
+
+@pytest.mark.asyncio
 async def test_non_streaming_no_thinking_param_without_config():
   """Without thinking_config, thinking kwarg should be NOT_GIVEN."""
   from anthropic import NOT_GIVEN
@@ -4044,7 +4170,9 @@ async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("thinking_deltas", [["Reason."], []])
+# [""] is how ``display: "omitted"`` streams a thinking block: one empty
+# thinking_delta, then the signature.
+@pytest.mark.parametrize("thinking_deltas", [["Reason."], [], [""]])
 async def test_streaming_thinking_captures_signature_delta(thinking_deltas):
   """A streamed signature_delta must land on the final thinking Part.
 
