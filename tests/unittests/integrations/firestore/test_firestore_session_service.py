@@ -16,13 +16,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import contextlib
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+import decimal
+import enum
 import json
 import os
 import time
 from unittest import mock
+import uuid
 
 from google.adk.errors import StaleSessionError
 from google.adk.errors.already_exists_error import AlreadyExistsError
@@ -33,7 +37,9 @@ from google.adk.integrations.firestore.firestore_session_service import Firestor
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
 from google.cloud import firestore
+from google.cloud.firestore_v1 import _helpers as firestore_helpers
 from google.genai import types
+from pydantic import BaseModel
 import pytest
 
 
@@ -547,6 +553,177 @@ async def test_create_session_keeps_app_and_user_state_native(
   session_doc_ref = sessions_ref.document.return_value
   persisted_state = json.loads(written[session_doc_ref]["state"])
   assert isinstance(persisted_state["session_key"], str)
+
+
+class _Plan(BaseModel):
+  name: str
+  due: date
+  grid: list[list[int]]
+
+
+class _Tier(enum.Enum):
+  GOLD = 1
+
+
+# Values the Firestore client cannot encode, each with the JSON-safe form that
+# the session bucket, and the other session services, persist for it.
+_NON_NATIVE_STATE_VALUES = [
+    pytest.param(date(2024, 6, 15), "2024-06-15", id="date"),
+    pytest.param(
+        uuid.UUID(int=1), "00000000-0000-0000-0000-000000000001", id="uuid"
+    ),
+    pytest.param(decimal.Decimal("1.50"), "1.50", id="decimal"),
+    pytest.param(_Tier.GOLD, 1, id="enum"),
+    pytest.param(
+        _Plan(name="trip", due=date(2024, 1, 2), grid=[[1, 2], [3]]),
+        {"name": "trip", "due": "2024-01-02", "grid": [[1, 2], [3]]},
+        id="pydantic_model",
+    ),
+]
+
+
+def _store_in_firestore(data: Mapping[str, object]) -> dict[str, object]:
+  """Returns `data` as Firestore would store and return it.
+
+  Encoding is what the real client does in `transaction.set`, so a value it
+  cannot encode raises TypeError here as it would abort the transaction.
+  """
+  return firestore_helpers.decode_dict(
+      firestore_helpers.encode_dict(data), client=None
+  )
+
+
+async def _read_back_user_state(
+    service: FirestoreSessionService,
+    client: mock.MagicMock,
+    stored: Mapping[str, object],
+) -> dict[str, object]:
+  """Returns the user state `get_user_state` reads from a stored document."""
+  users_coll = client.collection.return_value.document.return_value.collection
+  users_coll.return_value.document.return_value.get = mock.AsyncMock(
+      return_value=_stored_snapshot(stored)
+  )
+  return await service.get_user_state(app_name="test_app", user_id="test_user")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "expected"), _NON_NATIVE_STATE_VALUES)
+async def test_append_event_stores_non_native_app_and_user_state(
+    mock_firestore_client, value, expected
+):
+  """A value Firestore cannot encode is stored as in the session bucket."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+
+  session_doc_snapshot = mock.MagicMock()
+  session_doc_snapshot.exists = True
+  session_doc_snapshot.to_dict.return_value = {"revision": 0}
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  users_coll = app_ref.collection.return_value
+  user_ref = users_coll.document.return_value
+  sessions_ref = user_ref.collection.return_value
+  session_doc_ref = sessions_ref.document.return_value
+  session_doc_ref.get = mock.AsyncMock(return_value=session_doc_snapshot)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.append_event(
+        session,
+        Event(
+            invocation_id="test_inv",
+            author="user",
+            actions=EventActions(
+                state_delta={
+                    "app:value": value,
+                    "user:value": value,
+                    "session_value": value,
+                }
+            ),
+        ),
+    )
+
+  transaction = mock_firestore_client.transaction.return_value
+  written = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  stored_app = _store_in_firestore(written[app_ref])
+  stored_user = _store_in_firestore(written[user_ref])
+  user_state = await _read_back_user_state(
+      service, mock_firestore_client, stored_user
+  )
+  session_state = json.loads(transaction.update.call_args[0][1]["state"])
+
+  assert stored_app == stored_user
+  assert user_state["value"] == expected
+  assert session_state["session_value"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "expected"), _NON_NATIVE_STATE_VALUES)
+async def test_create_session_stores_non_native_app_and_user_state(
+    mock_firestore_client, value, expected
+):
+  """create_session stores a value Firestore cannot encode as JSON-safe."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        state={
+            "app:value": value,
+            "user:value": value,
+            "session_value": value,
+        },
+    )
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  user_ref = app_ref.collection.return_value.document.return_value
+  session_doc_ref = user_ref.collection.return_value.document.return_value
+
+  transaction = mock_firestore_client.transaction.return_value
+  written = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  stored_app = _store_in_firestore(written[app_ref])
+  stored_user = _store_in_firestore(written[user_ref])
+  user_state = await _read_back_user_state(
+      service, mock_firestore_client, stored_user
+  )
+  session_state = json.loads(written[session_doc_ref]["state"])
+
+  assert stored_app == stored_user
+  assert user_state["value"] == expected
+  assert session_state["session_value"] == expected
+
+
+@pytest.mark.asyncio
+async def test_create_session_keeps_firestore_native_app_and_user_state(
+    mock_firestore_client,
+):
+  """Values Firestore stores natively are not coerced to JSON-safe forms."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  point = firestore.GeoPoint(51.5, -0.12)
+  state = {"point": point, "blob": b"\x00\xff", "when": [datetime(2024, 1, 1)]}
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        state={f"user:{key}": value for key, value in state.items()},
+    )
+
+  root_coll = mock_firestore_client.collection.return_value
+  user_ref = root_coll.document.return_value.collection.return_value
+  user_ref = user_ref.document.return_value
+  transaction = mock_firestore_client.transaction.return_value
+  written = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+
+  assert written[user_ref] == state
 
 
 @pytest.mark.asyncio
