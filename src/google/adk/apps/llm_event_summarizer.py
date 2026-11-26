@@ -13,7 +13,10 @@
 # limitations under the License.
 from __future__ import annotations
 
+import logging
+
 from google.genai.types import Content
+from google.genai.types import FinishReason
 from google.genai.types import Part
 
 from ..apps.base_events_summarizer import BaseEventsSummarizer
@@ -23,6 +26,24 @@ from ..events.event_actions import EventCompaction
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..utils.context_utils import Aclosing
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+# A summary that ended for any other reason (e.g. MAX_TOKENS or SAFETY) is
+# incomplete and must not replace the events it was meant to summarize.
+_COMPLETE_FINISH_REASONS = (
+    None,
+    FinishReason.STOP,
+    FinishReason.FINISH_REASON_UNSPECIFIED,
+)
+
+
+def _has_summary_text(content: Content) -> bool:
+  """Whether `content` has a non-blank text part that is not a thought."""
+  return any(
+      part.text and part.text.strip() and not part.thought
+      for part in content.parts or ()
+  )
 
 
 class LlmEventSummarizer(BaseEventsSummarizer):
@@ -150,6 +171,7 @@ class LlmEventSummarizer(BaseEventsSummarizer):
     )
     summary_content = None
     summary_usage_metadata = None
+    summary_finish_reason = None
     async with Aclosing(
         self._llm.generate_content_async(llm_request, stream=False)
     ) as agen:
@@ -157,9 +179,26 @@ class LlmEventSummarizer(BaseEventsSummarizer):
         if llm_response.content:
           summary_content = llm_response.content
           summary_usage_metadata = llm_response.usage_metadata
+          summary_finish_reason = llm_response.finish_reason
           break
 
     if summary_content is None:
+      return None
+
+    if summary_finish_reason not in _COMPLETE_FINISH_REASONS:
+      logger.warning(
+          'Discarding summary that ended with finish reason %s; keeping the'
+          ' uncompacted history.',
+          summary_finish_reason,
+      )
+      return None
+
+    # An empty or thought-only summary would hide the history just the same.
+    if not _has_summary_text(summary_content):
+      logger.warning(
+          'Discarding summary without summary text; keeping the uncompacted'
+          ' history.'
+      )
       return None
 
     # Ensure the compacted content has the role 'model'
