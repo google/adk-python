@@ -287,7 +287,7 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
         else:
           fields[prop_name] = (
               prop_type | None,
-              None,
+              prop_schema.get("default"),
           )
 
       try:

@@ -257,6 +257,54 @@ class TestValidateResumeResponse:
     assert _validate_resume_response("data", schema) == "data"
     assert not marker.exists()
 
+  def test_object_schema_uses_declared_defaults_for_missing_fields(self):
+    """A partial resume answer keeps the optional fields' schema defaults."""
+
+    class Decision(BaseModel):
+      approved: bool
+      priority: int = 3
+      tags: list[str] = []
+      reviewer: str = "manager"
+
+    answer = _validate_resume_response(
+        {"approved": True}, Decision.model_json_schema()
+    )
+
+    assert answer == {
+        "approved": True,
+        "priority": 3,
+        "tags": [],
+        "reviewer": "manager",
+    }
+    # The next node rebuilds the model from this answer; it must not fail.
+    assert Decision.model_validate(answer) == Decision(approved=True)
+
+  def test_object_schema_explicit_values_override_declared_defaults(self):
+    """A provided optional field wins over its schema default."""
+
+    class Decision(BaseModel):
+      approved: bool
+      priority: int = 3
+      tags: list[str] = []
+      reviewer: str = "manager"
+
+    answer = _validate_resume_response(
+        {
+            "approved": False,
+            "priority": 7,
+            "tags": ["urgent"],
+            "reviewer": "director",
+        },
+        Decision.model_json_schema(),
+    )
+
+    assert answer == {
+        "approved": False,
+        "priority": 7,
+        "tags": ["urgent"],
+        "reviewer": "director",
+    }
+
 
 # --- _reconstruct_node_states ---
 
