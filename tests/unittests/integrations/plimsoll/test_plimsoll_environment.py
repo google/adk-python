@@ -691,6 +691,32 @@ async def test_a_failed_close_is_retried_by_the_next_close(
   client.open_session.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        plimsoll_client.ChainError("the daemon counts 1 call"),
+        plimsoll_client.StaleOwnerError(
+            "another worker", not_dispatched="request"
+        ),
+    ],
+)
+async def test_a_close_that_would_fail_again_is_not_retried(
+    env: PlimsollEnvironment, session: mock.MagicMock, error
+):
+  # The daemon answered the close (ChainError: the session is closed there),
+  # or another worker holds the session: the client would raise the same
+  # error again without sending anything, so the error is raised once.
+  session.close.side_effect = error
+  await env.initialize()
+
+  with pytest.raises(type(error)):
+    await env.close()
+  await env.close()
+
+  session.close.assert_called_once()
+  assert env.is_initialized is False
+
+
 async def test_a_reopen_retries_a_failed_close_before_opening(
     client: mock.MagicMock,
     session: mock.MagicMock,

@@ -274,12 +274,7 @@ class PlimsollEnvironment(BaseEnvironment):
         self._opening = None
     if not keep:
       # Still the open in flight while it closes, so a close() waits for it.
-      try:
-        session.close()
-      except Exception:  # pylint: disable=broad-exception-caught
-        logger.warning("Failed to close the Plimsoll session", exc_info=True)
-        with self._lock:
-          self._closing.append(session)
+      self._close_or_keep(session)
       with self._lock:
         if self._opening is opening:
           self._opening = None
@@ -368,9 +363,19 @@ class PlimsollEnvironment(BaseEnvironment):
             self._is_initialized = False
           return
         session = self._closing[0]
-      await asyncio.to_thread(session.close)
-      with self._lock:
-        self._closing = [s for s in self._closing if s is not session]
+      try:
+        await asyncio.to_thread(session.close)
+      except Exception as e:
+        if not _close_is_final(e):
+          raise
+        # Raised once: the session is no longer this environment's to close.
+        self._drop_closing(session)
+        raise
+      self._drop_closing(session)
+
+  def _drop_closing(self, session: Session) -> None:
+    with self._lock:
+      self._closing = [s for s in self._closing if s is not session]
 
   @override
   async def execute(
@@ -489,6 +494,36 @@ class PlimsollEnvironment(BaseEnvironment):
           " answer; it may have run, so check its effects before repeating"
           " it"
       ) from None
+
+  def _close_or_keep(self, session: Session) -> None:
+    """Closes ``session`` from a worker thread, where nothing can be raised to.
+
+    A close that may succeed when tried again is kept for the next
+    ``close()``.
+    """
+    try:
+      session.close()
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      logger.warning("Failed to close the Plimsoll session", exc_info=True)
+      if not _close_is_final(e):
+        with self._lock:
+          self._closing.append(session)
+
+
+def _close_is_final(error: Exception) -> bool:
+  """Whether a close that raised ``error`` would raise it again, unsent.
+
+  The client raises ``ChainError`` when the daemon answered the close (the
+  session is closed there, and its count shows a call this client did not
+  see, as a cut call may be), and ``StaleOwnerError`` when another worker
+  holds the session. Either is final; any other error, such as a close that
+  got no answer, is sent again by the next close.
+  """
+  import plimsoll_client
+
+  return isinstance(
+      error, (plimsoll_client.ChainError, plimsoll_client.StaleOwnerError)
+  )
 
 
 def _posix(path: Path | str) -> str:
