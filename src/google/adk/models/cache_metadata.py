@@ -22,16 +22,18 @@ from pydantic import Field
 from pydantic import model_validator
 
 
+### BEGIN_GENERATED_CODE: CacheMetadata
+### Do not edit, code generation overwrites it.
 class CacheMetadata(BaseModel):
   """Metadata for context cache associated with LLM responses.
 
   This class stores cache identification, usage tracking, and lifecycle
   information for a particular cache instance. It can be in two states:
 
-  1. Active cache state: cache_name is set, all fields populated, except
-     created_at when ADK did not create the cache
-  2. Fingerprint-only state: cache_name is None, only fingerprint and
-     contents_count are set for prefix matching
+  1. Active cache state: cache_name is set, all fields populated, except created_at when ADK did
+     not create the cache
+  2. Fingerprint-only state: cache_name is None, only fingerprint and contents_count are set for
+     prefix matching
 
   Token counts (cached and total) are available in the LlmResponse.usage_metadata
   and should be accessed from there to avoid duplication. Cache-creation (write)
@@ -56,59 +58,48 @@ class CacheMetadata(BaseModel):
           ADK. ADK only deletes caches it created.
   """
 
-  model_config = ConfigDict(
-      extra="forbid",
-      frozen=True,  # Cache metadata should be immutable
-  )
+  model_config = ConfigDict(extra='forbid', frozen=True)
 
   cache_name: str | None = Field(
       default=None,
-      description=(
-          "Full resource name of the cached content (None if no active cache)"
-      ),
+      description="""Full resource name of the cached content (None if no active cache)""",
   )
 
   expire_time: float | None = Field(
       default=None,
-      description="Unix timestamp when cache expires (None if no active cache)",
+      description="""Unix timestamp when cache expires (None if no active cache)""",
   )
 
   fingerprint: str = Field(
-      description="Hash of cacheable contents used to detect changes"
+      description="""Hash of cacheable contents used to detect changes"""
   )
 
   invocations_used: int | None = Field(
       default=None,
+      description="""Number of invocations this cache has been used for (None if no active cache)""",
       ge=0,
-      description=(
-          "Number of invocations this cache has been used for (None if no"
-          " active cache)"
-      ),
   )
 
   contents_count: int = Field(
+      description="""Number of contents (cached contents when active cache exists, cacheable content prefix when
+no active cache)""",
       ge=0,
-      description=(
-          "Number of contents (cached contents when active cache exists, "
-          "cacheable content prefix when no active cache)"
-      ),
   )
 
   created_at: float | None = Field(
       default=None,
-      description=(
-          "Unix timestamp when ADK created the cache (None if no active cache"
-          " or the cache was created outside ADK)"
-      ),
+      description="""Unix timestamp when ADK created the cache (None if no active cache or the cache was created
+outside ADK)""",
   )
+  ### END_GENERATED_CODE: CacheMetadata
 
-  @model_validator(mode="after")
+  @model_validator(mode='after')
   def _enforce_active_state_invariant(self) -> CacheMetadata:
     active = (self.cache_name, self.expire_time, self.invocations_used)
     if len({f is not None for f in active}) > 1:
       raise ValueError(
-          "cache_name, expire_time, and invocations_used must all be set "
-          "(active cache) or all be None (fingerprint-only state)"
+          'cache_name, expire_time, and invocations_used must all be set '
+          '(active cache) or all be None (fingerprint-only state)'
       )
     return self
 
@@ -124,14 +115,14 @@ class CacheMetadata(BaseModel):
     """String representation for logging and debugging."""
     if self.cache_name is None:
       return (
-          f"Fingerprint-only: {self.contents_count} contents, "
-          f"fingerprint={self.fingerprint[:8]}..."
+          f'Fingerprint-only: {self.contents_count} contents, '
+          f'fingerprint={self.fingerprint[:8]}...'
       )
     assert self.expire_time is not None and self.invocations_used is not None
-    cache_id = self.cache_name.split("/")[-1]
+    cache_id = self.cache_name.split('/')[-1]
     time_until_expiry_minutes = (self.expire_time - time.time()) / 60
     return (
-        f"Cache {cache_id}: used {self.invocations_used} invocations, "
-        f"cached {self.contents_count} contents, "
-        f"expires in {time_until_expiry_minutes:.1f}min"
+        f'Cache {cache_id}: used {self.invocations_used} invocations, '
+        f'cached {self.contents_count} contents, '
+        f'expires in {time_until_expiry_minutes:.1f}min'
     )

@@ -22,6 +22,8 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 
+### BEGIN_GENERATED_CODE: UiWidget
+### Do not edit, code generation overwrites it.
 class UiWidget(BaseModel):
   """Rendering metadata for a UI widget associated with an event.
 
@@ -30,8 +32,8 @@ class UiWidget(BaseModel):
   """
 
   model_config = ConfigDict(
-      extra='forbid',
       alias_generator=alias_generators.to_camel,
+      extra='forbid',
       populate_by_name=True,
   )
 
@@ -57,3 +59,4 @@ class UiWidget(BaseModel):
   }
   Future providers can have their set of payload fields.
   """
+  ### END_GENERATED_CODE: UiWidget
