@@ -108,8 +108,9 @@ def _kill_execution(process: subprocess.Popen[str]) -> tuple[str, str]:
 
   # Escalate unconditionally: the execution process exiting says nothing about
   # a child of it that is ignoring SIGTERM, and such a child holds the output
-  # pipes open besides.
-  _signal_group(group, signal.SIGKILL)
+  # pipes open besides. `_signal_group` no-ops on the platforms that have no
+  # process groups, so the fallback signal is never sent by it.
+  _signal_group(group, getattr(signal, 'SIGKILL', signal.SIGTERM))
   process.kill()
   try:
     return process.communicate(timeout=_TERMINATE_GRACE_SECONDS)
