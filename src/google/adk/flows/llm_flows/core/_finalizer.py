@@ -367,7 +367,7 @@ async def handle_after_model_callback(
 def _model_error_callback_scope(
     invocation_context: InvocationContext,
     model_response_event: Event,
-    call_llm_span: Optional[trace.Span],
+    call_llm_span: trace.Span | None,
 ) -> Iterator[CallbackContext]:
   """Enters the model callback context and optional call_llm tracing span."""
   span_scope = (
@@ -389,7 +389,7 @@ async def _notify_model_cancelled(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
     model_response_event: Event,
-    call_llm_span: Optional[trace.Span],
+    call_llm_span: trace.Span | None,
     exc: asyncio.CancelledError | GeneratorExit,
     has_unfinished_partial_stream: bool,
 ) -> None:
