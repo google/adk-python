@@ -65,6 +65,14 @@ _CLOSED = (
     " PlimsollEnvironment of its own, or pass reopen_after_close=True."
 )
 
+_LOST = (
+    "This PlimsollEnvironment lost its sandbox, and the files in it: {reason}."
+    " It does not open an empty sandbox in its place, because the agent would"
+    " take it for the one holding its files. Give the agent a new"
+    " PlimsollEnvironment, or close() this one: after that, initialize()"
+    " opens a new, empty sandbox if reopen_after_close is set."
+)
+
 
 @experimental(FeatureName.PLIMSOLL_ENVIRONMENT)
 class PlimsollEnvironment(BaseEnvironment):
@@ -82,12 +90,18 @@ class PlimsollEnvironment(BaseEnvironment):
   for code you trust on a machine you own.
 
   Each command runs in a new ``sh`` in the working directory: files persist
-  from one command to the next, a ``cd`` or an ``export`` does not. When the
-  session has ended (its lifetime, or the daemon restarted), every call
-  raises ``plimsoll_client.SessionEndedError``; the environment never opens a
-  fresh sandbox in its place, because the agent would take an empty sandbox
-  for the one holding its files. For the same reason ``initialize()`` after
-  ``close()`` raises ``RuntimeError`` unless ``reopen_after_close`` is set:
+  from one command to the next, a ``cd`` or an ``export`` does not. The
+  sandbox is lost when the daemon ends the session (its lifetime, or a
+  restart), or when a call ends without an answer the client can check, as
+  a call cancelled after it was sent does: ADK cancels the other calls of a
+  parallel batch when one of them fails. The call that found it raises its
+  own error, the environment closes the session, and from then on every
+  ``initialize()`` and call raises ``RuntimeError`` saying the sandbox was
+  lost, whatever ``reopen_after_close`` says, until ``close()``. The
+  environment never opens a fresh sandbox in its place on its own, because
+  the agent would take an empty sandbox for the one holding its files. For
+  the same reason ``initialize()`` after ``close()`` raises ``RuntimeError``
+  unless ``reopen_after_close`` is set:
   ADK initializes before every tool call, and closes the environment with any
   Runner that holds it. So don't share one environment between Runners that
   close on their own, such as an agent and the agent an ``AgentTool`` wraps.
@@ -175,6 +189,8 @@ class PlimsollEnvironment(BaseEnvironment):
     self._closed = False
     # Sessions whose close has not yet succeeded.
     self._closing: list[Session] = []
+    # Why the sandbox was lost, until close().
+    self._lost: str | None = None
     # The open in flight, which every initialize() call meanwhile waits for.
     self._opening: _Opening | None = None
     # Moved on by every close(), so an open that a close overtook closes what
@@ -225,6 +241,8 @@ class PlimsollEnvironment(BaseEnvironment):
       with self._lock:
         if self._workspace is not None:
           return
+        if self._lost is not None:
+          raise RuntimeError(_LOST.format(reason=self._lost))
         if self._closed and not self._reopen_after_close:
           raise RuntimeError(_CLOSED)
         opening = self._opening
@@ -340,6 +358,9 @@ class PlimsollEnvironment(BaseEnvironment):
       self._working_dir = None
       self._ceiling = None
       self._generation += 1
+      # The lost sandbox is closed with the environment: from here on the
+      # rule for a closed environment applies, reopen_after_close included.
+      self._lost = None
       if session is not None or (opening is not None and opening.waiters):
         # Set before the delete, so a delete that fails still refuses a
         # reopen. An open no caller waits for any more opened nothing for
@@ -404,13 +425,17 @@ class PlimsollEnvironment(BaseEnvironment):
         or timeout < 0
     ):
       raise ValueError("timeout must be a non-negative number of seconds")
-    workspace = self._require()
+    session, workspace = self._require()
     if timeout is None:
       budget = self._ceiling if self._ceiling is not None else self._timeout
     else:
       budget = max(float(timeout), _SHORTEST_BUDGET)
     out = await self._call(
-        workspace.run, ["sh", "-c", command], env=self._env_vars, timeout=budget
+        session,
+        workspace.run,
+        ["sh", "-c", command],
+        env=self._env_vars,
+        timeout=budget,
     )
     stderr = out.stderr_text
     notes = [
@@ -443,8 +468,8 @@ class PlimsollEnvironment(BaseEnvironment):
       self, path: Path | str, *, ctx: Context | None = None
   ) -> bytes:
     del ctx
-    workspace = self._require()
-    return await self._call(workspace.read_whole, _posix(path))
+    session, workspace = self._require()
+    return await self._call(session, workspace.read_whole, _posix(path))
 
   @override
   async def write_file(
@@ -461,30 +486,50 @@ class PlimsollEnvironment(BaseEnvironment):
       raise TypeError(
           f"content must be str or bytes, not {type(content).__name__}"
       )
-    workspace = self._require()
-    await self._call(workspace.write, _posix(path), bytes(content))
+    session, workspace = self._require()
+    await self._call(session, workspace.write, _posix(path), bytes(content))
 
-  def _require(self) -> Workspace:
-    workspace = self._workspace
-    if workspace is None:
+  def _require(self) -> tuple[Session, Workspace]:
+    with self._lock:
+      session, workspace, lost = self._session, self._workspace, self._lost
+    if session is None or workspace is None:
+      if lost is not None:
+        raise RuntimeError(_LOST.format(reason=lost))
       if self._closed and not self._reopen_after_close:
         raise RuntimeError(_CLOSED)
       raise RuntimeError("Sandbox is not started. Call initialize() first.")
-    return workspace
+    return session, workspace
 
-  async def _call(self, fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
-    """Runs one blocking Plimsoll call in a worker thread.
+  async def _call(
+      self,
+      session: Session,
+      fn: Callable[..., _T],
+      *args: Any,
+      **kwargs: Any,
+  ) -> _T:
+    """Runs one blocking Plimsoll call of ``session`` in a worker thread.
 
     Cancelling the await cuts the request in flight. A call that came back
     without a usable answer is raised as a RuntimeError naming only its
-    outcome, never the sandbox's text: the command may have run.
+    outcome, never the sandbox's text: the command may have run. After the
+    call, however it ended, the thread lets the sandbox go if the session can
+    take no more calls.
     """
     from plimsoll_client import CancelHandle
     from plimsoll_client import WorkspaceCallError
 
     handle = CancelHandle()
+
+    def call() -> _T:
+      try:
+        return fn(*args, cancel=handle, **kwargs)
+      finally:
+        # In the thread, not the event loop: a cancelled await returns
+        # before the client has cut the request and stopped the session.
+        self._let_go_if_lost(session)
+
     try:
-      return await asyncio.to_thread(fn, *args, cancel=handle, **kwargs)
+      return await asyncio.to_thread(call)
     except asyncio.CancelledError:
       handle.cancel()
       raise
@@ -494,6 +539,41 @@ class PlimsollEnvironment(BaseEnvironment):
           " answer; it may have run, so check its effects before repeating"
           " it"
       ) from None
+
+  def _let_go_if_lost(self, session: Session) -> None:
+    """Lets the sandbox go when ``session`` can take no more calls.
+
+    The client sends nothing more on a session once a call ended without an
+    answer it could check, a cut call included, and the daemon takes nothing
+    more once it ended the session. Either way the sandbox and its files are
+    gone for this environment, which then says so on every call rather than
+    open an empty sandbox the agent would take for its own.
+    """
+    ended = session.ended
+    if ended is not None:
+      reason = f"the daemon ended its session ({ended.reason})"
+    elif session.stopped is not None:
+      reason = (
+          "a call ended without an answer the client could check, as a"
+          " cancelled call does once it was sent, so the client sends"
+          " nothing more on its session"
+      )
+    else:
+      return
+    with self._lock:
+      if self._session is not session:
+        return
+      self._session = None
+      self._workspace = None
+      self._working_dir = None
+      self._ceiling = None
+      self._generation += 1
+      self._closed = True
+      self._lost = reason
+    # is_initialized stays true, so a Runner's close still reaches close().
+    # The close usually raises ChainError, which is final: a cut call may
+    # have run, and the daemon then counts a call this client did not see.
+    self._close_or_keep(session)
 
   def _close_or_keep(self, session: Session) -> None:
     """Closes ``session`` from a worker thread, where nothing can be raised to.

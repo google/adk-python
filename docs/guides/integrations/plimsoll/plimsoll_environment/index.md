@@ -97,11 +97,17 @@ The sandbox has no network access, so an agent cannot install packages from the
 internet at run time; put them in the daemon's project image instead.
 
 One environment holds one sandbox for every agent run that uses it. Give each
-end user an environment of their own. When the session ends (its lifetime
-passes, or the daemon restarts), every call raises
-`plimsoll_client.SessionEndedError`. The environment does not replace the
-sandbox on its own, because an agent would take an empty sandbox for the one
-holding its files.
+end user an environment of their own. The sandbox is lost when the session
+ends (its lifetime passes, or the daemon restarts) and when a call ends
+without an answer the client can check, as a call cancelled after it was sent
+does: ADK cancels the other calls of a parallel batch when one of them fails.
+The call that found it raises its own error, the environment closes the
+session, and every later call raises `RuntimeError` saying the sandbox was
+lost, even with `reopen_after_close=True`, until `close` is called. The
+environment does not replace the sandbox on its own, because an agent would
+take an empty sandbox for the one holding its files. To go on, give the agent
+a new environment, or call `close` and, with `reopen_after_close=True`, let
+the next call open a new, empty sandbox.
 
 Don't share one environment between Runners that close on their own. ADK
 closes an environment when a Runner that holds it closes, and an `AgentTool`

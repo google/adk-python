@@ -66,6 +66,10 @@ def _outcome(
 def _session() -> mock.MagicMock:
   session = mock.MagicMock(name="Session")
   session.isolation = "kernel"
+  # What plimsoll_client.Session states once a call ended without an answer
+  # it could check, and once an answer reported the session's end.
+  session.stopped = None
+  session.ended = None
   return session
 
 
@@ -565,6 +569,182 @@ async def test_cancelled_execute_cuts_the_call(
   with pytest.raises(asyncio.CancelledError):
     await task
   assert handles[0].cancelled is True
+
+
+def _cut_when_cancelled(session: mock.MagicMock, started: threading.Event):
+  """A run that the client cuts when its handle is cancelled, as 0.29 does."""
+
+  def run(argv, *, env, timeout, cancel):
+    del argv, env, timeout
+    if session.stopped is not None:
+      raise plimsoll_client.PlimsollError(
+          "an earlier call of this session ended without an answer",
+          code="failed_precondition",
+          not_dispatched="request",
+      )
+    started.set()
+    for _ in range(500):
+      if cancel.cancelled:
+        session.stopped = "the request was cut"
+        raise plimsoll_client.RequestCanceledError("cut")
+      threading.Event().wait(0.01)
+    return _outcome()
+
+  return run
+
+
+async def _cancel_a_call(
+    env: PlimsollEnvironment,
+    session: mock.MagicMock,
+    close_error: Exception | None = None,
+):
+  started = threading.Event()
+  closed = threading.Event()
+
+  def close():
+    closed.set()
+    if close_error is not None:
+      raise close_error
+
+  session.close.side_effect = close
+  env._workspace.run.side_effect = _cut_when_cancelled(session, started)
+  task = asyncio.create_task(env.execute("sleep 9"))
+  await asyncio.to_thread(started.wait, 5)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  # The call's thread lets the sandbox go once the client has cut it.
+  assert await asyncio.to_thread(closed.wait, 5)
+
+
+@pytest.mark.parametrize("reopen_after_close", [False, True])
+async def test_a_cut_call_lets_the_sandbox_go_and_says_so(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+    reopen_after_close: bool,
+):
+  del workspace_class
+  env = PlimsollEnvironment(
+      client=client, reopen_after_close=reopen_after_close
+  )
+  await env.initialize()
+
+  await _cancel_a_call(env, session)
+
+  # Every later call says the sandbox was lost, and none opens an empty one
+  # in its place, whatever reopen_after_close says.
+  for _ in range(2):
+    with pytest.raises(RuntimeError, match="lost its sandbox"):
+      await env.initialize()
+    with pytest.raises(RuntimeError, match="lost its sandbox"):
+      await env.execute("ls")
+  client.open_session.assert_called_once()
+  session.close.assert_called_once()
+  assert env.isolation is None
+  # Still initialized, so the Runner's close reaches close().
+  assert env.is_initialized is True
+
+
+async def test_close_after_a_lost_sandbox_applies_the_reopen_rule(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  del workspace_class
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  toolset = EnvironmentToolset(environment=env)
+  await env.initialize()
+  await _cancel_a_call(env, session)
+
+  await toolset.close()
+
+  assert env.is_initialized is False
+  session.close.assert_called_once()
+  session.stopped = None
+  await env.initialize()
+  assert client.open_session.call_count == 2
+
+
+async def test_a_lost_sandbox_closed_with_a_chain_error_is_not_kept(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  # The usual close of a cut session: the daemon counts the cut call, which
+  # the client never saw answered.
+  del workspace_class
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  await env.initialize()
+  await _cancel_a_call(
+      env, session, plimsoll_client.ChainError("the daemon counts 1 call")
+  )
+
+  await env.close()
+  session.stopped = None
+  session.close.side_effect = None
+  await env.initialize()
+
+  session.close.assert_called_once()
+  assert client.open_session.call_count == 2
+
+
+async def test_a_session_the_daemon_ended_lets_the_sandbox_go(
+    env: PlimsollEnvironment,
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace: mock.MagicMock,
+):
+  def ended(*args, **kwargs):
+    del args, kwargs
+    session.ended = SimpleNamespace(reason="expired", detail="")
+    raise plimsoll_client.SessionEndedError(
+        "ended", reason="expired", not_dispatched="request"
+    )
+
+  workspace.read_whole.side_effect = ended
+  await env.initialize()
+
+  with pytest.raises(plimsoll_client.SessionEndedError):
+    await env.read_file("a.txt")
+  with pytest.raises(RuntimeError, match=r"lost its sandbox.*expired"):
+    await env.initialize()
+
+  session.close.assert_called_once()
+  client.open_session.assert_called_once()
+
+
+async def test_a_call_cancelled_before_it_was_sent_keeps_the_sandbox(
+    env: PlimsollEnvironment, session: mock.MagicMock, workspace: mock.MagicMock
+):
+  # The client refuses a cancelled call that it has not sent yet, and the
+  # session goes on: nothing is let go.
+  started = threading.Event()
+
+  def refused(argv, *, env, timeout, cancel):
+    del argv, env, timeout
+    started.set()
+    for _ in range(500):
+      if cancel.cancelled:
+        raise plimsoll_client.RequestCanceledError(
+            "not sent", not_dispatched="request"
+        )
+      threading.Event().wait(0.01)
+    return _outcome()
+
+  workspace.run.side_effect = refused
+  await env.initialize()
+  task = asyncio.create_task(env.execute("sleep 9"))
+  await asyncio.to_thread(started.wait, 5)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  workspace.run.side_effect = None
+
+  result = await env.execute("echo 42")
+
+  assert result.stdout == "42\n"
+  session.close.assert_not_called()
 
 
 async def test_read_file_returns_bytes_for_a_posix_path(
