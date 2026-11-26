@@ -22,14 +22,18 @@ from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
+from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.final_response_match_v2 import _parse_critique
+from google.adk.evaluation.final_response_match_v2 import _parse_reasoning
 from google.adk.evaluation.final_response_match_v2 import FinalResponseMatchV2Evaluator
 from google.adk.evaluation.llm_as_judge import AutoRaterScore
 from google.adk.evaluation.llm_as_judge_utils import Label
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
 import pytest
+
+from .. import testing_utils
 
 
 @pytest.mark.parametrize(
@@ -107,6 +111,59 @@ def test_parse_critique(response_text):
 def test_parse_critique_invalid(response_text):
   label = _parse_critique(response_text)
   assert label == Label.INVALID
+
+
+@pytest.mark.parametrize(
+    "response_text, expected_reasoning",
+    [
+        (
+            """```json
+  {
+    "reasoning": "The agent says Lyon; the reference says Paris.",
+    "is_the_agent_response_valid": "invalid",
+  }
+  ```""",
+            "The agent says Lyon; the reference says Paris.",
+        ),
+        (
+            (
+                '{"reasoning": ["Wrapped in a list."],'
+                ' "is_the_agent_response_valid": ["valid"]}'
+            ),
+            "Wrapped in a list.",
+        ),
+        (
+            r'{"reasoning": "It says \"Lyon\".\nNot Paris.",'
+            ' "is_the_agent_response_valid": "invalid"}',
+            'It says "Lyon".\nNot Paris.',
+        ),
+        (
+            (
+                '{"reasoning": "Spans\ntwo lines.",'
+                ' "is_the_agent_response_valid": "invalid"}'
+            ),
+            "Spans\ntwo lines.",
+        ),
+    ],
+    ids=["fenced_json", "list_value", "escaped_characters", "raw_newline"],
+)
+def test_parse_reasoning(response_text, expected_reasoning):
+  """The judge's reasoning is extracted from the shapes its critique takes."""
+  assert _parse_reasoning(response_text) == expected_reasoning
+
+
+@pytest.mark.parametrize(
+    "response_text",
+    [
+        '{"is_the_agent_response_valid": "valid"}',
+        '{"reasoning": "", "is_the_agent_response_valid": "valid"}',
+        "invalid json",
+    ],
+    ids=["missing", "empty", "not_json"],
+)
+def test_parse_reasoning_not_found(response_text):
+  """A critique without usable reasoning yields None."""
+  assert _parse_reasoning(response_text) is None
 
 
 def create_test_template() -> str:
@@ -306,7 +363,16 @@ def test_convert_auto_rater_response_to_score_valid():
   auto_rater_score = evaluator.convert_auto_rater_response_to_score(
       llm_response
   )
-  assert auto_rater_score == AutoRaterScore(score=1.0)
+  assert auto_rater_score == AutoRaterScore(
+      score=1.0,
+      rubric_scores=[
+          RubricScore(
+              rubric_id="is_the_agent_response_valid",
+              rationale="The response is valid.",
+              score=1.0,
+          )
+      ],
+  )
 
 
 def test_convert_auto_rater_response_to_score_ignores_judge_thoughts():
@@ -334,7 +400,16 @@ def test_convert_auto_rater_response_to_score_ignores_judge_thoughts():
       llm_response
   )
 
-  assert auto_rater_score == AutoRaterScore(score=1.0)
+  assert auto_rater_score == AutoRaterScore(
+      score=1.0,
+      rubric_scores=[
+          RubricScore(
+              rubric_id="is_the_agent_response_valid",
+              rationale="It matches.",
+              score=1.0,
+          )
+      ],
+  )
 
 
 def test_convert_auto_rater_response_to_score_invalid():
@@ -354,7 +429,16 @@ def test_convert_auto_rater_response_to_score_invalid():
   auto_rater_score = evaluator.convert_auto_rater_response_to_score(
       llm_response
   )
-  assert auto_rater_score == AutoRaterScore(score=0.0)
+  assert auto_rater_score == AutoRaterScore(
+      score=0.0,
+      rubric_scores=[
+          RubricScore(
+              rubric_id="is_the_agent_response_valid",
+              rationale="The response is invalid.",
+              score=0.0,
+          )
+      ],
+  )
 
 
 def test_convert_auto_rater_response_to_score_invalid_json():
@@ -415,6 +499,39 @@ def test_alternate_invalidity_label_maps_to_score(label, expected_score):
   result = evaluator.convert_auto_rater_response_to_score(response)
 
   assert result.score == expected_score
+
+
+def test_convert_auto_rater_response_to_score_keeps_reasoning_without_label():
+  """Reasoning is kept, unscored, when the judge's label cannot be parsed."""
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  llm_response = LlmResponse(
+      content=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  text=(
+                      '{"reasoning": "The reference is ambiguous.",'
+                      ' "is_the_agent_response_valid": "unsure"}'
+                  )
+              )
+          ],
+          role="model",
+      )
+  )
+
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+
+  assert auto_rater_score == AutoRaterScore(
+      score=None,
+      rubric_scores=[
+          RubricScore(
+              rubric_id="is_the_agent_response_valid",
+              rationale="The reference is ambiguous.",
+              score=None,
+          )
+      ],
+  )
 
 
 def test_aggregate_per_invocation_samples_none_evaluated():
@@ -673,3 +790,54 @@ def test_aggregate_invocation_results_none_evaluated():
   assert aggregated_result.overall_score is None
   assert aggregated_result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert aggregated_result.per_invocation_results == per_invocation_results
+
+
+async def test_evaluate_invocations_returns_reasoning_of_majority_verdict():
+  """Each invocation carries the reasoning of a sample that agrees with it.
+
+  Setup: three judge samples for one invocation, one valid and two invalid.
+  Act: evaluate the invocation.
+  Assert: the invocation fails, and its rubric score holds the reasoning of
+    the first invalid sample rather than the outvoted valid one.
+  """
+  evaluator = FinalResponseMatchV2Evaluator(
+      EvalMetric(
+          metric_name="final_response_match_v2",
+          criterion=BaseCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(num_samples=3),
+          ),
+      ),
+  )
+  evaluator._judge_model = testing_utils.MockModel.create(
+      responses=[
+          (
+              '{"reasoning": "Both name a city.",'
+              ' "is_the_agent_response_valid": "valid"}'
+          ),
+          (
+              '{"reasoning": "The agent says Lyon; the reference says Paris.",'
+              ' "is_the_agent_response_valid": "invalid"}'
+          ),
+          (
+              '{"reasoning": "Lyon is not the capital.",'
+              ' "is_the_agent_response_valid": "invalid"}'
+          ),
+      ]
+  )
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "The capital of France is Lyon.", "The capital of France is Paris."
+  )
+
+  result = await evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+
+  assert result.overall_eval_status == EvalStatus.FAILED
+  assert result.per_invocation_results[0].rubric_scores == [
+      RubricScore(
+          rubric_id="is_the_agent_response_valid",
+          rationale="The agent says Lyon; the reference says Paris.",
+          score=0.0,
+      )
+  ]

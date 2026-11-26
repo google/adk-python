@@ -39,6 +39,7 @@ from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import HallucinationsCriterion
+from .eval_rubrics import RubricScore
 from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -276,6 +277,11 @@ class HallucinationsV1Evaluator(Evaluator):
 
   The metric computes the Accuracy Score (AS): the percentage of sentences that
   are supported or not_applicable.
+
+  Each per-invocation result carries one `RubricScore` per sentence of every
+  scored response in `rubric_scores`. Its `rubric_id` is the sentence, its
+  score is 1.0 or 0.0 by the sentence's label, and its rationale is the label
+  followed by the judge's rationale.
   """
 
   criterion_type: ClassVar[type[HallucinationsCriterion]] = (
@@ -520,8 +526,14 @@ class HallucinationsV1Evaluator(Evaluator):
 
   async def _evaluate_nl_response(
       self, nl_response: str, context: str
-  ) -> tuple[float | None, str]:
-    """Runs segmentation and validation for a single NL response."""
+  ) -> tuple[float | None, str, list[RubricScore]]:
+    """Runs segmentation and validation for a single NL response.
+
+    Returns:
+      The accuracy score (None if the response could not be scored), the
+      validation details or failure reason, and one RubricScore per sentence
+      carrying its label score and the judge's rationale (empty if unscored).
+    """
     # Segmentation step: split the NL response into sentences.
     segmenter_llm_request = LlmRequest(
         model=self._model,
@@ -545,13 +557,13 @@ class HallucinationsV1Evaluator(Evaluator):
         segmenter_response = await agen.__anext__()
         segmenter_text = get_text_from_content(segmenter_response.content)
         if segmenter_text is None:
-          return None, "Segmenter returned no text."
+          return None, "Segmenter returned no text.", []
         sentences = _parse_sentences(segmenter_text)
     except Exception as e:
-      return None, f"Error during sentence segmentation: {e}"
+      return None, f"Error during sentence segmentation: {e}", []
 
     if not sentences:
-      return None, "No sentences produced by segmenter."
+      return None, "No sentences produced by segmenter.", []
 
     sentences_str = "\n".join([f"<sentence>{s}</sentence>" for s in sentences])
 
@@ -580,12 +592,13 @@ class HallucinationsV1Evaluator(Evaluator):
         validator_response = await agen.__anext__()
         validator_text = get_text_from_content(validator_response.content)
         if validator_text is None:
-          return None, "Sentence validator returned no text."
+          return None, "Sentence validator returned no text.", []
         validation_results = _parse_validation_results(validator_text)
     except Exception as e:
-      return None, f"Error during sentence validation: {e}"
+      return None, f"Error during sentence validation: {e}", []
 
     scores = []
+    rationales = []
     for result in validation_results:
       label = result.get("label")
       if label is None:
@@ -600,6 +613,11 @@ class HallucinationsV1Evaluator(Evaluator):
         scores.append(0)
       else:
         logger.debug("Unexpected label: %s", label)
+        continue
+      # The score alone does not say which label was given, e.g. unsupported
+      # or contradictory, so the label leads the rationale.
+      rationale = result.get("rationale")
+      rationales.append(f"{label}: {rationale}" if rationale else label)
 
     # A sentence without a usable label would drop out of the mean and inflate
     # the score, so a partial parse leaves the response unscored. Blocks are
@@ -623,7 +641,7 @@ class HallucinationsV1Evaluator(Evaluator):
           len(validation_results),
           num_sentences,
       )
-      return None, json.dumps(validation_results, indent=2)
+      return None, json.dumps(validation_results, indent=2), []
     if mismatch_index is not None:
       logger.warning(
           "Sentence validator block %d does not echo sentence %d; this"
@@ -631,7 +649,7 @@ class HallucinationsV1Evaluator(Evaluator):
           mismatch_index,
           mismatch_index,
       )
-      return None, json.dumps(validation_results, indent=2)
+      return None, json.dumps(validation_results, indent=2), []
     if len(scores) != num_sentences:
       logger.warning(
           "Sentence validator returned %d usable labels for %d sentences; this"
@@ -639,10 +657,23 @@ class HallucinationsV1Evaluator(Evaluator):
           len(scores),
           num_sentences,
       )
-      return None, json.dumps(validation_results, indent=2)
+      return None, json.dumps(validation_results, indent=2), []
 
+    # The checks above leave exactly one usable label per sentence, in order.
+    rubric_scores = [
+        RubricScore(
+            rubric_id=sentence.strip(), rationale=rationale, score=float(score)
+        )
+        for sentence, rationale, score in zip(
+            sentences, rationales, scores, strict=True
+        )
+    ]
     accuracy_score = statistics.mean(scores)
-    return accuracy_score, json.dumps(validation_results, indent=2)
+    return (
+        accuracy_score,
+        json.dumps(validation_results, indent=2),
+        rubric_scores,
+    )
 
   def _get_steps_to_evaluate(self, actual: Invocation) -> list[EvaluationStep]:
     """Gathers all NL responses and their contexts for evaluation.
@@ -802,7 +833,9 @@ class HallucinationsV1Evaluator(Evaluator):
           None,
       )
 
-    async def _evaluate_step(step: EvaluationStep) -> tuple[float | None, str]:
+    async def _evaluate_step(
+        step: EvaluationStep,
+    ) -> tuple[float | None, str, list[RubricScore]]:
       async with semaphore:
         return await self._evaluate_nl_response(step.nl_response, step.context)
 
@@ -813,7 +846,12 @@ class HallucinationsV1Evaluator(Evaluator):
     # the invocation is scored only when every step is, or when it fails
     # even with each unscored step counted as 1.0.
     scores_per_step = [
-        fs_score for fs_score, _ in step_results if fs_score is not None
+        fs_score for fs_score, _, _ in step_results if fs_score is not None
+    ]
+    sentence_rubric_scores = [
+        rubric_score
+        for _, _, step_rubric_scores in step_results
+        for rubric_score in step_rubric_scores
     ]
 
     best_case_score = statistics.mean(
@@ -834,7 +872,7 @@ class HallucinationsV1Evaluator(Evaluator):
             eval_status=get_eval_status(
                 invocation_score, self._criterion.threshold
             ),
-            rubric_scores=[],
+            rubric_scores=sentence_rubric_scores,
         ),
         unscored_best_case_score,
     )
