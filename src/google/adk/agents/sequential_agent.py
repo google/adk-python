@@ -187,31 +187,42 @@ class SequentialAgent(BaseAgent):
       return
 
     # There is no way to know if it's using live during init phase so we have to init it here
-    for sub_agent in self.sub_agents:
-      # add tool
-      def task_completed() -> str:
-        """
-        Signals that the agent has successfully completed the user's question
-        or task.
-        """
-        return 'Task completion signaled.'
+    def task_completed() -> str:
+      """
+      Signals that the agent has successfully completed the user's question
+      or task.
+      """
+      return 'Task completion signaled.'
 
+    completion_instruction = f"""If you finished the user's request
+          according to its description, call the {task_completed.__name__} function
+          to exit so the next agents can take over. When calling this function,
+          do not generate any text other than the function call."""
+
+    # The completion tool and instruction only apply to a live run, so they are
+    # added to a per-invocation copy. A Runner can run the same agent tree both
+    # live and non-live, and mutating a shared sub-agent would leave the tool
+    # and the instruction on it for every later run.
+    live_sub_agents: list[BaseAgent] = []
+    for sub_agent in self.sub_agents:
+      live_sub_agent = sub_agent
       if isinstance(sub_agent, LlmAgent):
         # Use function name to dedupe.
         if not any(
             _tool_name(tool) == task_completed.__name__
             for tool in sub_agent.tools
         ):
-          sub_agent.tools.append(task_completed)
-          completion_instruction = f"""If you finished the user's request
-          according to its description, call the {task_completed.__name__} function
-          to exit so the next agents can take over. When calling this function,
-          do not generate any text other than the function call."""
-          sub_agent.instruction = _append_instruction(
-              sub_agent.instruction, completion_instruction
+          live_sub_agent = sub_agent.clone(
+              update={
+                  'tools': [*sub_agent.tools, task_completed],
+                  'instruction': _append_instruction(
+                      sub_agent.instruction, completion_instruction
+                  ),
+              }
           )
+      live_sub_agents.append(live_sub_agent)
 
-    for sub_agent in self.sub_agents:
+    for sub_agent in live_sub_agents:
       async with Aclosing(sub_agent.run_live(ctx)) as agen:
         async for event in agen:
           yield event
