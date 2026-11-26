@@ -1110,3 +1110,158 @@ def test_answering_workflows_omit_unused_secrets(
 ) -> None:
   """Answering bot workflows do not pass unused raw keys or PATs to scripts."""
   assert forbidden_key not in _step_env_keys(workflow_name, job_name, step_name)
+
+
+_PLIMSOLL_SAMPLE = (
+    SAMPLES_DIR / "environment_and_skills" / "plimsoll_environment"
+)
+
+
+def _plimsoll_client_with_sandboxes(monkeypatch) -> tuple[Any, list[Any]]:
+  """A mocked Plimsoll client whose sessions each keep files of their own."""
+  plimsoll_client = pytest.importorskip("plimsoll_client")
+  sessions = []
+
+  def open_session(**kwargs):
+    del kwargs
+    session = mock.MagicMock(name=f"Session {len(sessions)}")
+    session.isolation = "kernel"
+    session.stopped = None
+    session.ended = None
+    session.files = {}
+    sessions.append(session)
+    return session
+
+  def workspace(session, **kwargs):
+    del kwargs
+    files = session.files
+
+    def write(path, data, *, cancel):
+      del cancel
+      files[path] = data
+
+    def run(argv, *, env, timeout, cancel):
+      del env, timeout, cancel
+      assert argv == ["sh", "-c", "cat note.txt"]
+      return py_types.SimpleNamespace(
+          exit_code=0,
+          stdout_text=files["note.txt"].decode(),
+          stderr_text="",
+          timed_out=False,
+          stdout_truncated=False,
+          stderr_truncated=False,
+          result=py_types.SimpleNamespace(isolation="kernel", record=None),
+      )
+
+    return mock.MagicMock(root="/work", write=write, run=run)
+
+  monkeypatch.setattr(plimsoll_client, "Workspace", workspace)
+  client = mock.MagicMock(name="Client")
+  client.describe.return_value = py_types.SimpleNamespace(
+      provider="docker",
+      supports_sessions=True,
+      session_environment=py_types.SimpleNamespace(max_timeout_ms=60_000),
+  )
+  client.open_session.side_effect = open_session
+  return client, sessions
+
+
+async def test_plimsoll_sample_survives_a_runner_closing_mid_run(monkeypatch):
+  """The sample gives each session a sandbox, as `adk eval`'s Runners need.
+
+  `adk eval` runs each case in a Runner of its own over one agent, and a
+  Runner closes all the agent's toolsets when it ends. A case still running
+  then keeps its sandbox and its files.
+  """
+  from google.adk.integrations.plimsoll import PlimsollEnvironment
+  from google.adk.models.base_llm import BaseLlm
+  from google.adk.models.llm_response import LlmResponse
+  from google.adk.runners import InMemoryRunner
+
+  client, sessions = _plimsoll_client_with_sandboxes(monkeypatch)
+  gates = {"alpha": asyncio.Event(), "beta": asyncio.Event()}
+  gates["alpha"].set()
+
+  class NoteModel(BaseLlm):
+    """Keeps the prompt's word in note.txt, then reads it back."""
+
+    model: str = "note"
+
+    async def generate_content_async(self, llm_request, stream=False):
+      word = llm_request.contents[0].parts[0].text.split()[-1]
+      answers = [
+          part.function_response.response
+          for content in llm_request.contents
+          for part in content.parts or []
+          if part.function_response
+      ]
+      if not answers:
+        part = types.Part.from_function_call(
+            name="WriteFile", args={"path": "note.txt", "content": word}
+        )
+      elif len(answers) == 1:
+        await gates[word].wait()
+        part = types.Part.from_function_call(
+            name="Execute", args={"command": "cat note.txt"}
+        )
+      else:
+        part = types.Part.from_text(text=answers[-1].get("stdout", "none"))
+      yield LlmResponse(content=types.Content(role="model", parts=[part]))
+
+  root_agent = _load_root_agent(_PLIMSOLL_SAMPLE)
+  root_agent.model = NoteModel()
+  root_agent.tools[0]._new_environment = lambda: PlimsollEnvironment(
+      client=client
+  )
+
+  async def run_case(word: str) -> str:
+    async with InMemoryRunner(agent=root_agent, app_name="eval") as runner:
+      session = await runner.session_service.create_session(
+          app_name="eval", user_id="user"
+      )
+      texts = [
+          part.text
+          async for event in runner.run_async(
+              user_id="user",
+              session_id=session.id,
+              new_message=types.UserContent(f"keep {word}"),
+          )
+          if event.content
+          for part in event.content.parts or []
+          if part.text
+      ]
+    return texts[-1]
+
+  beta = asyncio.create_task(run_case("beta"))
+  while not sessions or "note.txt" not in sessions[0].files:
+    await asyncio.sleep(0.01)
+  # The alpha case's Runner closes while the beta case is still running.
+  assert await run_case("alpha") == "alpha"
+  beta_session, alpha_session = sessions
+  alpha_session.close.assert_called_once()
+  beta_session.close.assert_not_called()
+
+  gates["beta"].set()
+  assert await beta == "beta"
+  beta_session.close.assert_called_once()
+  assert client.open_session.call_count == 2
+
+
+async def test_plimsoll_sample_lists_tools_without_a_session(monkeypatch):
+  """Listing the tools, as `adk web` does to draw the graph, opens nothing."""
+  from google.adk.integrations.plimsoll import PlimsollEnvironment
+
+  client, _ = _plimsoll_client_with_sandboxes(monkeypatch)
+  toolset = _load_root_agent(_PLIMSOLL_SAMPLE).tools[0]
+  toolset._new_environment = lambda: PlimsollEnvironment(client=client)
+
+  tools = await toolset.get_tools()
+
+  assert [tool.name for tool in tools] == [
+      "Execute",
+      "ReadFile",
+      "EditFile",
+      "WriteFile",
+  ]
+  client.describe.assert_not_called()
+  client.open_session.assert_not_called()

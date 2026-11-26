@@ -60,6 +60,13 @@ directory: a `cd` or an `export` does not carry over to the next command, and a
 process left running in the background is stopped when its call ends. Relative
 paths resolve against the working directory; `..` out of it is refused.
 
+`execute` takes a `timeout` in seconds, capped at the daemon's own limit.
+`None` gives the daemon's limit, or the environment's `timeout` when the daemon
+states none; `0` sends the shortest budget the daemon takes, one millisecond; a
+negative or non-finite value raises `ValueError`. The toolset's `Execute` tool
+gives every command 30 seconds. A command that runs out of time comes back as a
+result with `timed_out` set, not as an error.
+
 The client checks a run record on every answer: digests of the request and the
 result that the daemon states. A call that came back without a usable answer
 raises a `RuntimeError` that says the command may have run, and a refusal made
@@ -79,7 +86,7 @@ agent would take an empty sandbox for the one holding its files. Pass
 | `token` | `str \| None` | `None` | The caller token; `PLIMSOLL_TOKEN`. |
 | `client` | `Client \| None` | `None` | A `plimsoll_client.Client` to use instead of `url` and `token`. |
 | `minimum_isolation` | `str` | `"kernel"` | The weakest tier accepted: `process`, `container`, `kernel` or `vm`. |
-| `timeout` | `float` | `120.0` | Seconds a file call, or a command with no timeout of its own, may take. |
+| `timeout` | `float` | `120.0` | Seconds a file call may take, capped at the daemon's limit; also a command's budget when it has none and the daemon states no limit. |
 | `env_vars` | `dict[str, str] \| None` | `None` | Variables added to every command's environment. |
 | `lifetime` | `float \| None` | `None` | Seconds the session may live; only shortens the daemon's limit. |
 | `idle_timeout` | `float \| None` | `None` | Seconds the session may sit unused; only shortens the daemon's limit. |
@@ -116,6 +123,13 @@ environment shared by an agent and the agent it wraps is closed in the middle
 of the wrapping agent's turn, and its next tool call raises `RuntimeError`.
 Give the wrapped agent an environment of its own.
 
+`adk eval` runs each eval case in a Runner of its own, several at once, over
+one agent, so an agent that holds one environment has it closed when the first
+case ends, and the next case raises `RuntimeError`. The sample below gives each
+ADK session an environment of its own and closes only the environments of
+sessions whose agent run has ended; [its README](../../../../../contributing/samples/environment_and_skills/plimsoll_environment/README.md)
+says what that costs.
+
 ## Related samples
 
-- [plimsoll_environment](../../../../../contributing/samples/environment_and_skills/plimsoll_environment/agent.py) - A coding agent that runs its scripts in a Plimsoll sandbox.
+- [plimsoll_environment](../../../../../contributing/samples/environment_and_skills/plimsoll_environment/agent.py) - A coding agent that runs its scripts in a Plimsoll sandbox, one for each ADK session, so `adk eval` can run it.
