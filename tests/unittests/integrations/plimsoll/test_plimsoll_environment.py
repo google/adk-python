@@ -334,16 +334,31 @@ async def test_execute_maps_failure_and_timeout(
   assert result.timed_out is True
 
 
-async def test_execute_with_no_budget_sends_nothing(
+async def test_execute_with_a_zero_timeout_sends_the_shortest_budget(
     env: PlimsollEnvironment, workspace: mock.MagicMock
 ):
+  # As OpenSandboxEnvironment does: zero is a valid budget, sent as the
+  # shortest one the daemon takes (1 ms), not a result made up here.
   await env.initialize()
 
   result = await env.execute("true", timeout=0)
 
+  assert workspace.run.call_args.kwargs["timeout"] == 0.001
+  assert result.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "timeout", [-5, -0.5, float("nan"), float("inf"), float("-inf"), True, "5"]
+)
+async def test_execute_rejects_an_invalid_timeout(
+    env: PlimsollEnvironment, workspace: mock.MagicMock, timeout
+):
+  await env.initialize()
+
+  with pytest.raises(ValueError, match="timeout"):
+    await env.execute("true", timeout=timeout)
+
   workspace.run.assert_not_called()
-  assert result.timed_out is True
-  assert result.exit_code == -1
 
 
 async def test_execute_reports_truncated_streams(

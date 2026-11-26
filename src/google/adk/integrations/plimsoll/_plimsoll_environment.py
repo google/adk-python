@@ -52,7 +52,8 @@ _DEFAULT_TIMEOUT = 120.0
 _TIERS = ("process", "container", "kernel", "vm")
 # The names the Plimsoll workspace accepts for a command's variables.
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_TIMEOUT_EXIT_CODE = -1
+# Seconds: the daemon counts a command's budget in whole milliseconds.
+_SHORTEST_BUDGET = 0.001
 _CLOSED = (
     "This PlimsollEnvironment was closed, and its sandbox and files with it;"
     " it does not open an empty sandbox in their place. ADK closes an"
@@ -281,17 +282,27 @@ class PlimsollEnvironment(BaseEnvironment):
     """Runs ``command`` in a new ``sh`` in the working directory.
 
     A non-zero exit is a result, not an error. ``timeout`` ``None`` gets the
-    daemon's longest budget. When the daemon cut a stream at its output limit,
-    a ``plimsoll:`` line at the end of ``stderr`` says so.
+    daemon's longest budget; ``0`` sends the shortest budget the daemon
+    takes, one millisecond, as ``OpenSandboxEnvironment`` does. When the daemon
+    cut a stream at its output limit, a ``plimsoll:`` line at the end of
+    ``stderr`` says so.
+
+    Raises:
+      ValueError: If ``timeout`` is negative, not finite, or not a number.
     """
     del ctx
+    if timeout is not None and (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout < 0
+    ):
+      raise ValueError("timeout must be a non-negative number of seconds")
     workspace = self._require()
     if timeout is None:
       budget = self._ceiling if self._ceiling is not None else self._timeout
     else:
-      budget = float(timeout)
-    if budget <= 0:
-      return ExecutionResult(exit_code=_TIMEOUT_EXIT_CODE, timed_out=True)
+      budget = max(float(timeout), _SHORTEST_BUDGET)
     out = await self._call(
         workspace.run, ["sh", "-c", command], env=self._env_vars, timeout=budget
     )
