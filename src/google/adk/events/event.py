@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
@@ -32,6 +33,11 @@ from ._node_path_builder import _NodePathBuilder
 from .event_actions import EventActions
 
 _CONVENIENCE_KWARGS = frozenset({'message', 'state', 'route', 'node_path'})
+
+if TYPE_CHECKING:
+  from google.genai import types
+
+  from ..models.cache_metadata import CacheMetadata
 
 TOOL_DISPLAY_NAMES_METADATA_KEY = 'adk:tool_display_names'
 """``Event.custom_metadata`` key mapping called tool names to display titles.
@@ -178,6 +184,59 @@ class Event(LlmResponse):
     # unchanged event as changed on every fetch. Emit a sorted list so the same
     # event always serializes identically.
     return None if value is None else sorted(value)
+
+  if TYPE_CHECKING:
+    # Static-only signature so type checkers accept the convenience kwargs
+    # routed by _accept_convenience_kwargs. Keep in sync with model_fields
+    # (tests/unittests/events/test_event_init_signature.py checks this).
+
+    def __init__(
+        self,
+        *,
+        model_version: str | None = ...,
+        content: types.Content | None = ...,
+        grounding_metadata: types.GroundingMetadata | None = ...,
+        partial: bool | None = ...,
+        turn_complete: bool | None = ...,
+        turn_complete_reason: types.TurnCompleteReason | None = ...,
+        interaction_status: types.InteractionStatus | None = ...,
+        finish_reason: types.FinishReason | None = ...,
+        error_code: str | None = ...,
+        error_message: str | None = ...,
+        interrupted: bool | None = ...,
+        custom_metadata: dict[str, Any] | None = ...,
+        usage_metadata: types.GenerateContentResponseUsageMetadata | None = ...,
+        cache_creation_token_count: int | None = ...,
+        live_session_resumption_update: (
+            types.LiveServerSessionResumptionUpdate | None
+        ) = ...,
+        live_session_id: str | None = ...,
+        go_away: types.LiveServerGoAway | None = ...,
+        voice_activity: types.VoiceActivity | None = ...,
+        input_transcription: types.Transcription | None = ...,
+        output_transcription: types.Transcription | None = ...,
+        avg_logprobs: float | None = ...,
+        logprobs_result: types.LogprobsResult | None = ...,
+        cache_metadata: CacheMetadata | None = ...,
+        citation_metadata: types.CitationMetadata | None = ...,
+        interaction_id: str | None = ...,
+        environment_id: str | None = ...,
+        invocation_id: str = ...,
+        author: str = ...,
+        actions: EventActions = ...,
+        output: Any | None = ...,
+        node_info: NodeInfo = ...,
+        long_running_tool_ids: set[str] | None = ...,
+        branch: str | None = ...,
+        isolation_scope: str | None = ...,
+        id: str = ...,
+        timestamp: float = ...,
+        message: types.ContentUnion | None = None,
+        state: dict[str, Any] | None = None,
+        route: bool | int | str | list[bool | int | str] | None = None,
+        node_path: str | None = None,
+    ) -> None:
+      ...
 
   @model_validator(mode='before')
   @classmethod
