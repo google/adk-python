@@ -28,6 +28,9 @@
   <a href="https://github.com/google/adk-go">ADK Go</a> &
   <a href="https://github.com/google/adk-js">ADK Typescript</a>.
 </h3>
+<p align="center">
+  <b>English</b> · <a href="https://github.com/google/adk-python/blob/main/README.zh.md">简体中文</a>
+</p>
 
 Agent Development Kit (ADK) is a flexible and modular framework that applies
 software development principles to AI agent creation. It is designed to
