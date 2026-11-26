@@ -1107,6 +1107,11 @@ def _get_ignore_patterns_func(
               # matches basenames via fnmatch, so '/venv' would match nothing.
               if line.startswith('/'):
                 line = line[1:]
+              # A leading '**/' matches in any directory, which is how basename
+              # patterns already match; with it, '**/node_modules' matches
+              # nothing.
+              while line.startswith('**/'):
+                line = line[3:]
               if line:
                 patterns.add(line)
       except Exception as e:
