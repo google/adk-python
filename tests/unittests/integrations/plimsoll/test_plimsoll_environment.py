@@ -105,6 +105,9 @@ def _env(client: mock.MagicMock, workspace_class: mock.MagicMock):
         ({"minimum_isolation": "none"}, "minimum_isolation"),
         ({"timeout": 0}, "timeout"),
         ({"timeout": True}, "timeout"),
+        ({"timeout": float("nan")}, "timeout"),
+        ({"timeout": float("inf")}, "timeout"),
+        ({"env_vars": {"A\n": "1"}}, "shell variable name"),
         ({"env_vars": {"A-B": "1"}}, "shell variable name"),
         ({"env_vars": {"A": "x\x00y"}}, "must be text"),
         ({"client": mock.MagicMock(), "url": "http://h"}, "client"),
@@ -256,6 +259,11 @@ async def test_cancelled_initialize_closes_the_session_it_opened(
 
   assert await asyncio.to_thread(closed.wait, 5)
   assert env.is_initialized is False
+
+  # Nothing was open when the open was cancelled, so the next one may open.
+  client.open_session.side_effect = None
+  await env.initialize()
+  assert client.open_session.call_count == 2
 
 
 async def test_methods_before_initialize_raise(env: PlimsollEnvironment):
@@ -465,11 +473,49 @@ async def test_close_closes_the_session_and_is_idempotent(
   session.close.assert_called_once()
   assert env.is_initialized is False
   assert env.working_dir is None
-  with pytest.raises(RuntimeError, match="initialize"):
+  with pytest.raises(RuntimeError, match="was closed"):
     await env.execute("true")
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.initialize()
+  client.open_session.assert_called_once()
+
+
+async def test_reopen_after_close_opens_a_new_session(
+    client: mock.MagicMock, workspace_class: mock.MagicMock
+):
+  del workspace_class
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  await env.initialize()
+  await env.close()
 
   await env.initialize()
+
   assert client.open_session.call_count == 2
+  assert env.is_initialized is True
+
+
+async def test_close_before_any_open_is_harmless(
+    env: PlimsollEnvironment, client: mock.MagicMock
+):
+  await env.close()
+
+  await env.initialize()
+
+  client.open_session.assert_called_once()
+
+
+async def test_a_failed_close_still_refuses_a_reopen(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  session.close.side_effect = OSError("daemon gone")
+  await env.initialize()
+
+  with pytest.raises(OSError, match="daemon gone"):
+    await env.close()
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.initialize()
+
+  client.open_session.assert_called_once()
 
 
 async def test_toolset_drives_the_environment(

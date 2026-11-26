@@ -20,6 +20,7 @@ import asyncio
 from collections.abc import Callable
 from collections.abc import Mapping
 import logging
+import math
 import os
 from pathlib import Path
 from pathlib import PurePath
@@ -52,6 +53,13 @@ _TIERS = ("process", "container", "kernel", "vm")
 # The names the Plimsoll workspace accepts for a command's variables.
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TIMEOUT_EXIT_CODE = -1
+_CLOSED = (
+    "This PlimsollEnvironment was closed, and its sandbox and files with it;"
+    " it does not open an empty sandbox in their place. ADK closes an"
+    " environment when a Runner that holds it closes, an AgentTool's nested"
+    " Runner included: give each Runner that closes on its own a"
+    " PlimsollEnvironment of its own, or pass reopen_after_close=True."
+)
 
 
 @experimental(FeatureName.PLIMSOLL_ENVIRONMENT)
@@ -74,8 +82,11 @@ class PlimsollEnvironment(BaseEnvironment):
   session has ended (its lifetime, or the daemon restarted), every call
   raises ``plimsoll_client.SessionEndedError``; the environment never opens a
   fresh sandbox in its place, because the agent would take an empty sandbox
-  for the one holding its files. A later ``close()`` and ``initialize()``
-  opens a new one.
+  for the one holding its files. For the same reason ``initialize()`` after
+  ``close()`` raises ``RuntimeError`` unless ``reopen_after_close`` is set:
+  ADK initializes before every tool call, and closes the environment with any
+  Runner that holds it. So don't share one environment between Runners that
+  close on their own, such as an agent and the agent an ``AgentTool`` wraps.
 
   One environment holds one sandbox for every agent run that uses it. Give
   each end user an environment of their own.
@@ -95,6 +106,7 @@ class PlimsollEnvironment(BaseEnvironment):
       lifetime: float | None = None,
       idle_timeout: float | None = None,
       owner: str | None = None,
+      reopen_after_close: bool = False,
   ):
     """Create a Plimsoll environment. Nothing is contacted until initialize().
 
@@ -107,14 +119,17 @@ class PlimsollEnvironment(BaseEnvironment):
         ``token``, for example one with a custom TLS context.
       minimum_isolation: The weakest isolation tier the sandbox may have:
         ``process``, ``container``, ``kernel`` or ``vm``.
-      timeout: Seconds a file call, or a command run with no timeout of its
-        own, may take. Capped at the daemon's own limit.
+      timeout: Seconds a file call may take, capped at the daemon's own
+        limit. A command run with no timeout of its own gets the daemon's
+        limit, or this when the daemon states none.
       env_vars: Variables added to every command's environment. They enter
         the sandbox, so never put a credential here.
       lifetime: Seconds the session may live. May only shorten the daemon's.
       idle_timeout: Seconds the session may sit unused. May only shorten the
         daemon's.
       owner: The end user the session is for, which a daemon can cap.
+      reopen_after_close: Whether ``initialize()`` after ``close()`` opens a
+        new, empty sandbox instead of raising ``RuntimeError``.
 
     Raises:
       ValueError: If a configuration value is invalid.
@@ -126,12 +141,13 @@ class PlimsollEnvironment(BaseEnvironment):
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
         or timeout <= 0
     ):
       raise ValueError("timeout must be a positive number of seconds")
     variables = dict(env_vars or {})
     for name, value in variables.items():
-      if not isinstance(name, str) or not _ENV_NAME.match(name):
+      if not isinstance(name, str) or not _ENV_NAME.fullmatch(name):
         raise ValueError(f"env_vars: {name!r} is not a shell variable name")
       if not isinstance(value, str) or "\x00" in value:
         raise ValueError(f"env_vars: the value of {name} must be text")
@@ -151,6 +167,8 @@ class PlimsollEnvironment(BaseEnvironment):
     self._workspace: Workspace | None = None
     self._working_dir: Path | None = None
     self._ceiling: float | None = None
+    self._reopen_after_close = reopen_after_close
+    self._closed = False
 
   @property
   @override
@@ -178,6 +196,8 @@ class PlimsollEnvironment(BaseEnvironment):
     # The environment toolsets run initialize() and close() one at a time.
     if self._workspace is not None:
       return
+    if self._closed and not self._reopen_after_close:
+      raise RuntimeError(_CLOSED)
     opening = asyncio.ensure_future(asyncio.to_thread(self._open))
     try:
       session, workspace, root, ceiling = await asyncio.shield(opening)
@@ -246,6 +266,8 @@ class PlimsollEnvironment(BaseEnvironment):
     self._ceiling = None
     self._is_initialized = False
     if session is not None:
+      # Set before the delete, so a delete that fails still refuses a reopen.
+      self._closed = True
       await asyncio.to_thread(session.close)
 
   @override
@@ -328,6 +350,8 @@ class PlimsollEnvironment(BaseEnvironment):
   def _require(self) -> Workspace:
     workspace = self._workspace
     if workspace is None:
+      if self._closed and not self._reopen_after_close:
+        raise RuntimeError(_CLOSED)
       raise RuntimeError("Sandbox is not started. Call initialize() first.")
     return workspace
 

@@ -65,6 +65,10 @@ result that the daemon states. A call that came back without a usable answer
 raises a `RuntimeError` that says the command may have run, and a refusal made
 before anything ran is raised as the client's error with its not-dispatched
 reason. `close` closes the session, and the sandbox and its files are gone.
+After `close`, `initialize` raises `RuntimeError` instead of opening a new,
+empty sandbox, because ADK calls `initialize` before every tool call and the
+agent would take an empty sandbox for the one holding its files. Pass
+`reopen_after_close=True` to open a new one instead.
 
 ## Configuration options
 
@@ -79,6 +83,7 @@ reason. `close` closes the session, and the sandbox and its files are gone.
 | `lifetime` | `float \| None` | `None` | Seconds the session may live; only shortens the daemon's limit. |
 | `idle_timeout` | `float \| None` | `None` | Seconds the session may sit unused; only shortens the daemon's limit. |
 | `owner` | `str \| None` | `None` | The end user the session is for, which a daemon can cap. |
+| `reopen_after_close` | `bool` | `False` | Whether `initialize` after `close` opens a new, empty sandbox instead of raising `RuntimeError`. |
 
 `env_vars` enter the sandbox, so never put a credential there. The `isolation`
 property returns the tier the open session states.
@@ -95,7 +100,14 @@ end user an environment of their own. When the session ends (its lifetime
 passes, or the daemon restarts), every call raises
 `plimsoll_client.SessionEndedError`. The environment does not replace the
 sandbox on its own, because an agent would take an empty sandbox for the one
-holding its files; a `close` followed by `initialize` opens a new one.
+holding its files.
+
+Don't share one environment between Runners that close on their own. ADK
+closes an environment when a Runner that holds it closes, and an `AgentTool`
+runs its agent in a nested `Runner` that closes when the agent finishes: an
+environment shared by an agent and the agent it wraps is closed in the middle
+of the wrapping agent's turn, and its next tool call raises `RuntimeError`.
+Give the wrapped agent an environment of its own.
 
 ## Related samples
 
