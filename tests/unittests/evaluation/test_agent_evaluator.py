@@ -879,6 +879,68 @@ def test_process_metrics_informational_metric_is_never_a_failure():
   assert failures == []
 
 
+def test_process_metrics_prints_details_for_a_metric_without_a_threshold(
+    capsys,
+):
+  """An informational metric prints its detail table instead of raising.
+
+  The efficiency metrics are appended to every eval and carry no threshold, so
+  the threshold column of the printed table holds no value at all.
+  """
+  result = _EvalMetricResultWithInvocation(
+      actual_invocation=Invocation(
+          user_content=_content("hi"),
+          final_response=_content("hello"),
+      ),
+      expected_invocation=None,
+      eval_metric_result=EvalMetricResult(
+          metric_name="tool_call_count_v1",
+          score=3.0,
+          eval_status=EvalStatus.INFORMATIONAL,
+      ),
+  )
+
+  failures = AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results={"tool_call_count_v1": [result]},
+      print_detailed_results=True,
+      agent_module="my_agent",
+  )
+
+  assert failures == []
+  assert "tool_call_count_v1" in capsys.readouterr().out
+
+
+def test_process_metrics_prints_details_for_a_metric_with_no_score(capsys):
+  """A metric that produced no score prints its table and is not evaluated.
+
+  A judge model that could not run leaves every invocation unscored, so the
+  score column of the printed table holds no value at all.
+  """
+  result = _EvalMetricResultWithInvocation(
+      actual_invocation=Invocation(
+          user_content=_content("hi"),
+          final_response=_content("hello"),
+      ),
+      expected_invocation=None,
+      eval_metric_result=EvalMetricResult(
+          metric_name="safety_v1",
+          threshold=0.8,
+          score=None,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+  )
+
+  failures = AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results={"safety_v1": [result]},
+      print_detailed_results=True,
+      agent_module="my_agent",
+  )
+
+  assert len(failures) == 1
+  assert "was not evaluated" in failures[0]
+  assert "safety_v1" in capsys.readouterr().out
+
+
 def test_process_metrics_thresholded_metric_below_threshold_still_fails():
   """A thresholded metric below its threshold is still reported as a failure."""
   result = _EvalMetricResultWithInvocation(
