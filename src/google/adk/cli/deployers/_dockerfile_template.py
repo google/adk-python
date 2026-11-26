@@ -20,6 +20,8 @@ from typing import Any
 from typing import Final
 
 import click
+from packaging.requirements import InvalidRequirement
+from packaging.requirements import Requirement
 
 # app_name is interpolated into the generated Dockerfile (COPY/RUN instructions
 # and CMD) by _DOCKERFILE_TEMPLATE. It defaults to the basename of the agent
@@ -154,16 +156,14 @@ ENV PATH="/home/myuser/.local/bin:$PATH"
 {install_adk}
 # Install ADK - End
 
-# Copy agent - Start
+# Stage extra packages before installing agent dependencies
 {extra_packages_copy}
 
-# Set permission
-COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-# Copy agent - End
-
 # Install Agent Deps - Start
+{agent_copy_before_deps}
 {install_agent_deps}
 {reinstall_extra_packages}
+{agent_copy_after_deps}
 # Remove dev_server.py to ensure production-safe endpoints only (disabling dev endpoints in production)
 # Shell form on purpose: this instruction interpolates nothing, and `|| true`
 # is shell syntax. Do not add a `{{...}}` placeholder to it without moving it to
@@ -281,6 +281,52 @@ def _render_install_agent_deps(
   )
 
 
+def _can_cache_agent_deps(requirements_txt_path: str) -> bool:
+  """Returns whether requirements can be installed without the agent source.
+
+  Only ordinary named requirements are accepted. Pip supports additional
+  syntax, including local paths, nested requirements and constraints, editable
+  installs, and package search directories. Preserve copy-before-install for
+  these and any unrecognized syntax rather than risk a deployment regression.
+  """
+  try:
+    with open(requirements_txt_path, encoding='utf-8-sig') as requirements:
+      for line in requirements:
+        # Pip joins continuations before stripping comments. Do not interpret
+        # a continued comment or requirement as independent physical lines.
+        if line.rstrip().endswith('\\'):
+          return False
+        line = re.split(r'(^|\s+)#', line, maxsplit=1)[0].strip()
+        if not line:
+          continue
+        try:
+          requirement = Requirement(line)
+        except InvalidRequirement:
+          return False
+        # A bare wheel/archive filename can also parse as a package name,
+        # but pip treats it as a local file rather than an index requirement.
+        if requirement.url is not None or requirement.name.lower().endswith((
+            '.whl',
+            '.zip',
+            '.tar',
+            '.gz',
+            '.bz2',
+            '.xz',
+            '.tgz',
+            '.tbz',
+            '.tbz2',
+            '.txz',
+            '.tlz',
+            '.lz',
+            '.lzma',
+            '.z',
+        )):
+          return False
+  except (OSError, UnicodeError):
+    return False
+  return True
+
+
 def _render_dockerfile(
     *,
     app_name: str,
@@ -304,6 +350,7 @@ def _render_dockerfile(
     extra_env_vars: str = '',
     python_version: str = _DEFAULT_PYTHON_VERSION,
     validate_agent_import: bool = False,
+    requirements_txt_path: str | None = None,
 ) -> str:
   """Renders the Dockerfile used by every `adk deploy` target.
 
@@ -344,6 +391,8 @@ def _render_dockerfile(
     validate_agent_import: Whether to wrap `CMD` so `app_name` is preloaded on
       the server's `AgentLoader` at container startup before binding `PORT`
       (default: False).
+    requirements_txt_path: Staged requirements file to inspect for dependency
+      caching. If absent or not safely classifiable, copy agent source first.
 
   Returns:
     The Dockerfile contents.
@@ -388,11 +437,26 @@ def _render_dockerfile(
       ['pip', 'install', f'google-adk[{",".join(extras)}]=={adk_version}'],
   )
 
+  agent_copy = (
+      f'COPY --chown=myuser:myuser "agents/{app_name}/"'
+      f' "/app/agents/{app_name}/"'
+  )
+  agent_copy_before_deps = agent_copy
+  agent_copy_after_deps = ''
+  if requirements_txt_path and _can_cache_agent_deps(requirements_txt_path):
+    agent_copy_before_deps = (
+        f'COPY --chown=myuser:myuser "agents/{app_name}/requirements.txt"'
+        f' "/app/agents/{app_name}/requirements.txt"'
+    )
+    agent_copy_after_deps = agent_copy
+
   return _DOCKERFILE_TEMPLATE.format(
       python_version=_validate_python_version(python_version),
       app_name=app_name,
       port=port,
       install_adk=install_adk,
+      agent_copy_before_deps=agent_copy_before_deps,
+      agent_copy_after_deps=agent_copy_after_deps,
       install_agent_deps=install_agent_deps,
       extra_packages_copy=extra_packages_copy,
       reinstall_extra_packages=reinstall_extra_packages,

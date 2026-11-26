@@ -3402,6 +3402,70 @@ def test_to_agent_engine_rejects_invalid_python_version_before_copying(
   assert not (src_dir.parent / "tmp").exists()
 
 
+@pytest.mark.parametrize("target", ["agent_engine", "gke"])
+@pytest.mark.parametrize(
+    "requirements,cacheable",
+    [("pytest\n", True), ("./helper\n", False), ("-r extra.txt\n", False)],
+)
+def test_cloud_deployments_preserve_dependency_copy_order(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+    target: str,
+    requirements: str,
+    cacheable: bool,
+) -> None:
+  """Each cloud-specific generator selects the compatible source-copy order."""
+  source = agent_dir(True, False)
+  (source / "requirements.txt").write_text(requirements)
+  build = tmp_path / "build"
+  monkeypatch.setattr(shutil, "rmtree", lambda *args, **kwargs: None)
+  if target == "agent_engine":
+    recording_agentplatform = _make_recording_agentplatform([])
+    monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+    monkeypatch.setattr(
+        "src.google.adk.dependencies._agentplatform.agentplatform",
+        recording_agentplatform,
+    )
+
+    cli_deploy.to_agent_engine(
+        agent_folder=str(source),
+        temp_folder=str(build),
+        project="project",
+        region="us-central1",
+        adk_version="2.14.0",
+    )
+  else:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(stdout="deployed"),
+    )
+
+    cli_deploy.to_gke(
+        agent_folder=str(source),
+        temp_folder=str(build),
+        project="project",
+        region="us-central1",
+        cluster_name="cluster",
+        service_name="service",
+        app_name="agent",
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        adk_version="2.14.0",
+        log_level="info",
+    )
+
+  content = (build / "Dockerfile").read_text()
+  source_copy = (
+      'COPY --chown=myuser:myuser "agents/agent/" "/app/agents/agent/"'
+  )
+  install = 'RUN ["pip", "install", "-r", "/app/agents/agent/requirements.txt"]'
+  assert (content.index(install) < content.index(source_copy)) == cacheable
+
+
 def test_to_gke_renders_python_version(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
