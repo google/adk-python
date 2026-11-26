@@ -458,7 +458,8 @@ class NodeRunner:
   def _track_event_in_context(self, event: Event, ctx: Context) -> None:
     """Write yielded event results to ctx (source of truth)."""
     if event.output is not None:
-      ctx.output = event.output
+      if ctx.output is None or not ctx._output_delegated:
+        ctx.output = event.output
     elif event.node_info and event.node_info.message_as_output:
       ctx.output = event.content
     if event.long_running_tool_ids is not None:
