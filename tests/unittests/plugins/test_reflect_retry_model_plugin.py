@@ -351,6 +351,47 @@ class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
           llm_response=llm_response,
       )
 
+  async def test_after_model_callback_counts_streamed_error_once(self):
+    """Checks that a streamed chunk's error is only counted on the final response."""
+    mock_agent = Mock(spec=LlmAgent)
+    mock_agent.canonical_model = Mock()
+    mock_agent.canonical_model.model = "TEST_MODEL_NAME"
+
+    mock_invocation_context = Mock()
+    mock_invocation_context.agent = mock_agent
+    mock_invocation_context.invocation_id = "TEST_INVOCATION_ID"
+
+    mock_callback_context = Mock(spec=CallbackContext)
+    mock_callback_context.get_invocation_context.return_value = (
+        mock_invocation_context
+    )
+
+    plugin = ReflectAndRetryModelPlugin(
+        max_retries=1, throw_exception_if_retry_exceeded=True
+    )
+
+    partial_response = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR_MESSAGE",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        partial=True,
+    )
+    final_response = partial_response.model_copy(update={"partial": False})
+
+    response1 = await plugin.after_model_callback(
+        callback_context=mock_callback_context,
+        llm_response=partial_response,
+    )
+    self.assertIsNone(response1)
+
+    response2 = await plugin.after_model_callback(
+        callback_context=mock_callback_context,
+        llm_response=final_response,
+    )
+    self.assertEqual(
+        response2.content.parts[0].function_call.args["retry_count"], 1
+    )
+
   async def test_after_model_callback_resets_retry_limit_upon_success(self):
     """Checks that a successful model response resets the failure counter for the model."""
     mock_agent = Mock(spec=LlmAgent)
