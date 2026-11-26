@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import concurrent.futures
 from collections.abc import Mapping
 import logging
 import math
@@ -25,6 +26,7 @@ import os
 from pathlib import Path
 from pathlib import PurePath
 import re
+import threading
 from typing import Any
 from typing import TYPE_CHECKING
 from typing import TypeVar
@@ -172,6 +174,17 @@ class PlimsollEnvironment(BaseEnvironment):
     self._closed = False
     # A session whose close has not yet succeeded.
     self._closing: Session | None = None
+    # Guards the handoff between an open's thread and the event loop.
+    self._lock = threading.Lock()
+
+  def __getstate__(self) -> dict[str, Any]:
+    state = self.__dict__.copy()
+    del state["_lock"]
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._lock = threading.Lock()
 
   @property
   @override
@@ -204,19 +217,41 @@ class PlimsollEnvironment(BaseEnvironment):
     # A sandbox whose close failed still holds one of the daemon's places, so
     # close it before opening another.
     await self._finish_close()
-    opening = asyncio.ensure_future(asyncio.to_thread(self._open))
+    opening = _Opening()
+    threading.Thread(
+        target=self._open_in_thread,
+        args=(opening,),
+        name="PlimsollEnvironment open",
+    ).start()
     try:
-      session, workspace, root, ceiling = await asyncio.shield(opening)
+      await asyncio.shield(asyncio.wrap_future(opening.done))
     except asyncio.CancelledError:
-      # The open goes on in its thread; close what it opens, so no session
-      # holds one of the daemon's places until its idle limit.
-      opening.add_done_callback(_close_abandoned_open)
+      # The open goes on in its thread, which closes what it opens, so no
+      # session holds one of the daemon's places until its idle limit. The
+      # thread decides, not this event loop: asyncio.run cancels everything
+      # when it ends, and the open may finish after the loop has closed.
+      with self._lock:
+        opening.abandoned = True
       raise
-    self._session = session
-    self._ceiling = ceiling
-    self._working_dir = Path(root)
-    self._workspace = workspace
-    self._is_initialized = True
+
+  def _open_in_thread(self, opening: _Opening) -> None:
+    """Opens a session, then publishes it, or closes it if it was abandoned."""
+    try:
+      session, workspace, root, ceiling = self._open()
+    except BaseException as e:  # pylint: disable=broad-exception-caught
+      opening.done.set_exception(e)
+      return
+    with self._lock:
+      keep = not opening.abandoned
+      if keep:
+        self._session = session
+        self._ceiling = ceiling
+        self._working_dir = Path(root)
+        self._workspace = workspace
+        self._is_initialized = True
+    if not keep:
+      _close_quietly(session)
+    opening.done.set_result(None)
 
   def _open(self) -> tuple[Session, Workspace, str, float | None]:
     try:
@@ -426,8 +461,13 @@ def _close_quietly(session: Session) -> None:
     logger.warning("Failed to close the Plimsoll session", exc_info=True)
 
 
-def _close_abandoned_open(opening: asyncio.Future[Any]) -> None:
-  if opening.cancelled() or opening.exception() is not None:
-    return
-  session = opening.result()[0]
-  asyncio.get_running_loop().run_in_executor(None, _close_quietly, session)
+class _Opening:
+  """An open in flight, which its own thread publishes or closes."""
+
+  def __init__(self) -> None:
+    self.done: concurrent.futures.Future[None] = concurrent.futures.Future()
+    # Running from the start, so nothing can cancel it: only the thread
+    # settles it.
+    self.done.set_running_or_notify_cancel()
+    # Set, under the environment's lock, when no caller waits for the open.
+    self.abandoned = False

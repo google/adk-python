@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import pickle
 from pathlib import PureWindowsPath
 import threading
 from types import SimpleNamespace
@@ -264,6 +265,37 @@ async def test_cancelled_initialize_closes_the_session_it_opened(
   client.open_session.side_effect = None
   await env.initialize()
   assert client.open_session.call_count == 2
+
+
+def test_an_open_cancelled_at_event_loop_shutdown_is_closed(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened = threading.Event()
+  release = threading.Event()
+  closed = threading.Event()
+  session.close.side_effect = lambda: closed.set()
+
+  def slow_open(**kwargs):
+    del kwargs
+    opened.set()
+    release.wait(5)
+    return session
+
+  client.open_session.side_effect = slow_open
+
+  async def main():
+    task = asyncio.create_task(env.initialize())
+    await asyncio.to_thread(opened.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+    # The open finishes while asyncio.run tears the loop down.
+    threading.Timer(0.2, release.set).start()
+
+  asyncio.run(main())
+
+  assert closed.wait(5)
+  assert env.is_initialized is False
 
 
 async def test_methods_before_initialize_raise(env: PlimsollEnvironment):
@@ -580,6 +612,17 @@ async def test_a_reopen_retries_a_failed_close_before_opening(
   assert session.close.call_count == 3
   assert client.open_session.call_count == 2
   assert env.is_initialized is True
+
+
+async def test_an_unopened_environment_pickles_with_its_toolset():
+  toolset = EnvironmentToolset(
+      environment=PlimsollEnvironment(url="http://127.0.0.1:1")
+  )
+
+  restored = pickle.loads(pickle.dumps(toolset))
+
+  await restored.close()
+  assert restored._environment.is_initialized is False
 
 
 async def test_toolset_drives_the_environment(
