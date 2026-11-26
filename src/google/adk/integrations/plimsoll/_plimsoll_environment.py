@@ -170,6 +170,8 @@ class PlimsollEnvironment(BaseEnvironment):
     self._ceiling: float | None = None
     self._reopen_after_close = reopen_after_close
     self._closed = False
+    # A session whose close has not yet succeeded.
+    self._closing: Session | None = None
 
   @property
   @override
@@ -199,6 +201,9 @@ class PlimsollEnvironment(BaseEnvironment):
       return
     if self._closed and not self._reopen_after_close:
       raise RuntimeError(_CLOSED)
+    # A sandbox whose close failed still holds one of the daemon's places, so
+    # close it before opening another.
+    await self._finish_close()
     opening = asyncio.ensure_future(asyncio.to_thread(self._open))
     try:
       session, workspace, root, ceiling = await asyncio.shield(opening)
@@ -259,17 +264,32 @@ class PlimsollEnvironment(BaseEnvironment):
 
   @override
   async def close(self) -> None:
-    """Closes the session: the sandbox and its files are gone. Idempotent."""
+    """Closes the session: the sandbox and its files are gone. Idempotent.
+
+    No call reaches the sandbox once a close has started. A close that fails
+    keeps the session, and ``is_initialized`` stays true, so the next
+    ``close()`` tries again.
+    """
     session = self._session
     self._session = None
     self._workspace = None
     self._working_dir = None
     self._ceiling = None
-    self._is_initialized = False
     if session is not None:
       # Set before the delete, so a delete that fails still refuses a reopen.
       self._closed = True
+      self._closing = session
+    await self._finish_close()
+
+  async def _finish_close(self) -> None:
+    """Closes the session a close took, if any; raises if that fails."""
+    session = self._closing
+    if session is not None:
       await asyncio.to_thread(session.close)
+      if self._closing is session:
+        self._closing = None
+    if self._session is None:
+      self._is_initialized = False
 
   @override
   async def execute(

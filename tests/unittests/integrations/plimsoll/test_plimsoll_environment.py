@@ -533,6 +533,55 @@ async def test_a_failed_close_still_refuses_a_reopen(
   client.open_session.assert_called_once()
 
 
+async def test_a_failed_close_is_retried_by_the_next_close(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  session.close.side_effect = [OSError("daemon gone"), None]
+  toolset = EnvironmentToolset(environment=env)
+  await env.initialize()
+
+  with pytest.raises(OSError, match="daemon gone"):
+    await toolset.close()
+  # Still initialized, so the toolset's next close comes back to retry; no
+  # call reaches the sandbox meanwhile.
+  assert env.is_initialized is True
+  assert env.working_dir is None
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.execute("true")
+  await toolset.close()
+
+  assert session.close.call_count == 2
+  assert env.is_initialized is False
+  await env.close()
+  assert session.close.call_count == 2
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.initialize()
+  client.open_session.assert_called_once()
+
+
+async def test_a_reopen_retries_a_failed_close_before_opening(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  del workspace_class
+  session.close.side_effect = [OSError("gone"), OSError("still gone"), None]
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  await env.initialize()
+  with pytest.raises(OSError, match="gone"):
+    await env.close()
+
+  # The old sandbox holds one of the daemon's places until it is closed.
+  with pytest.raises(OSError, match="still gone"):
+    await env.initialize()
+  assert client.open_session.call_count == 1
+  await env.initialize()
+
+  assert session.close.call_count == 3
+  assert client.open_session.call_count == 2
+  assert env.is_initialized is True
+
+
 async def test_toolset_drives_the_environment(
     env: PlimsollEnvironment, workspace: mock.MagicMock
 ):

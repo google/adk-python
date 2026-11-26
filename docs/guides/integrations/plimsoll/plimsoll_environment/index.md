@@ -65,6 +65,7 @@ result that the daemon states. A call that came back without a usable answer
 raises a `RuntimeError` that says the command may have run, and a refusal made
 before anything ran is raised as the client's error with its not-dispatched
 reason. `close` closes the session, and the sandbox and its files are gone.
+A `close` that fails keeps the session, so calling `close` again retries it.
 After `close`, `initialize` raises `RuntimeError` instead of opening a new,
 empty sandbox, because ADK calls `initialize` before every tool call and the
 agent would take an empty sandbox for the one holding its files. Pass
