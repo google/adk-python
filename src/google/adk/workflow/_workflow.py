@@ -451,8 +451,17 @@ class Workflow(BaseNode):
         logger.debug("node %s execute loop end.", ctx.node_path)
         return
 
-      await self._schedule_ready_nodes(loop_state, ctx)
-      await self._flush_node_checkpoint(loop_state, ctx)
+      # Handle a replayed fast-forward that already finished before starting
+      # any buffered trigger. Otherwise a run that the recorded history places
+      # after that completion can start first, and the replay barrier then
+      # waits for a recorded run that never comes.
+      replay_done = any(
+          task.done() and name in loop_state.replayed_nodes
+          for name, task in loop_state.pending_tasks.items()
+      )
+      if not replay_done:
+        await self._schedule_ready_nodes(loop_state, ctx)
+        await self._flush_node_checkpoint(loop_state, ctx)
 
       if not loop_state.pending_tasks:
         if loop_state.checkpointed_running_replayed - loop_state.replayed_nodes:

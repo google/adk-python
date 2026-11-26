@@ -337,6 +337,9 @@ _run_impl
   │    ├─ _seed_start_triggers
   │    └─ ctx._workflow_scheduler = DynamicNodeScheduler(state=loop_state)
   ├─ LOOP (_run_loop):
+  │    ├─ if a replayed fast-forward task already finished → skip scheduling
+  │    │    and the flush this pass, so its completion is handled before any
+  │    │    buffered trigger starts a new run
   │    ├─ _schedule_ready_nodes → pop triggers, dispatch via _start_node_task / ctx._run_node_internal
   │    ├─ _flush_node_checkpoint → emit one coalesced checkpoint
   │    │    if a static node status changed since the last flush

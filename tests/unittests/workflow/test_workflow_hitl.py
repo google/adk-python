@@ -17,6 +17,7 @@
 import asyncio
 from collections.abc import Iterator
 import copy
+import functools
 import json
 from typing import Any
 from typing import AsyncGenerator
@@ -47,6 +48,8 @@ from google.adk.workflow import RetryConfig
 from google.adk.workflow import START
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils import _replay_manager
+from google.adk.workflow.utils import _replay_sequence_barrier
 from google.adk.workflow.utils._rehydration_utils import _wrap_response
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.genai import types
@@ -3159,3 +3162,123 @@ async def test_resume_keeps_branch_retried_while_sibling_waited_for_input(
       'flaky': 'flaky_ok',
       'asker': 'answered_yes',
   } in workflow_testing_utils.get_outputs(events2)
+
+
+@pytest.mark.asyncio
+async def test_resume_consumes_finished_replay_before_new_loop_runs(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Resuming a loop with a join replays finished runs before starting new ones.
+
+  Setup: a resumable workflow loops first -> (a, b) -> join and b -> c ->
+    loop -> back to first, three times. a also feeds asker, whose dynamic
+    child asks for input; join and asker feed end.
+  Act: answer each question asker asks, once per run of asker.
+  Assert:
+    - Every resume finishes without a replay divergence.
+    - asker asks three times, once per loop lap, and the last answer ends
+      the workflow.
+  """
+  monkeypatch.setattr(
+      _replay_manager,
+      'ReplaySequenceBarrier',
+      functools.partial(
+          _replay_sequence_barrier.ReplaySequenceBarrier, timeout_sec=0.5
+      ),
+  )
+
+  async def yield_a_few_times() -> None:
+    for _ in range(3):
+      await asyncio.sleep(0)
+
+  @node()
+  def first(node_input: Any) -> str:
+    del node_input
+    return 'first'
+
+  @node()
+  async def a(node_input: Any) -> str:
+    del node_input
+    await yield_a_few_times()
+    return 'a'
+
+  @node()
+  async def b(node_input: Any) -> str:
+    del node_input
+    await yield_a_few_times()
+    return 'b'
+
+  @node()
+  def c(node_input: Any) -> str:
+    del node_input
+    return 'c'
+
+  @node()
+  def loop(ctx: Context, node_input: Any) -> Iterator[Event]:
+    del node_input
+    visits = (ctx.state.get('visits') or 0) + 1
+    ctx.state['visits'] = visits
+    yield Event(output=visits, route='back' if visits < 3 else 'done')
+
+  @node(rerun_on_resume=True)
+  def ask(ctx: Context, node_input: Any) -> Iterator[RequestInput | str]:
+    del node_input
+    if ctx.resume_inputs:
+      yield 'answered'
+      return
+    yield RequestInput(message='ok?')
+
+  @node(rerun_on_resume=True)
+  async def asker(ctx: Context, node_input: Any) -> AsyncGenerator[str, None]:
+    answer = await ctx.run_node(ask, node_input=node_input)
+    yield f'asker:{answer}'
+
+  @node()
+  def end(node_input: Any) -> str:
+    del node_input
+    return 'end'
+
+  join = JoinNode(name='join')
+  agent = Workflow(
+      name='loop_join_resume_wf',
+      edges=[
+          (START, first),
+          (first, a),
+          (a, b),
+          (first, b),
+          (b, join),
+          (a, join),
+          (b, c),
+          (a, asker),
+          (c, loop),
+          (loop, {'back': first}),
+          (join, end),
+          (asker, end),
+      ],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  message = testing_utils.get_user_content('start')
+  questions = 0
+  for _ in range(6):
+    events = await runner.run_async(message)
+    assert not [e.error_message for e in events if e.error_code]
+    interrupt_ids = [
+        interrupt_id
+        for e in events
+        for interrupt_id in sorted(extract_event_interrupt_ids(e))
+    ]
+    if not interrupt_ids:
+      break
+    questions += 1
+    message = testing_utils.UserContent(
+        create_request_input_response(interrupt_ids[0], {'ok': True})
+    )
+
+  assert questions == 3
+  assert not interrupt_ids
