@@ -298,6 +298,106 @@ def test_an_open_cancelled_at_event_loop_shutdown_is_closed(
   assert env.is_initialized is False
 
 
+def _held_open(client: mock.MagicMock, session: mock.MagicMock):
+  """Makes the client's open wait for release; returns (opened, release)."""
+  opened = threading.Event()
+  release = threading.Event()
+
+  def slow_open(**kwargs):
+    del kwargs
+    opened.set()
+    release.wait(5)
+    return session
+
+  client.open_session.side_effect = slow_open
+  return opened, release
+
+
+async def test_concurrent_initialize_calls_open_one_session(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  first = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  second = asyncio.create_task(env.initialize())
+  await asyncio.sleep(0.05)
+  release.set()
+
+  await asyncio.gather(first, second)
+
+  client.open_session.assert_called_once()
+  session.close.assert_not_called()
+
+
+async def test_one_cancelled_waiter_does_not_abandon_a_shared_open(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  first = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  second = asyncio.create_task(env.initialize())
+  await asyncio.sleep(0.05)
+  first.cancel()
+  release.set()
+
+  await second
+
+  session.close.assert_not_called()
+  assert env.is_initialized is True
+
+
+async def test_close_during_an_open_closes_what_it_opens(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  task = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  closing = asyncio.create_task(env.close())
+  await asyncio.sleep(0.05)
+  release.set()
+
+  await closing
+  # close() returns once the sandbox the open made is closed.
+  session.close.assert_called_once()
+  with pytest.raises(RuntimeError, match="was closed"):
+    await task
+  assert env.is_initialized is False
+  assert env.working_dir is None
+  client.open_session.assert_called_once()
+
+
+async def test_an_abandoned_open_whose_close_fails_is_closed_later(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  failed = threading.Event()
+
+  def close_once():
+    if not failed.is_set():
+      failed.set()
+      raise OSError("daemon gone")
+
+  session.close.side_effect = close_once
+  task = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  release.set()
+  assert await asyncio.to_thread(failed.wait, 5)
+
+  # Waits for the open's thread, then retries the close that failed there.
+  await env.close()
+
+  assert session.close.call_count == 2
+  assert env.is_initialized is False
+  # No caller was given that sandbox, so this close refuses no reopen.
+  session.close.side_effect = None
+  client.open_session.side_effect = None
+  await env.initialize()
+  assert client.open_session.call_count == 2
+
+
 async def test_methods_before_initialize_raise(env: PlimsollEnvironment):
   with pytest.raises(RuntimeError, match="initialize"):
     await env.execute("true")

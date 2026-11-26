@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import concurrent.futures
+import contextlib
 from collections.abc import Mapping
 import logging
 import math
@@ -172,14 +173,21 @@ class PlimsollEnvironment(BaseEnvironment):
     self._ceiling: float | None = None
     self._reopen_after_close = reopen_after_close
     self._closed = False
-    # A session whose close has not yet succeeded.
-    self._closing: Session | None = None
-    # Guards the handoff between an open's thread and the event loop.
+    # Sessions whose close has not yet succeeded.
+    self._closing: list[Session] = []
+    # The open in flight, which every initialize() call meanwhile waits for.
+    self._opening: _Opening | None = None
+    # Moved on by every close(), so an open that a close overtook closes what
+    # it opens instead of publishing it.
+    self._generation = 0
+    # Guards the fields above and the open session's handles, which an open's
+    # thread publishes while the event loop reads them.
     self._lock = threading.Lock()
 
   def __getstate__(self) -> dict[str, Any]:
     state = self.__dict__.copy()
     del state["_lock"]
+    state["_opening"] = None
     return state
 
   def __setstate__(self, state: dict[str, Any]) -> None:
@@ -207,50 +215,74 @@ class PlimsollEnvironment(BaseEnvironment):
 
   @override
   async def initialize(self, *, ctx: Context | None = None) -> None:
-    """Opens the session; returns at once while one is open."""
+    """Opens the session; returns at once while one is open.
+
+    Calls made while an open is in flight wait for that open rather than
+    starting another, and a ``close()`` made meanwhile closes what it opens.
+    """
     del ctx
-    # The environment toolsets run initialize() and close() one at a time.
-    if self._workspace is not None:
-      return
-    if self._closed and not self._reopen_after_close:
-      raise RuntimeError(_CLOSED)
-    # A sandbox whose close failed still holds one of the daemon's places, so
-    # close it before opening another.
-    await self._finish_close()
-    opening = _Opening()
-    threading.Thread(
-        target=self._open_in_thread,
-        args=(opening,),
-        name="PlimsollEnvironment open",
-    ).start()
-    try:
-      await asyncio.shield(asyncio.wrap_future(opening.done))
-    except asyncio.CancelledError:
-      # The open goes on in its thread, which closes what it opens, so no
-      # session holds one of the daemon's places until its idle limit. The
-      # thread decides, not this event loop: asyncio.run cancels everything
-      # when it ends, and the open may finish after the loop has closed.
+    while True:
       with self._lock:
-        opening.abandoned = True
-      raise
+        if self._workspace is not None:
+          return
+        if self._closed and not self._reopen_after_close:
+          raise RuntimeError(_CLOSED)
+        opening = self._opening
+        if opening is None and not self._closing:
+          opening = self._opening = _Opening(self._generation)
+          threading.Thread(
+              target=self._open_in_thread,
+              args=(opening,),
+              name="PlimsollEnvironment open",
+          ).start()
+        if opening is not None:
+          opening.waiters += 1
+      if opening is None:
+        # A sandbox whose close failed still holds one of the daemon's
+        # places, so close it before opening another.
+        await self._finish_close()
+        continue
+      try:
+        # A cancelled caller leaves the open to its thread, which closes what
+        # it opens when no caller waits for it any more, so no session holds
+        # one of the daemon's places until its idle limit. The thread
+        # decides, not this event loop: asyncio.run cancels everything when
+        # it ends, and the open may finish after the loop has closed.
+        await asyncio.shield(asyncio.wrap_future(opening.done))
+      finally:
+        with self._lock:
+          opening.waiters -= 1
 
   def _open_in_thread(self, opening: _Opening) -> None:
-    """Opens a session, then publishes it, or closes it if it was abandoned."""
+    """Opens a session and publishes it, or closes it when no one wants it."""
     try:
       session, workspace, root, ceiling = self._open()
     except BaseException as e:  # pylint: disable=broad-exception-caught
+      with self._lock:
+        if self._opening is opening:
+          self._opening = None
       opening.done.set_exception(e)
       return
     with self._lock:
-      keep = not opening.abandoned
+      keep = opening.waiters > 0 and opening.generation == self._generation
       if keep:
         self._session = session
         self._ceiling = ceiling
         self._working_dir = Path(root)
         self._workspace = workspace
         self._is_initialized = True
+        self._opening = None
     if not keep:
-      _close_quietly(session)
+      # Still the open in flight while it closes, so a close() waits for it.
+      try:
+        session.close()
+      except Exception:  # pylint: disable=broad-exception-caught
+        logger.warning("Failed to close the Plimsoll session", exc_info=True)
+        with self._lock:
+          self._closing.append(session)
+      with self._lock:
+        if self._opening is opening:
+          self._opening = None
     opening.done.set_result(None)
 
   def _open(self) -> tuple[Session, Workspace, str, float | None]:
@@ -305,26 +337,40 @@ class PlimsollEnvironment(BaseEnvironment):
     keeps the session, and ``is_initialized`` stays true, so the next
     ``close()`` tries again.
     """
-    session = self._session
-    self._session = None
-    self._workspace = None
-    self._working_dir = None
-    self._ceiling = None
-    if session is not None:
-      # Set before the delete, so a delete that fails still refuses a reopen.
-      self._closed = True
-      self._closing = session
+    with self._lock:
+      session = self._session
+      opening = self._opening
+      self._session = None
+      self._workspace = None
+      self._working_dir = None
+      self._ceiling = None
+      self._generation += 1
+      if session is not None or (opening is not None and opening.waiters):
+        # Set before the delete, so a delete that fails still refuses a
+        # reopen. An open no caller waits for any more opened nothing for
+        # anyone, as a close before any open.
+        self._closed = True
+      if session is not None:
+        self._closing.append(session)
+    if opening is not None:
+      # The open's thread closes what it opens, since the generation moved
+      # on; one that failed opened nothing.
+      with contextlib.suppress(Exception):
+        await asyncio.shield(asyncio.wrap_future(opening.done))
     await self._finish_close()
 
   async def _finish_close(self) -> None:
-    """Closes the session a close took, if any; raises if that fails."""
-    session = self._closing
-    if session is not None:
+    """Closes the sessions closes took; raises if one fails, keeping it."""
+    while True:
+      with self._lock:
+        if not self._closing:
+          if self._session is None and self._opening is None:
+            self._is_initialized = False
+          return
+        session = self._closing[0]
       await asyncio.to_thread(session.close)
-      if self._closing is session:
-        self._closing = None
-    if self._session is None:
-      self._is_initialized = False
+      with self._lock:
+        self._closing = [s for s in self._closing if s is not session]
 
   @override
   async def execute(
@@ -464,10 +510,13 @@ def _close_quietly(session: Session) -> None:
 class _Opening:
   """An open in flight, which its own thread publishes or closes."""
 
-  def __init__(self) -> None:
+  def __init__(self, generation: int) -> None:
     self.done: concurrent.futures.Future[None] = concurrent.futures.Future()
     # Running from the start, so nothing can cancel it: only the thread
     # settles it.
     self.done.set_running_or_notify_cancel()
-    # Set, under the environment's lock, when no caller waits for the open.
-    self.abandoned = False
+    # The environment's generation when the open started.
+    self.generation = generation
+    # The initialize() calls waiting for it, counted under the environment's
+    # lock; none left means no one wants what it opens.
+    self.waiters = 0
