@@ -76,6 +76,48 @@ def _append_instruction(
   return combined
 
 
+def task_completed() -> str:
+  """
+  Signals that the agent has successfully completed the user's question
+  or task.
+  """
+  return 'Task completion signaled.'
+
+
+_COMPLETION_INSTRUCTION = f"""If you finished the user's request
+          according to its description, call the {task_completed.__name__} function
+          to exit so the next agents can take over. When calling this function,
+          do not generate any text other than the function call."""
+
+
+def _with_completion_tool(agent: LlmAgent) -> LlmAgent:
+  """Returns `agent`, or a copy of it that can signal task completion.
+
+  A live run needs `task_completed` on every LlmAgent child, but the agent tree
+  outlives the invocation: a Runner reuses it, and a live run may overlap with
+  an ordinary one. So the tool and the instruction go onto a copy, and the
+  agent the caller built keeps whatever it was configured with.
+
+  Args:
+    agent: The sub-agent to prepare for a live run.
+
+  Returns:
+    The agent itself if it already has a `task_completed` tool, otherwise a
+    copy of it with the tool and the completion instruction added.
+  """
+  if any(_tool_name(tool) == task_completed.__name__ for tool in agent.tools):
+    return agent
+
+  return agent.clone(
+      update={
+          'tools': [*agent.tools, task_completed],
+          'instruction': _append_instruction(
+              agent.instruction, _COMPLETION_INSTRUCTION
+          ),
+      }
+  )
+
+
 class SequentialAgentState(BaseAgentState):
   """State for SequentialAgent."""
 
@@ -186,32 +228,17 @@ class SequentialAgent(BaseAgent):
     if not self.sub_agents:
       return
 
-    # There is no way to know if it's using live during init phase so we have to init it here
-    for sub_agent in self.sub_agents:
-      # add tool
-      def task_completed() -> str:
-        """
-        Signals that the agent has successfully completed the user's question
-        or task.
-        """
-        return 'Task completion signaled.'
+    # There is no way to know if it's using live during init phase so we have to
+    # prepare the children here. The prepared agents are local to this run, see
+    # `_with_completion_tool`.
+    live_agents: list[BaseAgent] = [
+        _with_completion_tool(sub_agent)
+        if isinstance(sub_agent, LlmAgent)
+        else sub_agent
+        for sub_agent in self.sub_agents
+    ]
 
-      if isinstance(sub_agent, LlmAgent):
-        # Use function name to dedupe.
-        if not any(
-            _tool_name(tool) == task_completed.__name__
-            for tool in sub_agent.tools
-        ):
-          sub_agent.tools.append(task_completed)
-          completion_instruction = f"""If you finished the user's request
-          according to its description, call the {task_completed.__name__} function
-          to exit so the next agents can take over. When calling this function,
-          do not generate any text other than the function call."""
-          sub_agent.instruction = _append_instruction(
-              sub_agent.instruction, completion_instruction
-          )
-
-    for sub_agent in self.sub_agents:
+    for sub_agent in live_agents:
       async with Aclosing(sub_agent.run_live(ctx)) as agen:
         async for event in agen:
           yield event
