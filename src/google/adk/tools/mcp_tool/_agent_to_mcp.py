@@ -27,6 +27,7 @@ import weakref
 from google.genai import types
 
 from ...agents.base_agent import BaseAgent
+from ...apps.app import App
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ...auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ...dependencies._mcp import Context
@@ -44,11 +45,16 @@ _INLINE_RESOURCE_URI = "resource://adk-agent/inline-data"
 _MAX_REAP_ATTEMPTS = 3
 
 
-def _build_runner(agent: BaseAgent) -> Runner:
-  """Builds a Runner for the agent using in-memory services."""
+def _build_runner(agent: BaseAgent | App) -> Runner:
+  """Builds a Runner for the agent or app using in-memory services."""
+  app = agent if isinstance(agent, App) else None
+  root_agent = agent if isinstance(agent, BaseAgent) else None
   return Runner(
-      app_name=agent.name or "adk_agent",
-      agent=agent,
+      app=app,
+      app_name=(
+          (root_agent.name or "adk_agent") if root_agent is not None else None
+      ),
+      agent=root_agent,
       artifact_service=InMemoryArtifactService(),
       session_service=InMemorySessionService(),
       memory_service=InMemoryMemoryService(),
@@ -276,13 +282,13 @@ async def _run_agent(
 
 
 def to_mcp_server(
-    agent: BaseAgent,
+    agent: BaseAgent | App,
     *,
     name: Optional[str] = None,
     instructions: Optional[str] = None,
     runner: Optional[Runner] = None,
 ) -> FastMCP:
-  """Exposes an ADK agent as an MCP server.
+  """Exposes an ADK agent or app as an MCP server.
 
   The returned server registers a single MCP tool that runs the agent: an MCP
   host (e.g. Claude Code, OpenAI Codex, an IDE, or any MCP client) sends a
@@ -305,8 +311,9 @@ def to_mcp_server(
   reclaimed when using an in-memory session service.
 
   Args:
-    agent: The ADK agent to serve.
-    name: The MCP server and tool name. Defaults to the agent's name.
+    agent: The ADK agent or App to serve. With the default runner, an App
+      retains its application-level plugins and configuration.
+    name: The MCP server and tool name. Defaults to the agent or app name.
     instructions: Optional instructions the MCP host may show to its model.
     runner: A pre-built Runner. If omitted, one is created with in-memory
       services.
@@ -321,6 +328,8 @@ def to_mcp_server(
       server.run(transport="stdio")
   """
   tool_name = name or agent.name or "adk_agent"
+  root = agent.root_agent if isinstance(agent, App) else agent
+  description = root.description if root is not None else ""
   server = FastMCP(name=tool_name, instructions=instructions)
   agent_runner = runner if runner is not None else _build_runner(agent)
   reap_sessions = isinstance(
@@ -360,7 +369,7 @@ def to_mcp_server(
   server.add_tool(
       call_agent,
       name=tool_name,
-      description=agent.description or f"Run the {tool_name} agent.",
+      description=description or f"Run the {tool_name} agent.",
       structured_output=False,
   )
   return server
