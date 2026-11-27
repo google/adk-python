@@ -23,19 +23,26 @@ from a2a.server.agent_execution import RequestContext
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import Message
 from a2a.types import Task
+from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a import _compat
+from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
+from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.executor.a2a_agent_executor_impl import _A2aAgentExecutor as A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor_impl import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.executor.a2a_agent_executor_impl import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
+from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
+from google.adk.artifacts import InMemoryArtifactService
+from google.adk.events import event_actions
 from google.adk.events.event import Event
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.utils._error_reporting import ENV_DEBUG_ERRORS
+from google.genai import types as genai_types
 from google.genai.types import Content
 import pytest
 
@@ -980,3 +987,143 @@ class TestA2aAgentExecutor:
     assert self.mock_event_queue.enqueue_event.call_count == 1
     final_event = self.mock_event_queue.enqueue_event.call_args_list[0][0][0]
     assert final_event.status.state == _compat.TS_COMPLETED
+
+  @pytest.mark.asyncio
+  async def test_execute_escalate_event_keeps_actions_metadata(self):
+    """An escalate-only event keeps its adk_actions on the message-less
+    WORKING update after the executor stamps the invocation metadata: the
+    merge must not wipe the converter metadata (review on #8372)."""
+    # Use the real converter so the test covers the converter -> executor
+    # path, not a mocked conversion.
+    self.mock_config.adk_event_converter = convert_event_to_a2a_events
+    self.mock_config.gen_ai_part_converter = convert_genai_part_to_a2a_part
+
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=RunConfig(),
+    )
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    mock_events = [
+        Event(
+            invocation_id="invocation-id",
+            author="test-agent",
+            branch="main",
+            partial=False,
+            content=genai_types.Content(
+                parts=[genai_types.Part(text="hello")], role="model"
+            ),
+        ),
+        Event(
+            invocation_id="invocation-id",
+            author="test-agent",
+            branch="main",
+            partial=False,
+            actions=event_actions.EventActions(escalate=True),
+        ),
+    ]
+
+    async def mock_run_async(**kwargs):
+      async for item in self._create_async_generator(mock_events):
+        yield item
+
+    self.mock_runner.run_async = mock_run_async
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    enqueued = [
+        call[0][0]
+        for call in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    # The escalate event's update is the message-less WORKING update that
+    # carries adk_actions; the initial WORKING update from execute() has
+    # invocation metadata only.
+    actions_key = _get_adk_metadata_key("actions")
+    escalate_updates = [
+        e
+        for e in enqueued
+        if isinstance(e, TaskStatusUpdateEvent)
+        and e.status.state == _compat.TS_WORKING
+        and _compat.normalize_message(e.status.message) is None
+        and actions_key in _compat.meta_to_dict(e.metadata)
+    ]
+    assert len(escalate_updates) == 1
+    metadata = _compat.meta_to_dict(escalate_updates[0].metadata)
+    assert metadata[actions_key]["escalate"] is True
+    # The invocation metadata survives alongside the converter metadata.
+    for key, value in self.expected_metadata.items():
+      assert metadata[key] == value
+
+    # No agent message with empty parts anywhere in the stream.
+    for e in enqueued:
+      if isinstance(e, TaskStatusUpdateEvent):
+        message = _compat.normalize_message(e.status.message)
+        if message is not None:
+          assert len(message.parts) >= 1
+
+  @pytest.mark.asyncio
+  async def test_execute_artifact_delta_event_exports_artifact(self):
+    """An artifact-delta-only event still exports the saved artifact: the
+    converter emits a message-less WORKING update for it, which the
+    after-event interceptor turns into an artifact update (review on
+    #8372)."""
+    artifact_service = InMemoryArtifactService()
+    await artifact_service.save_artifact(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="test-session",
+        filename="report.txt",
+        artifact=genai_types.Part(text="report content"),
+    )
+    self.mock_runner.artifact_service = artifact_service
+    self.mock_config.adk_event_converter = convert_event_to_a2a_events
+    self.mock_config.execute_interceptors = [
+        include_artifacts_in_a2a_event_interceptor
+    ]
+
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=RunConfig(),
+    )
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    mock_event = Event(
+        invocation_id="invocation-id",
+        author="test-agent",
+        branch="main",
+        partial=False,
+        actions=event_actions.EventActions(artifact_delta={"report.txt": 0}),
+    )
+
+    async def mock_run_async(**kwargs):
+      async for item in self._create_async_generator([mock_event]):
+        yield item
+
+    self.mock_runner.run_async = mock_run_async
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    enqueued = [
+        call[0][0]
+        for call in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    artifact_updates = [
+        e
+        for e in enqueued
+        if isinstance(e, TaskArtifactUpdateEvent)
+        and e.artifact.name == "report.txt"
+    ]
+    assert len(artifact_updates) == 1
+    assert _part_text(artifact_updates[0].artifact.parts[0]) == "report content"
