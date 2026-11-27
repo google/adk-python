@@ -55,7 +55,6 @@ from typing import Any
 from typing import Callable
 from typing import ClassVar
 from typing import Literal
-from typing import Optional
 import uuid
 
 from fastapi import FastAPI
@@ -152,7 +151,7 @@ _STARTUP_ENVIRON: dict[str, str] = dict(os.environ)
 # only for the moment between claiming the slot and the child being spawned.
 # Holding the task here also keeps a strong reference to it, which the event
 # loop does not.
-_deploys_in_flight: dict[str, Optional["asyncio.Task[int]"]] = {}
+_deploys_in_flight: dict[str, asyncio.Task[int] | None] = {}
 
 DeployTarget = Literal["agent_engine", "cloud_run", "gke"]
 
@@ -168,7 +167,7 @@ def _reject_unsafe(field: str, value: str) -> str:
   return value
 
 
-def _check_free_text(value: Optional[str]) -> Optional[str]:
+def _check_free_text(value: str | None) -> str | None:
   """Validates a human-readable field that still becomes an argv entry."""
   if value is None:
     return None
@@ -194,7 +193,7 @@ class _BaseDeployRequest(common.BaseModel, abc.ABC):
   fetch cluster credentials.
   """
 
-  project: Optional[str] = None
+  project: str | None = None
   """Google Cloud project. When omitted the CLI reads it from gcloud config."""
 
   @field_validator("region")
@@ -207,7 +206,7 @@ class _BaseDeployRequest(common.BaseModel, abc.ABC):
 
   @field_validator("project")
   @classmethod
-  def _check_project(cls, value: Optional[str]) -> Optional[str]:
+  def _check_project(cls, value: str | None) -> str | None:
     if value is None:
       return None
     _reject_unsafe("project", value)
@@ -247,12 +246,12 @@ class AgentEngineDeployRequest(_BaseDeployRequest):
 
   target: ClassVar[DeployTarget] = "agent_engine"
 
-  display_name: Optional[str] = None
+  display_name: str | None = None
   """Display name of the Agent Runtime. Defaults to the agent folder name."""
 
-  description: Optional[str] = None
+  description: str | None = None
 
-  agent_engine_id: Optional[str] = None
+  agent_engine_id: str | None = None
   """Existing runtime to update; a bare id or a full resource name.
 
   When omitted the CLI creates a brand new Agent Runtime on every deploy, so a
@@ -262,7 +261,7 @@ class AgentEngineDeployRequest(_BaseDeployRequest):
 
   @field_validator("agent_engine_id")
   @classmethod
-  def _check_agent_engine_id(cls, value: Optional[str]) -> Optional[str]:
+  def _check_agent_engine_id(cls, value: str | None) -> str | None:
     if value is None:
       return None
     _reject_unsafe("agent_engine_id", value)
@@ -278,7 +277,7 @@ class AgentEngineDeployRequest(_BaseDeployRequest):
 
   @field_validator("display_name", "description")
   @classmethod
-  def _check_text(cls, value: Optional[str]) -> Optional[str]:
+  def _check_text(cls, value: str | None) -> str | None:
     return _check_free_text(value)
 
   def target_flags(self) -> list[str]:
@@ -476,32 +475,32 @@ class DeployDefaults(common.BaseModel):
   other response the UI consumes.
   """
 
-  project: Optional[str] = None
-  project_source: Optional[str] = None
+  project: str | None = None
+  project_source: str | None = None
   """Where `project` came from.
 
   One of "dotenv" (the agent's .env), "environment" (a variable exported to
   the server), "gcloud" (gcloud config), or None when nothing supplied it.
   """
 
-  region: Optional[str] = None
-  region_source: Optional[str] = None
+  region: str | None = None
+  region_source: str | None = None
   """Where `region` came from: "dotenv", "environment", or None.
 
   There is no gcloud fallback: gcloud config has no region default that
   applies here.
   """
 
-  display_name: Optional[str] = None
-  description: Optional[str] = None
-  service_name: Optional[str] = None
+  display_name: str | None = None
+  description: str | None = None
+  service_name: str | None = None
   """The agent name in Cloud Run / GKE form: lower-case, hyphens for spaces."""
 
-  env_file: Optional[str] = None
+  env_file: str | None = None
   """Path of the `.env` that supplied values, shown so the source is visible."""
 
 
-def _find_dotenv(agent_dir: str) -> Optional[str]:
+def _find_dotenv(agent_dir: str) -> str | None:
   """Finds the `.env` that applies to an agent.
 
   Prefers the agent's own folder, which is the only place `adk deploy` looks
@@ -538,7 +537,7 @@ def _sanitize_service_name(name: str) -> str:
   return slug[:_MAX_SERVICE_NAME_CHARS].rstrip("-")
 
 
-async def _gcloud_project() -> Optional[str]:
+async def _gcloud_project() -> str | None:
   """Returns the active gcloud project, or None if it cannot be determined.
 
   Mirrors `cli_deploy._resolve_project` but never raises and never prompts:
@@ -577,7 +576,7 @@ async def _gcloud_project() -> Optional[str]:
 
 def _lookup(
     key: str, env_values: dict[str, Any]
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
   """Resolves one variable, returning its value and where it came from.
 
   The agent's own `.env` wins over an exported environment variable: it sits
@@ -680,7 +679,7 @@ def _build_deploy_argv(
   ]
 
 
-def _agent_runtime_console_url(resource_name: str) -> Optional[str]:
+def _agent_runtime_console_url(resource_name: str) -> str | None:
   """Builds the Cloud console URL for a deployed Agent Runtime."""
   parts = resource_name.split("/")
   if len(parts) < 6 or parts[0] != "projects" or parts[2] != "locations":
@@ -693,8 +692,8 @@ def _agent_runtime_console_url(resource_name: str) -> Optional[str]:
 
 
 def _cloud_run_console_url(
-    *, project: Optional[str], region: str, service_name: str
-) -> Optional[str]:
+    *, project: str | None, region: str, service_name: str
+) -> str | None:
   """Builds the Cloud console URL for a deployed Cloud Run service."""
   if not project:
     return None
@@ -720,7 +719,7 @@ def _read_log(log_path: str) -> str:
 
 
 def _base_result(
-    *, target: DeployTarget, exit_code: Optional[int], log_path: str
+    *, target: DeployTarget, exit_code: int | None, log_path: str
 ) -> dict[str, Any]:
   """Returns the keys every deploy result carries, whatever the outcome.
 
@@ -772,7 +771,7 @@ async def _spawn_deploy(
     app_name: str,
     agent_dir: str,
     request: _BaseDeployRequest,
-) -> tuple[asyncio.subprocess.Process, str, "asyncio.Task[int]"]:
+) -> tuple[asyncio.subprocess.Process, str, asyncio.Task[int]]:
   """Starts the deploy child and returns it, its log path, and its waiter.
 
   Spawning happens while the request is being handled rather than on the first
@@ -841,7 +840,7 @@ async def _tail_deploy(
     agent_dir: str,
     process: asyncio.subprocess.Process,
     log_path: str,
-    waiter: "asyncio.Task[int]",
+    waiter: asyncio.Task[int],
     request: _BaseDeployRequest,
 ) -> AsyncIterator[bytes]:
   """Yields the running deploy's output, then one result line.
@@ -902,7 +901,7 @@ def register_dev_deploy_endpoints(
     app: FastAPI,
     *,
     get_agent_dir: Callable[[str], str],
-    dependencies: Optional[Sequence[Any]] = None,
+    dependencies: Sequence[Any] | None = None,
 ) -> None:
   """Registers the dev-only deploy endpoints on `app`.
 

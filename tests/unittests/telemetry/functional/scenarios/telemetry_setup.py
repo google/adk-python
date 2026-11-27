@@ -85,6 +85,11 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
     ),
     HistogramSpec(
         module=_metrics,
+        attr="_client_inference_duration",
+        metric_name="gen_ai.client.inference.duration",
+    ),
+    HistogramSpec(
+        module=_metrics,
         attr="_client_token_usage",
         metric_name="gen_ai.client.token.usage",
     ),

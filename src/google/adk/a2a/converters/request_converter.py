@@ -18,7 +18,6 @@ from collections.abc import Callable
 import functools
 import logging
 from typing import Any
-from typing import Optional
 
 from a2a.server.agent_execution import RequestContext
 from google.genai import types as genai_types
@@ -37,12 +36,12 @@ A2A_METADATA_KEY = 'a2a_metadata'
 class AgentRunRequest(BaseModel):
   """Data model for arguments passed to the ADK runner."""
 
-  user_id: Optional[str] = None
-  session_id: Optional[str] = None
-  invocation_id: Optional[str] = None
-  new_message: Optional[genai_types.Content] = None
-  state_delta: Optional[dict[str, Any]] = None
-  run_config: Optional[RunConfig] = None
+  user_id: str | None = None
+  session_id: str | None = None
+  invocation_id: str | None = None
+  new_message: genai_types.Content | None = None
+  state_delta: dict[str, Any] | None = None
+  run_config: RunConfig | None = None
 
 
 A2ARequestToAgentRunRequestConverter = Callable[

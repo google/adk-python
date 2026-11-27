@@ -948,6 +948,75 @@ def test_maybe_append_user_content(gemini_llm, llm_request):
   assert "Continue processing" in llm_request.contents[-1].parts[0].text
 
 
+@pytest.mark.parametrize(
+    "contents,transient_role,expected_len,expected_tail",
+    [
+        pytest.param(
+            [
+                Content(role="user", parts=[Part.from_text(text="Start")]),
+                Content(role="model", parts=[Part.from_text(text="Done")]),
+            ],
+            "user",
+            4,
+            "Continue processing",
+            id="after_model",
+        ),
+        pytest.param([], "user", 2, "Handle the requests", id="transient_only"),
+        pytest.param(
+            [
+                Content(role="user", parts=[Part.from_text(text="Start")]),
+                Content(
+                    role="model",
+                    parts=[Part.from_function_call(name="tool", args={})],
+                ),
+                Content(
+                    role="user",
+                    parts=[
+                        Part.from_function_response(name="tool", response={})
+                    ],
+                ),
+            ],
+            "user",
+            4,
+            None,
+            id="after_tool",
+        ),
+        pytest.param(
+            [
+                Content(role="user", parts=[Part.from_text(text="Start")]),
+                Content(
+                    role="model",
+                    parts=[Part.from_function_call(name="tool", args={})],
+                ),
+                Content(
+                    role="user",
+                    parts=[
+                        Part.from_function_response(name="tool", response={})
+                    ],
+                ),
+            ],
+            "model",
+            5,
+            "Continue processing",
+            id="after_tool_with_transient_model",
+        ),
+    ],
+)
+def test_maybe_append_user_content_ignores_trailing_transient_content(
+    gemini_llm, contents, transient_role, expected_len, expected_tail
+):
+  request = LlmRequest(contents=list(contents))
+  request._insert_transient_user_content(
+      [Content(role=transient_role, parts=[Part.from_text(text="dyn inst")])]
+  )
+
+  gemini_llm._maybe_append_user_content(request)
+
+  assert len(request.contents) == expected_len
+  if expected_tail is not None:
+    assert expected_tail in request.contents[-1].parts[0].text
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async(
     gemini_llm, llm_request, generate_content_response

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import keyword
 import os
-from typing import Optional
 
 import click
 
@@ -115,10 +114,10 @@ def _ensure_dotenv_gitignored(agent_folder: str) -> None:
 def _generate_files(
     agent_folder: str,
     *,
-    google_api_key: Optional[str] = None,
-    google_cloud_project: Optional[str] = None,
-    google_cloud_region: Optional[str] = None,
-    model: Optional[str] = None,
+    google_api_key: str | None = None,
+    google_cloud_project: str | None = None,
+    google_cloud_region: str | None = None,
+    model: str | None = None,
     type: str,
 ) -> None:
   """Generates a folder name for the agent."""
@@ -204,11 +203,11 @@ Choose type""",
 def run_cmd(
     agent_name: str,
     *,
-    model: Optional[str],
-    google_api_key: Optional[str],
-    google_cloud_project: Optional[str],
-    google_cloud_region: Optional[str],
-    type: Optional[str],
+    model: str | None,
+    google_api_key: str | None,
+    google_cloud_project: str | None,
+    google_cloud_region: str | None,
+    type: str | None,
 ) -> None:
   """Runs `adk create` command to create agent template.
 

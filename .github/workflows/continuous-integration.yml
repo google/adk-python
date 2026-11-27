@@ -319,3 +319,61 @@ jobs:
           sed -n '/^=* short test summary info =*$/,$p' "$RUNNER_TEMP/pytest.log" \
             | grep -E '^(FAILED|ERROR) ' | head -n 10 \
             | sed -e 's/%/%25/g' -e 's/^/::error::/'
+
+  # 3d. Dual-version google-genai coverage: google-cloud-aiplatform caps
+  # google-genai below 3 in the test extra, so unit-test only exercises 2.x
+  # while a default install resolves 3.x.
+  unit-test-genai-v3:
+    name: google-genai v3 Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --extra test $SKIP_PACKAGE_FLAGS
+
+      - name: List installed packages (before reinstall)
+        run: uv pip list
+
+      - name: Run unit tests against google-genai v3
+        run: |
+          set -o pipefail
+          uv pip install --reinstall-package google-genai 'google-genai>=3,<4'
+          uv pip list
+          uv run --no-sync python -c "
+          import importlib.metadata as m
+          version = m.version('google-genai')
+          assert version.startswith('3.'), f'expected google-genai 3.x, got {version}'
+          print('testing against google-genai', version)
+          "
+          uv run --no-sync pytest tests/unittests -n auto | tee "$RUNNER_TEMP/pytest.log"
+
+      - name: Annotate failing tests
+        # Copy pytest's FAILED/ERROR summary lines verbatim into annotations.
+        if: failure()
+        run: |
+          [ -f "$RUNNER_TEMP/pytest.log" ] || exit 0
+          sed -n '/^=* short test summary info =*$/,$p' "$RUNNER_TEMP/pytest.log" \
+            | grep -E '^(FAILED|ERROR) ' | head -n 10 \
+            | sed -e 's/%/%25/g' -e 's/^/::error::/'

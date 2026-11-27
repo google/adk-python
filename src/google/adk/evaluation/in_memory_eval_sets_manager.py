@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from typing_extensions import override
 
@@ -46,7 +45,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
       self._eval_cases[app_name] = {}
 
   @override
-  def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
+  def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet | None:
     self._ensure_app_exists(app_name)
     return self._eval_sets[app_name].get(eval_set_id, None)
 
@@ -77,7 +76,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
   @override
   def get_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ) -> Optional[EvalCase]:
+  ) -> EvalCase | None:
     if app_name not in self._eval_cases:
       return None
     if eval_set_id not in self._eval_cases[app_name]:

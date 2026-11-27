@@ -20,9 +20,6 @@ import os
 from pathlib import Path
 import subprocess
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Tuple
 
 import click
 import google.adk.cli.cli_create as cli_create
@@ -36,7 +33,7 @@ class _Recorder:
   """A callable object that records every invocation."""
 
   def __init__(self) -> None:
-    self.calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+    self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
   def __call__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
     self.calls.append((args, kwargs))
@@ -448,7 +445,7 @@ def test_prompt_for_model_gemini_38_flash(
 
 def test_prompt_for_model_other(monkeypatch: pytest.MonkeyPatch) -> None:
   """Selecting option '3' should return placeholder and call secho."""
-  called: Dict[str, bool] = {}
+  called: dict[str, bool] = {}
 
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
 
@@ -705,7 +702,7 @@ def test_get_gcp_region_from_gcloud_fail(
 
 
 # express_mode_action telemetry
-def _onboard_and_get_root_meta() -> Dict[str, Any]:
+def _onboard_and_get_root_meta() -> dict[str, Any]:
   """Runs onboarding under a nested context and returns the *root* context meta.
 
   `TelemetryGroup` reads `express_mode_action` off the root context, so the
