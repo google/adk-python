@@ -22,9 +22,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
-from typing import Dict
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 
 import httpx
@@ -71,7 +69,7 @@ class AdkWebServerClient:
     """
     self.base_url = base_url.rstrip("/")
     self.timeout = timeout
-    self._client: Optional[httpx.AsyncClient] = None
+    self._client: httpx.AsyncClient | None = None
 
   @asynccontextmanager
   async def _get_client(self) -> AsyncGenerator[httpx.AsyncClient, None]:
@@ -96,7 +94,7 @@ class AdkWebServerClient:
       await self._client.aclose()
       self._client = None
 
-  async def __aenter__(self) -> "AdkWebServerClient":
+  async def __aenter__(self) -> AdkWebServerClient:
     """Async context manager entry.
 
     Returns:
@@ -106,9 +104,9 @@ class AdkWebServerClient:
 
   async def __aexit__(  # pylint: disable=unused-argument
       self,
-      exc_type: Optional[type[BaseException]],
-      exc_val: Optional[BaseException],
-      exc_tb: Optional[TracebackType],
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
   ) -> None:
     """Async context manager exit that closes the HTTP client."""
     await self.close()
@@ -141,7 +139,7 @@ class AdkWebServerClient:
       *,
       app_name: str,
       user_id: str,
-      state: Optional[Dict[str, Any]] = None,
+      state: dict[str, Any] | None = None,
   ) -> Session:
     """Create a new session in the ADK web server.
 
@@ -193,7 +191,7 @@ class AdkWebServerClient:
       app_name: str,
       user_id: str,
       session_id: str,
-      state_delta: Dict[str, Any],
+      state_delta: dict[str, Any],
   ) -> Session:
     """Update session state without running the agent.
 
@@ -217,7 +215,7 @@ class AdkWebServerClient:
       response.raise_for_status()
       return Session.model_validate(response.json())
 
-  async def get_version_data(self) -> Dict[str, str]:
+  async def get_version_data(self) -> dict[str, str]:
     """Retrieve version data from the ADK web server.
 
     Returns:
@@ -227,14 +225,14 @@ class AdkWebServerClient:
       response = await client.get("/version")
       response.raise_for_status()
       # The /version route returns a dict[str, str].
-      return cast(Dict[str, str], response.json())
+      return cast(dict[str, str], response.json())
 
   async def run_agent(
       self,
       request: RunAgentRequest,
-      mode: Optional[Literal["record", "replay"]] = None,
-      test_case_dir: Optional[str] = None,
-      user_message_index: Optional[int] = None,
+      mode: Literal["record", "replay"] | None = None,
+      test_case_dir: str | None = None,
+      user_message_index: int | None = None,
   ) -> AsyncGenerator[Event, None]:
     """Run an agent with streaming Server-Sent Events response.
 

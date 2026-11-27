@@ -23,8 +23,6 @@ from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Optional
-from typing import Union
 from urllib.parse import urlparse
 
 from a2a.client import Client as A2AClient
@@ -179,7 +177,7 @@ _CARD_DESCRIPTION_TRUNCATION_SUFFIX = "... [truncated]"
 
 
 def _mark_a2a_task_failed_event(
-    event: Optional[Event],
+    event: Event | None,
     *,
     author: str,
     invocation_context: InvocationContext,
@@ -215,7 +213,7 @@ def _payload_is_auth_config(payload: Any) -> bool:
 
 def _is_credential_function_response(
     function_response: genai_types.FunctionResponse,
-    matched_call_names: Optional[set[str]] = None,
+    matched_call_names: set[str] | None = None,
 ) -> bool:
   """Whether a function_response carries credential material (fail closed)."""
   if matched_call_names and not matched_call_names.isdisjoint(
@@ -295,7 +293,7 @@ def _without_credential_parts(event: Event) -> Event:
 
 
 def _adopted_card_description(
-    description: str, agent_card_source: Optional[str]
+    description: str, agent_card_source: str | None
 ) -> str:
   """Returns the description to adopt from a resolved agent card.
 
@@ -316,8 +314,8 @@ def _adopted_card_description(
 
 
 def _render_user_function_response(
-    response: Optional[dict[str, Any]],
-) -> Optional[str]:
+    response: dict[str, Any] | None,
+) -> str | None:
   """Renders a human-input response payload as text, or None if empty."""
   # ADK's mock path wraps the answer as {"result": <text>}; workflow producers
   # send the resolved parameters directly (e.g. {"company_name": "Okta"}).
@@ -335,7 +333,7 @@ def _render_user_function_response(
 
 def _sanitize_user_function_response_event(
     event: Event,
-    trusted_call_names_by_id: dict[Optional[str], set[str]],
+    trusted_call_names_by_id: dict[str | None, set[str]],
     id_less_call_is_ambiguous: bool,
     human_input_call_names: frozenset[str],
 ) -> Event:
@@ -398,7 +396,7 @@ def _sanitize_user_function_response_event(
   return new_event
 
 
-def _is_loopback_host(hostname: Optional[str]) -> bool:
+def _is_loopback_host(hostname: str | None) -> bool:
   """Returns whether a hostname names the local machine.
 
   Covers ``localhost`` and the reserved ``*.localhost`` names as well as any
@@ -416,7 +414,7 @@ def _is_loopback_host(hostname: Optional[str]) -> bool:
     return False
 
 
-def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
+def _url_origin(url: str) -> tuple[str, str, int | None]:
   """Returns the ``(scheme, host, port)`` origin triple for a URL.
 
   Raises:
@@ -431,7 +429,7 @@ def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
   )
 
 
-def _card_target_origin(url: str) -> tuple[str, str, Optional[int]]:
+def _card_target_origin(url: str) -> tuple[str, str, int | None]:
   """Returns the origin of url, with a Google API's mTLS host as its plain host.
 
   Requests to a ``*.googleapis.com`` host may be routed to its mTLS host, so
@@ -458,7 +456,7 @@ class A2AClientError(Exception):
   pass
 
 
-def _text_from_content(content: Optional[genai_types.Content]) -> Optional[str]:
+def _text_from_content(content: genai_types.Content | None) -> str | None:
   """Joins the text parts of a content, or None when there is no text."""
   if content is None or not content.parts:
     return None
@@ -471,7 +469,7 @@ def _create_finish_task_event(
     agent_name: str,
     *,
     output: Any = None,
-    error_message: Optional[str] = None,
+    error_message: str | None = None,
     is_error: bool = False,
 ) -> Event:
   """Creates a finish_task Event."""
@@ -554,9 +552,9 @@ def _add_mock_function_call(event: Event, state: TaskState) -> None:
 
 def _find_finish_task_args_from_history(
     session: Session,
-    isolation_scope: Optional[str] = None,
-    completed_fr_event: Optional[Event] = None,
-) -> Optional[dict[str, Any]]:
+    isolation_scope: str | None = None,
+    completed_fr_event: Event | None = None,
+) -> dict[str, Any] | None:
   """Search session events for the latest finish_task FC and return args."""
   matching_fc_id = None
   if completed_fr_event:
@@ -565,7 +563,7 @@ def _find_finish_task_args_from_history(
         matching_fc_id = fr.id
         break
 
-  def _args_from(event: Event) -> Optional[dict[str, Any]]:
+  def _args_from(event: Event) -> dict[str, Any] | None:
     for fc in reversed(event.get_function_calls()):
       if fc.name != FINISH_TASK_TOOL_NAME:
         continue
@@ -639,7 +637,7 @@ def _add_request_headers(
   client_call_context.state = state
 
 
-def _remote_identity(agent_card: Union[AgentCard, str]) -> str:
+def _remote_identity(agent_card: AgentCard | str) -> str:
   """Returns the remote a credential is meant for: a URL, a path or a name."""
   if isinstance(agent_card, str):
     return agent_card.strip()
@@ -648,7 +646,7 @@ def _remote_identity(agent_card: Union[AgentCard, str]) -> str:
   return _compat.agent_card_url(agent_card) or agent_card.name or ""
 
 
-def _namespaced_session_context_id(session: Optional[Session]) -> Optional[str]:
+def _namespaced_session_context_id(session: Session | None) -> str | None:
   """Derives a remote context ID that namespaces the session by app/user.
 
   ``session.id`` alone is not globally unique: two distinct local users (or
@@ -672,7 +670,7 @@ def _namespaced_session_context_id(session: Optional[Session]) -> Optional[str]:
 
 
 def _names_its_own_credential_key(
-    auth_scheme: AuthScheme, auth_credential: Optional[AuthCredential]
+    auth_scheme: AuthScheme, auth_credential: AuthCredential | None
 ) -> bool:
   """Whether the scheme or credential carries a caller-set credential key."""
   for obj in (auth_credential, auth_scheme):
@@ -705,7 +703,7 @@ def _build_auth_interceptors(
       ctx: InvocationContext,
       a2a_request: A2AMessage,
       parameters: ParametersConfig,
-  ) -> tuple[Union[A2AMessage, Event], ParametersConfig]:
+  ) -> tuple[A2AMessage | Event, ParametersConfig]:
     headers = _headers(ctx)
     if headers:
       _add_request_headers(parameters, headers)
@@ -758,29 +756,30 @@ class RemoteA2aAgent(BaseAgent):
   def __init__(
       self,
       name: str,
-      agent_card: Union[AgentCard, str],
+      agent_card: AgentCard | str,
       *,
       description: str = "",
-      httpx_client: Optional[httpx.AsyncClient] = None,
+      httpx_client: httpx.AsyncClient | None = None,
       timeout: float = DEFAULT_TIMEOUT,
       genai_part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
       a2a_part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-      a2a_client_factory: Optional[A2AClientFactory] = None,
-      a2a_request_meta_provider: Optional[
-          Callable[[InvocationContext, A2AMessage], dict[str, Any]]
-      ] = None,
+      a2a_client_factory: A2AClientFactory | None = None,
+      a2a_request_meta_provider: (
+          Callable[[InvocationContext, A2AMessage], dict[str, Any]] | None
+      ) = None,
       full_history_when_stateless: bool = False,
-      context_builder: Optional[
+      context_builder: (
           Callable[
               [InvocationContext, str, GenAIPartToA2APartConverter],
-              tuple[list[A2APart], Optional[str]],
+              tuple[list[A2APart], str | None],
           ]
-      ] = None,
-      config: Optional[A2aRemoteAgentConfig] = None,
+          | None
+      ) = None,
+      config: A2aRemoteAgentConfig | None = None,
       use_legacy: bool = True,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      credential_key: Optional[str] = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      credential_key: str | None = None,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -826,9 +825,9 @@ class RemoteA2aAgent(BaseAgent):
     if agent_card is None:
       raise ValueError("agent_card cannot be None")
 
-    self._agent_card: Optional[AgentCard] = None
-    self._agent_card_source: Optional[str] = None
-    self._a2a_client: Optional[A2AClient] = None
+    self._agent_card: AgentCard | None = None
+    self._agent_card_source: str | None = None
+    self._a2a_client: A2AClient | None = None
     # This is stored to support backward compatible usage of class.
     # In future, the client is expected to be present in the factory.
     self._httpx_client = httpx_client
@@ -839,7 +838,7 @@ class RemoteA2aAgent(BaseAgent):
     self._is_resolved = False
     self._genai_part_converter = genai_part_converter
     self._a2a_part_converter = a2a_part_converter
-    self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
+    self._a2a_client_factory: A2AClientFactory | None = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless_param = full_history_when_stateless
     self._context_builder = context_builder
@@ -872,7 +871,7 @@ class RemoteA2aAgent(BaseAgent):
       )
 
     # Set up after the card is validated: the derived credential key reads it.
-    self._auth_config: Optional[AuthConfig] = None
+    self._auth_config: AuthConfig | None = None
     if auth_scheme:
       self._auth_config = AuthConfig(
           auth_scheme=auth_scheme,
@@ -923,7 +922,7 @@ class RemoteA2aAgent(BaseAgent):
 
   async def _resolve_auth_credential(
       self, ctx: InvocationContext
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Caches the credential for this invocation in ``ctx.credential_by_key``.
 
     Args:
@@ -1025,7 +1024,7 @@ class RemoteA2aAgent(BaseAgent):
     return self._httpx_client
 
   async def _resolve_agent_card_from_url(
-      self, url: str, ctx: Optional[InvocationContext] = None
+      self, url: str, ctx: InvocationContext | None = None
   ) -> AgentCard:
     """Resolve agent card from URL."""
     try:
@@ -1080,7 +1079,7 @@ class RemoteA2aAgent(BaseAgent):
       ) from e
 
   async def _resolve_agent_card(
-      self, ctx: Optional[InvocationContext] = None
+      self, ctx: InvocationContext | None = None
   ) -> AgentCard:
     """Resolve agent card from source."""
     if ctx is not None:
@@ -1252,7 +1251,7 @@ class RemoteA2aAgent(BaseAgent):
         )
 
   async def _ensure_resolved(
-      self, ctx: Optional[InvocationContext] = None
+      self, ctx: InvocationContext | None = None
   ) -> A2AClient:
     """Resolves the agent card and returns the A2A client for this invocation."""
     # Per the A2A spec, the authenticated (extended) agent card is scoped to a
@@ -1345,7 +1344,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _create_a2a_request_for_user_function_response(
       self, ctx: InvocationContext
-  ) -> Optional[A2AMessage]:
+  ) -> A2AMessage | None:
     """Create A2A request for user function response if applicable.
 
     Args:
@@ -1371,7 +1370,7 @@ class RemoteA2aAgent(BaseAgent):
 
     # Map every pending call to its id by the trusted function CALL name so
     # credential matching does not depend on the human-input set.
-    trusted_call_names_by_id: dict[Optional[str], set[str]] = {}
+    trusted_call_names_by_id: dict[str | None, set[str]] = {}
     id_less_call_is_ambiguous = False
     for fc in function_call_event.get_function_calls():
       if fc.name is None:
@@ -1429,7 +1428,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str]]:
+  ) -> tuple[list[A2APart], str | None]:
     """Construct A2A message parts from session events.
 
     Args:
@@ -1546,7 +1545,7 @@ class RemoteA2aAgent(BaseAgent):
       # function_response as text with their payloads inlined, so scrubbing
       # after it would be too late.
       scrubbed_event = _without_credential_parts(event)
-      processed_event: Optional[Event] = scrubbed_event
+      processed_event: Event | None = scrubbed_event
       if _is_other_agent_reply(self.name, scrubbed_event):
         processed_event = _present_other_agent_message(scrubbed_event)
 
@@ -1608,7 +1607,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _build_message_parts_for_request(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str]]:
+  ) -> tuple[list[A2APart], str | None]:
     """Build A2A message parts for the outgoing remote request.
 
     Uses ``context_builder`` when provided; otherwise falls back to
@@ -1619,8 +1618,8 @@ class RemoteA2aAgent(BaseAgent):
     return self._construct_message_parts_from_session(ctx)
 
   def _get_resumable_task_id(
-      self, ctx: InvocationContext, context_id: Optional[str]
-  ) -> Optional[str]:
+      self, ctx: InvocationContext, context_id: str | None
+  ) -> str | None:
     """Returns the latest paused task in the outgoing message's context."""
     if not context_id or not self._has_default_response_persistence():
       return None
@@ -1689,7 +1688,7 @@ class RemoteA2aAgent(BaseAgent):
       self,
       a2a_response: _compat.A2AClientEvent | A2AMessage,
       ctx: InvocationContext,
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Handle A2A response and convert to Event.
 
     Args:
@@ -1887,7 +1886,7 @@ class RemoteA2aAgent(BaseAgent):
       self,
       a2a_response: _compat.A2AClientEvent | A2AMessage,
       ctx: InvocationContext,
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Handle A2A response and convert to Event.
 
     Args:
@@ -1981,7 +1980,7 @@ class RemoteA2aAgent(BaseAgent):
     # Tracks whether task control should be released back to the parent
     # coordinator and any error output to emit on early termination.
     should_release_task_control = False
-    task_error_message: Optional[str] = None
+    task_error_message: str | None = None
     a2a_request = None
 
     try:

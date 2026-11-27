@@ -21,15 +21,23 @@ attribute mappings instead of probing individual keys.
 
 from __future__ import annotations
 
+from typing import Any
+from unittest import mock
+
+from google.adk.agents.run_config import RunConfig
 from google.adk.dependencies._mcp import Tool as McpTool
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry._experimental_semconv import _model_dump_to_tool_definition
+from google.adk.telemetry._experimental_semconv import _operation_details_attributes_no_content
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_request
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_response
 from google.adk.telemetry._stable_semconv import choice_body
+from google.adk.telemetry.context import ADK_TELEMETRY_IGNORE_RUN_CONFIG
 from google.adk.telemetry.context import ContentCapturingMode
 from google.adk.telemetry.context import TelemetryConfig
+from google.adk.telemetry.tracing import _use_native_generate_content_span
+from google.adk.telemetry.tracing import trace_inference_result
 from google.genai import types
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
@@ -43,17 +51,25 @@ import pytest
 _CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens'
 
 
-def _request_attributes(llm_request: LlmRequest) -> dict:
-  attributes: dict = {}
-  set_operation_details_attributes_from_request(attributes, llm_request)
+def _request_attributes(
+    llm_request: LlmRequest, *, reasoning: bool = False
+) -> dict[str, Any]:
+  attributes: dict[str, Any] = {}
+  set_operation_details_attributes_from_request(
+      attributes, llm_request, reasoning=reasoning
+  )
   return attributes
 
 
-def _response_attributes(llm_response: LlmResponse) -> tuple[dict, dict]:
+def _response_attributes(
+    llm_response: LlmResponse, *, reasoning: bool = False
+) -> tuple[dict[str, Any], dict[str, Any]]:
   """Returns the (details, common) mappings written for `llm_response`."""
-  details: dict = {}
-  common: dict = {}
-  set_operation_details_attributes_from_response(llm_response, details, common)
+  details: dict[str, Any] = {}
+  common: dict[str, Any] = {}
+  set_operation_details_attributes_from_response(
+      llm_response, details, common, reasoning=reasoning
+  )
   return details, common
 
 
@@ -417,6 +433,175 @@ def test_response_attributes_omit_token_usage_without_metadata():
 
 
 # ---------------------------------------------------------------------------
+# the `reasoning` experimental feature
+# ---------------------------------------------------------------------------
+
+
+def _thought_and_answer() -> list[types.Part]:
+  """Returns a model turn whose first part is a thought, second the answer."""
+  # The thought carries a signature because that is what the next turn's replay
+  # keeps; without one it would never reach the input messages.
+  return [
+      types.Part(text='plan', thought=True, thought_signature=b'sig'),
+      types.Part(text='answer'),
+  ]
+
+
+def test_output_reasoning_parts_are_tagged_apart_from_the_answer():
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=_thought_and_answer()),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  details, _ = _response_attributes(llm_response, reasoning=True)
+
+  assert details[GEN_AI_OUTPUT_MESSAGES] == [{
+      'role': 'assistant',
+      'parts': [
+          {'content': 'plan', 'type': 'reasoning'},
+          {'content': 'answer', 'type': 'text'},
+      ],
+      'finish_reason': 'stop',
+  }]
+
+
+def test_the_feature_relabels_the_thought_and_leaves_the_answer_alone():
+  """A consumer reading only answer text must see no change from the opt-in."""
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=_thought_and_answer()),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  on, _ = _response_attributes(llm_response, reasoning=True)
+  off, _ = _response_attributes(llm_response)
+
+  assert (
+      on[GEN_AI_OUTPUT_MESSAGES][0]['parts'][1]
+      == off[GEN_AI_OUTPUT_MESSAGES][0]['parts'][1]
+  )
+
+
+def test_thought_parts_stay_indistinguishable_while_the_feature_is_off():
+  """The default stays the shipped behaviour: both parts read as `text`."""
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=_thought_and_answer()),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  details, _ = _response_attributes(llm_response)
+
+  assert [
+      part['type'] for part in details[GEN_AI_OUTPUT_MESSAGES][0]['parts']
+  ] == ['text', 'text']
+
+
+def test_replayed_reasoning_parts_are_tagged_in_the_input_too():
+  """The next turn replays the thought, so the label has to survive there."""
+  llm_request = LlmRequest(
+      model='some-model',
+      contents=[
+          types.Content(
+              role='model',
+              parts=[
+                  *_thought_and_answer(),
+                  types.Part(thought=True, thought_signature=b'sig'),
+              ],
+          )
+      ],
+  )
+
+  attributes = _request_attributes(llm_request, reasoning=True)
+
+  assert attributes[GEN_AI_INPUT_MESSAGES] == [{
+      'role': 'assistant',
+      'parts': [
+          {'content': 'plan', 'type': 'reasoning'},
+          {'content': 'answer', 'type': 'text'},
+      ],
+  }]
+
+
+def test_replayed_thought_parts_stay_text_while_the_feature_is_off():
+  llm_request = LlmRequest(
+      model='some-model',
+      contents=[types.Content(role='model', parts=_thought_and_answer())],
+  )
+
+  attributes = _request_attributes(llm_request)
+
+  assert [
+      part['type'] for part in attributes[GEN_AI_INPUT_MESSAGES][0]['parts']
+  ] == ['text', 'text']
+
+
+# ---------------------------------------------------------------------------
+# the seam between the opt-in and the mapping
+#
+# The tests above pass `reasoning=` to the builders by hand, so they would all
+# still pass if tracing stopped deriving it from the config. These drive the
+# two call sites that actually carry the opt-in across, with a TelemetryConfig
+# shaped like the one Gemini Enterprise builds per request.
+# ---------------------------------------------------------------------------
+
+
+def _experimental_config(*, reasoning: bool) -> TelemetryConfig:
+  """A per-request config on the experimental semconv, opted in or not."""
+  return TelemetryConfig(
+      genai_semconv_stability_opt_in='experimental',
+      capture_message_content=ContentCapturingMode.EVENT_ONLY,
+      experimental_features_opt_in=frozenset({'reasoning'})
+      if reasoning
+      else None,
+  )
+
+
+def _part_types(messages: Any) -> list[str]:
+  return [part['type'] for part in messages[0]['parts']]
+
+
+@pytest.mark.parametrize(
+    'reasoning, expected',
+    [(True, ['reasoning', 'text']), (False, ['text', 'text'])],
+)
+def test_the_config_opt_in_reaches_the_request_mapping(reasoning, expected):
+  """The replayed thought is tagged iff the config named the feature."""
+  llm_request = LlmRequest(
+      model='some-model',
+      contents=[types.Content(role='model', parts=_thought_and_answer())],
+  )
+
+  with _use_native_generate_content_span(
+      llm_request, {}, _experimental_config(reasoning=reasoning)
+  ) as gc_span:
+    attributes = gc_span.operation_details_attributes
+
+  assert _part_types(attributes[GEN_AI_INPUT_MESSAGES]) == expected
+
+
+@pytest.mark.parametrize(
+    'reasoning, expected',
+    [(True, ['reasoning', 'text']), (False, ['text', 'text'])],
+)
+def test_the_config_opt_in_reaches_the_response_mapping(reasoning, expected):
+  """The answered thought is tagged iff the config named the feature."""
+  config = _experimental_config(reasoning=reasoning)
+  llm_request = LlmRequest(model='some-model', contents=[])
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=_thought_and_answer()),
+      finish_reason=types.FinishReason.STOP,
+  )
+  # `trace_inference_result` reads the config off the invocation context, and
+  # only ever touches `run_config.telemetry`.
+  invocation_context = mock.Mock(run_config=RunConfig(telemetry=config))
+
+  with _use_native_generate_content_span(llm_request, {}, config) as gc_span:
+    trace_inference_result(invocation_context, gc_span, llm_response)
+    attributes = gc_span.operation_details_attributes
+
+  assert _part_types(attributes[GEN_AI_OUTPUT_MESSAGES]) == expected
+
+
+# ---------------------------------------------------------------------------
 # stable vs experimental divergence
 # ---------------------------------------------------------------------------
 
@@ -498,3 +683,78 @@ class TestModelDumpToolDefinitionSchemaKey:
 
     assert definition['name'] == 'mcp_tool'
     assert definition.get('parameters') is None
+
+
+def _request_with_content_and_tool() -> LlmRequest:
+  def add(a: int, b: int) -> int:
+    """Adds two numbers."""
+    return a + b
+
+  return LlmRequest(
+      contents=[types.Content(role='user', parts=[types.Part(text='hi')])],
+      config=types.GenerateContentConfig(
+          system_instruction='be helpful',
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration.from_callable_with_api_option(
+                          callable=add
+                      )
+                  ]
+              )
+          ],
+      ),
+  )
+
+
+def test_set_operation_details_from_request_without_content(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Skipping content keeps exactly what survives no-content redaction."""
+  monkeypatch.delenv(ADK_TELEMETRY_IGNORE_RUN_CONFIG, raising=False)
+  llm_request = _request_with_content_and_tool()
+  full = {}
+  set_operation_details_attributes_from_request(full, llm_request)
+  without_content = {}
+  set_operation_details_attributes_from_request(
+      without_content,
+      llm_request,
+      TelemetryConfig(capture_message_content=ContentCapturingMode.NO_CONTENT),
+  )
+
+  assert GEN_AI_INPUT_MESSAGES in full
+  assert GEN_AI_INPUT_MESSAGES not in without_content
+  assert GEN_AI_SYSTEM_INSTRUCTIONS not in without_content
+  assert (
+      without_content[GEN_AI_TOOL_DEFINITIONS] == full[GEN_AI_TOOL_DEFINITIONS]
+  )
+  assert _operation_details_attributes_no_content(
+      without_content
+  ) == _operation_details_attributes_no_content(full)
+
+
+@pytest.mark.parametrize(
+    'mode',
+    [
+        ContentCapturingMode.EVENT_ONLY,
+        ContentCapturingMode.SPAN_ONLY,
+        ContentCapturingMode.SPAN_AND_EVENT,
+    ],
+)
+def test_set_operation_details_from_request_with_content_capture(
+    mode: ContentCapturingMode,
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Any content-capturing mode serializes the full request attributes."""
+  monkeypatch.delenv(ADK_TELEMETRY_IGNORE_RUN_CONFIG, raising=False)
+  llm_request = _request_with_content_and_tool()
+  full = {}
+  set_operation_details_attributes_from_request(full, llm_request)
+  with_content = {}
+  set_operation_details_attributes_from_request(
+      with_content,
+      llm_request,
+      TelemetryConfig(capture_message_content=mode),
+  )
+
+  assert with_content == full

@@ -16,7 +16,6 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Awaitable
 from typing import ClassVar
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -31,7 +30,7 @@ from .eval_rubrics import RubricScore
 
 def _validate_invocation_lengths(
     actual_invocations: list[Invocation],
-    expected_invocations: Optional[list[Invocation]],
+    expected_invocations: list[Invocation] | None,
 ) -> None:
   """Rejects invocation lists that cannot be paired without truncation."""
   if expected_invocations is not None and len(actual_invocations) != len(
@@ -48,19 +47,19 @@ class PerInvocationResult(BaseModel):
   """Metric evaluation score per invocation."""
 
   actual_invocation: Invocation
-  expected_invocation: Optional[Invocation] = None
-  score: Optional[float] = None
+  expected_invocation: Invocation | None = None
+  score: float | None = None
   eval_status: EvalStatus = EvalStatus.NOT_EVALUATED
-  rubric_scores: Optional[list[RubricScore]] = None
-  token_usage_details: Optional[TokenUsageDetails] = None
+  rubric_scores: list[RubricScore] | None = None
+  token_usage_details: TokenUsageDetails | None = None
   """Per-type token counts, reported by the token usage metric."""
 
-  duration_details: Optional[DurationDetails] = None
+  duration_details: DurationDetails | None = None
   """Where the seconds went, reported by the invocation duration metric."""
 
 
 class EvaluationResult(BaseModel):
-  overall_score: Optional[float] = None
+  overall_score: float | None = None
   """Overall score, based on each invocation."""
 
   overall_eval_status: EvalStatus = EvalStatus.NOT_EVALUATED
@@ -69,13 +68,13 @@ class EvaluationResult(BaseModel):
   per_invocation_results: list[PerInvocationResult] = []
   """Detailed results per invocation."""
 
-  overall_rubric_scores: Optional[list[RubricScore]] = None
+  overall_rubric_scores: list[RubricScore] | None = None
   """Overall rubric, based on each invocation."""
 
-  overall_token_usage_details: Optional[TokenUsageDetails] = None
+  overall_token_usage_details: TokenUsageDetails | None = None
   """Per-type token counts, averaged over invocations."""
 
-  overall_duration_details: Optional[DurationDetails] = None
+  overall_duration_details: DurationDetails | None = None
   """Where the seconds went, averaged over invocations."""
 
 
@@ -87,8 +86,8 @@ class Evaluator(ABC):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult | Awaitable[EvaluationResult]:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 

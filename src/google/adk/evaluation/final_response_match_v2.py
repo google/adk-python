@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import re
 from typing import ClassVar
-from typing import Optional
 
 from typing_extensions import override
 
@@ -158,7 +157,7 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge[LlmAsAJudgeCriterion]):
   def format_auto_rater_prompt(
       self,
       actual_invocation: Invocation,
-      expected_invocation: Optional[Invocation],
+      expected_invocation: Invocation | None,
   ) -> str:
     if expected_invocation is None:
       raise ValueError("expected_invocation is required for this metric.")

@@ -15,7 +15,6 @@
 """Tests for the replay plugin's load / replay / cleanup lifecycle."""
 
 from typing import Any
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.cli.plugins.recordings_schema import Recording
@@ -55,8 +54,8 @@ def _recording(
     agent_name: str = 'agent_a',
     user_message_index: int = 0,
     tool_name: str = 'roll_die',
-    args: Optional[dict[str, Any]] = None,
-    response: Optional[dict[str, Any]] = None,
+    args: dict[str, Any] | None = None,
+    response: dict[str, Any] | None = None,
     call_id: str = 'fc-1',
 ) -> Recording:
   return Recording(
@@ -85,7 +84,7 @@ async def _make_invocation(
     *,
     case_dir=None,
     user_message_index: int = 0,
-    streaming_mode: Optional[str] = 'none',
+    streaming_mode: str | None = 'none',
     agent_names: tuple[str, ...] = ('agent_a',),
 ):
   """Builds one invocation plus a per-agent context sharing its session."""

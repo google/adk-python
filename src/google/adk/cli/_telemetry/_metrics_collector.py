@@ -25,8 +25,6 @@ import subprocess
 import sys
 import threading
 import time
-from typing import List
-from typing import Optional
 import uuid
 
 import click
@@ -165,7 +163,7 @@ class MetricsCollector:
     atexit.register(self.shutdown)
 
   @staticmethod
-  def _gather_flags_from_click() -> Optional[List[str]]:
+  def _gather_flags_from_click() -> list[str] | None:
     """Gathers used flags and positional argument names from Click context."""
     ctx = click.get_current_context(silent=True)
     if not ctx:
