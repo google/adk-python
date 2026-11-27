@@ -2583,3 +2583,163 @@ async def test_include_contents_none_ignores_submitted_tool_result_without_match
     pass
 
   assert llm_request.contents == [types.UserContent("current turn question")]
+
+
+@pytest.mark.parametrize("output", [False, True])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "finished",
+        "finished_turn_complete",
+        "invocation",
+        "live_session",
+        "turn_complete",
+        "interrupted",
+    ],
+)
+def test_transcriptions_keep_turn_boundaries(
+    output: bool, boundary: str
+) -> None:
+  """Separate utterances from the same speaker retain their own text."""
+  field = "output_transcription" if output else "input_transcription"
+  author = "test_agent" if output else "user"
+  events = [
+      Event(
+          author=author,
+          invocation_id="inv1",
+          **{
+              field: types.Transcription(
+                  text=text, finished=boundary.startswith("finished")
+              )
+          },
+      )
+      for text in ("first", "second")
+  ]
+  if boundary == "invocation":
+    events[1].invocation_id = "inv2"
+  elif boundary == "live_session":
+    events[1].live_session_id = "live2"
+  elif boundary == "finished_turn_complete":
+    events.insert(1, Event(author="test_agent", turn_complete=True))
+  elif boundary in ("turn_complete", "interrupted"):
+    events.insert(1, Event(author="test_agent", **{boundary: True}))
+
+  result = contents._get_contents(None, events, "test_agent")
+
+  role = "model" if output else "user"
+  assert result == [
+      types.Content(role=role, parts=[types.Part(text="first")]),
+      types.Content(
+          role="user" if output and boundary == "live_session" else role,
+          parts=[
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part("[test_agent] said:", "second"),
+          ]
+          if output and boundary == "live_session"
+          else [types.Part(text="second")],
+      ),
+  ]
+
+
+@pytest.mark.parametrize("output", [False, True])
+@pytest.mark.parametrize("finished", [False, None])
+def test_unfinished_transcription_chunks_merge(
+    output: bool, finished: bool | None
+) -> None:
+  """Consecutive unfinished chunks from one turn still form one utterance."""
+  field = "output_transcription" if output else "input_transcription"
+  events = [
+      Event(
+          author="test_agent" if output else "user",
+          invocation_id="inv1",
+          **{field: types.Transcription(text=text, finished=finished)},
+      )
+      for text in ("hello", " there")
+  ]
+  originals = [event.model_copy(deep=True) for event in events]
+
+  result = contents._get_contents(None, events, "test_agent")
+
+  assert result == [
+      types.Content(
+          role="model" if output else "user",
+          parts=[types.Part(text="hello there")],
+      )
+  ]
+  assert events == originals
+
+
+@pytest.mark.parametrize("output", [False, True])
+@pytest.mark.parametrize("finished_first", [False, True])
+def test_finished_transcription_is_not_merged_with_partial(
+    output: bool, finished_first: bool
+) -> None:
+  """A finished record stays separate from an adjacent unfinished record."""
+  field = "output_transcription" if output else "input_transcription"
+  events = [
+      Event(
+          author="test_agent" if output else "user",
+          **{field: types.Transcription(text=text, finished=finished)},
+      )
+      for text, finished in (
+          ("first", finished_first),
+          ("second", not finished_first),
+      )
+  ]
+
+  result = contents._get_contents(None, events, "test_agent")
+
+  assert [part.text for content in result for part in content.parts or []] == [
+      "first",
+      "second",
+  ]
+
+
+def test_input_and_output_transcriptions_remain_separate() -> None:
+  """Input and output text keep their respective user and model roles."""
+  events = [
+      Event(author="user", input_transcription=types.Transcription(text="hi")),
+      Event(
+          author="test_agent",
+          output_transcription=types.Transcription(text="hello"),
+      ),
+  ]
+
+  result = contents._get_contents(None, events, "test_agent")
+
+  assert result == [
+      types.Content(role="user", parts=[types.Part(text="hi")]),
+      types.Content(role="model", parts=[types.Part(text="hello")]),
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output", [False, True])
+async def test_finished_transcriptions_survive_session_round_trip(
+    output: bool,
+) -> None:
+  """Persisted final live records remain separate when replayed as history."""
+  from google.adk.sessions import InMemorySessionService
+
+  service = InMemorySessionService()
+  session = await service.create_session(app_name="app", user_id="user")
+  field = "output_transcription" if output else "input_transcription"
+  for text in ("first", "second"):
+    await service.append_event(
+        session=session,
+        event=Event(
+            author="test_agent" if output else "user",
+            **{field: types.Transcription(text=text, finished=True)},
+        ),
+    )
+  restored = await service.get_session(
+      app_name="app", user_id="user", session_id=session.id
+  )
+
+  assert restored is not None
+  result = contents._get_contents(None, restored.events, "test_agent")
+
+  assert [part.text for content in result for part in content.parts or []] == [
+      "first",
+      "second",
+  ]
