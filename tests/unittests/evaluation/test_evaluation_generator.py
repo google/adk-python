@@ -27,6 +27,7 @@ from google.adk.evaluation._efficiency_evaluators import _TokenUsageV1Evaluator
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
+from google.adk.evaluation.conversation_termination import ConversationTerminationReason
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import SessionInput
@@ -34,6 +35,7 @@ from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.evaluation_generator import _LiveSession
 from google.adk.evaluation.evaluation_generator import _send_audio_to_live
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
+from google.adk.evaluation.evaluation_generator import InferencesGenerationResult
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
@@ -1028,7 +1030,7 @@ class TestGenerateInferencesFromRootAgent:
 
     mock_generate_inferences.side_effect = mock_generate_inferences_side_effect
 
-    await EvaluationGenerator._generate_inferences_from_root_agent(
+    result = await EvaluationGenerator._generate_inferences_from_root_agent(
         root_agent=mock_agent,
         user_simulator=mock_user_sim,
     )
@@ -1043,6 +1045,56 @@ class TestGenerateInferencesFromRootAgent:
     mock_generate_inferences.assert_called_once()
     called_with_content = mock_generate_inferences.call_args.args[3]
     assert called_with_content.parts[0].text == "message 1"
+    assert (
+        result.termination_reason
+        == ConversationTerminationReason.STOP_SIGNAL
+    )
+
+  @pytest.mark.asyncio
+  async def test_records_turn_limit_termination_reason(
+      self, mocker, mock_runner, mock_session_service
+  ):
+    """A TURN_LIMIT_REACHED status is preserved on the generation result."""
+    mock_agent = mocker.MagicMock()
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+
+    async def get_next_user_message_side_effect(*args, **kwargs):
+      if mock_user_sim.get_next_user_message.call_count == 1:
+        return NextUserMessage(
+            status=UserSimulatorStatus.SUCCESS,
+            user_message=types.Content(parts=[types.Part(text="message 1")]),
+        )
+      return NextUserMessage(status=UserSimulatorStatus.TURN_LIMIT_REACHED)
+
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        side_effect=get_next_user_message_side_effect
+    )
+
+    mock_generate_inferences = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_for_single_user_invocation"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._get_app_details_by_invocation_id"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator.convert_events_to_eval_invocations",
+        return_value=[],
+    )
+
+    async def mock_generate_inferences_side_effect(
+        runner, user_id, session_id, user_content
+    ):
+      yield _build_event("user", user_content.parts, "inv1")
+      yield _build_event("agent", [types.Part(text="agent_response")], "inv1")
+
+    mock_generate_inferences.side_effect = mock_generate_inferences_side_effect
+
+    result = await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=mock_agent,
+        user_simulator=mock_user_sim,
+    )
+
+    assert result.termination_reason == ConversationTerminationReason.TURN_LIMIT
 
   @pytest.mark.asyncio
   async def test_records_a_duration_for_each_invocation(
@@ -1295,7 +1347,7 @@ class TestGenerateResponses:
     mock_process_query = mocker.patch(
         "google.adk.evaluation.evaluation_generator.EvaluationGenerator._process_query",
         new_callable=mocker.AsyncMock,
-        return_value=[],
+        return_value=InferencesGenerationResult(invocations=[]),
     )
 
     user_simulator_config = LlmBackedUserSimulatorConfig(
@@ -2717,14 +2769,14 @@ async def test_tool_time_is_not_counted_as_model_time():
           ),
       )
 
-  invocations = await EvaluationGenerator._generate_inferences_from_root_agent(
+  generation_result = await EvaluationGenerator._generate_inferences_from_root_agent(
       root_agent=LlmAgent(
           name="root", model=_ToolThenAnswerModel(), tools=[slow_tool]
       ),
       user_simulator=_OneTurnUser(),
   )
 
-  (invocation,) = invocations
+  (invocation,) = generation_result.invocations
   assert invocation.tool_duration >= tool_seconds * 0.75
   # The whole point: the tool's sleep is absent from the model's figure.
   assert invocation.model_duration < tool_seconds * 0.75

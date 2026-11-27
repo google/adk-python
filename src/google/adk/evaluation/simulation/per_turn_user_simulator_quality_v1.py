@@ -42,6 +42,7 @@ from ..llm_as_judge_utils import gather_cancelling_on_error
 from ..llm_as_judge_utils import get_eval_status
 from ..llm_as_judge_utils import get_text_from_content
 from ..llm_as_judge_utils import Label
+from ..conversation_termination import ConversationTerminationReason
 from .per_turn_user_simulator_quality_prompts import get_per_turn_user_simulator_quality_prompt
 
 
@@ -165,6 +166,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       actual_invocations: list[Invocation],
       expected_invocations: list[Invocation] | None = None,
       conversation_scenario: ConversationScenario | None = None,
+      termination_reason: ConversationTerminationReason | None = None,
   ) -> EvaluationResult:
     del expected_invocations  # not used by this metric.
     if conversation_scenario is None:
@@ -188,21 +190,31 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
         )
         for i, invocation in enumerate(actual_invocations[1:], start=1)
     ]
-    coros.append(
-        self._evaluate_stop_signal_turn(
-            invocation_history=actual_invocations,
-            conversation_scenario=conversation_scenario,
-            semaphore=semaphore,
-        )
+    # A turn-limit cut-off is a framework truncation, not a simulator
+    # </finished>. Judging a synthetic stop signal would blame the simulator
+    # for incomplete tasks that the conversation never got to finish.
+    evaluate_stop_signal = (
+        termination_reason != ConversationTerminationReason.TURN_LIMIT
     )
+    if evaluate_stop_signal:
+      coros.append(
+          self._evaluate_stop_signal_turn(
+              invocation_history=actual_invocations,
+              conversation_scenario=conversation_scenario,
+              semaphore=semaphore,
+          )
+      )
     gathered_results = await gather_cancelling_on_error(coros)
-    results.extend(gathered_results[:-1])
-    stop_signal_evaluation = gathered_results[-1]
+    if evaluate_stop_signal:
+      results.extend(gathered_results[:-1])
+      stop_signal_evaluation = gathered_results[-1]
 
-    # If the conversation did not end correctly, indicate so by marking the
-    # last user turn as failed.
-    if stop_signal_evaluation.eval_status == EvalStatus.FAILED:
-      results[-1] = stop_signal_evaluation
+      # If the conversation did not end correctly, indicate so by marking the
+      # last user turn as failed.
+      if stop_signal_evaluation.eval_status == EvalStatus.FAILED:
+        results[-1] = stop_signal_evaluation
+    else:
+      results.extend(gathered_results)
 
     return self._aggregate_conversation_results(results)
 

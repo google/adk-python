@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
+from google.adk.evaluation.conversation_termination import ConversationTerminationReason
 from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
@@ -998,6 +999,64 @@ async def test_evaluate_invocations_stop_signal_failure_marks_last_turn_failed(
   ]
   assert result.overall_score == 0.5
   assert result.overall_eval_status == EvalStatus.FAILED
+
+
+async def test_evaluate_invocations_skips_stop_signal_on_turn_limit(mocker):
+  """Turn-limit cut-offs must not judge a synthetic </finished> turn."""
+  mock_llm = _mock_judge_llm(mocker)
+  evaluator = PerTurnUserSimulatorQualityV1(
+      EvalMetric(
+          metric_name="test_per_turn_user_simulator_quality_v1",
+          threshold=1.0,
+          criterion=LlmBackedUserSimulatorCriterion(
+              threshold=1.0,
+              stop_signal="test stop signal",
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  num_samples=1,
+                  parallelism_limit=3,
+              ),
+          ),
+      ),
+  )
+
+  judged_responses = []
+
+  async def mock_generate_content_async(llm_request):
+    prompt_text = llm_request.contents[0].parts[0].text
+    judged_responses.append(prompt_text.rstrip().splitlines()[-1])
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text='{"is_valid": "valid"}')],
+            role="model",
+        )
+    )
+
+  mock_llm.generate_content_async = mock_generate_content_async
+
+  invocations = [
+      _create_test_invocation(
+          "turn_0", user_content="start", model_content="m0"
+      ),
+      _create_test_invocation(
+          "turn_1", user_content="keep going", model_content="m1"
+      ),
+  ]
+  scenario = _create_test_conversation_scenario(starting_prompt="start")
+
+  result = await evaluator.evaluate_invocations(
+      actual_invocations=invocations,
+      conversation_scenario=scenario,
+      termination_reason=ConversationTerminationReason.TURN_LIMIT,
+  )
+
+  assert "test stop signal" not in judged_responses
+  assert judged_responses == ["keep going"]
+  assert [r.eval_status for r in result.per_invocation_results] == [
+      EvalStatus.PASSED,
+      EvalStatus.PASSED,
+  ]
+  assert result.overall_score == 1.0
 
 
 async def test_evaluate_invocations_cancels_in_flight_sibling_calls_on_error(

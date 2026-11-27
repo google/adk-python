@@ -60,6 +60,7 @@ from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from .metric_evaluator_registry import MetricEvaluatorRegistry
+from .conversation_termination import ConversationTerminationReason
 from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -401,6 +402,7 @@ class LocalEvalService(BaseEvalService):
               session_details=session_details,
               user_id=user_id,
               repetition_index=inference_result.repetition_index,
+              termination_reason=inference_result.termination_reason,
           ),
       )
 
@@ -473,6 +475,7 @@ class LocalEvalService(BaseEvalService):
         session_details=session_details,
         user_id=user_id,
         repetition_index=inference_result.repetition_index,
+        termination_reason=inference_result.termination_reason,
     )
 
     return (inference_result, eval_case_result)
@@ -496,6 +499,7 @@ class LocalEvalService(BaseEvalService):
             actual_invocations=actual_invocations,
             expected_invocations=eval_case.conversation,
             conversation_scenario=eval_case.conversation_scenario,
+            termination_reason=inference_result.termination_reason,
         )
     except Exception as e:
       # We intentionally catch the Exception as we don't want failures to
@@ -601,6 +605,7 @@ class LocalEvalService(BaseEvalService):
       actual_invocations: list[Invocation],
       expected_invocations: list[Invocation] | None,
       conversation_scenario: ConversationScenario | None,
+      termination_reason: ConversationTerminationReason | None = None,
   ) -> EvaluationResult:
     """Returns EvaluationResult obtained from evaluating a metric using an Evaluator."""
 
@@ -609,22 +614,33 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
+    evaluate_kwargs: dict[str, object] = {
+        "actual_invocations": actual_invocations,
+        "expected_invocations": expected_invocations,
+        "conversation_scenario": conversation_scenario,
+    }
+    # Only the per-turn simulator metric consumes termination_reason today;
+    # pass it when the evaluator signature accepts it so other metrics stay
+    # backwards compatible without a mass signature update.
+    try:
+      evaluate_params = inspect.signature(
+          metric_evaluator.evaluate_invocations
+      ).parameters
+    except (TypeError, ValueError):
+      evaluate_params = {}
+    if "termination_reason" in evaluate_params:
+      evaluate_kwargs["termination_reason"] = termination_reason
+
     result: EvaluationResult | Awaitable[EvaluationResult]
     if _is_async_callable(metric_evaluator.evaluate_invocations):
-      result = metric_evaluator.evaluate_invocations(
-          actual_invocations=actual_invocations,
-          expected_invocations=expected_invocations,
-          conversation_scenario=conversation_scenario,
-      )
+      result = metric_evaluator.evaluate_invocations(**evaluate_kwargs)
     else:
       # Offload synchronous evaluators (such as the Vertex Gen AI Evaluation SDK
       # facade) to a worker thread so blocking I/O does not stall the event
       # loop.
       result = await asyncio.to_thread(
           metric_evaluator.evaluate_invocations,
-          actual_invocations=actual_invocations,
-          expected_invocations=expected_invocations,
-          conversation_scenario=conversation_scenario,
+          **evaluate_kwargs,
       )
     if inspect.isawaitable(result):
       return await result
@@ -685,7 +701,7 @@ class LocalEvalService(BaseEvalService):
     try:
       with client_label_context(EVAL_CLIENT_LABEL):
         if use_live:
-          inferences = await EvaluationGenerator._generate_inferences_from_root_agent_live(
+          generation_result = await EvaluationGenerator._generate_inferences_from_root_agent_live(
               root_agent=root_agent,
               user_simulator=self._user_simulator_provider.provide(eval_case),
               initial_session=initial_session,
@@ -697,7 +713,7 @@ class LocalEvalService(BaseEvalService):
               app=self._app,
           )
         else:
-          inferences = (
+          generation_result = (
               await EvaluationGenerator._generate_inferences_from_root_agent(
                   root_agent=root_agent,
                   user_simulator=self._user_simulator_provider.provide(
@@ -712,7 +728,8 @@ class LocalEvalService(BaseEvalService):
               )
           )
 
-      inference_result.inferences = inferences
+      inference_result.inferences = generation_result.invocations
+      inference_result.termination_reason = generation_result.termination_reason
       inference_result.status = InferenceStatus.SUCCESS
 
       return inference_result

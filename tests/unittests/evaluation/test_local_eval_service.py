@@ -38,8 +38,10 @@ from google.adk.evaluation.base_eval_service import InferenceRequest
 from google.adk.evaluation.base_eval_service import InferenceResult
 from google.adk.evaluation.base_eval_service import InferenceStatus
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
+from google.adk.evaluation.conversation_termination import ConversationTerminationReason
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import SessionInput
+from google.adk.evaluation.evaluation_generator import InferencesGenerationResult
 from google.adk.evaluation.eval_config import MultiRunConfig
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
@@ -1343,7 +1345,7 @@ async def test_perform_inference_single_eval_item_live(
   mock_generate_live = mocker.patch(
       "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent_live"
   )
-  mock_generate_live.return_value = []
+  mock_generate_live.return_value = InferencesGenerationResult(invocations=[])
 
   eval_service._session_id_supplier = mocker.MagicMock(
       return_value="test_session_id"
@@ -1383,7 +1385,7 @@ async def test_perform_inference_single_eval_item_non_live(
   mock_generate = mocker.patch(
       "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent"
   )
-  mock_generate.return_value = []
+  mock_generate.return_value = InferencesGenerationResult(invocations=[])
 
   eval_service._session_id_supplier = mocker.MagicMock(
       return_value="test_session_id"
@@ -1432,7 +1434,7 @@ async def test_perform_inference_single_eval_item_uses_session_input_id(
   mock_generate = mocker.patch(
       "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent"
   )
-  mock_generate.return_value = []
+  mock_generate.return_value = InferencesGenerationResult(invocations=[])
 
   eval_service._session_id_supplier = mocker.MagicMock(
       return_value="test_session_id"
@@ -1526,12 +1528,54 @@ async def test_perform_inference_pinned_session_id_across_runs(
   assert len(results) == 2
   assert all(r.status == InferenceStatus.SUCCESS for r in results)
   assert all(r.session_id == "fixed" for r in results)
+  assert all(
+      r.termination_reason == ConversationTerminationReason.STOP_SIGNAL
+      for r in results
+  )
 
   loaded = await eval_service._artifact_service.load_artifact(
       app_name="test_app", user_id="u", session_id="fixed", filename="doc.txt"
   )
   assert loaded is not None
   assert loaded.text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_copies_termination_reason_to_eval_case_result(
+    eval_service, mock_eval_sets_manager
+):
+  """EvalCaseResult preserves InferenceResult.termination_reason."""
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation_scenario=ConversationScenario(
+          starting_prompt="hi", conversation_plan="plan"
+      ),
+      session_input=None,
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = eval_case
+
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hi")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="hello")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[invocation],
+      session_id="session1",
+      status=InferenceStatus.SUCCESS,
+      termination_reason=ConversationTerminationReason.TURN_LIMIT,
+  )
+  evaluate_config = EvaluateConfig(eval_metrics=[], parallelism=1)
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert result.termination_reason == ConversationTerminationReason.TURN_LIMIT
 
 
 @pytest.mark.asyncio
@@ -1549,7 +1593,7 @@ async def test_perform_inference_forwards_app_to_evaluation_generator(
 
   mock_generate = mocker.patch(
       "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
-      new=mocker.AsyncMock(return_value=[]),
+      new=mocker.AsyncMock(return_value=InferencesGenerationResult(invocations=[])),
   )
 
   service = LocalEvalService(
@@ -1584,7 +1628,7 @@ async def test_perform_inference_passes_none_when_no_app(
 
   mock_generate = mocker.patch(
       "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
-      new=mocker.AsyncMock(return_value=[]),
+      new=mocker.AsyncMock(return_value=InferencesGenerationResult(invocations=[])),
   )
 
   service = LocalEvalService(
@@ -1620,7 +1664,7 @@ async def test_perform_inference_live_forwards_app(
 
   mock_generate_live = mocker.patch(
       "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent_live",
-      new=mocker.AsyncMock(return_value=[]),
+      new=mocker.AsyncMock(return_value=InferencesGenerationResult(invocations=[])),
   )
 
   service = LocalEvalService(

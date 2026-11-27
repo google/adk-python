@@ -72,6 +72,7 @@ from ..auth.auth_credential import _redact_credential_secrets
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
+from ..evaluation.conversation_termination import ConversationTerminationReason
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
 from ..evaluation.eval_config import _UserSimulatorConfig
@@ -222,6 +223,7 @@ class RunEvalResult(common.BaseModel):
   eval_metric_result_per_invocation: list[EvalMetricResultPerInvocation]
   user_id: str
   session_id: str
+  termination_reason: ConversationTerminationReason | None = None
 
 
 class RunEvalResponse(common.BaseModel):
@@ -1169,6 +1171,7 @@ class DevServer(ApiServer):
                 eval_metric_result_per_invocation=eval_case_result.eval_metric_result_per_invocation,
                 user_id=eval_case_result.user_id,
                 session_id=eval_case_result.session_id,
+                termination_reason=eval_case_result.termination_reason,
             )
         )
 
