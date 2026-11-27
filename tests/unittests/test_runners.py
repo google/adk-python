@@ -41,6 +41,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.app import ResumabilityConfig
@@ -59,6 +60,7 @@ from google.adk.events.event import EventActions
 from google.adk.events.event import NodeInfo
 from google.adk.models.google_llm import Gemini
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
@@ -7742,6 +7744,95 @@ async def test_run_async_post_invocation_compaction_aborts_inflight():
       app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
   )
   assert not [e for e in session.events if e.actions.compaction]
+
+
+@pytest.mark.parametrize("root_kind", ["llm", "workflow", "composite"])
+@pytest.mark.parametrize("save_blobs", [True, False, None])
+@pytest.mark.parametrize("use_plugin", [False, True])
+@pytest.mark.parametrize("has_artifact_service", [False, True])
+async def test_run_async_input_blob_artifacts(
+    root_kind, save_blobs, use_plugin, has_artifact_service
+):
+  """Input uploads follow the same artifact contract for every root type."""
+  model = testing_utils.MockModel.create(responses=["reply", "reply"])
+  child = LlmAgent(name="child", model=model)
+  root = child
+  if root_kind == "workflow":
+    root = Workflow(name="wf", edges=[(START, child)])
+  elif root_kind == "composite":
+    root = SequentialAgent(name="pipeline", sub_agents=[child])
+  sessions = InMemorySessionService()
+  artifacts = InMemoryArtifactService()
+  session = await sessions.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      **({"node": root} if root_kind == "workflow" else {"agent": root}),
+      session_service=sessions,
+      artifact_service=artifacts if has_artifact_service else None,
+      plugins=[SaveFilesAsArtifactsPlugin(attach_file_reference=False)]
+      if use_plugin
+      else [],
+  )
+  config = RunConfig(**(
+      {"save_input_blobs_as_artifacts": save_blobs}
+      if save_blobs is not None
+      else {}
+  ))
+  scope = dict(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  try:
+    for turn in range(2):
+      upload = types.Part.from_bytes(data=b"hello", mime_type="text/plain")
+      upload.inline_data.display_name = "upload.txt"
+      message = types.UserContent(
+          parts=[types.Part(text="inspect"), upload, types.Part(text="please")]
+      )
+      events = [
+          event
+          async for event in runner.run_async(
+              user_id=TEST_USER_ID,
+              session_id=session.id,
+              new_message=message,
+              run_config=config,
+          )
+      ]
+      stored = await sessions.get_session(**scope)
+      user_event = [event for event in stored.events if event.author == "user"][
+          -1
+      ]
+      filename = (
+          "upload.txt"
+          if use_plugin
+          else f"artifact_{user_event.invocation_id}_1"
+      )
+      keys = await artifacts.list_artifact_keys(**scope)
+      if has_artifact_service and (save_blobs or use_plugin):
+        assert len(keys) == (1 if use_plugin else turn + 1)
+        assert filename in keys
+        versions = await artifacts.list_versions(**scope, filename=filename)
+        assert versions == (list(range(turn + 1)) if use_plugin else [0])
+        saved = await artifacts.load_artifact(**scope, filename=filename)
+        assert saved == upload
+        expected = types.Part(
+            text=f'[Uploaded Artifact: "{filename}"]'
+            if use_plugin
+            else f"Uploaded file: {filename}. It is saved into artifacts"
+        )
+      else:
+        assert keys == []
+        expected = upload
+      assert user_event.content.parts == [
+          types.Part(text="inspect"),
+          expected,
+          types.Part(text="please"),
+      ]
+      assert model.requests[-1].contents[-1].parts == user_event.content.parts
+      assert any(event.content for event in events)
+  finally:
+    await runner.close()
 
 
 if __name__ == "__main__":
