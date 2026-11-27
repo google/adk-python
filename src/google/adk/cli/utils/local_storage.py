@@ -21,7 +21,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 from typing import Mapping
-from typing import Optional
 
 from google.genai import types
 from typing_extensions import override
@@ -39,8 +38,24 @@ from .dot_adk_folder import DotAdkFolder
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_BUILT_IN_SESSION_SERVICE_KEY = "__adk_built_in_session_service__"
-_BUILT_IN_ARTIFACT_SERVICE_KEY = "__adk_built_in_artifact_service__"
+
+def _reject_reserved_app_name(app_name: str) -> None:
+  """Raises if `app_name` uses the reserved `__` prefix.
+
+  The agent loaders reserve names starting with `__`, so no agent can have
+  one. Rejecting them here keeps a request for such a name from creating a
+  `.adk` folder for it under the agents root.
+
+  Args:
+    app_name: The app name from the request.
+
+  Raises:
+    ValueError: If `app_name` starts with `__`.
+  """
+  if app_name.startswith("__"):
+    raise ValueError(
+        f"Invalid app name {app_name!r}: names starting with '__' are reserved."
+    )
 
 
 def create_local_database_session_service(
@@ -70,7 +85,7 @@ def create_local_session_service(
     *,
     base_dir: Path | str,
     per_agent: bool = False,
-    app_name_to_dir: Optional[Mapping[str, str]] = None,
+    app_name_to_dir: Mapping[str, str] | None = None,
 ) -> BaseSessionService:
   """Creates a local SQLite-backed session service.
 
@@ -102,7 +117,7 @@ def create_local_artifact_service(
     *,
     base_dir: Path | str,
     per_agent: bool = False,
-    app_name_to_dir: Optional[Mapping[str, str]] = None,
+    app_name_to_dir: Mapping[str, str] | None = None,
 ) -> BaseArtifactService:
   """Creates a file-backed artifact service that persists data in `.adk/artifacts` folders.
 
@@ -138,7 +153,7 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       self,
       *,
       agents_root: Path | str,
-      app_name_to_dir: Optional[Mapping[str, str]] = None,
+      app_name_to_dir: Mapping[str, str] | None = None,
   ):
     self._agents_root = Path(agents_root).resolve()
     self._app_name_to_dir = dict(app_name_to_dir or {})
@@ -146,16 +161,13 @@ class PerAgentDatabaseSessionService(BaseSessionService):
     self._service_lock = asyncio.Lock()
 
   async def _get_service(self, app_name: str) -> BaseSessionService:
+    _reject_reserved_app_name(app_name)
     async with self._service_lock:
-      if app_name.startswith("__"):
-        storage_key = _BUILT_IN_SESSION_SERVICE_KEY
-        base_dir = self._agents_root
-      else:
-        storage_key = self._app_name_to_dir.get(app_name, app_name)
-        folder = dot_adk_folder_for_agent(
-            agents_root=self._agents_root, app_name=storage_key
-        )
-        base_dir = folder.agent_dir
+      storage_key = self._app_name_to_dir.get(app_name, app_name)
+      folder = dot_adk_folder_for_agent(
+          agents_root=self._agents_root, app_name=storage_key
+      )
+      base_dir = folder.agent_dir
 
       service = self._services.get(storage_key)
       if service is not None:
@@ -174,8 +186,8 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, object]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, object] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     service = await self._get_service(app_name)
     return await service.create_session(
@@ -192,8 +204,8 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     service = await self._get_service(app_name)
     return await service.get_session(
         app_name=app_name,
@@ -207,7 +219,7 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       self,
       *,
       app_name: str,
-      user_id: Optional[str] = None,
+      user_id: str | None = None,
   ) -> ListSessionsResponse:
     service = await self._get_service(app_name)
     return await service.list_sessions(app_name=app_name, user_id=user_id)
@@ -265,25 +277,22 @@ class PerAgentFileArtifactService(BaseArtifactService):
       self,
       *,
       agents_root: Path | str,
-      app_name_to_dir: Optional[Mapping[str, str]] = None,
+      app_name_to_dir: Mapping[str, str] | None = None,
   ):
     self._agents_root = Path(agents_root).resolve()
     self._app_name_to_dir = dict(app_name_to_dir or {})
     self._services: dict[str, BaseArtifactService] = {}
-    self._legacy_service: Optional[BaseArtifactService] = None
+    self._legacy_service: BaseArtifactService | None = None
     self._service_lock = asyncio.Lock()
 
   async def _get_service(self, app_name: str) -> BaseArtifactService:
+    _reject_reserved_app_name(app_name)
     async with self._service_lock:
-      if app_name.startswith("__"):
-        storage_key = _BUILT_IN_ARTIFACT_SERVICE_KEY
-        base_dir = self._agents_root
-      else:
-        storage_key = self._app_name_to_dir.get(app_name, app_name)
-        folder = dot_adk_folder_for_agent(
-            agents_root=self._agents_root, app_name=storage_key
-        )
-        base_dir = folder.agent_dir
+      storage_key = self._app_name_to_dir.get(app_name, app_name)
+      folder = dot_adk_folder_for_agent(
+          agents_root=self._agents_root, app_name=storage_key
+      )
+      base_dir = folder.agent_dir
 
       service = self._services.get(storage_key)
       if service is not None:
@@ -293,17 +302,12 @@ class PerAgentFileArtifactService(BaseArtifactService):
       self._services[storage_key] = service
       return service
 
-  async def _get_legacy_service(
-      self, app_name: str
-  ) -> Optional[BaseArtifactService]:
+  async def _get_legacy_service(self) -> BaseArtifactService | None:
     """Returns a reader for the pre-per-agent shared `.adk/artifacts` root.
 
-    Returns None for built-in agents (which already use that root) and when
-    no legacy directory exists, so reads fall back only when there is legacy
-    data to find. Never creates the legacy directory.
+    Returns None when no legacy directory exists, so reads fall back only when
+    there is legacy data to find. Never creates the legacy directory.
     """
-    if app_name.startswith("__"):
-      return None
     if self._legacy_service is not None:
       return self._legacy_service
     legacy_dir = DotAdkFolder(self._agents_root).artifacts_dir
@@ -322,8 +326,8 @@ class PerAgentFileArtifactService(BaseArtifactService):
       user_id: str,
       filename: str,
       artifact: types.Part | dict[str, Any],
-      session_id: Optional[str] = None,
-      custom_metadata: Optional[dict[str, Any]] = None,
+      session_id: str | None = None,
+      custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     service = await self._get_service(app_name)
     return await service.save_artifact(
@@ -342,9 +346,9 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[types.Part]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> types.Part | None:
     service = await self._get_service(app_name)
     result = await service.load_artifact(
         app_name=app_name,
@@ -355,7 +359,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
     )
     if result is not None:
       return result
-    legacy = await self._get_legacy_service(app_name)
+    legacy = await self._get_legacy_service()
     if legacy is None:
       return None
     return await legacy.load_artifact(
@@ -368,13 +372,13 @@ class PerAgentFileArtifactService(BaseArtifactService):
 
   @override
   async def list_artifact_keys(
-      self, *, app_name: str, user_id: str, session_id: Optional[str] = None
+      self, *, app_name: str, user_id: str, session_id: str | None = None
   ) -> list[str]:
     service = await self._get_service(app_name)
     keys = await service.list_artifact_keys(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
-    legacy = await self._get_legacy_service(app_name)
+    legacy = await self._get_legacy_service()
     if legacy is None:
       return keys
     legacy_keys = await legacy.list_artifact_keys(
@@ -389,7 +393,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> None:
     service = await self._get_service(app_name)
     await service.delete_artifact(
@@ -400,7 +404,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
     )
     # Also delete any legacy copy so a deleted artifact can't reappear via the
     # read fallback.
-    legacy = await self._get_legacy_service(app_name)
+    legacy = await self._get_legacy_service()
     if legacy is not None:
       await legacy.delete_artifact(
           app_name=app_name,
@@ -416,7 +420,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[int]:
     service = await self._get_service(app_name)
     versions = await service.list_versions(
@@ -427,7 +431,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
     )
     if versions:
       return versions
-    legacy = await self._get_legacy_service(app_name)
+    legacy = await self._get_legacy_service()
     if legacy is None:
       return versions
     return await legacy.list_versions(
@@ -444,7 +448,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
+      session_id: str | None = None,
   ) -> list[ArtifactVersion]:
     service = await self._get_service(app_name)
     versions = await service.list_artifact_versions(
@@ -455,7 +459,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
     )
     if versions:
       return versions
-    legacy = await self._get_legacy_service(app_name)
+    legacy = await self._get_legacy_service()
     if legacy is None:
       return versions
     return await legacy.list_artifact_versions(
@@ -472,9 +476,9 @@ class PerAgentFileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      session_id: Optional[str] = None,
-      version: Optional[int] = None,
-  ) -> Optional[ArtifactVersion]:
+      session_id: str | None = None,
+      version: int | None = None,
+  ) -> ArtifactVersion | None:
     service = await self._get_service(app_name)
     result = await service.get_artifact_version(
         app_name=app_name,
@@ -485,7 +489,7 @@ class PerAgentFileArtifactService(BaseArtifactService):
     )
     if result is not None:
       return result
-    legacy = await self._get_legacy_service(app_name)
+    legacy = await self._get_legacy_service()
     if legacy is None:
       return None
     return await legacy.get_artifact_version(

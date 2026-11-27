@@ -25,7 +25,6 @@ import json
 import signal
 from typing import Awaitable
 from typing import Callable
-from typing import Optional
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -81,8 +80,8 @@ async def dummy_run_async(
     session_id,
     new_message,
     state_delta=None,
-    run_config: Optional[RunConfig] = None,
-    invocation_id: Optional[str] = None,
+    run_config: RunConfig | None = None,
+    invocation_id: str | None = None,
 ):
   """Mocked Runner.run_async that echoes input text back."""
   # Extract the input text to echo it back — proves the pipeline works e2e
@@ -110,8 +109,8 @@ async def dummy_run_async_error(
     session_id,
     new_message,
     state_delta=None,
-    run_config: Optional[RunConfig] = None,
-    invocation_id: Optional[str] = None,
+    run_config: RunConfig | None = None,
+    invocation_id: str | None = None,
 ):
   """Mocked Runner.run_async that raises an exception."""
   raise RuntimeError(_SECRET_ERROR)
@@ -128,8 +127,8 @@ def _make_rate_limit_runner(fail_count: int):
       session_id,
       new_message,
       state_delta=None,
-      run_config: Optional[RunConfig] = None,
-      invocation_id: Optional[str] = None,
+      run_config: RunConfig | None = None,
+      invocation_id: str | None = None,
   ):
     call_count["value"] += 1
     if call_count["value"] <= fail_count:
@@ -149,8 +148,8 @@ async def dummy_run_async_always_429(
     session_id,
     new_message,
     state_delta=None,
-    run_config: Optional[RunConfig] = None,
-    invocation_id: Optional[str] = None,
+    run_config: RunConfig | None = None,
+    invocation_id: str | None = None,
 ):
   """Mocked Runner.run_async that always raises a 429 error."""
   raise RuntimeError(f"RESOURCE_EXHAUSTED: {_SECRET_429}")
@@ -215,13 +214,13 @@ def _make_test_client(
     mock_artifact_service,
     mock_memory_service,
     mock_agent_loader,
-    trigger_sources: Optional[list[str]] = None,
-    trigger_oidc_audience: Optional[str] = None,
-    trigger_oidc_service_accounts: Optional[list[str]] = None,
-    trigger_auth_verifier: Optional[
-        Callable[[Request], None | Awaitable[None]]
-    ] = None,
-    max_llm_calls: Optional[int] = None,
+    trigger_sources: list[str] | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: list[str] | None = None,
+    trigger_auth_verifier: (
+        Callable[[Request], None | Awaitable[None]] | None
+    ) = None,
+    max_llm_calls: int | None = None,
 ) -> TestClient:
   """Build a TestClient with the given trigger setting."""
   with (

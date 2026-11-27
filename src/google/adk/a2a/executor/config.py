@@ -17,8 +17,6 @@ from __future__ import annotations
 import dataclasses
 from typing import Awaitable
 from typing import Callable
-from typing import Optional
-from typing import Union
 
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events import Event as A2AEvent
@@ -43,21 +41,22 @@ from .executor_context import ExecutorContext
 class ExecuteInterceptor:
   """Interceptor for the A2aAgentExecutor."""
 
-  before_agent: Optional[
-      Callable[[RequestContext], Awaitable[RequestContext]]
-  ] = None
+  before_agent: Callable[[RequestContext], Awaitable[RequestContext]] | None = (
+      None
+  )
   """Hook executed before the agent starts processing the request.
 
     Allows inspection or modification of the incoming request context.
     Must return a valid `RequestContext` to continue execution.
   """
 
-  after_event: Optional[
+  after_event: (
       Callable[
           [ExecutorContext, A2AEvent, Event],
-          Awaitable[Union[A2AEvent, list[A2AEvent], None]],
+          Awaitable[A2AEvent | list[A2AEvent] | None],
       ]
-  ] = None
+      | None
+  ) = None
   """Hook executed after an ADK event is converted to an A2A event.
 
     Allows mutating the outgoing event before it is enqueued.
@@ -65,12 +64,13 @@ class ExecuteInterceptor:
     which also halts any subsequent interceptors in the chain.
     """
 
-  after_agent: Optional[
+  after_agent: (
       Callable[
           [ExecutorContext, TaskStatusUpdateEvent],
           Awaitable[TaskStatusUpdateEvent],
       ]
-  ] = None
+      | None
+  ) = None
   """Hook executed after the agent finishes and the final event is prepared.
 
     Allows inspection or modification of the terminal status event (e.g.,
@@ -101,4 +101,4 @@ class A2aAgentExecutorConfig(BaseModel):
   )
   """Set up the imlp event converter implementation to be used by the new agent executor implementation."""
 
-  execute_interceptors: Optional[list[ExecuteInterceptor]] = None
+  execute_interceptors: list[ExecuteInterceptor] | None = None

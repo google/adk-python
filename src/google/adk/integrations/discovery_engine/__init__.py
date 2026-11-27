@@ -14,8 +14,8 @@
 
 """Discovery Engine integration.
 
-This module provides a client for verifying model answers against facts with
-the Discovery Engine CheckGrounding API.
+This module provides a plugin that verifies model responses against facts, and
+a client for the Discovery Engine CheckGrounding API.
 """
 
 from __future__ import annotations
@@ -24,6 +24,10 @@ import typing
 
 if typing.TYPE_CHECKING:
   from ._check_grounding_client import CheckGroundingClient
+  from ._plugin import GroundingClient
+  from ._plugin import GroundingPlugin
+  from ._plugin import OnResult
+  from ._types import Fact
   from ._types import FactChunk
   from ._types import GroundingLimits
   from ._types import GroundingResult
@@ -32,18 +36,26 @@ if typing.TYPE_CHECKING:
 # Map attribute names to relative module paths.
 _lazy_imports = {
     'CheckGroundingClient': '._check_grounding_client',
+    'Fact': '._types',
     'FactChunk': '._types',
+    'GroundingClient': '._plugin',
     'GroundingLimits': '._types',
+    'GroundingPlugin': '._plugin',
     'GroundingResult': '._types',
     'GroundingStatus': '._types',
+    'OnResult': '._plugin',
 }
 
 __all__ = [
     'CheckGroundingClient',
+    'Fact',
     'FactChunk',
+    'GroundingClient',
     'GroundingLimits',
+    'GroundingPlugin',
     'GroundingResult',
     'GroundingStatus',
+    'OnResult',
 ]
 
 

@@ -25,7 +25,6 @@ import logging
 import os
 from typing import Any
 from typing import AsyncGenerator
-from typing import Optional
 from typing import TYPE_CHECKING
 
 import google.api_core.exceptions
@@ -87,12 +86,12 @@ class _CloudTTSLlm(BaseLlm):
       ),
   )
 
-  speaking_speed: Optional[float] = Field(
+  speaking_speed: float | None = Field(
       default=1.0,
       description="Speaking speed multiplier (0.25–4.0). 1.0 is normal speed.",
   )
 
-  pitch: Optional[float] = Field(
+  pitch: float | None = Field(
       default=0.0,
       description="Pitch adjustment in semitones (-20.0 to 20.0).",
   )

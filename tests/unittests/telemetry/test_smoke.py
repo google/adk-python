@@ -26,6 +26,7 @@ from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.genai.models import AsyncModels
 from mcp import StdioServerParameters
 from opentelemetry.instrumentation._semconv import _OpenTelemetrySemanticConventionStability
+from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 import pytest
 
@@ -92,6 +93,10 @@ def test_the_instrumentor_wraps_the_sdk_call_the_harness_mocks(
   mocked = AsyncModels.generate_content
 
   instrumentor = GoogleGenAiSdkInstrumentor()
+  if conflict := get_dependency_conflicts(
+      instrumentor.instrumentation_dependencies()
+  ):
+    pytest.skip(str(conflict))
   instrumentor.instrument()
   try:
     assert AsyncModels.generate_content is not mocked

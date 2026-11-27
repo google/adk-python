@@ -116,7 +116,8 @@ A successful consultation returns the following dictionary structure:
 `'off'`, `'none'`, `''`, or `None`. Passing `'off'`, `'none'`, `''`, or `None`
 leaves the advisor's thinking configuration unset. If the target advisor model
 rejects the thinking configuration as unsupported, `ModelConsultTool`
-automatically retries the call once without it.
+automatically retries the call once without it, and the result reports
+`"thinking_level": None`.
 
 `max_output_tokens` caps the advisor's total generated tokens, including reasoning tokens on thinking models. If generation stops at `max_output_tokens` after producing partial text, `ModelConsultTool` appends a notice to the returned guidance; if thinking consumes the entire cap before any visible text is emitted, the call returns `"status": "error"`. Setting different values on `max_output_tokens` and `generate_content_config.max_output_tokens` raises `ValueError` at construction time.
 

@@ -19,8 +19,6 @@ from collections.abc import Sequence
 import json
 import logging
 from typing import Any
-from typing import List
-from typing import Optional
 import uuid
 
 from a2a.types import Message
@@ -73,11 +71,11 @@ _TASK_RESPONSE_BOUNDARY_STATES = frozenset({
 A2AMessageToEventConverter = Callable[
     [
         Message,
-        Optional[str],
-        Optional[InvocationContext],
+        str | None,
+        InvocationContext | None,
         A2APartToGenAIPartConverter,
     ],
-    Optional[Event],
+    Event | None,
 ]
 """A Callable that converts an A2A Message to an ADK Event.
 
@@ -94,11 +92,11 @@ Returns:
 A2ATaskToEventConverter = Callable[
     [
         Task,
-        Optional[str],
-        Optional[InvocationContext],
+        str | None,
+        InvocationContext | None,
         A2APartToGenAIPartConverter,
     ],
-    Optional[Event],
+    Event | None,
 ]
 """A Callable that converts an A2A Task to an ADK Event.
 
@@ -115,11 +113,11 @@ Returns:
 A2AStatusUpdateToEventConverter = Callable[
     [
         TaskStatusUpdateEvent,
-        Optional[str],
-        Optional[InvocationContext],
+        str | None,
+        InvocationContext | None,
         A2APartToGenAIPartConverter,
     ],
-    Optional[Event],
+    Event | None,
 ]
 """A Callable that converts an A2A TaskStatusUpdateEvent to an ADK Event.
 
@@ -136,11 +134,11 @@ Returns:
 A2AArtifactUpdateToEventConverter = Callable[
     [
         TaskArtifactUpdateEvent,
-        Optional[str],
-        Optional[InvocationContext],
+        str | None,
+        InvocationContext | None,
         A2APartToGenAIPartConverter,
     ],
-    Optional[Event],
+    Event | None,
 ]
 """A Callable that converts an A2A TaskArtifactUpdateEvent to an ADK Event.
 
@@ -158,7 +156,7 @@ Returns:
 def _convert_a2a_parts_to_adk_parts(
     a2a_parts: Sequence[A2APart],
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-) -> tuple[List[genai_types.Part], set[str]]:
+) -> tuple[list[genai_types.Part], set[str]]:
   """Converts a list of A2A parts to a list of ADK parts."""
   output_parts: list[genai_types.Part] = []
   long_running_function_ids: set[str] = set()
@@ -199,11 +197,11 @@ def _convert_a2a_parts_to_adk_parts(
 
 
 def _create_event(
-    output_parts: List[genai_types.Part],
-    invocation_context: Optional[InvocationContext],
-    author: Optional[str],
-    actions: Optional[EventActions] = None,
-    long_running_function_ids: Optional[set[str]] = None,
+    output_parts: list[genai_types.Part],
+    invocation_context: InvocationContext | None,
+    author: str | None,
+    actions: EventActions | None = None,
+    long_running_function_ids: set[str] | None = None,
     partial: bool = False,
     content_role: str = "model",
     grounding_metadata: Any = None,
@@ -213,7 +211,7 @@ def _create_event(
     error_message: Any = None,
     citation_metadata: Any = None,
     allow_empty_event: bool = False,
-) -> Optional[Event]:
+) -> Event | None:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
   if (
@@ -263,7 +261,7 @@ def _extract_text_from_event(event: Event) -> str:
   return ""
 
 
-def _mark_a2a_task_failed(event: Optional[Event]) -> Optional[Event]:
+def _mark_a2a_task_failed(event: Event | None) -> Event | None:
   """Marks an event produced from a failed A2A task."""
   if event is None:
     return None
@@ -276,7 +274,7 @@ def _mark_a2a_task_failed(event: Optional[Event]) -> Optional[Event]:
   return event
 
 
-def _a2a_role_to_content_role(role: Optional[Role]) -> str:
+def _a2a_role_to_content_role(role: Role | None) -> str:
   """Maps an A2A Role to the corresponding GenAI content role."""
   return _compat.role_to_str(role)
 
@@ -540,10 +538,10 @@ def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
 
 def convert_a2a_task_to_event(
     a2a_task: Task,
-    author: Optional[str] = None,
-    invocation_context: Optional[InvocationContext] = None,
+    author: str | None = None,
+    invocation_context: InvocationContext | None = None,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-) -> Optional[Event]:
+) -> Event | None:
   """Converts an A2A task to an ADK event.
 
   Args:
@@ -652,10 +650,10 @@ def convert_a2a_task_to_event(
 
 def convert_a2a_message_to_event(
     a2a_message: Message,
-    author: Optional[str] = None,
-    invocation_context: Optional[InvocationContext] = None,
+    author: str | None = None,
+    invocation_context: InvocationContext | None = None,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-) -> Optional[Event]:
+) -> Event | None:
   """Converts an A2A message to an ADK event.
 
   Args:
@@ -700,10 +698,10 @@ def convert_a2a_message_to_event(
 
 def convert_a2a_status_update_to_event(
     a2a_status_update: TaskStatusUpdateEvent,
-    author: Optional[str] = None,
-    invocation_context: Optional[InvocationContext] = None,
+    author: str | None = None,
+    invocation_context: InvocationContext | None = None,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-) -> Optional[Event]:
+) -> Event | None:
   """Converts an A2A task status update to an ADK event.
 
   Args:
@@ -762,8 +760,8 @@ def convert_a2a_status_update_to_event(
 
 
 def _artifact_event_id(
-    artifact_id: str, invocation_context: Optional[InvocationContext]
-) -> Optional[str]:
+    artifact_id: str, invocation_context: InvocationContext | None
+) -> str | None:
   """The event id shared by every chunk of one A2A artifact.
 
   ADK's own streaming gives the partial chunks of one model response and the
@@ -787,10 +785,10 @@ def _artifact_event_id(
 # TODO: Add support for non-ADK Artifact Updates.
 def convert_a2a_artifact_update_to_event(
     a2a_artifact_update: TaskArtifactUpdateEvent,
-    author: Optional[str] = None,
-    invocation_context: Optional[InvocationContext] = None,
+    author: str | None = None,
+    invocation_context: InvocationContext | None = None,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-) -> Optional[Event]:
+) -> Event | None:
   """Converts an A2A task artifact update to an ADK event.
 
   Args:

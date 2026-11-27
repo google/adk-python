@@ -21,14 +21,18 @@ local bash.
 
 import asyncio
 import atexit
+import copy
 import os
+import pickle
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import cloudpickle
 from google.adk.integrations.vmaas import _agent_engine_environment
 from google.adk.integrations.vmaas import AgentEngineEnvironment
 from google.genai.errors import APIError
@@ -805,3 +809,105 @@ def test_working_dir_is_known_before_initialize():
   environment = AgentEngineEnvironment(vertexai_client=_make_client())
 
   assert str(environment.working_dir) == "/workspace"
+
+
+# Ways an environment gets copied: pickling, and the deepcopy that the Agent
+# Platform SDK's AdkApp.clone() makes of an agent before deploying it.
+_COPIERS = pytest.mark.parametrize(
+    "copier",
+    [
+        lambda obj: pickle.loads(pickle.dumps(obj)),
+        lambda obj: pickle.loads(cloudpickle.dumps(obj)),
+        copy.deepcopy,
+    ],
+    ids=["pickle", "cloudpickle", "deepcopy"],
+)
+
+
+def _patch_created_client(monkeypatch, api):
+  """Makes created clients hold a lock, as a real client does."""
+  monkeypatch.setattr(
+      "agentplatform.Client",
+      lambda **kwargs: SimpleNamespace(
+          runtimes=api.runtimes, sandboxes=api.sandboxes, lock=threading.Lock()
+      ),
+  )
+
+
+@_COPIERS
+async def test_environment_copied_after_use_creates_its_own_sandbox(
+    monkeypatch, copier
+):
+  """A copy of a used environment does not share the sandbox it created.
+
+  Setup: an environment creates its client and its sandbox, with concurrent
+    initialize calls contending for its lock.
+  Act: copy the environment, then initialize the copy and run a command.
+  Assert: the copy is not initialized and has no sandbox, and initialize
+    creates a new sandbox for it while the original keeps its own.
+  """
+  api = _make_client()
+  _patch_created_client(monkeypatch, api)
+  environment = AgentEngineEnvironment(project_id="p")
+  await asyncio.gather(environment.initialize(), environment.initialize())
+  sandbox = environment.sandbox_name
+
+  restored = copier(environment)
+  initialized_after_copy = restored.is_initialized
+  sandbox_after_copy = restored.sandbox_name
+  await restored.initialize()
+  result = await restored.execute("echo hi")
+
+  assert not initialized_after_copy
+  assert sandbox_after_copy is None
+  assert restored.sandbox_name not in (None, sandbox)
+  assert environment.sandbox_name == sandbox
+  assert len(api.sandboxes.create_calls) == 2
+  assert result.stdout == "hi\n"
+
+
+@_COPIERS
+async def test_environment_copied_after_use_checks_named_sandbox_again(
+    monkeypatch, copier
+):
+  """A copy of a used environment keeps the sandbox it was given.
+
+  Setup: an environment given a sandbox creates its client and starts the
+    sandbox; the sandbox is then paused, as by another process.
+  Act: copy the environment, then initialize the copy and run a command.
+  Assert: the copy is not initialized, and initialize resumes the given
+    sandbox instead of trusting the old state or creating a new one.
+  """
+  api = _make_client()
+  _patch_created_client(monkeypatch, api)
+  sandbox = f"{_ENGINE}/sandboxEnvironments/existing"
+  api.sandboxes.states[sandbox] = "STATE_RUNNING"
+  environment = AgentEngineEnvironment(project_id="p", sandbox_name=sandbox)
+  await environment.initialize()
+  api.sandboxes.states[sandbox] = "STATE_PAUSED"
+
+  restored = copier(environment)
+  initialized_after_copy = restored.is_initialized
+  await restored.initialize()
+  result = await restored.execute("echo hi")
+
+  assert not initialized_after_copy
+  assert restored.sandbox_name == sandbox
+  assert api.sandboxes.resume_calls == [sandbox]
+  assert not api.sandboxes.create_calls
+  assert result.stdout == "hi\n"
+
+
+@_COPIERS
+async def test_environment_given_a_client_cannot_be_copied(copier):
+  """An environment given a client refuses to be pickled, saying what to pass.
+
+  Setup: an environment given a client starts its sandbox.
+  Act: copy the environment.
+  Assert: a TypeError tells the caller to pass project_id and location
+    instead.
+  """
+  environment = await _make_environment()
+
+  with pytest.raises(TypeError, match="Pass project_id and location"):
+    copier(environment)

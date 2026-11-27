@@ -67,6 +67,7 @@ from ..utils.model_name_utils import is_gemini_model
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
+from .llm_request import _is_transient_user_content
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
@@ -711,6 +712,15 @@ def _get_provider_from_model(model: str) -> str:
 # Providers that natively support response schemas (e.g. Azure OpenAI, OpenAI).
 _NATIVE_SCHEMA_PROVIDERS = frozenset({"azure", "openai"})
 
+# Providers that accept tool->user and user->user turns and benefit from caching.
+# Strict templates (e.g. Mistral, Perplexity, DeepSeek reasoner, Llama/Ollama)
+# reject those sequences with HTTP 400 and stay on system_instruction.
+_DYNAMIC_INSTRUCTION_ROUTING_PROVIDERS = frozenset(
+    {"anthropic", "azure", "openai"}
+)
+_ROUTING_BEDROCK_PROVIDERS = frozenset({"bedrock", "bedrock_converse"})
+_ROUTING_VERTEX_PROVIDERS = frozenset({"vertex_ai", "vertex_ai_beta"})
+
 # Providers that can route to Anthropic. bedrock and vertex_ai are multi-model
 # platforms, so _is_anthropic_route also checks the model name for them.
 _ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
@@ -741,6 +751,39 @@ def _is_anthropic_route(provider: str, model: str) -> bool:
     )
     return _is_anthropic_model(prefixed_model)
   return True
+
+
+def _litellm_supports_dynamic_instruction_routing(
+    model: str, custom_llm_provider: str | None = None
+) -> bool:
+  custom = (
+      custom_llm_provider.strip().lower()
+      if isinstance(custom_llm_provider, str)
+      else ""
+  )
+  provider = (
+      custom
+      if custom and custom != _PROXY_PROVIDER
+      else _get_provider_from_model(model)
+  )
+  if provider in _DYNAMIC_INSTRUCTION_ROUTING_PROVIDERS:
+    return True
+  model_part = (model or "").strip().lower()
+  if model_part.startswith(f"{_PROXY_PROVIDER}/"):
+    model_part = model_part[len(_PROXY_PROVIDER) + 1 :]
+  if provider and model_part.startswith(f"{provider}/"):
+    model_part = model_part[len(provider) + 1 :]
+  if provider in _ROUTING_BEDROCK_PROVIDERS:
+    return "anthropic" in model_part or "claude" in model_part
+  if provider in _ROUTING_VERTEX_PROVIDERS:
+    return (
+        "anthropic" in model_part
+        or "claude" in model_part
+        or is_gemini_model(model_part)
+    )
+  if provider == "gemini":
+    return is_gemini_model(model_part)
+  return False
 
 
 def _infer_mime_type_from_uri(uri: str) -> str | None:
@@ -1333,6 +1376,8 @@ def _append_fallback_user_content_if_missing(
   """
   for content in reversed(llm_request.contents):
     if content.role == "user":
+      if _is_transient_user_content(llm_request, content):
+        continue
       parts = content.parts or []
       if any(_part_has_payload(part) for part in parts):
         return
@@ -1448,8 +1493,44 @@ def _extract_cache_creation_tokens(usage: Any) -> int | None:
   return None
 
 
+_UNCACHEABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _is_cacheable_message(message: Message) -> bool:
+  role = message.get("role")
+  if role == "system":
+    return False
+  content = message.get("content")
+  if isinstance(content, str):
+    return bool(content) or role != "assistant"
+  if isinstance(content, list) and content:
+    last_block = content[-1]
+    return not (
+        isinstance(last_block, dict)
+        and last_block.get("type") in _UNCACHEABLE_BLOCK_TYPES
+    )
+  return False
+
+
+def _cache_message_index(
+    messages: Sequence[Message], first_transient: Message | None
+) -> int | None:
+  """Returns the last cacheable non-system message index before ``first_transient``."""
+  if first_transient is None:
+    return -1
+  last_cacheable: int | None = None
+  for idx, message in enumerate(messages):
+    if message is first_transient:
+      return last_cacheable
+    if _is_cacheable_message(message):
+      last_cacheable = idx
+  return -1
+
+
 def _cache_control_injection_points(
     cache_config: ContextCacheConfig,
+    *,
+    message_index: int | None = -1,
 ) -> list[dict[str, Any]]:
   """Describes the prefix LiteLLM should mark as cacheable.
 
@@ -1460,13 +1541,15 @@ def _cache_control_injection_points(
   before the request leaves.
 
   The system instruction is one point because it is the stable head of the
-  prompt. The final message is the other, which caches the conversation so far
-  and moves forward on its own as the conversation grows. Tool definitions get
-  no point of their own, because LiteLLM's only tool-level location is
-  specific to one provider.
+  prompt. The last stable conversation message (before any transient ADK
+  instruction) is the other, so ephemeral content stays outside the cached
+  prefix. Tool definitions get no point of their own, because LiteLLM's only
+  tool-level location is specific to one provider.
 
   Args:
     cache_config: Cache configuration for the request.
+    message_index: Index of the last stable non-system message to cache, or
+      ``None`` when no non-system message precedes the first transient one.
 
   Returns:
     Injection points to hand to LiteLLM.
@@ -1474,10 +1557,14 @@ def _cache_control_injection_points(
   control: dict[str, Any] = {"type": "ephemeral"}
   if _prompt_cache.use_one_hour_ttl(cache_config):
     control["ttl"] = "1h"
-  return [
+  points: list[dict[str, Any]] = [
       {"location": "message", "role": "system", "control": control},
-      {"location": "message", "index": -1, "control": control},
   ]
+  if message_index is not None:
+    points.append(
+        {"location": "message", "index": message_index, "control": control}
+    )
+  return points
 
 
 def _decode_thought_signature(value: Any) -> bytes | None:
@@ -4044,7 +4131,7 @@ def _drop_params_rejected_by_anthropic_thinking(params: dict[str, Any]) -> None:
     params.pop("top_p")
 
 
-async def _get_completion_inputs(
+async def _build_completion_inputs(
     llm_request: LlmRequest,
     model: str,
     upload_params: dict[str, Any] | None = None,
@@ -4059,8 +4146,9 @@ async def _get_completion_inputs(
     dict[str, Any] | None,
     dict[str, Any] | None,
     str | None,
+    int | None,
 ]:
-  """Converts an LlmRequest to litellm inputs and extracts generation params.
+  """Converts an LlmRequest to litellm inputs, generation params, and cache index.
 
   Args:
     llm_request: The LlmRequest to convert.
@@ -4074,7 +4162,7 @@ async def _get_completion_inputs(
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format,
-    generation params, and tool_choice).
+    generation params, tool_choice, and message index to cache or ``None``).
   """
   _ensure_litellm_imported()
 
@@ -4083,6 +4171,7 @@ async def _get_completion_inputs(
 
   # 1. Construct messages
   messages: list[Message] = []
+  first_transient_message: Message | None = None
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
         content,
@@ -4093,9 +4182,18 @@ async def _get_completion_inputs(
         custom_llm_provider=custom_llm_provider,
     )
     if isinstance(message_param_or_list, list):
-      messages.extend(message_param_or_list)
-    elif message_param_or_list:  # Ensure it's not None before appending
-      messages.append(message_param_or_list)
+      added = message_param_or_list
+    elif message_param_or_list:
+      added = [message_param_or_list]
+    else:
+      added = []
+    if (
+        first_transient_message is None
+        and added
+        and _is_transient_user_content(llm_request, content)
+    ):
+      first_transient_message = added[0]
+    messages.extend(added)
 
   system_instruction = extract_system_instruction(llm_request.config)
   if system_instruction:
@@ -4111,6 +4209,7 @@ async def _get_completion_inputs(
       model,
       custom_llm_provider=custom_llm_provider,
   )
+  cache_message_index = _cache_message_index(messages, first_transient_message)
 
   # 2. Convert tool declarations
   tools: list[dict[str, Any]] | None = None
@@ -4371,6 +4470,44 @@ async def _get_completion_inputs(
   if not tools:
     tool_choice = None
 
+  return (
+      messages,
+      tools,
+      response_format,
+      generation_params,
+      tool_choice,
+      cache_message_index,
+  )
+
+
+async def _get_completion_inputs(
+    llm_request: LlmRequest,
+    model: str,
+    upload_params: dict[str, Any] | None = None,
+    *,
+    is_proxied: bool = False,
+    custom_llm_provider: str | None = None,
+    max_tokens: int | None = None,
+    has_constructor_reasoning: bool = False,
+) -> tuple[
+    list[Message],
+    list[dict[str, Any]] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    str | None,
+]:
+  """Converts an LlmRequest to litellm inputs and extracts generation params."""
+  messages, tools, response_format, generation_params, tool_choice, _ = (
+      await _build_completion_inputs(
+          llm_request,
+          model,
+          upload_params=upload_params,
+          is_proxied=is_proxied,
+          custom_llm_provider=custom_llm_provider,
+          max_tokens=max_tokens,
+          has_constructor_reasoning=has_constructor_reasoning,
+      )
+  )
   return messages, tools, response_format, generation_params, tool_choice
 
 
@@ -4798,23 +4935,26 @@ class LiteLlm(BaseLlm):
     constructor_max_tokens = self._additional_args.get("max_completion_tokens")
     if constructor_max_tokens is None:
       constructor_max_tokens = self._additional_args.get("max_tokens")
-    messages, tools, response_format, generation_params, tool_choice = (
-        await _get_completion_inputs(
-            llm_request,
-            effective_model,
-            upload_params=_get_upload_params(
-                effective_model, self._additional_args
-            ),
-            is_proxied=_is_proxied_model(
-                effective_model, self._additional_args
-            ),
-            custom_llm_provider=custom_llm_provider,
-            max_tokens=constructor_max_tokens,
-            has_constructor_reasoning=(
-                self._additional_args.get("thinking") is not None
-                or self._additional_args.get("reasoning_effort") is not None
-            ),
-        )
+    (
+        messages,
+        tools,
+        response_format,
+        generation_params,
+        tool_choice,
+        cache_message_index,
+    ) = await _build_completion_inputs(
+        llm_request,
+        effective_model,
+        upload_params=_get_upload_params(
+            effective_model, self._additional_args
+        ),
+        is_proxied=_is_proxied_model(effective_model, self._additional_args),
+        custom_llm_provider=custom_llm_provider,
+        max_tokens=constructor_max_tokens,
+        has_constructor_reasoning=(
+            self._additional_args.get("thinking") is not None
+            or self._additional_args.get("reasoning_effort") is not None
+        ),
     )
     nests_output = False
     if response_format and llm_request.config:
@@ -4857,7 +4997,9 @@ class LiteLlm(BaseLlm):
         and "cache_control_injection_points" not in completion_args
     ):
       completion_args["cache_control_injection_points"] = (
-          _cache_control_injection_points(cache_config)
+          _cache_control_injection_points(
+              cache_config, message_index=cache_message_index
+          )
       )
 
     # merge headers
@@ -5458,6 +5600,25 @@ class LiteLlm(BaseLlm):
       if nests_output:
         _unwrap_litellm_output(llm_response)
       yield llm_response
+
+  @classmethod
+  @override
+  def _supports_dynamic_instruction_routing_for_model(
+      cls, model: str
+  ) -> bool | None:
+    if (
+        cls._supports_dynamic_instruction_routing
+        is LiteLlm._supports_dynamic_instruction_routing
+    ):
+      return _litellm_supports_dynamic_instruction_routing(model)
+    return None
+
+  @override
+  def _supports_dynamic_instruction_routing(self) -> bool:
+    return _litellm_supports_dynamic_instruction_routing(
+        self.model,
+        self._additional_args.get("custom_llm_provider"),
+    )
 
   @classmethod
   @override

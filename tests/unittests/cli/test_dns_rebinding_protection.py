@@ -16,7 +16,6 @@
 
 import asyncio
 from typing import Any
-from typing import Optional
 
 from google.adk.cli.api_server import _get_allowed_request_hosts
 from google.adk.cli.api_server import _is_dns_rebinding_request
@@ -206,9 +205,9 @@ class TestDnsRebindingProtection:
 def _make_http_scope(
     method: str = "GET",
     server_host: str = "127.0.0.1",
-    host_header: Optional[str] = "127.0.0.1:8000",
-    origin: Optional[str] = None,
-    extra_headers: Optional[list[tuple[bytes, bytes]]] = None,
+    host_header: str | None = "127.0.0.1:8000",
+    origin: str | None = None,
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> dict[str, Any]:
   """Builds a minimal ASGI HTTP scope."""
   # server_host is the local end of the connection, which is what ASGI servers
@@ -369,9 +368,9 @@ class TestOriginCheckMiddleware:
   def _call(
       self,
       scope: dict[str, Any],
-      bind_host: Optional[str] = "127.0.0.1",
-      allow_origins: Optional[list[str]] = None,
-  ) -> tuple[Optional[int], bool]:
+      bind_host: str | None = "127.0.0.1",
+      allow_origins: list[str] | None = None,
+  ) -> tuple[int | None, bool]:
     """Returns (status code, whether the wrapped app was reached)."""
     reached = False
     statuses: list[int] = []

@@ -39,7 +39,6 @@ from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
 
@@ -158,16 +157,14 @@ def _is_transient_error(error: Exception) -> bool:
 class PubSubMessage(BaseModel):
   """Inner message payload from a Pub/Sub push subscription."""
 
-  data: Optional[str] = Field(
+  data: str | None = Field(
       default=None, description="Base64-encoded message data."
   )
-  attributes: Optional[dict[str, str]] = Field(
+  attributes: dict[str, str] | None = Field(
       default=None, description="Message attributes."
   )
-  messageId: Optional[str] = Field(
-      default=None, description="Pub/Sub message ID."
-  )
-  publishTime: Optional[str] = Field(
+  messageId: str | None = Field(default=None, description="Pub/Sub message ID.")
+  publishTime: str | None = Field(
       default=None, description="Publish timestamp."
   )
 
@@ -179,7 +176,7 @@ class PubSubTriggerRequest(BaseModel):
   """
 
   message: PubSubMessage
-  subscription: Optional[str] = Field(
+  subscription: str | None = Field(
       default=None,
       description="Full subscription name (e.g. projects/p/subscriptions/s).",
   )
@@ -202,33 +199,31 @@ class EventarcTriggerRequest(BaseModel):
 
   # In structured mode, ``data`` is always present.
   # In binary mode, the entire body is the data (often a Pub/Sub wrapper).
-  data: Optional[dict[str, Any]] = Field(
+  data: dict[str, Any] | None = Field(
       default=None, description="Event payload data (structured mode)."
   )
-  source: Optional[str] = Field(
+  source: str | None = Field(
       default=None, description="CloudEvents source attribute."
   )
-  type: Optional[str] = Field(
+  type: str | None = Field(
       default=None, description="CloudEvents type attribute."
   )
-  id: Optional[str] = Field(
-      default=None, description="CloudEvents id attribute."
-  )
-  time: Optional[str] = Field(
+  id: str | None = Field(default=None, description="CloudEvents id attribute.")
+  time: str | None = Field(
       default=None, description="CloudEvents time attribute."
   )
-  specversion: Optional[str] = Field(
+  specversion: str | None = Field(
       default=None, description="CloudEvents specversion attribute."
   )
 
   # Binary mode: Pub/Sub message wrapper fields.
-  message: Optional[PubSubMessage] = Field(
+  message: PubSubMessage | None = Field(
       default=None,
       description=(
           "Pub/Sub message wrapper (binary content mode from Eventarc)."
       ),
   )
-  subscription: Optional[str] = Field(
+  subscription: str | None = Field(
       default=None,
       description=(
           "Pub/Sub subscription name (binary content mode from Eventarc)."
@@ -247,7 +242,7 @@ class TriggerResponse(BaseModel):
 
 
 def _make_trigger_user_id(
-    raw_value: Optional[str],
+    raw_value: str | None,
     *,
     default: str,
 ) -> str:
@@ -265,7 +260,7 @@ def _make_trigger_user_id(
 class GoogleOidcVerifier:
   """Verifies the request's OIDC bearer token."""
 
-  def __init__(self, audience: str, allowed_emails: Optional[list[str]] = None):
+  def __init__(self, audience: str, allowed_emails: list[str] | None = None):
     self._audience = audience
     self._allowed_emails = allowed_emails
     self._http_request = google_auth_requests.Request()
@@ -333,12 +328,12 @@ class TriggerRouter:
       self,
       adk_web_server: ApiServer,
       *,
-      trigger_sources: Optional[Sequence[str]] = None,
+      trigger_sources: Sequence[str] | None = None,
       max_concurrent: int = DEFAULT_MAX_CONCURRENT,
       max_retries: int = DEFAULT_MAX_RETRIES,
       retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
       retry_max_delay: float = DEFAULT_RETRY_MAX_DELAY,
-      verifier: Optional[Callable[[Request], None | Awaitable[None]]] = None,
+      verifier: Callable[[Request], None | Awaitable[None]] | None = None,
   ):
     self._server = adk_web_server
     # When set, every /trigger/* request must be verified by this callable
@@ -373,7 +368,7 @@ class TriggerRouter:
       user_id: str,
       message_text: str,
       session_id: str,
-      session_state: Optional[dict[str, Any]] = None,
+      session_state: dict[str, Any] | None = None,
   ) -> list[Event]:
     """Run the agent with an auto-created ephemeral session.
 
@@ -439,7 +434,7 @@ class TriggerRouter:
       app_name: str,
       user_id: str,
       message_text: str,
-      delivery: Optional[dict[str, Any]] = None,
+      delivery: dict[str, Any] | None = None,
   ) -> list[Event]:
     """Run the agent with retry on transient errors.
 
@@ -461,7 +456,7 @@ class TriggerRouter:
       TransientError: When retries are exhausted on a transient error.
       Exception: For non-transient errors, re-raised immediately.
     """
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
     session_id = str(uuid.uuid4())
     session_state = (
         {TRIGGER_DELIVERY_STATE_KEY: delivery} if delivery is not None else None

@@ -36,7 +36,9 @@ class ContextCacheConfig(BaseModel):
   second turn of a session at the earliest and requires the cacheable prefix
   to reach the model-specific minimum: 2048 tokens for Gemini 2.5 or 4096
   tokens for Gemini 3. Short or single-turn sessions are therefore only cached
-  when seeded via ``cached_content``.
+  when seeded via ``cached_content``. This config has no effect on a
+  model that does not support explicit context caching, such as Gemini 4:
+  its requests are sent without an explicit cache.
 
   Attributes:
       cache_intervals: Maximum number of invocations to reuse the same cache before refreshing it

@@ -59,6 +59,7 @@ class FeatureName(str, Enum):
   GCS_TOOLSET = "GCS_TOOLSET"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
+  GRID_SEARCH_AGENT_OPTIMIZER = "GRID_SEARCH_AGENT_OPTIMIZER"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   LIVEKIT = "LIVEKIT"
   MCP_AGENT_SERVER = "MCP_AGENT_SERVER"
@@ -218,6 +219,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.GOOGLE_TOOL: FeatureConfig(
         FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.GRID_SEARCH_AGENT_OPTIMIZER: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
         FeatureStage.STABLE, default_on=True

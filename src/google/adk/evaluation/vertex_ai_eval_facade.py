@@ -19,8 +19,6 @@ from collections.abc import Sequence
 import logging
 import math
 import os
-from typing import Optional
-from typing import Union
 
 from google.genai import types as genai_types
 import pandas as pd
@@ -76,9 +74,7 @@ class _VertexAiEvalFacade(Evaluator):
   def __init__(
       self,
       threshold: float,
-      metric_name: Union[
-          vertexai.types.PrebuiltMetric, vertexai.types.RubricMetric
-      ],
+      metric_name: vertexai.types.PrebuiltMetric | vertexai.types.RubricMetric,
       expected_invocations_required: bool = False,
   ):
     self._threshold = threshold
@@ -110,8 +106,8 @@ class _VertexAiEvalFacade(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 
@@ -126,12 +122,12 @@ class _VertexAiEvalFacade(Evaluator):
         conversations.
     """
 
-  def _get_text(self, content: Optional[genai_types.Content]) -> str:
+  def _get_text(self, content: genai_types.Content | None) -> str:
     # The single-turn metrics receive plain text, which cannot carry the
     # `thought` flag, so thought parts are dropped here.
     return extract_text_from_content(content, splitter="\n")
 
-  def _get_score(self, eval_result: object) -> Optional[float]:
+  def _get_score(self, eval_result: object) -> float | None:
     summary_metrics: object = getattr(eval_result, "summary_metrics", None)
     if not isinstance(summary_metrics, Sequence) or not summary_metrics:
       return None
@@ -145,9 +141,7 @@ class _VertexAiEvalFacade(Evaluator):
 
     return None
 
-  def _get_rubric_scores(
-      self, eval_result: object
-  ) -> Optional[list[RubricScore]]:
+  def _get_rubric_scores(self, eval_result: object) -> list[RubricScore] | None:
     """Returns the judge's rubric verdicts and explanation as RubricScores.
 
     Every call to `_perform_eval` evaluates exactly one metric, so all the
@@ -224,7 +218,7 @@ class _VertexAiEvalFacade(Evaluator):
         score=1.0 if getattr(rubric_verdict, "verdict", None) else 0.0,
     )
 
-  def _get_eval_status(self, score: Optional[float]) -> EvalStatus:
+  def _get_eval_status(self, score: float | None) -> EvalStatus:
     if score is not None:
       return (
           EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
@@ -251,8 +245,8 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
@@ -261,7 +255,7 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
 
     # If expected_invocation are not required by the metric and if they are not
     # supplied, we provide a list of None.
-    resolved_expected: Sequence[Optional[Invocation]] = (
+    resolved_expected: Sequence[Invocation | None] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else expected_invocations
@@ -326,8 +320,8 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     del conversation_scenario
     _validate_invocation_lengths(actual_invocations, expected_invocations)
@@ -337,7 +331,7 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
     per_invocation_results = []
     # If expected_invocation are not required by the metric and if they are not
     # supplied, we provide a list of None.
-    resolved_expected: Sequence[Optional[Invocation]] = (
+    resolved_expected: Sequence[Invocation | None] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else expected_invocations

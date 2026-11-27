@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import Field
 
 from .common import EvalBaseModel
@@ -24,7 +22,7 @@ from .common import EvalBaseModel
 class RubricContent(EvalBaseModel):
   """The content of a rubric."""
 
-  text_property: Optional[str] = Field(
+  text_property: str | None = Field(
       default=None,
       description=(
           "The property being evaluated. Example: \"The agent's response is"
@@ -44,7 +42,7 @@ class Rubric(EvalBaseModel):
       description="The actual testable criterion for the rubric."
   )
 
-  description: Optional[str] = Field(
+  description: str | None = Field(
       default=None,
       description=(
           "A description of the rubric that provide details on how the results"
@@ -52,7 +50,7 @@ class Rubric(EvalBaseModel):
       ),
   )
 
-  type: Optional[str] = Field(
+  type: str | None = Field(
       default=None,
       description="""Optional. A type designator for the rubric, which can
       inform how it's evaluated or interpreted by systems or users.
@@ -70,11 +68,11 @@ class RubricScore(EvalBaseModel):
 
   rubric_id: str = Field(description="The id of the rubric that was assessed.")
 
-  rationale: Optional[str] = Field(
+  rationale: str | None = Field(
       default=None, description="Reasoning/rationale for the score."
   )
 
-  score: Optional[float] = Field(
+  score: float | None = Field(
       default=None,
       description=(
           "Score obtained after assessing the rubric. Optional, as assessment"
