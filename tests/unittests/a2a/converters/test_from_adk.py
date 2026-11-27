@@ -224,9 +224,12 @@ class TestFromAdk:
       convert_event_to_a2a_events(self.mock_event, None)
 
   def test_convert_event_to_a2a_events_with_actions(self):
-    """An artifact-delta-only event emits no A2A event: it has no content
-    and no action a remote peer honors, so there is nothing to send. The
-    legacy executor behaves the same way for content-less events."""
+    """An artifact-delta-only event emits one message-less WORKING update
+    with the artifact delta on the update's own metadata: the update is the
+    vehicle the after-event interceptors run on, so without it an artifact
+    saved by a callback would never be exported. Still never a message
+    with empty parts, which the A2A spec forbids (Message.parts is
+    REQUIRED)."""
     self.mock_event.actions = event_actions.EventActions()
     self.mock_event.actions.artifact_delta["image"] = 0
 
@@ -239,7 +242,16 @@ class TestFromAdk:
         context_id="context-456",
     )
 
-    assert result == []
+    assert len(result) == 1
+    assert isinstance(result[0], TaskStatusUpdateEvent)
+    assert result[0].task_id == "task-123"
+    assert result[0].context_id == "context-456"
+    assert result[0].status.state == _compat.TS_WORKING
+    assert _compat.normalize_message(result[0].status.message) is None
+
+    metadata = _compat.meta_to_dict(result[0].metadata)
+    assert "adk_actions" in metadata
+    assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}
 
   def test_convert_event_to_a2a_events_escalate_only(self):
     """An escalate-only event emits one message-less WORKING update with the
