@@ -163,8 +163,10 @@ def _allowed_globals() -> frozenset[tuple[str, str]]:
   return _STATIC_ALLOWED_GLOBALS | frozenset(derived)
 
 
-class _RestrictedUnpickler(pickle.Unpickler):
+class _RestrictedUnpickler(pickle._Unpickler):
   """Unpickler that only resolves the types `EventActions` can hold."""
+
+  dispatch = pickle._Unpickler.dispatch.copy()
 
   def find_class(self, module: str, name: str) -> Any:  # noqa: ANN001
     if (module, name) in _allowed_globals():
@@ -178,6 +180,17 @@ class _RestrictedUnpickler(pickle.Unpickler):
         " `adk migrate session --allow-unsafe-unpickling`, which also moves it"
         " off the pickled schema."
     )
+
+  def load_build(self) -> None:
+    if len(self.stack) >= 2 and isinstance(self.stack[-2], type):
+      target = self.stack[-2]
+      raise pickle.UnpicklingError(
+          f"Refusing to apply BUILD to class {target.__module__}."
+          f"{target.__qualname__} from a legacy pickled `events.actions` value."
+      )
+    super().load_build()
+
+  dispatch[pickle.BUILD[0]] = load_build
 
 
 def loads(data: bytes | bytearray) -> Any:
