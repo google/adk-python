@@ -29,6 +29,7 @@ from google.adk.workflow.utils._rehydration_utils import is_terminal_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 # --- _wrap_response ---
@@ -304,6 +305,53 @@ class TestValidateResumeResponse:
         "tags": ["urgent"],
         "reviewer": "director",
     }
+
+  def test_object_schema_leaves_out_omitted_fields_without_default(self):
+    """A default_factory field carries no JSON-schema default to restore."""
+
+    class Decision(BaseModel):
+      approved: bool
+      tags: list[str] = Field(default_factory=list)
+
+    answer = _validate_resume_response(
+        {"approved": True}, Decision.model_json_schema()
+    )
+
+    assert answer == {"approved": True}
+    # The downstream node rebuilds the model: the factory fills tags in.
+    assert Decision.model_validate(answer) == Decision(approved=True)
+
+  def test_object_schema_keeps_given_fields_without_default(self):
+    """An answer's own value for a no-default field is kept, including None."""
+
+    class Decision(BaseModel):
+      approved: bool
+      tags: list[str] | None = Field(default_factory=list)
+
+    answer = _validate_resume_response(
+        {"approved": True, "tags": None}, Decision.model_json_schema()
+    )
+    assert answer == {"approved": True, "tags": None}
+
+    answer = _validate_resume_response(
+        {"approved": True, "tags": ["urgent"]}, Decision.model_json_schema()
+    )
+    assert answer == {"approved": True, "tags": ["urgent"]}
+
+  def test_resume_answer_omitting_optional_fields_keeps_defaults(self):
+    """No-default fields are dropped while declared defaults still apply."""
+
+    class Decision(BaseModel):
+      approved: bool
+      priority: int = 3
+      tags: list[str] = Field(default_factory=list)
+
+    answer = _validate_resume_response(
+        {"approved": True}, Decision.model_json_schema()
+    )
+
+    assert answer == {"approved": True, "priority": 3}
+    assert Decision.model_validate(answer) == Decision(approved=True)
 
 
 # --- _reconstruct_node_states ---

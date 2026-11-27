@@ -276,11 +276,15 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
       required = schema.get('required', [])
 
       fields: dict[str, Any] = {}
+      no_default: set[str] = set()
       for prop_name, prop_schema in properties.items():
         prop_type_str = prop_schema.get('type')
         prop_type = (
             type_mapping.get(prop_type_str, Any) if prop_type_str else Any
         )
+
+        if 'default' not in prop_schema:
+          no_default.add(prop_name)
 
         if prop_name in required:
           fields[prop_name] = (prop_type, ...)
@@ -298,7 +302,14 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
         model_instance = TypeAdapter(DynamicModel).validate_python(
             response_data
         )
-        return model_instance.model_dump()
+        # A property without a JSON-schema default (e.g. a Pydantic
+        # default_factory) gets its value from the downstream model, so an
+        # omitted answer must not emit it as None. Pydantic tracks the fields
+        # the answer actually carried, including an explicit None, so only
+        # the untouched no-default fields are left out.
+        return model_instance.model_dump(
+            exclude=no_default - model_instance.model_fields_set
+        )
       except ValidationError as e:
         raise WorkflowDataError(
             f'Validation failed for object schema: {e}'
