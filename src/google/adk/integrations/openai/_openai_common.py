@@ -52,6 +52,7 @@ __all__ = [
     "is_reasoning_model",
     "map_finish_reason",
     "serialize_system_instruction",
+    "split_reasoning_tokens",
     "strip_unsupported_sampling_params",
     "supported_efforts",
     "targets_default_openai_host",
@@ -485,6 +486,28 @@ def map_finish_reason(
   if not finish_reason:
     return None
   return types.FinishReason.FINISH_REASON_UNSPECIFIED
+
+
+def split_reasoning_tokens(
+    output_tokens: int | None,
+    reasoning_tokens: int | None,
+) -> tuple[int | None, int | None]:
+  """Splits an output count that includes reasoning into disjoint counts.
+
+  OpenAI counts reasoning tokens inside its output count, while the GenAI usage
+  shape keeps the candidate and thought counts disjoint, and telemetry sums the
+  two into output tokens. Returns ``(candidates, thoughts)``. Reasoning is
+  capped at the output count, so the candidate count stays non-negative even if
+  the two counters disagree, as in ``AnthropicLlm``. Negative counts are read
+  as zero. When either count is missing, both are returned unchanged.
+  """
+  if not isinstance(output_tokens, int) or not isinstance(
+      reasoning_tokens, int
+  ):
+    return output_tokens, reasoning_tokens
+  output = max(output_tokens, 0)
+  thoughts = min(max(reasoning_tokens, 0), output)
+  return output - thoughts, thoughts
 
 
 def build_api_key(

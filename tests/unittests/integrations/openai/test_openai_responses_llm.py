@@ -40,9 +40,11 @@ from google.adk.integrations.openai._openai_responses_llm import _loads_json_obj
 from google.adk.integrations.openai._openai_responses_llm import _response_to_llm_response
 from google.adk.integrations.openai._openai_responses_llm import _serialize_system_instruction
 from google.adk.integrations.openai._openai_responses_llm import _tool_choice
+from google.adk.integrations.openai._openai_responses_llm import _usage_metadata
 from google.adk.integrations.openai._openai_responses_llm import AzureOpenAIResponsesLlm
 from google.adk.integrations.openai._openai_responses_llm import OpenAIResponsesLlm
 from google.adk.models.llm_request import LlmRequest
+from google.adk.telemetry._token_usage import TokenUsage
 from google.adk.utils._schema_utils import enforce_strict_openai_schema
 from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam
@@ -856,7 +858,8 @@ def test_response_parsing_maps_text_reasoning_tool_calls_and_usage():
   assert llm_response.model_version == 'gpt-5'
   assert llm_response.finish_reason == types.FinishReason.STOP
   assert llm_response.usage_metadata.prompt_token_count == 11
-  assert llm_response.usage_metadata.candidates_token_count == 7
+  # output_tokens 7 includes the 4 reasoning tokens.
+  assert llm_response.usage_metadata.candidates_token_count == 3
   assert llm_response.usage_metadata.total_token_count == 18
   assert llm_response.usage_metadata.cached_content_token_count == 3
   assert llm_response.usage_metadata.thoughts_token_count == 4
@@ -871,6 +874,60 @@ def test_response_parsing_maps_text_reasoning_tool_calls_and_usage():
   assert llm_response.custom_metadata['openai_response']['reasoning'] == [
       {'encrypted_content': 'encrypted', 'id': 'rs_1'}
   ]
+
+
+@pytest.mark.parametrize(
+    'output, total, reasoning, candidates, thoughts',
+    [
+        pytest.param(50, 70, 38, 12, 38, id='reasoning_in_output'),
+        pytest.param(50, 70, None, 50, None, id='no_reasoning_details'),
+        pytest.param(50, 70, 0, 50, 0, id='zero_reasoning'),
+        pytest.param(50, 70, 60, 0, 50, id='reasoning_above_output'),
+        pytest.param(50, 70, -1, 50, 0, id='negative_reasoning'),
+        pytest.param(-1, 19, 5, 0, 0, id='negative_output'),
+        # Unlike Chat Completions, a total that also counts the reasoning does
+        # not mark it as outside output_tokens.
+        pytest.param(9, 123, 94, 0, 9, id='total_counts_reasoning_again'),
+    ],
+)
+def test_usage_metadata_splits_reasoning_from_candidates(
+    output: int,
+    total: int,
+    reasoning: int | None,
+    candidates: int,
+    thoughts: int | None,
+) -> None:
+  """Responses output_tokens includes reasoning; candidates exclude it."""
+  usage: dict[str, object] = {
+      'input_tokens': 20,
+      'output_tokens': output,
+      'total_tokens': total,
+      'input_tokens_details': {'cached_tokens': 0},
+  }
+  if reasoning is not None:
+    usage['output_tokens_details'] = {'reasoning_tokens': reasoning}
+  metadata = _usage_metadata(usage)
+  assert metadata is not None
+  assert metadata.candidates_token_count == candidates
+  assert metadata.thoughts_token_count == thoughts
+  assert metadata.total_token_count == total
+
+
+def test_usage_metadata_reports_output_tokens_once() -> None:
+  """Telemetry's output tokens count each reasoning token once."""
+  usage = ResponseUsage(
+      input_tokens=20,
+      input_tokens_details=InputTokensDetails(
+          cached_tokens=0, cache_write_tokens=0
+      ),
+      output_tokens=50,
+      output_tokens_details=OutputTokensDetails(reasoning_tokens=38),
+      total_tokens=70,
+  )
+  token_usage = TokenUsage.from_usage_metadata(_usage_metadata(usage))
+  assert token_usage.output_tokens == 50
+  assert token_usage.reasoning_output_tokens == 38
+  assert token_usage.candidate_output_tokens == 12
 
 
 def test_response_parsing_accepts_openai_sdk_response_types():

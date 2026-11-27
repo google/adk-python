@@ -528,12 +528,16 @@ def _usage_metadata(
   output_details = _get_value(usage, 'output_tokens_details')
   cached_tokens = _get_value(input_details, 'cached_tokens')
   reasoning_tokens = _get_value(output_details, 'reasoning_tokens')
+  # Responses counts reasoning inside output_tokens; split it out.
+  candidates, thoughts = _openai_common.split_reasoning_tokens(
+      output_tokens, reasoning_tokens
+  )
   return types.GenerateContentResponseUsageMetadata(
       prompt_token_count=input_tokens,
-      candidates_token_count=output_tokens,
+      candidates_token_count=candidates,
       total_token_count=total_tokens,
       cached_content_token_count=cached_tokens,
-      thoughts_token_count=reasoning_tokens,
+      thoughts_token_count=thoughts,
   )
 
 
