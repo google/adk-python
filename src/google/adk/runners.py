@@ -64,6 +64,7 @@ from .utils import _lazy
 from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _CALLER_CLOSED_EARLY_MSG
+from .utils._runner_utils import _notify_run_error
 from .utils._runner_utils import _run_invocation_lifecycle
 from .utils.model_name_utils import is_gemini_model
 from .utils.model_name_utils import is_gemini_model_id_check_disabled
@@ -1972,12 +1973,18 @@ class Runner:
       invocation_context._attach_abort_signal(abort_signal)
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
-    await self._handle_new_message(
-        new_message=new_message,
-        invocation_context=invocation_context,
-        run_config=run_config,
-        state_delta=state_delta,
-    )
+    try:
+      await self._handle_new_message(
+          new_message=new_message,
+          invocation_context=invocation_context,
+          run_config=run_config,
+          state_delta=state_delta,
+      )
+    except Exception as error:
+      await _notify_run_error(
+          invocation_context.plugin_manager, invocation_context, error
+      )
+      raise
     # Step 3: Set agent to run for the invocation.
     root_agent = self._require_root_agent()
     invocation_context.agent = self._find_agent_to_run(
@@ -2047,18 +2054,24 @@ class Runner:
       # after construction rather than passed to the factory.
       invocation_context._attach_abort_signal(abort_signal)
     # Step 3: Maybe handle new message.
-    if new_message:
-      await self._handle_new_message(
-          new_message=user_message,
-          invocation_context=invocation_context,
-          run_config=run_config,
-          state_delta=state_delta,
+    try:
+      if new_message:
+        await self._handle_new_message(
+            new_message=user_message,
+            invocation_context=invocation_context,
+            run_config=run_config,
+            state_delta=state_delta,
+        )
+      elif state_delta:
+        # Resuming without a new message: there is no user message event to
+        # carry the delta, so append it as a content-less event instead of
+        # dropping it.
+        await self._append_state_delta_event(invocation_context, state_delta)
+    except Exception as error:
+      await _notify_run_error(
+          invocation_context.plugin_manager, invocation_context, error
       )
-    elif state_delta:
-      # Resuming without a new message: there is no user message event to
-      # carry the delta, so append it as a content-less event instead of
-      # dropping it.
-      await self._append_state_delta_event(invocation_context, state_delta)
+      raise
     # Step 4: Populate agent states for the current invocation.
     invocation_context.populate_invocation_agent_states()
     # Step 5: Set agent to run for the invocation.
