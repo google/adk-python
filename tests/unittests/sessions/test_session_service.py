@@ -456,6 +456,57 @@ async def test_sqlite_session_service_memory_rolls_back_failed_operation() -> (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('list_only', [False, True], ids=['get', 'list'])
+async def test_sqlite_session_reads_one_revision(
+    tmp_path: Path, list_only: bool
+) -> None:
+  db_path = tmp_path / 'sessions.db'
+  service = SqliteSessionService(str(db_path))
+  initial = {'step': 0, 'app:step': 0, 'user:step': 0}
+  updated = dict.fromkeys(initial, 1)
+  session = await service.create_session(
+      app_name='app', user_id='user', state=initial
+  )
+  # WAL lets a second connection commit while the read transaction stays open.
+  conn = sqlite3.connect(db_path)
+  try:
+    conn.execute('PRAGMA journal_mode=WAL')
+  finally:
+    conn.close()
+
+  event = Event(
+      author='agent',
+      invocation_id='inv',
+      actions=EventActions(state_delta=updated),
+  )
+  get_app_state = service._get_app_state
+
+  async def append_then_read_app_state(db, app_name):
+    await service.append_event(session, event)
+    return await get_app_state(db, app_name)
+
+  with mock.patch.object(service, '_get_app_state', append_then_read_app_state):
+    if list_only:
+      [snapshot] = (
+          await service.list_sessions(app_name='app', user_id='user')
+      ).sessions
+    else:
+      snapshot = await service.get_session(
+          app_name='app', user_id='user', session_id=session.id
+      )
+
+  assert snapshot is not None
+  assert snapshot.state == initial
+  assert snapshot.events == []
+  latest = await service.get_session(
+      app_name='app', user_id='user', session_id=session.id
+  )
+  assert latest is not None
+  assert latest.state == updated
+  assert latest.events == [event]
+
+
+@pytest.mark.asyncio
 async def test_sqlite_session_service_rejects_concurrent_stale_writer(
     tmp_path: Path,
 ) -> None:
