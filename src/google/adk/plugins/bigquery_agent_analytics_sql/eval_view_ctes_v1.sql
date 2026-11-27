@@ -77,6 +77,13 @@
 -- has_user_message and is_complete, so a truncated turn may also be
 -- unfinished or lack user text.
 --
+-- Nested sub-agent sessions: an AgentTool call runs its sub-agent in a
+-- throwaway child session whose rows carry attributes.adk.parent_session_id.
+-- SessionEvents excludes those child-session rows because the parent
+-- session's trace already records the AgentTool call and response as a tool
+-- step.  Rows without that field, or from tables where attributes is
+-- withheld, evaluate to NULL and are kept.
+--
 -- Versioning: the _v1 in the file name is the version of this contract.  A
 -- backward-compatible fix, which keeps the placeholders and the output
 -- columns, edits the file in place; a change to either needs a new _v2 file.
@@ -105,6 +112,19 @@ WITH
     WHERE
       session_id IS NOT NULL
       AND invocation_id IS NOT NULL{raw_where_clause}
+  ),
+  -- Keeps only top-level session events, excluding throwaway in-memory
+  -- sessions created by nested AgentTool calls (which carry
+  -- attributes.adk.parent_session_id and already appear as tool calls inside
+  -- their parent session's trace).  Rows without that field, or from tables
+  -- that withhold attributes, evaluate to NULL and are kept.
+  SessionEvents AS (
+    SELECT
+      *
+    FROM
+      RawEvents
+    WHERE
+      JSON_VALUE(attributes, '$.adk.parent_session_id') IS NULL
   ),
   -- Each event with the fields that later steps read parsed out of its JSON
   -- payload: its author, the tool name and args, whether the tool is a
@@ -179,6 +199,10 @@ WITH
           )
         )
       ) AS is_function_response,
+      -- Keep sentinels on $.text_summary and $.response in TypedEvents so
+      -- COALESCE fails closed instead of falling back to $.response.
+      -- ResponseEvents maps those sentinels to NULL, while top-level string
+      -- content excludes them directly below.
       IF(
         event_type = 'AGENT_RESPONSE',
         COALESCE(
@@ -188,11 +212,30 @@ WITH
             JSON_VALUE(content, '$.text_summary'),
             NULL
           ),
-          NULLIF(JSON_VALUE(content, '$.response'), ''),
+          IF(
+            TRIM(JSON_VALUE(content, '$.response')) != '',
+            JSON_VALUE(content, '$.response'),
+            NULL
+          ),
           IF(
             JSON_TYPE(JSON_QUERY(content, '$.response'))
               IN ('object', 'array'),
             TO_JSON_STRING(JSON_QUERY(content, '$.response')),
+            NULL
+          ),
+          IF(
+            JSON_TYPE(content) = 'string'
+              AND TRIM(JSON_VALUE(content, '$')) != ''
+              AND JSON_VALUE(content, '$') NOT IN (
+                '[FORMATTER_FAILED]',
+                '[FORMATTING FAILED]',
+                '[REDACTED]',
+                '[CONTENT_PARSE_FAILED]',
+                '[UNPARSEABLE_JSON_BLOB]',
+                '[UNSUPPORTED_OBJECT]',
+                '[REDACTED_SENSITIVE_TEXT]'
+              ),
+            JSON_VALUE(content, '$'),
             NULL
           )
         ),
@@ -212,7 +255,7 @@ WITH
         AS usage_completion,
       SAFE_CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms
     FROM
-      RawEvents
+      SessionEvents
   ),
   -- Marks the real tool calls, the calls of tools other than the framework
   -- tools, and unwraps the text of each model response.  It also counts the
@@ -249,16 +292,38 @@ WITH
           REGEXP_CONTAINS(formatted_response, r"(?s)^text: '.*'$")
           AND NOT REGEXP_CONTAINS(
             formatted_response,
-            r' [|] (?:call: |resp: |Executable code |Code execution result )'
+            r"' [|] (?:call: |resp: |Executable code |Code execution result )"
           )
-          AND NOT REGEXP_CONTAINS(formatted_response, r' [|] other(?: [|] |$)')
-          THEN NULLIF(
+          AND NOT REGEXP_CONTAINS(
+            formatted_response, r"' [|] other(?: [|] |$)"
+          )
+          THEN IF(
+            TRIM(
+              REGEXP_REPLACE(
+                REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
+                r"' [|] text: '",
+                CHR(10)
+              )
+            ) != ''
+              AND REGEXP_REPLACE(
+                REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
+                r"' [|] text: '",
+                CHR(10)
+              ) NOT IN (
+                '[FORMATTER_FAILED]',
+                '[FORMATTING FAILED]',
+                '[REDACTED]',
+                '[CONTENT_PARSE_FAILED]',
+                '[UNPARSEABLE_JSON_BLOB]',
+                '[UNSUPPORTED_OBJECT]',
+                '[REDACTED_SENSITIVE_TEXT]'
+              ),
             REGEXP_REPLACE(
               REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
               r"' [|] text: '",
               CHR(10)
             ),
-            ''
+            NULL
           )
         WHEN
           NOT REGEXP_CONTAINS(
@@ -268,7 +333,17 @@ WITH
           AND NOT REGEXP_CONTAINS(
             formatted_response, r"^(?:None$|text: '|other(?: [|] |$))"
           )
-          THEN NULLIF(formatted_response, '')
+          AND TRIM(formatted_response) != ''
+          AND formatted_response NOT IN (
+            '[FORMATTER_FAILED]',
+            '[FORMATTING FAILED]',
+            '[REDACTED]',
+            '[CONTENT_PARSE_FAILED]',
+            '[UNPARSEABLE_JSON_BLOB]',
+            '[UNSUPPORTED_OBJECT]',
+            '[REDACTED_SENSITIVE_TEXT]'
+          )
+          THEN formatted_response
         ELSE NULL
       END AS response_text
     FROM
@@ -479,13 +554,13 @@ WITH
       session_id,
       invocation_id,
       ARRAY_AGG(
-        user_id IGNORE NULLS ORDER BY timestamp LIMIT 1
+        user_id IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1
       )[SAFE_OFFSET(0)] AS user_id,
       ARRAY_AGG(
-        root_agent_name IGNORE NULLS ORDER BY timestamp LIMIT 1
+        root_agent_name IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1
       )[SAFE_OFFSET(0)] AS first_root_agent_name,
       ARRAY_AGG(
-        agent IGNORE NULLS ORDER BY timestamp LIMIT 1
+        agent IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1
       )[SAFE_OFFSET(0)] AS first_agent,
       MIN(timestamp) AS turn_start_timestamp,
       MAX(timestamp) AS turn_end_timestamp,
@@ -640,14 +715,16 @@ WITH
   ),
   -- One row per event of an agent, with the parts of its configuration that
   -- the event logs: the instruction, description and sub agents of
-  -- AGENT_STARTING, and the tool declarations of LLM_REQUEST.  An instruction
-  -- that is a callable, logged as its repr, is dropped.
+  -- AGENT_STARTING, and the tool declarations and system prompt of
+  -- LLM_REQUEST.  An instruction that is a callable, logged as its repr, is
+  -- dropped.
   AgentRows AS (
     SELECT
       session_id,
       invocation_id,
       agent AS agent_id,
       timestamp,
+      event_id,
       IF(
         event_type = 'AGENT_STARTING',
         COALESCE(
@@ -680,30 +757,43 @@ WITH
         AND JSON_TYPE(JSON_QUERY(attributes, '$.tools')) = 'array',
         JSON_QUERY(attributes, '$.tools'),
         NULL
-      ) AS tool_declarations
+      ) AS tool_declarations,
+      IF(
+        event_type = 'LLM_REQUEST'
+        AND JSON_TYPE(JSON_QUERY(content, '$.system_prompt')) = 'string'
+        AND TRIM(JSON_VALUE(content, '$.system_prompt')) != '',
+        JSON_VALUE(content, '$.system_prompt'),
+        NULL
+      ) AS system_prompt
     FROM
-      RawEvents
+      SessionEvents
     WHERE
       agent IS NOT NULL
   ),
   -- The latest logged value of each part of the configuration of each agent,
-  -- in each session or turn.
+  -- and the earliest non-blank system prompt it logged, in each session or
+  -- turn.
   AgentLatest AS (
     SELECT
       {scope_columns},
       agent_id,
       ARRAY_AGG(
-        instruction IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+        instruction IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1
       )[SAFE_OFFSET(0)] AS instruction,
       ARRAY_AGG(
-        description IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+        description IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1
       )[SAFE_OFFSET(0)] AS description,
       ARRAY_AGG(
-        sub_agents IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+        sub_agents IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1
       )[SAFE_OFFSET(0)] AS sub_agents,
       ARRAY_AGG(
-        tool_declarations IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
-      )[SAFE_OFFSET(0)] AS tool_declarations
+        tool_declarations IGNORE NULLS
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT 1
+      )[SAFE_OFFSET(0)] AS tool_declarations,
+      ARRAY_AGG(
+        system_prompt IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1
+      )[SAFE_OFFSET(0)] AS scoped_system_prompt
     FROM
       AgentRows
     GROUP BY
@@ -763,7 +853,7 @@ WITH
         LIMIT 1
       )[SAFE_OFFSET(0)] AS logged_system_prompt
     FROM
-      RawEvents
+      SessionEvents
     WHERE
       event_type = 'LLM_REQUEST'
       AND agent IS NOT NULL
@@ -772,7 +862,8 @@ WITH
       agent
   ),
   -- The AgentConfig of each agent.  Its instruction comes from the latest
-  -- AGENT_STARTING event, else from the logged system prompt.
+  -- AGENT_STARTING event, else from the earliest system prompt logged in the
+  -- scope, else from the session's earliest logged system prompt.
   AgentConfigs AS (
     SELECT
       {scope_columns},
@@ -780,7 +871,12 @@ WITH
       JSON_OBJECT(
         'agent_id', agent_id,
         'instruction',
-        COALESCE(NULLIF(instruction, ''), logged_system_prompt, ''),
+        COALESCE(
+          NULLIF(instruction, ''),
+          scoped_system_prompt,
+          logged_system_prompt,
+          ''
+        ),
         'description', COALESCE(description, ''),
         'sub_agents', COALESCE(sub_agents, JSON_ARRAY()),
         'tools', IF(

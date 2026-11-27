@@ -36,7 +36,9 @@ class FeatureName(str, Enum):
   BIG_QUERY_TOOL_CONFIG = "BIG_QUERY_TOOL_CONFIG"
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
   BIGTABLE_TOOLSET = "BIGTABLE_TOOLSET"
+  BUFFERED_SESSION_SERVICE = "BUFFERED_SESSION_SERVICE"
   CASCADE_LIVE = "CASCADE_LIVE"
+  CHECK_GROUNDING = "CHECK_GROUNDING"
   CLASSIFIER = "CLASSIFIER"
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
@@ -57,6 +59,7 @@ class FeatureName(str, Enum):
   GCS_TOOLSET = "GCS_TOOLSET"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
+  GRID_SEARCH_AGENT_OPTIMIZER = "GRID_SEARCH_AGENT_OPTIMIZER"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   LIVEKIT = "LIVEKIT"
   MCP_AGENT_SERVER = "MCP_AGENT_SERVER"
@@ -148,7 +151,13 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.BIGTABLE_TOOLSET: FeatureConfig(
         FeatureStage.STABLE, default_on=True
     ),
+    FeatureName.BUFFERED_SESSION_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.CASCADE_LIVE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.CHECK_GROUNDING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.CLASSIFIER: FeatureConfig(
@@ -164,7 +173,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=False
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
         FeatureStage.STABLE, default_on=True
@@ -210,6 +219,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.GOOGLE_TOOL: FeatureConfig(
         FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.GRID_SEARCH_AGENT_OPTIMIZER: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
         FeatureStage.STABLE, default_on=True

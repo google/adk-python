@@ -113,6 +113,9 @@
                   "name": "support-hours-skill"
                 },
                 "instructions": "Step 1: Look up the timezone for the user's location using 'get_timezone'. Step 2: Read 'references/support_policy.txt' to understand support hours policy. Step 3: Explain the support hours relative to the location's timezone.",
+                "resources": [
+                  "references/support_policy.txt"
+                ],
                 "skill_name": "support-hours-skill"
               }
             }

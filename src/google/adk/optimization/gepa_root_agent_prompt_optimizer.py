@@ -28,6 +28,7 @@ from ..agents.llm_agent import Agent
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..models.registry import LLMRegistry
 from ..utils.feature_decorator import experimental
+from ..utils.model_name_utils import _with_gemini_4_thinking_level
 from ._gepa_utils import generate_reflection_response
 from ._gepa_utils import GEPAPrompt
 from ._gepa_utils import require_static_instruction
@@ -50,6 +51,11 @@ _AGENT_PROMPT_NAME = "agent_prompt"
 # makes GEPA treat the example as a failure rather than aborting the run.
 _MISSING_EXAMPLE_SCORE = 0.0
 
+_DEFAULT_THINKING_CONFIG = genai_types.ThinkingConfig(
+    include_thoughts=True,
+    thinking_budget=10240,
+)
+
 
 class GEPARootAgentPromptOptimizerConfig(BaseModel):
   """Contains configuration options required by the GEPARootAgentPromptOptimizer."""
@@ -68,7 +74,11 @@ class GEPARootAgentPromptOptimizerConfig(BaseModel):
               thinking_budget=10240,
           )
       ),
-      description="The configuration for the optimizer model.",
+      description=(
+          "The configuration for the optimizer model. Its default thinking"
+          " budget is sent as thinking level HIGH to Gemini 4 and later"
+          " models."
+      ),
   )
 
   max_metric_calls: int = Field(
@@ -269,13 +279,19 @@ class GEPARootAgentPromptOptimizer(
     )
 
     llm = self._llm_class(model=self._config.optimizer_model)
+    reflection_config = _with_gemini_4_thinking_level(
+        self._config.model_configuration,
+        model=self._config.optimizer_model,
+        default_thinking_config=_DEFAULT_THINKING_CONFIG,
+        thinking_level=genai_types.ThinkingLevel.HIGH,
+    )
 
     def reflection_lm(prompt: GEPAPrompt) -> str:
       future = asyncio.run_coroutine_threadsafe(
           generate_reflection_response(
               llm=llm,
               model=self._config.optimizer_model,
-              config=self._config.model_configuration,
+              config=reflection_config,
               prompt=prompt,
           ),
           loop,

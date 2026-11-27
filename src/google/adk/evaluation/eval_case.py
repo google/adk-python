@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
-from typing import Union
 
 from google.genai import types as genai_types
 import pydantic
@@ -24,10 +22,18 @@ from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import TypeAlias
 
+from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .conversation_scenarios import ConversationScenario as ConversationScenario
 from .eval_rubrics import Rubric
+
+# `adk_request_input` is kept: the public `request_input` tool is model-chosen.
+_FRAMEWORK_FUNCTION_CALL_NAMES = frozenset({
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+})
 
 
 class IntermediateData(EvalBaseModel):
@@ -69,18 +75,16 @@ class InvocationEvent(EvalBaseModel):
   author: str
   """The name of the agent that authored/owned this event."""
 
-  content: Optional[genai_types.Content] = None
+  content: genai_types.Content | None = None
   """The content of the event."""
 
-  grounding_metadata: Optional[genai_types.GroundingMetadata] = None
+  grounding_metadata: genai_types.GroundingMetadata | None = None
   """Grounding metadata emitted with the event."""
 
-  usage_metadata: Optional[genai_types.GenerateContentResponseUsageMetadata] = (
-      None
-  )
+  usage_metadata: genai_types.GenerateContentResponseUsageMetadata | None = None
   """Token usage reported by the model for this event."""
 
-  model_version: Optional[str] = None
+  model_version: str | None = None
   """The version/name of the model that served this call."""
 
 
@@ -91,7 +95,7 @@ class InvocationEvents(EvalBaseModel):
   """A list of invocation events."""
 
 
-IntermediateDataType: TypeAlias = Union[IntermediateData, InvocationEvents]
+IntermediateDataType: TypeAlias = IntermediateData | InvocationEvents
 
 
 class Invocation(EvalBaseModel):
@@ -103,10 +107,10 @@ class Invocation(EvalBaseModel):
   user_content: genai_types.Content
   """Content provided by the user in this invocation."""
 
-  final_response: Optional[genai_types.Content] = None
+  final_response: genai_types.Content | None = None
   """Final response from the agent."""
 
-  intermediate_data: Optional[IntermediateDataType] = None
+  intermediate_data: IntermediateDataType | None = None
   """Intermediate steps generated as a part of Agent execution.
 
   For a multi-agent system, it is also helpful to inspect the route that
@@ -116,7 +120,7 @@ class Invocation(EvalBaseModel):
   creation_timestamp: float = 0.0
   """Timestamp for the current invocation, primarily intended for debugging purposes."""
 
-  inference_call_count: Optional[int] = Field(default=None, ge=0)
+  inference_call_count: int | None = Field(default=None, ge=0)
   """Number of model requests reconstructed from streamed event boundaries.
 
   Set during session-event conversion, before turn completion markers are
@@ -124,7 +128,7 @@ class Invocation(EvalBaseModel):
   invocations. Usage and intermediate content remain on their original events.
   """
 
-  duration: Optional[float] = None
+  duration: float | None = None
   """Wall-clock seconds this invocation took, measured while it ran.
 
   Set only when the eval performed the inference itself; an invocation read
@@ -134,7 +138,7 @@ class Invocation(EvalBaseModel):
   constructed, which for a model call is before the request is even sent.
   """
 
-  model_duration: Optional[float] = None
+  model_duration: float | None = None
   """Of `duration`, the seconds with at least one model call in flight.
 
   Measured from the interval each model call occupied, with concurrent calls
@@ -143,7 +147,7 @@ class Invocation(EvalBaseModel):
   `duration` and None otherwise.
   """
 
-  tool_duration: Optional[float] = None
+  tool_duration: float | None = None
   """Of `duration`, the seconds inside a tool but not awaiting a model.
 
   Time a tool spent awaiting a model -- an `AgentTool` runs model calls inside
@@ -153,12 +157,12 @@ class Invocation(EvalBaseModel):
   None otherwise.
   """
 
-  rubrics: Optional[list[Rubric]] = Field(
+  rubrics: list[Rubric] | None = Field(
       default=None,
   )
   """A list of rubrics that are applicable to only this invocation."""
 
-  app_details: Optional[AppDetails] = Field(default=None)
+  app_details: AppDetails | None = Field(default=None)
   """Details about the App that was used for this invocation."""
 
 
@@ -177,7 +181,7 @@ class SessionInput(EvalBaseModel):
   user_id: str
   """The user id."""
 
-  session_id: Optional[str] = None
+  session_id: str | None = None
   """A fixed session id to use for this eval case, if set.
 
   Artifacts are keyed by (app_name, user_id, session_id), so a fixed session id
@@ -203,21 +207,21 @@ class EvalCase(EvalBaseModel):
   eval_id: str
   """Unique identifier for the evaluation case."""
 
-  conversation: Optional[StaticConversation] = None
+  conversation: StaticConversation | None = None
   """A static conversation between the user and the Agent.
 
    While creating an eval case you should specify either a `conversation` or a
   `conversation_scenario`, but not both.
   """
 
-  conversation_scenario: Optional[ConversationScenario] = None
+  conversation_scenario: ConversationScenario | None = None
   """A conversation scenario that should be used by a UserSimulator.
 
   While creating an eval case you should specify either a `conversation` or a
   `conversation_scenario`, but not both.
   """
 
-  session_input: Optional[SessionInput] = None
+  session_input: SessionInput | None = None
   """Session input that will be passed on to the Agent during eval.
      It is common for Agents state to be initialized to some initial/default value,
      for example, your agent may need to know today's date.
@@ -226,12 +230,12 @@ class EvalCase(EvalBaseModel):
   creation_timestamp: float = 0.0
   """The time at which this eval case was created."""
 
-  rubrics: Optional[list[Rubric]] = Field(
+  rubrics: list[Rubric] | None = Field(
       default=None,
   )
   """A list of rubrics that are applicable to all the invocations in the conversation of this eval case."""
 
-  final_session_state: Optional[SessionState] = Field(default_factory=dict)
+  final_session_state: SessionState | None = Field(default_factory=dict)
   """The expected final session state at the end of the conversation."""
 
   @model_validator(mode="after")
@@ -245,9 +249,14 @@ class EvalCase(EvalBaseModel):
 
 
 def get_all_tool_calls(
-    intermediate_data: Optional[IntermediateDataType],
+    intermediate_data: IntermediateDataType | None,
 ) -> list[genai_types.FunctionCall]:
-  """A utility method to retrieve tools calls from intermediate data."""
+  """A utility method to retrieve tools calls from intermediate data.
+
+  Function calls that ADK itself emits to the client (for example
+  `adk_request_confirmation` for tools with `require_confirmation=True`) are
+  excluded, since the model did not choose them.
+  """
   if not intermediate_data:
     return []
 
@@ -268,13 +277,21 @@ def get_all_tool_calls(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return tool_calls
+  return [
+      call
+      for call in tool_calls
+      if call.name not in _FRAMEWORK_FUNCTION_CALL_NAMES
+  ]
 
 
 def get_all_tool_responses(
-    intermediate_data: Optional[IntermediateDataType],
+    intermediate_data: IntermediateDataType | None,
 ) -> list[genai_types.FunctionResponse]:
-  """A utility method to retrieve tools responses from intermediate data."""
+  """A utility method to retrieve tools responses from intermediate data.
+
+  Responses to ADK's own client function calls are excluded, matching
+  `get_all_tool_calls`.
+  """
   if not intermediate_data:
     return []
 
@@ -295,22 +312,24 @@ def get_all_tool_responses(
         f"Unsupported type for intermediate_data `{intermediate_data}`"
     )
 
-  return tool_responses
+  return [
+      response
+      for response in tool_responses
+      if response.name not in _FRAMEWORK_FUNCTION_CALL_NAMES
+  ]
 
 
 ToolCallAndResponse: TypeAlias = tuple[
-    genai_types.FunctionCall, Optional[genai_types.FunctionResponse]
+    genai_types.FunctionCall, genai_types.FunctionResponse | None
 ]
 """A Tuple representing a Function call and corresponding optional function response."""
 
 
 def get_all_tool_calls_with_responses(
-    intermediate_data: Optional[IntermediateDataType],
+    intermediate_data: IntermediateDataType | None,
 ) -> list[ToolCallAndResponse]:
   """Returns tool calls with the corresponding responses, if available."""
-  tool_responses_by_call_id: dict[
-      Optional[str], genai_types.FunctionResponse
-  ] = {
+  tool_responses_by_call_id: dict[str | None, genai_types.FunctionResponse] = {
       tool_response.id: tool_response
       for tool_response in get_all_tool_responses(intermediate_data)
   }

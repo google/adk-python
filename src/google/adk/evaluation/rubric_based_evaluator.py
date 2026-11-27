@@ -17,7 +17,6 @@ from __future__ import annotations
 import abc
 import logging
 import re
-from typing import Optional
 import unicodedata
 
 from typing_extensions import override
@@ -43,10 +42,10 @@ logger = logging.getLogger("google_adk." + __name__)
 class RubricResponse(EvalBaseModel):
   """Internal data model to represent a rubric's response from the auto-rater."""
 
-  rubric_id: Optional[str] = None
-  property_text: Optional[str] = None
-  rationale: Optional[str] = None
-  score: Optional[float] = None
+  rubric_id: str | None = None
+  property_text: str | None = None
+  rationale: str | None = None
+  score: float | None = None
 
 
 class AutoRaterResponseParser(abc.ABC):
@@ -341,7 +340,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
       invocation_results_summarizer: InvocationResultsSummarizer = (
           MeanInvocationResultsSummarizer()
       ),
-      rubric_type: Optional[str] = None,
+      rubric_type: str | None = None,
   ):
     """Initializes the RubricBasedEvaluator.
 
@@ -370,7 +369,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
     self._invocation_results_summarizer = invocation_results_summarizer
 
     self._rubrics: list[Rubric] = self._criterion.rubrics or []
-    self._effective_rubrics_list: Optional[list[Rubric]] = None
+    self._effective_rubrics_list: list[Rubric] | None = None
 
     self._normalized_rubric_to_id_map = {
         _normalize_text(r.rubric_content.text_property): r.rubric_id
@@ -379,7 +378,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
 
   def create_effective_rubrics_list(
       self,
-      invocation_rubrics: Optional[list[Rubric]],
+      invocation_rubrics: list[Rubric] | None,
   ) -> None:
     rubrics_by_id = {}
 

@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import Field
 from pydantic import field_validator
 
@@ -53,14 +51,14 @@ class ConversationScenario(EvalBaseModel):
   your overall goal is complete.
   """
 
-  user_persona: Optional[UserPersona] = Field(default=None)
+  user_persona: UserPersona | None = Field(default=None)
   """User persona that the user simulator should adopt. If a persona id is specified instead, we will try to use one of our default personas."""
 
   @field_validator("user_persona", mode="before")
   @classmethod
   def validate_user_persona(
-      cls, value: Optional[UserPersona | str]
-  ) -> Optional[UserPersona]:
+      cls, value: UserPersona | str | None
+  ) -> UserPersona | None:
     if value is not None and isinstance(value, str):
       return get_default_persona_registry().get_persona(value)
     return value
@@ -83,13 +81,13 @@ class ConversationGenerationConfig(EvalBaseModel):
   count: int = Field(
       description="The number of conversation scenarios to generate."
   )
-  generation_instruction: Optional[str] = Field(
+  generation_instruction: str | None = Field(
       default=None,
       description=(
           "Optional natural language goal to guide the EvalSet generation."
       ),
   )
-  environment_context: Optional[str] = Field(
+  environment_context: str | None = Field(
       default=None,
       description=(
           "Context describing the backend data or state accessible to the"

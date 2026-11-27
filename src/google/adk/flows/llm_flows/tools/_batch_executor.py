@@ -23,6 +23,7 @@ import logging
 from typing import Any
 from typing import TYPE_CHECKING
 from typing import TypeVar
+import warnings
 
 from google.genai import types
 
@@ -409,6 +410,13 @@ async def handle_function_calls_live(
     tools_dict: dict[str, BaseTool],
 ) -> Event | None:
   """Calls the functions and returns the function response event."""
+  warnings.warn(
+      'handle_function_calls_live is deprecated: run_live no longer uses it,'
+      ' there is no replacement outside run_live, and it will be removed in a'
+      ' future version.',
+      DeprecationWarning,
+      stacklevel=2,
+  )
   from . import _live_caller
 
   return await _live_caller.handle_function_calls_live(

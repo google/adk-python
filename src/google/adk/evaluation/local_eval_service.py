@@ -15,16 +15,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Optional
 import uuid
 
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -34,6 +33,9 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
+from ..utils._sync_runner import _is_async_callable
+from ..workflow._base_node import BaseNode
+from ._eval_case_result_multi_run_aggregator import summarize_eval_case_results
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -51,6 +53,7 @@ from .eval_result import EvalCaseResult
 from .eval_set import EvalCase
 from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
+from .evaluation_generator import _get_eval_session_app_name_and_user_id
 from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -141,7 +144,7 @@ def _copy_eval_case_rubrics_to_actual_invocations(
 
 
 def _copy_invocation_rubrics_to_actual_invocations(
-    expected_invocations: Optional[list[Invocation]],
+    expected_invocations: list[Invocation] | None,
     actual_invocations: list[Invocation],
 ) -> None:
   """Copies invocation level rubrics to corresponding actual invocations."""
@@ -160,17 +163,17 @@ class LocalEvalService(BaseEvalService):
 
   def __init__(
       self,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       eval_sets_manager: EvalSetsManager,
-      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
-      session_service: Optional[BaseSessionService] = None,
-      artifact_service: Optional[BaseArtifactService] = None,
-      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      metric_evaluator_registry: MetricEvaluatorRegistry | None = None,
+      session_service: BaseSessionService | None = None,
+      artifact_service: BaseArtifactService | None = None,
+      eval_set_results_manager: EvalSetResultsManager | None = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
-      user_simulator_provider: Optional[UserSimulatorProvider] = None,
-      memory_service: Optional[BaseMemoryService] = None,
+      user_simulator_provider: UserSimulatorProvider | None = None,
+      memory_service: BaseMemoryService | None = None,
       *,
-      app: Optional[App] = None,
+      app: App | None = None,
   ):
     """Initializes a LocalEvalService.
 
@@ -310,14 +313,27 @@ class LocalEvalService(BaseEvalService):
       yield eval_case_result
 
     if self._eval_set_results_manager:
+      multi_run_config = evaluate_request.evaluate_config.multi_run_config
       for eval_set_id, results in results_by_set.items():
         app_name = results[0][0]
         cases = [r[1] for r in results]
-        self._eval_set_results_manager.save_eval_set_result(
-            app_name=app_name,
-            eval_set_id=eval_set_id,
-            eval_case_results=cases,
-        )
+        has_multiple_runs = len(cases) > len({c.eval_id for c in cases})
+        if multi_run_config is not None or has_multiple_runs:
+          multi_run_case_summaries = summarize_eval_case_results(
+              cases, multi_run_config=multi_run_config
+          )
+          self._eval_set_results_manager.save_eval_set_result(
+              app_name=app_name,
+              eval_set_id=eval_set_id,
+              eval_case_results=cases,
+              multi_run_case_summaries=multi_run_case_summaries,
+          )
+        else:
+          self._eval_set_results_manager.save_eval_set_result(
+              app_name=app_name,
+              eval_set_id=eval_set_id,
+              eval_case_results=cases,
+          )
 
   async def _evaluate_single_inference_result(
       self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
@@ -354,10 +370,10 @@ class LocalEvalService(BaseEvalService):
     # would be the score for the eval case.
     overall_eval_metric_results: list[EvalMetricResult] = []
 
-    user_id = (
-        eval_case.session_input.user_id
-        if eval_case.session_input and eval_case.session_input.user_id
-        else "test_user_id"
+    # Inference created the session under the eval case's own app name and
+    # user id, which can differ from the app name of the request.
+    session_app_name, user_id = _get_eval_session_app_name_and_user_id(
+        eval_case.session_input
     )
 
     actual_invocations = inference_result.inferences
@@ -368,7 +384,7 @@ class LocalEvalService(BaseEvalService):
       session_details = None
       if inference_result.session_id is not None:
         session_details = await self._session_service.get_session(
-            app_name=inference_result.app_name,
+            app_name=session_app_name,
             user_id=user_id,
             session_id=inference_result.session_id,
         )
@@ -441,7 +457,7 @@ class LocalEvalService(BaseEvalService):
     session_details = None
     if session_id is not None:
       session_details = await self._session_service.get_session(
-          app_name=inference_result.app_name,
+          app_name=session_app_name,
           user_id=user_id,
           session_id=session_id,
       )
@@ -583,8 +599,8 @@ class LocalEvalService(BaseEvalService):
       self,
       eval_metric: EvalMetric,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      conversation_scenario: Optional[ConversationScenario],
+      expected_invocations: list[Invocation] | None,
+      conversation_scenario: ConversationScenario | None,
   ) -> EvaluationResult:
     """Returns EvaluationResult obtained from evaluating a metric using an Evaluator."""
 
@@ -593,11 +609,23 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
-    result = metric_evaluator.evaluate_invocations(
-        actual_invocations=actual_invocations,
-        expected_invocations=expected_invocations,
-        conversation_scenario=conversation_scenario,
-    )
+    result: EvaluationResult | Awaitable[EvaluationResult]
+    if _is_async_callable(metric_evaluator.evaluate_invocations):
+      result = metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
+    else:
+      # Offload synchronous evaluators (such as the Vertex Gen AI Evaluation SDK
+      # facade) to a worker thread so blocking I/O does not stall the event
+      # loop.
+      result = await asyncio.to_thread(
+          metric_evaluator.evaluate_invocations,
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
     if inspect.isawaitable(result):
       return await result
     return result
@@ -633,7 +661,7 @@ class LocalEvalService(BaseEvalService):
       app_name: str,
       eval_set_id: str,
       eval_case: EvalCase,
-      root_agent: BaseAgent,
+      root_agent: BaseNode,
       use_live: bool,
       live_timeout_seconds: int,
       *,

@@ -25,8 +25,6 @@ from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _schema_version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._decorators import experimental_telemetry
-from google.adk.telemetry._schema_version import resolve_schema_version
-from google.adk.telemetry._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
@@ -113,8 +111,8 @@ _workflow_invocation_duration = meter.create_histogram(
     description="Duration of workflow invocations.",
     explicit_bucket_boundaries_advisory=_WORKFLOW_DURATION_BUCKET_BOUNDS,
 )
-# The semconv bounds for gen_ai.client.operation.duration, also used for tool
-# executions.
+# The semconv bounds for gen_ai.client.operation.duration and
+# gen_ai.client.inference.duration, also used for tool executions.
 _OPERATION_DURATION_BUCKET_BOUNDS = [
     0.01,
     0.02,
@@ -171,7 +169,7 @@ _client_token_usage = meter.create_histogram(
     explicit_bucket_boundaries_advisory=_TOKEN_USAGE_BUCKET_BOUNDS,
 )
 
-# ---- Inference token metrics, schema v2 only ----
+# ---- Inference token metrics ----
 _inference_usage_input_tokens = meter.create_counter(
     "gen_ai.client.inference.usage.input_tokens",
     unit="{token}",
@@ -281,6 +279,12 @@ _client_inference_time_per_output_chunk = meter.create_histogram(
     ),
     explicit_bucket_boundaries_advisory=_INFERENCE_CHUNK_BUCKET_BOUNDS,
 )
+_client_inference_duration = meter.create_histogram(
+    "gen_ai.client.inference.duration",
+    unit="s",
+    description="GenAI client inference operation duration.",
+    explicit_bucket_boundaries_advisory=_OPERATION_DURATION_BUCKET_BOUNDS,
+)
 
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
 # The tail is sized for a workflow rather than a single agent: a coding agent
@@ -307,13 +311,13 @@ _CALL_COUNT_BUCKET_BOUNDS = [
 
 _invoke_agent_inference_calls = meter.create_histogram(
     "gen_ai.invoke_agent.inference_calls",
-    unit="1",
+    unit="{inference_call}",
     description="Number of inference (model) calls per agent invocation.",
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
 _invoke_agent_tool_calls = meter.create_histogram(
     "gen_ai.invoke_agent.tool_calls",
-    unit="1",
+    unit="{tool_call}",
     description="Number of tool calls per agent invocation.",
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
@@ -737,6 +741,29 @@ def record_client_operation_duration(
   _client_operation_duration.record(elapsed_s, attributes=attrs)
 
 
+def record_client_inference_duration(
+    elapsed_s: float,
+    llm_request: LlmRequest,
+    responses: list[LlmResponse],
+    error: Exception | None = None,
+) -> None:
+  """Records `gen_ai.client.inference.duration`.
+
+  Args:
+    elapsed_s: How long the model call took.
+    llm_request: The request sent to the model.
+    responses: The response chunks received, if any.
+    error: The exception the call failed with, if any.
+  """
+  last_response = None
+  if responses:
+    last_response = responses[-1]
+  attrs = _inference_attributes(llm_request, last_response)
+  if error is not None:
+    attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
+  _client_inference_duration.record(elapsed_s, attributes=attrs)
+
+
 def record_client_inference_chunk(
     llm_request: LlmRequest,
     response: LlmResponse,
@@ -803,6 +830,10 @@ def record_client_token_usage(
   base_attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name} | (
       _inference_attributes(llm_request, responses[-1])
   )
+  # gen_ai.client.token.usage keeps its schema v1 provider name.
+  base_attrs[gen_ai_attributes.GEN_AI_PROVIDER_NAME] = _get_provider_name(
+      llm_request.model
+  )
 
   if input_token_count > 0:
     input_attrs = base_attrs.copy()
@@ -820,7 +851,7 @@ def record_inference_token_usage(
     responses: list[LlmResponse],
     error: Exception | None = None,
 ) -> None:
-  """Records the semconv-genai inference token metrics, from schema v2.
+  """Records the semconv-genai inference token metrics.
 
   Every model call records each of them once, failed calls included. A count
   the model did not report, or a call that got no usage back, records `0`.
@@ -830,8 +861,6 @@ def record_inference_token_usage(
     responses: The response chunks received, if any.
     error: The exception the call failed with, if any.
   """
-  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    return
   last_response = responses[-1] if responses else None
   token_usage = TokenUsage.from_llm_responses(responses)
   if token_usage is None:
@@ -927,11 +956,11 @@ def _split_by_modality(
 def _inference_attributes(
     llm_request: LlmRequest, last_response: LlmResponse | None
 ) -> dict[str, AttributeValue]:
-  """The semconv attributes every inference token metric carries."""
+  """The semconv attributes every inference metric carries, in every schema."""
   attrs: dict[str, AttributeValue] = {
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
-      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
-          llm_request.model
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: (
+          tracing._resolve_gen_ai_provider_name(llm_request.model)
       ),
   }
   if llm_request.model:
@@ -955,6 +984,7 @@ def _get_provider_name(model: str | None) -> str:
 def get_elapsed_s(
     span: Span | GenerateContentSpan | None,
     fallback_start: float,
+    fallback_end: float | None = None,
 ) -> float:
   """Guarantees consistent time source for duration calculation.
 
@@ -964,12 +994,16 @@ def get_elapsed_s(
     span (trace.Span | tracing.GenerateContentSpan | None): The ended span to
       extract duration from.
     fallback_start (float): Fallback start time in seconds (monotonic).
+    fallback_end (float | None): Fallback end time in seconds (monotonic).
+      Defaults to now.
 
   Returns:
     float: Elapsed duration in seconds.
   """
+  if fallback_end is None:
+    fallback_end = time.monotonic()
   if span is None:
-    return time.monotonic() - fallback_start
+    return fallback_end - fallback_start
 
   span = span.span if hasattr(span, "span") else span
   start_ns = getattr(span, "start_time", None)
@@ -979,7 +1013,7 @@ def get_elapsed_s(
     return (end_ns - start_ns) / 1e9  # Convert ns to s
 
   # Fallback if span times are missing
-  return time.monotonic() - fallback_start
+  return fallback_end - fallback_start
 
 
 @experimental_telemetry(gate="skills")

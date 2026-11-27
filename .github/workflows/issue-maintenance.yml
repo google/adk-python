@@ -40,8 +40,6 @@ permissions:
   contents: read
 
 env:
-  GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
-  GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
   OWNER: ${{ github.repository_owner }}
   REPO: adk-python
   CONCURRENCY_LIMIT: 3
@@ -67,13 +65,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: false
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests google-adk python-dotenv
+        run: uv pip install --system --exclude-newer "7 days" requests google-adk python-dotenv
 
       - name: Run Issue Monitoring Agent (Spam Sweep)
         env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           INITIAL_FULL_SCAN: ${{ github.event.inputs.full_scan == 'true' }}
         run: python -m adk_issue_monitoring_agent.main
 
@@ -95,10 +98,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: false
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests google-adk python-dateutil
+        run: uv pip install --system --exclude-newer "7 days" requests google-adk python-dateutil
 
       - name: Run Stale Auditor Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: python -m adk_stale_agent.main

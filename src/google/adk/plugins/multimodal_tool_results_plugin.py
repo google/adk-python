@@ -22,6 +22,7 @@ from google.genai import types
 
 from ..agents.callback_context import CallbackContext
 from ..flows.llm_flows.tools._caller import _as_function_response_part
+from ..models.llm_request import _last_non_transient_content
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.base_tool import BaseTool
@@ -76,7 +77,8 @@ class MultimodalToolResultsPlugin(BasePlugin):
         parts to every subsequent model request for the rest of the
         session, so follow-up turns can still reference them. Note that only
         file_data and text parts are retained across turns (in session mode);
-        inline_data parts (such as image or audio bytes) are always one-shot.
+        a part holding inline_data is one-shot, and is left out altogether
+        when the function response already carries it.
 
     Raises:
       ValueError: If retention is not 'next_model_call' or 'session'.
@@ -98,9 +100,10 @@ class MultimodalToolResultsPlugin(BasePlugin):
   ) -> Optional[dict[str, Any]]:
     """Saves parts returned by the tool in ToolContext.
 
-    Later these are passed to LLM's context as-is. Under the default retention
-    a part the function response already carries is left out, so those bytes
-    are not sent a second time.
+    Later these are passed to LLM's context as-is. A part the function
+    response already carries is left out, so those bytes are not sent a
+    second time; the exception is a part holding a file URI under session
+    retention, which is kept because later turns re-attach it.
     No-op if tool doesn't return list[google.genai.types.Part] or google.genai.types.Part.
     """
 
@@ -116,11 +119,15 @@ class MultimodalToolResultsPlugin(BasePlugin):
 
     if self._retention == "session":
       session_parts = []
+      current_turn_parts = []
       for p in parts:
         if isinstance(p, types.Part) and p.inline_data is not None:
-          pass
-        else:
-          session_parts.append(p)
+          # Inline media the function response carries would otherwise go twice.
+          if not _is_carried_by_the_framework(p):
+            current_turn_parts.append(p)
+          continue
+        session_parts.append(p)
+        current_turn_parts.append(p)
 
       session_key = SESSION_PARTS_RETURNED_BY_TOOLS_ID
       updated_key = _SESSION_UPDATED_KEY
@@ -136,12 +143,13 @@ class MultimodalToolResultsPlugin(BasePlugin):
           tool_context.state[updated_key] = True
           tool_context.state[session_key] = serialized_session_parts
 
-      # Accumulate ALL parts of current turn in order
+      # Accumulate the parts of the current turn in order.
       current_turn_key = _CURRENT_TURN_PARTS_ID
-      if current_turn_key in tool_context.state:
-        tool_context.state[current_turn_key] += parts
-      else:
-        tool_context.state[current_turn_key] = parts
+      if current_turn_parts:
+        if current_turn_key in tool_context.state:
+          tool_context.state[current_turn_key] += current_turn_parts
+        else:
+          tool_context.state[current_turn_key] = current_turn_parts
     else:
       parts = [part for part in parts if not _is_carried_by_the_framework(part)]
       if not parts:
@@ -189,7 +197,9 @@ class MultimodalToolResultsPlugin(BasePlugin):
         callback_context.state.update({current_turn_key: []})
 
       if parts_to_attach:
-        last_content = llm_request.contents[-1]
+        last_content = (
+            _last_non_transient_content(llm_request) or llm_request.contents[-1]
+        )
         if last_content.parts is None:
           last_content.parts = []
         last_content.parts += parts_to_attach
@@ -198,7 +208,9 @@ class MultimodalToolResultsPlugin(BasePlugin):
       # Default mode
       temp_key = PARTS_RETURNED_BY_TOOLS_ID
       if temp_parts := callback_context.state.get(temp_key, None):
-        last_content = llm_request.contents[-1]
+        last_content = (
+            _last_non_transient_content(llm_request) or llm_request.contents[-1]
+        )
         if last_content.parts is None:
           last_content.parts = []
         last_content.parts += temp_parts

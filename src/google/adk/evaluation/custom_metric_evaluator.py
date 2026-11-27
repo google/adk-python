@@ -14,15 +14,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable
 import importlib
 import inspect
 from typing import Callable
 from typing import cast
-from typing import Optional
 
 from typing_extensions import override
 
+from ..utils._sync_runner import _is_async_callable
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
@@ -36,8 +37,8 @@ def _get_metric_function(
     [
         EvalMetric,
         list[Invocation],
-        Optional[list[Invocation]],
-        Optional[ConversationScenario],
+        list[Invocation] | None,
+        ConversationScenario | None,
     ],
     EvaluationResult | Awaitable[EvaluationResult],
 ]:
@@ -55,8 +56,8 @@ def _get_metric_function(
             [
                 EvalMetric,
                 list[Invocation],
-                Optional[list[Invocation]],
-                Optional[ConversationScenario],
+                list[Invocation] | None,
+                ConversationScenario | None,
             ],
             EvaluationResult | Awaitable[EvaluationResult],
         ],
@@ -79,17 +80,27 @@ class _CustomMetricEvaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     eval_metric = self._eval_metric.model_copy(deep=True)
     eval_metric.threshold = None
-    eval_result = self._metric_function(
-        eval_metric,
-        actual_invocations,
-        expected_invocations,
-        conversation_scenario,
-    )
+    eval_result: EvaluationResult | Awaitable[EvaluationResult]
+    if _is_async_callable(self._metric_function):
+      eval_result = self._metric_function(
+          eval_metric,
+          actual_invocations,
+          expected_invocations,
+          conversation_scenario,
+      )
+    else:
+      eval_result = await asyncio.to_thread(
+          self._metric_function,
+          eval_metric,
+          actual_invocations,
+          expected_invocations,
+          conversation_scenario,
+      )
     if inspect.isawaitable(eval_result):
       return await eval_result
     return eval_result

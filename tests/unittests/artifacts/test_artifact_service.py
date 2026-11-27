@@ -19,6 +19,7 @@
 import asyncio
 from datetime import datetime
 from datetime import timedelta
+from datetime import timezone
 import enum
 import json
 from pathlib import Path
@@ -32,6 +33,8 @@ from unittest.mock import patch
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+import fsspec
+from fsspec.implementations.memory import MemoryFileSystem
 from google.adk.artifacts import artifact_util
 from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts import gcs_artifact_service
@@ -42,6 +45,9 @@ from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.errors.input_validation_error import InputValidationError
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.integrations.fsspec._fsspec_artifact_service import FsspecArtifactService
 from google.cloud.exceptions import NotFound
 from google.cloud.exceptions import PreconditionFailed
 from google.genai import types
@@ -57,6 +63,22 @@ class ArtifactServiceType(Enum):
   FILE = "FILE"
   IN_MEMORY = "IN_MEMORY"
   GCS = "GCS"
+  FSSPEC = "FSSPEC"
+  FSSPEC_MEMORY = "FSSPEC_MEMORY"
+  FSSPEC_S3 = "FSSPEC_S3"
+  FSSPEC_AZURE = "FSSPEC_AZURE"
+
+
+# memory:// has no object contentType or custom metadata, so contract cases
+# requiring text/file_data markers, custom_metadata, display_name, or
+# non-tombstone 0-byte payloads cannot be met without sidecar metadata.
+FSSPEC_MEMORY_REQUIRES_METADATA = pytest.param(
+    ArtifactServiceType.FSSPEC_MEMORY,
+    marks=pytest.mark.xfail(
+        strict=True,
+        reason="memory:// does not persist object contentType or metadata",
+    ),
+)
 
 
 class MockBlob:
@@ -212,15 +234,374 @@ def mock_gcs_artifact_service():
     return GcsArtifactService(bucket_name="test_bucket")
 
 
+class FakeFsspecObjectStore(fsspec.AbstractFileSystem):
+  """In-memory fsspec filesystem whose info() mappings match gcsfs."""
+
+  protocol: Any = ("gs", "gcs")
+  # fsspec's own spelling of its instance-caching switch.
+  cachable = False  # codespell:ignore cachable
+
+  def __init__(self, **kwargs: Any) -> None:
+    super().__init__(**kwargs)
+    self.objects: dict[str, tuple[bytes, dict[str, Any]]] = {}
+    self.invalidated: list[str | None] = []
+    self._lock = threading.Lock()
+
+  @staticmethod
+  def _default_time_created() -> str:
+    return (
+        datetime.fromtimestamp(FIXED_DATETIME.timestamp(), tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+  def put(self, key: str, data: bytes = b"", **info: Any) -> None:
+    """Stores an object directly; ``info`` adds fields like contentType."""
+    entry: dict[str, Any] = {
+        "name": key,
+        "size": len(data),
+        "type": "file",
+        "timeCreated": self._default_time_created(),
+    }
+    entry.update(info)
+    with self._lock:
+      self.objects[key] = (data, entry)
+
+  def pipe_file(
+      self,
+      path: str,
+      value: bytes,
+      mode: str = "overwrite",
+      content_type: str | None = None,
+      metadata: dict[str, str] | None = None,
+      **kwargs: Any,
+  ) -> None:
+    key = self._strip_protocol(path)
+    entry: dict[str, Any] = {
+        "name": key,
+        "size": len(value),
+        "type": "file",
+        "timeCreated": self._default_time_created(),
+    }
+    if content_type is not None:
+      entry["contentType"] = content_type
+    if metadata is not None:
+      entry["metadata"] = dict(metadata)
+    with self._lock:
+      if mode == "create" and key in self.objects:
+        raise FileExistsError(key)
+      self.objects[key] = (bytes(value), entry)
+
+  def setxattrs(
+      self,
+      path: str,
+      content_type: str | None = None,
+      **metadata_kwargs: Any,
+  ) -> dict[str, Any]:
+    key = self._strip_protocol(path)
+    with self._lock:
+      if key not in self.objects:
+        raise FileNotFoundError(path)
+      data, entry = self.objects[key]
+      updated = dict(entry)
+      if content_type is not None:
+        updated["contentType"] = content_type
+      if metadata_kwargs:
+        merged = dict(updated.get("metadata") or {})
+        merged.update(metadata_kwargs)
+        updated["metadata"] = merged
+      self.objects[key] = (data, updated)
+      return dict(updated)
+
+  def rm_file(self, path: str) -> None:
+    key = self._strip_protocol(path)
+    with self._lock:
+      if key not in self.objects:
+        raise FileNotFoundError(path)
+      del self.objects[key]
+
+  def invalidate_cache(self, path: str | None = None) -> None:
+    self.invalidated.append(path)
+
+  def info(self, path: str, **kwargs: Any) -> dict[str, Any]:
+    key = self._strip_protocol(path)
+    with self._lock:
+      try:
+        info = dict(self.objects[key][1])
+      except KeyError:
+        raise FileNotFoundError(path) from None
+      if info.get("metadata") is not None:
+        info["metadata"] = dict(info["metadata"])
+      return info
+
+  def cat_file(
+      self, path: str, start: Any = None, end: Any = None, **kwargs: Any
+  ) -> bytes:
+    key = self._strip_protocol(path)
+    with self._lock:
+      try:
+        return self.objects[key][0]
+      except KeyError:
+        raise FileNotFoundError(path) from None
+
+  def find(self, path: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    stripped = self._strip_protocol(path).rstrip("/")
+    prefix = stripped + "/"
+    with self._lock:
+      result: dict[str, Any] = {}
+      for key, (_, info) in sorted(self.objects.items()):
+        if key == stripped or key.startswith(prefix):
+          copied = dict(info)
+          if copied.get("metadata") is not None:
+            copied["metadata"] = dict(copied["metadata"])
+          result[key] = copied
+      return result
+
+
+class FakeS3ObjectStore(FakeFsspecObjectStore):
+  """In-memory fsspec filesystem whose behavior matches s3fs.
+
+  ``pipe_file`` takes boto3's ``ContentType`` and ``Metadata``, and the content
+  type defaults to ``binary/octet-stream``. ``info()`` has no user metadata,
+  and listings have neither user metadata nor content type. ``metadata()``
+  returns user metadata with keys lowercased and ``_`` turned into ``-``.
+  """
+
+  protocol: Any = ("s3", "s3a")
+
+  def __init__(self, **kwargs: Any) -> None:
+    super().__init__(**kwargs)
+    self.head_metadata: dict[str, dict[str, str]] = {}
+
+  def pipe_file(  # type: ignore[override]
+      self,
+      path: str,
+      value: bytes,
+      mode: str = "overwrite",
+      ContentType: str | None = None,  # pylint: disable=invalid-name
+      Metadata: dict[str, str] | None = None,  # pylint: disable=invalid-name
+  ) -> None:
+    key = self._strip_protocol(path)
+    entry: dict[str, Any] = {
+        "name": key,
+        "size": len(value),
+        "type": "file",
+        "LastModified": datetime.fromtimestamp(
+            FIXED_DATETIME.timestamp(), tz=timezone.utc
+        ),
+        "ContentType": ContentType or "binary/octet-stream",
+    }
+    with self._lock:
+      if mode == "create" and key in self.objects:
+        raise FileExistsError(key)
+      self.objects[key] = (bytes(value), entry)
+      self.head_metadata[key] = {
+          k.lower().replace("_", "-"): v for k, v in (Metadata or {}).items()
+      }
+
+  def metadata(self, path: str, **kwargs: Any) -> dict[str, str]:
+    key = self._strip_protocol(path)
+    with self._lock:
+      if key not in self.objects:
+        raise FileNotFoundError(path)
+      return dict(self.head_metadata.get(key, {}))
+
+  def rm_file(self, path: str) -> None:
+    super().rm_file(path)
+    with self._lock:
+      self.head_metadata.pop(self._strip_protocol(path), None)
+
+  def find(self, path: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    listing = super().find(path, *args, **kwargs)
+    return {
+        key: {
+            k: v
+            for k, v in info.items()
+            if k in ("name", "size", "type", "LastModified")
+        }
+        for key, info in listing.items()
+    }
+
+
+class ResourceExistsError(Exception):
+  """Stands in for azure.core.exceptions.ResourceExistsError."""
+
+  error_code = "BlobAlreadyExists"
+
+
+class _FakeAzureWriter:
+  """Buffers an ``open(..., "wb"/"xb")`` write and commits it on close."""
+
+  def __init__(self, commit: Callable[[bytes], None]) -> None:
+    self._commit = commit
+    self._chunks: list[bytes] = []
+    self.closed = False
+
+  def write(self, data: bytes) -> int:
+    self._chunks.append(bytes(data))
+    return len(data)
+
+  def close(self) -> None:
+    if not self.closed:
+      self.closed = True
+      self._commit(b"".join(self._chunks))
+
+  def __enter__(self) -> "_FakeAzureWriter":
+    return self
+
+  def __exit__(self, *args: Any) -> None:
+    self.close()
+
+  def __del__(self) -> None:
+    # Like fsspec's AbstractBufferedFile, an unclosed writer commits on GC.
+    if not self.closed:
+      self.close()
+
+
+class FakeAzureObjectStore(FakeFsspecObjectStore):
+  """In-memory fsspec filesystem whose behavior matches adlfs.
+
+  ``pipe_file`` stores adlfs's ``{"is_directory": "false"}`` metadata and
+  cannot take ``metadata=``. ``open(path, "xb", metadata=, content_settings=)``
+  creates an object with metadata, and the content type defaults to
+  ``application/octet-stream``. ``info()`` and listings return ``metadata``,
+  ``content_settings`` and ``creation_time``, except that ``find`` returns
+  ``[path]`` when ``path`` is a file. As in adlfs, a conflicting exclusive
+  create of an empty payload raises ``ResourceExistsError`` instead of
+  ``FileExistsError``, and ``info()`` trusts a cached listing of the parent,
+  which ``invalidate_cache(path)`` drops only for ``path`` itself.
+  """
+
+  protocol: Any = ("abfs", "az", "abfss")
+
+  def invalidate_cache(self, path: str | None = None) -> None:
+    super().invalidate_cache(path)
+    if path is None:
+      self.dircache.clear()
+    else:
+      self.dircache.pop(self._strip_protocol(path), None)
+
+  def info(self, path: str, **kwargs: Any) -> dict[str, Any]:
+    key = self._strip_protocol(path)
+    listing = self.dircache.get(self._parent(key))
+    if listing is not None and all(entry["name"] != key for entry in listing):
+      raise FileNotFoundError(path)
+    return super().info(path, **kwargs)
+
+  def _store(
+      self,
+      key: str,
+      value: bytes,
+      metadata: dict[str, str],
+      content_settings: dict[str, Any] | None,
+      exclusive: bool,
+  ) -> None:
+    content_type = (content_settings or {}).get("content_type")
+    entry: dict[str, Any] = {
+        "name": key,
+        "size": len(value),
+        "type": "file",
+        "creation_time": datetime.fromtimestamp(
+            FIXED_DATETIME.timestamp(), tz=timezone.utc
+        ),
+        "metadata": dict(metadata),
+        "content_settings": {
+            "content_type": content_type or "application/octet-stream"
+        },
+    }
+    with self._lock:
+      if exclusive and key in self.objects:
+        raise ResourceExistsError(key) if not value else FileExistsError(key)
+      self.objects[key] = (bytes(value), entry)
+
+  def pipe_file(  # type: ignore[override]
+      self,
+      path: str,
+      value: bytes,
+      mode: str = "overwrite",
+      content_settings: dict[str, Any] | None = None,
+  ) -> None:
+    self._store(
+        self._strip_protocol(path),
+        value,
+        {"is_directory": "false"},
+        content_settings,
+        exclusive=mode == "create",
+    )
+
+  def find(self, path: str, prefix: str = "", **kwargs: Any) -> Any:
+    full_path = self._strip_protocol(path).strip("/")
+    if full_path in self.objects:
+      return [full_path]
+    target = f"{full_path}/{prefix.strip('/')}"
+    with self._lock:
+      return {
+          key: {**info, "metadata": dict(info.get("metadata") or {})}
+          for key, (_, info) in sorted(self.objects.items())
+          if key.startswith(target)
+      }
+
+  def open(  # type: ignore[override]
+      self,
+      path: str,
+      mode: str = "rb",
+      metadata: dict[str, str] | None = None,
+      content_settings: dict[str, Any] | None = None,
+      **kwargs: Any,
+  ) -> _FakeAzureWriter:
+    assert mode in ("wb", "xb"), mode
+    return _FakeAzureWriter(
+        lambda data: self._store(
+            self._strip_protocol(path),
+            data,
+            metadata or {"is_directory": "false"},
+            content_settings,
+            exclusive=mode == "xb",
+        )
+    )
+
+
+def mock_fsspec_artifact_service() -> FsspecArtifactService:
+  with temporary_feature_override(FeatureName.FSSPEC_ARTIFACT_SERVICE, True):
+    return FsspecArtifactService("gs://test_bucket", fs=FakeFsspecObjectStore())
+
+
+def mock_fsspec_s3_artifact_service() -> FsspecArtifactService:
+  with temporary_feature_override(FeatureName.FSSPEC_ARTIFACT_SERVICE, True):
+    return FsspecArtifactService("s3://test_bucket", fs=FakeS3ObjectStore())
+
+
+def mock_fsspec_azure_artifact_service() -> FsspecArtifactService:
+  with temporary_feature_override(FeatureName.FSSPEC_ARTIFACT_SERVICE, True):
+    return FsspecArtifactService(
+        "abfs://test_bucket", fs=FakeAzureObjectStore()
+    )
+
+
+def mock_fsspec_memory_artifact_service() -> FsspecArtifactService:
+  with temporary_feature_override(FeatureName.FSSPEC_ARTIFACT_SERVICE, True):
+    return FsspecArtifactService("memory://test_bucket")
+
+
 @pytest.fixture
-def artifact_service_factory(tmp_path: Path):
+def artifact_service_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
   """Provides an artifact service constructor bound to the test tmp path."""
+  monkeypatch.setattr(MemoryFileSystem, "store", {})
+  monkeypatch.setattr(MemoryFileSystem, "pseudo_dirs", [""])
 
   def factory(
       service_type: ArtifactServiceType = ArtifactServiceType.IN_MEMORY,
   ):
     if service_type == ArtifactServiceType.GCS:
       return mock_gcs_artifact_service()
+    if service_type == ArtifactServiceType.FSSPEC:
+      return mock_fsspec_artifact_service()
+    if service_type == ArtifactServiceType.FSSPEC_S3:
+      return mock_fsspec_s3_artifact_service()
+    if service_type == ArtifactServiceType.FSSPEC_AZURE:
+      return mock_fsspec_azure_artifact_service()
+    if service_type == ArtifactServiceType.FSSPEC_MEMORY:
+      return mock_fsspec_memory_artifact_service()
     if service_type == ArtifactServiceType.FILE:
       return FileArtifactService(root_dir=tmp_path / "artifacts")
     return InMemoryArtifactService()
@@ -235,6 +616,10 @@ def artifact_service_factory(tmp_path: Path):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_load_empty(service_type, artifact_service_factory):
@@ -255,6 +640,10 @@ async def test_load_empty(service_type, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_save_load_delete(service_type, artifact_service_factory):
@@ -264,7 +653,7 @@ async def test_save_load_delete(service_type, artifact_service_factory):
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
-  filename = "file456"
+  filename = "file456.txt"
 
   await artifact_service.save_artifact(
       app_name=app_name,
@@ -505,12 +894,120 @@ async def test_in_memory_rejected_save_preserves_artifact_catalog(
     )
 
 
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "invalid_artifact, custom_metadata, error_message",
+    [
+        (types.Part(), None, "inline_data, text, or file_data"),
+        (
+            types.Part.from_text(text="note"),
+            None,
+            "persists custom object metadata",
+        ),
+        (
+            types.Part.from_text(text=""),
+            None,
+            "persists custom object metadata",
+        ),
+        (
+            types.Part.from_uri(
+                file_uri="gs://bucket/report.txt", mime_type="text/plain"
+            ),
+            None,
+            "persists custom object metadata",
+        ),
+        (
+            types.Part.from_bytes(data=b"note", mime_type="text/plain"),
+            {"env": "memory"},
+            "persists custom object metadata",
+        ),
+    ],
+)
+async def test_fsspec_memory_rejected_save_preserves_artifact_catalog(
+    filename: str,
+    existing: bool,
+    invalid_artifact: types.Part,
+    custom_metadata: dict[str, str] | None,
+    error_message: str,
+    artifact_service_factory: Callable[
+        [ArtifactServiceType], BaseArtifactService
+    ],
+) -> None:
+  """Rejected saves on memory:// leave catalog and versions unchanged."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.FSSPEC_MEMORY)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  previous = types.Part.from_bytes(data=b"previous", mime_type="text/plain")
+  if existing:
+    assert (
+        await artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            artifact=previous,
+        )
+        == 0
+    )
+
+  with pytest.raises(InputValidationError, match=error_message):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=invalid_artifact,
+        custom_metadata=custom_metadata,
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == ([filename] if existing else [])
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == ([0] if existing else [])
+  assert await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == (previous if existing else None)
+  replacement = types.Part.from_bytes(
+      data=b"replacement", mime_type="text/plain"
+  )
+  assert await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=replacement,
+  ) == (1 if existing else 0)
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      == replacement
+  )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type",
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
@@ -567,6 +1064,10 @@ async def test_file_allows_reserved_user_as_session_id(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
@@ -673,7 +1174,15 @@ def _artifact_reference_part(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
+    ],
 )
 async def test_load_artifact_rejects_self_referential_artifact_reference(
     service_type,
@@ -695,7 +1204,15 @@ async def test_load_artifact_rejects_self_referential_artifact_reference(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
+    ],
 )
 async def test_load_artifact_rejects_too_long_artifact_reference_chain(
     service_type,
@@ -736,6 +1253,10 @@ async def test_load_artifact_rejects_too_long_artifact_reference_chain(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_list_keys(service_type, artifact_service_factory):
@@ -772,6 +1293,10 @@ async def test_list_keys(service_type, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_list_versions(service_type, artifact_service_factory):
@@ -788,7 +1313,11 @@ async def test_list_versions(service_type, artifact_service_factory):
       )
       for i in range(3)
   ]
-  versions.append(types.Part.from_text(text="hello"))
+  versions.append(
+      types.Part.from_bytes(data=b"hello", mime_type="text/plain")
+      if service_type == ArtifactServiceType.FSSPEC_MEMORY
+      else types.Part.from_text(text="hello")
+  )
 
   for i in range(4):
     await artifact_service.save_artifact(
@@ -816,6 +1345,10 @@ async def test_list_versions(service_type, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_nested_artifact_does_not_leak_versions_into_parent(
@@ -832,7 +1365,9 @@ async def test_nested_artifact_does_not_leak_versions_into_parent(
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
-  parent = types.Part.from_text(text="parent v0")
+  parent = types.Part.from_bytes(
+      data=b"parent v0", mime_type="application/octet-stream"
+  )
 
   await artifact_service.save_artifact(
       app_name=app_name,
@@ -849,7 +1384,10 @@ async def test_nested_artifact_does_not_leak_versions_into_parent(
         user_id=user_id,
         session_id=session_id,
         filename="doc/nested",
-        artifact=types.Part.from_text(text=f"nested v{i}"),
+        artifact=types.Part.from_bytes(
+            data=f"nested v{i}".encode("utf-8"),
+            mime_type="application/octet-stream",
+        ),
     )
 
   assert await artifact_service.list_versions(
@@ -878,7 +1416,9 @@ async def test_nested_artifact_does_not_leak_versions_into_parent(
           user_id=user_id,
           session_id=session_id,
           filename="doc",
-          artifact=types.Part.from_text(text="parent v1"),
+          artifact=types.Part.from_bytes(
+              data=b"parent v1", mime_type="application/octet-stream"
+          ),
       )
       == 1
   )
@@ -899,6 +1439,10 @@ async def test_nested_artifact_does_not_leak_versions_into_parent(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_list_artifact_versions_excludes_nested_artifact(
@@ -916,7 +1460,10 @@ async def test_list_artifact_versions_excludes_nested_artifact(
         user_id=user_id,
         session_id=session_id,
         filename=filename,
-        artifact=types.Part.from_text(text=filename),
+        artifact=types.Part.from_bytes(
+            data=filename.encode("utf-8"),
+            mime_type="application/octet-stream",
+        ),
     )
 
   versions = await artifact_service.list_artifact_versions(
@@ -928,7 +1475,13 @@ async def test_list_artifact_versions_excludes_nested_artifact(
 
   assert [v.version for v in versions] == [0]
   # The returned handle must address "doc", not the nested artifact.
-  if service_type == ArtifactServiceType.GCS:
+  if service_type in (
+      ArtifactServiceType.GCS,
+      ArtifactServiceType.FSSPEC,
+      ArtifactServiceType.FSSPEC_S3,
+      ArtifactServiceType.FSSPEC_AZURE,
+      ArtifactServiceType.FSSPEC_MEMORY,
+  ):
     assert versions[0].canonical_uri.endswith("/doc/0")
 
 
@@ -939,6 +1492,10 @@ async def test_list_artifact_versions_excludes_nested_artifact(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_delete_artifact_keeps_nested_artifact(
@@ -949,14 +1506,18 @@ async def test_delete_artifact_keeps_nested_artifact(
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
-  nested = types.Part.from_text(text="nested v0")
+  nested = types.Part.from_bytes(
+      data=b"nested v0", mime_type="application/octet-stream"
+  )
 
   await artifact_service.save_artifact(
       app_name=app_name,
       user_id=user_id,
       session_id=session_id,
       filename="doc",
-      artifact=types.Part.from_text(text="parent v0"),
+      artifact=types.Part.from_bytes(
+          data=b"parent v0", mime_type="application/octet-stream"
+      ),
   )
   await artifact_service.save_artifact(
       app_name=app_name,
@@ -997,6 +1558,10 @@ async def test_delete_artifact_keeps_nested_artifact(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_list_keys_includes_nested_artifact(
@@ -1014,7 +1579,10 @@ async def test_list_keys_includes_nested_artifact(
         user_id=user_id,
         session_id=session_id,
         filename=filename,
-        artifact=types.Part.from_text(text=filename),
+        artifact=types.Part.from_bytes(
+            data=filename.encode("utf-8"),
+            mime_type="application/octet-stream",
+        ),
     )
 
   assert await artifact_service.list_artifact_keys(
@@ -1029,6 +1597,10 @@ async def test_list_keys_includes_nested_artifact(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_list_keys_preserves_user_prefix(
@@ -1084,7 +1656,15 @@ async def test_list_keys_preserves_user_prefix(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
+    ],
 )
 async def test_list_artifact_versions_and_get_artifact_version(
     service_type, artifact_service_factory
@@ -1128,10 +1708,16 @@ async def test_list_artifact_versions_and_get_artifact_version(
     expected_artifact_versions = []
     for i in range(4):
       metadata = {"key": "value" + str(i)}
-      if service_type == ArtifactServiceType.GCS:
+      if service_type in (ArtifactServiceType.GCS, ArtifactServiceType.FSSPEC):
         uri = (
             f"gs://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
         )
+      elif service_type == ArtifactServiceType.FSSPEC_S3:
+        uri = (
+            f"s3://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
+        )
+      elif service_type == ArtifactServiceType.FSSPEC_AZURE:
+        uri = f"abfs://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
       else:
         uri = f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{i}"
       expected_artifact_versions.append(
@@ -1171,7 +1757,15 @@ async def test_list_artifact_versions_and_get_artifact_version(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
+    ],
 )
 async def test_list_artifact_versions_with_user_prefix(
     service_type, artifact_service_factory
@@ -1216,8 +1810,12 @@ async def test_list_artifact_versions_with_user_prefix(
     expected_artifact_versions = []
     for i in range(4):
       metadata = {"key": "value" + str(i)}
-      if service_type == ArtifactServiceType.GCS:
+      if service_type in (ArtifactServiceType.GCS, ArtifactServiceType.FSSPEC):
         uri = f"gs://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
+      elif service_type == ArtifactServiceType.FSSPEC_S3:
+        uri = f"s3://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
+      elif service_type == ArtifactServiceType.FSSPEC_AZURE:
+        uri = f"abfs://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
       else:
         uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{user_scoped_filename}/versions/{i}"
       expected_artifact_versions.append(
@@ -1234,7 +1832,15 @@ async def test_list_artifact_versions_with_user_prefix(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
+    ],
 )
 async def test_get_artifact_version_artifact_does_not_exist(
     service_type, artifact_service_factory
@@ -1251,7 +1857,15 @@ async def test_get_artifact_version_artifact_does_not_exist(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
+    ],
 )
 async def test_get_artifact_version_out_of_index(
     service_type, artifact_service_factory
@@ -1261,7 +1875,7 @@ async def test_get_artifact_version_out_of_index(
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
-  filename = "filename"
+  filename = "filename.txt"
   artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
 
   await artifact_service.save_artifact(
@@ -1322,6 +1936,10 @@ async def test_get_artifact_version_out_of_index(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_load_and_get_artifact_version_reject_negative_version(
@@ -1336,10 +1954,16 @@ async def test_load_and_get_artifact_version_reject_negative_version(
       "filename": "filename",
   }
   await artifact_service.save_artifact(
-      **scope, artifact=types.Part.from_text(text="v0")
+      **scope,
+      artifact=types.Part.from_bytes(
+          data=b"v0", mime_type="application/octet-stream"
+      ),
   )
   await artifact_service.save_artifact(
-      **scope, artifact=types.Part.from_text(text="v1")
+      **scope,
+      artifact=types.Part.from_bytes(
+          data=b"v1", mime_type="application/octet-stream"
+      ),
   )
 
   assert await artifact_service.load_artifact(**scope, version=-1) is None
@@ -1355,6 +1979,10 @@ async def test_load_and_get_artifact_version_reject_negative_version(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_artifact_service_isolates_stored_data_from_caller_mutation(
@@ -1666,6 +2294,10 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_artifact_version_metadata_holds_only_caller_keys(
@@ -2169,6 +2801,10 @@ INVALID_PATH_SEGMENT_CASES = (
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize(
@@ -2208,6 +2844,10 @@ async def test_save_and_load_namespaced_user_id_succeeds(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
@@ -2233,6 +2873,10 @@ async def test_save_artifact_rejects_traversal_in_app_name(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2258,6 +2902,10 @@ async def test_save_artifact_rejects_traversal_in_user_id(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2284,6 +2932,10 @@ async def test_save_artifact_rejects_traversal_in_session_id(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
@@ -2307,6 +2959,10 @@ async def test_load_artifact_rejects_traversal_in_app_name(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2330,6 +2986,10 @@ async def test_load_artifact_rejects_traversal_in_user_id(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2354,6 +3014,10 @@ async def test_load_artifact_rejects_traversal_in_session_id(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
@@ -2377,6 +3041,10 @@ async def test_delete_artifact_rejects_traversal_in_app_name(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2400,6 +3068,10 @@ async def test_delete_artifact_rejects_traversal_in_user_id(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2424,6 +3096,10 @@ async def test_delete_artifact_rejects_traversal_in_session_id(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
@@ -2446,6 +3122,10 @@ async def test_list_artifact_keys_rejects_traversal_in_app_name(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2468,6 +3148,10 @@ async def test_list_artifact_keys_rejects_traversal_in_user_id(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
@@ -2515,6 +3199,10 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_artifact_reference_allows_same_session_scope(
@@ -2563,6 +3251,10 @@ async def test_artifact_reference_allows_same_session_scope(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_artifact_reference_allows_same_user_user_scope(
@@ -2611,6 +3303,10 @@ async def test_artifact_reference_allows_same_user_user_scope(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_artifact_reference_rejects_cross_user_on_save(
@@ -2652,6 +3348,10 @@ async def test_artifact_reference_rejects_cross_user_on_save(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_artifact_reference_rejects_cross_app_on_save(
@@ -2693,6 +3393,10 @@ async def test_artifact_reference_rejects_cross_app_on_save(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_artifact_reference_rejects_cross_session_on_load(
@@ -2744,6 +3448,15 @@ async def test_artifact_reference_rejects_cross_session_on_load(
     )
     blob = artifact_service.bucket.get_blob(blob_name)
     blob.metadata["adkFileUri"] = new_uri
+  elif service_type in (
+      ArtifactServiceType.FSSPEC,
+      ArtifactServiceType.FSSPEC_AZURE,
+  ):
+    ref_key = "test_bucket/app0/user0/sess0/ref.txt/0"
+    artifact_service._fs.objects[ref_key][1]["metadata"]["adkFileUri"] = new_uri
+  elif service_type == ArtifactServiceType.FSSPEC_S3:
+    ref_key = "test_bucket/app0/user0/sess0/ref.txt/0"
+    artifact_service._fs.head_metadata[ref_key]["adkfileuri"] = new_uri
   elif service_type == ArtifactServiceType.IN_MEMORY:
     ref_path = artifact_service._artifact_path(
         "app0", "user0", "ref.txt", "sess0"
@@ -3449,6 +4162,10 @@ async def test_gcs_get_signed_url_cyclic_reference_raises_error() -> None:
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_save_artifact_with_camel_case_dict(
@@ -3496,6 +4213,10 @@ async def test_save_artifact_with_camel_case_dict(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_save_artifact_with_snake_case_dict(
@@ -3542,6 +4263,10 @@ async def test_save_artifact_with_snake_case_dict(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 async def test_load_artifact_preserves_inline_data_display_name(
@@ -3588,6 +4313,10 @@ async def test_load_artifact_preserves_inline_data_display_name(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 @pytest.mark.parametrize(
@@ -3651,6 +4380,10 @@ async def test_file_save_text_artifact_preserves_utf8_bytes(tmp_path, filename):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 @pytest.mark.parametrize("filename", ["empty.txt", "user:empty.txt"])
@@ -3687,6 +4420,10 @@ async def test_save_load_empty_text_artifact(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        FSSPEC_MEMORY_REQUIRES_METADATA,
     ],
 )
 @pytest.mark.parametrize("filename", ["empty.bin", "user:empty.bin"])
@@ -3732,6 +4469,10 @@ _REWIND_TOMBSTONE = types.Part(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 @pytest.mark.parametrize("version", [None, 1])
@@ -3746,7 +4487,9 @@ async def test_artifact_removed_by_rewind_loads_as_none(
   artifact_service = artifact_service_factory(service_type)
   scope = dict(app_name="app0", user_id="user0", session_id="123")
   await artifact_service.save_artifact(
-      **scope, filename="report.txt", artifact=types.Part.from_text(text="v0")
+      **scope,
+      filename="report.txt",
+      artifact=types.Part.from_bytes(data=b"v0", mime_type="text/plain"),
   )
   await artifact_service.save_artifact(
       **scope,
@@ -3768,6 +4511,10 @@ async def test_artifact_removed_by_rewind_loads_as_none(
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.FSSPEC,
+        ArtifactServiceType.FSSPEC_S3,
+        ArtifactServiceType.FSSPEC_AZURE,
+        ArtifactServiceType.FSSPEC_MEMORY,
     ],
 )
 async def test_version_before_rewind_tombstone_still_loads(
@@ -3779,8 +4526,9 @@ async def test_version_before_rewind_tombstone_still_loads(
   """Versions saved before the rewind tombstone keep their content."""
   artifact_service = artifact_service_factory(service_type)
   scope = dict(app_name="app0", user_id="user0", session_id="123")
+  initial = types.Part.from_bytes(data=b"v0", mime_type="text/plain")
   await artifact_service.save_artifact(
-      **scope, filename="report.txt", artifact=types.Part.from_text(text="v0")
+      **scope, filename="report.txt", artifact=initial
   )
   await artifact_service.save_artifact(
       **scope,
@@ -3792,7 +4540,7 @@ async def test_version_before_rewind_tombstone_still_loads(
       **scope, filename="report.txt", version=0
   )
 
-  assert loaded == types.Part.from_text(text="v0")
+  assert loaded == initial
 
 
 def _write_tampered_metadata(

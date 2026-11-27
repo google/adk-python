@@ -507,12 +507,12 @@ def test_events_table_is_read_once_for_the_events_of_a_turn(
 def test_instruction_falls_back_to_the_logged_system_prompt(
     bodies: dict[str, str],
 ) -> None:
-  """An agent's instruction is its AGENT_STARTING text, else its prompt."""
+  """An agent's instruction prefers scoped prompt, then session prompt."""
   sql = _squash(bodies[_CTE_FILE])
 
   assert (
-      "'instruction', COALESCE(NULLIF(instruction, ''), logged_system_prompt,"
-      " '')"
+      "'instruction', COALESCE(NULLIF(instruction, ''), scoped_system_prompt,"
+      " logged_system_prompt, '')"
   ) in sql
 
 
@@ -522,3 +522,138 @@ def test_query_where_clause_filters_the_output_rows_last(
 ) -> None:
   """A query's where_clause follows the CTE of output rows that it reads."""
   assert bodies[filename].endswith(f"\nFROM\n  {source}{{where_clause}}\n")
+
+
+def _ctes_by_name(sql: str) -> dict[str, str]:
+  """Slices a CTE template body into each CTE's text, keyed by CTE name."""
+  matches = list(_CTE_NAME_RE.finditer(sql))
+  return {
+      match.group(1): sql[
+          match.start() : (
+              matches[i + 1].start() if i + 1 < len(matches) else len(sql)
+          )
+      ]
+      for i, match in enumerate(matches)
+  }
+
+
+def test_session_events_excludes_sub_agent_sessions(
+    bodies: dict[str, str],
+) -> None:
+  """SessionEvents filters parent_session_id as the sole RawEvents reader."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  squashed_body = _squash(bodies[_CTE_FILE])
+
+  assert (
+      "SessionEvents AS (SELECT * FROM RawEvents"
+      " WHERE JSON_VALUE(attributes, '$.adk.parent_session_id') IS NULL)"
+  ) in _squash(ctes["SessionEvents"])
+  assert re.findall(r"\bFROM RawEvents\b", squashed_body) == ["FROM RawEvents"]
+
+
+@pytest.mark.parametrize(
+    "cte_name",
+    ["TypedEvents", "AgentRows", "SessionAgentPrompts"],
+)
+def test_downstream_ctes_read_from_session_events(
+    bodies: dict[str, str],
+    cte_name: str,
+) -> None:
+  """Downstream CTEs read from SessionEvents instead of RawEvents."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  cte_sql = _squash(ctes[cte_name])
+  assert "FROM SessionEvents" in cte_sql
+  assert "FROM RawEvents" not in cte_sql
+
+
+def test_formatted_response_and_response_text_delimiters(
+    bodies: dict[str, str],
+) -> None:
+  """TypedEvents reads string content and ResponseEvents anchors delimiters."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  typed_sql = _squash(ctes["TypedEvents"])
+  response_sql = ctes["ResponseEvents"]
+
+  assert (
+      "IF(TRIM(JSON_VALUE(content, '$.response')) != '',"
+      " JSON_VALUE(content, '$.response'), NULL)"
+  ) in typed_sql
+  sentinel_sql = (
+      "'[FORMATTER_FAILED]', '[FORMATTING FAILED]', '[REDACTED]',"
+      " '[CONTENT_PARSE_FAILED]', '[UNPARSEABLE_JSON_BLOB]',"
+      " '[UNSUPPORTED_OBJECT]', '[REDACTED_SENSITIVE_TEXT]'"
+  )
+  assert (
+      "IF(JSON_TYPE(content) = 'string'"
+      " AND TRIM(JSON_VALUE(content, '$')) != ''"
+      f" AND JSON_VALUE(content, '$') NOT IN ({sentinel_sql}),"
+      " JSON_VALUE(content, '$'), NULL)"
+  ) in typed_sql
+
+  squashed_response_sql = _squash(response_sql)
+  assert "TRIM(REGEXP_REPLACE(" in squashed_response_sql
+  assert ")) != ''" in squashed_response_sql
+  assert f"CHR(10)) NOT IN ({sentinel_sql})" in squashed_response_sql
+  assert f"formatted_response NOT IN ({sentinel_sql})" in squashed_response_sql
+
+  assert (
+      'r"\' [|] (?:call: |resp: |Executable code |Code execution result )"'
+      in response_sql
+  )
+  assert 'r"\' [|] other(?: [|] |$)"' in response_sql
+  assert "r' [|] " not in response_sql
+
+
+def test_turn_rollup_uses_deterministic_tiebreakers(
+    bodies: dict[str, str],
+) -> None:
+  """TurnRollup breaks timestamp ties by event_id."""
+  turn_rollup_sql = _squash(_ctes_by_name(bodies[_CTE_FILE])["TurnRollup"])
+
+  assert "user_id IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1" in (
+      turn_rollup_sql
+  )
+  assert (
+      "root_agent_name IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1"
+      in turn_rollup_sql
+  )
+  assert "agent IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1" in (
+      turn_rollup_sql
+  )
+
+
+def test_agent_latest_and_session_rollup_use_deterministic_tiebreakers(
+    bodies: dict[str, str],
+) -> None:
+  """AgentLatest and SessionRollup break ties and keep Turn 1 root_agent."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  agent_latest_sql = _squash(ctes["AgentLatest"])
+  session_sql = _squash(bodies["eval_session_query_v1.sql"])
+
+  for column in (
+      "instruction",
+      "description",
+      "sub_agents",
+      "tool_declarations",
+  ):
+    assert (
+        f"{column} IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1"
+        in agent_latest_sql
+    )
+  assert (
+      "system_prompt IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1"
+      in agent_latest_sql
+  )
+  assert "AS scoped_system_prompt" in agent_latest_sql
+  assert (
+      "user_id IGNORE NULLS ORDER BY turn_start_timestamp, invocation_id"
+      " LIMIT 1"
+      in session_sql
+  )
+  assert (
+      "root_agent IGNORE NULLS ORDER BY turn_start_timestamp, invocation_id"
+      " LIMIT 1"
+      in session_sql
+  )
+  assert "first_root_agent_name" not in session_sql
+  assert "first_agent" not in session_sql

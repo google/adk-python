@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 from unittest import mock
 
@@ -46,8 +45,8 @@ if TYPE_CHECKING:
   from collections.abc import Iterable
   from collections.abc import Mapping
 
-  from google.adk.agents.base_agent import BaseAgent
   from google.adk.sessions.session import Session
+  from google.adk.workflow._base_node import BaseNode
 
 EXCLUDED_EVENT_FIELDS = {
     "id",
@@ -144,7 +143,7 @@ class MockModel(BaseLlm):
 class InMemoryRunner:
 
   def __init__(
-      self, root_agent: BaseAgent | None = None, app: App | None = None
+      self, root_agent: BaseNode | None = None, app: App | None = None
   ) -> None:
     self._session_service = InMemorySessionService()
     if app:
@@ -159,7 +158,7 @@ class InMemoryRunner:
       self.app_name = "test_app"
       self.runner = Runner(
           app_name="test_app",
-          agent=root_agent,
+          node=root_agent,
           artifact_service=InMemoryArtifactService(),
           session_service=self._session_service,
           memory_service=InMemoryMemoryService(),
@@ -299,7 +298,7 @@ def _make_nodes_sequential(
       _make_nodes_sequential(obj._node, visited)
 
 
-def _extract_user_content(event: Mapping[str, Any]) -> Optional[types.Content]:
+def _extract_user_content(event: Mapping[str, Any]) -> types.Content | None:
   """Extracts user content from an event dict and returns a types.Content object.
 
   Agent-emitted user-role events (e.g., task FRs synthesized by the Task

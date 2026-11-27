@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import logging
 from typing import AsyncGenerator
+from typing import Callable
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -27,6 +28,8 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.live import _live_llm_flow
 from google.adk.live._active_background_tool import ActiveBackgroundTool
@@ -35,10 +38,14 @@ from google.adk.live._visual_frames import unpack_visual_frames
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import InMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from google.adk.utils.context_utils import Aclosing
 from google.genai import errors
 from google.genai import types
 from pydantic import BaseModel
@@ -532,6 +539,38 @@ async def test_screen_live_user_content_returns_blocked_event():
   assert blocked_event is not None
   assert blocked_event.turn_complete is True
   assert blocked_event.content == blocked_response.content
+
+
+def _added_tool() -> str:
+  return 'added'
+
+
+async def test_screen_live_user_content_does_not_mutate_live_request():
+  """A callback that edits the request does not change the live request."""
+  flow = _TestBaseLlmFlow()
+  tool = types.Tool(
+      function_declarations=[types.FunctionDeclaration(name='lookup')]
+  )
+  llm_request = LlmRequest(config=types.GenerateContentConfig(tools=[tool]))
+  llm_request.tools_dict['lookup'] = mock.Mock()
+
+  def _edit_request(context, request, event):
+    request.config.system_instruction = 'changed'
+    request.append_tools([FunctionTool(_added_tool)])
+    request.config.tools.clear()
+    request.tools_dict.clear()
+
+  with mock.patch.object(
+      flow, '_handle_before_model_callback', side_effect=_edit_request
+  ):
+    await _live_llm_flow.screen_live_user_content(
+        flow, _create_test_context(), types.Content(), llm_request
+    )
+
+  assert llm_request.config.system_instruction is None
+  assert llm_request.config.tools == [tool]
+  assert [d.name for d in tool.function_declarations] == ['lookup']
+  assert list(llm_request.tools_dict) == ['lookup']
 
 
 async def test_stop_background_tool_tasks_uses_timeout():
@@ -1080,39 +1119,290 @@ def test_run_live_does_not_warn_for_task_mode_output_schema(caplog):
   assert 'not supported in live mode' not in caplog.text
 
 
-async def test_postprocess_live_flow_does_not_synthesize_structured_response():
+async def test_run_live_does_not_synthesize_structured_response():
   """A set_model_response call yields only the call and its response."""
-  flow = _TestBaseLlmFlow()
-  context = _create_test_context(live_request_queue=LiveRequestQueue())
-  llm_request = LlmRequest()
-  llm_request.append_tools([SetModelResponseTool(_WeatherReport)])
-  response = LlmResponse(
-      content=types.Content(
-          role='model',
-          parts=[
-              types.Part(
-                  function_call=types.FunctionCall(
-                      id='call-1',
-                      name=SetModelResponseTool.NAME,
-                      args={'city': 'Tokyo', 'temperature_celsius': 26},
-                  )
+  agent = LlmAgent(
+      name='weather_agent',
+      model=testing_utils.MockModel.create([
+          LlmResponse(
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      types.Part.from_function_call(
+                          name=SetModelResponseTool.NAME,
+                          args={'city': 'Tokyo', 'temperature_celsius': 26},
+                      )
+                  ],
               )
-          ],
-      )
+          )
+      ]),
+      tools=[SetModelResponseTool(_WeatherReport)],
   )
-  event = Event(
-      id='ev-1',
-      invocation_id=context.invocation_id,
-      author=context.agent.name,
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=agent, session_service=session_service)
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
   )
+  events: list[Event] = []
 
-  events = [
-      e
-      async for e in _live_llm_flow.postprocess_live_flow(
-          flow, context, llm_request, response, event
-      )
+  async def consume() -> None:
+    async with Aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['AUDIO']),
+        )
+    ) as agen:
+      async for event in agen:
+        events.append(event)
+        if event.get_function_responses():
+          live_request_queue.close()
+
+  await asyncio.wait_for(consume(), timeout=5)
+
+  agent_events = [e for e in events if e.author == agent.name and e.content]
+  assert [bool(e.get_function_calls()) for e in agent_events] == [True, False]
+  assert agent_events[1].get_function_responses()
+
+
+@pytest.mark.asyncio
+async def test_run_live_tool_instruction_does_not_start_a_turn() -> None:
+  """A tool's instruction stays in system_instruction on a new live session."""
+  model = testing_utils.MockModel.create([])
+  runner = InMemoryRunner(
+      agent=LlmAgent(
+          name='root_agent', model=model, tools=[load_artifacts_tool]
+      ),
+      app_name='app',
+  )
+  session = await runner.session_service.create_session(
+      app_name='app', user_id='u'
+  )
+  await runner.artifact_service.save_artifact(
+      app_name='app',
+      user_id='u',
+      session_id=session.id,
+      filename='report.txt',
+      artifact=types.Part.from_text(text='q3 numbers'),
+  )
+  queue = LiveRequestQueue()
+  queue.close()
+
+  async def _drain() -> None:
+    async with Aclosing(
+        runner.run_live(
+            user_id='u', session_id=session.id, live_request_queue=queue
+        )
+    ) as events:
+      async for _ in events:
+        pass
+
+  with (
+      temporary_feature_override(FeatureName.DYNAMIC_INSTRUCTION_ROUTING, True),
+      mock.patch.object(
+          testing_utils.MockLlmConnection, 'send_history', autospec=True
+      ) as send_history,
+  ):
+    await asyncio.wait_for(_drain(), timeout=5)
+
+  assert 'report.txt' in (model.requests[0].config.system_instruction or '')
+  send_history.assert_not_called()
+
+
+_END_OF_RECEIVE_STREAM = object()
+
+
+async def _until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+  async def wait() -> None:
+    while not predicate():
+      await asyncio.sleep(0)
+
+  await asyncio.wait_for(wait(), timeout)
+
+
+class _MergeHarness:
+  """Drives `_merge_function_responses`."""
+
+  def __init__(self):
+    self._receive_items: asyncio.Queue[object] = asyncio.Queue()
+    self.function_response_queue: asyncio.Queue[Event] = asyncio.Queue()
+    self.model_events_read = 0
+    self.read_ids: list[str] = []
+    self._merged_stream = _live_llm_flow._merge_function_responses(
+        self._receive_stream(), self.function_response_queue
+    )
+
+  async def _receive_stream(self) -> AsyncGenerator[Event, None]:
+    while True:
+      item = await self._receive_items.get()
+      if item is _END_OF_RECEIVE_STREAM:
+        return
+      if isinstance(item, Exception):
+        raise item
+      self.model_events_read += 1
+      yield item
+
+  def send_model_event(self, event_id: str) -> None:
+    self._receive_items.put_nowait(Event(id=event_id, author='model'))
+
+  def send_function_response(self, event_id: str) -> None:
+    self.function_response_queue.put_nowait(
+        Event(id=event_id, author='test_agent')
+    )
+
+  def end_receive_stream(self) -> None:
+    self._receive_items.put_nowait(_END_OF_RECEIVE_STREAM)
+
+  def fail_receive_stream(self, error: Exception) -> None:
+    self._receive_items.put_nowait(error)
+
+  async def read(self) -> str:
+    """Reads the next event from the merged stream."""
+    event = await asyncio.wait_for(self._merged_stream.__anext__(), 2)
+    self.read_ids.append(event.id)
+    return event.id
+
+  async def read_rest(self) -> list[str]:
+    """Reads the merged stream until it ends."""
+    event_ids = []
+    async for event in self._merged_stream:
+      self.read_ids.append(event.id)
+      event_ids.append(event.id)
+    return event_ids
+
+  async def close(self) -> None:
+    """Closes the merged stream, as the flow does to reconnect or hand off."""
+    await self._merged_stream.aclose()
+
+  def take_queued_function_responses(self) -> list[str]:
+    """Empties the function response queue and returns what was in it."""
+    event_ids = []
+    while not self.function_response_queue.empty():
+      event_ids.append(self.function_response_queue.get_nowait().id)
+    return event_ids
+
+  async def until_function_responses_taken(self) -> None:
+    """Waits until the merge has taken every queued function response."""
+    await _until(self.function_response_queue.empty)
+
+  async def let_merge_run(self) -> None:
+    """Gives the merge time to read ahead, if it would."""
+    for _ in range(10):
+      await asyncio.sleep(0)
+
+
+@pytest.fixture
+async def merge_harness():
+  harness = _MergeHarness()
+  yield harness
+  await harness.close()
+
+
+async def test_merge_yields_events_from_both_inputs(
+    merge_harness,
+):
+  """Model events and function responses come out of one merged stream, once."""
+  merge_harness.send_model_event('model-1')
+  assert await merge_harness.read() == 'model-1'
+
+  merge_harness.send_function_response('response-a')
+  assert await merge_harness.read() == 'response-a'
+
+  await merge_harness.close()
+  assert merge_harness.take_queued_function_responses() == []
+
+
+async def test_merge_hands_over_one_model_event_at_a_time(
+    merge_harness,
+):
+  """The receive stream is not read ahead of the flow."""
+  merge_harness.send_model_event('model-1')
+  merge_harness.send_model_event('model-2')
+
+  assert await merge_harness.read() == 'model-1'
+  await merge_harness.let_merge_run()
+
+  assert merge_harness.model_events_read == 1
+
+
+async def test_merge_hands_over_one_function_response_at_a_time(
+    merge_harness,
+):
+  """Function responses are not taken from the queue ahead of the flow."""
+  merge_harness.send_function_response('response-a')
+  merge_harness.send_function_response('response-b')
+
+  assert await merge_harness.read() == 'response-a'
+  await merge_harness.let_merge_run()
+
+  assert merge_harness.take_queued_function_responses() == ['response-b']
+
+
+async def test_merge_raises_receive_stream_error(
+    merge_harness,
+):
+  """A receive stream error reaches the flow after the events before it."""
+  merge_harness.send_model_event('model-1')
+  merge_harness.fail_receive_stream(RuntimeError('connection lost'))
+
+  assert await merge_harness.read() == 'model-1'
+  with pytest.raises(RuntimeError, match='connection lost'):
+    await merge_harness.read()
+
+
+async def test_merge_yields_waiting_responses_when_receive_stream_ends(
+    merge_harness,
+):
+  """The run ends with the receive stream, so every response is yielded."""
+  merge_harness.send_model_event('model-1')
+  assert await merge_harness.read() == 'model-1'
+  merge_harness.send_function_response('response-b')
+  await merge_harness.until_function_responses_taken()
+  merge_harness.send_function_response('response-c')
+
+  merge_harness.end_receive_stream()
+
+  assert await merge_harness.read_rest() == [
+      'response-b',
+      'response-c',
   ]
 
-  assert len(events) == 2
-  assert events[0].get_function_calls()
-  assert events[1].get_function_responses()
+
+async def test_merge_keeps_waiting_responses_when_receive_stream_fails(
+    merge_harness,
+):
+  """Each response is either yielded or left queued for the next connection."""
+  merge_harness.send_model_event('model-1')
+  assert await merge_harness.read() == 'model-1'
+  merge_harness.send_function_response('response-b')
+  await merge_harness.until_function_responses_taken()
+  merge_harness.send_function_response('response-c')
+
+  merge_harness.fail_receive_stream(RuntimeError('connection lost'))
+
+  with pytest.raises(RuntimeError, match='connection lost'):
+    await merge_harness.read_rest()
+  assert merge_harness.read_ids + (
+      merge_harness.take_queued_function_responses()
+  ) == ['model-1', 'response-b', 'response-c']
+
+
+async def test_merge_requeues_waiting_responses_when_flow_closes_merged_stream(
+    merge_harness,
+):
+  """The flow reconnects, so every response is left queued for it."""
+  merge_harness.send_model_event('model-1')
+  assert await merge_harness.read() == 'model-1'
+  merge_harness.send_function_response('response-b')
+  await merge_harness.until_function_responses_taken()
+  merge_harness.send_function_response('response-c')
+
+  await merge_harness.close()
+
+  assert merge_harness.take_queued_function_responses() == [
+      'response-b',
+      'response-c',
+  ]

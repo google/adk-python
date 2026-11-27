@@ -37,6 +37,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins import ToolResultClassification
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.debug_logging_plugin import DebugLoggingPlugin
 from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
 from google.adk.sessions.session import Session
@@ -46,6 +47,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from pydantic import BaseModel
 import pytest
+from typing_extensions import override
 import yaml
 
 from .. import testing_utils
@@ -1632,3 +1634,92 @@ class TestDebugLoggingPluginToolResultErrors:
     ]
     assert [e["error_message"] for e in tool_errors] == ["quota exceeded"]
     assert "tool_response" not in entry_types
+
+
+class TestDebugLoggingPluginRunErrors:
+  """Tests for writing the trace of an invocation that raises."""
+
+  async def test_failed_run_writes_redacted_error_and_clears_state(
+      self, debug_output_file: Path
+  ) -> None:
+    """A failed run writes a redacted invocation_error and frees state."""
+
+    def raising_tool() -> str:
+      raise ValueError(f"bad key {_SENTINEL_PRIVATE_KEY}")
+
+    debug_plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    runner = testing_utils.InMemoryRunner(
+        app=testing_utils.App(
+            name="test_app",
+            root_agent=LlmAgent(
+                name="agent",
+                model=testing_utils.MockModel.create(
+                    responses=[
+                        types.Part.from_function_call(
+                            name="raising_tool", args={}
+                        ),
+                    ]
+                ),
+                tools=[FunctionTool(raising_tool)],
+            ),
+            plugins=[debug_plugin],
+        )
+    )
+
+    with pytest.raises(ValueError, match="bad key"):
+      await runner.run_async("go")
+
+    assert not debug_plugin._invocation_states
+    raw = debug_output_file.read_text()
+    assert "sentinel-key-body" not in raw
+    [document] = yaml.safe_load_all(raw)
+    entry_types = [e["entry_type"] for e in document["entries"]]
+    assert entry_types[0] == "invocation_start"
+    assert entry_types[-2:] == ["session_state_snapshot", "invocation_error"]
+    assert document["entries"][-1]["data"] == {
+        "error_type": "ValueError",
+        "error_message": "bad key [REDACTED]",
+    }
+
+  async def test_error_after_trace_was_written_does_not_write_again(
+      self, debug_output_file: Path, caplog: pytest.LogCaptureFixture
+  ) -> None:
+    """An error after the trace was written does not write it again."""
+
+    class _AfterRunRaisingPlugin(BasePlugin):
+
+      def __init__(self) -> None:
+        super().__init__(name="after_run_raising")
+
+      @override
+      async def after_run_callback(
+          self, *, invocation_context: InvocationContext
+      ) -> None:
+        raise RuntimeError("after_run boom")
+
+    debug_plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    runner = testing_utils.InMemoryRunner(
+        app=testing_utils.App(
+            name="test_app",
+            root_agent=LlmAgent(
+                name="agent",
+                model=testing_utils.MockModel.create(responses=["done"]),
+            ),
+            plugins=[debug_plugin, _AfterRunRaisingPlugin()],
+        )
+    )
+
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="google_adk.google.adk.plugins.debug_logging_plugin",
+    ):
+      with pytest.raises(RuntimeError, match="after_run boom"):
+        await runner.run_async("go")
+
+    assert "skipping write" not in caplog.text
+    assert "not recording RuntimeError" in caplog.text
+    with open(debug_output_file, "r") as f:
+      documents = list(yaml.safe_load_all(f))
+    assert [d["entries"][-1]["entry_type"] for d in documents] == [
+        "invocation_end"
+    ]

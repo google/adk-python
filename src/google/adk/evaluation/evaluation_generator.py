@@ -23,7 +23,6 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
 
@@ -44,7 +43,7 @@ from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
-from ..flows.llm_flows.tools._functions import handle_function_calls_live
+from ..flows.llm_flows.tools._live_caller import handle_function_calls_live
 from ..live import _runner_utils as _live_runner_utils
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
@@ -131,16 +130,29 @@ def _send_audio_to_live(
   live_request_queue.send_activity_end()
 
 
+def _get_eval_session_app_name_and_user_id(
+    initial_session: SessionInput | None,
+) -> tuple[str, str]:
+  """Returns the app name and user id of the session an eval case runs in.
+
+  Both creating the session and looking it up for the eval result use this,
+  so the lookup finds the session the eval case ran in.
+
+  Args:
+    initial_session: The `session_input` of the eval case, if it has one.
+  """
+  if initial_session is None:
+    return "EvaluationGenerator", "test_user_id"
+  return initial_session.app_name, initial_session.user_id
+
+
 async def _get_or_create_eval_session(
     session_service: BaseSessionService,
-    initial_session: Optional[SessionInput],
-    fallback_session_id: Optional[str],
+    initial_session: SessionInput | None,
+    fallback_session_id: str | None,
 ) -> Session:
   """Returns the session an eval case runs in."""
-  app_name = (
-      initial_session.app_name if initial_session else "EvaluationGenerator"
-  )
-  user_id = initial_session.user_id if initial_session else "test_user_id"
+  app_name, user_id = _get_eval_session_app_name_and_user_id(initial_session)
   pinned_session_id = initial_session.session_id if initial_session else None
 
   if pinned_session_id:
@@ -171,7 +183,7 @@ _APP_KEY = "app"
 def _build_eval_runner_kwargs(
     root_agent: BaseAgent | BaseNode,
     app_name: str,
-    app: Optional[App],
+    app: App | None,
     internal_eval_plugins: list[BasePlugin],
 ) -> dict[str, Any]:
   """Returns the Runner kwargs used to evaluate `root_agent`.
@@ -230,7 +242,7 @@ class _LiveSession:
     self.turn_complete_event = asyncio.Event()
     self.live_finished = asyncio.Event()
     self.current_invocation_id = Event.new_id()
-    self.consume_task: Optional[asyncio.Task[None]] = None
+    self.consume_task: asyncio.Task[None] | None = None
 
   async def __aenter__(self) -> _LiveSession:
     """Starts the background task."""
@@ -549,8 +561,8 @@ class EvaluationGenerator:
       eval_set: EvalSet,
       agent_module_path: str,
       repeat_num: int = 3,
-      agent_name: Optional[str] = None,
-      user_simulator_config: Optional[BaseUserSimulatorConfig] = None,
+      agent_name: str | None = None,
+      user_simulator_config: BaseUserSimulatorConfig | None = None,
   ) -> list[EvalCaseResponses]:
     """Returns evaluation responses for the given dataset and agent.
 
@@ -622,8 +634,8 @@ class EvaluationGenerator:
   async def _process_query(
       module_name: str,
       user_simulator: UserSimulator,
-      agent_name: Optional[str] = None,
-      initial_session: Optional[SessionInput] = None,
+      agent_name: str | None = None,
+      initial_session: SessionInput | None = None,
   ) -> list[Invocation]:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
@@ -648,7 +660,7 @@ class EvaluationGenerator:
     root_agent = cast(BaseAgent, root_agent)
 
     reset_candidate = getattr(agent_package, "reset_data", None)
-    reset_func: Optional[Callable[[], object]] = None
+    reset_func: Callable[[], object] | None = None
     if reset_candidate is not None:
       if not callable(reset_candidate):
         raise TypeError("agent.reset_data must be callable when provided.")
@@ -754,14 +766,14 @@ class EvaluationGenerator:
   async def _generate_inferences_from_root_agent_live(
       root_agent: BaseAgent | BaseNode,
       user_simulator: UserSimulator,
-      reset_func: Optional[Callable[[], object]] = None,
-      initial_session: Optional[SessionInput] = None,
-      session_id: Optional[str] = None,
-      session_service: Optional[BaseSessionService] = None,
-      artifact_service: Optional[BaseArtifactService] = None,
-      memory_service: Optional[BaseMemoryService] = None,
+      reset_func: Callable[[], object] | None = None,
+      initial_session: SessionInput | None = None,
+      session_id: str | None = None,
+      session_service: BaseSessionService | None = None,
+      artifact_service: BaseArtifactService | None = None,
+      memory_service: BaseMemoryService | None = None,
       live_timeout_seconds: int = DEFAULT_LIVE_TIMEOUT_SECONDS,
-      app: Optional[App] = None,
+      app: App | None = None,
   ) -> list[Invocation]:
     """Scrapes the root agent in coordination with the user simulator in live mode.
 
@@ -876,13 +888,13 @@ class EvaluationGenerator:
   async def _generate_inferences_from_root_agent(
       root_agent: BaseAgent | BaseNode,
       user_simulator: UserSimulator,
-      reset_func: Optional[Callable[[], object]] = None,
-      initial_session: Optional[SessionInput] = None,
-      session_id: Optional[str] = None,
-      session_service: Optional[BaseSessionService] = None,
-      artifact_service: Optional[BaseArtifactService] = None,
-      memory_service: Optional[BaseMemoryService] = None,
-      app: Optional[App] = None,
+      reset_func: Callable[[], object] | None = None,
+      initial_session: SessionInput | None = None,
+      session_id: str | None = None,
+      session_service: BaseSessionService | None = None,
+      artifact_service: BaseArtifactService | None = None,
+      memory_service: BaseMemoryService | None = None,
+      app: App | None = None,
   ) -> list[Invocation]:
     """Scrapes the root agent in coordination with the user simulator.
 
@@ -1000,11 +1012,11 @@ class EvaluationGenerator:
   @staticmethod
   def convert_events_to_eval_invocations(
       events: list[Event],
-      app_details_per_invocation: Optional[dict[str, AppDetails]] = None,
-      durations_per_invocation: Optional[dict[str, float]] = None,
+      app_details_per_invocation: dict[str, AppDetails] | None = None,
+      durations_per_invocation: dict[str, float] | None = None,
       *,
-      model_durations_per_invocation: Optional[dict[str, float]] = None,
-      tool_durations_per_invocation: Optional[dict[str, float]] = None,
+      model_durations_per_invocation: dict[str, float] | None = None,
+      tool_durations_per_invocation: dict[str, float] | None = None,
   ) -> list[Invocation]:
     """Converts a list of events to eval invocations.
 
@@ -1029,8 +1041,8 @@ class EvaluationGenerator:
 
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
-      final_response: Optional[Content] = None
-      final_event: Optional[Event] = None
+      final_response: Content | None = None
+      final_event: Event | None = None
       user_content = Content(parts=[])
       invocation_timestamp: float = 0
       app_details = None
@@ -1180,7 +1192,7 @@ class EvaluationGenerator:
   @staticmethod
   def _count_streamed_inference_calls(
       events: list[Event], merged_event_sources: list[Event]
-  ) -> Optional[int]:
+  ) -> int | None:
     """Counts requests before stream completion markers are projected out."""
     stream_keys = {
         (event.author, event.live_session_id)
@@ -1197,7 +1209,7 @@ class EvaluationGenerator:
     # Keep the raw sequence for boundaries, including markers absent from evals.
     model_event_ids = {id(event) for event in merged_event_sources}
     count = 0
-    active_sessions: set[tuple[str, Optional[str]]] = set()
+    active_sessions: set[tuple[str, str | None]] = set()
     for event in events:
       if event.author.lower() == _USER_AUTHOR:
         # Live input transcriptions can interleave with the model response.
@@ -1351,7 +1363,7 @@ class EvaluationGenerator:
       if not isinstance(query, str):
         raise ValueError("Each evaluation entry must contain a string query.")
       actual_tool_uses: list[dict[str, object]] = []
-      response: Optional[str] = None
+      response: str | None = None
 
       # Search for the corresponding session events
       for event in session_data.events:

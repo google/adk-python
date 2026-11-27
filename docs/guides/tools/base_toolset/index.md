@@ -3,9 +3,10 @@
 A toolset gives an agent a group of related tools that ADK asks for each time
 the agent runs, so the group can depend on a remote server, on the current user,
 or on a connection that the tools share. You subclass the `BaseToolset` class to
-write your own toolset, and the class also defines `tool_filter` and
-`tool_name_prefix`, the arguments that choose which of a toolset's tools an
-agent receives and what those tools are called.
+write your own toolset, and the class also defines `tool_filter`,
+`tool_name_prefix`, and `disable_invocation_cache`, the arguments that choose
+which of a toolset's tools an agent receives, what those tools are called, and
+whether the tools available to the agent can change within an invocation.
 
 ## Introduction
 
@@ -102,11 +103,12 @@ Before each request to the model, ADK goes through the agent's `tools` list in
 order and asks each toolset for its tools. Within one invocation, which covers a
 user message and everything the agent does in response to it, ADK reuses the
 list from the first time it asked. An agent that calls the model several times
-while answering one message therefore lists your tools once, and there is
-currently no public option to have ADK list them again within the same
-invocation. The next user message starts a new invocation, and ADK asks again.
-If building the list is expensive, such as a call over the network, keep the
-result in your own cache when once per message is still too often.
+while answering one message therefore lists your tools once. To have ADK list
+them again before each request, pass `disable_invocation_cache=True` to the
+`BaseToolset` constructor. The next user message starts a new invocation, and
+ADK asks again. If building the list is expensive, such as a call over the
+network, keep the result in your own cache when once per message is still too
+often.
 
 ### When listing fails
 
@@ -143,8 +145,9 @@ tools on the next run.
 
 ## Configuration options
 
-The `BaseToolset` constructor takes the keyword-only arguments `tool_filter` and
-`tool_name_prefix`, and toolsets that support them pass them on to it unchanged.
+The `BaseToolset` constructor takes the keyword-only arguments `tool_filter`,
+`tool_name_prefix`, and `disable_invocation_cache`. Toolsets that support
+`tool_filter` and `tool_name_prefix` pass them on to it unchanged.
 
 ### Choosing tools with `tool_filter`
 
@@ -223,6 +226,17 @@ When the only name you have is the one the model used, for example from a trace,
 remove the prefix and its underscore before you put the name in the filter. A
 `ToolPredicate` works the same way, because the `tool.name` it receives is the
 name without the prefix.
+
+### Listing tools again with `disable_invocation_cache`
+
+The `disable_invocation_cache` argument controls whether ADK reuses a toolset's
+tools for the rest of an invocation. When it is `False`, the default, ADK lists
+the tools once per invocation, as described in
+[When ADK asks for the tools](#when-adk-asks-for-the-tools). When it is `True`,
+ADK lists the tools before each request to the model, which suits a toolset
+whose tools can change within an invocation. `SkillToolset` uses `True`, because
+loading a skill changes its tools. The value is set at construction and cannot
+be changed afterward.
 
 ## Advanced applications
 

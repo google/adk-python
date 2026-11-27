@@ -35,6 +35,8 @@ from ...environment._base_environment import ExecutionResult
 if TYPE_CHECKING:
   from e2b import AsyncSandbox
 
+  from ...agents.context import Context
+
 
 class _ClosableBytesStream(Protocol):
 
@@ -100,12 +102,11 @@ class E2BEnvironment(BaseEnvironment):
   @property
   @override
   def working_dir(self) -> Path:
-    if self._sandbox is None:
-      raise RuntimeError("Sandbox is not started. Call initialize() first.")
+    # A fixed path in every sandbox, known before `initialize` starts one.
     return Path(_SANDBOX_HOME)
 
   @override
-  async def initialize(self) -> None:
+  async def initialize(self, *, ctx: Context | None = None) -> None:
     if self._sandbox is not None:
       return
     self._sandbox = await self._create_sandbox()
@@ -124,6 +125,7 @@ class E2BEnvironment(BaseEnvironment):
       command: str,
       *,
       timeout: float | None = None,
+      ctx: Context | None = None,
   ) -> ExecutionResult:
     from e2b import CommandExitException
     from e2b import TimeoutException
@@ -148,7 +150,12 @@ class E2BEnvironment(BaseEnvironment):
     )
 
   @override
-  async def read_file(self, path: str | os.PathLike[str]) -> bytes:
+  async def read_file(
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
+  ) -> bytes:
     from e2b import FileNotFoundException
 
     sandbox = await self._ensure_sandbox()
@@ -161,7 +168,10 @@ class E2BEnvironment(BaseEnvironment):
 
   @override
   async def read_file_stream(
-      self, path: str | os.PathLike[str]
+      self,
+      path: str | os.PathLike[str],
+      *,
+      ctx: Context | None = None,
   ) -> AsyncGenerator[bytes, None]:
     from e2b import FileNotFoundException
 
@@ -181,7 +191,11 @@ class E2BEnvironment(BaseEnvironment):
 
   @override
   async def write_file(
-      self, path: str | os.PathLike[str], content: str | bytes
+      self,
+      path: str | os.PathLike[str],
+      content: str | bytes,
+      *,
+      ctx: Context | None = None,
   ) -> None:
     sandbox = await self._ensure_sandbox()
     resolved = self._resolve_path(path)

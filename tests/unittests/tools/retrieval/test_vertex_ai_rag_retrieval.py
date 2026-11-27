@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import dataclasses
 from types import SimpleNamespace
 from typing import Optional
@@ -225,33 +226,60 @@ async def test_run_async_passes_similarity_top_k_on_the_query(mocker):
 
 
 @pytest.mark.asyncio
-async def test_run_async_closes_the_client(mocker):
+async def test_run_async_reuses_one_client_per_event_loop(mocker):
   retrieval = VertexAiRagRetrieval(
       name="rag_retrieval",
       description="rag_retrieval",
       rag_corpora=[_CORPUS],
   )
-  _, client = _mock_client(mocker)
+  factory, client = _mock_client(mocker)
 
-  await retrieval.run_async(args={"query": "q"}, tool_context=mocker.Mock())
+  for _ in range(3):
+    await retrieval.run_async(args={"query": "q"}, tool_context=mocker.Mock())
 
-  client.aio.aclose.assert_awaited_once()
+  factory.assert_called_once_with(project="p", location="l")
+  assert client.aio.rag.retrieve_contexts.await_count == 3
+  client.aio.aclose.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_run_async_closes_the_client_when_retrieval_fails(mocker):
+async def test_run_async_builds_a_client_per_project_and_location(
+    mocker, monkeypatch
+):
+  retrieval = VertexAiRagRetrieval(
+      name="rag_retrieval",
+      description="rag_retrieval",
+      rag_corpora=["c"],
+  )
+  factory, _ = _mock_client(mocker)
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "l")
+
+  for project in ("p1", "p2", "p1"):
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", project)
+    await retrieval.run_async(args={"query": "q"}, tool_context=mocker.Mock())
+
+  assert factory.call_args_list == [
+      mocker.call(project="p1", location="l"),
+      mocker.call(project="p2", location="l"),
+  ]
+
+
+def test_run_async_builds_a_client_per_event_loop(mocker):
   retrieval = VertexAiRagRetrieval(
       name="rag_retrieval",
       description="rag_retrieval",
       rag_corpora=[_CORPUS],
   )
-  _, client = _mock_client(mocker)
-  client.aio.rag.retrieve_contexts.side_effect = RuntimeError("boom")
+  factory, _ = _mock_client(mocker)
 
-  with pytest.raises(RuntimeError, match="boom"):
-    await retrieval.run_async(args={"query": "q"}, tool_context=mocker.Mock())
+  async def retrieve_twice():
+    for _ in range(2):
+      await retrieval.run_async(args={"query": "q"}, tool_context=mocker.Mock())
 
-  client.aio.aclose.assert_awaited_once()
+  for _ in range(2):
+    asyncio.run(retrieve_twice())
+
+  assert factory.call_count == 2
 
 
 @pytest.mark.asyncio
