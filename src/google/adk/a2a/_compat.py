@@ -1257,6 +1257,29 @@ def set_event_metadata(event: Any, metadata: dict[str, Any]) -> None:
     event.metadata = metadata
 
 
+def merge_event_metadata(event: Any, metadata: dict[str, Any]) -> None:
+  """Merge metadata into an A2A event's existing metadata.
+
+  Unlike ``set_event_metadata``, keys already present on the event are kept
+  unless the new metadata provides the same key: the converter may have put
+  event metadata (e.g. ``adk_actions`` for an action-only event) on a
+  message-less status update, and stamping the invocation metadata must not
+  wipe it.
+
+  0.3.x: ``event.metadata`` is a plain dict → merge into a new dict.
+  1.x:   ``event.metadata`` is a proto ``Struct`` field → merge the dicts,
+         then ``CopyFrom`` the result.
+  """
+  if not metadata:
+    return
+  merged = meta_to_dict(event.metadata)
+  merged.update(metadata)
+  if IS_A2A_V1:
+    event.metadata.CopyFrom(ParseDict(merged, Struct()))  # type: ignore[possibly-undefined]
+  else:
+    event.metadata = merged
+
+
 def metadata_get(metadata: Any, key: str, default: Any = None) -> Any:
   """Reads a key from A2A metadata.
 
