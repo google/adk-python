@@ -371,6 +371,22 @@ assert not missing, missing
   assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize('module_name', _HAND_WRITTEN_LAZY_PACKAGES)
+def test_hand_written_lazy_packages_hide_exports_from_freezegun(module_name):
+  """freezegun getattr()s every dir() name, so dir() must not list lazy ones."""
+  result = run_isolated(f"""
+import importlib
+
+package = importlib.import_module({module_name!r})
+ns = {{'__name__': 'freezegun.api', 'package': package}}
+exec('names = dir(package)', ns)
+listed = sorted((set(package.__all__) - set(vars(package))) & set(ns['names']))
+assert not listed, listed
+""")
+
+  assert result.returncode == 0, result.stderr
+
+
 def test_lazy_packages_resolve_subpackages_as_attributes():
   """A subpackage stays reachable on its parent, as eager imports left it."""
   result = run_isolated("""

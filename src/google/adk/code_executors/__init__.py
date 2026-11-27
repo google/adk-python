@@ -95,4 +95,6 @@ def __getattr__(name: str) -> object:
 
 
 def __dir__() -> list[str]:
-  return sorted(set(globals()) | set(__all__))
+  from ..utils._lazy import exported_dir
+
+  return exported_dir(globals())
