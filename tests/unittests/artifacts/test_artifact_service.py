@@ -5168,3 +5168,76 @@ async def test_in_memory_plain_identifier_keys_are_unchanged():
       "app/u1/s1/notes.txt",
       "app/u1/user/user:prefs.json",
   }
+
+
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.FILE,
+        ArtifactServiceType.GCS,
+    ],
+)
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+async def test_custom_metadata_preserves_json_types(
+    service_type, filename, artifact_service_factory
+):
+  """Both version readers preserve JSON values across versions and scopes."""
+  service = artifact_service_factory(service_type)
+  scope = dict(
+      app_name="app", user_id="user", session_id="session", filename=filename
+  )
+  metadata = {
+      "integer": 3,
+      "float": 2.5,
+      "approved": False,
+      "null": None,
+      "list": [1, False, None],
+      "nested": {"page": 2},
+      "number_string": "3",
+      "bool_string": "false",
+      "object_string": '{"a": 1}',
+      "empty": "",
+      "unicode": "café",
+  }
+  for values in [metadata, {}]:
+    await service.save_artifact(
+        **scope, artifact=types.Part(text="hello"), custom_metadata=values
+    )
+  first = await service.get_artifact_version(**scope, version=0)
+  latest = await service.get_artifact_version(**scope)
+  listed = await service.list_artifact_versions(**scope)
+
+  assert first.custom_metadata == metadata
+  assert {key: type(value) for key, value in first.custom_metadata.items()} == {
+      key: type(value) for key, value in metadata.items()
+  }
+  assert latest.custom_metadata == {}
+  assert [version.custom_metadata for version in listed] == [metadata, {}]
+
+
+async def test_gcs_legacy_custom_metadata_stays_strings():
+  """Old string metadata must not be interpreted as JSON values."""
+  service = mock_gcs_artifact_service()
+  scope = dict(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="report.txt",
+  )
+  await service.save_artifact(**scope, artifact=types.Part(text="hello"))
+  blob = service.bucket.blob("app/user/session/report.txt/0")
+  metadata = {
+      "count": "3",
+      "approved": "false",
+      "null": "null",
+      "list": "[1]",
+      "object": '{"a": 1}',
+  }
+  blob.metadata = {**metadata, "adkIsText": "true", "file_uri": "gs://old/file"}
+
+  fetched = await service.get_artifact_version(**scope)
+  listed = await service.list_artifact_versions(**scope)
+
+  assert fetched.custom_metadata == metadata
+  assert listed[0].custom_metadata == metadata

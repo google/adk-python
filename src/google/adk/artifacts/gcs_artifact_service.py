@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 from typing import Any
 from typing import cast
@@ -47,6 +48,7 @@ _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
 _LEGACY_GCS_FILE_URI_METADATA_KEY = "file_uri"
+_GCS_CUSTOM_METADATA_KEY = "adkCustomMetadata"
 # Blob metadata keys reserved for this service's own bookkeeping. They are
 # dropped from custom_metadata on save and hidden from it on read.
 _INTERNAL_METADATA_KEYS = frozenset({
@@ -55,6 +57,7 @@ _INTERNAL_METADATA_KEYS = frozenset({
     _GCS_FILE_URI_METADATA_KEY,
     _GCS_FILE_MIME_TYPE_METADATA_KEY,
     _LEGACY_GCS_FILE_URI_METADATA_KEY,
+    _GCS_CUSTOM_METADATA_KEY,
 })
 _MAX_SAVE_VERSION_ATTEMPTS = 10
 
@@ -70,6 +73,15 @@ def _user_metadata(
       for key, value in blob_metadata.items()
       if key not in _INTERNAL_METADATA_KEYS
   }
+
+
+def _decode_user_metadata(
+    blob_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+  """Decodes new JSON metadata, leaving legacy string values unchanged."""
+  if blob_metadata and _GCS_CUSTOM_METADATA_KEY in blob_metadata:
+    return _user_metadata(json.loads(blob_metadata[_GCS_CUSTOM_METADATA_KEY]))
+  return _user_metadata(blob_metadata)
 
 
 def _get_file_uri(
@@ -296,7 +308,7 @@ class GcsArtifactService(BaseArtifactService):
 
     artifact = ensure_part(artifact)
     blob_metadata = {
-        k: str(v) for k, v in _user_metadata(custom_metadata).items()
+        _GCS_CUSTOM_METADATA_KEY: json.dumps(_user_metadata(custom_metadata))
     }
     if artifact.inline_data and artifact.inline_data.display_name:
       blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
@@ -592,7 +604,7 @@ class GcsArtifactService(BaseArtifactService):
         canonical_uri=canonical_uri,
         create_time=blob.time_created.timestamp(),
         mime_type=blob.content_type,
-        custom_metadata=_user_metadata(blob.metadata),
+        custom_metadata=_decode_user_metadata(blob.metadata),
     )
 
   def _list_artifact_versions_sync(
@@ -619,7 +631,7 @@ class GcsArtifactService(BaseArtifactService):
           canonical_uri=canonical_uri,
           create_time=blob.time_created.timestamp(),
           mime_type=blob.content_type,
-          custom_metadata=_user_metadata(blob.metadata),
+          custom_metadata=_decode_user_metadata(blob.metadata),
       )
       artifact_versions.append(av)
 
