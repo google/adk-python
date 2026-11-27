@@ -172,9 +172,9 @@ async def dummy_run_async(
     session_id,
     new_message,
     state_delta=None,
-    run_config: Optional[RunConfig] = None,
-    invocation_id: Optional[str] = None,
-    abort_signal: Optional[asyncio.Event] = None,
+    run_config: RunConfig | None = None,
+    invocation_id: str | None = None,
+    abort_signal: asyncio.Event | None = None,
     **kwargs,
 ):
   run_config = run_config or RunConfig()
@@ -285,7 +285,7 @@ def mock_artifact_service():
   artifacts: dict[str, list[dict[str, Any]]] = {}
 
   def _artifact_key(
-      app_name: str, user_id: str, session_id: Optional[str], filename: str
+      app_name: str, user_id: str, session_id: str | None, filename: str
   ) -> str:
     if session_id is None:
       return f"{app_name}:{user_id}:user:{filename}"
@@ -294,7 +294,7 @@ def mock_artifact_service():
   def _canonical_uri(
       app_name: str,
       user_id: str,
-      session_id: Optional[str],
+      session_id: str | None,
       filename: str,
       version: int,
   ) -> str:
@@ -312,7 +312,7 @@ def mock_artifact_service():
 
     def __init__(self):
       self._artifacts = artifacts
-      self.save_artifact_side_effect: Optional[BaseException] = None
+      self.save_artifact_side_effect: BaseException | None = None
 
     async def save_artifact(
         self,
@@ -321,8 +321,8 @@ def mock_artifact_service():
         user_id: str,
         filename: str,
         artifact: types.Part,
-        session_id: Optional[str] = None,
-        custom_metadata: Optional[dict[str, Any]] = None,
+        session_id: str | None = None,
+        custom_metadata: dict[str, Any] | None = None,
     ) -> int:
       if self.save_artifact_side_effect is not None:
         effect = self.save_artifact_side_effect
@@ -363,9 +363,9 @@ def mock_artifact_service():
         session_id: str,
         filename: str,
         artifact: types.Part,
-        custom_metadata: Optional[dict[str, Any]] = None,
-        canonical_uri: Optional[str] = None,
-        mime_type: Optional[str] = None,
+        custom_metadata: dict[str, Any] | None = None,
+        canonical_uri: str | None = None,
+        mime_type: str | None = None,
     ) -> int:
       """Synchronous helper for tests to add artifacts."""
       key = _artifact_key(app_name, user_id, session_id, filename)
@@ -449,9 +449,9 @@ def mock_artifact_service():
         app_name: str,
         user_id: str,
         filename: str,
-        session_id: Optional[str] = None,
-        version: Optional[int] = None,
-    ) -> Optional[ArtifactVersion]:
+        session_id: str | None = None,
+        version: int | None = None,
+    ) -> ArtifactVersion | None:
       key = _artifact_key(app_name, user_id, session_id, filename)
       entries = artifacts.get(key)
       if not entries:
@@ -2183,8 +2183,8 @@ class _OptionsRecordingSessionService(InMemorySessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
       **kwargs: Any,
   ) -> Session:
     self.recorded_kwargs = dict(kwargs)
@@ -2208,9 +2208,9 @@ class _ExplicitOptionsSessionService(InMemorySessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
-      custom_option: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
+      custom_option: str | None = None,
   ) -> Session:
     self.recorded_kwargs = {"custom_option": custom_option}
     return await super().create_session(
@@ -2229,8 +2229,8 @@ class _ValidatingOptionsSessionService(InMemorySessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
       **kwargs: Any,
   ) -> Session:
     if kwargs.get("ttl") is not None and kwargs.get("expire_time") is not None:
@@ -2584,7 +2584,7 @@ def test_rewind_session(test_app, create_test_session, monkeypatch):
       user_id: str,
       session_id: str,
       rewind_before_invocation_id: str,
-      run_config: Optional[RunConfig] = None,
+      run_config: RunConfig | None = None,
   ):
     del self, run_config
     captured["user_id"] = user_id
@@ -3331,10 +3331,10 @@ async def _run_async_with_internal_metadata(
     *,
     user_id: str,
     session_id: str,
-    invocation_id: Optional[str] = None,
-    new_message: Optional[types.Content] = None,
-    state_delta: Optional[dict[str, Any]] = None,
-    run_config: Optional[RunConfig] = None,
+    invocation_id: str | None = None,
+    new_message: types.Content | None = None,
+    state_delta: dict[str, Any] | None = None,
+    run_config: RunConfig | None = None,
 ):
   del user_id, session_id, invocation_id, new_message, state_delta, run_config
   yield Event(
@@ -3402,17 +3402,17 @@ def test_agent_run_passes_invocation_id(
 ):
   """Test /run forwards invocation_id for resumable invocations."""
   info = create_test_session
-  captured_invocation_id: dict[str, Optional[str]] = {"invocation_id": None}
+  captured_invocation_id: dict[str, str | None] = {"invocation_id": None}
 
   async def run_async_capture(
       self,
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del self, user_id, session_id, new_message, state_delta, run_config
     captured_invocation_id["invocation_id"] = invocation_id
@@ -3440,17 +3440,17 @@ def test_agent_run_passes_custom_metadata(
 ):
   """Test /run forwards custom_metadata via the run config."""
   info = create_test_session
-  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+  captured: dict[str, RunConfig | None] = {"run_config": None}
 
   async def run_async_capture(
       self,
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del self, user_id, session_id, invocation_id, new_message, state_delta
     captured["run_config"] = run_config
@@ -3486,17 +3486,17 @@ def test_agent_run_passes_max_llm_calls(
 ):
   """Test /run forwards the server's max_llm_calls via the run config."""
   info = create_test_session
-  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+  captured: dict[str, RunConfig | None] = {"run_config": None}
 
   async def run_async_capture(
       self,
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, object]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, object] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del self, user_id, session_id, invocation_id, new_message, state_delta
     captured["run_config"] = run_config
@@ -3540,17 +3540,17 @@ def test_agent_run_sse_passes_max_llm_calls(
 ):
   """Test /run_sse forwards the server's max_llm_calls via the run config."""
   info = create_test_session
-  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+  captured: dict[str, RunConfig | None] = {"run_config": None}
 
   async def run_async_capture(
       self,
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, object]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, object] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del self, user_id, session_id, invocation_id, new_message, state_delta
     captured["run_config"] = run_config
@@ -3634,10 +3634,10 @@ def test_agent_run_sse_splits_artifact_delta(
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
       **kwargs,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta, run_config
@@ -3728,10 +3728,10 @@ def test_agent_run_redacts_oauth2_client_secret(
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta, run_config
     yield Event(
@@ -3814,10 +3814,10 @@ def test_agent_run_debug_log_redacts_credential_secrets(
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta, run_config
     yield Event(
@@ -3905,10 +3905,10 @@ def test_agent_run_sse_redacts_oauth2_client_secret(
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta, run_config
     yield Event(
@@ -4838,10 +4838,10 @@ def test_agent_run_sse_does_not_split_artifact_delta_for_function_resume(
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
       **kwargs,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta, run_config
@@ -6986,10 +6986,10 @@ def test_agent_run_disconnect_aborts_run(
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del (
         self,
@@ -8164,10 +8164,10 @@ def test_agent_run_sse_deferred_without_streaming_is_allowed(
       *,
       user_id: str,
       session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
+      invocation_id: str | None = None,
+      new_message: types.Content | None = None,
+      state_delta: dict[str, Any] | None = None,
+      run_config: RunConfig | None = None,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta
     assert run_config.service_tier == "deferred"

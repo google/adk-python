@@ -27,10 +27,6 @@ import sys
 import types
 from typing import Any
 from typing import Callable
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
 from unittest import mock
 
 import click
@@ -49,18 +45,18 @@ class _Recorder:
   """A callable object that records every invocation."""
 
   def __init__(self) -> None:
-    self.calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+    self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
   def __call__(self, *args: Any, **kwargs: Any) -> None:
     self.calls.append((args, kwargs))
 
-  def get_last_call_args(self) -> Tuple[Any, ...]:
+  def get_last_call_args(self) -> tuple[Any, ...]:
     """Returns the positional arguments of the last call."""
     if not self.calls:
       raise IndexError("No calls have been recorded.")
     return self.calls[-1][0]
 
-  def get_last_call_kwargs(self) -> Dict[str, Any]:
+  def get_last_call_kwargs(self) -> dict[str, Any]:
     """Returns the keyword arguments of the last call."""
     if not self.calls:
       raise IndexError("No calls have been recorded.")
@@ -323,7 +319,7 @@ def test_to_agent_engine_happy_path(
           )
       )
 
-    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+    def update(self, *, name: str, config: dict[str, Any]) -> None:
       del name
       del config
 
@@ -1003,7 +999,7 @@ class TestValidateAppName:
             )
         )
 
-      def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      def update(self, *, name: str, config: dict[str, Any]) -> None:
         del name
         del config
 
@@ -1683,8 +1679,8 @@ def test_ensure_agent_engine_dependency_ignores_commented_out_pin(
 
 
 def _make_recording_agentplatform(
-    captured_configs: List[Dict[str, Any]],
-    created_instances: Optional[List[Any]] = None,
+    captured_configs: list[dict[str, Any]],
+    created_instances: list[Any] | None = None,
 ) -> types.ModuleType:
   """Returns a fake `agentplatform` module whose client records configs."""
   fake_agentplatform = types.ModuleType("agentplatform")
@@ -1700,7 +1696,7 @@ def _make_recording_agentplatform(
           )
       )
 
-    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+    def update(self, *, name: str, config: dict[str, Any]) -> None:
       del name
       captured_configs.append(config)
 
@@ -1730,7 +1726,7 @@ def test_to_agent_engine_rejects_client_without_runtimes(
   created, instead of an AttributeError from the create call.
   """
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  created: List[Any] = []
+  created: list[Any] = []
 
   class _FakeAgentEngines:
 
@@ -1775,7 +1771,7 @@ def test_to_agent_engine_with_extra_packages_adds_to_source_packages(
 ) -> None:
   """extra_packages basenames should be appended to source_packages."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -1809,7 +1805,7 @@ def test_to_agent_engine_installs_telemetry_extras(
 ) -> None:
   """The container must install the extras the telemetry flags need."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -1841,7 +1837,7 @@ def test_to_agent_engine_with_extra_packages_copies_into_temp_and_dockerfile(
 ) -> None:
   """extra_packages should be staged into the temp folder and copied in Docker."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -1879,7 +1875,7 @@ def test_to_agent_engine_extra_packages_missing_path_raises(
 ) -> None:
   """A nonexistent extra_packages path should raise a ClickException."""
   monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -1908,7 +1904,7 @@ def test_to_agent_engine_extra_packages_from_config_file(
 ) -> None:
   """The config-file `extra_packages` key should stage without being forwarded."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -1943,7 +1939,7 @@ def test_to_agent_engine_config_file_relative_entry_resolves_to_agent_folder(
 ) -> None:
   """Relative config-file entries resolve against the agent folder, not cwd."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2051,7 +2047,7 @@ def test_to_agent_engine_extra_packages_single_file_uses_file_form_copy(
 ) -> None:
   """A single-file extra package is staged and copied with the file-form COPY."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2089,7 +2085,7 @@ def test_to_agent_engine_extra_packages_conflicting_name_raises(
 ) -> None:
   """A package basename that collides with a reserved name raises."""
   monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2120,7 +2116,7 @@ def test_to_agent_engine_extra_packages_duplicate_basename_raises(
 ) -> None:
   """Two extra packages that share a basename raise a ClickException."""
   monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2152,7 +2148,7 @@ def test_to_agent_engine_extra_packages_dockerfile_keeps_inherited_pythonpath(
 ) -> None:
   """The emitted PYTHONPATH prepends `/app` instead of discarding the old value."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2189,7 +2185,7 @@ def test_to_agent_engine_extra_packages_agents_name_raises(
 ) -> None:
   """A package basename already staged in the build context raises."""
   monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2220,7 +2216,7 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
 ) -> None:
   """An extra package named requirements.txt leaves the agent's file intact."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2405,7 +2401,7 @@ def test_to_agent_engine_gates_gemini_enterprise_flag_by_version(
 ) -> None:
   """The api_server flag is only emitted for versions that accept it."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2439,7 +2435,7 @@ def test_to_agent_engine_env_vars_override_reports_names_only(
 ) -> None:
   """The env_vars override notice names the variables without their values."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2547,7 +2543,7 @@ def test_validate_worker_pool_rejects_malformed_names(bad_pool: str) -> None:
 
 def test_apply_worker_pool_nests_cli_value_into_build_config() -> None:
   """CLI worker_pool is nested under build_config for the Vertex SDK."""
-  agent_config: Dict[str, Any] = {}
+  agent_config: dict[str, Any] = {}
   cli_deploy._apply_worker_pool_to_agent_config(
       agent_config, _VALID_WORKER_POOL
   )
@@ -2557,7 +2553,7 @@ def test_apply_worker_pool_nests_cli_value_into_build_config() -> None:
 
 def test_apply_worker_pool_pops_top_level_config_key() -> None:
   """Top-level worker_pool in .agent_engine_config.json is nested and removed."""
-  agent_config: Dict[str, Any] = {"worker_pool": _VALID_WORKER_POOL}
+  agent_config: dict[str, Any] = {"worker_pool": _VALID_WORKER_POOL}
   cli_deploy._apply_worker_pool_to_agent_config(agent_config, None)
   assert agent_config["build_config"]["worker_pool"] == _VALID_WORKER_POOL
   assert "worker_pool" not in agent_config
@@ -2566,7 +2562,7 @@ def test_apply_worker_pool_pops_top_level_config_key() -> None:
 def test_apply_worker_pool_cli_overrides_config_file() -> None:
   """Explicit CLI worker_pool overrides values from the config file."""
   override = "projects/other/locations/europe-west1/workerPools/compliance-pool"
-  agent_config: Dict[str, Any] = {
+  agent_config: dict[str, Any] = {
       "build_config": {"worker_pool": _VALID_WORKER_POOL},
   }
   cli_deploy._apply_worker_pool_to_agent_config(agent_config, override)
@@ -2575,7 +2571,7 @@ def test_apply_worker_pool_cli_overrides_config_file() -> None:
 
 def test_apply_worker_pool_preserves_other_build_config_fields() -> None:
   """Existing build_config.service_account is kept when adding worker_pool."""
-  agent_config: Dict[str, Any] = {
+  agent_config: dict[str, Any] = {
       "build_config": {
           "service_account": "builder@example.iam.gserviceaccount.com",
       },
@@ -2595,7 +2591,7 @@ def test_to_agent_engine_forwards_worker_pool_in_update_config(
 ) -> None:
   """to_agent_engine puts worker_pool under build_config on runtimes.update."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2623,7 +2619,7 @@ def test_to_agent_engine_reads_worker_pool_from_config_file(
 ) -> None:
   """worker_pool from .agent_engine_config.json is forwarded on deploy."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2653,7 +2649,7 @@ def test_to_agent_engine_rejects_invalid_worker_pool(
 ) -> None:
   """An invalid --worker_pool value fails before calling Agent Engine APIs."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2764,7 +2760,7 @@ def test_to_agent_engine_sets_gcp_project_and_enterprise_env(
     agent_dir: Callable[[bool, bool], Path],
 ) -> None:
   """Tests that to_agent_engine configures GCP project and enterprise env vars."""
-  update_config: Dict[str, Any] = {}
+  update_config: dict[str, Any] = {}
   fake_agentplatform = types.ModuleType("agentplatform")
 
   class _FakeRuntimes:
@@ -2776,7 +2772,7 @@ def test_to_agent_engine_sets_gcp_project_and_enterprise_env(
           )
       )
 
-    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+    def update(self, *, name: str, config: dict[str, Any]) -> None:
       del name
       nonlocal update_config
       update_config = config
@@ -2895,7 +2891,7 @@ def test_to_agent_engine_rejects_multiline_env_file_value(
   monkeypatch.setattr(
       subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout="\n")
   )
-  created: List[Any] = []
+  created: list[Any] = []
   recording_agentplatform = _make_recording_agentplatform([], created)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -2994,7 +2990,7 @@ def test_validate_service_account_rejects_malformed_emails(
 
 def test_apply_service_account_sets_top_level_config_field() -> None:
   """CLI service_account is set as a top-level Agent Engine config field."""
-  agent_config: Dict[str, Any] = {}
+  agent_config: dict[str, Any] = {}
   cli_deploy._apply_service_account_to_agent_config(
       agent_config, _VALID_SERVICE_ACCOUNT
   )
@@ -3004,7 +3000,7 @@ def test_apply_service_account_sets_top_level_config_field() -> None:
 def test_apply_service_account_cli_overrides_config_file() -> None:
   """Explicit CLI service_account overrides the config-file value."""
   override = "other@my-gcp-project.iam.gserviceaccount.com"
-  agent_config: Dict[str, Any] = {
+  agent_config: dict[str, Any] = {
       "service_account": _VALID_SERVICE_ACCOUNT,
   }
   cli_deploy._apply_service_account_to_agent_config(agent_config, override)
@@ -3013,7 +3009,7 @@ def test_apply_service_account_cli_overrides_config_file() -> None:
 
 def test_apply_service_account_validates_config_file_value() -> None:
   """service_account from .agent_engine_config.json is validated in place."""
-  agent_config: Dict[str, Any] = {
+  agent_config: dict[str, Any] = {
       "service_account": _VALID_SERVICE_ACCOUNT,
   }
   cli_deploy._apply_service_account_to_agent_config(agent_config, None)
@@ -3026,7 +3022,7 @@ def test_to_agent_engine_forwards_service_account_in_update_config(
 ) -> None:
   """to_agent_engine puts service_account on runtimes.update config."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -3054,7 +3050,7 @@ def test_to_agent_engine_reads_service_account_from_config_file(
 ) -> None:
   """service_account from .agent_engine_config.json is forwarded on deploy."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -3083,7 +3079,7 @@ def test_to_agent_engine_reads_service_account_from_env_file(
 ) -> None:
   """GOOGLE_CLOUD_SERVICE_ACCOUNT in .env becomes runtime service_account."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -3116,7 +3112,7 @@ def test_to_agent_engine_rejects_invalid_service_account(
 ) -> None:
   """An invalid --service_account value fails before Agent Engine APIs."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -3236,7 +3232,7 @@ def test_to_agent_engine_renders_python_version_and_pops_config_key(
 ) -> None:
   """to_agent_engine supports python_version from .agent_engine_config.json."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -3274,7 +3270,7 @@ def test_to_agent_engine_cli_python_version_overrides_config_file(
   different one, so the override cannot depend on a default sentinel.
   """
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -3306,7 +3302,7 @@ def test_to_agent_engine_defaults_python_version_without_flag_or_config(
 ) -> None:
   """With neither the flag nor a config key, the image is built on 3.11."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -3355,7 +3351,7 @@ def test_to_agent_engine_reports_python_version_override(
 ) -> None:
   """Overriding the config file's python_version prints a notice naming the winner."""
   monkeypatch.setattr(shutil, "rmtree", _Recorder())
-  captured: List[Dict[str, Any]] = []
+  captured: list[dict[str, Any]] = []
   recording_agentplatform = _make_recording_agentplatform(captured)
   monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
   monkeypatch.setattr(
@@ -5122,3 +5118,417 @@ def test_cli_deploy_agent_engine_rejects_conflicting_import_validation_flags(
       in result.output
   )
   mock_to_agent_engine.assert_not_called()
+
+
+def _make_runtime_entry(
+    name: str,
+    update_time: str = "2026-11-09T00:00:00Z",
+) -> Any:
+  """Builds a fake runtime list item with `api_resource.name` and `update_time`."""
+  return types.SimpleNamespace(
+      api_resource=types.SimpleNamespace(name=name, update_time=update_time)
+  )
+
+
+def _install_fake_runtimes_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    existing: Optional[List[Any]] = None,
+    list_error: Optional[Exception] = None,
+    update_error: Optional[Exception] = None,
+) -> Dict[str, List[Any]]:
+  """Installs a fake `agentplatform.Client` that records list/create/update/delete calls."""
+  calls: Dict[str, List[Any]] = {
+      "list": [],
+      "create": [],
+      "update": [],
+      "delete": [],
+  }
+  fake_agentplatform = types.ModuleType("agentplatform")
+
+  class _FakeRuntimes:
+    """Fake runtimes client."""
+
+    def list(self, *, config: Optional[Dict[str, Any]] = None) -> List[Any]:
+      calls["list"].append(config)
+      if list_error is not None:
+        raise list_error
+      return list(existing or [])
+
+    def create(self, **kwargs: Any) -> Any:
+      calls["create"].append(kwargs)
+      return _make_runtime_entry(
+          "projects/p/locations/l/reasoningEngines/newly-created"
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      calls["update"].append((name, config))
+      if update_error is not None:
+        raise update_error
+
+    def delete(self, *, name: str) -> None:
+      calls["delete"].append(name)
+
+  class _FakeAgentPlatformClient:
+    """Fake Agent Platform client."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args, kwargs
+      self.runtimes = _FakeRuntimes()
+
+  fake_agentplatform.Client = _FakeAgentPlatformClient
+  monkeypatch.setitem(sys.modules, "agentplatform", fake_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      fake_agentplatform,
+  )
+  return calls
+
+
+# pylint: disable=redefined-outer-name
+def test_to_agent_engine_no_existing_match_creates_without_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """When no runtime shares the display name, create runs without a duplicate warning."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(monkeypatch, existing=[])
+  src_dir = agent_dir(False, False)
+
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name='My "Quoted" Agent',
+        adk_version="1.2.0",
+    )
+
+  assert calls["list"] == [{"filter": 'display_name="My \\"Quoted\\" Agent"'}]
+  assert len(calls["create"]) == 1
+  assert (
+      calls["update"][0][0]
+      == "projects/p/locations/l/reasoningEngines/newly-created"
+  )
+  warnings_printed = [
+      c.args[0]
+      for c in mocked_secho.call_args_list
+      if c.args and "WARNING:" in str(c.args[0])
+  ]
+  assert not warnings_printed
+
+
+def test_to_agent_engine_warns_when_duplicate_display_name_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Without --update_if_exists, an existing same-name runtime triggers a stderr warning and still creates."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  existing_name = (
+      "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  )
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(existing_name, "2026-11-08T12:00:00Z")],
+  )
+  src_dir = agent_dir(False, False)
+
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+    )
+
+  assert len(calls["create"]) == 1
+  assert (
+      calls["update"][0][0]
+      == "projects/p/locations/l/reasoningEngines/newly-created"
+  )
+  warning_calls = [
+      c
+      for c in mocked_secho.call_args_list
+      if c.args and "WARNING:" in str(c.args[0])
+  ]
+  assert len(warning_calls) == 1
+  warning_text = warning_calls[0].args[0]
+  assert existing_name in warning_text
+  assert "2026-11-08T12:00:00Z" in warning_text
+  assert "re-run with --agent_engine_id=<ID>" in warning_text
+  assert "or --update_if_exists" not in warning_text
+  assert (
+      "--update_if_exists only works once extra duplicates are deleted down to"
+      " a single instance"
+      in warning_text
+  )
+  assert warning_calls[0].kwargs.get("err")
+
+
+def test_to_agent_engine_update_if_exists_updates_single_match_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True and exactly one match, update runs on that match without create."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  existing_name = (
+      "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  )
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(existing_name)],
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      adk_version="1.2.0",
+      update_if_exists=True,
+  )
+
+  assert not calls["create"]
+  assert len(calls["update"]) == 1
+  assert calls["update"][0][0] == existing_name
+
+
+def test_to_agent_engine_update_if_exists_creates_when_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True and zero matches, a new runtime is created."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(monkeypatch, existing=[])
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      adk_version="1.2.0",
+      update_if_exists=True,
+  )
+
+  assert len(calls["create"]) == 1
+  assert (
+      calls["update"][0][0]
+      == "projects/p/locations/l/reasoningEngines/newly-created"
+  )
+
+
+def test_to_agent_engine_update_if_exists_fails_on_ambiguous_matches(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True and multiple matches, ClickException lists candidates without creating."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  first = "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  second = "projects/my-gcp-project/locations/us-central1/reasoningEngines/222"
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(first), _make_runtime_entry(second)],
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  message = str(exc_info.value)
+  assert "2 Agent Runtimes" in message
+  assert first in message
+  assert second in message
+  assert "--agent_engine_id" in message
+  assert "replace --update_if_exists with --agent_engine_id" in message
+  assert not calls["create"]
+  assert not calls["update"]
+
+
+def test_to_agent_engine_update_if_exists_fails_in_express_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True in Express Mode, ClickException is raised before create."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(stdout="\n"),
+  )
+  calls = _install_fake_runtimes_client(monkeypatch)
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        api_key="fake-api-key",
+        project=None,
+        region=None,
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  message = str(exc_info.value)
+  assert "Express Mode" in message
+  assert "replace --update_if_exists with --agent_engine_id" in message
+  assert not calls["list"]
+  assert not calls["create"]
+  assert not calls["update"]
+  assert not (src_dir.parent / "tmp" / "Dockerfile").exists()
+
+
+def test_to_agent_engine_update_if_exists_fails_when_list_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With update_if_exists=True, runtimes.list failure raises instead of silently creating."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      list_error=RuntimeError("IAM permission denied"),
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  assert "IAM permission denied" in str(exc_info.value)
+  assert len(calls["list"]) == 1
+  assert not calls["create"]
+  assert not calls["update"]
+  assert not (src_dir.parent / "tmp" / "Dockerfile").exists()
+
+
+def test_find_runtimes_by_display_name_empty_display_name() -> None:
+  """Empty display_name returns [] by default and raises when strict."""
+  client = mock.Mock()
+  # pylint: disable=protected-access
+  assert not cli_deploy._find_runtimes_by_display_name(client, "")
+  with pytest.raises(click.ClickException, match="non-empty display name"):
+    cli_deploy._find_runtimes_by_display_name(client, "", raise_on_error=True)
+  # pylint: enable=protected-access
+  client.runtimes.list.assert_not_called()
+
+
+def test_to_agent_engine_update_if_exists_does_not_delete_preexisting_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """When updating a pre-existing runtime resolved via update_if_exists fails, it is not deleted."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  existing_name = (
+      "projects/my-gcp-project/locations/us-central1/reasoningEngines/111"
+  )
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      existing=[_make_runtime_entry(existing_name)],
+      update_error=RuntimeError("build failed"),
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(RuntimeError, match="build failed"):
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        adk_version="1.2.0",
+        update_if_exists=True,
+    )
+
+  assert not calls["create"]
+  assert not calls["delete"]
+
+
+def test_to_agent_engine_proceeds_when_duplicate_check_list_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """A failure in runtimes.list does not block deployment."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  calls = _install_fake_runtimes_client(
+      monkeypatch,
+      list_error=RuntimeError("IAM permission denied"),
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      adk_version="1.2.0",
+  )
+
+  assert len(calls["list"]) == 1
+  assert len(calls["create"]) == 1
+  assert len(calls["update"]) == 1
+
+
+# pylint: enable=redefined-outer-name
+
+
+def test_cli_deploy_agent_engine_update_if_exists_and_conflict(
+    tmp_path: Path,
+) -> None:
+  """--update_if_exists forwards to to_agent_engine and conflicts with --agent_engine_id."""
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    ok_result = runner.invoke(
+        cli_tools_click.main,
+        ["deploy", "agent_engine", "--update_if_exists", str(agent_path)],
+        catch_exceptions=False,
+    )
+    assert ok_result.exit_code == 0
+    assert mock_to_agent_engine.call_args.kwargs["update_if_exists"]
+
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    bad_result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--agent_engine_id=123",
+            "--update_if_exists",
+            str(agent_path),
+        ],
+    )
+    assert bad_result.exit_code != 0
+    assert (
+        "Do not pass both --agent_engine_id and --update_if_exists."
+        in bad_result.output
+    )
+    mock_to_agent_engine.assert_not_called()

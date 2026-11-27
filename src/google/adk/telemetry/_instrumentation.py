@@ -1167,6 +1167,12 @@ async def record_inference_telemetry(
             responses=tel_ctx.llm_responses,
             error=error,
         )
+        _metrics.record_client_inference_duration(
+            elapsed_s=elapsed_s,
+            llm_request=llm_request,
+            responses=tel_ctx.llm_responses,
+            error=error,
+        )
         _metrics.record_client_token_usage(
             agent_name=agent.name,
             llm_request=llm_request,

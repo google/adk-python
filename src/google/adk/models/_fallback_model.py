@@ -61,6 +61,7 @@ _SNAPSHOT_PRIVATE = (
     '_is_managed_agent',
     '_has_static_instruction',
     '_static_instruction_prefix_end_index',
+    '_transient_user_contents',
 )
 """The private attributes of ``LlmRequest`` a rollback restores.
 
@@ -101,10 +102,9 @@ class _RequestSnapshot(NamedTuple):
     refuses. Tools are a registry the models read, never something they edit,
     so they are left out along with everything else outside these four.
     """
+    memo: dict[int, Any] = {}
     return cls(
-        contents=[
-            content.model_copy(deep=True) for content in llm_request.contents
-        ],
+        contents=copy.deepcopy(llm_request.contents, memo),
         config=llm_request.config.model_copy(deep=True),
         live_connect_config=(
             llm_request.live_connect_config.model_copy(deep=True)
@@ -112,7 +112,8 @@ class _RequestSnapshot(NamedTuple):
             else types.LiveConnectConfig()
         ),
         private=copy.deepcopy(
-            {name: getattr(llm_request, name) for name in _SNAPSHOT_PRIVATE}
+            {name: getattr(llm_request, name) for name in _SNAPSHOT_PRIVATE},
+            memo,
         ),
     )
 
@@ -591,3 +592,48 @@ class FallbackModel(BaseLlm):
           ' keep such a pair out of a live agent that resumes sessions.'
       )
     return owner
+
+  @override
+  def _supports_dynamic_instruction_routing(self) -> bool:
+    unresolved: list[str] = []
+    for entry in self.models:
+      if isinstance(entry, BaseLlm):
+        if not entry._supports_dynamic_instruction_routing():  # pylint: disable=protected-access
+          return False
+      elif (built := self._resolved.get(entry)) is not None:
+        if not built._supports_dynamic_instruction_routing():  # pylint: disable=protected-access
+          return False
+      else:
+        unresolved.append(entry)
+    return all(
+        _model_name_supports_dynamic_instruction_routing(entry)
+        for entry in unresolved
+    )
+
+
+def _model_name_supports_dynamic_instruction_routing(model: str) -> bool:
+  try:
+    prefix, actual_model = LLMRegistry._parse_model(model)  # pylint: disable=protected-access
+    cls = LLMRegistry.resolve(model)
+  except (ImportError, ValueError):
+    return False
+  resolved_model = (
+      actual_model
+      if prefix and LLMRegistry._match_prefix(prefix, cls.__name__)  # pylint: disable=protected-access
+      else model
+  )
+  supported = cls._supports_dynamic_instruction_routing_for_model(  # pylint: disable=protected-access
+      resolved_model
+  )
+  if supported is not None:
+    return supported
+  try:
+    return cls(model=resolved_model)._supports_dynamic_instruction_routing()  # pylint: disable=protected-access
+  except Exception:  # pylint: disable=broad-except
+    logger.debug(
+        'Assuming model %r does not support dynamic instruction routing after'
+        ' instantiation failed.',
+        resolved_model,
+        exc_info=True,
+    )
+    return False

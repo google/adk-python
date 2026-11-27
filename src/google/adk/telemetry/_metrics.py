@@ -111,8 +111,8 @@ _workflow_invocation_duration = meter.create_histogram(
     description="Duration of workflow invocations.",
     explicit_bucket_boundaries_advisory=_WORKFLOW_DURATION_BUCKET_BOUNDS,
 )
-# The semconv bounds for gen_ai.client.operation.duration, also used for tool
-# executions.
+# The semconv bounds for gen_ai.client.operation.duration and
+# gen_ai.client.inference.duration, also used for tool executions.
 _OPERATION_DURATION_BUCKET_BOUNDS = [
     0.01,
     0.02,
@@ -278,6 +278,12 @@ _client_inference_time_per_output_chunk = meter.create_histogram(
         " chunk to the end of the current chunk."
     ),
     explicit_bucket_boundaries_advisory=_INFERENCE_CHUNK_BUCKET_BOUNDS,
+)
+_client_inference_duration = meter.create_histogram(
+    "gen_ai.client.inference.duration",
+    unit="s",
+    description="GenAI client inference operation duration.",
+    explicit_bucket_boundaries_advisory=_OPERATION_DURATION_BUCKET_BOUNDS,
 )
 
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
@@ -735,6 +741,29 @@ def record_client_operation_duration(
   _client_operation_duration.record(elapsed_s, attributes=attrs)
 
 
+def record_client_inference_duration(
+    elapsed_s: float,
+    llm_request: LlmRequest,
+    responses: list[LlmResponse],
+    error: Exception | None = None,
+) -> None:
+  """Records `gen_ai.client.inference.duration`.
+
+  Args:
+    elapsed_s: How long the model call took.
+    llm_request: The request sent to the model.
+    responses: The response chunks received, if any.
+    error: The exception the call failed with, if any.
+  """
+  last_response = None
+  if responses:
+    last_response = responses[-1]
+  attrs = _inference_attributes(llm_request, last_response)
+  if error is not None:
+    attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
+  _client_inference_duration.record(elapsed_s, attributes=attrs)
+
+
 def record_client_inference_chunk(
     llm_request: LlmRequest,
     response: LlmResponse,
@@ -927,7 +956,7 @@ def _split_by_modality(
 def _inference_attributes(
     llm_request: LlmRequest, last_response: LlmResponse | None
 ) -> dict[str, AttributeValue]:
-  """The semconv attributes every inference token metric carries."""
+  """The semconv attributes every inference metric carries, in every schema."""
   attrs: dict[str, AttributeValue] = {
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
       gen_ai_attributes.GEN_AI_PROVIDER_NAME: (

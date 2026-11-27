@@ -91,6 +91,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Labs
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
 * [ClassifierNode](labs/classifiers/classifier_node/index.md) - Routing a workflow on a classifier's answer to one `Choice` or `Binary` question.
+* [GeminiDecisionsClassifier](labs/classifiers/gemini_decisions_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with the Gemini Decisions API, in one request and with no output tokens.
 * [LlmClassifier](labs/classifiers/llm_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with any model, in one structured-output call.
 
 ### Live

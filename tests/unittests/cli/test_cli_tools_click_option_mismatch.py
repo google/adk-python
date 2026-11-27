@@ -16,7 +16,6 @@
 
 import inspect
 from typing import MutableMapping
-from typing import Optional
 
 import click
 from google.adk.cli.cli_tools_click import cli_api_server
@@ -34,7 +33,7 @@ from google.adk.cli.cli_tools_click import main
 
 def _get_command_by_name(
     commands: MutableMapping[str, click.Command], name
-) -> Optional[click.Command]:
+) -> click.Command | None:
   """Return the command object with the given name from a commands dict."""
   return next((cmd for cmd in commands.values() if cmd.name == name), None)
 
@@ -58,7 +57,7 @@ def _check_options_in_parameters(
     command,
     func,
     command_name,
-    ignore_params: Optional[set[str]] = None,
+    ignore_params: set[str] | None = None,
 ):
   """Check if all Click options are present in method parameters."""
   click_options = _get_click_options(command)

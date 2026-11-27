@@ -34,8 +34,10 @@ from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
 from google.adk.skills import load_skill_from_dir_async as _load_skill_from_dir_async
 from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
 from google.adk.skills import load_skill_from_gcs_dir_async as _load_skill_from_gcs_dir_async
+from google.adk.skills import load_skill_from_markdown
 from google.adk.skills import load_skills_from_dir as _load_skills_from_dir
 from google.adk.skills import load_skills_from_dir_async as _load_skills_from_dir_async
+from google.adk.skills import Resources
 from google.adk.skills._utils import _load_skill_from_zip_bytes
 from google.adk.skills._utils import _MAX_ZIP_ENTRIES
 from google.adk.skills._utils import _MAX_ZIP_UNCOMPRESSED_BYTES
@@ -304,6 +306,54 @@ Body
 
   with pytest.raises(ValueError, match="does not match directory"):
     _load_skill_from_dir(skill_dir)
+
+
+def test_load_skill_from_markdown():
+  """SKILL.md text becomes a skill carrying the given resources."""
+  resources = Resources(references={"policy.md": "Open 9 to 5."})
+
+  skill = load_skill_from_markdown(
+      "---\nname: support-hours\ndescription: Check support hours\n---\n"
+      "Read references/policy.md.\n",
+      resources=resources,
+  )
+
+  assert skill.name == "support-hours"
+  assert skill.description == "Check support hours"
+  assert skill.instructions == "Read references/policy.md."
+  assert skill.resources == resources
+
+
+def test_load_skill_from_markdown_without_resources_has_none():
+  """A skill built from text alone has no references, assets or scripts."""
+  skill = load_skill_from_markdown(
+      "---\nname: support-hours\ndescription: Check support hours\n---\nBody"
+  )
+
+  assert skill.resources == Resources()
+
+
+@pytest.mark.parametrize(
+    "markdown, match",
+    [
+        ("name: my-skill\ndescription: A skill\nBody", "must start with YAML"),
+        ("---\nname: my-skill\ndescription: A skill\nBody", "not properly"),
+        ("---\nname: [my-skill\n---\nBody", "Invalid YAML"),
+        ("---\n- my-skill\n---\nBody", "must be a YAML mapping"),
+        ("---\nname: My Skill\ndescription: A skill\n---\nBody", "name must"),
+    ],
+    ids=[
+        "no_frontmatter",
+        "unclosed",
+        "invalid_yaml",
+        "not_a_mapping",
+        "invalid_name",
+    ],
+)
+def test_load_skill_from_markdown_rejects_invalid_skill_md(markdown, match):
+  """Malformed frontmatter, or frontmatter that fails validation, raises."""
+  with pytest.raises(ValueError, match=match):
+    load_skill_from_markdown(markdown)
 
 
 def test_validate_skill_dir_valid(tmp_path):
