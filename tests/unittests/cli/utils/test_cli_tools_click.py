@@ -25,10 +25,6 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
 from unittest import mock
 
 import click
@@ -94,7 +90,7 @@ def mock_get_root_agent():
 class _Recorder(BaseModel):
   """Callable that records every invocation."""
 
-  calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+  calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
   def __call__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
     self.calls.append((args, kwargs))
@@ -562,9 +558,9 @@ def test_cli_run_service_uris(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cli_args: list,
-    expected_session_uri: Optional[str],
-    expected_artifact_uri: Optional[str],
-    expected_memory_uri: Optional[str],
+    expected_session_uri: str | None,
+    expected_artifact_uri: str | None,
+    expected_memory_uri: str | None,
 ) -> None:
   """`adk run` should forward service URIs correctly to run_cli."""
   agent_dir = tmp_path / "agent"
@@ -2152,8 +2148,8 @@ def test_cli_arms_rebinding_guard_with_the_address_it_binds(
   agents_dir = tmp_path / "agents"
   agents_dir.mkdir()
 
-  app_kwargs: Dict[str, Any] = {}
-  uvicorn_kwargs: Dict[str, Any] = {}
+  app_kwargs: dict[str, Any] = {}
+  uvicorn_kwargs: dict[str, Any] = {}
 
   def _record_get_fast_api_app(**kwargs: Any) -> object:
     app_kwargs.update(kwargs)
@@ -2445,7 +2441,7 @@ def _make_agent_with_eval_set(
 
 
 def _run_result(
-    *, eval_set_id: str, score: float, repetition_index: Optional[int]
+    *, eval_set_id: str, score: float, repetition_index: int | None
 ) -> EvalCaseResult:
   """Returns the result of one run of case1, scored on a single invocation."""
   metric_result = EvalMetricResult(
@@ -4010,7 +4006,7 @@ def test_helpful_command_format_missing_arg_error_requires_param() -> None:
 # adk_services_options
 def _services_command(*, default_use_local_storage: bool = True):
   """Builds a throwaway command wired up with adk_services_options."""
-  captured: Dict[str, Any] = {}
+  captured: dict[str, Any] = {}
 
   @click.command()
   @cli_tools_click.adk_services_options(
@@ -4095,7 +4091,7 @@ def test_adk_services_options_honours_default_use_local_storage_false() -> None:
 # fast_api_common_options
 def _fast_api_command():
   """Builds a throwaway command wired up with fast_api_common_options."""
-  captured: Dict[str, Any] = {}
+  captured: dict[str, Any] = {}
 
   @click.command()
   @cli_tools_click.fast_api_common_options()
@@ -4277,7 +4273,7 @@ def test_fast_api_common_options_parses_max_llm_calls() -> None:
 @pytest.fixture
 def fake_pytest_run(monkeypatch: pytest.MonkeyPatch):
   """Captures the argv that `adk test` hands to its pytest subprocess."""
-  runs: List[List[str]] = []
+  runs: list[list[str]] = []
   returncode = {"value": 0}
 
   def _fake_run(cmd, *args: Any, **kwargs: Any):
@@ -4336,7 +4332,7 @@ def test_cli_test_rebuild_skips_the_pytest_subprocess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pytest_run
 ) -> None:
   """--rebuild regenerates the fixtures and stops; it does not run tests."""
-  rebuilt: List[str] = []
+  rebuilt: list[str] = []
   monkeypatch.setattr(
       "google.adk.cli.agent_test_runner.rebuild_tests", rebuilt.append
   )
@@ -4372,7 +4368,7 @@ def test_cli_test_rejects_args_between_folder_and_double_dash(
 @pytest.fixture
 def fake_conformance_record(monkeypatch: pytest.MonkeyPatch):
   """Captures the (paths, streaming_mode) the record command dispatches."""
-  calls: List[Tuple[Any, Any]] = []
+  calls: list[tuple[Any, Any]] = []
 
   async def _fake_record(paths, streaming_mode):
     calls.append((paths, streaming_mode))
@@ -4387,7 +4383,7 @@ def fake_conformance_record(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def fake_conformance_test(monkeypatch: pytest.MonkeyPatch):
   """Captures the kwargs the conformance test command dispatches."""
-  calls: List[Dict[str, Any]] = []
+  calls: list[dict[str, Any]] = []
 
   async def _fake_test(**kwargs: Any):
     calls.append(kwargs)
@@ -4800,7 +4796,7 @@ def test_cli_migrate_session_defaults_to_safe_unpickling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   """Unsafe pickle loading must be opt-in, never the default."""
-  seen: List[bool] = []
+  seen: list[bool] = []
 
   def fake_upgrade(
       source_db_url: str,

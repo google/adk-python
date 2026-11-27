@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
 import unicodedata
 
 from typing_extensions import override
@@ -47,8 +46,8 @@ class RougeEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")

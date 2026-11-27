@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -36,7 +34,7 @@ class EvalCaseResult(BaseModel):
       populate_by_name=True,
   )
 
-  eval_set_file: Optional[str] = Field(
+  eval_set_file: str | None = Field(
       deprecated=True,
       default=None,
       description="This field is deprecated, use eval_set_id instead.",
@@ -50,15 +48,12 @@ class EvalCaseResult(BaseModel):
   final_eval_status: EvalStatus
   """Final eval status for this eval case."""
 
-  eval_metric_results: Optional[list[tuple[EvalMetric, EvalMetricResult]]] = (
-      Field(
-          deprecated=True,
-          default=None,
-          description=(
-              "This field is deprecated, use overall_eval_metric_results"
-              " instead."
-          ),
-      )
+  eval_metric_results: list[tuple[EvalMetric, EvalMetricResult]] | None = Field(
+      deprecated=True,
+      default=None,
+      description=(
+          "This field is deprecated, use overall_eval_metric_results instead."
+      ),
   )
 
   overall_eval_metric_results: list[EvalMetricResult]
@@ -70,13 +65,13 @@ class EvalCaseResult(BaseModel):
   session_id: str
   """Session id of the session generated as result of inferencing/scraping stage of the eval."""
 
-  session_details: Optional[Session] = None
+  session_details: Session | None = None
   """Session generated as result of inferencing/scraping stage of the eval."""
 
-  user_id: Optional[str] = None
+  user_id: str | None = None
   """User id used during inferencing/scraping stage of the eval."""
 
-  repetition_index: Optional[int] = None
+  repetition_index: int | None = None
   """0-based index of the run this result is for, among the runs of the same
   eval case (see `InferenceConfig.num_runs`). None if it was not recorded.
   """
@@ -97,10 +92,10 @@ class MethodResult(BaseModel):
   name: str
   """The name of the aggregation method, e.g. "mean_over_invocations"."""
 
-  value: Optional[float]
+  value: float | None
   """The method's value over the runs, or None if the runs gave it none."""
 
-  threshold: Optional[float]
+  threshold: float | None
   """The value needed to pass. None for a metric that never passes or fails."""
 
   status: EvalStatus
@@ -112,7 +107,7 @@ class MethodResult(BaseModel):
   a cross-run criterion without a threshold, which only reports its value.
   """
 
-  note: Optional[str] = None
+  note: str | None = None
   """What the value rests on, such as how many runs passed, or why it is None.
 
   For a metric judged lower-is-better, with nothing else to say, it says so.
@@ -152,7 +147,7 @@ class MultiRunCaseSummary(BaseModel):
   not_evaluated_runs: int = 0
   """Number of non-crashed runs whose whole-run status was NOT_EVALUATED."""
 
-  pass_rate: Optional[float] = None
+  pass_rate: float | None = None
   """Fraction of decided (passed or failed) runs that passed, or None if no run
   was decided.
   """
@@ -180,8 +175,8 @@ class EvalSetResult(BaseModel):
       populate_by_name=True,
   )
   eval_set_result_id: str
-  eval_set_result_name: Optional[str] = None
+  eval_set_result_name: str | None = None
   eval_set_id: str
   eval_case_results: list[EvalCaseResult] = Field(default_factory=list)
-  multi_run_case_summaries: Optional[list[MultiRunCaseSummary]] = None
+  multi_run_case_summaries: list[MultiRunCaseSummary] | None = None
   creation_timestamp: float = 0.0

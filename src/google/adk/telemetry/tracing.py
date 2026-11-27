@@ -1371,6 +1371,8 @@ def _use_native_generate_content_span(
     set_operation_details_attributes_from_request(
         gc_span.operation_details_attributes,
         llm_request,
+        telemetry_config,
+        reasoning=telemetry_config._experimental_feature_enabled("reasoning"),  # pylint: disable=protected-access
     )
     yield gc_span
 
@@ -1476,6 +1478,7 @@ def trace_inference_result(
         llm_response,
         gc_span.operation_details_attributes,
         gc_span.operation_details_common_attributes,
+        reasoning=telemetry_config._experimental_feature_enabled("reasoning"),  # pylint: disable=protected-access
     )
 
   else:

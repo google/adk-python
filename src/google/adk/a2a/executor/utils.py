@@ -130,10 +130,11 @@ async def _consume_runner_with_abort(
     await drive_task
   except asyncio.CancelledError:
     curr = asyncio.current_task()
+    abort_triggered = abort_signal.is_set()
     abort_signal.set()
     drive_task.cancel()
     await asyncio.gather(drive_task, return_exceptions=True)
-    if curr is not None and curr.cancelling() > 0:
+    if not abort_triggered or (curr is not None and curr.cancelling() > 0):
       raise
   finally:
     abort_task.cancel()

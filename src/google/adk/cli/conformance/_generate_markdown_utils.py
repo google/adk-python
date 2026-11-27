@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 import click
@@ -31,7 +30,7 @@ if TYPE_CHECKING:
 def generate_markdown_report(
     version_data: dict[str, Any],
     summaries: list[_ConformanceTestSummary],
-    report_dir: Optional[str],
+    report_dir: str | None,
 ) -> None:
   """Generates a Markdown report of the test results."""
   server_version = version_data.get("version", "Unknown")

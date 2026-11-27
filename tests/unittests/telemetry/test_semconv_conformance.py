@@ -58,6 +58,7 @@ _EVERY_CASE: list[FunctionalTestCase] = [
 # a fact recorded on either belongs on both.
 _OPERATION_BY_METRIC: dict[str, str] = {
     "gen_ai.client.operation.duration": "generate_content",
+    "gen_ai.client.inference.duration": "generate_content",
     "gen_ai.client.token.usage": "generate_content",
     "gen_ai.client.inference.usage.input_tokens": "generate_content",
     "gen_ai.client.inference.usage.output_tokens": "generate_content",

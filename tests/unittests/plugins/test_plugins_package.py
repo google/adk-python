@@ -92,6 +92,20 @@ def test_every_name_in_all_resolves():
     assert getattr(plugins, name).__name__ == name
 
 
+def test_dir_lists_all_exports():
+  """dir(google.adk.plugins) lists every public export for Sphinx autodoc."""
+  names = dir(plugins)
+
+  assert 'BigQueryAgentAnalyticsPlugin' in names
+  assert set(plugins.__all__).issubset(names)
+  assert '__all__' in names
+  assert '__name__' in names
+  assert 'base_plugin' in names
+  assert 'inspect' not in names
+  raw = plugins.__dir__()
+  assert raw == sorted(raw)
+
+
 def test_unknown_name_raises_attribute_error():
   """An unknown attribute raises AttributeError naming it."""
   with pytest.raises(AttributeError, match='NoSuchPlugin'):
@@ -132,5 +146,56 @@ def test_package_import_does_not_load_plugin_modules():
   """Importing the package loads no lazily exported module."""
   isolated_import_utils.assert_modules_unloaded(
       'import google.adk.plugins',
+      tuple(sorted(_lazy_modules())) + ('google.cloud.bigquery',),
+  )
+
+
+@pytest.mark.skipif(
+    not isolated_import_utils.SOURCE_ROOT.is_dir(),
+    reason='Import-loading checks need the source checkout layout.',
+)
+def test_dir_does_not_load_plugin_modules():
+  """Calling dir() on the package loads no lazily exported module."""
+  isolated_import_utils.assert_modules_unloaded(
+      'import google.adk.plugins; dir(google.adk.plugins)',
+      tuple(sorted(_lazy_modules())) + ('google.cloud.bigquery',),
+  )
+
+
+@pytest.mark.skipif(
+    not isolated_import_utils.SOURCE_ROOT.is_dir(),
+    reason='Import-loading checks need the source checkout layout.',
+)
+@pytest.mark.parametrize('caller_module', ['freezegun', 'freezegun.api'])
+def test_freezegun_scan_does_not_load_plugin_modules(caller_module: str):
+  """A freezegun-style dir()+getattr() module scan skips lazy plugins."""
+  isolated_import_utils.assert_modules_unloaded(
+      (
+          'import google.adk.plugins as p;'
+          f' ns = {{"__name__": {caller_module!r}, "p": p}};'
+          ' exec("names = dir(p);'
+          " assert 'BasePlugin' in names;"
+          " assert 'PluginManager' in names;"
+          " assert 'BigQueryAgentAnalyticsPlugin' not in names;"
+          ' [getattr(p, k) for k in names]", ns)'
+      ),
+      tuple(sorted(_lazy_modules())) + ('google.cloud.bigquery',),
+  )
+
+
+@pytest.mark.skipif(
+    not isolated_import_utils.SOURCE_ROOT.is_dir(),
+    reason='Import-loading checks need the source checkout layout.',
+)
+def test_freezegun_prefix_non_package_caller_keeps_lazy_exports():
+  """A non-freezegun caller sharing the prefix still sees lazy exports."""
+  isolated_import_utils.assert_modules_unloaded(
+      (
+          'import google.adk.plugins as p;'
+          ' ns = {"__name__": "freezegun_utils", "p": p};'
+          ' exec("names = dir(p);'
+          " assert 'BigQueryAgentAnalyticsPlugin' in names;"
+          ' assert set(p.__all__).issubset(names)", ns)'
+      ),
       tuple(sorted(_lazy_modules())) + ('google.cloud.bigquery',),
   )

@@ -23,7 +23,10 @@ from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+import warnings
 
+from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropicVertex
 from anthropic import NOT_GIVEN
 from anthropic import RateLimitError
 from anthropic import types as anthropic_types
@@ -4658,8 +4661,9 @@ async def test_streaming_no_system_instruction_passes_not_given():
 
 @pytest.mark.asyncio
 async def test_generate_content_async_with_generation_config(
-    generate_content_response, generate_llm_response
+    generate_content_response, generate_llm_response, monkeypatch
 ):
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "1.0.0")
   claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022")
   llm_request = LlmRequest(
       model="claude-3-5-sonnet-v2@20241022",
@@ -4692,17 +4696,20 @@ async def test_generate_content_async_with_generation_config(
       ]
       mock_client.messages.create.assert_called_once()
       _, kwargs = mock_client.messages.create.call_args
-      assert kwargs["temperature"] == 0.7
-      assert kwargs["top_p"] == 0.9
-      assert kwargs["top_k"] == 50
+      assert kwargs["extra_body"] == {
+          "temperature": 0.7,
+          "top_p": 0.9,
+          "top_k": 50,
+      }
       assert kwargs["stop_sequences"] == ["##"]
       assert kwargs["max_tokens"] == 1024
 
 
 @pytest.mark.asyncio
 async def test_generate_content_streaming_with_generation_config(
-    generate_content_response,
+    generate_content_response, monkeypatch
 ):
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "1.0.0")
   claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022")
   llm_request = LlmRequest(
       model="claude-3-5-sonnet-v2@20241022",
@@ -4734,12 +4741,393 @@ async def test_generate_content_streaming_with_generation_config(
     ]
     mock_client.messages.create.assert_called_once()
     _, kwargs = mock_client.messages.create.call_args
-    assert kwargs["temperature"] == 0.7
-    assert kwargs["top_p"] == 0.9
-    assert kwargs["top_k"] == 50
+    assert kwargs["extra_body"] == {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 50,
+    }
     assert kwargs["stop_sequences"] == ["##"]
     assert kwargs["max_tokens"] == 1024
     assert kwargs["stream"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_sampling_config_fits_installed_sdk_create_signature(
+    stream, generate_content_response
+):
+  """Sampling settings must reach create() in a form the installed SDK takes."""
+  client = AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={"anthropic-version": "2023-06-01"},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=50),
+  )
+
+  async def reply(**kwargs):
+    if kwargs.get("stream"):
+      return _make_mock_stream_events([])
+    return generate_content_response
+
+  with mock.patch.object(
+      client.messages, "create", autospec=True, side_effect=reply
+  ) as create:
+    _ = [
+        resp
+        async for resp in llm.generate_content_async(request, stream=stream)
+    ]
+
+  create.assert_called_once()
+  assert create.call_args.kwargs["extra_body"] == {
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "top_k": 50,
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("header_name", "header_value"),
+    [
+        ("anthropic-version", "2026-10-21"),
+        ("Anthropic-Version", " 2026-10-21 "),
+    ],
+)
+async def test_sampling_config_omitted_on_api_2026_10_21(
+    stream, header_name, header_value, generate_content_response
+):
+  """API version 2026-10-21 rejects sampling params, so drop them and warn."""
+  client = AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={header_name: header_value},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=50),
+  )
+
+  async def reply(**kwargs):
+    if kwargs.get("stream"):
+      return _make_mock_stream_events([])
+    return generate_content_response
+
+  with (
+      mock.patch.object(
+          client.messages, "create", autospec=True, side_effect=reply
+      ) as create,
+      pytest.warns(UserWarning, match="2026-10-21"),
+  ):
+    _ = [
+        resp
+        async for resp in llm.generate_content_async(request, stream=stream)
+    ]
+
+  create.assert_called_once()
+  assert create.call_args.kwargs.keys().isdisjoint(
+      {"temperature", "top_p", "top_k", "extra_body"}
+  )
+
+
+@pytest.mark.asyncio
+async def test_sampling_config_sent_on_sdk_v2_when_header_pins_2023_06_01(
+    generate_content_response, monkeypatch
+):
+  """An explicit 2023-06-01 header overrides the anthropic 2.x default."""
+
+  class _V2AsyncAnthropic(AsyncAnthropic):
+
+    @property
+    def default_headers(self):
+      return {
+          **super().default_headers,
+          "anthropic-version": "2026-10-21",
+          **self._custom_headers,
+      }
+
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "2.12.0")
+  client = _V2AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={"Anthropic-Version": "2023-06-01"},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=50),
+  )
+
+  async def reply(**kwargs):
+    del kwargs
+    return generate_content_response
+
+  with (
+      mock.patch.object(
+          client.messages, "create", autospec=True, side_effect=reply
+      ) as create,
+      warnings.catch_warnings(record=True) as caught,
+  ):
+    warnings.simplefilter("always")
+    _ = [
+        resp async for resp in llm.generate_content_async(request, stream=False)
+    ]
+
+  create.assert_called_once()
+  assert create.call_args.kwargs["extra_body"] == {
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "top_k": 50,
+  }
+  assert not [w for w in caught if issubclass(w.category, UserWarning)]
+
+
+def test_build_anthropic_kwargs_accepts_five_positional_args(monkeypatch):
+  """_build_anthropic_kwargs keeps client optional for direct callers."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "1.17.0")
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.0),
+  )
+  kwargs = llm._build_anthropic_kwargs(
+      request,
+      [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+      NOT_GIVEN,
+      NOT_GIVEN,
+      NOT_GIVEN,
+  )
+  assert kwargs["extra_body"] == {"temperature": 0.0}
+
+
+def test_build_anthropic_kwargs_five_args_respects_configured_client(
+    monkeypatch,
+):
+  """A 5-arg _build_anthropic_kwargs call still honors a pinned self.client."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "2.12.0")
+  client = AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={"anthropic-version": "2023-06-01"},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7),
+  )
+  kwargs = llm._build_anthropic_kwargs(
+      request,
+      [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+      NOT_GIVEN,
+      NOT_GIVEN,
+      NOT_GIVEN,
+  )
+  assert kwargs["extra_body"] == {"temperature": 0.7}
+
+
+def test_build_anthropic_kwargs_five_args_respects_cached_client(monkeypatch):
+  """A 5-arg _build_anthropic_kwargs call honors cached _anthropic_client."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "2.12.0")
+  client = AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={"anthropic-version": "2023-06-01"},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm.__dict__["_anthropic_client"] = client
+  assert llm.client is None
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7),
+  )
+  kwargs = llm._build_anthropic_kwargs(
+      request,
+      [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+      NOT_GIVEN,
+      NOT_GIVEN,
+      NOT_GIVEN,
+  )
+  assert kwargs["extra_body"] == {"temperature": 0.7}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_sampling_config_uses_client_from_get_anthropic_client(
+    stream, generate_content_response, monkeypatch
+):
+  """Both streaming and non-streaming pass the fetched client into kwargs."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "2.12.0")
+  client = AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={"anthropic-version": "2023-06-01"},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  assert llm.client is None
+  assert "_anthropic_client" not in llm.__dict__
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7),
+  )
+
+  async def reply(**kwargs):
+    if kwargs.get("stream"):
+      return _make_mock_stream_events([])
+    return generate_content_response
+
+  with (
+      mock.patch.object(
+          llm, "_get_anthropic_client", autospec=True, return_value=client
+      ),
+      mock.patch.object(
+          client.messages, "create", autospec=True, side_effect=reply
+      ) as create,
+      warnings.catch_warnings(record=True) as caught,
+  ):
+    warnings.simplefilter("always")
+    _ = [
+        resp
+        async for resp in llm.generate_content_async(request, stream=stream)
+    ]
+
+  create.assert_called_once()
+  assert create.call_args.kwargs["extra_body"] == {"temperature": 0.7}
+  assert not [w for w in caught if issubclass(w.category, UserWarning)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header_value", ["   ", "2026-10-21-beta"])
+async def test_sampling_config_falls_back_to_sdk_v2_on_non_date_header(
+    header_value, generate_content_response, monkeypatch
+):
+  """Blank or non-YYYY-MM-DD anthropic-version headers fall back to SDK 2.x."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "2.12.0")
+  client = AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={"anthropic-version": header_value},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7),
+  )
+
+  async def reply(**kwargs):
+    del kwargs
+    return generate_content_response
+
+  with (
+      mock.patch.object(
+          client.messages, "create", autospec=True, side_effect=reply
+      ) as create,
+      pytest.warns(UserWarning, match="2026-10-21"),
+  ):
+    _ = [
+        resp async for resp in llm.generate_content_async(request, stream=False)
+    ]
+
+  create.assert_called_once()
+  assert create.call_args.kwargs.keys().isdisjoint(
+      {"temperature", "top_p", "top_k", "extra_body"}
+  )
+
+
+@pytest.mark.asyncio
+async def test_sampling_config_no_warning_on_api_2026_10_21_when_unset(
+    generate_content_response,
+):
+  """Requests without sampling params should not warn on API 2026-10-21."""
+  client = AsyncAnthropic(
+      api_key="placeholder-not-a-real-key",
+      default_headers={"anthropic-version": "2026-10-21"},
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(max_output_tokens=1024),
+  )
+
+  async def reply(**kwargs):
+    del kwargs
+    return generate_content_response
+
+  with (
+      mock.patch.object(
+          client.messages, "create", autospec=True, side_effect=reply
+      ) as create,
+      warnings.catch_warnings(record=True) as caught,
+  ):
+    warnings.simplefilter("always")
+    _ = [
+        resp async for resp in llm.generate_content_async(request, stream=False)
+    ]
+
+  create.assert_called_once()
+  assert create.call_args.kwargs.keys().isdisjoint(
+      {"temperature", "top_p", "top_k", "extra_body"}
+  )
+  assert not [w for w in caught if issubclass(w.category, UserWarning)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sdk_version", "should_send"),
+    [("1.17.0", True), ("2.0.0", False)],
+)
+async def test_vertex_sampling_config_respects_sdk_major_version(
+    sdk_version, should_send, generate_content_response, monkeypatch
+):
+  """Vertex ignores anthropic-version headers and follows the SDK major."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", sdk_version)
+  client = AsyncAnthropicVertex(
+      project_id="test-project",
+      region="us-east5",
+      default_headers={"anthropic-version": "2023-06-01"},
+  )
+  llm = Claude(model="claude-sonnet-4-6", client=client)
+  request = LlmRequest(
+      model="claude-sonnet-4-6",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=50),
+  )
+
+  async def reply(**kwargs):
+    del kwargs
+    return generate_content_response
+
+  with mock.patch.object(
+      client.messages, "create", autospec=True, side_effect=reply
+  ) as create:
+    if should_send:
+      with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _ = [
+            resp
+            async for resp in llm.generate_content_async(request, stream=False)
+        ]
+      assert create.call_args.kwargs["extra_body"] == {
+          "temperature": 0.7,
+          "top_p": 0.9,
+          "top_k": 50,
+      }
+      assert not [w for w in caught if issubclass(w.category, UserWarning)]
+    else:
+      with pytest.warns(UserWarning, match="2026-10-21"):
+        _ = [
+            resp
+            async for resp in llm.generate_content_async(request, stream=False)
+        ]
+      assert create.call_args.kwargs.keys().isdisjoint(
+          {"temperature", "top_p", "top_k", "extra_body"}
+      )
 
 
 @pytest.mark.asyncio
@@ -4849,8 +5237,10 @@ async def test_generate_content_async_with_anthropic_config_effort(
 async def test_generate_content_async_excludes_sampling_when_thinking(
     generate_content_response,
     generate_llm_response,
+    monkeypatch,
 ):
   """Tests that sampling parameters are excluded when thinking is enabled."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "1.0.0")
   claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   llm_request = LlmRequest(
       model="claude-sonnet-4-20250514",
@@ -4877,7 +5267,11 @@ async def test_generate_content_async_excludes_sampling_when_thinking(
       mock_client.messages.create.return_value = mock_coro()
 
       with pytest.warns(
-          UserWarning, match="Sampling parameters .* are ignored"
+          UserWarning,
+          match=(
+              "Sampling parameters .* are ignored because thinking/effort is"
+              " enabled"
+          ),
       ):
         _ = [
             resp
@@ -4890,6 +5284,7 @@ async def test_generate_content_async_excludes_sampling_when_thinking(
       assert "temperature" not in kwargs
       assert "top_p" not in kwargs
       assert "top_k" not in kwargs
+      assert "extra_body" not in kwargs
       assert kwargs["max_tokens"] == 8192
       assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 1024}
 
@@ -4898,8 +5293,10 @@ async def test_generate_content_async_excludes_sampling_when_thinking(
 async def test_generate_content_async_excludes_sampling_when_effort(
     generate_content_response,
     generate_llm_response,
+    monkeypatch,
 ):
   """Tests that sampling parameters are excluded when effort is enabled."""
+  monkeypatch.setattr(anthropic_llm.anthropic, "__version__", "1.0.0")
   claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   llm_request = LlmRequest(
       model="claude-sonnet-4-20250514",
@@ -4924,7 +5321,11 @@ async def test_generate_content_async_excludes_sampling_when_effort(
       mock_client.messages.create.return_value = mock_coro()
 
       with pytest.warns(
-          UserWarning, match="Sampling parameters .* are ignored"
+          UserWarning,
+          match=(
+              "Sampling parameters .* are ignored because thinking/effort is"
+              " enabled"
+          ),
       ):
         _ = [
             resp
@@ -4937,6 +5338,7 @@ async def test_generate_content_async_excludes_sampling_when_effort(
       assert "temperature" not in kwargs
       assert "top_p" not in kwargs
       assert "top_k" not in kwargs
+      assert "extra_body" not in kwargs
       assert kwargs["output_config"] == {"effort": "xhigh"}
 
 

@@ -15,15 +15,14 @@
 """Tests for _is_local_client, the peer-address gate on the Agent Builder."""
 
 from typing import Any
-from typing import Optional
 
 from google.adk.cli.api_server import _is_local_client
 import pytest
 
 
 def _make_scope(
-    client: Optional[tuple[str, int]] = ("127.0.0.1", 51234),
-    headers: Optional[list[tuple[bytes, bytes]]] = None,
+    client: tuple[str, int] | None = ("127.0.0.1", 51234),
+    headers: list[tuple[bytes, bytes]] | None = None,
 ) -> dict[str, Any]:
   """Build a minimal ASGI scope for testing."""
   scope: dict[str, Any] = {
