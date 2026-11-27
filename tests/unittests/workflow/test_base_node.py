@@ -16,10 +16,14 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+from typing import Literal
+
 from google.adk.workflow._base_node import _walk_static_nodes
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import find_static_node_path
 import pydantic
+from pydantic import BaseModel
 from pydantic import Field
 import pytest
 
@@ -151,3 +155,20 @@ def test_find_static_node_path_traverses_iter_static_children():
   wf = Workflow(name='wf', edges=[(START, leaf)])
 
   assert find_static_node_path(wf, leaf) == 'wf/leaf'
+
+
+@pytest.mark.parametrize('field', ['input_schema', 'output_schema'])
+@pytest.mark.parametrize(
+    'schema',
+    [
+        Literal['yes', 'no'],
+        Annotated[BaseModel, Field(title='Answer')],
+        Annotated[int, Field(gt=0)],
+    ],
+)
+def test_schema_fields_preserve_typing_alias(field, schema):
+  """Node schemas retain their declared aliases through validation and dumping."""
+  node = BaseNode(name='test_node', **{field: schema})
+
+  assert getattr(node, field) is schema
+  assert node.model_dump()[field] is schema

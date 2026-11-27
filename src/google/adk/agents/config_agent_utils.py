@@ -91,6 +91,9 @@ def _is_schema_type(annotation: Any) -> bool:
   origin = typing.get_origin(annotation)
   args = typing.get_args(annotation)
 
+  if origin is typing.Annotated:
+    return _is_schema_type(args[0])
+
   if _is_union(origin):
     return any(_is_schema_type(arg) for arg in args)
 

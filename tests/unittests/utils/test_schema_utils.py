@@ -20,7 +20,9 @@ import signal
 import time
 from typing import Annotated
 from typing import Any
+from typing import Literal
 from typing import Optional
+from typing import Union
 
 from google.adk.utils._callable_utils import get_type_hints_cached
 from google.adk.utils._schema_utils import _strip_json_code_fence
@@ -31,12 +33,14 @@ from google.adk.utils._schema_utils import is_list_of_basemodel
 from google.adk.utils._schema_utils import lowercase_schema_types
 from google.adk.utils._schema_utils import preprocess_args
 from google.adk.utils._schema_utils import schema_to_json_schema
+from google.adk.utils._schema_utils import SchemaType
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import TypeAdapter
 from pydantic import ValidationError
 import pytest
 
@@ -657,3 +661,76 @@ class TestPreprocessArgs:
     result = preprocess_args(raw_args, None)
     assert result == raw_args
     assert result is not raw_args
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        SampleModel,
+        list[SampleModel],
+        list[str],
+        dict[str, int],
+        int,
+        SampleModel | OtherModel,
+        Union[SampleModel, OtherModel],
+        {"type": "string"},
+        types.Schema(type=types.Type.STRING),
+        types.SchemaDict(type=types.Type.OBJECT),
+    ],
+)
+def test_schema_type_keeps_existing_union_validation(schema):
+  """Other inputs retain GenAI union validation and serialization behavior."""
+  config = ConfigDict(arbitrary_types_allowed=True)
+  original = TypeAdapter(types.SchemaUnion, config=config)
+  current = TypeAdapter(SchemaType, config=config)
+
+  expected = original.validate_python(schema)
+  actual = current.validate_python(schema)
+
+  assert actual == expected
+  assert type(actual) is type(expected)
+  assert current.dump_python(actual) == original.dump_python(expected)
+
+
+def test_schema_type_keeps_existing_json_schema():
+  """The wrap validator leaves generated field JSON schemas unchanged."""
+  config = ConfigDict(arbitrary_types_allowed=True)
+  original = TypeAdapter(types.SchemaUnion, config=config)
+  current = TypeAdapter(SchemaType, config=config)
+
+  assert current.json_schema() == original.json_schema()
+
+
+@pytest.mark.parametrize(
+    "schema, expected",
+    [
+        (Literal["yes", "no"], {"enum": ["yes", "no"], "type": "string"}),
+        (
+            Annotated[int, Field(gt=0)],
+            {"exclusiveMinimum": 0, "type": "integer"},
+        ),
+    ],
+)
+def test_schema_to_json_schema_keeps_alias_constraints(schema, expected):
+  """Literal values and Annotated constraints reach the JSON schema."""
+  assert schema_to_json_schema(schema) == expected
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        Literal["yes", "no"],
+        Annotated[SampleModel, Field(title="Answer")],
+        Annotated[int, Field(gt=0)],
+    ],
+)
+def test_schema_type_preserves_typing_alias(schema):
+  """SchemaType accepts typing aliases without coercing from attributes."""
+  adapter = TypeAdapter(
+      SchemaType, config=ConfigDict(arbitrary_types_allowed=True)
+  )
+
+  validated = adapter.validate_python(schema)
+
+  assert validated is schema
+  assert adapter.dump_python(validated) is schema
