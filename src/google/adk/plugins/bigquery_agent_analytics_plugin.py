@@ -2892,7 +2892,8 @@ class BigQueryLoggerConfig:
         Each agent's ``instruction`` in the trace is the one logged by
         ``AGENT_STARTING``; when none was logged (for example a callable
         ``InstructionProvider``), it falls back to the earliest non-empty
-        ``system_prompt`` logged for that agent in the session's
+        ``system_prompt`` logged for that agent in the turn or session scope,
+        and then to the earliest non-empty ``system_prompt`` in the session's
         ``LLM_REQUEST`` events. For ``AGENT_RESPONSE``, a non-blank string
         ``$.text_summary`` (such as from a custom ``content_formatter``) takes
         precedence over ``$.response``.
@@ -6144,9 +6145,11 @@ WHERE
 #   with ``TO_JSON_STRING``).
 # - An agent's ``instruction`` comes from its latest AGENT_STARTING event.
 #   Where none logged one (a callable ``InstructionProvider`` is not logged as
-#   text), it falls back to ``logged_system_prompt`` from
-#   ``SessionAgentPrompts``, the earliest non-empty ``system_prompt`` logged
-#   for that agent in the session's LLM_REQUEST events.
+#   text), it falls back to ``scoped_system_prompt`` from ``AgentLatest`` (the
+#   earliest non-empty ``system_prompt`` logged for that agent in the turn or
+#   session scope) and then to ``logged_system_prompt`` from
+#   ``SessionAgentPrompts`` (the earliest non-empty ``system_prompt`` logged
+#   for that agent in the session's LLM_REQUEST events).
 # - ``trace`` holds only ``agents`` and ``turns``, and every nested object uses
 #   proto field names only, because unknown fields are rejected.
 # - No output column is named ``status``, avoiding collisions with

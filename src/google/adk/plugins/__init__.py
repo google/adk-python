@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect as _inspect
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -101,3 +102,35 @@ def __getattr__(name: str) -> Any:
       raise
     return vars(module)[name]
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+  """Lists module attributes, exposing lazy exports except to freezegun.
+
+  When called directly from ``freezegun``, omits lazy exports:
+  ``freezegun``'s ``sys.modules`` attribute scanner calls ``getattr()`` on
+  every entry in ``dir(module)`` while ``datetime`` is monkey-patched, which
+  otherwise eagerly imports ``pandas``/``pyarrow`` via
+  ``BigQueryAgentAnalyticsPlugin`` and triggers a ``pandas``/``NaTType``
+  ``SIGABRT`` on Python 3.14. Future refactors (such as migrating to
+  ``google.adk.utils._lazy.accessors``) must preserve this guard.
+
+  Returns:
+    ``sorted(globals())`` when called from ``freezegun`` or a ``freezegun.*``
+    submodule; otherwise ``sorted(set(globals()) | set(__all__))`` so lazily
+    imported exports remain discoverable via ``dir()``, IDE tab completion, and
+    Sphinx autodoc without eagerly loading optional plugin modules, while
+    preserving module dunders and already-loaded submodules.
+  """
+  caller = None
+  frame = _inspect.currentframe()
+  try:
+    caller = frame.f_back if frame is not None else None
+    caller_module = (
+        str(caller.f_globals.get("__name__", "")) if caller is not None else ""
+    )
+  finally:
+    del caller, frame
+  if caller_module == "freezegun" or caller_module.startswith("freezegun."):
+    return sorted(globals())
+  return sorted(set(globals()) | set(__all__))

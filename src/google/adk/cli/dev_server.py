@@ -49,7 +49,6 @@ import sys
 import time
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 
 import anyio
@@ -189,7 +188,7 @@ class RunEvalRequest(common.BaseModel):
       ),
   )
   eval_metrics: list[EvalMetric]
-  live_model_config: Optional[LiveModelConfig] = Field(
+  live_model_config: LiveModelConfig | None = Field(
       default=None,
       description=(
           "Config for running inference in live (bidirectional streaming) mode."
@@ -198,7 +197,7 @@ class RunEvalRequest(common.BaseModel):
   )
   # A raw mapping, not the typed `UserSimulatorConfig` union: the union is not
   # JSON-schema-able and would break OpenAPI generation. `run_eval` validates it.
-  user_simulator_config: Optional[dict[str, Any]] = Field(
+  user_simulator_config: dict[str, Any] | None = Field(
       default=None,
       description=(
           "Optional user-simulator configuration. The concrete type is selected"
@@ -472,8 +471,8 @@ class DevServer(ApiServer):
       *,
       app_name: str,
       user_id: str,
-      session_id: Optional[str] = None,
-      state: Optional[dict[str, Any]] = None,
+      session_id: str | None = None,
+      state: dict[str, Any] | None = None,
   ) -> Session:
     """Creates a session seeded from the agent's ``initial_state.json``.
 
@@ -540,7 +539,7 @@ class DevServer(ApiServer):
       trace_dict: dict[str, dict[str, AttributeValue]],
       memory_exporter: Any,
       log_exporter: WebUiLogExporter,
-      web_assets_dir: Optional[str] = None,
+      web_assets_dir: str | None = None,
   ) -> None:
     """Register all development-only endpoints.
 
@@ -622,7 +621,7 @@ class DevServer(ApiServer):
 
     @app.get("/dev/apps/{app_name}/build_graph_image")
     async def get_app_info_image(
-        app_name: str, dark_mode: bool = False, node: Optional[str] = None
+        app_name: str, dark_mode: bool = False, node: str | None = None
     ) -> dict[str, GetEventGraphResult]:
       runner = await self.get_runner_async(app_name)
 
@@ -681,7 +680,7 @@ class DevServer(ApiServer):
         dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def rebuild_app_tests(
-        app_name: str, test_name: Optional[str] = None
+        app_name: str, test_name: str | None = None
     ) -> dict[str, str]:
       """Rebuilds tests for the app."""
       if test_name:
@@ -699,7 +698,7 @@ class DevServer(ApiServer):
         dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def run_app_tests(
-        app_name: str, test_name: Optional[str] = None
+        app_name: str, test_name: str | None = None
     ) -> StreamingResponse:
       """Runs tests and streams pytest output."""
       agent_dir = self._get_agent_dir(app_name)

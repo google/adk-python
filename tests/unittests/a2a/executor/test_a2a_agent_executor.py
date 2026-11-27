@@ -837,12 +837,33 @@ class TestA2aAgentExecutor:
     self.mock_event_queue.enqueue_event.assert_not_awaited()
 
   @pytest.mark.asyncio
-  async def test_execute_cancelled_does_not_publish_failure(self):
+  @pytest.mark.parametrize("cancel_source", ["converter", "runner"])
+  async def test_execute_cancelled_does_not_publish_failure(
+      self, cancel_source: str
+  ):
     """Test that a cancelled execution is not reported as a failure."""
     self.mock_context.task_id = "test-task-id"
     self.mock_context.current_task = None
 
-    self.mock_request_converter.side_effect = asyncio.CancelledError()
+    if cancel_source == "converter":
+      self.mock_request_converter.side_effect = asyncio.CancelledError()
+    else:
+      self.mock_request_converter.return_value = AgentRunRequest(
+          user_id="test-user",
+          session_id="test-session",
+          new_message=Mock(spec=Content),
+          run_config=RunConfig(),
+      )
+      self.mock_runner.session_service.get_session = AsyncMock(
+          return_value=Mock(id="test-session")
+      )
+
+      async def cancelled_run_async(**unused_kwargs):
+        for item in ():
+          yield item
+        raise asyncio.CancelledError()
+
+      self.mock_runner.run_async = cancelled_run_async
 
     with pytest.raises(asyncio.CancelledError):
       await self.executor.execute(self.mock_context, self.mock_event_queue)

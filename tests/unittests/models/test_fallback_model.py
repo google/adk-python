@@ -21,14 +21,19 @@ import gc
 import sys
 import threading
 from typing import AsyncGenerator
+from unittest import mock
 
 from google.adk.models import FallbackModel
+from google.adk.models import registry as llm_registry
 from google.adk.models._capabilities import LlmCapabilities
 from google.adk.models._fallback_model import _SNAPSHOT_PRIVATE
 from google.adk.models._fallback_model import _status_code
 from google.adk.models._fallback_model import _UNSNAPSHOTTED_PRIVATE
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
+from google.adk.models.google_llm import Gemini
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.models.llm_request import _is_transient_user_content
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
@@ -962,3 +967,125 @@ def test_every_public_field_is_accounted_for():
       ' test_a_failed_model_does_not_leak_its_edits_to_the_next. If a model'
       ' never edits it, add it to `left`.'
   )
+
+
+@pytest.mark.asyncio
+async def test_rollback_preserves_transient_user_content_identity():
+  transient_matches: list[list[bool]] = []
+
+  class _CheckingLlm(_MutatingLlm):
+
+    async def generate_content_async(self, llm_request, stream=False):
+      transient_matches.append([
+          _is_transient_user_content(llm_request, c)
+          for c in llm_request.contents
+      ])
+      async for resp in super().generate_content_async(llm_request, stream):
+        yield resp
+
+  fallback = FallbackModel(
+      models=[
+          _CheckingLlm(model='primary', error=_rate_limited()),
+          _CheckingLlm(model='backup'),
+      ]
+  )
+  request = LlmRequest(
+      contents=[types.Content(role='user', parts=[types.Part(text='hello')])]
+  )
+  request._insert_transient_user_content(
+      [types.Content(role='user', parts=[types.Part(text='hello')])]
+  )
+
+  responses = await _collect(fallback, request)
+
+  assert len(responses) == 1
+  assert transient_matches == [[True, False], [True, False]]
+
+
+def test_supports_dynamic_instruction_routing_requires_all_delegates():
+  supported = FallbackModel(
+      models=[Gemini(model='gemini-2.5-flash'), LiteLlm(model='openai/gpt-4o')]
+  )
+  unsupported = FallbackModel(
+      models=[
+          Gemini(model='gemini-2.5-flash'),
+          LiteLlm(model='mistral/mistral-large-latest'),
+      ]
+  )
+  assert supported._supports_dynamic_instruction_routing()
+  assert not unsupported._supports_dynamic_instruction_routing()
+
+  resolved_override = FallbackModel(models=['gemini-2.5-flash'])
+  resolved_override._resolved['gemini-2.5-flash'] = Gemini(
+      model='gemini-2.5-flash', use_interactions_api=True
+  )
+  assert not resolved_override._supports_dynamic_instruction_routing()
+
+  class _DefaultRoutingLlm(_FakeLlm):
+
+    def __init__(self, **kwargs):
+      del kwargs
+      raise AssertionError('must not instantiate default-routing BaseLlm')
+
+  class _CustomRoutingLlm(_FakeLlm):
+
+    def _supports_dynamic_instruction_routing(self) -> bool:
+      return self.model.endswith('-ok')
+
+  class _BrokenRoutingLlm(_FakeLlm):
+
+    def __init__(self, **kwargs):
+      del kwargs
+      raise RuntimeError('missing env')
+
+    def _supports_dynamic_instruction_routing(self) -> bool:
+      return True
+
+  extra_registry = {
+      r'default-routing-.*': _DefaultRoutingLlm,
+      r'custom-routing-.*': _CustomRoutingLlm,
+      r'broken-routing-.*': _BrokenRoutingLlm,
+  }
+  with mock.patch.dict(llm_registry._llm_registry_dict, extra_registry):
+    LLMRegistry.resolve.cache_clear()
+    try:
+      with (
+          mock.patch.object(
+              Gemini, '__init__', side_effect=AssertionError('no Gemini init')
+          ),
+          mock.patch.object(
+              LiteLlm, '__init__', side_effect=AssertionError('no LiteLlm init')
+          ),
+      ):
+        string_supported = FallbackModel(
+            models=[
+                'gemini-2.5-flash',
+                'openai/gpt-4o',
+                'litellm:openai/gpt-4o',
+                'default-routing-1',
+            ]
+        )
+        string_unsupported = FallbackModel(
+            models=['gemini-2.5-flash', 'mistral/mistral-large-latest']
+        )
+        typo_backup = FallbackModel(
+            models=['gemini-2.5-flash', 'gemni-2.5-flash']
+        )
+        assert string_supported._supports_dynamic_instruction_routing()
+        assert not string_unsupported._supports_dynamic_instruction_routing()
+        assert not typo_backup._supports_dynamic_instruction_routing()
+        assert not string_supported._resolved
+        assert not string_unsupported._resolved
+        assert not typo_backup._resolved
+
+      assert FallbackModel(
+          models=['custom-routing-ok']
+      )._supports_dynamic_instruction_routing()
+      assert not FallbackModel(
+          models=['custom-routing-no']
+      )._supports_dynamic_instruction_routing()
+      assert not FallbackModel(
+          models=['broken-routing-1']
+      )._supports_dynamic_instruction_routing()
+    finally:
+      LLMRegistry.resolve.cache_clear()

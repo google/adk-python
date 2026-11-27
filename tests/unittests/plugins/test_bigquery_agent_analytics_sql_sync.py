@@ -507,12 +507,12 @@ def test_events_table_is_read_once_for_the_events_of_a_turn(
 def test_instruction_falls_back_to_the_logged_system_prompt(
     bodies: dict[str, str],
 ) -> None:
-  """An agent's instruction is its AGENT_STARTING text, else its prompt."""
+  """An agent's instruction prefers scoped prompt, then session prompt."""
   sql = _squash(bodies[_CTE_FILE])
 
   assert (
-      "'instruction', COALESCE(NULLIF(instruction, ''), logged_system_prompt,"
-      " '')"
+      "'instruction', COALESCE(NULLIF(instruction, ''), scoped_system_prompt,"
+      " logged_system_prompt, '')"
   ) in sql
 
 
@@ -602,3 +602,58 @@ def test_formatted_response_and_response_text_delimiters(
   )
   assert 'r"\' [|] other(?: [|] |$)"' in response_sql
   assert "r' [|] " not in response_sql
+
+
+def test_turn_rollup_uses_deterministic_tiebreakers(
+    bodies: dict[str, str],
+) -> None:
+  """TurnRollup breaks timestamp ties by event_id."""
+  turn_rollup_sql = _squash(_ctes_by_name(bodies[_CTE_FILE])["TurnRollup"])
+
+  assert "user_id IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1" in (
+      turn_rollup_sql
+  )
+  assert (
+      "root_agent_name IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1"
+      in turn_rollup_sql
+  )
+  assert "agent IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1" in (
+      turn_rollup_sql
+  )
+
+
+def test_agent_latest_and_session_rollup_use_deterministic_tiebreakers(
+    bodies: dict[str, str],
+) -> None:
+  """AgentLatest and SessionRollup break ties and keep Turn 1 root_agent."""
+  ctes = _ctes_by_name(bodies[_CTE_FILE])
+  agent_latest_sql = _squash(ctes["AgentLatest"])
+  session_sql = _squash(bodies["eval_session_query_v1.sql"])
+
+  for column in (
+      "instruction",
+      "description",
+      "sub_agents",
+      "tool_declarations",
+  ):
+    assert (
+        f"{column} IGNORE NULLS ORDER BY timestamp DESC, event_id DESC LIMIT 1"
+        in agent_latest_sql
+    )
+  assert (
+      "system_prompt IGNORE NULLS ORDER BY timestamp, event_id LIMIT 1"
+      in agent_latest_sql
+  )
+  assert "AS scoped_system_prompt" in agent_latest_sql
+  assert (
+      "user_id IGNORE NULLS ORDER BY turn_start_timestamp, invocation_id"
+      " LIMIT 1"
+      in session_sql
+  )
+  assert (
+      "root_agent IGNORE NULLS ORDER BY turn_start_timestamp, invocation_id"
+      " LIMIT 1"
+      in session_sql
+  )
+  assert "first_root_agent_name" not in session_sql
+  assert "first_agent" not in session_sql

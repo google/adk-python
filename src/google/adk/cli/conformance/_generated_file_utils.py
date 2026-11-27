@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from typing import Optional
 
 import click
 import yaml
@@ -38,7 +37,7 @@ def load_test_case(test_case_dir: Path) -> TestSpec:
 
 def load_recorded_session(
     test_case_dir: Path, streaming_mode: StreamingMode
-) -> Optional[Session]:
+) -> Session | None:
   """Load recorded session data from YAML file."""
   if streaming_mode == StreamingMode.SSE:
     session_file = test_case_dir / "generated-session-sse.yaml"

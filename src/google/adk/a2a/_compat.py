@@ -35,7 +35,6 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeAlias
 from typing import TypeVar
@@ -108,7 +107,7 @@ def _as_factory(target: type[_T]) -> Callable[..., _T]:
   return cast(Callable[..., _T], target)
 
 
-def _make_proto_timestamp(dt: Optional[datetime] = None) -> Any:
+def _make_proto_timestamp(dt: datetime | None = None) -> Any:
   """Build a google.protobuf.Timestamp from a datetime (or now). 1.x only."""
   ts = timestamp_pb2.Timestamp()  # type: ignore[possibly-undefined]
   ts.FromDatetime(dt or datetime.now(timezone.utc))
@@ -282,7 +281,7 @@ def set_part_metadata(p: Part, metadata: dict[str, Any]) -> None:
 #        ``Part(root=DataPart(data=..., metadata=...))``
 # -----------------------------------------------------------------------------
 def make_file_part_with_uri(
-    *, uri: str, mime_type: str = "", name: Optional[str] = None
+    *, uri: str, mime_type: str = "", name: str | None = None
 ) -> Part:
   """Builds a file Part referencing a URI."""
   if IS_A2A_V1:
@@ -302,7 +301,7 @@ def make_file_part_with_uri(
 
 
 def make_file_part_with_bytes(
-    *, data: bytes, mime_type: str = "", name: Optional[str] = None
+    *, data: bytes, mime_type: str = "", name: str | None = None
 ) -> Part:
   """Builds a file Part carrying raw bytes.
 
@@ -331,7 +330,7 @@ def make_file_part_with_bytes(
 
 
 def make_data_part(
-    *, data: dict[str, Any], metadata: Optional[dict[str, Any]] = None
+    *, data: dict[str, Any], metadata: dict[str, Any] | None = None
 ) -> Part:
   """Builds a structured-data Part."""
   if IS_A2A_V1:
@@ -347,7 +346,7 @@ def make_data_part(
 
 
 def make_data_part_from_blob(
-    raw_json: bytes, *, extra_metadata: Optional[dict[str, Any]] = None
+    raw_json: bytes, *, extra_metadata: dict[str, Any] | None = None
 ) -> Part:
   """Rebuilds a data Part from a generic inline-blob payload.
 
@@ -372,7 +371,7 @@ def make_data_part_from_blob(
     return _as_factory(Part)(root=inner)
 
 
-def file_part_uri(p: Part) -> Optional[str]:
+def file_part_uri(p: Part) -> str | None:
   """Returns the URI of a URI-backed file Part, else None."""
   if IS_A2A_V1:
     return p.url if p.WhichOneof("content") == "url" else None
@@ -384,7 +383,7 @@ def file_part_uri(p: Part) -> Optional[str]:
     return getattr(file, "uri", None) if isinstance(file, FileWithUri) else None
 
 
-def file_part_bytes(p: Part) -> Optional[bytes]:
+def file_part_bytes(p: Part) -> bytes | None:
   """Returns the raw (decoded) bytes of a bytes-backed file Part, else None."""
   if IS_A2A_V1:
     return p.raw if p.WhichOneof("content") == "raw" else None
@@ -398,7 +397,7 @@ def file_part_bytes(p: Part) -> Optional[bytes]:
     return None
 
 
-def file_part_mime_type(p: Part) -> Optional[str]:
+def file_part_mime_type(p: Part) -> str | None:
   """Returns the media type of a file Part."""
   if IS_A2A_V1:
     return p.media_type or None
@@ -407,7 +406,7 @@ def file_part_mime_type(p: Part) -> Optional[str]:
     return getattr(file, "mime_type", None) if file is not None else None
 
 
-def file_part_name(p: Part) -> Optional[str]:
+def file_part_name(p: Part) -> str | None:
   """Returns the display name / filename of a file Part."""
   if IS_A2A_V1:
     return p.filename or None
@@ -496,12 +495,12 @@ def build_agent_card(
     version: str,
     url: str,
     protocol_binding: str,
-    protocol_version: Optional[str] = None,
+    protocol_version: str | None = None,
     skills: Any = (),
     capabilities: Any = None,
     provider: Any = None,
     security_schemes: Any = None,
-    doc_url: Optional[str] = None,
+    doc_url: str | None = None,
     default_input_modes: Any = ("text/plain",),
     default_output_modes: Any = ("text/plain",),
     supports_authenticated_extended_card: bool = False,
@@ -680,7 +679,7 @@ def agent_card_url(
     card: AgentCard,
     *,
     protocol_binding: str = TP_JSONRPC,
-) -> Optional[str]:
+) -> str | None:
   """Returns the RPC URL for a given protocol binding from an AgentCard.
 
   1.x: URL lives in ``supported_interfaces[i].url``; pick the first interface
@@ -695,9 +694,9 @@ def agent_card_url(
       return None
     for iface in interfaces:
       if getattr(iface, "protocol_binding", None) == protocol_binding:
-        matched_url: Optional[str] = iface.url
+        matched_url: str | None = iface.url
         return matched_url
-    first_url: Optional[str] = interfaces[0].url
+    first_url: str | None = interfaces[0].url
     return first_url
   else:
     del protocol_binding  # Only used by the v1.x path.
@@ -779,7 +778,7 @@ def make_stream_normalizer() -> Callable[[Any], Any]:
   state: dict[str, Any] = {"task": None}
 
   def _ensure_task(payload: Any) -> Task:
-    task: Optional[Task] = state["task"]
+    task: Task | None = state["task"]
     if task is None:
       task = Task(
           id=getattr(payload, "task_id", "") or "",
@@ -802,7 +801,7 @@ def make_stream_normalizer() -> Callable[[Any], Any]:
     if kind == "task":
       # A full task state is already passed; use it as the aggregate. Carry over
       # any artifacts the running aggregate already holds that the snapshot lacks.
-      running: Optional[Task] = state["task"]
+      running: Task | None = state["task"]
       aggregate = _snapshot(payload)
       if running is not None and running.artifacts:
         known = {a.artifact_id for a in aggregate.artifacts}
@@ -836,7 +835,7 @@ async def send_message(
     client: Any,
     *,
     request: Any,
-    request_metadata: Optional[dict[str, Any]] = None,
+    request_metadata: dict[str, Any] | None = None,
     context: Any = None,
 ) -> AsyncGenerator[Any, None]:
   """Version-agnostic send_message invocation; yields raw stream items.

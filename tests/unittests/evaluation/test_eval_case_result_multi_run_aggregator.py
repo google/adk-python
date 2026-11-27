@@ -19,7 +19,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 import statistics
-from typing import Optional
 
 from google.adk.agents.common_configs import CodeConfig
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
@@ -76,7 +75,7 @@ def _run(
     invocation_scores: list[float],
     session_id: str,
     final_eval_status: EvalStatus = EvalStatus.PASSED,
-    repetition_index: Optional[int] = None,
+    repetition_index: int | None = None,
 ) -> EvalCaseResult:
   per_invocation = [_invocation(score) for score in invocation_scores]
   # `overall_eval_metric_results` is deliberately left empty: the aggregator
@@ -115,7 +114,7 @@ def _with_metric(
 
 
 def _judged_run(
-    repetition_index: int, **scores: Optional[float]
+    repetition_index: int, **scores: float | None
 ) -> EvalCaseResult:
   """Returns a run of case1 with one invocation, scored as given per metric.
 

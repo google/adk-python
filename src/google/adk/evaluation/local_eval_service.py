@@ -20,7 +20,6 @@ import inspect
 import logging
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Optional
 import uuid
 
 from typing_extensions import override
@@ -145,7 +144,7 @@ def _copy_eval_case_rubrics_to_actual_invocations(
 
 
 def _copy_invocation_rubrics_to_actual_invocations(
-    expected_invocations: Optional[list[Invocation]],
+    expected_invocations: list[Invocation] | None,
     actual_invocations: list[Invocation],
 ) -> None:
   """Copies invocation level rubrics to corresponding actual invocations."""
@@ -166,15 +165,15 @@ class LocalEvalService(BaseEvalService):
       self,
       root_agent: BaseNode,
       eval_sets_manager: EvalSetsManager,
-      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
-      session_service: Optional[BaseSessionService] = None,
-      artifact_service: Optional[BaseArtifactService] = None,
-      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      metric_evaluator_registry: MetricEvaluatorRegistry | None = None,
+      session_service: BaseSessionService | None = None,
+      artifact_service: BaseArtifactService | None = None,
+      eval_set_results_manager: EvalSetResultsManager | None = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
-      user_simulator_provider: Optional[UserSimulatorProvider] = None,
-      memory_service: Optional[BaseMemoryService] = None,
+      user_simulator_provider: UserSimulatorProvider | None = None,
+      memory_service: BaseMemoryService | None = None,
       *,
-      app: Optional[App] = None,
+      app: App | None = None,
   ):
     """Initializes a LocalEvalService.
 
@@ -600,8 +599,8 @@ class LocalEvalService(BaseEvalService):
       self,
       eval_metric: EvalMetric,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      conversation_scenario: Optional[ConversationScenario],
+      expected_invocations: list[Invocation] | None,
+      conversation_scenario: ConversationScenario | None,
   ) -> EvaluationResult:
     """Returns EvaluationResult obtained from evaluating a metric using an Evaluator."""
 

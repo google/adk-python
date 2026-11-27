@@ -63,6 +63,35 @@ def copy_http_options(
   return http_options.model_copy(update=updates)
 
 
+def copy_request_scoped_fields(
+    config: types.GenerateContentConfig,
+) -> types.GenerateContentConfig:
+  """Copies the agent config fields that request assembly goes on to mutate.
+
+  ``model_copy`` is shallow, so every container the agent configured would still
+  be the agent's own object, and a write during assembly would outlive the
+  invocation and be seen by every later run of that agent.
+
+  Every list and dict is copied, not just the fields assembly happens to touch
+  today: a before-model callback receives the request config and can append to
+  any of them. The elements themselves are shared, because assembly replaces
+  entries rather than mutating them.
+
+  ``http_options`` needs its own copy because it is a model rather than a
+  container. It can hold a live httpx or aiohttp client and an SSL context,
+  none of which survive a deep copy, so only its ``headers`` dict is copied.
+  """
+  updates: dict[str, object] = {}
+  for name, value in config:
+    if isinstance(value, list):
+      updates[name] = list(value)
+    elif isinstance(value, dict):
+      updates[name] = dict(value)
+  if config.http_options is not None:
+    updates['http_options'] = copy_http_options(config.http_options)
+  return config.model_copy(update=updates)
+
+
 def require_agent(invocation_context: InvocationContext) -> BaseAgent:
   """Returns the agent required by processors that walk the agent tree."""
   agent = invocation_context.agent

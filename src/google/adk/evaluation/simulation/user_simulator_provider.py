@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from typing import cast
-from typing import Optional
 from typing import Protocol
 
 from ..conversation_scenarios import ConversationScenario
@@ -74,7 +73,7 @@ class UserSimulatorProvider:
 
   def __init__(
       self,
-      user_simulator_config: Optional[BaseUserSimulatorConfig] = None,
+      user_simulator_config: BaseUserSimulatorConfig | None = None,
   ):
     if user_simulator_config is None:
       # No config supplied: fall back to the legacy default subclass so that
