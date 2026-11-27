@@ -1264,3 +1264,39 @@ async def test_delete_memory_then_windowed_add_does_not_restore_it():
 
   assert await _texts_for(memory_service, 'paris') == ['trip to paris']
   assert await _texts_for(memory_service, 'london') == ['flight to london']
+
+
+@pytest.mark.asyncio
+async def test_add_events_and_windowed_session_adds_share_one_session(
+    windowed_memory_service,
+):
+  """Events added directly and windowed session adds on one session coexist."""
+  direct = _text_event('direct', 'note about paris museums')
+  turn_1 = _text_event('t1', 'trip to paris')
+  turn_2 = _text_event('t2', 'flight to london')
+  await windowed_memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[direct],
+      session_id='session-windowed',
+  )
+  await windowed_memory_service.add_session_to_memory(_session_with([turn_1]))
+
+  # A windowed add that holds only the next turn keeps both earlier entries,
+  # and adding the same events again stores each of them once.
+  await windowed_memory_service.add_session_to_memory(_session_with([turn_2]))
+  await windowed_memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[direct, turn_2],
+      session_id='session-windowed',
+  )
+  await windowed_memory_service.add_session_to_memory(_session_with([turn_2]))
+
+  assert await _texts_for(windowed_memory_service, 'paris') == [
+      'note about paris museums',
+      'trip to paris',
+  ]
+  assert await _texts_for(windowed_memory_service, 'london') == [
+      'flight to london'
+  ]
