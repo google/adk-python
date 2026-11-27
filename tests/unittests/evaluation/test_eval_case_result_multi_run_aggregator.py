@@ -17,8 +17,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import dataclasses
 import statistics
-from typing import Optional
 
 from google.adk.agents.common_configs import CodeConfig
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
@@ -28,6 +28,7 @@ from google.adk.evaluation._eval_case_result_multi_run_aggregator import get_run
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
+from google.adk.evaluation._eval_case_result_multi_run_aggregator import summarize_cross_run_criteria
 from google.adk.evaluation._eval_case_result_multi_run_aggregator import summarize_eval_case_results
 from google.adk.evaluation._multi_run_aggregation_methods import get_built_in_aggregation_methods
 from google.adk.evaluation._multi_run_aggregation_methods import RunResult
@@ -74,7 +75,7 @@ def _run(
     invocation_scores: list[float],
     session_id: str,
     final_eval_status: EvalStatus = EvalStatus.PASSED,
-    repetition_index: Optional[int] = None,
+    repetition_index: int | None = None,
 ) -> EvalCaseResult:
   per_invocation = [_invocation(score) for score in invocation_scores]
   # `overall_eval_metric_results` is deliberately left empty: the aggregator
@@ -113,7 +114,7 @@ def _with_metric(
 
 
 def _judged_run(
-    repetition_index: int, **scores: Optional[float]
+    repetition_index: int, **scores: float | None
 ) -> EvalCaseResult:
   """Returns a run of case1 with one invocation, scored as given per metric.
 
@@ -1988,3 +1989,88 @@ def test_summarize_eval_case_results_records_run_counts_and_pass_rate():
       summary.pass_rate,
       summary.final_eval_status,
   ) == (4, 2, 1, 1, 0, 2 / 3, EvalStatus.PASSED)
+
+
+def _case_with_criteria(
+    eval_id: str, **values: Optional[float]
+) -> MultiRunCaseResult:
+  """Returns a judged case whose cross-run criteria have the given values."""
+  return MultiRunCaseResult(
+      eval_set_id="set1",
+      eval_id=eval_id,
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[],
+      runs=[],
+      cross_run_results=[
+          MethodResult(
+              name=name,
+              value=value,
+              threshold=None,
+              status=EvalStatus.INFORMATIONAL,
+          )
+          for name, value in values.items()
+      ],
+  )
+
+
+def test_summarize_cross_run_criteria_averages_each_criterion_over_cases():
+  """Each criterion's per-case values are averaged, in config order."""
+  summaries = summarize_cross_run_criteria([
+      _case_with_criteria("case1", pass_at_2=1.0, pass_hat_2=1.0),
+      _case_with_criteria("case2", pass_at_2=1.0, pass_hat_2=0.0),
+  ])
+
+  assert [
+      (s.name, s.mean, s.num_cases_with_value, s.num_cases) for s in summaries
+  ] == [("pass_at_2", 1.0, 2, 2), ("pass_hat_2", 0.5, 2, 2)]
+
+
+def test_summarize_cross_run_criteria_leaves_out_a_case_without_a_value():
+  """A case with no value is left out of the mean, and the count says so."""
+  (summary,) = summarize_cross_run_criteria([
+      _case_with_criteria("case1", pass_hat_3=1.0),
+      _case_with_criteria("case2", pass_hat_3=None),
+  ])
+
+  assert (summary.mean, summary.num_cases_with_value, summary.num_cases) == (
+      1.0,
+      1,
+      2,
+  )
+
+
+def test_summarize_cross_run_criteria_counts_a_case_judged_on_its_own():
+  """A case kept as its single run has no cross-run results, but still counts."""
+  single_run_case = dataclasses.replace(
+      _case_with_criteria("case2"), cross_run_results=[]
+  )
+
+  (summary,) = summarize_cross_run_criteria(
+      [_case_with_criteria("case1", pass_hat_2=0.5), single_run_case]
+  )
+
+  assert (summary.mean, summary.num_cases_with_value, summary.num_cases) == (
+      0.5,
+      1,
+      2,
+  )
+
+
+def test_summarize_cross_run_criteria_has_no_mean_without_any_value():
+  """When no case has a value there is nothing to average."""
+  (summary,) = summarize_cross_run_criteria([
+      _case_with_criteria("case1", pass_hat_3=None),
+      _case_with_criteria("case2", pass_hat_3=None),
+  ])
+
+  assert (summary.mean, summary.num_cases_with_value, summary.num_cases) == (
+      None,
+      0,
+      2,
+  )
+
+
+def test_summarize_cross_run_criteria_is_empty_without_criteria():
+  """Without cross-run criteria there is nothing to summarize."""
+  assert not summarize_cross_run_criteria([_case_with_criteria("case1")])
+  assert not summarize_cross_run_criteria([])

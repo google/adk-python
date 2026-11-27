@@ -24,12 +24,8 @@ from os import path
 import statistics
 from typing import Any
 from typing import cast
-from typing import Dict
-from typing import List
-from typing import Optional
 from typing import Protocol
 from typing import TYPE_CHECKING
-from typing import Union
 import uuid
 
 from google.genai import types as genai_types
@@ -99,9 +95,9 @@ REFERENCE_COLUMN = "reference"
 EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 
 
-def load_json(file_path: str) -> Union[Dict[str, Any], List[Any]]:
+def load_json(file_path: str) -> dict[str, Any] | list[Any]:
   with open(file_path, "r", encoding="utf-8") as f:
-    return cast(Union[Dict[str, Any], List[Any]], json.load(f))
+    return cast(dict[str, Any] | list[Any], json.load(f))
 
 
 class _EvalMetricResultWithInvocation(BaseModel):
@@ -128,17 +124,17 @@ class AgentEvaluator:
 
   @staticmethod
   async def evaluate_eval_set(
-      agent_module: Union[str, BaseNode, App],
+      agent_module: str | BaseNode | App,
       eval_set: EvalSet,
-      criteria: Optional[dict[str, float]] = None,
-      eval_config: Optional[EvalConfig] = None,
+      criteria: dict[str, float] | None = None,
+      eval_config: EvalConfig | None = None,
       num_runs: int = NUM_RUNS,
-      agent_name: Optional[str] = None,
+      agent_name: str | None = None,
       print_detailed_results: bool = True,
-      artifact_service: Optional[BaseArtifactService] = None,
-      output_file: Optional[str] = None,
-      app_name: Optional[str] = None,
-      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      artifact_service: BaseArtifactService | None = None,
+      output_file: str | None = None,
+      app_name: str | None = None,
+      eval_set_results_manager: EvalSetResultsManager | None = None,
       parallelism: int | None = None,
   ) -> None:
     """Evaluates an agent using the given EvalSet.
@@ -320,16 +316,16 @@ class AgentEvaluator:
 
   @staticmethod
   async def evaluate(
-      agent_module: Union[str, BaseNode, App],
+      agent_module: str | BaseNode | App,
       eval_dataset_file_path_or_dir: str,
       num_runs: int = NUM_RUNS,
-      agent_name: Optional[str] = None,
-      initial_session_file: Optional[str] = None,
+      agent_name: str | None = None,
+      initial_session_file: str | None = None,
       print_detailed_results: bool = True,
-      artifact_service: Optional[BaseArtifactService] = None,
-      output_file: Optional[str] = None,
-      app_name: Optional[str] = None,
-      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      artifact_service: BaseArtifactService | None = None,
+      output_file: str | None = None,
+      app_name: str | None = None,
+      eval_set_results_manager: EvalSetResultsManager | None = None,
       parallelism: int | None = None,
   ) -> None:
     """Evaluates an Agent given eval data.
@@ -428,7 +424,7 @@ class AgentEvaluator:
   def migrate_eval_data_to_new_schema(
       old_eval_data_file: str,
       new_eval_data_file: str,
-      initial_session_file: Optional[str] = None,
+      initial_session_file: str | None = None,
   ) -> None:
     """A utility for migrating eval data to new schema backed by EvalSet."""
     if not old_eval_data_file or not new_eval_data_file:
@@ -498,7 +494,7 @@ class AgentEvaluator:
 
   @staticmethod
   def _get_initial_session(
-      initial_session_file: Optional[str] = None,
+      initial_session_file: str | None = None,
   ) -> dict[str, Any]:
     initial_session: dict[str, Any] = {}
     if initial_session_file:
@@ -510,14 +506,11 @@ class AgentEvaluator:
 
   @staticmethod
   def _load_dataset(
-      input_data: Union[
-          str,
-          List[str],
-          List[Dict[str, Any]],
-          List[List[Dict[str, Any]]],
-      ],
-  ) -> List[List[Dict[str, Any]]]:
-    def load_json_file(file_path: str) -> List[Dict[str, Any]]:
+      input_data: (
+          str | list[str] | list[dict[str, Any]] | list[list[dict[str, Any]]]
+      ),
+  ) -> list[list[dict[str, Any]]]:
+    def load_json_file(file_path: str) -> list[dict[str, Any]]:
       data = load_json(file_path)
       if not isinstance(data, list) or not all(
           isinstance(d, dict) for d in data
@@ -604,9 +597,9 @@ class AgentEvaluator:
           _EvalMetricResultWithInvocation
       ],
       overall_eval_status: EvalStatus,
-      overall_score: Optional[float],
+      overall_score: float | None,
       metric_name: str,
-      threshold: Optional[float],
+      threshold: float | None,
   ) -> None:
     try:
       import pandas as pd  # pylint: disable=g-import-not-at-top
@@ -656,7 +649,7 @@ class AgentEvaluator:
     print("\n\n")  # Few empty lines for visual clarity
 
   @staticmethod
-  def _convert_content_to_text(content: Optional[genai_types.Content]) -> str:
+  def _convert_content_to_text(content: genai_types.Content | None) -> str:
     if content and content.parts:
       return "\n".join([p.text for p in content.parts if p.text])
 
@@ -664,14 +657,14 @@ class AgentEvaluator:
 
   @staticmethod
   def _convert_tool_calls_to_text(
-      intermediate_data: Optional[IntermediateDataType],
+      intermediate_data: IntermediateDataType | None,
   ) -> str:
     tool_calls = get_all_tool_calls(intermediate_data)
 
     return "\n".join([str(t) for t in tool_calls])
 
   @staticmethod
-  def _get_agent_label(agent_module: Union[str, BaseNode, App]) -> str:
+  def _get_agent_label(agent_module: str | BaseNode | App) -> str:
     """Returns the name used for the agent in failure messages."""
     if isinstance(agent_module, (BaseNode, App)):
       return agent_module.name
@@ -679,9 +672,9 @@ class AgentEvaluator:
 
   @staticmethod
   async def _get_agent_for_eval(
-      module_name: Union[str, BaseNode, App],
-      agent_name: Optional[str] = None,
-  ) -> tuple[BaseAgent, Optional[App]]:
+      module_name: str | BaseNode | App,
+      agent_name: str | None = None,
+  ) -> tuple[BaseAgent, App | None]:
     """Returns the (agent_for_eval, app) pair for the given agent or module.
 
     `module_name` is either a `BaseNode` or `App` built by the caller, or the
@@ -696,7 +689,7 @@ class AgentEvaluator:
       if module_name.root_agent is None:
         raise TypeError(f"App {module_name.name!r} does not have a root_agent.")
       root_agent: BaseNode = module_name.root_agent
-      app: Optional[App] = module_name
+      app: App | None = module_name
     elif isinstance(module_name, BaseNode):
       root_agent, app = module_name, None
     elif isinstance(module_name, str):
@@ -727,7 +720,7 @@ class AgentEvaluator:
   @staticmethod
   async def _load_agent_from_module(
       module_name: str,
-  ) -> tuple[BaseAgent, Optional[App]]:
+  ) -> tuple[BaseAgent, App | None]:
     """Returns the (root_agent, app) pair defined in the given module."""
     module_path = f"{module_name}"
     loaded_module = importlib.import_module(module_path)
@@ -796,13 +789,13 @@ class AgentEvaluator:
       eval_metrics: list[EvalMetric],
       num_runs: int,
       user_simulator_provider: UserSimulatorProvider,
-      live_model_config: Optional[LiveModelConfig] = None,
-      artifact_service: Optional[BaseArtifactService] = None,
-      app: Optional[App] = None,
+      live_model_config: LiveModelConfig | None = None,
+      artifact_service: BaseArtifactService | None = None,
+      app: App | None = None,
       *,
       app_name: str,
-      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
-      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
+      eval_set_results_manager: EvalSetResultsManager | None = None,
+      metric_evaluator_registry: MetricEvaluatorRegistry | None = None,
       parallelism: int | None = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.

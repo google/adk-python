@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from collections.abc import Iterator
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 import logging
@@ -30,6 +31,7 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from pydantic import Field
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..events._branch_path import _BranchPath
@@ -45,9 +47,12 @@ from ._graph import EdgeItem
 from ._graph import Graph
 from ._node_state import NodeState
 from ._node_status import NodeStatus
+from ._retry_config import RetryConfig
 from ._trigger import Trigger
 from .utils._rehydration_utils import _ChildScanState
 from .utils._replay_interceptor import check_interception
+from .utils._retry_utils import _has_own_retry_config
+from .utils._retry_utils import _with_retry_config
 
 if TYPE_CHECKING:
   from ..agents.context import Context
@@ -90,6 +95,19 @@ class _LoopState(DynamicNodeState):
   error_shut_down: bool = False
   """Flag indicating that the workflow is shutting down due to an error."""
 
+  checkpoint_pending: bool = False
+  """Whether static node statuses changed since the last checkpoint.
+
+  Set when a node starts or completes for real (not a replayed fast-forward)
+  or reaches WAITING or FAILED. `_run_loop` flushes it once per scheduler
+  tick, after `_schedule_ready_nodes`, and after each error-drain pass.
+  """
+
+  checkpointed_running_replayed: frozenset[str] = field(
+      default_factory=frozenset
+  )
+  """Replayed nodes recorded as RUNNING in the last emitted checkpoint."""
+
   join_arrivals: dict[str, set[str]] = field(default_factory=dict)
   """Predecessor arrivals that each wait-for-all node has not consumed yet.
 
@@ -115,7 +133,7 @@ class _LoopState(DynamicNodeState):
 
   A node is added when it is scheduled as a no-op replay and removed when
   that run completes, so completion handling can tell a genuine execution
-  from a fast-forward when deciding whether to emit a checkpoint.
+  from a fast-forward when deciding whether to mark a checkpoint as pending.
   """
 
   trigger_buffer: dict[str, list[Trigger]] = field(default_factory=dict)
@@ -138,6 +156,15 @@ class _LoopState(DynamicNodeState):
 # ---------------------------------------------------------------------------
 
 
+def _collect_own_retry_node_names(graph: Graph) -> frozenset[str]:
+  """Returns names of static nodes in ``graph`` with their own retry policy."""
+  return frozenset(
+      node.name
+      for node in graph.nodes
+      if node.name != START.name and _has_own_retry_config(node)
+  )
+
+
 class Workflow(BaseNode):
   """A graph-based workflow node.
 
@@ -148,6 +175,9 @@ class Workflow(BaseNode):
   """
 
   rerun_on_resume: bool = Field(default=True)
+
+  retry_config: RetryConfig | None = Field(default=None, frozen=True)
+  """Frozen; use ``Workflow(...)`` or ``node(workflow, retry_config=...)``."""
 
   edges: list[EdgeItem] = Field(
       description="Edges to build the workflow graph.",
@@ -172,7 +202,28 @@ class Workflow(BaseNode):
   a graph, in which case ``_run_impl`` returns immediately. Helpers reached
   from the orchestration loop should call ``_require_graph()`` rather than
   read this field.
+
+  With ``retry_config`` set, the graph holds copies of the static children
+  that inherit it (agents are cloned), and the nodes passed in ``edges`` are
+  left unchanged. Children take the policy when the workflow is built or
+  copied (as with ``node(workflow, retry_config=...)``); ``retry_config`` is
+  frozen on ``Workflow``, so assigning it after construction raises
+  ``pydantic.ValidationError``. A graph passed in through ``graph=`` or
+  ``model_copy(update={"graph": ...})`` is taken as declared: a
+  ``retry_config`` already set on one of its children counts as that child's
+  own, even one inherited from the workflow the graph came from. Build such a
+  graph from ``edges`` rather than taking it from a workflow with
+  ``retry_config``.
   """
+
+  _own_retry_node_names: frozenset[str] = PrivateAttr(default_factory=frozenset)
+  """Names of static graph children that declared their own ``retry_config``.
+
+  Collected when the children first inherit a policy.
+  """
+
+  _graph_retry_config: RetryConfig | None = PrivateAttr(default=None)
+  """The ``retry_config`` that the static graph children inherited, if any."""
 
   # --- Construction ---
 
@@ -180,7 +231,88 @@ class Workflow(BaseNode):
     super().model_post_init(context)
     if self.edges and self.graph is None:
       self.graph = self._build_graph()
+    self._inherit_retry_config()
     self._validate_state_schema()
+
+  @override
+  def model_copy(
+      self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+  ) -> Workflow:
+    """Copies the workflow, propagating an updated ``retry_config`` or graph.
+
+    When ``update`` sets ``retry_config``, static graph children without
+    their own ``retry_config`` inherit the new policy, or lose the inherited
+    one when it is ``None``. When ``update`` replaces ``graph``, its children
+    inherit the copy's ``retry_config``; a ``retry_config`` already set on one
+    of them counts as that child's own.
+
+    Args:
+      update: Values for fields of the copy, replacing the workflow's. If
+        ``None``, no field values are replaced.
+      deep: Whether to make a deep copy.
+
+    Returns:
+      The copy of the workflow.
+    """
+    copied = super().model_copy(update=update, deep=deep)
+    if not update:
+      return copied
+    if "graph" in update:
+      # A replaced graph holds only the policies its children declared.
+      copied._graph_retry_config = None
+    if "graph" in update or "retry_config" in update:
+      copied._inherit_retry_config()
+    return copied
+
+  def _inherit_retry_config(self) -> None:
+    """Applies ``retry_config`` to static children without their own.
+
+    Reads the children's policies only when they inherit a new one, so a
+    workflow without ``retry_config`` never reads them.
+    """
+    if self.graph is None or self.retry_config == self._graph_retry_config:
+      return
+    if self._graph_retry_config is None:
+      # Nothing is inherited yet, so every child policy is the child's own.
+      self._own_retry_node_names = _collect_own_retry_node_names(self.graph)
+    self.graph = self._graph_with_retry_config(self.graph, self.retry_config)
+    self._graph_retry_config = self.retry_config
+
+  def _graph_with_retry_config(
+      self, graph: Graph, retry_config: RetryConfig | None
+  ) -> Graph:
+    """Returns a copy of ``graph`` with ``retry_config`` applied to children."""
+    node_map: dict[int, BaseNode] = {}
+
+    def _resolve_node(node: BaseNode) -> BaseNode:
+      node_id = id(node)
+      resolved = node_map.get(node_id)
+      if resolved is None:
+        if node.name == START.name or node.name in self._own_retry_node_names:
+          resolved = node
+        else:
+          resolved = _with_retry_config(node, retry_config)
+        node_map[node_id] = resolved
+      return resolved
+
+    new_edges = [
+        edge.model_copy(
+            update={
+                "from_node": _resolve_node(edge.from_node),
+                "to_node": _resolve_node(edge.to_node),
+            }
+        )
+        for edge in graph.edges
+    ]
+    # model_copy keeps every other field and private attribute, such as the
+    # terminal node names from validate_graph. It skips model_post_init, which
+    # derives nodes from edges, so the copied nodes are passed explicitly.
+    return graph.model_copy(
+        update={
+            "edges": new_edges,
+            "nodes": [_resolve_node(node) for node in graph.nodes],
+        }
+    )
 
   def _build_graph(self) -> Graph:
     """Convert edge definitions to a validated Graph."""
@@ -320,8 +452,12 @@ class Workflow(BaseNode):
         return
 
       await self._schedule_ready_nodes(loop_state, ctx)
+      await self._flush_node_checkpoint(loop_state, ctx)
 
       if not loop_state.pending_tasks:
+        if loop_state.checkpointed_running_replayed - loop_state.replayed_nodes:
+          loop_state.checkpoint_pending = True
+          await self._flush_node_checkpoint(loop_state, ctx)
         break
 
       wait_tasks: list[asyncio.Task[Any]] = list(
@@ -385,17 +521,30 @@ class Workflow(BaseNode):
         await self._handle_completion(loop_state, name, task.result(), ctx)
 
       if ctx._error is not None:
-        # Drain sibling tasks that finished in the same tick so their completed
-        # outputs and state changes are preserved before shutting down.
-        while loop_state.pending_tasks:
+        # Drain finished siblings so their outputs and state changes are
+        # preserved before shutting down. In resumable apps each checkpoint
+        # flush blocks until earlier queued events are consumed, releasing
+        # siblings parked on them; non-resumable flushes don't block. Stop
+        # once a pass neither drains a task nor flushes a checkpoint.
+        while True:
           done_siblings = [
-              task for task in loop_state.pending_tasks.values() if task.done()
+              t for t in loop_state.pending_tasks.values() if t.done()
           ]
-          if not done_siblings:
-            break
           for task in done_siblings:
             name = self._pop_completed_task(loop_state, task)
             await self._handle_completion(loop_state, name, task.result(), ctx)
+          if (
+              not done_siblings
+              and not loop_state.checkpoint_pending
+              and (
+                  loop_state.checkpointed_running_replayed
+                  - loop_state.replayed_nodes
+              )
+          ):
+            loop_state.checkpoint_pending = True
+          flushed = await self._flush_node_checkpoint(loop_state, ctx)
+          if not done_siblings and not flushed:
+            break
 
         loop_state.error_shut_down = True
         logger.debug("node %s execute loop end.", ctx.node_path)
@@ -547,7 +696,7 @@ class Workflow(BaseNode):
     # Only a genuinely-executing node marks a new step; a replayed node
     # being fast-forwarded from history should not re-announce itself.
     if started:
-      await self._emit_node_checkpoint(loop_state, ctx)
+      loop_state.checkpoint_pending = True
 
   def _at_concurrency_limit(self, loop_state: _LoopState) -> bool:
     """Check if max_concurrency has been reached.
@@ -721,6 +870,20 @@ class Workflow(BaseNode):
 
   # --- Resumability checkpoints ---
 
+  async def _flush_node_checkpoint(
+      self, loop_state: _LoopState, ctx: Context
+  ) -> bool:
+    """Emit one checkpoint if node statuses changed since the last flush.
+
+    Returns True if a checkpoint was pending (even when `is_resumable` is False
+    and `_emit_node_checkpoint` is a no-op).
+    """
+    if not loop_state.checkpoint_pending:
+      return False
+    loop_state.checkpoint_pending = False
+    await self._emit_node_checkpoint(loop_state, ctx)
+    return True
+
   async def _emit_node_checkpoint(
       self, loop_state: _LoopState, ctx: Context
   ) -> None:
@@ -740,6 +903,12 @@ class Workflow(BaseNode):
     from ..events.event import Event
     from ..events.event_actions import EventActions
 
+    loop_state.checkpointed_running_replayed = frozenset(
+        name
+        for name, run in loop_state.static_runs.items()
+        if name in loop_state.replayed_nodes
+        and run.state.status == NodeStatus.RUNNING
+    )
     nodes = {
         name: run.state.model_dump(
             mode="json", include={"status", "interrupts"}
@@ -809,20 +978,21 @@ class Workflow(BaseNode):
     run.record_outcome(child_ctx, node, loop_state.interrupt_ids)
 
     if run.state.status == NodeStatus.FAILED:
+      loop_state.checkpoint_pending = True
       if ctx._error is None:
         ctx._error = child_ctx.error
         ctx._error_node_path = child_ctx.error_node_path
       return
 
     if run.state.status == NodeStatus.WAITING:
-      await self._emit_node_checkpoint(loop_state, ctx)
+      loop_state.checkpoint_pending = True
       return
 
-    # A genuine execution records a checkpoint on completion. A replayed
+    # A genuine execution marks a checkpoint pending on completion. A replayed
     # fast-forward instead re-surfaces its recovered output so a resumable
     # stream stays complete, without a redundant checkpoint.
     if not replayed:
-      await self._emit_node_checkpoint(loop_state, ctx)
+      loop_state.checkpoint_pending = True
     else:
       await self._maybe_reemit_replayed_output(child_ctx, ctx)
 

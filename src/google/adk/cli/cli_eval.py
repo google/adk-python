@@ -23,7 +23,6 @@ import textwrap
 from types import ModuleType
 from typing import Any
 from typing import cast
-from typing import Optional
 
 import click
 from google.genai import types as genai_types
@@ -31,6 +30,7 @@ from google.genai import types as genai_types
 from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..evaluation._eval_case_result_multi_run_aggregator import count_runs_failed_without_metric_results
+from ..evaluation._eval_case_result_multi_run_aggregator import CrossRunCriterionSummary
 from ..evaluation._eval_case_result_multi_run_aggregator import describe_run_statuses
 from ..evaluation._eval_case_result_multi_run_aggregator import get_run_status
 from ..evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
@@ -101,7 +101,7 @@ def _get_agent_module(agent_module_file_path: str) -> ModuleType:
 
 async def get_app_or_root_agent(
     agent_module_file_path: str,
-) -> tuple[Optional[App], BaseAgent]:
+) -> tuple[App | None, BaseAgent]:
   """Returns the (app, root_agent) pair for the given agent module.
 
   If the module exposes an `App` instance via `app`, that App and its
@@ -211,7 +211,7 @@ async def _collect_eval_results(
     eval_metrics: list[EvalMetric],
     *,
     parallelism: int | None = None,
-    multi_run_config: Optional[MultiRunConfig] = None,
+    multi_run_config: MultiRunConfig | None = None,
 ) -> list[EvalCaseResult]:
   """Simple utility methods to collect eval results from an eval service.
 
@@ -238,7 +238,7 @@ async def _collect_eval_results(
 
 
 def _convert_content_to_text(
-    content: Optional[genai_types.Content],
+    content: genai_types.Content | None,
 ) -> str:
   if content and content.parts:
     return "\n".join([p.text for p in content.parts if p.text])
@@ -259,13 +259,13 @@ def _format_tool_call(tool_call: genai_types.FunctionCall) -> str:
 
 
 def _convert_tool_calls_to_text(
-    intermediate_data: Optional[IntermediateDataType],
+    intermediate_data: IntermediateDataType | None,
 ) -> str:
   tool_calls = get_all_tool_calls(intermediate_data)
   return "\n".join([_format_tool_call(t) for t in tool_calls])
 
 
-def _format_token_count(value: Optional[float]) -> str:
+def _format_token_count(value: float | None) -> str:
   """Formats a token count, showing unavailable counts as n/a rather than 0."""
   return "n/a" if value is None else f"{value:g}"
 
@@ -312,7 +312,7 @@ _DURATION_BREAKDOWN_ROWS = (
 )
 
 
-def _format_seconds(value: Optional[float]) -> str:
+def _format_seconds(value: float | None) -> str:
   """Formats a duration, showing an unmeasured one as n/a rather than 0."""
   return "n/a" if value is None else f"{value:g}s"
 
@@ -387,6 +387,24 @@ def _format_method_result(method_result: MethodResult) -> str:
   return text
 
 
+def _format_eval_set_criterion_summary(
+    summary: CrossRunCriterionSummary,
+) -> str:
+  """Formats a cross-run criterion's mean over an eval set's cases.
+
+  The line says how many cases the mean covers when some case had no value,
+  so "pass^3: 0.41 (mean over 11 of 12 cases)" is not read as a mean over
+  all twelve.
+  """
+  if summary.mean is None:
+    return f"{summary.name}: n/a (no case had a value)"
+  if summary.num_cases_with_value == summary.num_cases:
+    cases = "1 case" if summary.num_cases == 1 else f"{summary.num_cases} cases"
+  else:
+    cases = f"{summary.num_cases_with_value} of {summary.num_cases} cases"
+  return f"{summary.name}: {summary.mean:.2f} (mean over {cases})"
+
+
 def _describe_crashed_runs(*, crashed: int, runs: int, allowed: int) -> str:
   """Returns the line that says how many runs crashed, and how many may.
 
@@ -417,7 +435,7 @@ def _format_run_symbol(run: EvalCaseResult) -> str:
 
 def _get_run_metric_score(
     run: EvalCaseResult, metric_name: str
-) -> Optional[float]:
+) -> float | None:
   """Returns a single run's score for `metric_name`, or None if unavailable."""
   for metric_result in run.overall_eval_metric_results:
     if (
@@ -735,7 +753,7 @@ def _echo_field(label: str, value: str) -> None:
 
 
 def get_eval_sets_manager(
-    eval_storage_uri: Optional[str], agents_dir: str
+    eval_storage_uri: str | None, agents_dir: str
 ) -> EvalSetsManager:
   """Returns an instance of EvalSetsManager."""
   try:

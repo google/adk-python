@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Collection
+from collections.abc import Mapping
 import contextlib
 import copy
 import dataclasses
@@ -36,6 +38,7 @@ from typing import TYPE_CHECKING
 from typing import TypeAlias
 import warnings
 
+import anthropic
 from anthropic import AsyncAnthropic
 from anthropic import AsyncAnthropicVertex
 from anthropic import NOT_GIVEN
@@ -58,6 +61,7 @@ from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
+from .llm_request import _is_transient_user_content
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
@@ -1339,6 +1343,8 @@ def _apply_cache_breakpoints(
 
 def _ensure_messages_end_with_user(
     messages: list[anthropic_types.MessageParam],
+    *,
+    transient_indices: Collection[int] = (),
 ) -> None:
   """Appends a user turn when the conversation does not end on one.
 
@@ -1348,10 +1354,23 @@ def _ensure_messages_end_with_user(
   which the other model classes call on `llm_request.contents`. This runs on
   the converted messages instead, so that a turn dropped for having no content
   is accounted for and the synthetic turn stays outside the cached prefix.
+
+  Args:
+    messages: Converted conversation messages, modified in place.
+    transient_indices: Message indices carrying request-scoped ADK content.
   """
-  if messages and messages[-1]["role"] == "user":
+  last_non_transient = None
+  for index in range(len(messages) - 1, -1, -1):
+    if index not in transient_indices:
+      last_non_transient = messages[index]
+      break
+  if (
+      last_non_transient is not None
+      and last_non_transient["role"] == "user"
+      and messages[-1]["role"] == "user"
+  ):
     return
-  if messages:
+  if last_non_transient is not None:
     text = (
         "Continue processing previous requests as instructed."
         " Exit or provide a summary if no more outputs are needed."
@@ -1362,6 +1381,51 @@ def _ensure_messages_end_with_user(
       "role": "user",
       "content": [anthropic_types.TextBlockParam(type="text", text=text)],
   })
+
+
+_SAMPLING_REMOVED_API_VERSION = "2026-10-21"
+_API_VERSION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _anthropic_sdk_major_version() -> int | None:
+  version = getattr(anthropic, "__version__", "")
+  if not isinstance(version, str):
+    return None
+  major, _, _ = version.partition(".")
+  return int(major) if major.isdigit() else None
+
+
+def _extract_anthropic_version_header(
+    client: AsyncAnthropic,
+) -> str | None:
+  """Returns the client's effective anthropic-version header, if set."""
+  # _custom_headers holds caller overrides ahead of the SDK's lowercase default.
+  for attr in ("_custom_headers", "default_headers"):
+    headers = getattr(client, attr, None)
+    if not isinstance(headers, Mapping):
+      continue
+    found = False
+    api_version: str | None = None
+    for key, value in headers.items():
+      if isinstance(key, str) and key.lower() == "anthropic-version":
+        found = True
+        api_version = value.strip() if isinstance(value, str) else None
+    if found:
+      return api_version
+  return None
+
+
+def _client_rejects_sampling(
+    client: AsyncAnthropic | AsyncAnthropicVertex | None,
+) -> bool:
+  """Returns whether the client targets API version 2026-10-21 or later."""
+  # Vertex sends anthropic_version in the body, not as an HTTP header.
+  if client is not None and not isinstance(client, AsyncAnthropicVertex):
+    api_version = _extract_anthropic_version_header(client)
+    if api_version is not None and _API_VERSION_DATE_RE.match(api_version):
+      return api_version >= _SAMPLING_REMOVED_API_VERSION
+  major = _anthropic_sdk_major_version()
+  return major is not None and major >= 2
 
 
 class AnthropicLlm(BaseLlm):
@@ -1410,6 +1474,14 @@ class AnthropicLlm(BaseLlm):
         return match.group(1)
     return model
 
+  def _resolved_anthropic_client(
+      self,
+  ) -> AsyncAnthropic | AsyncAnthropicVertex | None:
+    cached_client = self.__dict__.get("_anthropic_client")
+    if cached_client is not None:
+      return cast(AsyncAnthropic | AsyncAnthropicVertex, cached_client)
+    return self.client
+
   def _build_anthropic_kwargs(
       self,
       llm_request: LlmRequest,
@@ -1422,6 +1494,9 @@ class AnthropicLlm(BaseLlm):
           | anthropic_types.ThinkingConfigAdaptiveParam
           | NotGiven
       ),
+      *,
+      client: AsyncAnthropic | AsyncAnthropicVertex | None = None,
+      transient_message_indices: Collection[int] = (),
   ) -> dict[str, Any]:
     system: str | NotGiven = NOT_GIVEN
     if llm_request.config:
@@ -1432,15 +1507,18 @@ class AnthropicLlm(BaseLlm):
     system_param: str | list[anthropic_types.TextBlockParam] | NotGiven = system
     cache_config = _prompt_cache.resolve_cache_config(llm_request)
     if cache_config is not None:
+      cache_end = min(transient_message_indices, default=len(messages))
       system_param = _apply_cache_breakpoints(
           cache_config=cache_config,
           system=system,
-          messages=messages,
+          messages=messages[:cache_end],
           tools=tools,
       )
 
     # After the cache breakpoints, so the synthetic turn is never cached.
-    _ensure_messages_end_with_user(messages)
+    _ensure_messages_end_with_user(
+        messages, transient_indices=transient_message_indices
+    )
 
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
@@ -1459,27 +1537,40 @@ class AnthropicLlm(BaseLlm):
     exclude_sampling = _thinking_is_enabled(thinking) or (effort is not None)
 
     if llm_request.config:
-      # Models released after Claude Opus 4.6 do not support setting
-      # temperature, top_k, or top_p when thinking is enabled or effort is set.
-      if not exclude_sampling:
-        if llm_request.config.temperature is not None:
-          kwargs["temperature"] = llm_request.config.temperature
-        if llm_request.config.top_p is not None:
-          kwargs["top_p"] = llm_request.config.top_p
-        if llm_request.config.top_k is not None:
-          kwargs["top_k"] = int(llm_request.config.top_k)
-      else:
-        if (
-            llm_request.config.temperature is not None
-            or llm_request.config.top_p is not None
-            or llm_request.config.top_k is not None
-        ):
+      has_sampling = (
+          llm_request.config.temperature is not None
+          or llm_request.config.top_p is not None
+          or llm_request.config.top_k is not None
+      )
+      if has_sampling:
+        if client is None:
+          client = self._resolved_anthropic_client()
+        # Models after Claude Opus 4.6 reject sampling params with thinking or
+        # effort enabled.
+        if exclude_sampling:
           warnings.warn(
               "Sampling parameters (temperature, top_p, top_k) are ignored "
               "because thinking/effort is enabled.",
               category=UserWarning,
               stacklevel=3,
           )
+        elif _client_rejects_sampling(client):
+          warnings.warn(
+              "Sampling parameters (temperature, top_p, top_k) are ignored "
+              "because Claude API version 2026-10-21 removed them.",
+              category=UserWarning,
+              stacklevel=3,
+          )
+        else:
+          # SDK 1.0 dropped these from create(); pre-2026-10-21 APIs take them.
+          sampling: dict[str, float | int] = {}
+          if llm_request.config.temperature is not None:
+            sampling["temperature"] = llm_request.config.temperature
+          if llm_request.config.top_p is not None:
+            sampling["top_p"] = llm_request.config.top_p
+          if llm_request.config.top_k is not None:
+            sampling["top_k"] = int(llm_request.config.top_k)
+          kwargs["extra_body"] = sampling
 
       if llm_request.config.stop_sequences:
         kwargs["stop_sequences"] = llm_request.config.stop_sequences
@@ -1504,18 +1595,23 @@ class AnthropicLlm(BaseLlm):
     # Anthropic rejects a message with empty content. Sending one re-wedges the
     # session exactly as the NotImplementedError did: the offending part stays
     # in history, so every later turn fails the same way.
-    def _build_messages() -> list[anthropic_types.MessageParam]:
-      return [
-          message
-          for message in (
-              _content_to_message_param(content, sanitizer, downloads)
-              for content in llm_request.contents or []
-          )
-          if message["content"]
-      ]
+    def _build_messages() -> (
+        tuple[list[anthropic_types.MessageParam], set[int]]
+    ):
+      built_messages: list[anthropic_types.MessageParam] = []
+      transient_indices: set[int] = set()
+      for content in llm_request.contents or []:
+        message = _content_to_message_param(content, sanitizer, downloads)
+        if message["content"]:
+          if _is_transient_user_content(llm_request, content):
+            transient_indices.add(len(built_messages))
+          built_messages.append(message)
+      return built_messages, transient_indices
 
     # Converting a gs:// file part downloads it, which would block the loop.
-    messages = await asyncio.to_thread(_build_messages)
+    messages, transient_message_indices = await asyncio.to_thread(
+        _build_messages
+    )
     tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
     function_declarations: list[types.FunctionDeclaration] = []
     if llm_request.config and llm_request.config.tools:
@@ -1558,9 +1654,22 @@ class AnthropicLlm(BaseLlm):
 
     try:
       client = await self._get_anthropic_client()
+      transient_kwargs = (
+          {"transient_message_indices": transient_message_indices}
+          if transient_message_indices
+          else {}
+      )
       if not stream:
+        extra_kwargs: dict[str, Any] = dict(transient_kwargs)
+        if client is not self._resolved_anthropic_client():
+          extra_kwargs["client"] = client
         kwargs = self._build_anthropic_kwargs(
-            llm_request, messages, tools, tool_choice, thinking
+            llm_request,
+            messages,
+            tools,
+            tool_choice,
+            thinking,
+            **extra_kwargs,
         )
         message = await client.messages.create(**kwargs)
         response = message_to_generate_content_response(message)
@@ -1575,6 +1684,7 @@ class AnthropicLlm(BaseLlm):
             tool_choice,
             thinking,
             output_schema_tool=output_schema_tool,
+            **transient_kwargs,
         ):
           yield response
     except RateLimitError as rate_limit_error:
@@ -1594,6 +1704,7 @@ class AnthropicLlm(BaseLlm):
       ) = NOT_GIVEN,
       *,
       output_schema_tool: _OutputSchemaTool | None = None,
+      transient_message_indices: Collection[int] = (),
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -1605,15 +1716,29 @@ class AnthropicLlm(BaseLlm):
       thinking: Optional thinking details.
       output_schema_tool: The tool carrying a requested response schema, whose
         call is streamed as the response text rather than as a function call.
+      transient_message_indices: Message indices carrying request-scoped ADK
+        content.
 
     Yields:
       Partial LlmResponse objects as content arrives, followed by
       a final aggregated LlmResponse with all content.
     """
-    kwargs = self._build_anthropic_kwargs(
-        llm_request, messages, tools, tool_choice, thinking
-    )
     client = await self._get_anthropic_client()
+    extra_kwargs: dict[str, Any] = (
+        {"transient_message_indices": transient_message_indices}
+        if transient_message_indices
+        else {}
+    )
+    if client is not self._resolved_anthropic_client():
+      extra_kwargs["client"] = client
+    kwargs = self._build_anthropic_kwargs(
+        llm_request,
+        messages,
+        tools,
+        tool_choice,
+        thinking,
+        **extra_kwargs,
+    )
     raw_stream = await client.messages.create(
         stream=True,
         **kwargs,

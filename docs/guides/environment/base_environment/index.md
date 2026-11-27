@@ -184,8 +184,9 @@ environment.
 ## Advanced applications
 
 The first section below is for backing the interface with something other than a
-subprocess, and the second is for the case where two toolsets have to agree on
-one working directory.
+subprocess, the second is for an environment that keeps a resource per session
+or user, and the third is for the case where two toolsets have to agree on one
+working directory.
 
 ### Write your own environment
 
@@ -259,11 +260,87 @@ build the model request, and pass that call's context, so state that
 `initialize` writes is saved with the tool call, and an environment that keeps a
 sandbox per session can create it on the session's first tool call. That makes
 the idempotence the lifecycle above asks for a requirement: once the environment
-is set up, `initialize` should return quickly. The toolsets run the calls for
-one environment one at a time, even when two toolsets share it, so concurrent
-tool calls do not set it up twice. `close` and `working_dir` take no context.
-Code that drives an environment directly, as in the example under
-[Get started](#get-started), can leave `ctx` out.
+is set up, `initialize` should return quickly. By default the toolsets run the
+calls for one environment one at a time, even when two toolsets share it, so
+concurrent tool calls do not set it up twice; an environment that keeps a
+resource per session or user can narrow that, as the next section describes.
+`close` and `working_dir` take no context. Code that drives an environment
+directly, as in the example under [Get started](#get-started), can leave `ctx`
+out.
+
+If `initialize` raises, for example because a sandbox cannot be created, the
+tool call raises the same exception rather than returning an error result. ADK
+handles it like any exception that a tool raises, which the `BaseTool` guide
+describes under
+[Errors raised by `run_async`](../../tools/base_tool/index.md#errors-raised-by-run_async).
+To let the model see the failure and carry on, return a result from
+`on_tool_error_callback`:
+
+```python
+def report_tool_error(tool, args, tool_context, error):
+  return {"status": "error", "error": f"{type(error).__name__}: {error}"}
+
+
+root_agent = Agent(
+    ...,
+    tools=[EnvironmentToolset(environment=environment)],
+    on_tool_error_callback=report_tool_error,
+)
+```
+
+The callback runs for every tool of the agent, so check `tool.name` or the
+exception type there to treat some failures differently. The next tool call
+calls `initialize` again.
+
+### Keep a resource per session or user
+
+An environment that gives each session or each user a resource of its own, such
+as a sandbox, says so through its `scope` property. The toolsets use it to
+decide which `initialize` calls wait for each other.
+
+| `EnvironmentScope` | Calls that run one at a time | Calls that run together |
+| :----------------- | :--------------------------- | :---------------------- |
+| `SHARED` (default) | All calls for the environment | None |
+| `USER` | Calls for one user, across the user's sessions | Calls for different users |
+| `SESSION` | Calls for one session | Calls for different sessions |
+
+The toolsets serialize these calls within one process. When the agent runs as
+several instances, calls that reach different instances are not serialized.
+
+```python
+from google.adk.agents import Context
+from google.adk.environment import BaseEnvironment
+from google.adk.environment import EnvironmentScope
+
+
+class SandboxPerSessionEnvironment(BaseEnvironment):
+
+  @property
+  def scope(self) -> EnvironmentScope:
+    return EnvironmentScope.SESSION
+
+  async def initialize(self, *, ctx: Context | None = None) -> None:
+    # Look up this session's sandbox in ctx.state and create it if missing.
+    ...
+```
+
+With the default `SHARED` scope, a session whose `initialize` is slow, for
+example because it is creating a sandbox, makes every other session's tool
+calls wait. With `USER` or `SESSION`, `initialize` runs for several users or
+sessions at once, possibly on different threads, so whatever those calls share
+inside the environment, such as a client or a cache, needs its own lock. A
+toolset's `close()` still waits for the `initialize` calls that are running,
+whatever user or session they are for, and holds back new ones until the
+environment is closed. A user is identified by app name and user ID, and a
+session by app name, user ID and session ID.
+
+Return the same scope for the whole life of the environment, and make a class
+that wraps another environment return the wrapped environment's `scope`;
+otherwise the wrapper is locked as `SHARED`, as is an environment whose `scope`
+is not an `EnvironmentScope` value.
+
+The scope does not change `working_dir`, which takes no context: such an
+environment uses the same path inside each of its resources.
 
 ### Share one environment across a conversation
 
@@ -286,7 +363,8 @@ it has nothing to do with a session. An environment held in a module-level
 variable is shared by every user of the process, which is fine for a single-user
 command-line agent and wrong for a server. None of the built-in environments
 isolate sessions, but one of your own can, by using the `ctx` its methods
-receive to choose a workspace per session or user.
+receive to choose a workspace per session or user; see
+[Keep a resource per session or user](#keep-a-resource-per-session-or-user).
 
 ## Limitations
 
