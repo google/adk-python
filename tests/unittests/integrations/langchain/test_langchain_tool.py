@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 from google.adk.events.event_actions import EventActions
 from google.adk.integrations.langchain import LangchainTool
+from google.adk.tools.tool_configs import ToolArgsConfig
 from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
@@ -200,3 +201,37 @@ async def test_return_direct_default_false_leaves_skip_summarization():
 
   assert result == 4
   assert tool_context.actions.skip_summarization is None
+
+
+def test_from_config_keeps_the_tool_name_and_description():
+  """Options a config leaves out keep the wrapped tool's own metadata."""
+  config = ToolArgsConfig(tool=f"{__name__}.sync_add_with_annotation")
+
+  langchain_tool = LangchainTool.from_config(config, "")
+
+  assert langchain_tool.name == "sync_add_with_annotation"
+  assert langchain_tool.description == "Adds two numbers"
+
+
+def test_from_config_overrides_only_the_name_it_sets():
+  """A config that sets only a name keeps the tool's description."""
+  config = ToolArgsConfig(
+      tool=f"{__name__}.sync_add_with_annotation", name="adder"
+  )
+
+  langchain_tool = LangchainTool.from_config(config, "")
+
+  assert langchain_tool.name == "adder"
+  assert langchain_tool.description == "Adds two numbers"
+
+
+def test_from_config_overrides_only_the_description_it_sets():
+  """A config that sets only a description keeps the tool's name."""
+  config = ToolArgsConfig(
+      tool=f"{__name__}.sync_add_with_annotation", description="Adds"
+  )
+
+  langchain_tool = LangchainTool.from_config(config, "")
+
+  assert langchain_tool.name == "sync_add_with_annotation"
+  assert langchain_tool.description == "Adds"

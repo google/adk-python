@@ -18,8 +18,16 @@ from google.genai import types
 
 from ._client_labels_utils import get_client_labels
 
+# TODO: Callers that can be pointed at a custom endpoint still send the runtime
+# tag there: google_llm (custom base_url or client), lite_llm (custom api_base
+# or litellm_proxy), the GCP skill registry (AGENT_REGISTRY_ENDPOINT), and the
+# Vertex session and memory services when _api_client_http_options_override
+# sets a base_url.
 
-def get_tracking_headers(framework_label: str | None = None) -> dict[str, str]:
+
+def get_tracking_headers(
+    framework_label: str | None = None, *, exclude_runtime_tag: bool = False
+) -> dict[str, str]:
   """Returns a dictionary of HTTP headers for tracking API requests.
 
   These headers are used to identify HTTP calls made by ADK towards
@@ -29,8 +37,12 @@ def get_tracking_headers(framework_label: str | None = None) -> dict[str, str]:
     framework_label: Optional SemVer build-metadata suffix appended to the
       google-adk framework token (e.g. "managed_agent"), used to distinguish a
       specific ADK surface in Google's server-side usage pipeline.
+    exclude_runtime_tag: Whether to leave out the hosting runtime suffix. Pass
+      True for requests that do not go to a Google API endpoint.
   """
-  labels = get_client_labels(framework_label=framework_label)
+  labels = get_client_labels(
+      framework_label=framework_label, exclude_runtime_tag=exclude_runtime_tag
+  )
   header_value = " ".join(labels)
   return {
       "x-goog-api-client": header_value,
@@ -38,18 +50,29 @@ def get_tracking_headers(framework_label: str | None = None) -> dict[str, str]:
   }
 
 
-def get_tracking_http_options() -> types.HttpOptions:
+def get_tracking_http_options(
+    *, exclude_runtime_tag: bool = False
+) -> types.HttpOptions:
   """Returns HttpOptions carrying ADK tracking headers for a genai Client.
 
   Use this when constructing a google.genai Client so its outbound calls are
   attributable to ADK by Google's server-side usage pipeline, matching
   models/google_llm.py.
+
+  Args:
+    exclude_runtime_tag: Whether to leave out the hosting runtime suffix (see
+      get_tracking_headers).
   """
-  return types.HttpOptions(headers=get_tracking_headers())
+  return types.HttpOptions(
+      headers=get_tracking_headers(exclude_runtime_tag=exclude_runtime_tag)
+  )
 
 
 def merge_tracking_headers(
-    headers: dict[str, str] | None, framework_label: str | None = None
+    headers: dict[str, str] | None,
+    framework_label: str | None = None,
+    *,
+    exclude_runtime_tag: bool = False,
 ) -> dict[str, str]:
   """Merge tracking headers to the given headers.
 
@@ -58,11 +81,15 @@ def merge_tracking_headers(
     framework_label: Optional SemVer build-metadata suffix appended to the
       google-adk framework token (e.g. "managed_agent"), used to distinguish a
       specific ADK surface in Google's server-side usage pipeline.
+    exclude_runtime_tag: Whether to leave out the hosting runtime suffix (see
+      get_tracking_headers).
 
   Returns:
     A dictionary of HTTP headers with tracking headers merged.
   """
-  tracking_headers = get_tracking_headers(framework_label=framework_label)
+  tracking_headers = get_tracking_headers(
+      framework_label=framework_label, exclude_runtime_tag=exclude_runtime_tag
+  )
   new_headers = {
       key: value
       for key, value in (headers or {}).items()
@@ -84,6 +111,8 @@ def merge_tracking_headers(
 def merge_tracking_http_options(
     http_options: types.HttpOptions | types.HttpOptionsDict | None = None,
     framework_label: str | None = None,
+    *,
+    exclude_runtime_tag: bool = False,
 ) -> types.HttpOptions | types.HttpOptionsDict:
   """Merges tracking headers into the given HttpOptions or HttpOptionsDict.
 
@@ -93,6 +122,8 @@ def merge_tracking_http_options(
     framework_label: Optional SemVer build-metadata suffix appended to the
       google-adk framework token (e.g. "managed_agent"), used to distinguish a
       specific ADK surface in Google's server-side usage pipeline.
+    exclude_runtime_tag: Whether to leave out the hosting runtime suffix (see
+      get_tracking_headers).
 
   Returns:
     HttpOptions or HttpOptionsDict with tracking headers merged.
@@ -102,10 +133,14 @@ def merge_tracking_http_options(
   if isinstance(http_options, dict):
     headers = http_options.get("headers")
     http_options["headers"] = merge_tracking_headers(
-        headers, framework_label=framework_label
+        headers,
+        framework_label=framework_label,
+        exclude_runtime_tag=exclude_runtime_tag,
     )
   else:
     http_options.headers = merge_tracking_headers(
-        http_options.headers, framework_label=framework_label
+        http_options.headers,
+        framework_label=framework_label,
+        exclude_runtime_tag=exclude_runtime_tag,
     )
   return http_options

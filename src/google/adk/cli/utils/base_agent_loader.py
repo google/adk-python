@@ -19,7 +19,6 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 from typing import Any
-from typing import Union
 
 from ...apps.app import App
 from ...workflow._base_node import BaseNode
@@ -35,10 +34,8 @@ class _AgentLoadError(RuntimeError):
 class BaseAgentLoader(ABC):
   """Abstract base class for agent loaders."""
 
-  _allow_special_agents: bool = False
-
   @abstractmethod
-  def load_agent(self, agent_name: str) -> Union[BaseNode, App]:
+  def load_agent(self, agent_name: str) -> BaseNode | App:
     """Loads an instance of an agent with the given name.
 
     Raises:

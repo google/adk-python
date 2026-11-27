@@ -515,23 +515,59 @@ def test_credential_return_is_redacted(fixture):
 def test_credential_named_args_are_not_recorded(fixture):
   name = "auto_tracing_plugin_test_cred_args"
 
-  def login(user: str, token: str, api_key: str, refresh_token: str):
-    del token, api_key, refresh_token
+  def login(
+      user: str,
+      token: str,
+      api_key: str,
+      refresh_token: str,
+      secret_key: str,
+      stripe_secret_key: str,
+      aws_secret_access_key: str,
+      passwd: str,
+      db_passwd: str,
+      secretary: str,
+      passage: str,
+      key_count: int,
+  ):
+    del token, api_key, refresh_token, secret_key, stripe_secret_key
+    del aws_secret_access_key
+    del passwd, db_passwd, secretary, passage, key_count
     return user
 
   mod = _install_module(name, login)
   try:
     _instrument(fixture.tracer, scope_prefixes=(name,))
     mod.fn(
-        "alice", _SENTINEL_TOKEN, _SENTINEL_TOKEN, refresh_token=_SENTINEL_TOKEN
+        "alice",
+        _SENTINEL_TOKEN,
+        _SENTINEL_TOKEN,
+        refresh_token=_SENTINEL_TOKEN,
+        secret_key=_SENTINEL_TOKEN,
+        stripe_secret_key=_SENTINEL_TOKEN,
+        aws_secret_access_key=_SENTINEL_TOKEN,
+        passwd=_SENTINEL_TOKEN,
+        db_passwd=_SENTINEL_TOKEN,
+        secretary="bob",
+        passage="chapter one",
+        key_count=3,
     )
     attrs = _attrs_for(fixture.exporter, "login")
     assert "adk.fn.arg.token" not in attrs
     assert "adk.fn.arg.api_key" not in attrs
     assert "adk.fn.arg.refresh_token" not in attrs
+    # Spellings `DebugLoggingPlugin` already redacts.
+    assert "adk.fn.arg.secret_key" not in attrs
+    assert "adk.fn.arg.stripe_secret_key" not in attrs
+    assert "adk.fn.arg.aws_secret_access_key" not in attrs
+    assert "adk.fn.arg.passwd" not in attrs
+    assert "adk.fn.arg.db_passwd" not in attrs
     assert _SENTINEL_TOKEN not in repr(attrs), attrs
-    # Ordinary args and returns are still traced.
+    # Ordinary args and returns are still traced, including names that merely
+    # contain a credential word.
     assert attrs.get("adk.fn.arg.user") == "'alice'"
+    assert attrs.get("adk.fn.arg.secretary") == "'bob'"
+    assert attrs.get("adk.fn.arg.passage") == "'chapter one'"
+    assert attrs.get("adk.fn.arg.key_count") == "3"
     assert attrs.get("adk.fn.return") == "'alice'"
   finally:
     sys.modules.pop(name, None)

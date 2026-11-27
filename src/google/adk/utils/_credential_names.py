@@ -48,7 +48,12 @@ CREDENTIAL_TYPE_NAMES = frozenset({
     'ServiceAccount',
     'ServiceAccountCredential',
 })
-# Parameter and field names that conventionally carry secret material.
+# Parameter and field names that conventionally carry secret material. They
+# cover the key names `DebugLoggingPlugin` redacts, other than the few that are
+# ordinary words in Python code (`signature`), so that a value redacted in the
+# debug log is not recorded on a span. Suffixes rather than substrings keep
+# `secretary` and `prompt_token_count` traced. test_serialization.py guards
+# the two lists against drifting apart.
 CREDENTIAL_ARG_NAMES = frozenset({
     'additional_headers',
     'api_key',
@@ -62,11 +67,16 @@ CREDENTIAL_ARG_NAMES = frozenset({
     'cookies',
     'credential',
     'credentials',
+    'passwd',
     'password',
     'private_key',
     'private_key_id',
     'secret',
+    'secret_access_key',
+    'secret_key',
     'token',
+    'x_amz_signature',
+    'x_goog_signature',
 })
 CREDENTIAL_ARG_SUFFIXES = (
     '_api_key',
@@ -76,9 +86,12 @@ CREDENTIAL_ARG_SUFFIXES = (
     '_cookies',
     '_credential',
     '_credentials',
+    '_passwd',
     '_password',
     '_private_key',
     '_secret',
+    '_secret_access_key',
+    '_secret_key',
     '_token',
 )
 

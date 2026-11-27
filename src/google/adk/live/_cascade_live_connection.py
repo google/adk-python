@@ -300,6 +300,15 @@ class CascadeLiveConnection(BaseLlmConnection):
         raise ConnectionClosedOK(None, _CLOSE_FRAME)
       yield item
 
+  async def send_context_update(
+      self,
+      *,
+      system_instruction: Optional[str] = None,
+      tools: Optional[types.ToolListUnion] = None,
+  ) -> None:
+    # Each turn copies the shared llm_request, which the flow updates.
+    return
+
   async def close(self) -> None:
     """Tears down the ingress pump and any in-flight reasoning turn."""
     if self._closed:

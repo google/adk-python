@@ -22,10 +22,7 @@ import shutil
 import subprocess
 import tempfile
 from typing import Any
-from typing import Dict
-from typing import List
 from typing import Protocol
-from typing import Tuple
 from unittest import mock
 
 import click
@@ -73,7 +70,7 @@ def test_dockerfile_template_preserves_multiline_ca_certificates_run() -> None:
 
 
 # Helpers
-def _parse_cmd_argv(dockerfile_content: str) -> List[str]:
+def _parse_cmd_argv(dockerfile_content: str) -> list[str]:
   """Extracts and parses the JSON array from a Dockerfile CMD instruction."""
   for line in dockerfile_content.splitlines():
     if line.startswith("CMD "):
@@ -85,18 +82,18 @@ class _Recorder:
   """A callable object that records every invocation."""
 
   def __init__(self) -> None:
-    self.calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+    self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
   def __call__(self, *args: Any, **kwargs: Any) -> None:
     self.calls.append((args, kwargs))
 
-  def get_last_call_args(self) -> Tuple[Any, ...]:
+  def get_last_call_args(self) -> tuple[Any, ...]:
     """Returns the positional arguments of the last call."""
     if not self.calls:
       raise IndexError("No calls have been recorded.")
     return self.calls[-1][0]
 
-  def get_last_call_kwargs(self) -> Dict[str, Any]:
+  def get_last_call_kwargs(self) -> dict[str, Any]:
     """Returns the keyword arguments of the last call."""
     if not self.calls:
       raise IndexError("No calls have been recorded.")
@@ -238,7 +235,8 @@ def test_to_cloud_run_happy_path(
   else:
     assert "# No requirements.txt found." in dockerfile_content
 
-  assert "--allow_origins=http://localhost:3000,https://my-app.com" in cmd_argv
+  assert "--allow_origins=http://localhost:3000" in cmd_argv
+  assert "--allow_origins=https://my-app.com" in cmd_argv
 
   assert len(run_recorder.calls) == 1
   gcloud_args = run_recorder.get_last_call_args()[0]
@@ -477,7 +475,7 @@ def test_to_cloud_run_cleans_temp_dir(
   tmp_dir = Path(tempfile.mkdtemp())
   src_dir = agent_dir(include_requirements=False, include_env=False)
 
-  deleted: Dict[str, Path] = {}
+  deleted: dict[str, Path] = {}
 
   def _fake_rmtree(path: str | Path, *_a: Any, **_k: Any) -> None:
     deleted["path"] = Path(path)
@@ -857,7 +855,7 @@ def test_render_dockerfile_rejects_malicious_app_name(
         service_options=[],
         trace_to_cloud_option="",
         otel_to_cloud_option="",
-        allow_origins_option="",
+        allow_origins=None,
         adk_version="1.3.0",
         host_option="--host=0.0.0.0",
         a2a_option="",
@@ -880,7 +878,7 @@ def test_render_dockerfile_rejects_injected_instructions(
     field: str, value: Any
 ) -> None:
   """A newline in an interpolated value would start a new Dockerfile line."""
-  kwargs: Dict[str, Any] = {
+  kwargs: dict[str, Any] = {
       "app_name": "safe_agent",
       "port": 8080,
       "command": "api_server",
@@ -888,7 +886,7 @@ def test_render_dockerfile_rejects_injected_instructions(
       "service_options": [],
       "trace_to_cloud_option": "",
       "otel_to_cloud_option": "",
-      "allow_origins_option": "",
+      "allow_origins": None,
       "adk_version": "1.3.0",
       "host_option": "--host=0.0.0.0",
       "a2a_option": "",
@@ -999,7 +997,7 @@ def test_dockerfile_run_and_cmd_use_exec_form() -> None:
       ],
       trace_to_cloud_option="--trace_to_cloud",
       otel_to_cloud_option="--otel_to_cloud",
-      allow_origins_option="--allow_origins=https://example.com",
+      allow_origins=["https://example.com"],
       adk_version="1.3.0",
       host_option="--host=0.0.0.0",
       a2a_option="--a2a",

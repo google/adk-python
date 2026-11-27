@@ -51,6 +51,7 @@ from google.genai.interactions import CodeExecutionCallStepParam
 from google.genai.interactions import CodeExecutionResultDelta
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import CodeExecutionResultStepParam
+from google.genai.interactions import Content
 from google.genai.interactions import ContentParam
 from google.genai.interactions import DocumentContentParam
 from google.genai.interactions import DocumentDelta
@@ -755,6 +756,36 @@ def _function_result_to_response(
   return {'result': result}
 
 
+def _convert_interaction_contents_to_parts(
+    contents: list[Content],
+) -> list[types.Part]:
+  """Converts text and media content items to parts, skipping other types."""
+  parts = []
+  for content in contents:
+    if content.type == 'text':
+      parts.append(types.Part.from_text(text=content.text))
+    elif content.type in ('image', 'audio', 'document', 'video'):
+      if content.data:
+        parts.append(
+            types.Part(
+                inline_data=types.Blob(
+                    data=content.data,
+                    mime_type=content.mime_type,
+                )
+            )
+        )
+      elif content.uri:
+        parts.append(
+            types.Part(
+                file_data=types.FileData(
+                    file_uri=content.uri,
+                    mime_type=content.mime_type,
+                )
+            )
+        )
+  return parts
+
+
 def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
   """Convert an interaction output content to a list of types.Part.
 
@@ -765,33 +796,7 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
     A list of types.Part objects.
   """
   if isinstance(step, ModelOutputStep):
-    if not step.content:
-      return []
-
-    parts = []
-    for content in step.content:
-      if content.type == 'text':
-        parts.append(types.Part.from_text(text=content.text))
-      elif content.type in ('image', 'audio', 'document', 'video'):
-        if content.data:
-          parts.append(
-              types.Part(
-                  inline_data=types.Blob(
-                      data=content.data,
-                      mime_type=content.mime_type,
-                  )
-              )
-          )
-        elif content.uri:
-          parts.append(
-              types.Part(
-                  file_data=types.FileData(
-                      file_uri=content.uri,
-                      mime_type=content.mime_type,
-                  )
-              )
-          )
-    return parts
+    return _convert_interaction_contents_to_parts(step.content or [])
   elif isinstance(step, FunctionCallStep):
     logger.debug(
         'Converting function_call output: name=%s, id=%s',
@@ -830,15 +835,25 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
       ]
     return []
   elif isinstance(step, CodeExecutionResultStep):
+    output = step.result
+    media_parts: list[types.Part] = []
+    if isinstance(output, list):
+      media_parts = _convert_interaction_contents_to_parts(
+          [content for content in output if content.type != 'text']
+      )
+      output = ''.join(
+          content.text for content in output if content.type == 'text'
+      )
     return [
         types.Part(
             code_execution_result=types.CodeExecutionResult(
-                output=step.result or '',
+                output=output or '',
                 outcome=types.Outcome.OUTCOME_FAILED
                 if step.is_error
                 else types.Outcome.OUTCOME_OK,
             )
-        )
+        ),
+        *media_parts,
     ]
   elif isinstance(step, CodeExecutionCallStep):
     args = step.arguments
@@ -1931,6 +1946,7 @@ async def generate_content_via_interactions(
     stream: bool,
     *,
     service_tier: ServiceTier | str | None = None,
+    exclude_runtime_tag: bool = False,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Generate content using the interactions API.
 
@@ -1947,6 +1963,8 @@ async def generate_content_via_interactions(
     stream: Whether to stream the response.
     service_tier: Optional serving tier. ``deferred`` queues the request to run
       on off-peak capacity and cannot be combined with streaming.
+    exclude_runtime_tag: Whether the tracking headers must leave out the hosting
+      runtime tag. True when api_client targets a non-Google endpoint.
 
   Yields:
     LlmResponse objects converted from interaction responses.
@@ -2024,7 +2042,9 @@ async def generate_content_via_interactions(
   config_headers = None
   if llm_request.config and llm_request.config.http_options:
     config_headers = llm_request.config.http_options.headers
-  extra_headers = merge_tracking_headers(config_headers)
+  extra_headers = merge_tracking_headers(
+      config_headers, exclude_runtime_tag=exclude_runtime_tag
+  )
 
   async for llm_response in _create_interactions(
       api_client,

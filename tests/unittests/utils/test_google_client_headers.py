@@ -194,6 +194,37 @@ def test_merge_tracking_headers_with_framework_label_preserves_custom_headers():
   }
 
 
+def test_merge_tracking_headers_without_runtime_tag(monkeypatch):
+  """exclude_runtime_tag=True keeps the runtime suffix out of the headers."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "test-agent-id")
+  headers = _google_client_headers.merge_tracking_headers(
+      {"x-custom": "v"}, exclude_runtime_tag=True
+  )
+  assert headers == {
+      "x-goog-api-client": _EXPECTED_BASE_HEADER,
+      "user-agent": _EXPECTED_BASE_HEADER,
+      "x-custom": "v",
+  }
+
+
+@pytest.mark.parametrize(
+    "http_options",
+    [None, types.HttpOptions(headers={"x-custom": "v"}), {"headers": {}}],
+)
+def test_http_options_helpers_without_runtime_tag(monkeypatch, http_options):
+  """Both HttpOptions helpers forward exclude_runtime_tag."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "test-agent-id")
+  merged = _google_client_headers.merge_tracking_http_options(
+      http_options, exclude_runtime_tag=True
+  )
+  headers = merged["headers"] if isinstance(merged, dict) else merged.headers
+  assert headers["user-agent"] == _EXPECTED_BASE_HEADER
+  built = _google_client_headers.get_tracking_http_options(
+      exclude_runtime_tag=True
+  )
+  assert built.headers["x-goog-api-client"] == _EXPECTED_BASE_HEADER
+
+
 def test_merge_tracking_http_options_none():
   """merge_tracking_http_options creates HttpOptions when input is None."""
   http_options = _google_client_headers.merge_tracking_http_options(None)

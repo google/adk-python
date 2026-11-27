@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
@@ -41,15 +40,15 @@ class MockLlmAsJudge(LlmAsJudge):
   def format_auto_rater_prompt(
       self,
       actual_invocation: Invocation,
-      expected_invocation: Optional[Invocation],
-      rubrics: Optional[list[Rubric]] = None,
+      expected_invocation: Invocation | None,
+      rubrics: list[Rubric] | None = None,
   ) -> str:
     return "formatted prompt"
 
   def convert_auto_rater_response_to_score(
       self,
       llm_response: LlmResponse,
-      rubrics: Optional[list[Rubric]] = None,
+      rubrics: list[Rubric] | None = None,
   ) -> AutoRaterScore:
     return AutoRaterScore(score=1.0)
 
