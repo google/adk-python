@@ -18,7 +18,6 @@ import logging
 import re
 import time
 from typing import Any
-from typing import Optional
 
 from google.cloud import exceptions as cloud_exceptions
 from google.cloud import storage
@@ -77,7 +76,7 @@ class GcsEvalSetsManager(EvalSetsManager):
           f"Invalid {id_name}. {id_name} should have the `{pattern}` format",
       )
 
-  def _load_eval_set_from_blob(self, blob_name: str) -> Optional[EvalSet]:
+  def _load_eval_set_from_blob(self, blob_name: str) -> EvalSet | None:
     blob = self.bucket.blob(blob_name)
     if not blob.exists():
       return None
@@ -104,7 +103,7 @@ class GcsEvalSetsManager(EvalSetsManager):
     self._write_eval_set_to_blob(eval_set_blob_name, eval_set)
 
   @override
-  def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
+  def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet | None:
     """Returns an EvalSet identified by an app_name and eval_set_id."""
     eval_set_blob_name = self._get_eval_set_blob_name(app_name, eval_set_id)
     return self._load_eval_set_from_blob(eval_set_blob_name)
@@ -154,7 +153,7 @@ class GcsEvalSetsManager(EvalSetsManager):
   @override
   def get_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ) -> Optional[EvalCase]:
+  ) -> EvalCase | None:
     """Returns an EvalCase identified by an app_name, eval_set_id and eval_case_id."""
     eval_set = self.get_eval_set(app_name, eval_set_id)
     if not eval_set:

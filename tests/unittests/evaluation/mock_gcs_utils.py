@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-from typing import Union
-
 
 class MockBlob:
   """Mocks a GCS Blob object.
@@ -31,12 +28,12 @@ class MockBlob:
         name: The name of the blob.
     """
     self.name = name
-    self.content: Optional[bytes] = None
-    self.content_type: Optional[str] = None
+    self.content: bytes | None = None
+    self.content_type: str | None = None
     self._exists: bool = False
 
   def upload_from_string(
-      self, data: Union[str, bytes], content_type: Optional[str] = None
+      self, data: str | bytes, content_type: str | None = None
   ) -> None:
     """Mocks uploading data to the blob (from a string or bytes).
 
@@ -104,7 +101,7 @@ class MockBucket:
       self.blobs[blob_name] = MockBlob(blob_name)
     return self.blobs[blob_name]
 
-  def list_blobs(self, prefix: Optional[str] = None) -> list[MockBlob]:
+  def list_blobs(self, prefix: str | None = None) -> list[MockBlob]:
     """Mocks listing blobs in a bucket, optionally with a prefix."""
     if prefix:
       return [

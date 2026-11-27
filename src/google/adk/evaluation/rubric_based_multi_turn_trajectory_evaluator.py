@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 from typing import ClassVar
-from typing import Optional
 
 from typing_extensions import override
 
@@ -285,8 +284,8 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     """Evaluates multiple turns locally, collecting full dialogue history."""
     # Parse out Pydantic types locally without server-side imports
@@ -302,7 +301,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     self._assemble_dialogue_history(actual_invocations)
 
     # If expected_invocations are not supplied, provide a list of None.
-    expected_by_invocation: list[Optional[Invocation]] = (
+    expected_by_invocation: list[Invocation | None] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else list(expected_invocations)
@@ -358,7 +357,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
   def format_auto_rater_prompt(
       self,
       actual_invocation: Invocation,
-      _: Optional[Invocation],
+      _: Invocation | None,
   ) -> str:
     """Returns the fully rendered validation prompt using locally configured rubrics."""
     self.create_effective_rubrics_list(actual_invocation.rubrics)

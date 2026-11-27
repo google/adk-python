@@ -32,7 +32,6 @@ from typing import Any
 from typing import AsyncIterator
 from typing import cast
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
@@ -409,7 +408,7 @@ class TelemetryGroup(click.Group):
 @click.group(cls=TelemetryGroup, context_settings={"max_content_width": 240})  # type: ignore[assignment]
 @click.version_option(version.__version__)
 @click.pass_context
-def main(ctx: Optional[click.Context] = None) -> None:
+def main(ctx: click.Context | None = None) -> None:
   """Agent Development Kit CLI tools."""
   if (
       ctx is not None
@@ -1115,22 +1114,22 @@ def adk_services_options(
 @click.argument("query", type=str, required=False)
 def cli_run(
     agent: str,
-    query: Optional[str],
+    query: str | None,
     save_session: bool,
-    session_id: Optional[str],
-    replay: Optional[str],
-    resume: Optional[str],
-    state: Optional[str] = None,
-    timeout: Optional[str] = None,
+    session_id: str | None,
+    replay: str | None,
+    resume: str | None,
+    state: str | None = None,
+    timeout: str | None = None,
     in_memory: bool = False,
     jsonl: bool = False,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    default_llm_model: Optional[str] = None,
+    default_llm_model: str | None = None,
     log_level: str = "INFO",
-    state_file: Optional[str] = None,
+    state_file: str | None = None,
     reload_agents: bool = False,
 ) -> None:
   """Runs an agent. If no query is provided, enters interactive mode.
@@ -1335,9 +1334,9 @@ def eval_options() -> Callable[[Callable[..., _R]], Callable[..., _R]]:
 
 
 def _resolve_eval_config_file_path(
-    config_file_path: Optional[str],
+    config_file_path: str | None,
     eval_set_file_or_id_to_evals: dict[str, list[str]],
-) -> Optional[str]:
+) -> str | None:
   """Returns config file path for eval command.
 
   If `config_file_path` is provided, it is used as-is. If omitted and evals are
@@ -1406,7 +1405,7 @@ def cli_eval(
     print_detailed_results: bool,
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
-    num_runs: Optional[int] = None,
+    num_runs: int | None = None,
     parallelism: int | None = None,
 ) -> None:
   """Evaluates an agent given the eval sets.
@@ -2400,8 +2399,8 @@ def _check_windows_reload(reload: bool) -> bool:
 )
 def cli_web(
     agents_dir: str,
-    default_llm_model: Optional[str] = None,
-    eval_storage_uri: Optional[str] = None,
+    default_llm_model: str | None = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
     allow_origins: list[str] | None = None,
     host: str = "127.0.0.1",

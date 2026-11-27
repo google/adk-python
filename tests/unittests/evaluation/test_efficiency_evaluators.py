@@ -18,8 +18,6 @@ Efficiency metrics are informational: they report a value but never pass or
 fail, so every result has an `EvalStatus` of `INFORMATIONAL`.
 """
 
-from typing import Optional
-
 from google.adk.evaluation._efficiency_evaluators import _InferenceCallCountV1Evaluator
 from google.adk.evaluation._efficiency_evaluators import _InvocationDurationV1Evaluator
 from google.adk.evaluation._efficiency_evaluators import _TokenUsageV1Evaluator
@@ -49,7 +47,7 @@ def _usage(
     cached: int = 0,
     thoughts: int = 0,
     tool_use_prompt: int = 0,
-    backend_total: Optional[int] = None,
+    backend_total: int | None = None,
 ) -> genai_types.GenerateContentResponseUsageMetadata:
   """Returns usage metadata populated with the given token counts.
 
@@ -598,7 +596,7 @@ def test_token_usage_counts_tool_use_tokens():
 # ---------------------------------------------------------------------------
 
 
-def _invocation_lasting(duration: Optional[float]) -> Invocation:
+def _invocation_lasting(duration: float | None) -> Invocation:
   """Returns an invocation that recorded the given wall-clock duration."""
   return Invocation(user_content=_USER_CONTENT, duration=duration)
 
@@ -670,9 +668,9 @@ def test_duration_averages_only_the_timed_invocations():
 
 
 def _invocation_spending(
-    duration: Optional[float],
-    model_duration: Optional[float] = None,
-    tool_duration: Optional[float] = None,
+    duration: float | None,
+    model_duration: float | None = None,
+    tool_duration: float | None = None,
 ) -> Invocation:
   """Returns an invocation whose time is split the given way."""
   return Invocation(

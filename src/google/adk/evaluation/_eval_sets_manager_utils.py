@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from ..errors.not_found_error import NotFoundError
 from .eval_case import EvalCase
@@ -37,7 +36,7 @@ def get_eval_set_from_app_and_id(
 
 def get_eval_case_from_eval_set(
     eval_set: EvalSet, eval_case_id: str
-) -> Optional[EvalCase]:
+) -> EvalCase | None:
   """Returns an EvalCase if found; otherwise, None."""
   eval_case_to_find = None
 

@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 import uuid
 
 from typing_extensions import override
@@ -58,7 +57,7 @@ class _RequestIntercepterPlugin(BasePlugin):
   @override
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     # We add the llm_request to the call back context so that we can fetch
     # it later.
     request_id = str(uuid.uuid4())
@@ -69,7 +68,7 @@ class _RequestIntercepterPlugin(BasePlugin):
   @override
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     # Fetch the request_id from the callback_context
     if callback_context and _LLM_REQUEST_ID_KEY in callback_context.state:
       if llm_response.custom_metadata is None:
@@ -80,9 +79,7 @@ class _RequestIntercepterPlugin(BasePlugin):
       )
     return None
 
-  def get_model_request(
-      self, llm_response: LlmResponse
-  ) -> Optional[LlmRequest]:
+  def get_model_request(self, llm_response: LlmResponse) -> LlmRequest | None:
     """Fetches the request object, if found."""
     if (
         llm_response.custom_metadata

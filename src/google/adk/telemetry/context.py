@@ -77,6 +77,7 @@ _ExperimentalFeature: TypeAlias = Literal[
     'mcp',
     'token_usage',
     'compaction',
+    'reasoning',
 ]
 
 # Stores unrecognized experimental features to warn only once per feature

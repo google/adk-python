@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from typing_extensions import override
 
 from .eval_case import ConversationScenario
@@ -47,9 +45,9 @@ class ResponseEvaluator(Evaluator):
 
   def __init__(
       self,
-      threshold: Optional[float] = None,
-      metric_name: Optional[str] = None,
-      eval_metric: Optional[EvalMetric] = None,
+      threshold: float | None = None,
+      metric_name: str | None = None,
+      eval_metric: EvalMetric | None = None,
   ):
     if (threshold is not None and eval_metric) or (
         metric_name is not None and eval_metric
@@ -81,8 +79,8 @@ class ResponseEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
     if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:
