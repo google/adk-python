@@ -202,15 +202,20 @@ def convert_event_to_a2a_events(
               ),
           )
       )
-    elif _has_peer_honored_actions(event.actions):
+    elif _has_peer_honored_actions(event.actions) or _has_artifact_delta(
+        event.actions
+    ):
       # Content-less event carrying an action a remote A2A peer honors on
-      # the round trip (escalate / skip_summarization). Emit a message-less
-      # WORKING update with the event metadata on the update itself: an
-      # agent message with an empty `parts` list violates the A2A spec
-      # (Message.parts is REQUIRED), and the legacy executor emits nothing
-      # for content-less events. Events carrying only actions no peer uses
-      # (state delta, artifact delta, transfer, auth configs, usage
-      # metadata) or nothing at all emit no A2A event.
+      # the round trip (escalate / skip_summarization), or an artifact
+      # delta the after-event interceptors turn into artifact updates.
+      # Emit a message-less WORKING update with the event metadata on the
+      # update itself: an agent message with an empty `parts` list violates
+      # the A2A spec (Message.parts is REQUIRED), and the legacy executor
+      # emits nothing for content-less events. The update is also the
+      # vehicle the after-event interceptors run on, so without it an
+      # artifact saved by a callback would never be exported. Events
+      # carrying only actions no peer uses (state delta, transfer, auth
+      # configs, usage metadata) or nothing at all emit no A2A event.
       a2a_events.append(
           _compat.make_task_status_update_event(
               task_id=task_id,
@@ -280,6 +285,21 @@ def _has_peer_honored_actions(actions: Any) -> bool:
   return bool(getattr(actions, "escalate", None)) or bool(
       getattr(actions, "skip_summarization", None)
   )
+
+
+def _has_artifact_delta(actions: Any) -> bool:
+  """Returns True when the actions carry a non-empty artifact delta.
+
+  An artifact delta is not rebuilt from peer metadata on the way back, but
+  the after-event interceptors (e.g.
+  `include_artifacts_in_a2a_event_interceptor`) turn it into
+  `TaskArtifactUpdateEvent`s — and they only run for ADK events the
+  converter turns into at least one A2A event. A message-less WORKING
+  update gives them that vehicle without an agent message with empty parts.
+  """
+  if actions is None:
+    return False
+  return bool(getattr(actions, "artifact_delta", None))
 
 
 # TODO: Clarify if this metadata needs to be translated back into the ADK event
