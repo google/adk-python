@@ -28,6 +28,7 @@ from google.adk.evaluation.hallucinations_v1 import _parse_sentences
 from google.adk.evaluation.hallucinations_v1 import _parse_validation_results
 from google.adk.evaluation.hallucinations_v1 import HallucinationsV1Evaluator
 from google.adk.models.llm_response import LlmResponse
+from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 import pytest
 
@@ -2328,3 +2329,360 @@ async def test_evaluate_invocations_cancels_in_flight_judge_calls_on_error(
     await metric.evaluate_invocations(invocations)
 
   assert cancelled
+
+
+def _make_metric_with_num_samples(
+    num_samples: int,
+) -> HallucinationsV1Evaluator:
+  return HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1",
+          threshold=0.5,
+          criterion=HallucinationsCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash", num_samples=num_samples
+              ),
+          ),
+      )
+  )
+
+
+def _single_response_invocation() -> Invocation:
+  return Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final response.")]
+      ),
+  )
+
+
+_SUPPORTED_VALIDATOR_REPLY = """sentence: Final response.
+label: supported
+rationale: r
+supporting_excerpt: e
+contradicting_excerpt: null
+"""
+
+
+async def test_evaluate_invocations_retries_transient_judge_error(
+    mock_llm_registry, caplog
+):
+  """A single transient judge failure is retried instead of losing the case.
+
+  Setup: num_samples=3. The first segmenter call raises; later calls succeed.
+  Act: Evaluate one invocation.
+  Assert: The invocation is scored, and the failed attempt is logged.
+  """
+  metric = _make_metric_with_num_samples(3)
+  calls = 0
+
+  async def mock_generate(llm_request):
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      raise RuntimeError("503 UNAVAILABLE")
+    prompt = llm_request.contents[0].parts[0].text
+    text = (
+        _SUPPORTED_VALIDATOR_REPLY
+        if "Sentences Begin" in prompt and "Context Begin" in prompt
+        else "<sentence>Final response.</sentence>"
+    )
+    yield LlmResponse(
+        content=genai_types.Content(parts=[genai_types.Part(text=text)])
+    )
+
+  mock_llm_registry.generate_content_async = mock_generate
+
+  with caplog.at_level("INFO"):
+    result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
+  assert result.per_invocation_results[0].rubric_scores == []
+  # 1 failed segmenter call + segmenter + validator on the retry.
+  assert calls == 3
+  assert "attempt 1/3 produced no score, retrying" in caplog.text
+  assert "503 UNAVAILABLE" in caplog.text
+  # A recovered failure is not reported as a lost score.
+  assert "could not score" not in caplog.text
+
+
+async def test_evaluate_invocations_reports_reason_when_all_attempts_fail(
+    mock_llm_registry, caplog
+):
+  """Exhausted attempts yield NOT_EVALUATED with the reason attached.
+
+  Setup: num_samples=2. The segmenter never returns <sentence> tags.
+  Act: Evaluate one invocation.
+  Assert: NOT_EVALUATED, an "error" RubricScore carries the reason, the judge
+    was tried num_samples times, and a WARNING is logged.
+  """
+  metric = _make_metric_with_num_samples(2)
+  calls = 0
+
+  async def mock_generate(llm_request):
+    del llm_request
+    nonlocal calls
+    calls += 1
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text="```\nFinal response.\n```")]
+        )
+    )
+
+  mock_llm_registry.generate_content_async = mock_generate
+
+  with caplog.at_level("WARNING"):
+    result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  assert calls == 2
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.eval_status == EvalStatus.NOT_EVALUATED
+  assert len(per_invocation_result.rubric_scores) == 1
+  error_score = per_invocation_result.rubric_scores[0]
+  assert error_score.rubric_id == "error"
+  assert error_score.score is None
+  assert "No score after 2 attempt(s)" in error_score.rationale
+  assert "No sentences produced by segmenter." in error_score.rationale
+  assert "could not score a response after 2 attempt(s)" in caplog.text
+
+
+async def test_evaluate_invocations_does_not_retry_without_response(
+    mock_llm_registry,
+):
+  """An invocation with no response text is not sent to the judge at all."""
+  metric = _make_metric_with_num_samples(3)
+  calls = 0
+
+  async def mock_generate(llm_request):
+    del llm_request
+    nonlocal calls
+    calls += 1
+    yield LlmResponse()
+
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations([
+      Invocation(
+          user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+          final_response=None,
+      )
+  ])
+
+  assert calls == 0
+  assert result.per_invocation_results[0].rubric_scores == []
+
+
+async def test_evaluate_invocations_attaches_reason_per_unscored_step(
+    hallucinations_metric, mocker
+):
+  """Each unscored step contributes its own "error" RubricScore."""
+  metric = hallucinations_metric
+  actual_invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text="Intermediate.")]
+                  ),
+              )
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final.")]
+      ),
+  )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    del context
+    if nl_response == "Intermediate.":
+      return 1.0, "[]"
+    return None, "Sentence validator returned no text."
+
+  mocker.patch.object(
+      metric, "_evaluate_nl_response", side_effect=mock_evaluate_nl_response
+  )
+  result = await metric.evaluate_invocations([actual_invocation])
+
+  rubric_scores = result.per_invocation_results[0].rubric_scores
+  assert [s.rubric_id for s in rubric_scores] == ["error"]
+  assert rubric_scores[0].rationale.startswith("Response 2 of 2")
+  assert "Sentence validator returned no text." in rubric_scores[0].rationale
+
+
+def _counting_judge(responses_or_errors):
+  """Returns a judge that yields/raises the given items, then repeats the last."""
+  calls = []
+
+  async def mock_generate(llm_request):
+    del llm_request
+    item = responses_or_errors[min(len(calls), len(responses_or_errors) - 1)]
+    calls.append(item)
+    if isinstance(item, Exception):
+      raise item
+    yield item
+
+  return mock_generate, calls
+
+
+def _text_response(text, finish_reason=None):
+  return LlmResponse(
+      content=genai_types.Content(parts=[genai_types.Part(text=text)]),
+      finish_reason=finish_reason,
+  )
+
+
+async def test_evaluate_invocations_caps_attempts(mock_llm_registry):
+  """num_samples=5 still makes at most 3 attempts on a judge that keeps failing."""
+  metric = _make_metric_with_num_samples(5)
+  mock_generate, calls = _counting_judge([RuntimeError("503 UNAVAILABLE")])
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  assert len(calls) == 3
+  rationale = result.per_invocation_results[0].rubric_scores[0].rationale
+  assert "No score after 3 attempt(s)" in rationale
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        genai_errors.ClientError(400, {"error": {"message": "judge error"}}),
+        genai_errors.ClientError(429, {"error": {"message": "judge error"}}),
+        genai_errors.ServerError(503, {"error": {"message": "judge error"}}),
+    ],
+    ids=["400", "429", "503"],
+)
+async def test_evaluate_invocations_does_not_retry_api_errors(
+    mock_llm_registry, error
+):
+  """API errors are left to the HTTP retry options and not retried again."""
+  metric = _make_metric_with_num_samples(3)
+  mock_generate, calls = _counting_judge([error])
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  assert len(calls) == 1
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+  rationale = result.per_invocation_results[0].rubric_scores[0].rationale
+  assert "No score after 1 attempt(s)" in rationale
+  assert str(error.code) in rationale
+
+
+def _judge_by_stage(validator_replies):
+  """Returns a judge that segments correctly and replays validator replies."""
+  calls = []
+
+  async def mock_generate(llm_request):
+    prompt = llm_request.contents[0].parts[0].text
+    is_validator = "Context Begin" in prompt
+    calls.append("validator" if is_validator else "segmenter")
+    if not is_validator:
+      yield _text_response("<sentence>Final response.</sentence>")
+      return
+    index = min(calls.count("validator"), len(validator_replies)) - 1
+    yield validator_replies[index]
+
+  return mock_generate, calls
+
+
+async def test_evaluate_invocations_retries_truncated_judge_output(
+    mock_llm_registry,
+):
+  """Truncation varies between calls with thinking models, so it is retried."""
+  metric = _make_metric_with_num_samples(3)
+  mock_generate, calls = _judge_by_stage([
+      _text_response(
+          "sentence: Final response.\nlabel: supp",
+          finish_reason=genai_types.FinishReason.MAX_TOKENS,
+      ),
+      _text_response(_SUPPORTED_VALIDATOR_REPLY),
+  ])
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  assert calls == ["segmenter", "validator", "segmenter", "validator"]
+  assert result.overall_score == 1.0
+  assert result.per_invocation_results[0].rubric_scores == []
+
+
+async def test_evaluate_invocations_reports_finish_reason_of_truncation(
+    mock_llm_registry,
+):
+  """When truncation persists, the reason says why the judge stopped."""
+  metric = _make_metric_with_num_samples(3)
+  mock_generate, calls = _judge_by_stage([
+      _text_response(
+          "sentence: Final response.\nlabel: supp",
+          finish_reason=genai_types.FinishReason.MAX_TOKENS,
+      ),
+  ])
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  assert calls.count("validator") == 3
+  rationale = result.per_invocation_results[0].rubric_scores[0].rationale
+  assert "No score after 3 attempt(s)" in rationale
+  assert "returned 0 blocks for 1 sentences" in rationale
+  assert "finish_reason=MAX_TOKENS" in rationale
+
+
+async def test_evaluate_invocations_reports_readable_partial_parse_reason(
+    mock_llm_registry,
+):
+  """A partial parse reports what went wrong, not the raw validator output."""
+  metric = _make_metric_with_num_samples(1)
+  mock_generate, _ = _counting_judge([
+      _text_response("<sentence>Final response.</sentence>"),
+      _text_response(
+          _SUPPORTED_VALIDATOR_REPLY + "\n" + _SUPPORTED_VALIDATOR_REPLY
+      ),
+  ])
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  rationale = result.per_invocation_results[0].rubric_scores[0].rationale
+  assert "Sentence validator returned 2 blocks for 1 sentences." in rationale
+  assert "supporting_excerpt" not in rationale
+
+
+async def test_evaluate_invocations_reports_reasons_at_case_level(
+    mock_llm_registry,
+):
+  """Failure reasons are repeated in overall_rubric_scores for eval reports."""
+  metric = _make_metric_with_num_samples(1)
+  mock_generate, _ = _counting_judge([RuntimeError("503 UNAVAILABLE")])
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations(
+      [_single_response_invocation(), _single_response_invocation()]
+  )
+
+  overall = result.overall_rubric_scores
+  assert [s.rubric_id for s in overall] == ["error", "error"]
+  assert overall[0].rationale.startswith("Invocation 1 of 2: Response 1 of 1")
+  assert overall[1].rationale.startswith("Invocation 2 of 2: Response 1 of 1")
+  assert "503 UNAVAILABLE" in overall[0].rationale
+
+
+async def test_evaluate_invocations_bounds_rationale_length(mock_llm_registry):
+  """A huge judge error message does not bloat the stored rationale."""
+  metric = _make_metric_with_num_samples(1)
+  mock_generate, _ = _counting_judge([RuntimeError("x" * 10_000)])
+  mock_llm_registry.generate_content_async = mock_generate
+
+  result = await metric.evaluate_invocations([_single_response_invocation()])
+
+  rationale = result.per_invocation_results[0].rubric_scores[0].rationale
+  assert len(rationale) < 2100
+  assert rationale.endswith("... [truncated]")
