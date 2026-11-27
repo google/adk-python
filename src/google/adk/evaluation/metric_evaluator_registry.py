@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import logging
 from typing import cast
-from typing import Optional
 from typing import Protocol
 
 from ..errors.not_found_error import NotFoundError
@@ -25,6 +24,7 @@ from ._efficiency_evaluators import _InferenceCallCountV1Evaluator
 from ._efficiency_evaluators import _InvocationDurationV1Evaluator
 from ._efficiency_evaluators import _TokenUsageV1Evaluator
 from ._efficiency_evaluators import _ToolCallCountV1Evaluator
+from ._tool_parameter_match_evaluator import _ToolParameterMatchEvaluator
 from .custom_metric_evaluator import _CustomMetricEvaluator
 from .eval_config import EvalConfig
 from .eval_metrics import EvalMetric
@@ -50,6 +50,7 @@ from .metric_info_providers import RubricBasedToolUseV1EvaluatorMetricInfoProvid
 from .metric_info_providers import SafetyEvaluatorV1MetricInfoProvider
 from .metric_info_providers import TokenUsageV1MetricInfoProvider
 from .metric_info_providers import ToolCallCountV1MetricInfoProvider
+from .metric_info_providers import ToolParameterMatchEvaluatorMetricInfoProvider
 from .metric_info_providers import TrajectoryEvaluatorMetricInfoProvider
 from .multi_turn_task_success_evaluator import MultiTurnTaskSuccessV1Evaluator
 from .multi_turn_tool_use_quality_evaluator import MultiTurnToolUseQualityV1Evaluator
@@ -112,7 +113,7 @@ class MetricEvaluatorRegistry:
     evaluator_factory = cast(_EvalMetricEvaluatorFactory, evaluator_type)
     return evaluator_factory(eval_metric=eval_metric)
 
-  def _custom_function_path(self, eval_metric: EvalMetric) -> Optional[str]:
+  def _custom_function_path(self, eval_metric: EvalMetric) -> str | None:
     """Returns the module path to import for a custom metric, if known.
 
     Both sources are eval config entries: one recorded when the metric was
@@ -142,7 +143,7 @@ class MetricEvaluatorRegistry:
       self,
       metric_info: MetricInfo,
       evaluator: type[Evaluator],
-      custom_function_path: Optional[str],
+      custom_function_path: str | None,
   ) -> None:
     """Registers an evaluator, along with the function path it may need.
 
@@ -203,6 +204,11 @@ def _register_standard_metrics(
   metric_evaluator_registry.register_evaluator(
       metric_info=TrajectoryEvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=TrajectoryEvaluator,
+  )
+
+  metric_evaluator_registry.register_evaluator(
+      metric_info=ToolParameterMatchEvaluatorMetricInfoProvider().get_metric_info(),
+      evaluator=_ToolParameterMatchEvaluator,
   )
 
   metric_evaluator_registry.register_evaluator(
@@ -300,7 +306,7 @@ def _get_default_metric_info(
 
 def register_custom_metrics_from_config(
     eval_config: EvalConfig,
-    metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
+    metric_evaluator_registry: MetricEvaluatorRegistry | None = None,
 ) -> MetricEvaluatorRegistry:
   """Registers custom metrics declared in the given eval config.
 

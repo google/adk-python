@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
+from typing_extensions import Self
 
 from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
@@ -37,6 +38,26 @@ from .cache_metadata import CacheMetadata
 if TYPE_CHECKING:
   from google.genai import Client
   from google.genai._api_client import BaseApiClient
+
+
+def _is_transient_user_content(
+    llm_request: LlmRequest, content: types.Content
+) -> bool:
+  """Returns whether ADK inserted ``content`` rather than the user."""
+  transient = getattr(llm_request, "_transient_user_contents", None)
+  return type(transient) is list and any(
+      content is added for added in transient
+  )
+
+
+def _last_non_transient_content(
+    llm_request: LlmRequest,
+) -> types.Content | None:
+  """Returns the last content not inserted as transient ADK context."""
+  for content in reversed(llm_request.contents or ()):
+    if not _is_transient_user_content(llm_request, content):
+      return content
+  return None
 
 
 def _find_tool_with_function_declarations(
@@ -149,6 +170,15 @@ class LlmRequest(BaseModel):
   or they would push tool-triggered content in front of it and break the
   stable-prefix guarantee.
   """
+
+  _transient_user_contents: list[types.Content] = PrivateAttr(
+      default_factory=list
+  )
+  """Non-static transient user contents inserted by ``_insert_transient_user_content``."""
+
+  def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+    # Share one memo dict so model_copy(deep=True) keeps transient identities.
+    return super().__deepcopy__({} if memo is None else memo)
 
   def _append_dynamic_instructions(self, instructions: list[str]) -> None:
     """Appends dynamic instructions to the request."""
@@ -367,6 +397,8 @@ class LlmRequest(BaseModel):
       self.contents[insert_index:insert_index] = contents
       self._static_instruction_prefix_end_index = len(contents)
       return
+
+    self._transient_user_contents.extend(contents)
 
     insert_index = len(self.contents)
     for i in range(len(self.contents) - 1, -1, -1):

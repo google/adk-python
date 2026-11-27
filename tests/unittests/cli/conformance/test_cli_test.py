@@ -14,7 +14,6 @@
 
 """Tests for cli_test.py."""
 
-from typing import Optional
 from unittest.mock import MagicMock
 
 import click
@@ -293,7 +292,7 @@ def _summary(
 
 def _run(
     summaries: list[_ConformanceTestSummary],
-    selected_streaming_mode: Optional[StreamingMode] = None,
+    selected_streaming_mode: StreamingMode | None = None,
 ):
   @click.command()
   def _command():

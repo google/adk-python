@@ -16,11 +16,15 @@
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Annotated
 from typing import Literal
+from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.models.llm_request import _is_transient_user_content
+from google.adk.models.llm_request import _last_non_transient_content
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_tool import BaseTool
@@ -1029,3 +1033,43 @@ def test_set_output_schema_replaces_previous_schema(
     assert 'responseSchema' not in converted
     assert converted['responseJsonSchema'] == schema_to_json_schema(alias)
   assert request.config.response_mime_type == 'application/json'
+
+
+def test_transient_user_content_identity_survives_deep_copy():
+  inserted = _user_text('transient context')
+  user_copy = _user_text('transient context')
+  request = LlmRequest(contents=[user_copy])
+  request._insert_transient_user_content([inserted])
+
+  assert _is_transient_user_content(request, inserted)
+  assert not _is_transient_user_content(request, user_copy)
+
+  copied = request.model_copy(deep=True)
+  assert _is_transient_user_content(copied, copied.contents[0])
+  assert not _is_transient_user_content(copied, copied.contents[1])
+
+
+def test_insert_transient_user_content_keeps_static_prefix_non_transient():
+  request, static_refs = _request_with_static_refs([_user_text('user turn')])
+  request._insert_transient_user_content(static_refs)
+  request._insert_transient_user_content([_user_text('dynamic instruction')])
+
+  assert not _is_transient_user_content(request, request.contents[0])
+  assert _is_transient_user_content(request, request.contents[1])
+  assert not _is_transient_user_content(request, request.contents[2])
+
+
+def test_transient_helpers_handle_mock_and_duck_typed_requests():
+  content = _user_text('hello')
+  spec_mock = mock.Mock(spec=LlmRequest)
+  spec_mock.contents = [content]
+  spec_set_mock = mock.Mock(spec_set=['contents'])
+  spec_set_mock.contents = [content]
+  non_list_attr = SimpleNamespace(
+      contents=[content], _transient_user_contents=object()
+  )
+  namespace = SimpleNamespace(contents=[content])
+
+  for request in (spec_mock, spec_set_mock, non_list_attr, namespace):
+    assert not _is_transient_user_content(request, content)
+    assert _last_non_transient_content(request) is content

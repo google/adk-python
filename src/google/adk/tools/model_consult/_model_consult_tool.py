@@ -150,8 +150,8 @@ class ModelConsultTool(BaseTool):
     session_max_uses: Consults allowed across the entire session, or `None` for
       unlimited.
     max_output_tokens: Output token cap for the advisor response, if configured.
-    thinking_level: Normalized advisor thinking level (`minimal`, `low`,
-      `medium`, `high`), or `None`.
+    thinking_level: Normalized lowercase advisor thinking level (such as
+      `minimal`, `low`, `medium`, `high`, or `xhigh`), or `None`.
   """
 
   def __init__(
@@ -183,9 +183,11 @@ class ModelConsultTool(BaseTool):
         session. `None` (the default) means unlimited. When both `max_uses` and
         `session_max_uses` are set, whichever limit is reached first blocks
         further consults.
-      thinking_level: `'minimal'`, `'low'`, `'medium'`, `'high'` (default), or
-        a `types.ThinkingLevel` enum value. `None` disables overriding the
-        thinking config.
+      thinking_level: Case-insensitive `types.ThinkingLevel` name such as
+        `'minimal'`, `'low'`, `'medium'`, `'high'` (default), or `'xhigh'`
+        (when defined by the installed `google-genai`), a `types.ThinkingLevel`
+        enum value, or `'off'` / `'none'` / `None` to leave the thinking config
+        unset.
       max_output_tokens: Caps the advisor's output (thinking included on models
         that bill it there). Advisor output is the single largest cost driver of
         this pattern, so a cap is the cheapest lever available -- but a cap that
@@ -733,6 +735,9 @@ class ModelConsultTool(BaseTool):
           executor_instruction=executor_instruction,
           tool_inventory=tool_inventory,
       )
+      telemetry_config = None
+      if tool_context.run_config is not None:
+        telemetry_config = tool_context.run_config.telemetry
 
       try:
         result = await call_advisor(
@@ -743,6 +748,7 @@ class ModelConsultTool(BaseTool):
             generate_content_config=self._generate_content_config,
             timeout_seconds=self._timeout_seconds,
             agent_name=self.name,
+            telemetry_config=telemetry_config,
         )
       except AdvisorError as exc:
         logger.warning('ModelConsultTool advisor call failed: %s', exc)
@@ -812,7 +818,11 @@ class ModelConsultTool(BaseTool):
         'status': 'ok',
         'guidance': result.text,
         'advisor_model': result.model_version or result.model,
-        'thinking_level': self.thinking_level,
+        'thinking_level': (
+            result.thinking_level.value.lower()
+            if result.thinking_level is not None
+            else None
+        ),
         'consults': self._consult_stats(turn_uses, session_uses),
         'usage': result.usage.to_dict(),
         'latency_ms': result.latency_ms,

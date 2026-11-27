@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import abc
 from enum import Enum
-from typing import Optional
-from typing import Union
 
 from google.genai import types as genai_types
 from pydantic import alias_generators
@@ -38,6 +36,7 @@ from ..telemetry._token_usage import PROMPT_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from ..telemetry._token_usage import TOOL_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import TOTAL_TOKENS_MEANING
+from ..tools.tool_args_matcher._tool_args_matcher import ToolArgsMatcher
 from .common import EvalBaseModel
 from .eval_case import Invocation
 from .eval_rubrics import Rubric as Rubric
@@ -57,6 +56,8 @@ class EvalStatus(Enum):
 
 class PrebuiltMetrics(Enum):
   TOOL_TRAJECTORY_AVG_SCORE = "tool_trajectory_avg_score"
+
+  TOOL_PARAMETER_MATCH = "tool_parameter_match"
 
   RESPONSE_EVALUATION_SCORE = "response_evaluation_score"
 
@@ -103,7 +104,7 @@ class PrebuiltMetrics(Enum):
   INVOCATION_DURATION_V1 = "invocation_duration_v1"
 
 
-MetricName: TypeAlias = Union[str, PrebuiltMetrics]
+MetricName: TypeAlias = str | PrebuiltMetrics
 Threshold: TypeAlias = float
 
 
@@ -118,7 +119,7 @@ class JudgeModelOptions(EvalBaseModel):
   )
 
   judge_model_config: SkipJsonSchema[
-      Optional[genai_types.GenerateContentConfig]
+      genai_types.GenerateContentConfig | None
   ] = Field(
       default=None,
       description="The configuration for the judge model.",
@@ -299,13 +300,65 @@ class ToolTrajectoryCriterion(BaseCriterion):
   @field_validator("match_type", mode="before")
   @classmethod
   def _coerce_match_type(cls, value: object) -> object:
-    if isinstance(value, cls.MatchType):
-      return value
-    if isinstance(value, str):
-      normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
-      if normalized in cls.MatchType.__members__:
-        return cls.MatchType[normalized]
+    return _to_tool_trajectory_match_type(value)
+
+
+def _to_tool_trajectory_match_type(value: object) -> object:
+  """Accepts a `ToolTrajectoryCriterion.MatchType` name in any common spelling.
+
+  Args:
+    value: The raw config value, for example `"IN_ORDER"` or `"in-order"`.
+
+  Returns:
+    The matching `MatchType`, or `value` unchanged for Pydantic to validate.
+  """
+  match_type = ToolTrajectoryCriterion.MatchType
+  if isinstance(value, match_type):
     return value
+  if isinstance(value, str):
+    normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
+    if normalized in match_type.__members__:
+      return match_type[normalized]
+  return value
+
+
+class ToolParameterMatchCriterion(BaseCriterion):
+  """Criterion for scoring the arguments of expected tool calls."""
+
+  args_matcher: ToolArgsMatcher | None = Field(
+      default=None,
+      description=(
+          "How each expected argument is compared with the actual one. When"
+          " not set, arguments must be equal. Each tool call scores the mean"
+          " argument score, so `allowExtraArgs` does not affect this metric."
+          " A custom matcher must be registered with `register_arg_matcher`"
+          " to be named in config."
+      ),
+  )
+
+  match_type: ToolTrajectoryCriterion.MatchType = Field(
+      default=ToolTrajectoryCriterion.MatchType.IN_ORDER,
+      description=(
+          "How expected tool calls are paired with actual calls, using the"
+          " same names as `tool_trajectory_avg_score`. `EXACT` pairs the call"
+          " at each position with the actual call at the same position."
+          " `IN_ORDER` pairs each expected call with the next actual call of"
+          " the same name after the previous pair, allowing other calls in"
+          " between. It pairs by name alone, so unlike"
+          " `tool_trajectory_avg_score` it does not skip a same-name call with"
+          " wrong arguments: a retried call is scored on its first attempt."
+          " `ANY_ORDER` pairs calls of the same name in any order so"
+          " that the total score is as high as possible, scoring every"
+          " same-name pair (`n * m` pairs for a tool expected `n` times and"
+          " called `m` times). A pair whose names differ, or an expected call"
+          " left unpaired, scores 0.0."
+      ),
+  )
+
+  @field_validator("match_type", mode="before")
+  @classmethod
+  def _coerce_match_type(cls, value: object) -> object:
+    return _to_tool_trajectory_match_type(value)
 
 
 class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
@@ -348,42 +401,42 @@ class TokenUsageDetails(EvalBaseModel):
   unavailable (n/a) rather than zero.
   """
 
-  total_tokens: Optional[float] = Field(
+  total_tokens: float | None = Field(
       default=None,
       description=TOTAL_TOKENS_MEANING,
   )
 
-  input_tokens: Optional[float] = Field(
+  input_tokens: float | None = Field(
       default=None,
       description=INPUT_TOKENS_MEANING,
   )
 
-  prompt_tokens: Optional[float] = Field(
+  prompt_tokens: float | None = Field(
       default=None,
       description=PROMPT_INPUT_TOKENS_MEANING,
   )
 
-  cached_tokens: Optional[float] = Field(
+  cached_tokens: float | None = Field(
       default=None,
       description=CACHE_READ_INPUT_TOKENS_MEANING,
   )
 
-  tool_use_tokens: Optional[float] = Field(
+  tool_use_tokens: float | None = Field(
       default=None,
       description=TOOL_INPUT_TOKENS_MEANING,
   )
 
-  output_tokens: Optional[float] = Field(
+  output_tokens: float | None = Field(
       default=None,
       description=OUTPUT_TOKENS_MEANING,
   )
 
-  candidates_tokens: Optional[float] = Field(
+  candidates_tokens: float | None = Field(
       default=None,
       description=CANDIDATE_OUTPUT_TOKENS_MEANING,
   )
 
-  reasoning_tokens: Optional[float] = Field(
+  reasoning_tokens: float | None = Field(
       default=None,
       description=REASONING_OUTPUT_TOKENS_MEANING,
   )
@@ -416,12 +469,12 @@ class DurationDetails(EvalBaseModel):
   unavailable (n/a) rather than zero.
   """
 
-  total_seconds: Optional[float] = Field(
+  total_seconds: float | None = Field(
       default=None,
       description="Wall-clock seconds the whole invocation took.",
   )
 
-  model_seconds: Optional[float] = Field(
+  model_seconds: float | None = Field(
       default=None,
       description=(
           "Seconds with at least one model call in flight. Concurrent calls"
@@ -429,7 +482,7 @@ class DurationDetails(EvalBaseModel):
       ),
   )
 
-  tool_seconds: Optional[float] = Field(
+  tool_seconds: float | None = Field(
       default=None,
       description=(
           "Seconds inside a tool that were not already spent awaiting a model."
@@ -438,7 +491,7 @@ class DurationDetails(EvalBaseModel):
       ),
   )
 
-  framework_seconds: Optional[float] = Field(
+  framework_seconds: float | None = Field(
       default=None,
       description=(
           "Seconds the turn spent neither in a model call nor in a tool, i.e."
@@ -454,7 +507,7 @@ class EvalMetric(EvalBaseModel):
       description="The name of the metric.",
   )
 
-  threshold: Optional[float] = Field(
+  threshold: float | None = Field(
       default=None,
       description=(
           "This field will be deprecated soon. Please use `criterion` instead."
@@ -463,11 +516,11 @@ class EvalMetric(EvalBaseModel):
       ),
   )
 
-  criterion: Optional[SerializeAsAny[BaseCriterion]] = Field(
+  criterion: SerializeAsAny[BaseCriterion] | None = Field(
       default=None, description="""Evaluation criterion used by the metric."""
   )
 
-  custom_function_path: Optional[str] = Field(
+  custom_function_path: str | None = Field(
       default=None,
       description="""Path to custom function, if this is a custom metric.""",
   )
@@ -475,7 +528,7 @@ class EvalMetric(EvalBaseModel):
   # The path declared for this metric in the eval config it was built from.
   # Private, so that a metric parsed from an inbound payload cannot carry one:
   # the public field above is settable by whoever built that payload.
-  _config_custom_function_path: Optional[str] = PrivateAttr(default=None)
+  _config_custom_function_path: str | None = PrivateAttr(default=None)
 
 
 def _get_metric_threshold(eval_metric: EvalMetric) -> float:
@@ -490,7 +543,7 @@ def _get_metric_threshold(eval_metric: EvalMetric) -> float:
 
 
 class EvalMetricResultDetails(EvalBaseModel):
-  rubric_scores: Optional[list[RubricScore]] = Field(
+  rubric_scores: list[RubricScore] | None = Field(
       default=None,
       description=(
           "The scores obtained after applying the rubrics to the Agent's"
@@ -498,7 +551,7 @@ class EvalMetricResultDetails(EvalBaseModel):
       ),
   )
 
-  token_usage_details: Optional[TokenUsageDetails] = Field(
+  token_usage_details: TokenUsageDetails | None = Field(
       default=None,
       description=(
           "The per-type token counts behind a token usage score. Populated"
@@ -506,7 +559,7 @@ class EvalMetricResultDetails(EvalBaseModel):
       ),
   )
 
-  duration_details: Optional[DurationDetails] = Field(
+  duration_details: DurationDetails | None = Field(
       default=None,
       description=(
           "Where the seconds behind an invocation duration score went."
@@ -518,7 +571,7 @@ class EvalMetricResultDetails(EvalBaseModel):
 class EvalMetricResult(EvalMetric):
   """The actual computed score/value of a particular EvalMetric."""
 
-  score: Optional[float] = Field(
+  score: float | None = Field(
       default=None,
       description=(
           "Score obtained after evaluating the metric. Optional, as evaluation"
@@ -542,7 +595,7 @@ class EvalMetricResultPerInvocation(EvalBaseModel):
       )
   )
 
-  expected_invocation: Optional[Invocation] = Field(
+  expected_invocation: Invocation | None = Field(
       default=None,
       description=(
           "The expected invocation, usually the reference or golden invocation."
@@ -582,7 +635,7 @@ class Interval(EvalBaseModel):
 class MetricValueInfo(EvalBaseModel):
   """Information about the type of metric value."""
 
-  interval: Optional[Interval] = Field(
+  interval: Interval | None = Field(
       default=None,
       description="The values represented by the metric are of type interval.",
   )
@@ -593,7 +646,7 @@ class MetricInfo(EvalBaseModel):
 
   metric_name: str = Field(description="The name of the metric.")
 
-  description: Optional[str] = Field(
+  description: str | None = Field(
       default=None, description="A 2 to 3 line description of the metric."
   )
 

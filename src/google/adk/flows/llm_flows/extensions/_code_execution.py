@@ -551,9 +551,6 @@ async def _post_process_code_execution_result(
     code_execution_result: CodeExecutionResult,
 ) -> Event:
   """Post-process the code execution result and emit an Event."""
-  if invocation_context.artifact_service is None:
-    raise ValueError('Artifact service is not initialized.')
-
   result_content = types.Content(
       role='model',
       parts=[
@@ -576,6 +573,8 @@ async def _post_process_code_execution_result(
 
   # Handle output files.
   for output_file in code_execution_result.output_files:
+    if invocation_context.artifact_service is None:
+      raise ValueError('Artifact service is not initialized.')
     version = await invocation_context.artifact_service.save_artifact(
         app_name=invocation_context.app_name,
         user_id=invocation_context.user_id,

@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from typing_extensions import override
 
@@ -72,6 +71,6 @@ class StaticUserSimulator(UserSimulator):
   @override
   def get_simulation_evaluator(
       self,
-  ) -> Optional[Evaluator]:
+  ) -> Evaluator | None:
     """The StaticUserSimulator does not require an evaluator."""
     return None

@@ -15,6 +15,7 @@
 """Testings for the Workflow HITL scenarios."""
 
 import asyncio
+from collections.abc import Iterator
 import copy
 import json
 from typing import Any
@@ -40,7 +41,9 @@ from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
+from google.adk.workflow import JoinNode
 from google.adk.workflow import node
+from google.adk.workflow import RetryConfig
 from google.adk.workflow import START
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
@@ -1446,6 +1449,74 @@ async def test_wrapped_response_unwrapped_for_node(
 
   # NodeB should receive the plain string, not {"result": "hello world"}.
   assert node_b.received_inputs == ['hello world']
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize(
+    'response_schema, answer, expected',
+    [
+        (str, '94103', '94103'),
+        (str, 'true', 'true'),
+        (str, 'null', 'null'),
+        (str, 'abc', 'abc'),
+        (str | None, '94103', '94103'),
+        (str | None, 'null', 'null'),
+        (str | None, 'abc', 'abc'),
+        (str | int, '42', 42),
+        ({'oneOf': [{'type': 'string'}, {'type': 'null'}]}, '94103', '94103'),
+        (int, '42', 42),
+        (None, '42', 42),
+    ],
+)
+@pytest.mark.asyncio
+async def test_wrapped_text_answer_kept_as_text_for_string_schema(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+    response_schema: Any,
+    answer: str,
+    expected: Any,
+):
+  """A typed answer is parsed according to the response schema.
+
+  It is kept as text for a string-only schema and still JSON-parsed otherwise.
+  """
+  from google.adk.workflow import FunctionNode
+
+  def ask():
+    return RequestInput(
+        interrupt_id='ask1',
+        message='Zip code?',
+        response_schema=response_schema,
+    )
+
+  node_a = FunctionNode(func=ask)
+  node_b = InputCapturingNode(name='NodeB')
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(
+          name='test_agent',
+          edges=[(START, node_a), (node_a, node_b)],
+      ),
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  [interrupt_id] = extract_event_interrupt_ids(
+      workflow_testing_utils.get_request_input_events(events1)[0]
+  )
+
+  # adk run and adk web send typed text wrapped as {"result": text}.
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, _wrap_response(answer))
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  assert node_b.received_inputs == [expected]
 
 
 @pytest.mark.parametrize('resumable', [False, True])
@@ -2890,3 +2961,201 @@ async def test_resume_does_not_rerun_waiting_runs_from_earlier_loop_laps(
   assert done.received_inputs == [{'yes': True}]
   assert not workflow_testing_utils.get_request_input_events(events2)
   assert runner.session.state['lap'] == 3
+
+
+@pytest.mark.asyncio
+async def test_aborted_request_input_reruns_node_on_same_invocation_resume():
+  """Resuming an aborted invocation reruns the paused node, not done ones.
+
+  Setup: START -> [node_a (rerun_on_resume=True), node_b, gate] -> join ->
+    collect.
+  Act:
+    - Run 1: abort after node_a requests input and node_b outputs while gate
+      waits.
+    - Run 2: release gate and resume the same invocation with no new message.
+    - Run 3: answer the fresh interrupt on the same invocation.
+  Assert:
+    - Run 1: emits INVOCATION_ABORTED after node_a and node_b run once.
+    - Run 2: node_a reruns and re-emits RequestInput; node_b does not rerun.
+    - Run 3: collect outputs 'approved:True|from_b' with node_b still at 1 run.
+  """
+  a_runs = 0
+  b_runs = 0
+  gate_release = asyncio.Event()
+  abort_signal = asyncio.Event()
+
+  @node(rerun_on_resume=True)
+  async def node_a(ctx: Context):
+    nonlocal a_runs
+    a_runs += 1
+    if 'ask' in ctx.resume_inputs:
+      yield Event(output=f"approved:{ctx.resume_inputs['ask']['ok']}")
+      return
+    yield Event(output='partial')
+    yield RequestInput(interrupt_id='ask', message='approve?')
+
+  @node
+  def node_b() -> str:
+    nonlocal b_runs
+    b_runs += 1
+    return 'from_b'
+
+  @node
+  async def gate() -> str:
+    await gate_release.wait()
+    return 'gate_done'
+
+  @node
+  def collect(node_input: dict[str, Any]) -> str:
+    return f"{node_input['node_a']}|{node_input['node_b']}"
+
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='wf',
+      edges=[
+          (START, [node_a, node_b, gate]),
+          ([node_a, node_b, gate], join),
+          (join, collect),
+      ],
+  )
+  ss = InMemorySessionService()
+  runner = workflow_testing_utils.create_runner(
+      app_name='test', node=wf, session_service=ss
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  # Run 1: abort once node_a emitted its RequestInput and node_b completed.
+  events1: list[Event] = []
+  saw_ask = False
+  saw_b = False
+  msg1 = types.Content(role='user', parts=[types.Part(text='start')])
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=msg1,
+      abort_signal=abort_signal,
+  ):
+    events1.append(event)
+    if extract_event_interrupt_ids(event):
+      saw_ask = True
+    if event.output == 'from_b':
+      saw_b = True
+    if saw_ask and saw_b and not abort_signal.is_set():
+      abort_signal.set()
+
+  assert a_runs == 1
+  assert b_runs == 1
+  assert any(e.error_code == 'INVOCATION_ABORTED' for e in events1)
+  invocation_id = events1[0].invocation_id
+
+  # Run 2: resume the aborted invocation; node_b fast-forwards, node_a reruns.
+  gate_release.set()
+  events2: list[Event] = []
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      invocation_id=invocation_id,
+      new_message=None,
+  ):
+    events2.append(event)
+
+  req_events2 = workflow_testing_utils.get_request_input_events(events2)
+  assert len(req_events2) == 1
+  assert a_runs == 2
+  assert b_runs == 1
+  [fresh_interrupt_id] = extract_event_interrupt_ids(req_events2[0])
+
+  # Run 3: answer the fresh interrupt to complete the workflow.
+  events3: list[Event] = []
+  msg3 = types.Content(
+      role='user',
+      parts=[create_request_input_response(fresh_interrupt_id, {'ok': True})],
+  )
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      invocation_id=invocation_id,
+      new_message=msg3,
+  ):
+    events3.append(event)
+
+  assert a_runs == 3
+  assert b_runs == 1
+  outputs3 = [e.output for e in events3 if e.output is not None]
+  assert outputs3[-1] == 'approved:True|from_b'
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_branch_retried_while_sibling_waited_for_input(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Resuming keeps a branch retried in place while a sibling asked for input.
+
+  Setup: a resumable workflow with a retry_config runs prep, then flaky and
+    asker in parallel, both feeding a join. flaky fails on its first run;
+    asker asks for input.
+  Act:
+    - Run 1: flaky is retried in place and succeeds; asker interrupts.
+    - Run 2: answer asker's question.
+  Assert:
+    - Run 1 pauses on asker's question after prep ran once and flaky twice.
+    - Run 2 runs only asker again: prep and flaky are replayed, not rerun.
+    - The join receives flaky's output from its retry and asker's answer.
+  """
+  runs = {'prep': 0, 'flaky': 0, 'asker': 0}
+  flaky_attempts: list[int] = []
+
+  def prep() -> str:
+    runs['prep'] += 1
+    return 'prepped'
+
+  def flaky(ctx: Context, node_input: str) -> str:
+    del node_input
+    runs['flaky'] += 1
+    flaky_attempts.append(ctx.attempt_count)
+    if runs['flaky'] == 1:
+      raise ValueError('flaky failed')
+    return 'flaky_ok'
+
+  @node(rerun_on_resume=True)
+  def asker(ctx: Context, node_input: str) -> Iterator[RequestInput | str]:
+    del node_input
+    runs['asker'] += 1
+    if 'proceed' not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id='proceed', message='Proceed?')
+      return
+    yield f"answered_{ctx.resume_inputs['proceed']['text']}"
+
+  agent = Workflow(
+      name='retry_then_resume_wf',
+      edges=[(START, prep, (flaky, asker), JoinNode(name='join'))],
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert extract_event_interrupt_ids(request_input_event) == {'proceed'}
+  assert runs == {'prep': 1, 'flaky': 2, 'asker': 1}
+  assert flaky_attempts == [1, 2]
+
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('proceed', {'text': 'yes'})
+      ),
+      invocation_id=request_input_event.invocation_id,
+  )
+
+  assert runs == {'prep': 1, 'flaky': 2, 'asker': 2}
+  assert flaky_attempts == [1, 2]
+  assert {
+      'flaky': 'flaky_ok',
+      'asker': 'answered_yes',
+  } in workflow_testing_utils.get_outputs(events2)

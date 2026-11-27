@@ -229,9 +229,10 @@ async def test_llm_agent_with_fake():
 To assert on the request shape instead, `monkeypatch` the agent's
 `canonical_model.generate_content_async`.
 
-Do **not** assert on `event.output` for an LLM agent's own event — the runner
-clears it before you see it. Assert on the downstream node's output, on
-`session.state[output_key]`, or on `event.content.parts[*].text`.
+Do **not** assert on `event.output` for an LLM agent's own event — it is `None`
+there unless the agent is a workflow node with `output_schema`. Assert on the
+downstream node's output, on `session.state[output_key]`, or on
+`event.content.parts[*].text`.
 
 ## Tests that hit a real model
 
@@ -261,6 +262,4 @@ async def test_real_model():
 - A unique `app_name` per test (`request.node.name` works) so parallel pytest
   workers do not collide.
 - `event.is_final_response()` filters for "the agent's last word".
-- Any LLM agent feeding a `JoinNode` needs `output_schema=`, or the join buffer
-  fails to serialize under `DatabaseSessionService`.
 - `pytest -xvs` while iterating: stop at the first failure, verbose, show prints.

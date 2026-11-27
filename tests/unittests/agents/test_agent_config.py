@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import ntpath
 import os
@@ -35,7 +36,6 @@ from google.adk.agents.llm_agent_config import LlmAgentConfig
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.cli.built_in_agents.utils import load_agent_config_schema
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import jsonschema
@@ -884,7 +884,7 @@ def test_validate_module_reference_blocks_exact_internal_prefixes(
         "google.adk.agents.config_agent_utils._set_enforce_yaml_key_denylist",
         "google.adk.tools.mcp_tool.mcp_toolset._set_allow_config_stdio_servers",
         "google.adk.events._internal_metadata.mark_restored",
-        "google.adk.cli.built_in_agents.tools.write_files.write_files",
+        "google.adk.cli.cli_deploy.to_cloud_run",
     ],
 )
 def test_resolve_code_and_workflow_refs_block_core_gadgets_and_private_adk(
@@ -1822,6 +1822,16 @@ def test_from_config_lets_an_inline_node_reach_a_from_config_override(
   assert wf.graph.edges[0].to_node.name == "built_by_override"
 
 
+def _load_shipped_agent_config_schema() -> dict[str, Any]:
+  """Loads the AgentConfig JSON schema that ships with the package."""
+  schema_path = (
+      Path(config_agent_utils.__file__).parent
+      / "config_schemas"
+      / "AgentConfig.json"
+  )
+  return json.loads(schema_path.read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize(
     "config_dict",
     [
@@ -1897,7 +1907,7 @@ def test_from_config_lets_an_inline_node_reach_a_from_config_override(
 def test_shipped_agent_config_json_validates_valid_configs(
     config_dict: dict[str, Any],
 ):
-  schema = load_agent_config_schema(raw_format=False)
+  schema = _load_shipped_agent_config_schema()
   assert isinstance(schema, dict)
   jsonschema.validate(config_dict, schema)
 
@@ -1936,7 +1946,7 @@ def test_shipped_agent_config_json_validates_valid_configs(
 def test_shipped_agent_config_json_rejects_invalid_configs(
     invalid_config_dict: dict[str, Any],
 ):
-  schema = load_agent_config_schema(raw_format=False)
+  schema = _load_shipped_agent_config_schema()
   assert isinstance(schema, dict)
   with pytest.raises(jsonschema.ValidationError):
     jsonschema.validate(invalid_config_dict, schema)

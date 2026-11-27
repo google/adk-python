@@ -92,7 +92,9 @@ Orchestrator
   (`_delegates_item_retry`): the item node already applied the retry policy
   to that item.
 - A `Workflow` reports a failing child by setting `ctx.error` rather than
-  raising, and NodeRunner applies the retry policy to that error as well.
+  raising. NodeRunner does not retry that error: static children retry in
+  place under their own `retry_config` or the one they inherit from the
+  workflow, so retrying the workflow on top would multiply their attempts.
 - When retries are exhausted, the error is recorded on `ctx.error` and
   `ctx.error_node_path` and the Context is returned normally — NodeRunner does
   not re-raise to the orchestrator.

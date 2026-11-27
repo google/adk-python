@@ -885,11 +885,16 @@ class Runner:
       raise
 
   async def _synthesize_abort_events_if_needed(
-      self, ic: InvocationContext
+      self, ic: InvocationContext, keep_open: frozenset[str] = frozenset()
   ) -> list[Event]:
     """Seals an aborted invocation in session history, at most once.
 
-    Returns the synthetic events after plugin processing and persistence.
+    Args:
+      ic: The aborted invocation.
+      keep_open: Ids of calls to leave unanswered.
+
+    Returns:
+      The synthetic events after plugin processing and persistence.
     """
     if ic._abort_state.event_synthesized or ic.session is None:  # pylint: disable=protected-access
       return []
@@ -899,6 +904,7 @@ class Runner:
         invocation_id=ic.invocation_id,
         root_agent_name=self.agent.name,
         branch=ic.branch,
+        keep_open=keep_open,
     )
     return [
         await self._process_and_append_event(event=e, invocation_context=ic)

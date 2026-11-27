@@ -43,12 +43,12 @@ def final_output(node_input: str):
 Stream partial text with `Event(message='chunk', partial=True)`. LLM agents emit
 their content events automatically; function nodes do not.
 
-## Write state through `Event(state=...)`, not `ctx.state[key] = ...`
+## Write state through `Event(state=...)` or `ctx.state[key] = ...`
 
 State passed to the `Event` constructor lands in `event.actions.state_delta`, so
 it is part of event history and survives the replay that non-resumable
-human-in-the-loop performs. A direct `ctx.state` mutation is a side effect that
-replay does not reproduce.
+human-in-the-loop performs. A direct `ctx.state` write is recorded the same
+way: the node runner moves it onto the next event the node emits.
 
 ```python
 # Recorded in event history
@@ -56,7 +56,7 @@ def save(node_input: str):
   return Event(output=node_input, state={'user_request': node_input})
 
 
-# Lost on replay
+# Also recorded: flushed onto the node's next event
 def save(ctx: Context, node_input: str) -> str:
   ctx.state['user_request'] = node_input
   return node_input
@@ -66,10 +66,10 @@ Reading is always `ctx.state[...]`.
 
 ## At most one output event per node execution
 
-A node may yield many events, but only one of them may carry `output`. Two
-output events are merged into a list, which silently changes the downstream
-node's `node_input` type from `str` to `list[str]`. The same limit applies to
-`route`, except there a second routed event raises `ValueError`.
+A node may yield many events, but only one of them may carry `output`. A second
+output event raises `ValueError: Output already set`. `route` does not raise: a
+second routed event silently replaces the first, so only the last route is
+followed.
 
 ```python
 def my_node(node_input: str):
@@ -137,10 +137,6 @@ auto-wrapped agent) or `mode='task'` on agents used mid-graph.
 - An LLM agent with `output_schema` validates then dumps, so
   `ctx.state[output_key]` is a plain `dict`, never a model instance. Read it
   with `data['field']`, or rebuild the model with `MyModel(**data)`.
-- This bites hardest at a `JoinNode`, which parks partial inputs in session
-  state while waiting. If a predecessor is an LLM agent without `output_schema`,
-  the parked value is a `types.Content` and `DatabaseSessionService` raises
-  `TypeError` on write.
 
 ## Give every loop iteration its own `interrupt_id`
 

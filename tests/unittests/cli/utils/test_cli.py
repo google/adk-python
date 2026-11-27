@@ -24,9 +24,6 @@ from textwrap import dedent
 import time
 import types
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Tuple
 from unittest import mock
 
 import click
@@ -40,8 +37,10 @@ from google.adk.cli.utils.local_storage import PerAgentFileArtifactService
 from google.adk.cli.utils.service_factory import create_artifact_service_from_options
 from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
+from google.adk.events.request_input import RequestInput
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.workflow.utils import _workflow_hitl_utils
 import pytest
 from watchdog.events import FileClosedNoWriteEvent
 from watchdog.events import FileModifiedEvent
@@ -53,7 +52,7 @@ class _Recorder:
   """Callable that records every invocation."""
 
   def __init__(self) -> None:
-    self.calls: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+    self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
   def __call__(self, *args: Any, **kwargs: Any) -> None:
     self.calls.append((args, kwargs))
@@ -79,7 +78,7 @@ def _patch_types_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 
   class _Content:
 
-    def __init__(self, role: str, parts: List[_Part]) -> None:
+    def __init__(self, role: str, parts: list[_Part]) -> None:
       self.role = role
       self.parts = parts
 
@@ -159,7 +158,7 @@ async def test_run_input_file_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """run_input_file should echo user & assistant messages and return a populated session."""
-  recorder: List[str] = []
+  recorder: list[str] = []
 
   def _echo(msg: str) -> None:
     recorder.append(msg)
@@ -245,7 +244,7 @@ async def test_run_cli_app_uses_app_name_for_sessions(
 ) -> None:
   """run_cli should honor the App-provided name when creating sessions."""
   parent_dir, folder_name, app_name = fake_app_agent
-  created_app_names: List[str] = []
+  created_app_names: list[str] = []
 
   class _SpySessionService(InMemorySessionService):
 
@@ -1203,3 +1202,43 @@ async def test_run_cli_reload_agents_save_session_prompts(
   )
 
   assert session_file.exists()
+
+
+@pytest.mark.parametrize(
+    "response_schema, user_input, expected",
+    [
+        (str, "94103", "94103"),
+        (str, "true", "true"),
+        (str | None, "null", "null"),
+        (str | int, "42", 42),
+        (int, "42", 42),
+        (None, "42", 42),
+    ],
+)
+@pytest.mark.asyncio
+async def test_prompt_for_request_input_keeps_text_for_string_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    response_schema: Any,
+    user_input: str,
+    expected: Any,
+) -> None:
+  """Typed input stays text for a string-only schema, else is JSON-parsed."""
+  # Restore the real genai Part/Content that the autouse fixture fakes.
+  monkeypatch.undo()
+  event = _workflow_hitl_utils.create_request_input_event(
+      RequestInput(
+          interrupt_id="ask1",
+          message="Zip code?",
+          response_schema=response_schema,
+      )
+  )
+  fc = event.content.parts[0].function_call
+
+  async def read_line(_: str) -> str:
+    return user_input
+
+  content = await cli._prompt_for_function_call(
+      fc.id, fc.name, fc.args, read_line
+  )
+
+  assert content.parts[0].function_response.response == {"result": expected}

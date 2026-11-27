@@ -24,6 +24,7 @@ from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBacked
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from google.adk.evaluation.simulation.static_user_simulator import StaticUserSimulator
 from google.adk.evaluation.simulation.user_simulator import BaseUserSimulatorConfig
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from pydantic import Field
 import pytest
@@ -103,6 +104,46 @@ class TestUserSimulatorProvider:
     assert (
         simulator._text_simulator._conversation_scenario
         == _TEST_CONVERSATION_SCENARIO
+    )
+
+  async def test_llm_audio_default_thinking_uses_level_on_gemini_4(
+      self, mocker
+  ):
+    """The audio simulator's text model gets level MEDIUM on Gemini 4."""
+    mocker.patch(
+        "google.adk.evaluation.simulation._llm_audio_user_simulator.LLMRegistry",
+        autospec=True,
+    )
+    mock_text_registry = mocker.patch(
+        "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+        autospec=True,
+    )
+    text_llm = mocker.Mock()
+
+    async def generate_content_async(llm_request):
+      del llm_request
+      yield LlmResponse(content=types.Content(parts=[types.Part(text="Hi")]))
+
+    text_llm.generate_content_async.side_effect = generate_content_async
+    mock_text_registry.return_value.resolve.return_value.return_value = text_llm
+    provider = user_simulator_provider.UserSimulatorProvider(
+        user_simulator_config=LlmAudioUserSimulatorConfig(
+            model="gemini-4-hydrogen"
+        )
+    )
+    simulator = provider.provide(
+        eval_case.EvalCase(
+            eval_id="test_eval_id",
+            conversation_scenario=_TEST_CONVERSATION_SCENARIO,
+        )
+    )
+
+    await simulator._text_simulator.get_next_user_message(events=[])
+    await simulator._text_simulator.get_next_user_message(events=[])
+
+    request = text_llm.generate_content_async.call_args.args[0]
+    assert request.config.thinking_config == types.ThinkingConfig(
+        include_thoughts=True, thinking_level=types.ThinkingLevel.MEDIUM
     )
 
   def test_provide_llm_backed_user_simulator(self, mocker):

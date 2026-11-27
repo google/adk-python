@@ -24,12 +24,16 @@ from .state import State
 from .state import StateSchemaError
 
 if TYPE_CHECKING:
+  from ._buffered_session_service import BufferedSessionService
+  from ._buffered_session_service import BufferedSessionServiceConfig
   from .database_session_service import DatabaseSessionService
   from .in_memory_session_service import InMemorySessionService
   from .vertex_ai_session_service import VertexAiSessionService
 
 __all__ = [
     'BaseSessionService',
+    'BufferedSessionService',
+    'BufferedSessionServiceConfig',
     'DatabaseSessionService',
     'InMemorySessionService',
     'Session',
@@ -39,6 +43,8 @@ __all__ = [
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
+    'BufferedSessionService': '_buffered_session_service',
+    'BufferedSessionServiceConfig': '_buffered_session_service',
     'InMemorySessionService': 'in_memory_session_service',
     'VertexAiSessionService': 'vertex_ai_session_service',
 }
