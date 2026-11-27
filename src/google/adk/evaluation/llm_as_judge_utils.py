@@ -20,9 +20,7 @@ from collections.abc import Iterable
 import enum
 import statistics
 from typing import Any
-from typing import Optional
 from typing import TypeVar
-from typing import Union
 
 from google.genai import types as genai_types
 
@@ -54,10 +52,10 @@ class Label(enum.Enum):
 
 
 def get_text_from_content(
-    content: Optional[Union[genai_types.Content, Invocation]],
+    content: genai_types.Content | Invocation | None,
     *,
     include_intermediate_responses_in_final: bool = False,
-) -> Optional[str]:
+) -> str | None:
   """Extracts text from a `Content` or an `Invocation`.
 
   When `content` is a `Content`, returns the concatenated text of its parts.
@@ -100,14 +98,14 @@ def get_text_from_content(
   return None
 
 
-def get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
+def get_eval_status(score: float | None, threshold: float) -> EvalStatus:
   if score is None:
     return EvalStatus.NOT_EVALUATED
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
 def build_judge_request_config(
-    user_config: Optional[genai_types.GenerateContentConfig],
+    user_config: genai_types.GenerateContentConfig | None,
 ) -> genai_types.GenerateContentConfig:
   """Returns a judge-request config with Automatic Function Calling forced off.
 
@@ -130,7 +128,7 @@ def build_judge_request_config(
 
 def get_average_rubric_score(
     rubric_scores: list[RubricScore],
-) -> Optional[float]:
+) -> float | None:
   """Returns a single score value from the given list of rubric scores.
 
   It is possible that none of the rubric score actually contain a score value,
@@ -177,7 +175,7 @@ class _ToolCallAndResponse(EvalBaseModel):
 
   step: int
   tool_call: genai_types.FunctionCall
-  tool_response: Union[genai_types.FunctionResponse, str]
+  tool_response: genai_types.FunctionResponse | str
 
 
 class _ToolCallsAndResponses(EvalBaseModel):
@@ -190,7 +188,7 @@ class _GroundingMetadataEntry(EvalBaseModel):
   """Internal data model to capture grounding metadata from an invocation."""
 
   step: int
-  author: Optional[str] = None
+  author: str | None = None
   grounding_metadata: genai_types.GroundingMetadata
 
 
@@ -201,7 +199,7 @@ class _GroundingMetadataEntries(EvalBaseModel):
 
 
 def get_tool_calls_and_responses_as_json_str(
-    intermediate_data: Optional[IntermediateDataType],
+    intermediate_data: IntermediateDataType | None,
 ) -> str:
   """Returns a JSON string representation of tool calls and corresponding responses.
 
@@ -237,7 +235,7 @@ def get_tool_calls_and_responses_as_json_str(
 
 
 def get_grounding_metadata_as_json_str(
-    intermediate_data: Optional[IntermediateDataType],
+    intermediate_data: IntermediateDataType | None,
 ) -> str:
   """Returns a JSON string representation of grounding metadata."""
   if not isinstance(intermediate_data, InvocationEvents):

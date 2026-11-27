@@ -226,6 +226,24 @@ class Gemini(BaseLlm):
         r'projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+',
     ]
 
+  @classmethod
+  @override
+  def _supports_dynamic_instruction_routing_for_model(
+      cls, model: str
+  ) -> bool | None:
+    del model
+    if (
+        cls._supports_dynamic_instruction_routing
+        is Gemini._supports_dynamic_instruction_routing
+    ):
+      default = cls.model_fields['use_interactions_api'].default
+      return not default if isinstance(default, bool) else None
+    return None
+
+  @override
+  def _supports_dynamic_instruction_routing(self) -> bool:
+    return not self.use_interactions_api
+
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:

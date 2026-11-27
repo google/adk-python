@@ -31,6 +31,7 @@ from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.events.event import Event
+from google.adk.features import _feature_registry
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
@@ -46,6 +47,7 @@ from google.adk.live._flow_utils import run_config_for_new_live_session
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
+from google.adk.models.llm_request import _is_transient_user_content
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
@@ -2952,6 +2954,7 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
+  assert _is_transient_user_content(llm_request, llm_request.contents[0])
   # The tool's instruction rides the same user-role carrier as the agent's, so
   # it is labelled the same way rather than sent as bare prose.
   instruction_text = llm_request.contents[0].parts[0].text
@@ -2959,6 +2962,67 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
+
+
+class _UnsupportedRoutingLlm(testing_utils.MockModel):
+
+  def _supports_dynamic_instruction_routing(self) -> bool:
+    return False
+
+
+@pytest.mark.parametrize(
+    'model,is_live,support_cfc',
+    [
+        pytest.param('gemini-2.5-flash', True, False, id='live'),
+        pytest.param('gemini-2.5-flash', False, True, id='support_cfc'),
+        pytest.param(
+            Gemini(model='gemini-2.5-flash', use_interactions_api=True),
+            False,
+            False,
+            id='interactions',
+        ),
+        pytest.param(
+            _UnsupportedRoutingLlm(responses=[]),
+            False,
+            False,
+            id='unsupported_model',
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_finalize_dynamic_instructions_keeps_system_instruction_for_unsupported_paths(
+    model, is_live, support_cfc, monkeypatch, recwarn
+):
+  monkeypatch.delenv(
+      'ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS', raising=False
+  )
+  agent = Agent(name='test_agent', model=model)
+  invocation_context = mock.Mock(spec=InvocationContext)
+  invocation_context.agent = agent
+  invocation_context.live_request_queue = (
+      LiveRequestQueue() if is_live else None
+  )
+  invocation_context.run_config = RunConfig(support_cfc=support_cfc)
+
+  llm_request = LlmRequest()
+  llm_request._append_dynamic_instructions(['dynamic 1'])
+  llm_request.contents.append(
+      types.Content(
+          role='user', parts=[types.Part.from_text(text='user question')]
+      )
+  )
+
+  with (
+      mock.patch.object(_feature_registry, '_WARNED_FEATURES', set()),
+      temporary_feature_override(FeatureName.DYNAMIC_INSTRUCTION_ROUTING, True),
+  ):
+    await _finalize_dynamic_instructions(invocation_context, llm_request)
+
+  assert llm_request.config.system_instruction == 'dynamic 1'
+  assert [c.parts[0].text for c in llm_request.contents] == ['user question']
+  assert not [
+      w for w in recwarn if 'DYNAMIC_INSTRUCTION_ROUTING' in str(w.message)
+  ]
 
 
 @pytest.mark.asyncio

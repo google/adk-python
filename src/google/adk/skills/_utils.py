@@ -238,6 +238,32 @@ def _parse_skill_md(
   return parsed, body, skill_md
 
 
+def _load_skill_from_markdown(
+    markdown: str, *, resources: models.Resources | None = None
+) -> models.Skill:
+  """Load a skill from the text of a SKILL.md file.
+
+  The skill name is not compared with a directory name, since there is none.
+
+  Args:
+    markdown: The SKILL.md text: YAML frontmatter between `---` lines, then the
+      instructions.
+    resources: The skill's references, assets and scripts.
+
+  Returns:
+    Skill object built from the frontmatter, instructions and resources.
+
+  Raises:
+    ValueError: If the frontmatter is missing, malformed, or fails validation.
+  """
+  parsed, body = _parse_skill_md_content(markdown)
+  return models.Skill(
+      frontmatter=models.Frontmatter.model_validate(parsed),
+      instructions=body,
+      resources=resources if resources is not None else models.Resources(),
+  )
+
+
 def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
   """Load a complete skill from a directory.
 

@@ -32,14 +32,14 @@ from .context import TelemetryConfig
 
 _CallableT = TypeVar("_CallableT", bound=Callable[..., object])
 
-# >= 1.0 rewrites the `co_filename` of each SDK function it wraps to this path
-# (`_set_co_filename`, which it keeps for ADK); < 1.0 wrappers live there.
+# Where the instrumentor's wrapper functions live, in every release.
 _MODULE_PATH = "opentelemetry/instrumentation/google_genai"
 
-# The newest google-genai instrumentor release verified not to record the
-# gen_ai.client.inference.* token metrics, so ADK can record them alongside it
-# without double counting.
-_LAST_INSTRUMENTOR_WITHOUT_INFERENCE_TOKEN_METRICS = Version("0.7b2")
+# The newest opentelemetry-util-genai release verified not to record the
+# gen_ai.client.inference.* token metrics. The instrumentor >= 1.0 records its
+# metrics through it, and < 1.0 (which pins util-genai < 0.4) records none of
+# these, so up to here ADK records them alongside it without double counting.
+_LAST_UTIL_GENAI_WITHOUT_INFERENCE_TOKEN_METRICS = Version("1.3b0")
 
 
 def _is_instrumentor_code(function: object) -> bool:
@@ -49,11 +49,33 @@ def _is_instrumentor_code(function: object) -> bool:
   return _MODULE_PATH in code.co_filename.replace("\\", "/")
 
 
+def _is_instrumentor_layer(function: object) -> bool:
+  """Whether ``function`` is a layer the instrumentor put over the SDK.
+
+  How each release wraps the SDK's generate content method:
+
+  - < 1.0:  instrumentor function --wraps--> SDK function
+            The SDK function is replaced outright, so the layer's code is the
+            instrumentor's own.
+  - >= 1.0: wrapt proxy --wrapper--> instrumentor function
+                        --wraps----> SDK function
+            The proxy reports the SDK function's code, which >= 1.0b1 marks
+            with the instrumentor's file name.
+
+  That mark alone misses 1.0b0, and it mistakes any wrapt proxy above the
+  instrumentor for the instrumentor, since that proxy also reports the marked
+  code. So read the proxy's wrapper, and fall back to the mark only if wrapt
+  stops exposing it.
+  """
+  wrapper = getattr(function, "_self_wrapper", None)
+  return _is_instrumentor_code(function if wrapper is None else wrapper)
+
+
 def is_instrumented() -> bool:
   """Whether the instrumentor wraps ``Models.generate_content``."""
   maybe_wrapped_function = Models.generate_content
   while wrapped := getattr(maybe_wrapped_function, "__wrapped__", None):
-    if _is_instrumentor_code(maybe_wrapped_function):
+    if _is_instrumentor_layer(maybe_wrapped_function):
       return True
     maybe_wrapped_function = wrapped  # pyright: ignore[reportAny]
   return False
@@ -88,17 +110,11 @@ def should_emit_inference_token_metrics(model: str | None) -> bool:
   # recording these metrics.
   if not (is_instrumented() and is_gemini_model(model)):
     return True
-  # Up to the verified release, the instrumentor records only the older
-  # metrics, so ADK adds these. From 1.0 they depend on the util-genai version
-  # it pulls in, so a newer or unreadable version is skipped to avoid double
-  # counting.
   try:
-    from opentelemetry.instrumentation.google_genai import version as instrumentor_version
-
-    installed = Version(instrumentor_version.__version__)
-  except (AttributeError, ImportError):
-    return False
-  return installed <= _LAST_INSTRUMENTOR_WITHOUT_INFERENCE_TOKEN_METRICS
+    installed = Version(metadata.version("opentelemetry-util-genai"))
+  except metadata.PackageNotFoundError:
+    return True
+  return installed <= _LAST_UTIL_GENAI_WITHOUT_INFERENCE_TOKEN_METRICS
 
 
 def maybe_without_genai_instrumentation(method: _CallableT) -> _CallableT:
@@ -118,19 +134,33 @@ def maybe_without_genai_instrumentation(method: _CallableT) -> _CallableT:
   scope = _instrumentation.inference_scope()
   if scope is None or not isinstance(scope.span, tracing.GenerateContentSpan):
     return method
-  # Peels the instrumentor only when it is the outermost layer over a
-  # plain function. Any wrapt wrapper stacked with it hides which layer is its,
-  # and both record.
+  return cast(_CallableT, _without_instrumentor(method))
+
+
+def _without_instrumentor(
+    method: Callable[..., object],
+) -> Callable[..., object]:
+  """``method`` with the instrumentor's layer left out, or as is if it can't be.
+
+  Layers above it are kept, as long as they are wrapt proxies: their wrapper is
+  handed what lies beneath the instrumentor instead. Beneath any other kind,
+  util-genai >= 1.3b0 still stands it down, because ADK's inference span marks
+  the context; older ones record as well.
+  """
   inner = getattr(method, "__wrapped__", None)
-  # `type() is`, not `isinstance`: wrapt proxies `__class__`.
-  if type(inner) is types.MethodType and _is_instrumentor_code(inner.__func__):
-    # >= 1.0: a wrapt wrapper, which stamps the method it wraps.
-    return cast(_CallableT, inner)
-  if (
-      isinstance(method, types.MethodType)
-      and type(inner) is types.FunctionType
-      and _is_instrumentor_code(method.__func__)
-  ):
-    # < 1.0: a functools.wraps replacement, whose `__wrapped__` is unbound.
-    return cast(_CallableT, types.MethodType(inner, method.__self__))
-  return method
+  if inner is None:
+    return method
+  if _is_instrumentor_layer(method):
+    # An exact type check, since wrapt proxies report the wrapped class.
+    if type(method) is types.MethodType:
+      # < 1.0: a plain replacement, which wraps the unbound SDK function, or
+      # an unbound wrapt proxy beneath it.
+      return types.MethodType(inner, method.__self__)
+    # >= 1.0: a bound wrapt proxy, which wraps the bound SDK method.
+    return cast(Callable[..., object], inner)
+  wrapper = getattr(method, "_self_wrapper", None)
+  beneath = _without_instrumentor(inner)  # pyright: ignore[reportAny]
+  if wrapper is None or beneath is inner:
+    return method
+  instance = getattr(method, "_self_instance", None)
+  return lambda *args, **kwargs: wrapper(beneath, instance, args, kwargs)
