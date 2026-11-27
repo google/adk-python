@@ -21,7 +21,6 @@ import logging
 import re
 import statistics
 from typing import ClassVar
-from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
@@ -239,7 +238,7 @@ def _normalize_sentence(text: str) -> str:
 
 def _parse_validation_results(
     response_text: str,
-) -> list[dict[str, Optional[str]]]:
+) -> list[dict[str, str | None]]:
   """Parses sentence validation results from LLM response."""
   results = []
   pattern = re.compile(
@@ -321,7 +320,7 @@ class HallucinationsV1Evaluator(Evaluator):
 
   def _create_context_for_step(
       self,
-      app_details: Optional[AppDetails],
+      app_details: AppDetails | None,
       invocation: Invocation,
       events: list[InvocationEvent],
   ) -> str:
@@ -521,7 +520,7 @@ class HallucinationsV1Evaluator(Evaluator):
 
   async def _evaluate_nl_response(
       self, nl_response: str, context: str
-  ) -> tuple[Optional[float], str]:
+  ) -> tuple[float | None, str]:
     """Runs segmentation and validation for a single NL response."""
     # Segmentation step: split the NL response into sentences.
     segmenter_llm_request = LlmRequest(
@@ -844,15 +843,15 @@ class HallucinationsV1Evaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     del conversation_scenario  # not used by this metric.
     _validate_invocation_lengths(actual_invocations, expected_invocations)
 
     # expected_invocations are not required by the metric and if they are not
     # supplied, we provide a list of None to rest of the code.
-    expected_by_invocation: list[Optional[Invocation]] = (
+    expected_by_invocation: list[Invocation | None] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else list(expected_invocations)

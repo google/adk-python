@@ -80,18 +80,15 @@
     SELECT
       session_id,
       ARRAY_AGG(
-        user_id IGNORE NULLS ORDER BY turn_start_timestamp LIMIT 1
+        user_id IGNORE NULLS
+        ORDER BY turn_start_timestamp, invocation_id
+        LIMIT 1
       )[SAFE_OFFSET(0)] AS user_id,
-      COALESCE(
-        ARRAY_AGG(
-          first_root_agent_name IGNORE NULLS
-          ORDER BY turn_start_timestamp
-          LIMIT 1
-        )[SAFE_OFFSET(0)],
-        ARRAY_AGG(
-          first_agent IGNORE NULLS ORDER BY turn_start_timestamp LIMIT 1
-        )[SAFE_OFFSET(0)]
-      ) AS root_agent,
+      ARRAY_AGG(
+        root_agent IGNORE NULLS
+        ORDER BY turn_start_timestamp, invocation_id
+        LIMIT 1
+      )[SAFE_OFFSET(0)] AS root_agent,
       MIN(turn_start_timestamp) AS session_start_timestamp,
       MAX(turn_end_timestamp) AS session_end_timestamp,
       COUNT(DISTINCT invocation_id) AS turn_count,

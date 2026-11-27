@@ -76,6 +76,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [E2BEnvironment](integrations/e2b/e2b_environment/index.md) - Running agent code in an E2B hosted sandbox, and what happens when the sandbox expires.
 * [FirestoreSessionService](integrations/firestore/firestore_session_service/index.md) - A durable multi-process session store built on Firestore documents and transactions.
 * [GCSToolset and GCSAdminToolset](integrations/gcs/gcs_toolset/index.md) - Giving an agent access to Cloud Storage objects and buckets, read-only until you say otherwise.
+* [GroundingPlugin](integrations/discovery_engine/grounding_plugin/index.md) - Verifying model responses against registered facts with the CheckGrounding API and attaching citations.
 * [LangchainTool](integrations/langchain/langchain_tool/index.md) - Wrapping a LangChain tool so an ADK agent can call it.
 * [Model Armor](integrations/model_armor/index.md) - Screening user input and model output with Google Cloud Model Armor.
 * [MongoDbMemoryService](integrations/mongodb/memory_service/index.md) - Storing session events in a MongoDB collection and recalling them by keyword match.
@@ -90,6 +91,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Labs
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
 * [ClassifierNode](labs/classifiers/classifier_node/index.md) - Routing a workflow on a classifier's answer to one `Choice` or `Binary` question.
+* [GeminiDecisionsClassifier](labs/classifiers/gemini_decisions_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with the Gemini Decisions API, in one request and with no output tokens.
 * [LlmClassifier](labs/classifiers/llm_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with any model, in one structured-output call.
 
 ### Live

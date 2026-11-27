@@ -1,0 +1,681 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1571 1115" width="3142" height="2230">
+<!-- svg-source:excalidraw -->
+<rect x="0" y="0" width="1571" height="1115" fill="#ffffff">
+</rect>
+<g stroke-linecap="round" transform="translate(10 10) rotate(0 775.5 547.5)">
+<path d="M32 0 L1519 0 L1526.5 0.5 L1533 2 L1538.5 4.5 L1543 8 L1546.5 12.5 L1549 18 L1550.5 24.5 L1551 32 L1551 1063 L1550.5 1070.5 L1549 1077 L1546.5 1082.5 L1543 1087 L1538.5 1090.5 L1533 1093 L1526.5 1094.5 L1519 1095 L32 1095 L24.5 1094.5 L18 1093 L12.5 1090.5 L8 1087 L4.5 1082.5 L2 1077 L0.5 1070.5 L0 1063 L0 32 L0.5 24.5 L2 18 L4.5 12.5 L8 8 L12.5 4.5 L18 2 L24.5 0.5 L32 0" stroke="none" stroke-width="0" fill="#ffffff">
+</path>
+<path d="M32 0 M32 0 C518.97 0, 1005.94 0, 1519 0 M32 0 C573.8 0, 1115.61 0, 1519 0 M1519 0 C1540.33 0, 1551 10.67, 1551 32 M1519 0 C1540.33 0, 1551 10.67, 1551 32 M1551 32 C1551 312.97, 1551 593.94, 1551 1063 M1551 32 C1551 297.13, 1551 562.26, 1551 1063 M1551 1063 C1551 1084.33, 1540.33 1095, 1519 1095 M1551 1063 C1551 1084.33, 1540.33 1095, 1519 1095 M1519 1095 C1077.57 1095, 636.14 1095, 32 1095 M1519 1095 C1002.2 1095, 485.4 1095, 32 1095 M32 1095 C10.67 1095, 0 1084.33, 0 1063 M32 1095 C10.67 1095, 0 1084.33, 0 1063 M0 1063 C0 650.96, 0 238.93, 0 32 M0 1063 C0 740.13, 0 417.25, 0 32 M0 32 C0 10.67, 10.67 0, 32 0 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(53.078124999999886 63.61328125) rotate(0 15 0)">
+<path d="M0 0 C8.04 0, 16.07 0, 30 0 M0 0 C9.17 0, 18.34 0, 30 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(53.078124999999886 63.61328125) rotate(0 15 0)">
+<path d="M15.9 5.13 C19.68 3.76, 23.46 2.38, 30 0 M15.9 5.13 C20.21 3.56, 24.52 1.99, 30 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(53.078124999999886 63.61328125) rotate(0 15 0)">
+<path d="M15.9 -5.13 C19.68 -3.76, 23.46 -2.38, 30 0 M15.9 -5.13 C20.21 -3.56, 24.52 -1.99, 30 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(92.07812499999989 53.234375) rotate(0 58.748046875 8.75)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">trusted control flow</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(248.52234127966233 64.51944976879008) rotate(0 15 0)">
+<path d="M0 0 C9.11 0, 18.22 0, 30 0 M0 0 C10.47 0, 20.95 0, 30 0" stroke="#cf222e" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(248.52234127966233 64.51944976879008) rotate(0 15 0)">
+<path d="M15.9 5.13 C20.18 3.57, 24.46 2.01, 30 0 M15.9 5.13 C20.83 3.34, 25.75 1.55, 30 0" stroke="#cf222e" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(248.52234127966233 64.51944976879008) rotate(0 15 0)">
+<path d="M15.9 -5.13 C20.18 -3.57, 24.46 -2.01, 30 0 M15.9 -5.13 C20.83 -3.34, 25.75 -1.55, 30 0" stroke="#cf222e" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(287.5223412796623 54.01944976879008) rotate(0 104.66162109375 8.75)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">model output (attacker-controlled)</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(534.9785629388108 65.16523707860125) rotate(0 15 0)">
+<path d="M0 0 C6.52 0, 13.05 0, 30 0" stroke="#d97706" stroke-width="2" fill="none" stroke-dasharray="8 9.5">
+</path>
+</g>
+<g transform="translate(534.9785629388108 65.16523707860125) rotate(0 15 0)">
+<path d="M15.9 5.13 C18.97 4.01, 22.04 2.9, 30 0" stroke="#d97706" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(534.9785629388108 65.16523707860125) rotate(0 15 0)">
+<path d="M15.9 -5.13 C18.97 -4.01, 22.04 -2.9, 30 0" stroke="#d97706" stroke-width="2" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(573.9785629388108 54.66523707860125) rotate(0 105.84765625 8.75)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">untrusted content entering context</text>
+</g>
+<g stroke-linecap="round" transform="translate(53 255.5) rotate(0 133.5 180.75)">
+<path d="M32 0 M32 0 C76.19 0, 120.37 0, 235 0 M235 0 C256.33 0, 267 10.67, 267 32 M267 32 C267 128.38, 267 224.76, 267 329.5 M267 329.5 C267 350.83, 256.33 361.5, 235 361.5 M235 361.5 C171.51 361.5, 108.03 361.5, 32 361.5 M32 361.5 C10.67 361.5, 0 350.83, 0 329.5 M0 329.5 C0 235.37, 0 141.24, 0 32 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#57606a" stroke-width="2" fill="none" stroke-dasharray="8 9.5">
+</path>
+</g>
+<g transform="translate(87.5 270.5) rotate(0 24.609375 7.5)">
+<text x="0" y="0" font-family="Cascadia Code, Consolas, Menlo, monospace" font-size="12px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">CALLERS</text>
+</g>
+<g stroke-linecap="round" transform="translate(365 255.5) rotate(0 347.25 238.5)">
+<path d="M32 0 M32 0 C215.03 0, 398.05 0, 662.5 0 M662.5 0 C683.83 0, 694.5 10.67, 694.5 32 M694.5 32 C694.5 163.52, 694.5 295.05, 694.5 445 M694.5 445 C694.5 466.33, 683.83 477, 662.5 477 M662.5 477 C438.4 477, 214.3 477, 32 477 M32 477 C10.67 477, 0 466.33, 0 445 M0 445 C0 336.56, 0 228.13, 0 32 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#57606a" stroke-width="2" fill="none" stroke-dasharray="8 9.5">
+</path>
+</g>
+<g transform="translate(380 708.5) rotate(0 87.890625 7.5)">
+<text x="0" y="0" font-family="Cascadia Code, Consolas, Menlo, monospace" font-size="12px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">ADK PROCESS · RUNNER HOST</text>
+</g>
+<g stroke-linecap="round" transform="translate(72.5 294.5) rotate(0 114.75 37.5)">
+<path d="M18.75 0 L210.75 0 L218.95 1.17 L224.81 4.69 L226.86 7.32 L229.21 14.36 L229.5 56.25 L228.33 64.45 L226.86 67.68 L222.18 72.36 L218.95 73.83 L210.75 75 L18.75 75 L10.55 73.83 L4.69 70.31 L2.64 67.68 L0.29 60.64 L0.29 14.36 L2.64 7.32 L4.69 4.69 L10.55 1.17 L18.75 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M18.75 0 M18.75 0 C93.52 0, 168.28 0, 210.75 0 M18.75 0 C94.92 0, 171.08 0, 210.75 0 M210.75 0 C223.25 0, 229.5 6.25, 229.5 18.75 M210.75 0 C223.25 0, 229.5 6.25, 229.5 18.75 M229.5 18.75 C229.5 27.06, 229.5 35.37, 229.5 56.25 M229.5 18.75 C229.5 30, 229.5 41.24, 229.5 56.25 M229.5 56.25 C229.5 68.75, 223.25 75, 210.75 75 M229.5 56.25 C229.5 68.75, 223.25 75, 210.75 75 M210.75 75 C157.26 75, 103.76 75, 18.75 75 M210.75 75 C139.73 75, 68.71 75, 18.75 75 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M0 56.25 C0 45.43, 0 34.6, 0 18.75 M0 56.25 C0 46.72, 0 37.19, 0 18.75 M0 18.75 C0 6.25, 6.25 0, 18.75 0 M0 18.75 C0 6.25, 6.25 0, 18.75 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(86.5 306.5) rotate(0 32.01953125 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">End user</text>
+</g>
+<g transform="translate(86.5 334.5) rotate(0 82.7353515625 8.775000000000006)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">messages · approvals · state</text>
+</g>
+<g stroke-linecap="round" transform="translate(72.5 402.5) rotate(0 114.75 35.25)">
+<path d="M17.63 0 L211.88 0 L219.59 1.1 L225.09 4.41 L227.02 6.88 L229.22 13.49 L229.5 52.88 L228.4 60.59 L227.02 63.62 L222.62 68.02 L219.59 69.4 L211.88 70.5 L17.63 70.5 L9.91 69.4 L4.41 66.09 L1.1 60.59 L0.28 57.01 L0.28 13.49 L2.48 6.88 L4.41 4.41 L9.91 1.1 L17.63 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M17.63 0 M17.63 0 C63.56 0, 109.49 0, 211.88 0 M17.63 0 C75.34 0, 133.05 0, 211.88 0 M211.88 0 C223.63 0, 229.5 5.88, 229.5 17.63 M211.88 0 C223.63 0, 229.5 5.88, 229.5 17.63 M229.5 17.63 C229.5 25.76, 229.5 33.89, 229.5 52.88 M229.5 17.63 C229.5 26.82, 229.5 36.02, 229.5 52.88 M229.5 52.88 C229.5 64.63, 223.63 70.5, 211.88 70.5 M229.5 52.88 C229.5 64.63, 223.63 70.5, 211.88 70.5 M211.88 70.5 C140.38 70.5, 68.89 70.5, 17.63 70.5 M211.88 70.5 C147.35 70.5, 82.83 70.5, 17.63 70.5 M17.63 70.5 C5.88 70.5, 0 64.63, 0 52.88 M17.63 70.5 C5.88 70.5, 0 64.63, 0 52.88 M0 52.88 C0 39.56, 0 26.25, 0 17.63 M0 52.88 C0 41.45, 0 30.02, 0 17.63 M0 17.63 C0 5.88, 5.88 0, 17.63 0 M0 17.63 C0 5.88, 5.88 0, 17.63 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(86.5 414.5) rotate(0 39.140625 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Peer agent</text>
+</g>
+<g transform="translate(86.5 442.5) rotate(0 29.265869140625 8.775000000000006)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">A2A client</text>
+</g>
+<g stroke-linecap="round" transform="translate(72.5 510.5) rotate(0 114.75 36.75)">
+<path d="M18.38 0 L211.13 0 L219.16 1.15 L224.91 4.59 L228.35 10.34 L229.21 14.07 L229.5 55.13 L228.35 63.16 L226.92 66.32 L222.32 70.92 L219.16 72.35 L211.13 73.5 L18.38 73.5 L10.34 72.35 L4.59 68.91 L1.15 63.16 L0.29 59.43 L0.29 14.07 L1.15 10.34 L4.59 4.59 L10.34 1.15 L18.38 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M18.38 0 M18.38 0 C84.28 0, 150.18 0, 211.13 0 M18.38 0 C75 0, 131.62 0, 211.13 0 M211.13 0 C223.38 0, 229.5 6.13, 229.5 18.38 M211.13 0 C223.38 0, 229.5 6.13, 229.5 18.38 M229.5 18.38 C229.5 30.05, 229.5 41.72, 229.5 55.13 M229.5 18.38 C229.5 31.44, 229.5 44.51, 229.5 55.13 M229.5 55.13 C229.5 67.38, 223.38 73.5, 211.13 73.5 M229.5 55.13 C229.5 67.38, 223.38 73.5, 211.13 73.5 M211.13 73.5 C135.68 73.5, 60.23 73.5, 18.38 73.5 M211.13 73.5 C168.98 73.5, 126.83 73.5, 18.38 73.5 M18.38 73.5 C6.13 73.5, 0 67.38, 0 55.13 M18.38 73.5 C6.13 73.5, 0 67.38, 0 55.13 M0 55.13 C0 40.68, 0 26.24, 0 18.38 M0 55.13 C0 41.95, 0 28.78, 0 18.38 M0 18.38 C0 6.13, 6.13 0, 18.38 0 M0 18.38 C0 6.13, 6.13 0, 18.38 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(86.5 522.5) rotate(0 50.69140625 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Event sources</text>
+</g>
+<g transform="translate(86.5 550.5) rotate(0 56.00537109375 8.774999999999977)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Pub/Sub · Eventarc</text>
+</g>
+<g stroke-linecap="round" transform="translate(389 294.5) rotate(0 87 183.75)">
+<path d="M32 0 L149.5 0.5 L156 2 L161.5 4.5 L166 8 L169.5 12.5 L172 18 L173.5 24.5 L174 32 L174 335.5 L173.5 343 L172 349.5 L169.5 355 L166 359.5 L161.5 363 L156 365.5 L149.5 367 L142 367.5 L24.5 367 L18 365.5 L12.5 363 L8 359.5 L4.5 355 L2 349.5 L0.5 343 L0 335.5 L0.5 24.5 L2 18 L4.5 12.5 L8 8 L12.5 4.5 L18 2 L24.5 0.5 L32 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M32 0 M32 0 C75.44 0, 118.88 0, 142 0 M32 0 C64.11 0, 96.21 0, 142 0 M142 0 C163.33 0, 174 10.67, 174 32 M142 0 C163.33 0, 174 10.67, 174 32 M174 32 C174 119.11, 174 206.22, 174 335.5 M174 32 C174 146.17, 174 260.34, 174 335.5 M174 335.5 C174 356.83, 163.33 367.5, 142 367.5 M174 335.5 C174 356.83, 163.33 367.5, 142 367.5 M142 367.5 C115.1 367.5, 88.21 367.5, 32 367.5 M142 367.5 C114.72 367.5, 87.45 367.5, 32 367.5 M32 367.5 C10.67 367.5, 0 356.83, 0 335.5 M32 367.5 C10.67 367.5, 0 356.83, 0 335.5 M0 335.5 C0 272.75, 0 210, 0 32 M0 335.5 C0 244.18, 0 152.85, 0 32 M0 32 C0 10.67, 10.67 0, 32 0 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(403 306.5) rotate(0 60.3203125 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Web / API server</text>
+</g>
+<g transform="translate(403 334.5) rotate(0 59.975830078125 61.42500000000001)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">adk web · api_server</text>
+<text x="0" y="17.55" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">A2A executor</text>
+<text x="0" y="35.1" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">trigger routes</text>
+<text x="0" y="52.650000000000006" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">
+</text>
+<text x="0" y="70.2" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">accepts state and</text>
+<text x="0" y="87.75" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">state_delta from</text>
+<text x="0" y="105.30000000000001" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">callers</text>
+</g>
+<g stroke-linecap="round" transform="translate(600.5 294.5) rotate(0 99.75 37.5)">
+<path d="M18.75 0 L180.75 0 L188.95 1.17 L194.81 4.69 L196.86 7.32 L199.21 14.36 L199.5 56.25 L198.33 64.45 L196.86 67.68 L192.18 72.36 L188.95 73.83 L180.75 75 L18.75 75 L10.55 73.83 L4.69 70.31 L2.64 67.68 L0.29 60.64 L0.29 14.36 L2.64 7.32 L4.69 4.69 L10.55 1.17 L18.75 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M18.75 0 M18.75 0 C74.11 0, 129.48 0, 180.75 0 M18.75 0 C73.79 0, 128.84 0, 180.75 0 M180.75 0 C193.25 0, 199.5 6.25, 199.5 18.75 M180.75 0 C193.25 0, 199.5 6.25, 199.5 18.75 M199.5 18.75 C199.5 30.81, 199.5 42.88, 199.5 56.25 M199.5 18.75 C199.5 31.88, 199.5 45.02, 199.5 56.25 M199.5 56.25 C199.5 68.75, 193.25 75, 180.75 75 M199.5 56.25 C199.5 68.75, 193.25 75, 180.75 75 M180.75 75 C144.51 75, 108.28 75, 18.75 75 M180.75 75 C117.09 75, 53.42 75, 18.75 75 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M0 56.25 C0 46.43, 0 36.61, 0 18.75 M0 56.25 C0 46.68, 0 37.1, 0 18.75 M0 18.75 C0 6.25, 6.25 0, 18.75 0 M0 18.75 C0 6.25, 6.25 0, 18.75 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(614.5 306.5) rotate(0 63.58203125 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Context assembly</text>
+</g>
+<g transform="translate(614.5 334.5) rotate(0 72.4453125 7.425000000000011)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="11px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">instructions · {state} · memory</text>
+</g>
+<g stroke-linecap="round" transform="translate(600.5 402.5) rotate(0 99.75 48.75)">
+<path d="M24.38 0 L175.13 0 L180.84 0.38 L189.98 3.43 L193.41 6.09 L196.07 9.52 L199.12 18.66 L199.5 73.13 L199.12 78.84 L196.07 87.98 L193.41 91.41 L189.98 94.07 L185.79 95.98 L175.13 97.5 L24.38 97.5 L18.66 97.12 L9.52 94.07 L6.09 91.41 L3.43 87.98 L0.38 78.84 L0.38 18.66 L1.52 13.71 L3.43 9.52 L6.09 6.09 L9.52 3.43 L13.71 1.52 L24.38 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M24.38 0 M24.38 0 C55.16 0, 85.95 0, 175.13 0 M24.38 0 C78.21 0, 132.04 0, 175.13 0 M175.13 0 C191.38 0, 199.5 8.13, 199.5 24.38 M175.13 0 C191.38 0, 199.5 8.13, 199.5 24.38 M199.5 24.38 C199.5 38.84, 199.5 53.31, 199.5 73.13 M199.5 24.38 C199.5 40.75, 199.5 57.12, 199.5 73.13 M199.5 73.13 C199.5 89.38, 191.38 97.5, 175.13 97.5 M199.5 73.13 C199.5 89.38, 191.38 97.5, 175.13 97.5 M175.13 97.5 C141.86 97.5, 108.6 97.5, 24.38 97.5 M175.13 97.5 C121.06 97.5, 67 97.5, 24.38 97.5 M24.38 97.5 C8.13 97.5, 0 89.38, 0 73.13 M24.38 97.5 C8.13 97.5, 0 89.38, 0 73.13 M0 73.13 C0 59.94, 0 46.75, 0 24.38 M0 73.13 C0 56.16, 0 39.2, 0 24.38 M0 24.38 C0 8.13, 8.13 0, 24.38 0 M0 24.38 C0 8.13, 8.13 0, 24.38 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(614.5 414.5) rotate(0 26.23828125 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Runner</text>
+</g>
+<g transform="translate(614.5 442.5) rotate(0 59.26171875 17.55000000000001)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">plugins run first,</text>
+<text x="0" y="17.55" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">then agent callbacks</text>
+</g>
+<g stroke-linecap="round" transform="translate(834.5 402.5) rotate(0 99.75 48.75)">
+<path d="M24.38 0 L175.13 0 L180.84 0.38 L189.98 3.43 L193.41 6.09 L196.07 9.52 L199.12 18.66 L199.5 73.13 L199.12 78.84 L196.07 87.98 L193.41 91.41 L189.98 94.07 L185.79 95.98 L175.13 97.5 L24.38 97.5 L18.66 97.12 L9.52 94.07 L6.09 91.41 L3.43 87.98 L0.38 78.84 L0.38 18.66 L1.52 13.71 L3.43 9.52 L6.09 6.09 L9.52 3.43 L13.71 1.52 L24.38 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M24.38 0 M24.38 0 C77.21 0, 130.04 0, 175.13 0 M24.38 0 C57.38 0, 90.39 0, 175.13 0 M175.13 0 C191.38 0, 199.5 8.13, 199.5 24.38 M175.13 0 C191.38 0, 199.5 8.13, 199.5 24.38 M199.5 24.38 C199.5 37.95, 199.5 51.52, 199.5 73.13 M199.5 24.38 C199.5 36.61, 199.5 48.84, 199.5 73.13 M199.5 73.13 C199.5 89.38, 191.38 97.5, 175.13 97.5 M199.5 73.13 C199.5 89.38, 191.38 97.5, 175.13 97.5 M175.13 97.5 C125.71 97.5, 76.3 97.5, 24.38 97.5 M175.13 97.5 C131.26 97.5, 87.39 97.5, 24.38 97.5 M24.38 97.5 C8.13 97.5, 0 89.38, 0 73.13 M24.38 97.5 C8.13 97.5, 0 89.38, 0 73.13 M0 73.13 C0 56.24, 0 39.35, 0 24.38 M0 73.13 C0 53.82, 0 34.51, 0 24.38 M0 24.38 C0 8.13, 8.13 0, 24.38 0 M0 24.38 C0 8.13, 8.13 0, 24.38 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(848.5 414.5) rotate(0 46.6953125 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Tool dispatch</text>
+</g>
+<g transform="translate(848.5 442.5) rotate(0 55.284912109375 17.55000000000001)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">confirmation gate</text>
+<text x="0" y="17.55" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">auth preprocessing</text>
+</g>
+<g stroke-linecap="round" transform="translate(834.5 527) rotate(0 84.75 27)">
+<path d="M13.5 0 L156 0 L161.91 0.84 L166.13 3.38 L167.6 5.27 L169.29 10.34 L169.5 40.5 L168.66 46.41 L167.6 48.73 L164.23 52.1 L161.91 53.16 L156 54 L13.5 54 L7.59 53.16 L3.38 50.63 L1.9 48.73 L0.21 43.66 L0.21 10.34 L1.9 5.27 L5.27 1.9 L7.59 0.84 L13.5 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M13.5 0 M13.5 0 C62.62 0, 111.74 0, 156 0 M13.5 0 C62.75 0, 112.01 0, 156 0 M156 0 C165 0, 169.5 4.5, 169.5 13.5 M156 0 C165 0, 169.5 4.5, 169.5 13.5 M169.5 13.5 C169.5 22.53, 169.5 31.57, 169.5 40.5 M169.5 13.5 C169.5 22.55, 169.5 31.59, 169.5 40.5 M169.5 40.5 C169.5 49.5, 165 54, 156 54 M169.5 40.5 C169.5 49.5, 165 54, 156 54 M156 54 C107.81 54, 59.62 54, 13.5 54 M156 54 C115.88 54, 75.76 54, 13.5 54 M13.5 54 C4.5 54, 0 49.5, 0 40.5 M13.5 54 C4.5 54, 0 49.5, 0 40.5 M0 40.5 C0 34.04, 0 27.58, 0 13.5 M0 40.5 C0 31.24, 0 21.97, 0 13.5 M0 13.5 C0 4.5, 4.5 0, 13.5 0 M0 13.5 C0 4.5, 4.5 0, 13.5 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(848.5 539) rotate(0 52.46484375 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Credential mgr</text>
+</g>
+<g transform="translate(848.5 561) rotate(0 64.376953125 8.100000000000023)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">OAuth · token exchange</text>
+</g>
+<g stroke-linecap="round" transform="translate(600.5 596) rotate(0 217.5 55.5)">
+<path d="M27.75 0 L413.75 0.43 L419.39 1.73 L424.16 3.9 L428.06 6.94 L431.1 10.84 L433.27 15.61 L435 27.75 L434.57 89.75 L433.27 95.39 L431.1 100.16 L428.06 104.06 L424.16 107.1 L419.39 109.27 L407.25 111 L21.25 110.57 L15.61 109.27 L10.84 107.1 L6.94 104.06 L3.9 100.16 L1.73 95.39 L0 83.25 L0 27.75 L1.73 15.61 L3.9 10.84 L6.94 6.94 L10.84 3.9 L15.61 1.73 L27.75 0" stroke="none" stroke-width="0" fill="#ffebe9">
+</path>
+<path d="M27.75 0 M27.75 0 C158.47 0, 289.19 0, 407.25 0 M27.75 0 C170.8 0, 313.86 0, 407.25 0 M407.25 0 C425.75 0, 435 9.25, 435 27.75 M407.25 0 C425.75 0, 435 9.25, 435 27.75 M435 27.75 C435 40.43, 435 53.12, 435 83.25 M435 27.75 C435 45.64, 435 63.54, 435 83.25 M435 83.25 C435 101.75, 425.75 111, 407.25 111 M435 83.25 C435 101.75, 425.75 111, 407.25 111 M407.25 111 C298.14 111, 189.03 111, 27.75 111 M407.25 111 C284.45 111, 161.65 111, 27.75 111 M27.75 111 C9.25 111, 0 101.75, 0 83.25 M27.75 111 C9.25 111, 0 101.75, 0 83.25 M0 83.25 C0 71.41, 0 59.56, 0 27.75 M0 83.25 C0 63.19, 0 43.14, 0 27.75 M0 27.75 C0 9.25, 9.25 0, 27.75 0 M0 27.75 C0 9.25, 9.25 0, 27.75 0" stroke="#cf222e" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(614.5 608) rotate(0 151.62890625 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Runner host: same machine, same identity</text>
+</g>
+<g transform="translate(614.5 632) rotate(0 145.599365234375 30.225000000000023)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">UnsafeLocalCodeExecutor: exec() in child process</text>
+<text x="0" y="20.150000000000002" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Local files: in-process I/O, path check</text>
+<text x="0" y="40.300000000000004" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">execute_bash, local execute: child process</text>
+</g>
+<g stroke-linecap="round" transform="translate(365 135.5) rotate(0 159 37.5)">
+<path d="M18.75 0 L303.64 0.29 L307.45 1.17 L313.31 4.69 L316.83 10.55 L318 18.75 L317.71 60.64 L316.83 64.45 L313.31 70.31 L307.45 73.83 L299.25 75 L14.36 74.71 L7.32 72.36 L4.69 70.31 L1.17 64.45 L0 56.25 L0 18.75 L1.17 10.55 L4.69 4.69 L10.55 1.17 L18.75 0" stroke="none" stroke-width="0" fill="#dafbe1">
+</path>
+<path d="M18.75 0 M18.75 0 C128.25 0, 237.75 0, 299.25 0 M18.75 0 C117.24 0, 215.73 0, 299.25 0 M299.25 0 C311.75 0, 318 6.25, 318 18.75 M299.25 0 C311.75 0, 318 6.25, 318 18.75 M318 18.75 C318 32.31, 318 45.87, 318 56.25 M318 18.75 C318 27.71, 318 36.68, 318 56.25 M318 56.25 C318 68.75, 311.75 75, 299.25 75 M318 56.25 C318 68.75, 311.75 75, 299.25 75 M299.25 75 C216.52 75, 133.8 75, 18.75 75 M299.25 75 C195.41 75, 91.58 75, 18.75 75 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M0 56.25 C0 46.35, 0 36.45, 0 18.75 M0 56.25 C0 48.6, 0 40.95, 0 18.75 M0 18.75 C0 6.25, 6.25 0, 18.75 0 M0 18.75 C0 6.25, 6.25 0, 18.75 0" stroke="#1a7f37" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(379 147.5) rotate(0 87.1640625 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Developer code &amp; config</text>
+</g>
+<g transform="translate(379 171.5) rotate(0 106.0634765625 16.200000000000003)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">agents · tools · plugins · agent callbacks</text>
+<text x="0" y="16.200000000000003" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Agent Config YAML · services.py</text>
+</g>
+<g stroke-linecap="round" transform="translate(1130.89453125 151.03515625) rotate(0 186 37.5)">
+<path d="M18.75 0 L357.64 0.29 L361.45 1.17 L367.31 4.69 L370.83 10.55 L372 18.75 L371.71 60.64 L370.83 64.45 L367.31 70.31 L361.45 73.83 L353.25 75 L14.36 74.71 L7.32 72.36 L4.69 70.31 L1.17 64.45 L0 56.25 L0 18.75 L1.17 10.55 L4.69 4.69 L10.55 1.17 L18.75 0" stroke="none" stroke-width="0" fill="#ffebe9">
+</path>
+<path d="M18.75 0 M18.75 0 C126.61 0, 234.48 0, 353.25 0 M18.75 0 C126.72 0, 234.69 0, 353.25 0 M353.25 0 C365.75 0, 372 6.25, 372 18.75 M353.25 0 C365.75 0, 372 6.25, 372 18.75 M372 18.75 C372 29.28, 372 39.8, 372 56.25 M372 18.75 C372 30.2, 372 41.65, 372 56.25 M372 56.25 C372 68.75, 365.75 75, 353.25 75 M372 56.25 C372 68.75, 365.75 75, 353.25 75 M353.25 75 C284.43 75, 215.62 75, 18.75 75 M353.25 75 C250.76 75, 148.27 75, 18.75 75 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M18.75 75 C6.25 75, 0 68.75, 0 56.25 M0 56.25 C0 46.06, 0 35.87, 0 18.75 M0 56.25 C0 47.59, 0 38.93, 0 18.75 M0 18.75 C0 6.25, 6.25 0, 18.75 0 M0 18.75 C0 6.25, 6.25 0, 18.75 0" stroke="#cf222e" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(1144.89453125 163.03515625) rotate(0 52.9140625 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Model provider</text>
+</g>
+<g transform="translate(1144.89453125 191.03515625) rotate(0 109.468505859375 8.775000000000006)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Gemini · LiteLLM · Anthropic · OpenAI</text>
+</g>
+<g stroke-linecap="round" transform="translate(1133 294.5) rotate(0 186 111.75)">
+<path d="M32 0 L340 0 L347.5 0.5 L354 2 L359.5 4.5 L364 8 L367.5 12.5 L370 18 L371.5 24.5 L372 32 L372 191.5 L371.5 199 L370 205.5 L367.5 211 L364 215.5 L359.5 219 L354 221.5 L347.5 223 L340 223.5 L32 223.5 L24.5 223 L18 221.5 L12.5 219 L8 215.5 L4.5 211 L2 205.5 L0.5 199 L0 191.5 L0.5 24.5 L2 18 L4.5 12.5 L8 8 L12.5 4.5 L18 2 L24.5 0.5 L32 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M32 0 M32 0 C118.38 0, 204.75 0, 340 0 M32 0 C120.85 0, 209.71 0, 340 0 M340 0 C361.33 0, 372 10.67, 372 32 M340 0 C361.33 0, 372 10.67, 372 32 M372 32 C372 88.96, 372 145.92, 372 191.5 M372 32 C372 90.08, 372 148.16, 372 191.5 M372 191.5 C372 212.83, 361.33 223.5, 340 223.5 M372 191.5 C372 212.83, 361.33 223.5, 340 223.5 M340 223.5 C258.94 223.5, 177.88 223.5, 32 223.5 M340 223.5 C243.3 223.5, 146.59 223.5, 32 223.5 M32 223.5 C10.67 223.5, 0 212.83, 0 191.5 M32 223.5 C10.67 223.5, 0 212.83, 0 191.5 M0 191.5 C0 129.83, 0 68.17, 0 32 M0 191.5 C0 143.66, 0 95.82, 0 32 M0 32 C0 10.67, 10.67 0, 32 0 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(1147 306.5) rotate(0 114.73046875 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Remote sandboxes &amp; data sinks</text>
+</g>
+<g transform="translate(1147 340.5) rotate(0 110.928466796875 65)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Code: Container · GKE · Agent Engine</text>
+<text x="0" y="26" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Environments: Daytona · E2B</text>
+<text x="0" y="52" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Computer use: VMaaS browser VM</text>
+<text x="0" y="78" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">SQL: BigQuery · Spanner · Bigtable</text>
+<text x="0" y="104" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Gemini code execution (at provider)</text>
+</g>
+<g stroke-linecap="round" transform="translate(1133 545) rotate(0 186 93.75)">
+<path d="M32 0 L340 0 L347.5 0.5 L354 2 L359.5 4.5 L364 8 L367.5 12.5 L370 18 L371.5 24.5 L372 32 L372 155.5 L371.5 163 L370 169.5 L367.5 175 L364 179.5 L359.5 183 L354 185.5 L347.5 187 L340 187.5 L32 187.5 L24.5 187 L18 185.5 L12.5 183 L8 179.5 L4.5 175 L2 169.5 L0.5 163 L0 155.5 L0.5 24.5 L2 18 L4.5 12.5 L8 8 L12.5 4.5 L18 2 L24.5 0.5 L32 0" stroke="none" stroke-width="0" fill="#fff8c5">
+</path>
+<path d="M32 0 M32 0 C97.64 0, 163.28 0, 340 0 M32 0 C135.88 0, 239.76 0, 340 0 M340 0 C361.33 0, 372 10.67, 372 32 M340 0 C361.33 0, 372 10.67, 372 32 M372 32 C372 62.85, 372 93.71, 372 155.5 M372 32 C372 59.25, 372 86.5, 372 155.5 M372 155.5 C372 176.83, 361.33 187.5, 340 187.5 M372 155.5 C372 176.83, 361.33 187.5, 340 187.5 M340 187.5 C254.96 187.5, 169.93 187.5, 32 187.5 M340 187.5 C234.94 187.5, 129.87 187.5, 32 187.5 M32 187.5 C10.67 187.5, 0 176.83, 0 155.5 M32 187.5 C10.67 187.5, 0 176.83, 0 155.5 M0 155.5 C0 112.91, 0 70.32, 0 32 M0 155.5 C0 112.54, 0 69.58, 0 32 M0 32 C0 10.67, 10.67 0, 32 0 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#bf8700" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(1147 557) rotate(0 119.16796875 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">External content, peers, registries</text>
+</g>
+<g transform="translate(1147 587) rotate(0 111.633056640625 55.25)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">MCP servers: stdio · HTTP</text>
+<text x="0" y="22.099999999999998" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">OpenAPI &amp; REST tools: SSRF check on by default</text>
+<text x="0" y="44.199999999999996" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Remote A2A agents · agent registry</text>
+<text x="0" y="66.3" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Skills · skill registry</text>
+<text x="0" y="88.39999999999999" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Web pages via load_web_page</text>
+</g>
+<g stroke-linecap="round" transform="translate(365 807.5) rotate(0 235.5 65.25)">
+<path d="M32 0 L439 0 L446.5 0.5 L453 2 L458.5 4.5 L463 8 L466.5 12.5 L469 18 L470.5 24.5 L471 98.5 L470.5 106 L469 112.5 L466.5 118 L463 122.5 L458.5 126 L453 128.5 L446.5 130 L439 130.5 L32 130.5 L24.5 130 L18 128.5 L12.5 126 L8 122.5 L4.5 118 L2 112.5 L0.5 106 L0 98.5 L0.5 24.5 L2 18 L4.5 12.5 L8 8 L12.5 4.5 L18 2 L24.5 0.5 L32 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M32 0 M32 0 C115.05 0, 198.1 0, 439 0 M32 0 C144.72 0, 257.43 0, 439 0 M439 0 C460.33 0, 471 10.67, 471 32 M439 0 C460.33 0, 471 10.67, 471 32 M471 32 C471 58.29, 471 84.57, 471 98.5 M471 32 C471 56.08, 471 80.16, 471 98.5 M471 98.5 C471 119.83, 460.33 130.5, 439 130.5 M471 98.5 C471 119.83, 460.33 130.5, 439 130.5 M439 130.5 C293.6 130.5, 148.2 130.5, 32 130.5 M439 130.5 C351.42 130.5, 263.84 130.5, 32 130.5 M32 130.5 C10.67 130.5, 0 119.83, 0 98.5 M32 130.5 C10.67 130.5, 0 119.83, 0 98.5 M0 98.5 C0 77.52, 0 56.54, 0 32 M0 98.5 C0 80.51, 0 62.51, 0 32 M0 32 C0 10.67, 10.67 0, 32 0 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(379 819.5) rotate(0 41.796875 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Persistence</text>
+</g>
+<g transform="translate(379 843.5) rotate(0 143.0634765625 37.69999999999999)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Sessions &amp; state: caller-writable, may hold tokens</text>
+<text x="0" y="18.849999999999998" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">app: state: shared by every user of the app</text>
+<text x="0" y="37.699999999999996" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Memory: recalled into later prompts</text>
+<text x="0" y="56.55" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Artifacts: scoped per user / session</text>
+</g>
+<g stroke-linecap="round" transform="translate(885.5 807.5) rotate(0 149.25 65.25)">
+<path d="M32 0 L266.5 0 L274 0.5 L280.5 2 L286 4.5 L290.5 8 L294 12.5 L296.5 18 L298 24.5 L298.5 98.5 L298 106 L296.5 112.5 L294 118 L290.5 122.5 L286 126 L280.5 128.5 L274 130 L266.5 130.5 L32 130.5 L24.5 130 L18 128.5 L12.5 126 L8 122.5 L4.5 118 L2 112.5 L0.5 106 L0 98.5 L0.5 24.5 L2 18 L4.5 12.5 L8 8 L12.5 4.5 L18 2 L24.5 0.5 L32 0" stroke="none" stroke-width="0" fill="#f6f8fa">
+</path>
+<path d="M32 0 M32 0 C83.33 0, 134.65 0, 266.5 0 M32 0 C79.73 0, 127.45 0, 266.5 0 M266.5 0 C287.83 0, 298.5 10.67, 298.5 32 M266.5 0 C287.83 0, 298.5 10.67, 298.5 32 M298.5 32 C298.5 53.87, 298.5 75.74, 298.5 98.5 M298.5 32 C298.5 57.48, 298.5 82.96, 298.5 98.5 M298.5 98.5 C298.5 119.83, 287.83 130.5, 266.5 130.5 M298.5 98.5 C298.5 119.83, 287.83 130.5, 266.5 130.5 M266.5 130.5 C207.26 130.5, 148.01 130.5, 32 130.5 M266.5 130.5 C191.2 130.5, 115.91 130.5, 32 130.5 M32 130.5 C10.67 130.5, 0 119.83, 0 98.5 M32 130.5 C10.67 130.5, 0 119.83, 0 98.5 M0 98.5 C0 72.18, 0 45.85, 0 32 M0 98.5 C0 83.05, 0 67.61, 0 32 M0 32 C0 10.67, 10.67 0, 32 0 M0 32 C0 10.67, 10.67 0, 32 0" stroke="#d0d7de" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(899.5 819.5) rotate(0 75.58203125 10)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="16px" fill="#1f2328" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">Telemetry &amp; analytics</text>
+</g>
+<g transform="translate(899.5 843.5) rotate(0 75.514892578125 20.80000000000001)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">OTel spans: content opt-in, except live</text>
+<text x="0" y="20.8" font-family="Helvetica, Segoe UI Emoji" font-size="13px" fill="#24292f" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">BigQuery analytics plugin</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(302 440) rotate(0 43.5 0)">
+<path d="M0 0 C20.97 0, 41.94 0, 87 0 M0 0 C28.38 0, 56.76 0, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(302 440) rotate(0 43.5 0)">
+<path d="M58.81 10.26 C65.6 7.79, 72.4 5.31, 87 0 M58.81 10.26 C68.01 6.91, 77.2 3.57, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(302 440) rotate(0 43.5 0)">
+<path d="M58.81 -10.26 C65.6 -7.79, 72.4 -5.31, 87 0 M58.81 -10.26 C68.01 -6.91, 77.2 -3.57, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(302 545) rotate(0 43.5 0)">
+<path d="M0 0 C33.64 0, 67.27 0, 87 0 M0 0 C32.42 0, 64.84 0, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(302 545) rotate(0 43.5 0)">
+<path d="M58.81 10.26 C69.71 6.29, 80.61 2.33, 87 0 M58.81 10.26 C69.31 6.44, 79.82 2.61, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(302 545) rotate(0 43.5 0)">
+<path d="M58.81 -10.26 C69.71 -6.29, 80.61 -2.33, 87 0 M58.81 -10.26 C69.31 -6.44, 79.82 -2.61, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(464 210.5) rotate(0 0 22.5)">
+<path d="M0 0 C0 12.68, 0 25.36, 0 45 M0 0 C0 17.94, 0 35.89, 0 45" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(464 210.5) rotate(0 0 22.5)">
+<path d="M-7.7 23.86 C-5.53 29.81, -3.36 35.77, 0 45 M-7.7 23.86 C-4.63 32.29, -1.56 40.72, 0 45" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(464 210.5) rotate(0 0 22.5)">
+<path d="M7.7 23.86 C5.53 29.81, 3.36 35.77, 0 45 M7.7 23.86 C4.63 32.29, 1.56 40.72, 0 45" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(485 225.5) rotate(0 71.255859375 7.5)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">imports code · loads YAML</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(699.62109375 294.5) rotate(0 214.697265625 -61.396484375)">
+<path d="M0 0 C0 -13.47, 0 -26.94, 0 -64.5 M0 0 C0 -25.08, 0 -50.17, 0 -64.5 M0 -64.5 C0.04 -86.87, 0.09 -109.23, 0.11 -122.28 M0 -64.5 C0.04 -82.69, 0.07 -100.88, 0.11 -122.28 M0.11 -122.28 C140.83 -122.46, 281.55 -122.63, 408 -122.79 M0.11 -122.28 C126.92 -122.44, 253.73 -122.6, 408 -122.79 M408 -122.79 C412.46 -122.75, 416.93 -122.72, 429.39 -122.61 M408 -122.79 C415.65 -122.73, 423.29 -122.66, 429.39 -122.61" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(699.62109375 294.5) rotate(0 214.697265625 -61.396484375)">
+<path d="M419.31 -119.04 C421.42 -119.78, 423.52 -120.53, 429.39 -122.61 M419.31 -119.04 C423.23 -120.42, 427.15 -121.81, 429.39 -122.61" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(699.62109375 294.5) rotate(0 214.697265625 -61.396484375)">
+<path d="M419.37 -126.35 C421.47 -125.57, 423.56 -124.79, 429.39 -122.61 M419.37 -126.35 C423.27 -124.9, 427.17 -123.44, 429.39 -122.61" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(725 212) rotate(0 53.677734375 7.5)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">prompt (mixed trust)</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(1128.9514023080014 196.44921875) rotate(0 -95.54991990400072 102.509765625)">
+<path d="M0 0 C-64.13 -0.35, -128.27 -0.69, -191.1 -1.03 M0 0 C-46.36 -0.25, -92.72 -0.5, -191.1 -1.03 M-191.1 -1.03 C-191.06 20.32, -191.01 41.68, -190.95 71.05 M-191.1 -1.03 C-191.05 23.98, -191 48.99, -190.95 71.05 M-190.95 71.05 C-190.95 118.54, -190.95 166.03, -190.95 206.05 M-190.95 71.05 C-190.95 119.8, -190.95 168.55, -190.95 206.05" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(1128.9514023080014 196.44921875) rotate(0 -95.54991990400072 102.509765625)">
+<path d="M-201.21 177.86 C-197.77 187.32, -194.32 196.78, -190.95 206.05 M-201.21 177.86 C-198.72 184.7, -196.23 191.54, -190.95 206.05" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(1128.9514023080014 196.44921875) rotate(0 -95.54991990400072 102.509765625)">
+<path d="M-180.69 177.86 C-184.13 187.32, -187.58 196.78, -190.95 206.05 M-180.69 177.86 C-183.18 184.7, -185.67 191.54, -190.95 206.05" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(1002.5 278) rotate(0 34.6845703125 7.5)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#cf222e" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">function calls</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(563 455) rotate(0 18.75 0)">
+<path d="M0 0 C13.7 0, 27.4 0, 37.5 0 M0 0 C11.92 0, 23.84 0, 37.5 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(563 455) rotate(0 18.75 0)">
+<path d="M19.88 6.41 C26.32 4.07, 32.75 1.73, 37.5 0 M19.88 6.41 C25.48 4.37, 31.08 2.34, 37.5 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(563 455) rotate(0 18.75 0)">
+<path d="M19.88 -6.41 C26.32 -4.07, 32.75 -1.73, 37.5 0 M19.88 -6.41 C25.48 -4.37, 31.08 -2.34, 37.5 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(699.5 402.5) rotate(0 0 -16.5)">
+<path d="M0 0 C0 -9.34, 0 -18.68, 0 -33 M0 0 C0 -7.58, 0 -15.15, 0 -33" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(699.5 402.5) rotate(0 0 -16.5)">
+<path d="M5.64 -17.5 C4.05 -21.88, 2.45 -26.27, 0 -33 M5.64 -17.5 C4.35 -21.05, 3.05 -24.61, 0 -33" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(699.5 402.5) rotate(0 0 -16.5)">
+<path d="M-5.64 -17.5 C-4.05 -21.88, -2.45 -26.27, 0 -33 M-5.64 -17.5 C-4.35 -21.05, -3.05 -24.61, 0 -33" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(860 402.5) rotate(0 -30 -36)">
+<path d="M0 0 C0 -15.47, 0 -30.94, 0 -72 M0 -72 C-23.96 -72, -47.92 -72, -60 -72" stroke="#d97706" stroke-width="2.5" fill="none" stroke-dasharray="8 10">
+</path>
+</g>
+<g transform="translate(860 402.5) rotate(0 -30 -36)">
+<path d="M-31.81 -82.26 C-37.87 -80.06, -43.92 -77.85, -60 -72" stroke="#d97706" stroke-width="2.5" fill="none">
+</path>
+</g>
+<g transform="translate(860 402.5) rotate(0 -30 -36)">
+<path d="M-31.81 -61.74 C-37.87 -63.94, -43.92 -66.15, -60 -72" stroke="#d97706" stroke-width="2.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(869 336.5) rotate(0 21.0087890625 22.5)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#d97706" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">results</text>
+<text x="0" y="15" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#d97706" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">re-enter</text>
+<text x="0" y="30" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#d97706" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">context</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(699.5 500) rotate(0 0 48)">
+<path d="M0 0 C0 37.08, 0 74.16, 0 96 M0 0 C0 34.76, 0 69.51, 0 96" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(699.5 500) rotate(0 0 48)">
+<path d="M-10.26 67.81 C-6.3 78.7, -2.33 89.59, 0 96 M-10.26 67.81 C-6.55 78.02, -2.83 88.22, 0 96" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(699.5 500) rotate(0 0 48)">
+<path d="M10.26 67.81 C6.3 78.7, 2.33 89.59, 0 96 M10.26 67.81 C6.55 78.02, 2.83 88.22, 0 96" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(722 519.5) rotate(0 50.689453125 7.5)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#cf222e" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">model-written code</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(1019 500) rotate(0 0 48)">
+<path d="M0 0 C0 31.28, 0 62.55, 0 96 M0 0 C0 24.87, 0 49.75, 0 96" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(1019 500) rotate(0 0 48)">
+<path d="M-10.26 67.81 C-6.92 76.99, -3.57 86.18, 0 96 M-10.26 67.81 C-7.6 75.11, -4.94 82.42, 0 96" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(1019 500) rotate(0 0 48)">
+<path d="M10.26 67.81 C6.92 76.99, 3.57 86.18, 0 96 M10.26 67.81 C7.6 75.11, 4.94 82.42, 0 96" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(920 527) rotate(0 0 -13.5)">
+<path d="M0 0 C0 -7.59, 0 -15.19, 0 -27 M0 0 C0 -10.04, 0 -20.09, 0 -27" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(920 527) rotate(0 0 -13.5)">
+<path d="M4.62 -14.31 C3.32 -17.88, 2.02 -21.45, 0 -27 M4.62 -14.31 C2.9 -19.03, 1.18 -23.75, 0 -27" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(920 527) rotate(0 0 -13.5)">
+<path d="M-4.62 -14.31 C-3.32 -17.88, -2.02 -21.45, 0 -27 M-4.62 -14.31 C-2.9 -19.03, -1.18 -23.75, 0 -27" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(1034 432.5) rotate(0 49.5 0)">
+<path d="M0 0 C38.32 0, 76.63 0, 99 0 M0 0 C33.7 0, 67.39 0, 99 0" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(1034 432.5) rotate(0 49.5 0)">
+<path d="M70.81 10.26 C81.72 6.29, 92.63 2.32, 99 0 M70.81 10.26 C80.4 6.77, 90 3.28, 99 0" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(1034 432.5) rotate(0 49.5 0)">
+<path d="M70.81 -10.26 C81.72 -6.29, 92.63 -2.32, 99 0 M70.81 -10.26 C80.4 -6.77, 90 -3.28, 99 0" stroke="#cf222e" stroke-width="2" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(1133 632) rotate(0 -49.5 -73.5)">
+<path d="M0 0 C-11.01 0, -22.03 0, -37.5 0 M0 0 C-7.62 0, -15.23 0, -37.5 0 M-37.5 0 C-37.5 -30.39, -37.5 -60.79, -37.5 -147 M-37.5 0 C-37.5 -46.84, -37.5 -93.67, -37.5 -147 M-37.5 -147 C-59.86 -147, -82.21 -147, -99 -147 M-37.5 -147 C-51.88 -147, -66.26 -147, -99 -147" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(1133 632) rotate(0 -49.5 -73.5)">
+<path d="M-28.19 10.26 C-19.91 7.25, -11.63 4.23, 0 0 M-28.19 10.26 C-22.47 8.18, -16.74 6.09, 0 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(1133 632) rotate(0 -49.5 -73.5)">
+<path d="M-28.19 -10.26 C-19.91 -7.25, -11.63 -4.23, 0 0 M-28.19 -10.26 C-22.47 -8.18, -16.74 -6.09, 0 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(1133 632) rotate(0 -49.5 -73.5)">
+<path d="M-70.81 -157.26 C-79.09 -154.25, -87.37 -151.23, -99 -147 M-70.81 -157.26 C-76.53 -155.18, -82.26 -153.09, -99 -147" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(1133 632) rotate(0 -49.5 -73.5)">
+<path d="M-70.81 -136.74 C-79.09 -139.75, -87.37 -142.77, -99 -147 M-70.81 -136.74 C-76.53 -138.82, -82.26 -140.91, -99 -147" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round">
+<g transform="translate(713 732.5) rotate(0 0 37.5)">
+<path d="M0 0 C0 16, 0 32, 0 75 M0 0 C0 22.62, 0 45.24, 0 75" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(713 732.5) rotate(0 0 37.5)">
+<path d="M-10.26 46.81 C-8.07 52.82, -5.88 58.84, 0 75 M-10.26 46.81 C-7.17 55.31, -4.07 63.82, 0 75" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(713 732.5) rotate(0 0 37.5)">
+<path d="M10.26 46.81 C8.07 52.82, 5.88 58.84, 0 75 M10.26 46.81 C7.17 55.31, 4.07 63.82, 0 75" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(737 761) rotate(0 79.6904296875 7.5)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">events · state · memory writes</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(1034 732.5) rotate(0 0 37.5)">
+<path d="M0 0 C0 15.99, 0 31.98, 0 75 M0 0 C0 22.63, 0 45.26, 0 75" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(1034 732.5) rotate(0 0 37.5)">
+<path d="M-10.26 46.81 C-8.07 52.82, -5.89 58.83, 0 75 M-10.26 46.81 C-7.16 55.32, -4.07 63.82, 0 75" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(1034 732.5) rotate(0 0 37.5)">
+<path d="M10.26 46.81 C8.07 52.82, 5.89 58.83, 0 75 M10.26 46.81 C7.16 55.32, 4.07 63.82, 0 75" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g transform="translate(1055 761) rotate(0 33.6796875 7.5)">
+<text x="0" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="12px" fill="#57606a" text-anchor="start" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">spans · rows</text>
+</g>
+<g stroke-linecap="round" transform="translate(324.734375 423.5) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#afb8c1" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(337.34130859375 431) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">6</text>
+</g>
+<g stroke-linecap="round" transform="translate(325.1484375 529.9140625) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#f2b544" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(337.75537109375 537.4140625) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">1</text>
+</g>
+<g stroke-linecap="round" transform="translate(447.5 218) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#afb8c1" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(460.10693359375 225.5) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">8</text>
+</g>
+<g stroke-linecap="round" transform="translate(683 239) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#afb8c1" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(695.60693359375 246.5) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">2</text>
+</g>
+<g stroke-linecap="round" transform="translate(683 523.74609375) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#f2b544" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(695.60693359375 531.24609375) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">3</text>
+</g>
+<g stroke-linecap="round" transform="translate(921.2734375 308.4140625) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#f2b544" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(933.88037109375 315.9140625) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">4</text>
+</g>
+<g stroke-linecap="round" transform="translate(1067 416) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#f2b544" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(1079.60693359375 423.5) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">3</text>
+</g>
+<g stroke-linecap="round" transform="translate(1002.5 534.5) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#f2b544" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(1015.10693359375 542) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">3</text>
+</g>
+<g stroke-linecap="round" transform="translate(1079 538.8037313078024) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#afb8c1" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(1091.60693359375 546.3037313078024) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">5</text>
+</g>
+<g stroke-linecap="round" transform="translate(696.5 717.5) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#f2b544" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(709.10693359375 725) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">7</text>
+</g>
+<g stroke-linecap="round" transform="translate(1017.5 717.5) rotate(0 16.5 16.5)">
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 16.5 C33 17.46, 32.92 18.42, 32.75 19.37 C32.58 20.31, 32.33 21.25, 32 22.14 C31.68 23.04, 31.27 23.92, 30.79 24.75 C30.31 25.58, 29.75 26.37, 29.14 27.11 C28.53 27.84, 27.84 28.53, 27.11 29.14 C26.37 29.75, 25.58 30.31, 24.75 30.79 C23.92 31.27, 23.04 31.68, 22.14 32 C21.25 32.33, 20.31 32.58, 19.37 32.75 C18.42 32.92, 17.46 33, 16.5 33 C15.54 33, 14.58 32.92, 13.63 32.75 C12.69 32.58, 11.75 32.33, 10.86 32 C9.96 31.68, 9.08 31.27, 8.25 30.79 C7.42 30.31, 6.63 29.75, 5.89 29.14 C5.16 28.53, 4.47 27.84, 3.86 27.11 C3.25 26.37, 2.69 25.58, 2.21 24.75 C1.73 23.92, 1.32 23.04, 1 22.14 C0.67 21.25, 0.42 20.31, 0.25 19.37 C0.08 18.42, 0 17.46, 0 16.5 C0 15.54, 0.08 14.58, 0.25 13.63 C0.42 12.69, 0.67 11.75, 1 10.86 C1.32 9.96, 1.73 9.08, 2.21 8.25 C2.69 7.42, 3.25 6.63, 3.86 5.89 C4.47 5.16, 5.16 4.47, 5.89 3.86 C6.63 3.25, 7.42 2.69, 8.25 2.21 C9.08 1.73, 9.96 1.32, 10.86 1 C11.75 0.67, 12.69 0.42, 13.63 0.25 C14.58 0.08, 15.54 0, 16.5 0 C17.46 0, 18.42 0.08, 19.37 0.25 C20.31 0.42, 21.25 0.67, 22.14 1 C23.04 1.32, 23.92 1.73, 24.75 2.21 C25.58 2.69, 26.37 3.25, 27.11 3.86 C27.84 4.47, 28.53 5.16, 29.14 5.89 C29.75 6.63, 30.31 7.42, 30.79 8.25 C31.27 9.08, 31.68 9.96, 32 10.86 C32.33 11.75, 32.58 12.69, 32.75 13.63 C32.92 14.58, 32.96 16.02, 33 16.5 C33.04 16.98, 33.04 16.02, 33 16.5" stroke="#0969da" stroke-width="2" fill="none">
+</path>
+</g>
+<g transform="translate(1030.10693359375 725) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">9</text>
+</g>
+<g stroke-linecap="round">
+<g transform="translate(305.27312500000016 335.70703125) rotate(0 43.5 0)">
+<path d="M0 0 C33.64 0, 67.27 0, 87 0 M0 0 C32.42 0, 64.84 0, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(305.27312500000016 335.70703125) rotate(0 43.5 0)">
+<path d="M58.81 10.26 C69.71 6.29, 80.61 2.33, 87 0 M58.81 10.26 C69.31 6.44, 79.82 2.61, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+<g transform="translate(305.27312500000016 335.70703125) rotate(0 43.5 0)">
+<path d="M58.81 -10.26 C69.71 -6.29, 80.61 -2.33, 87 0 M58.81 -10.26 C69.31 -6.44, 79.82 -2.61, 87 0" stroke="#24292f" stroke-width="1.5" fill="none">
+</path>
+</g>
+</g>
+<mask>
+</mask>
+<g stroke-linecap="round" transform="translate(328.0290251156051 320.62109375) rotate(0 16.5 20)">
+<path d="M33 20 C33 21.16, 32.92 22.33, 32.75 23.47 C32.58 24.61, 32.33 25.75, 32 26.84 C31.68 27.93, 31.27 29, 30.79 30 C30.31 31, 29.75 31.97, 29.14 32.86 C28.53 33.74, 27.84 34.58, 27.11 35.32 C26.37 36.07, 25.58 36.74, 24.75 37.32 C23.92 37.9, 23.04 38.4, 22.14 38.79 C21.25 39.19, 20.31 39.5, 19.37 39.7 C18.42 39.9, 17.46 40, 16.5 40 C15.54 40, 14.58 39.9, 13.63 39.7 C12.69 39.5, 11.75 39.19, 10.86 38.79 C9.96 38.4, 9.08 37.9, 8.25 37.32 C7.42 36.74, 6.63 36.07, 5.89 35.32 C5.16 34.58, 4.47 33.74, 3.86 32.86 C3.25 31.97, 2.69 31, 2.21 30 C1.73 29, 1.32 27.93, 1 26.84 C0.67 25.75, 0.42 24.61, 0.25 23.47 C0.08 22.33, 0 21.16, 0 20 C0 18.84, 0.08 17.67, 0.25 16.53 C0.42 15.39, 0.67 14.25, 1 13.16 C1.32 12.07, 1.73 11, 2.21 10 C2.69 9, 3.25 8.03, 3.86 7.14 C4.47 6.26, 5.16 5.42, 5.89 4.68 C6.63 3.93, 7.42 3.26, 8.25 2.68 C9.08 2.1, 9.96 1.6, 10.86 1.21 C11.75 0.81, 12.69 0.5, 13.63 0.3 C14.58 0.1, 15.54 0, 16.5 0 C17.46 0, 18.42 0.1, 19.37 0.3 C20.31 0.5, 21.25 0.81, 22.14 1.21 C23.04 1.6, 23.92 2.1, 24.75 2.68 C25.58 3.26, 26.37 3.93, 27.11 4.68 C27.84 5.42, 28.53 6.26, 29.14 7.14 C29.75 8.03, 30.31 9, 30.79 10 C31.27 11, 31.68 12.07, 32 13.16 C32.33 14.25, 32.58 15.39, 32.75 16.53 C32.92 17.67, 32.96 19.42, 33 20 C33.04 20.58, 33.04 19.42, 33 20" stroke="none" stroke-width="0" fill="#d3d3d3">
+</path>
+<path d="M33 20 C33 21.16, 32.92 22.33, 32.75 23.47 C32.58 24.61, 32.33 25.75, 32 26.84 C31.68 27.93, 31.27 29, 30.79 30 C30.31 31, 29.75 31.97, 29.14 32.86 C28.53 33.74, 27.84 34.58, 27.11 35.32 C26.37 36.07, 25.58 36.74, 24.75 37.32 C23.92 37.9, 23.04 38.4, 22.14 38.79 C21.25 39.19, 20.31 39.5, 19.37 39.7 C18.42 39.9, 17.46 40, 16.5 40 C15.54 40, 14.58 39.9, 13.63 39.7 C12.69 39.5, 11.75 39.19, 10.86 38.79 C9.96 38.4, 9.08 37.9, 8.25 37.32 C7.42 36.74, 6.63 36.07, 5.89 35.32 C5.16 34.58, 4.47 33.74, 3.86 32.86 C3.25 31.97, 2.69 31, 2.21 30 C1.73 29, 1.32 27.93, 1 26.84 C0.67 25.75, 0.42 24.61, 0.25 23.47 C0.08 22.33, 0 21.16, 0 20 C0 18.84, 0.08 17.67, 0.25 16.53 C0.42 15.39, 0.67 14.25, 1 13.16 C1.32 12.07, 1.73 11, 2.21 10 C2.69 9, 3.25 8.03, 3.86 7.14 C4.47 6.26, 5.16 5.42, 5.89 4.68 C6.63 3.93, 7.42 3.26, 8.25 2.68 C9.08 2.1, 9.96 1.6, 10.86 1.21 C11.75 0.81, 12.69 0.5, 13.63 0.3 C14.58 0.1, 15.54 0, 16.5 0 C17.46 0, 18.42 0.1, 19.37 0.3 C20.31 0.5, 21.25 0.81, 22.14 1.21 C23.04 1.6, 23.92 2.1, 24.75 2.68 C25.58 3.26, 26.37 3.93, 27.11 4.68 C27.84 5.42, 28.53 6.26, 29.14 7.14 C29.75 8.03, 30.31 9, 30.79 10 C31.27 11, 31.68 12.07, 32 13.16 C32.33 14.25, 32.58 15.39, 32.75 16.53 C32.92 17.67, 32.96 19.42, 33 20 C33.04 20.58, 33.04 19.42, 33 20" stroke="#f2b544" stroke-width="1" fill="none">
+</path>
+</g>
+<g transform="translate(340.4686968197771 331.72895812626905) rotate(0 3.89306640625 8.75)">
+<text x="3.89306640625" y="0" font-family="Helvetica, Segoe UI Emoji" font-size="14px" fill="#1f2328" text-anchor="middle" style="white-space: pre;" direction="ltr" dominant-baseline="text-before-edge">1</text>
+</g>
+</svg>

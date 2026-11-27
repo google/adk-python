@@ -10162,6 +10162,64 @@ async def test_get_completion_inputs_maps_include_thoughts(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini/gemini-4-hydrogen",
+        "vertex_ai/gemini-4-hydrogen",
+        "litellm_proxy/vertex_ai/gemini-4-hydrogen",
+        "openrouter/google/gemini-4-hydrogen",
+        "openrouter/google/gemini-4-hydrogen:online",
+        "vertex_ai/projects/my-project/locations/global/publishers/google/models/gemini-4-hydrogen",
+        "projects/my-project/locations/global/publishers/google/models/gemini-4-hydrogen",
+        "gemini/gemini-5-pro",
+    ],
+)
+@pytest.mark.parametrize(
+    ("thinking_config", "expected"),
+    [
+        (
+            types.ThinkingConfig(thinking_budget=512),
+            {"reasoning_effort": "low"},
+        ),
+        (
+            types.ThinkingConfig(thinking_budget=2048),
+            {"reasoning_effort": "medium"},
+        ),
+        (
+            types.ThinkingConfig(thinking_budget=4096),
+            {"reasoning_effort": "high"},
+        ),
+        (types.ThinkingConfig(thinking_budget=0), {"reasoning_effort": "none"}),
+        (types.ThinkingConfig(include_thoughts=True), None),
+    ],
+)
+async def test_get_completion_inputs_gemini_4_and_later_model_shapes(
+    mocker,
+    model: str,
+    thinking_config: types.ThinkingConfig,
+    expected: dict[str, object] | None,
+) -> None:
+  """Treats Gemini 4+ across provider and path shapes as Gemini 3 or newer."""
+  mocker.patch.object(litellm, "supports_reasoning", return_value=True)
+  mocker.patch.object(
+      litellm,
+      "get_supported_openai_params",
+      return_value=["reasoning_effort", "thinking"],
+  )
+  mocker.patch.object(litellm, "get_model_info", return_value=None)
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 async def test_generate_content_async_include_thoughts_false(
     mock_acompletion: AsyncMock,
@@ -13689,13 +13747,17 @@ async def test_generate_content_async_omits_tool_choice_when_functions_override(
   assert "tool_choice" not in kwargs
 
 
-def _cache_llm_request(cache_config=None):
+def _cache_llm_request(cache_config=None, contents=None):
   return LlmRequest(
-      contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Cache this")]
-          )
-      ],
+      contents=(
+          list(contents)
+          if contents is not None
+          else [
+              types.Content(
+                  role="user", parts=[types.Part.from_text(text="Cache this")]
+              )
+          ]
+      ),
       config=types.GenerateContentConfig(
           system_instruction="You are a helpful assistant",
       ),
@@ -14671,3 +14733,155 @@ async def test_bare_gemini_tracking_headers_match_main(mock_client):
   assert mock_client.acompletion_mock.call_args.kwargs["headers"] == {
       "x-test": "caller"
   }
+
+
+def test_append_fallback_user_content_skips_transient_content():
+  transient = types.Content(
+      role="user", parts=[types.Part.from_text(text="dynamic instruction")]
+  )
+  transient_only = LlmRequest()
+  transient_only._insert_transient_user_content([transient])
+  _append_fallback_user_content_if_missing(transient_only)
+  assert len(transient_only.contents) == 2
+  assert "Handle the requests" in transient_only.contents[-1].parts[0].text
+
+  empty_user = types.Content(role="user", parts=[])
+  model_turn = types.Content(
+      role="model", parts=[types.Part.from_text(text="model reply")]
+  )
+  with_empty_user = LlmRequest(contents=[empty_user, model_turn])
+  transient_after_model = transient.model_copy(deep=True)
+  with_empty_user._insert_transient_user_content([transient_after_model])
+  assert with_empty_user.contents[-1] is transient_after_model
+  _append_fallback_user_content_if_missing(with_empty_user)
+  assert len(with_empty_user.contents) == 3
+  assert "Handle the requests" in empty_user.parts[0].text
+
+
+@pytest.mark.parametrize(
+    "model_name,custom_llm_provider,expected_routed",
+    [
+        ("openai/gpt-4o", None, True),
+        ("anthropic/claude-sonnet-4-20250514", None, True),
+        ("azure/gpt-4o", None, True),
+        ("gemini/gemini-2.5-flash", None, True),
+        ("gemini/gemma-3-27b-it", None, False),
+        ("bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0", None, True),
+        ("bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0", None, True),
+        ("bedrock_converse/anthropic.claude-sonnet-4-v1:0", None, True),
+        ("bedrock_converse/mistral.mistral-large-2407-v1:0", None, False),
+        ("anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock", True),
+        ("converse/anthropic.claude-sonnet-4-v1:0", "bedrock", True),
+        ("bedrock/mistral.mistral-large-2407-v1:0", None, False),
+        ("bedrock/meta.llama3-70b-instruct-v1:0", None, False),
+        ("mistral.mistral-large-2407-v1:0", "bedrock", False),
+        ("vertex_ai/gemini-2.5-flash", None, True),
+        ("vertex_ai/Gemini-2.5-Flash", None, True),
+        ("vertex_ai/google/gemini-2.5-flash", None, True),
+        ("vertex_ai_beta/gemini-2.5-flash", None, True),
+        ("vertex_ai/claude-sonnet-4", None, True),
+        ("publishers/anthropic/models/claude-sonnet-4", "vertex_ai", True),
+        ("gemini-2.5-flash", "vertex_ai", True),
+        ("litellm_proxy/gemini-2.5-flash", "vertex_ai", True),
+        ("vertex_ai/mistral-large-2411", None, False),
+        ("openai/gpt-4o", "litellm_proxy", True),
+        ("litellm_proxy/openai/gpt-4o", None, True),
+        ("mistral/mistral-large-latest", "litellm_proxy", False),
+        ("mistral/mistral-large-latest", None, False),
+        ("perplexity/sonar", None, False),
+        ("ollama_chat/llama3", None, False),
+        ("mistral-large-latest", "mistral", False),
+    ],
+)
+def test_supports_dynamic_instruction_routing_by_provider(
+    model_name, custom_llm_provider, expected_routed
+):
+  kwargs = (
+      {"custom_llm_provider": custom_llm_provider}
+      if custom_llm_provider
+      else {}
+  )
+  llm = LiteLlm(model=model_name, **kwargs)
+  assert llm._supports_dynamic_instruction_routing() is expected_routed
+
+
+@pytest.mark.parametrize(
+    "contents,expected_indices",
+    [
+        pytest.param(
+            [
+                types.Content(
+                    role="user", parts=[types.Part.from_text(text="Turn 1")]
+                ),
+                types.Content(
+                    role="model", parts=[types.Part.from_text(text="Reply 1")]
+                ),
+                types.Content(
+                    role="user", parts=[types.Part.from_text(text="Turn 2")]
+                ),
+            ],
+            [2],
+            id="multi_turn",
+        ),
+        pytest.param(
+            [
+                types.Content(
+                    role="user", parts=[types.Part.from_text(text="Turn 1")]
+                ),
+                types.Content(
+                    role="model",
+                    parts=[types.Part(text="internal reasoning", thought=True)],
+                ),
+                types.Content(
+                    role="user", parts=[types.Part.from_text(text="Turn 2")]
+                ),
+            ],
+            [1],
+            id="skips_thinking_only_assistant",
+        ),
+        pytest.param(
+            [
+                types.Content(
+                    role="user", parts=[types.Part.from_text(text="Turn 1")]
+                ),
+            ],
+            [],
+            id="first_turn",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cache_control_injection_points_bound_before_transient_content(
+    mock_client, mock_acompletion, contents, expected_indices
+):
+  llm = LiteLlm(
+      model="anthropic/claude-sonnet-4-20250514", llm_client=mock_client
+  )
+  request = _cache_llm_request(
+      cache_config=ContextCacheConfig(), contents=contents
+  )
+  request._insert_transient_user_content([
+      types.Content(
+          role="user", parts=[types.Part.from_text(text="dynamic instruction")]
+      )
+  ])
+
+  async for _ in llm.generate_content_async(request):
+    pass
+
+  expected = [
+      {
+          "location": "message",
+          "role": "system",
+          "control": {"type": "ephemeral"},
+      },
+      *[
+          {
+              "location": "message",
+              "index": idx,
+              "control": {"type": "ephemeral"},
+          }
+          for idx in expected_indices
+      ],
+  ]
+  assert _injection_points(mock_acompletion) == expected

@@ -12,17 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from typing import Any
 
-from adk_answering_agent.settings import ADK_GCP_SA_KEY
 from adk_answering_agent.settings import GEMINI_API_DATASTORE_ID
 from adk_answering_agent.settings import LLM_MODEL_NAME
 from adk_answering_agent.utils import error_response
 from google.adk.agents.llm_agent import Agent
 from google.api_core.exceptions import GoogleAPICallError
+from google.auth.exceptions import GoogleAuthError
 from google.cloud import discoveryengine_v1beta as discoveryengine
-from google.oauth2 import service_account
 
 
 def search_gemini_api_docs(queries: list[str]) -> dict[str, Any]:
@@ -36,13 +34,8 @@ def search_gemini_api_docs(queries: list[str]) -> dict[str, Any]:
     results, which contains the title, url and snippets.
   """
   try:
-    adk_gcp_sa_key_info = json.loads(ADK_GCP_SA_KEY)
-    client = discoveryengine.SearchServiceClient(
-        credentials=service_account.Credentials.from_service_account_info(
-            adk_gcp_sa_key_info
-        )
-    )
-  except (TypeError, ValueError) as e:
+    client = discoveryengine.SearchServiceClient()
+  except GoogleAuthError as e:
     return error_response(f"Error creating Vertex AI Search client: {e}")
 
   serving_config = f"{GEMINI_API_DATASTORE_ID}/servingConfigs/default_config"

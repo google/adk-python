@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from .user_simulator_personas import UserPersona
@@ -208,7 +207,7 @@ The Evaluation Criteria above already specify how to evaluate whether the Genera
 
 
 def _get_latest_turn_user_simulator_quality_prompt_template(
-    user_persona: Optional[UserPersona] = None,
+    user_persona: UserPersona | None = None,
 ) -> str:
   """Returns the appropriate prompt for user simulator quality"""
   if user_persona is None:
@@ -221,7 +220,7 @@ def get_per_turn_user_simulator_quality_prompt(
     conversation_history: str,
     generated_user_response: str,
     stop_signal: str,
-    user_persona: Optional[UserPersona] = None,
+    user_persona: UserPersona | None = None,
 ) -> str:
   """Formats the prompt for the per turn user simulator evaluator"""
   from jinja2 import DictLoader

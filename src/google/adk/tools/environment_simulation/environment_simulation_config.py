@@ -149,6 +149,12 @@ class ToolSimulationConfig(BaseModel):
     return self
 
 
+_DEFAULT_THINKING_CONFIG = genai_types.ThinkingConfig(
+    include_thoughts=False,
+    thinking_budget=10240,
+)
+
+
 class EnvironmentSimulationConfig(BaseModel):
   """Configuration for EnvironmentSimulation."""
 
@@ -168,7 +174,11 @@ class EnvironmentSimulationConfig(BaseModel):
           )
       ),
   )
-  """The configuration for the internal simulator LLM calls."""
+  """The configuration for the internal simulator LLM calls.
+
+  Its default thinking budget is sent as thinking level MEDIUM to Gemini 4 and
+  later models.
+  """
 
   tracing: Optional[str] = None
   """Tracing data (e.g., a prior agent run trace in JSON string format) to

@@ -254,7 +254,8 @@ class TypesafeClassifier(BaseClassifier):
       )
     return {
         'Authorization': f'Bearer {api_key}',
-        'User-Agent': ' '.join(get_client_labels()),
+        # Typesafe is a third party, so the hosting runtime is not sent.
+        'User-Agent': ' '.join(get_client_labels(exclude_runtime_tag=True)),
     }
 
   async def _post(

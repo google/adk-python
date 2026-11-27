@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from ...agents.llm_agent import LlmAgent
@@ -57,7 +56,7 @@ def _create_empty_state(
 # `BaseAgent` annotation instead of an incompatible type change.
 def create_empty_state(
     agent: BaseAgent | BaseNode,
-    initialized_states: Optional[dict[str, Any]] = None,
+    initialized_states: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Creates empty str for non-initialized states."""
   non_initialized_states: dict[str, Any] = {}
