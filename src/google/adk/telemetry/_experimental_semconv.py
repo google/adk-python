@@ -94,6 +94,13 @@ class Text(TypedDict):
   type: Literal['text']
 
 
+class Reasoning(TypedDict):
+  """Text the model emitted as its thought process rather than as the answer."""
+
+  content: str
+  type: Literal['reasoning']
+
+
 class Blob(TypedDict):
   mime_type: str
   data: bytes
@@ -119,7 +126,7 @@ class ToolCallResponse(TypedDict):
   type: Literal['tool_call_response']
 
 
-Part = Text | Blob | FileData | ToolCall | ToolCallResponse
+Part = Text | Reasoning | Blob | FileData | ToolCall | ToolCallResponse
 
 
 class InputMessage(TypedDict):
@@ -267,7 +274,11 @@ def _to_finish_reason(finish_reason: types.FinishReason | None) -> str:
   return ''
 
 
-def _to_part(part: types.Part, idx: int) -> Part | None:
+def _to_part(
+    part: types.Part, idx: int, *, reasoning: bool = False
+) -> Part | None:
+  """Converts a google-genai Part into an OTel GenAI message Part."""
+
   def tool_call_id_fallback(name: str | None) -> str:
     if name:
       return f'{name}_{idx}'
@@ -277,6 +288,8 @@ def _to_part(part: types.Part, idx: int) -> Part | None:
     return None
 
   if (text := part.text) is not None:
+    if reasoning and part.thought:
+      return Reasoning(content=text, type='reasoning')
     return Text(content=text, type='text')
 
   if inline_data := part.inline_data:
@@ -311,8 +324,13 @@ def _to_part(part: types.Part, idx: int) -> Part | None:
   return None
 
 
-def _to_input_message(content: types.Content) -> InputMessage:
-  parts = (_to_part(part, idx) for idx, part in enumerate(content.parts or []))
+def _to_input_message(
+    content: types.Content, *, reasoning: bool = False
+) -> InputMessage:
+  parts = (
+      _to_part(part, idx, reasoning=reasoning)
+      for idx, part in enumerate(content.parts or [])
+  )
   return InputMessage(
       role=_to_role(content.role),
       parts=[part for part in parts if part is not None],
@@ -320,16 +338,20 @@ def _to_input_message(content: types.Content) -> InputMessage:
 
 
 def _to_input_messages(
-    contents: Sequence[types.Content],
+    contents: Sequence[types.Content], *, reasoning: bool = False
 ) -> list[InputMessage]:
-  return [_to_input_message(content) for content in contents]
+  return [
+      _to_input_message(content, reasoning=reasoning) for content in contents
+  ]
 
 
-def _to_output_message(llm_response: LlmResponse) -> OutputMessage | None:
+def _to_output_message(
+    llm_response: LlmResponse, *, reasoning: bool = False
+) -> OutputMessage | None:
   if not llm_response.content:
     return None
 
-  message = _to_input_message(llm_response.content)
+  message = _to_input_message(llm_response.content, reasoning=reasoning)
   return OutputMessage(
       role=message['role'],
       parts=message['parts'],
@@ -570,7 +592,7 @@ def _resolve_tool_definitions(
 
 
 def _build_request_operation_details(
-    llm_request: LlmRequest,
+    llm_request: LlmRequest, *, reasoning: bool = False
 ) -> dict[str, AnyValue]:
   """Pure builder for the per-request operation-details attributes.
 
@@ -580,7 +602,7 @@ def _build_request_operation_details(
   unchanged from inside synchronous code paths (e.g. the WebUI log
   exporter, which executes inside an OTel log record processor).
   """
-  input_messages = _to_input_messages(llm_request.contents)
+  input_messages = _to_input_messages(llm_request.contents, reasoning=reasoning)
   system_instructions = _to_system_instructions(llm_request.config)
   tool_definitions = _resolve_tool_definitions(llm_request.config.tools or [])
 
@@ -610,10 +632,10 @@ def _build_response_common_attributes(
 
 
 def _build_response_operation_details(
-    llm_response: LlmResponse,
+    llm_response: LlmResponse, *, reasoning: bool = False
 ) -> dict[str, AnyValue]:
   """Pure builder for the per-response operation-details attributes."""
-  output_message = _to_output_message(llm_response)
+  output_message = _to_output_message(llm_response, reasoning=reasoning)
   if output_message is None:
     return {}
   return {GEN_AI_OUTPUT_MESSAGES: _to_any_value([output_message])}
@@ -663,9 +685,26 @@ def set_operation_details_common_attributes(
 def set_operation_details_attributes_from_request(
     operation_details_attributes: MutableMapping[str, AnyValue],
     llm_request: LlmRequest,
+    telemetry_config: TelemetryConfig | None = None,
+    *,
+    reasoning: bool = False,
 ) -> None:
+  """Populates operation-details attributes from an LLM request."""
+  if (
+      telemetry_config is not None
+      and not telemetry_config.should_add_content_to_logs
+      and not telemetry_config.should_add_content_to_experimental_spans
+  ):
+    # Without content capture only the tool definitions survive redaction
+    # (see _operation_details_attributes_no_content), so skip serializing the
+    # whole conversation history on every request.
+    tool_definitions = _resolve_tool_definitions(llm_request.config.tools or [])
+    operation_details_attributes[GEN_AI_TOOL_DEFINITIONS] = _to_any_value(
+        tool_definitions
+    )
+    return
   operation_details_attributes.update(
-      _build_request_operation_details(llm_request)
+      _build_request_operation_details(llm_request, reasoning=reasoning)
   )
 
 
@@ -673,14 +712,19 @@ def set_operation_details_attributes_from_response(
     llm_response: LlmResponse,
     operation_details_attributes: MutableMapping[str, AnyValue],
     operation_details_common_attributes: MutableMapping[str, AnyValue],
+    *,
+    reasoning: bool = False,
 ) -> None:
   operation_details_common_attributes.update(
       _build_response_common_attributes(llm_response)
   )
-  response_attributes = _build_response_operation_details(llm_response)
+  response_attributes = _build_response_operation_details(
+      llm_response, reasoning=reasoning
+  )
   # Several responses for one call are chunks no aggregator assembled
   # (`partial` unset), so they extend one message. Parts are appended rather
-  # than text-joined: thought and answer text are both `text` parts here.
+  # than text-joined: a thought part and an answer part differ only by their
+  # `type`, and only when the `reasoning` feature is on.
   recorded = operation_details_attributes.get(GEN_AI_OUTPUT_MESSAGES)
   arrived = response_attributes.get(GEN_AI_OUTPUT_MESSAGES)
   if isinstance(recorded, list) and isinstance(arrived, list):

@@ -16,14 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List
 
 from ...runners import Runner
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-async def close_runners(runners: List[Runner]) -> None:
+async def close_runners(runners: list[Runner]) -> None:
   cleanup_tasks = [asyncio.create_task(runner.close()) for runner in runners]
   if cleanup_tasks:
     # Wait for all cleanup tasks with timeout

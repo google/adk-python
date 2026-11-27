@@ -22,8 +22,6 @@ from pathlib import Path
 import sys
 from typing import cast
 from typing import Literal
-from typing import Optional
-from typing import Union
 
 from typing_extensions import override
 
@@ -164,7 +162,7 @@ class NestedAgentLoader(AgentLoader):
       )
 
   @override
-  def load_agent(self, agent_name: str) -> Union[BaseNode, App]:
+  def load_agent(self, agent_name: str) -> BaseNode | App:
     """Load an agent module (with caching & .env) and return its root_agent.
 
     Args:
@@ -180,7 +178,7 @@ class NestedAgentLoader(AgentLoader):
     return agent_or_app
 
   @override
-  def _perform_load(self, agent_path: str) -> Union[BaseNode, App]:
+  def _perform_load(self, agent_path: str) -> BaseNode | App:
     """Internal logic to load an agent allowing slash-separated paths."""
     self._root_agent_type_mismatches = []
     self._validate_agent_name(agent_path)
@@ -303,14 +301,14 @@ class NestedAgentLoader(AgentLoader):
   def _record_origin_metadata(
       self,
       *,
-      loaded: Union[BaseNode, App],
+      loaded: BaseNode | App,
       expected_app_name: str,
-      module_name: Optional[str],
+      module_name: str | None,
       agents_dir: str,
   ) -> None:
     expected_full_app_name = expected_app_name
 
-    origin_path: Optional[Path] = None
+    origin_path: Path | None = None
     if module_name:
       spec = importlib.util.find_spec(module_name)
       if spec and spec.origin:
@@ -323,7 +321,7 @@ class NestedAgentLoader(AgentLoader):
       candidate = Path(agents_dir, expected_full_app_name.replace(".", "/"))
       origin_path = candidate if candidate.exists() else Path(agents_dir)
 
-    def _attach_metadata(target: Union[BaseNode, App]) -> None:
+    def _attach_metadata(target: BaseNode | App) -> None:
       setattr(target, "_adk_origin_app_name", expected_full_app_name)
       setattr(target, "_adk_origin_path", origin_path)
 

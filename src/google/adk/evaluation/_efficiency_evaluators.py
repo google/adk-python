@@ -58,7 +58,6 @@ the whole conversation), sum the reported per-invocation values.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Optional
 
 from typing_extensions import override
 
@@ -78,7 +77,7 @@ from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 
 
-def _reject_threshold(eval_metric: Optional[EvalMetric]) -> None:
+def _reject_threshold(eval_metric: EvalMetric | None) -> None:
   """Rejects a threshold configured on an informational efficiency metric.
 
   These metrics report a value and never pass or fail, so a threshold has no
@@ -108,7 +107,7 @@ def _is_model_call_event(event: InvocationEvent) -> bool:
 
 def _evaluate_efficiency_metric(
     actual_invocations: list[Invocation],
-    compute_value_fn: Callable[[Invocation], Optional[float]],
+    compute_value_fn: Callable[[Invocation], float | None],
 ) -> EvaluationResult:
   """Evaluates an efficiency metric across invocations using the provided computation function."""
   per_invocation_results = []
@@ -155,20 +154,20 @@ class _ToolCallCountV1Evaluator(Evaluator):
 
   def __init__(
       self,
-      eval_metric: Optional[EvalMetric] = None,
+      eval_metric: EvalMetric | None = None,
   ):
     _reject_threshold(eval_metric)
     self._eval_metric = eval_metric
 
-  def _compute_value(self, invocation: Invocation) -> Optional[float]:
+  def _compute_value(self, invocation: Invocation) -> float | None:
     return float(len(get_all_tool_calls(invocation.intermediate_data)))
 
   @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     # Efficiency metrics are reference-free, so expected invocations and
     # conversation scenarios are not used.
@@ -195,12 +194,12 @@ class _InferenceCallCountV1Evaluator(Evaluator):
 
   def __init__(
       self,
-      eval_metric: Optional[EvalMetric] = None,
+      eval_metric: EvalMetric | None = None,
   ):
     _reject_threshold(eval_metric)
     self._eval_metric = eval_metric
 
-  def _compute_value(self, invocation: Invocation) -> Optional[float]:
+  def _compute_value(self, invocation: Invocation) -> float | None:
     if not isinstance(invocation.intermediate_data, InvocationEvents):
       return None
     model_events = [
@@ -214,8 +213,8 @@ class _InferenceCallCountV1Evaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     # Efficiency metrics are reference-free, so expected invocations and
     # conversation scenarios are not used.
@@ -258,7 +257,7 @@ class _InvocationDurationV1Evaluator(Evaluator):
 
   def __init__(
       self,
-      eval_metric: Optional[EvalMetric] = None,
+      eval_metric: EvalMetric | None = None,
   ):
     _reject_threshold(eval_metric)
     self._eval_metric = eval_metric
@@ -285,9 +284,9 @@ class _InvocationDurationV1Evaluator(Evaluator):
   @staticmethod
   def _framework_seconds(
       total: float,
-      model_seconds: Optional[float],
-      tool_seconds: Optional[float],
-  ) -> Optional[float]:
+      model_seconds: float | None,
+      tool_seconds: float | None,
+  ) -> float | None:
     """Returns what is left of the turn once model and tool time are out.
 
     Derived rather than measured, so the parts always agree with the total.
@@ -332,8 +331,8 @@ class _InvocationDurationV1Evaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     # Efficiency metrics are reference-free, so expected invocations and
     # conversation scenarios are not used.
@@ -384,13 +383,13 @@ class _TokenUsageV1Evaluator(Evaluator):
 
   def __init__(
       self,
-      eval_metric: Optional[EvalMetric] = None,
+      eval_metric: EvalMetric | None = None,
   ):
     _reject_threshold(eval_metric)
     self._eval_metric = eval_metric
 
   @staticmethod
-  def _add(total: Optional[float], count: Optional[int]) -> Optional[float]:
+  def _add(total: float | None, count: int | None) -> float | None:
     """Adds one call's count to a running total, keeping n/a distinct from zero.
 
     A count the call did not report leaves the total untouched, including
@@ -477,8 +476,8 @@ class _TokenUsageV1Evaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     # Efficiency metrics are reference-free, so expected invocations and
     # conversation scenarios are not used.

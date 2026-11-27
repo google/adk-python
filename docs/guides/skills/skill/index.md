@@ -322,6 +322,27 @@ support_hours_skill = Skill(
 )
 ```
 
+If the content is already SKILL.md text, such as a file bundled as a package
+resource or a row in a database, `load_skill_from_markdown` parses it into the
+same models. There is no directory, so the name is not compared with one. This
+example reads `skill_md_text` and `policy_text` from bundled package resources:
+
+```python
+import importlib.resources
+
+from google.adk.skills import load_skill_from_markdown
+from google.adk.skills import Resources
+
+pkg = importlib.resources.files("my_app.skills")
+skill_md_text = (pkg / "support_hours.md").read_text(encoding="utf-8")
+policy_text = (pkg / "support_policy.txt").read_text(encoding="utf-8")
+
+support_hours_skill = load_skill_from_markdown(
+    skill_md_text,
+    resources=Resources(references={"support_policy.txt": policy_text}),
+)
+```
+
 ### Load a whole directory of skills
 
 *   **Problem solved**: you keep a `skills/` tree and you want every skill in it.
@@ -424,6 +445,7 @@ so it has to equal the declared `name`.
     `load_skills_from_dir_async`, `list_skills_in_dir_async`,
     `load_skill_from_gcs_dir_async`, and `list_skills_in_gcs_dir_async`, and the
     arguments and return values are identical to their blocking counterparts.
+    `load_skill_from_markdown` reads nothing, so it has no twin.
 
 ## Limitations
 

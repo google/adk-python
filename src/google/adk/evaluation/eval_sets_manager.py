@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
-from typing import Optional
 
 from .eval_case import EvalCase
 from .eval_set import EvalSet
@@ -26,7 +25,7 @@ class EvalSetsManager(ABC):
   """An interface to manage Eval Sets."""
 
   @abstractmethod
-  def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
+  def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet | None:
     """Returns an EvalSet identified by an app_name and eval_set_id."""
 
   @abstractmethod
@@ -53,7 +52,7 @@ class EvalSetsManager(ABC):
   @abstractmethod
   def get_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ) -> Optional[EvalCase]:
+  ) -> EvalCase | None:
     """Returns an EvalCase if found; otherwise, None."""
 
   @abstractmethod

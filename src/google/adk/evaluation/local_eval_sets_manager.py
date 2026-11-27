@@ -20,7 +20,6 @@ import os
 import re
 import time
 from typing import Any
-from typing import Optional
 import uuid
 
 from google.genai import types as genai_types
@@ -196,7 +195,7 @@ class LocalEvalSetsManager(EvalSetsManager):
     self._agents_dir = agents_dir
 
   @override
-  def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
+  def get_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet | None:
     """Returns an EvalSet identified by an app_name and eval_set_id."""
     # Load the eval set file data
     try:
@@ -266,7 +265,7 @@ class LocalEvalSetsManager(EvalSetsManager):
   @override
   def get_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ) -> Optional[EvalCase]:
+  ) -> EvalCase | None:
     """Returns an EvalCase if found; otherwise, None."""
     eval_set = self.get_eval_set(app_name, eval_set_id)
     if not eval_set:

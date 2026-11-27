@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -34,10 +32,10 @@ class LlmRecording(BaseModel):
       extra="forbid",
   )
 
-  llm_request: Optional[LlmRequest] = None
+  llm_request: LlmRequest | None = None
   """Required. The LLM request."""
 
-  llm_responses: Optional[list[LlmResponse]] = None
+  llm_responses: list[LlmResponse] | None = None
   """Required. The list of LLM responses."""
 
 
@@ -48,10 +46,10 @@ class ToolRecording(BaseModel):
       extra="forbid",
   )
 
-  tool_call: Optional[types.FunctionCall] = None
+  tool_call: types.FunctionCall | None = None
   """Required. The tool call."""
 
-  tool_response: Optional[types.FunctionResponse] = None
+  tool_response: types.FunctionResponse | None = None
   """Required. The tool response."""
 
 
@@ -69,10 +67,10 @@ class Recording(BaseModel):
   """Name of the agent."""
 
   # oneof fields - start
-  llm_recording: Optional[LlmRecording] = None
+  llm_recording: LlmRecording | None = None
   """LLM request-response pair."""
 
-  tool_recording: Optional[ToolRecording] = None
+  tool_recording: ToolRecording | None = None
   """Tool call-response pair."""
   # oneof fields - end
 

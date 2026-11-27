@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Dict
 from unittest.mock import Mock
 
 from a2a.types import TaskArtifactUpdateEvent
@@ -41,7 +40,7 @@ def test_round_trip_text_event():
       ),
       partial=False,
   )
-  agents_artifacts: Dict[str, str] = {}
+  agents_artifacts: dict[str, str] = {}
 
   a2a_events = convert_event_to_a2a_events(
       event=original_event,
@@ -126,7 +125,7 @@ def test_round_trip_function_call_event():
       ),
       partial=False,
   )
-  agents_artifacts: Dict[str, str] = {}
+  agents_artifacts: dict[str, str] = {}
 
   a2a_events = convert_event_to_a2a_events(
       event=original_event,
@@ -175,7 +174,7 @@ def test_round_trip_function_response_event():
       ),
       partial=False,
   )
-  agents_artifacts: Dict[str, str] = {}
+  agents_artifacts: dict[str, str] = {}
 
   a2a_events = convert_event_to_a2a_events(
       event=original_event,
