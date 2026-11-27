@@ -239,7 +239,8 @@ def pass_at_k(runs: Sequence[RunResult], k: int) -> float | None:
   decided, passed = _count_decided_and_passed(runs)
   if decided < k:
     return None
-  return 1.0 - math.comb(decided - passed, k) / math.comb(decided, k)
+  total = math.comb(decided, k)
+  return (total - math.comb(decided - passed, k)) / total
 
 
 def pass_hat_k(runs: Sequence[RunResult], k: int) -> float | None:
