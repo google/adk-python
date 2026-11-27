@@ -18,23 +18,51 @@ from datetime import datetime
 from datetime import timezone
 import logging
 import time
+from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
 from google.adk.models import gemini_context_cache_manager
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_context_cache_manager import GeminiContextCacheManager
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.workflow import Workflow
 from google.genai import Client
 from google.genai import types
+from google.genai.errors import ClientError
 import pytest
+
+from .. import testing_utils
+
+
+def _caching_error(message: str) -> ClientError:
+  return ClientError(
+      400,
+      {
+          "error": {
+              "code": 400,
+              "message": message,
+              "status": "INVALID_ARGUMENT",
+          }
+      },
+  )
 
 
 class TestGeminiContextCacheManager:
   """Test suite for GeminiContextCacheManager."""
+
+  @pytest.fixture(autouse=True)
+  def fresh_refusal_memory(self):
+    with patch.object(
+        gemini_context_cache_manager, "_models_without_explicit_caching", set()
+    ):
+      yield
 
   def setup_method(self):
     """Set up test fixtures."""
@@ -113,6 +141,182 @@ class TestGeminiContextCacheManager:
     manager = GeminiContextCacheManager(mock_client)
     assert manager is not None
     assert manager.genai_client == mock_client
+
+  async def test_handle_context_caching_static_cache_on_initial_request(
+      self,
+  ) -> None:
+    """Test attaching a pre-created cached_content seed on turn 1."""
+    seed_cache_name = (
+        "projects/test/locations/us-central1/cachedContents/static789"
+    )
+    static_config = ContextCacheConfig(
+        cache_intervals=10,
+        ttl_seconds=3600,
+    )
+    llm_request = self.create_llm_request(contents_count=3)
+    llm_request.cache_config = static_config
+    llm_request.config.cached_content = seed_cache_name
+    expected_fingerprint = self.manager._generate_cache_fingerprint(  # pylint: disable=protected-access
+        llm_request, 0
+    )
+
+    before = time.time()
+    result = await self.manager.handle_context_caching(llm_request)
+    after = time.time()
+
+    assert result is not None
+    assert result.cache_name == seed_cache_name
+    assert result.fingerprint == expected_fingerprint
+    assert result.invocations_used == 1
+    assert result.contents_count == 0
+    assert result.created_at is None
+    assert before + 3600 <= result.expire_time <= after + 3600
+    # Request config should be stripped and cached_content attached
+    assert llm_request.config.cached_content == seed_cache_name
+    assert llm_request.config.system_instruction is None
+    assert llm_request.config.tools is None
+    assert llm_request.config.tool_config is None
+    # No new cache creation API call should be made
+    self.manager.genai_client.aio.caches.create.assert_not_called()
+
+  async def test_handle_context_caching_static_cache_on_subsequent_requests(
+      self,
+  ) -> None:
+    """Test seed cache reuse and rollover without deleting shared cache."""
+    seed_cache_name = (
+        "projects/test/locations/us-central1/cachedContents/static789"
+    )
+    static_config = ContextCacheConfig(
+        cache_intervals=2,  # Low interval to trigger rollover quickly
+        ttl_seconds=3600,
+    )
+
+    # Turn 1: Initial request attaches seed cache
+    llm_request_1 = self.create_llm_request(contents_count=3)
+    llm_request_1.cache_config = static_config
+    llm_request_1.config.cached_content = seed_cache_name
+    result_1 = await self.manager.handle_context_caching(llm_request_1)
+
+    # Turn 2: Subsequent request within cache_intervals and TTL reuses it
+    llm_request_2 = self.create_llm_request(
+        cache_metadata=result_1, contents_count=4
+    )
+    llm_request_2.cache_config = static_config
+    llm_request_2.config.cached_content = seed_cache_name
+    result_2 = await self.manager.handle_context_caching(llm_request_2)
+
+    assert result_2 is not None
+    assert result_2.cache_name == seed_cache_name
+
+    # Turn 3: Exceeding cache_intervals rolls over to a new session cache
+    # covering the growing history without deleting the shared seed cache
+    mock_session_cache = AsyncMock()
+    mock_session_cache.name = (
+        "projects/test/locations/us-central1/cachedContents/session123"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_session_cache
+    )
+    self.manager.genai_client.aio.caches.delete = AsyncMock()
+
+    result_interval_exceeded = result_2.model_copy(
+        update={"invocations_used": 3}
+    )
+    llm_request_3 = self.create_llm_request(
+        cache_metadata=result_interval_exceeded, contents_count=0
+    )
+    llm_request_3.contents = [
+        types.Content(role="user", parts=[types.Part(text="Turn 1 user")]),
+        types.Content(role="model", parts=[types.Part(text="Turn 1 model")]),
+        types.Content(role="user", parts=[types.Part(text="Turn 2 user")]),
+    ]
+    llm_request_3.cache_config = static_config
+    llm_request_3.config.cached_content = seed_cache_name
+    llm_request_3.cacheable_contents_token_count = 5000
+    result_3 = await self.manager.handle_context_caching(llm_request_3)
+
+    assert result_3 is not None
+    assert result_3.cache_name == mock_session_cache.name
+    assert result_3.contents_count == 2
+    assert llm_request_3.config.cached_content == mock_session_cache.name
+    self.manager.genai_client.aio.caches.delete.assert_not_called()
+    self.manager.genai_client.aio.caches.create.assert_awaited_once()
+
+    # Turn 4: Expired seed cache is cleared from the request and not deleted
+    self.manager.genai_client.aio.caches.create.reset_mock()
+    result_expired = result_2.model_copy(
+        update={"invocations_used": 1, "expire_time": time.time() - 1000}
+    )
+    llm_request_4 = self.create_llm_request(
+        cache_metadata=result_expired, contents_count=4
+    )
+    llm_request_4.cache_config = static_config
+    llm_request_4.config.cached_content = seed_cache_name
+    result_4 = await self.manager.handle_context_caching(llm_request_4)
+
+    assert result_4 is not None
+    assert result_4.cache_name is None
+    assert llm_request_4.config.cached_content is None
+    self.manager.genai_client.aio.caches.delete.assert_not_called()
+
+    # Turn 5: Even when invalidated by a fingerprint mismatch (e.g. model
+    # change), the shared seed cache is cleared from the request and not deleted
+    llm_request_5 = self.create_llm_request(
+        cache_metadata=result_2, contents_count=6
+    )
+    llm_request_5.model = "gemini-2.5-pro"
+    llm_request_5.cache_config = static_config
+    llm_request_5.config.cached_content = seed_cache_name
+    result_5 = await self.manager.handle_context_caching(llm_request_5)
+    assert result_5 is not None
+    assert result_5.cache_name is None
+    assert llm_request_5.config.cached_content is None
+    self.manager.genai_client.aio.caches.delete.assert_not_called()
+
+    # Turn 6: The session cache created on rollover is still deleted when it
+    # is invalidated
+    llm_request_6 = self.create_llm_request(
+        cache_metadata=result_3.model_copy(update={"invocations_used": 3}),
+        contents_count=4,
+    )
+    llm_request_6.cache_config = static_config
+    llm_request_6.config.cached_content = seed_cache_name
+    await self.manager.handle_context_caching(llm_request_6)
+    self.manager.genai_client.aio.caches.delete.assert_awaited_once_with(
+        name=mock_session_cache.name
+    )
+
+    # Turn 7: A session that started on the seed cache stops using it and does
+    # not delete it after generate_content_config.cached_content is changed or
+    # unset, even within cache_intervals and ttl_seconds
+    self.manager.genai_client.aio.caches.delete.reset_mock()
+    llm_request_7_renamed = self.create_llm_request(
+        cache_metadata=result_2, contents_count=4
+    )
+    llm_request_7_renamed.cache_config = static_config
+    llm_request_7_renamed.config.cached_content = (
+        "projects/test/locations/us-central1/cachedContents/static999"
+    )
+    result_7_renamed = await self.manager.handle_context_caching(
+        llm_request_7_renamed
+    )
+    assert result_7_renamed is not None
+    assert result_7_renamed.cache_name is None
+    assert llm_request_7_renamed.config.cached_content is None
+    self.manager.genai_client.aio.caches.delete.assert_not_called()
+
+    llm_request_7_unset = self.create_llm_request(
+        cache_metadata=result_2, contents_count=4
+    )
+    llm_request_7_unset.cache_config = static_config
+    llm_request_7_unset.config.cached_content = None
+    result_7_unset = await self.manager.handle_context_caching(
+        llm_request_7_unset
+    )
+    assert result_7_unset is not None
+    assert result_7_unset.cache_name is None
+    assert llm_request_7_unset.config.cached_content is None
+    self.manager.genai_client.aio.caches.delete.assert_not_called()
 
   async def test_handle_context_caching_no_existing_cache(self):
     """Test handling context caching with no existing cache returns fingerprint-only metadata."""
@@ -1548,3 +1752,336 @@ class TestGeminiContextCacheManager:
     assert create_call is not None
     cache_config = create_call[1]["config"]
     assert cache_config.http_options is None
+
+  async def test_agent_cached_content_seed_is_scoped_per_agent(self) -> None:
+    """Only the LlmAgent that sets cached_content uses the turn-1 seed."""
+    seen_configs: list[types.GenerateContentConfig] = []
+
+    async def fake_generate_content(**kwargs):
+      seen_configs.append(kwargs["config"].model_copy(deep=True))
+      return types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      role="model", parts=[types.Part(text="ok")]
+                  )
+              )
+          ]
+      )
+
+    mock_client = AsyncMock(spec=Client)
+    mock_client.vertexai = False
+    mock_client.aio.models.generate_content = fake_generate_content
+
+    agent_a = LlmAgent(
+        name="agent_a",
+        model=Gemini(model="gemini-2.5-flash"),
+        instruction="Agent A instruction",
+        generate_content_config=types.GenerateContentConfig(
+            cached_content="cachedContents/seed-a"
+        ),
+    )
+    agent_b = LlmAgent(
+        name="agent_b",
+        model=Gemini(model="gemini-2.5-flash"),
+        instruction="Agent B instruction",
+    )
+    app = App(
+        name="multi_agent_seed_app",
+        root_agent=Workflow(
+            name="wf_root", edges=[("START", agent_a, agent_b)]
+        ),
+        context_cache_config=ContextCacheConfig(
+            cache_intervals=5, ttl_seconds=3600
+        ),
+    )
+    runner = testing_utils.InMemoryRunner(app=app)
+
+    with patch.object(
+        Gemini,
+        "api_client",
+        new_callable=mock.PropertyMock,
+        return_value=mock_client,
+    ):
+      await runner.run_async("hello")
+
+    assert len(seen_configs) == 2
+    assert seen_configs[0].cached_content == "cachedContents/seed-a"
+    assert seen_configs[0].system_instruction is None
+    assert seen_configs[1].cached_content is None
+    assert "Agent B instruction" in (seen_configs[1].system_instruction or "")
+
+  @pytest.mark.parametrize(
+      "refusal_message",
+      [
+          (
+              "Model `gemini-4-hydrogen` does not support explicit context"
+              " caching."
+          ),
+          "Explicit caching is not supported for models/gemini-4-hydrogen.",
+          (
+              "Model `gemma-4` is not supported for context caching. Please"
+              " use Gemini or OpenMaaS models that are enabled for context"
+              " caching."
+          ),
+      ],
+  )
+  async def test_explicit_caching_refusal_is_remembered_and_logged_once(
+      self,
+      refusal_message: str,
+      caplog: pytest.LogCaptureFixture,
+  ) -> None:
+    """Explicit caching refusal stops later create calls and warns once."""
+    refusal = _caching_error(refusal_message)
+    self.manager.genai_client.aio.caches.create = AsyncMock(side_effect=refusal)
+
+    turn_1 = self.create_llm_request(contents_count=1)
+    turn_1.model = "gemini-4-hydrogen"
+    turn_1_metadata = await self.manager.handle_context_caching(turn_1)
+
+    turn_2 = self.create_llm_request(
+        cache_metadata=turn_1_metadata, contents_count=3
+    )
+    turn_2.model = "gemini-4-hydrogen"
+    turn_2.cacheable_contents_token_count = 10_000
+
+    with caplog.at_level(
+        logging.WARNING, logger=gemini_context_cache_manager.logger.name
+    ):
+      turn_2_metadata = await self.manager.handle_context_caching(turn_2)
+
+      turn_3 = self.create_llm_request(
+          cache_metadata=turn_2_metadata, contents_count=5
+      )
+      turn_3.model = "gemini-4-hydrogen"
+      turn_3.cacheable_contents_token_count = 15_000
+      turn_3_metadata = await self.manager.handle_context_caching(turn_3)
+
+    self.manager.genai_client.aio.caches.create.assert_awaited_once()
+    for req, expected_len in ((turn_2, 3), (turn_3, 5)):
+      assert req.config.cached_content is None
+      assert req.config.system_instruction == "Test instruction"
+      assert len(req.contents) == expected_len
+    assert turn_2_metadata is not None and turn_2_metadata.cache_name is None
+    assert turn_3_metadata is not None and turn_3_metadata.cache_name is None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "gemini-4-hydrogen" in warnings[0].getMessage()
+    assert "ContextCacheConfig has no effect" in warnings[0].getMessage()
+    assert "Failed to create cache" not in caplog.text
+
+  @pytest.mark.parametrize(
+      "sub_minimum_message",
+      [
+          (
+              "The cached content is of 507 tokens. The minimum token count to"
+              " start explicit caching is 4096."
+          ),
+          (
+              "Cached content is too small. total_token_count=509,"
+              " min_total_token_count=1024"
+          ),
+      ],
+  )
+  async def test_sub_minimum_cache_error_is_retried_on_next_turn(
+      self,
+      sub_minimum_message: str,
+  ) -> None:
+    """A sub-minimum 400 error is not remembered across later, larger turns."""
+    sub_min_error = _caching_error(sub_minimum_message)
+    created_cache = AsyncMock()
+    created_cache.name = "cachedContents/created-after-growth"
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        side_effect=[sub_min_error, created_cache]
+    )
+
+    endpoint_model = "projects/test/locations/us-central1/endpoints/tuned-model"
+    turn_1 = self.create_llm_request(contents_count=1)
+    turn_1.model = endpoint_model
+    turn_1_metadata = await self.manager.handle_context_caching(turn_1)
+
+    turn_2 = self.create_llm_request(
+        cache_metadata=turn_1_metadata, contents_count=1
+    )
+    turn_2.model = endpoint_model
+    turn_2.cacheable_contents_token_count = 600
+    turn_2_metadata = await self.manager.handle_context_caching(turn_2)
+
+    assert turn_2_metadata is not None
+    assert turn_2_metadata.cache_name is None
+
+    turn_3 = self.create_llm_request(
+        cache_metadata=turn_2_metadata, contents_count=3
+    )
+    turn_3.model = endpoint_model
+    turn_3.cacheable_contents_token_count = 8_000
+    turn_3_metadata = await self.manager.handle_context_caching(turn_3)
+
+    assert self.manager.genai_client.aio.caches.create.await_count == 2
+    assert turn_3_metadata is not None
+    assert turn_3_metadata.cache_name == "cachedContents/created-after-growth"
+
+  async def test_explicit_caching_refusal_does_not_affect_supported_models(
+      self,
+  ) -> None:
+    """Remembering a refusal for one model leaves supported models unchanged."""
+    refusal = _caching_error(
+        "Model `gemini-4-hydrogen` does not support explicit context caching."
+    )
+    supported_cache = AsyncMock()
+    supported_cache.name = "cachedContents/gemini-25"
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        side_effect=[refusal, supported_cache]
+    )
+
+    g4_turn_1 = self.create_llm_request(contents_count=1)
+    g4_turn_1.model = "gemini-4-hydrogen"
+    g4_meta_1 = await self.manager.handle_context_caching(g4_turn_1)
+
+    g4_turn_2 = self.create_llm_request(
+        cache_metadata=g4_meta_1, contents_count=2
+    )
+    g4_turn_2.model = "gemini-4-hydrogen"
+    g4_turn_2.cacheable_contents_token_count = 10_000
+    g4_meta_2 = await self.manager.handle_context_caching(g4_turn_2)
+
+    g4_turn_3 = self.create_llm_request(
+        cache_metadata=g4_meta_2, contents_count=3
+    )
+    g4_turn_3.model = "gemini-4-hydrogen"
+    g4_turn_3.cacheable_contents_token_count = 12_000
+    await self.manager.handle_context_caching(g4_turn_3)
+
+    supported_turn_1 = self.create_llm_request(contents_count=0)
+    supported_turn_1.model = "gemini-2.5-flash"
+    supported_turn_1.config.system_instruction = "x" * 12_000
+    supported_meta_1 = await self.manager.handle_context_caching(
+        supported_turn_1
+    )
+
+    supported_turn_2 = self.create_llm_request(
+        cache_metadata=supported_meta_1, contents_count=0
+    )
+    supported_turn_2.model = "gemini-2.5-flash"
+    supported_turn_2.config.system_instruction = "x" * 12_000
+    supported_turn_2.cacheable_contents_token_count = 4_000
+    supported_meta_2 = await self.manager.handle_context_caching(
+        supported_turn_2
+    )
+
+    assert self.manager.genai_client.aio.caches.create.await_count == 2
+    assert supported_meta_2 is not None
+    assert supported_meta_2.cache_name == "cachedContents/gemini-25"
+
+  async def test_switching_from_active_cache_to_refusing_model_cleans_up_once(
+      self,
+  ) -> None:
+    """Switching a cached session to a refusing model cleans up the old cache."""
+    refusal = _caching_error(
+        "Model `gemini-4-hydrogen` does not support explicit context caching."
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(side_effect=refusal)
+    self.manager.genai_client.aio.caches.delete = AsyncMock()
+
+    flash_request = self.create_llm_request(contents_count=0)
+    flash_fp = await self.manager.handle_context_caching(flash_request)
+    assert flash_fp is not None
+    active_flash_cache = CacheMetadata(
+        cache_name="cachedContents/flash-cache",
+        expire_time=time.time() + 1_800,
+        fingerprint=flash_fp.fingerprint,
+        invocations_used=1,
+        contents_count=flash_fp.contents_count,
+        created_at=time.time(),
+    )
+
+    g4_turn_1 = self.create_llm_request(
+        cache_metadata=active_flash_cache, contents_count=1
+    )
+    g4_turn_1.model = "gemini-4-hydrogen"
+    g4_turn_1.cacheable_contents_token_count = 10_000
+    g4_meta_1 = await self.manager.handle_context_caching(g4_turn_1)
+
+    assert g4_meta_1 is not None and g4_meta_1.cache_name is None
+    assert g4_turn_1.config.cached_content is None
+    self.manager.genai_client.aio.caches.delete.assert_awaited_once_with(
+        name="cachedContents/flash-cache"
+    )
+    self.manager.genai_client.aio.caches.create.assert_not_awaited()
+
+    g4_turn_2 = self.create_llm_request(
+        cache_metadata=g4_meta_1, contents_count=2
+    )
+    g4_turn_2.model = "gemini-4-hydrogen"
+    g4_turn_2.cacheable_contents_token_count = 12_000
+    g4_meta_2 = await self.manager.handle_context_caching(g4_turn_2)
+
+    g4_turn_3 = self.create_llm_request(
+        cache_metadata=g4_meta_2, contents_count=3
+    )
+    g4_turn_3.model = "gemini-4-hydrogen"
+    g4_turn_3.cacheable_contents_token_count = 14_000
+    await self.manager.handle_context_caching(g4_turn_3)
+
+    self.manager.genai_client.aio.caches.delete.assert_awaited_once()
+    self.manager.genai_client.aio.caches.create.assert_awaited_once()
+
+  async def test_explicit_caching_refusal_is_shared_by_later_managers(
+      self,
+  ) -> None:
+    """A manager built after the refusal makes no create call for that model."""
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        side_effect=_caching_error(
+            "Model `gemini-4-hydrogen` does not support explicit context"
+            " caching."
+        )
+    )
+    turn_1 = self.create_llm_request(contents_count=1)
+    turn_1.model = "gemini-4-hydrogen"
+    turn_1_metadata = await self.manager.handle_context_caching(turn_1)
+    turn_2 = self.create_llm_request(
+        cache_metadata=turn_1_metadata, contents_count=3
+    )
+    turn_2.model = "gemini-4-hydrogen"
+    turn_2.cacheable_contents_token_count = 10_000
+    turn_2_metadata = await self.manager.handle_context_caching(turn_2)
+
+    later_manager = GeminiContextCacheManager(self.manager.genai_client)
+    turn_3 = self.create_llm_request(
+        cache_metadata=turn_2_metadata, contents_count=5
+    )
+    turn_3.model = "gemini-4-hydrogen"
+    turn_3.cacheable_contents_token_count = 15_000
+    await later_manager.handle_context_caching(turn_3)
+
+    self.manager.genai_client.aio.caches.create.assert_awaited_once()
+    assert turn_3.config.cached_content is None
+
+  async def test_explicit_caching_refusal_is_scoped_to_backend(self) -> None:
+    """A refusal on one backend still lets another backend create caches."""
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        side_effect=_caching_error(
+            "Explicit caching is not supported for models/gemini-4-hydrogen."
+        )
+    )
+    vertex_client = AsyncMock(spec=Client)
+    vertex_client.vertexai = True
+    vertex_cache = AsyncMock()
+    vertex_cache.name = "cachedContents/vertex-cache"
+    vertex_client.aio.caches.create = AsyncMock(return_value=vertex_cache)
+    vertex_manager = GeminiContextCacheManager(vertex_client)
+
+    for manager in (self.manager, vertex_manager):
+      turn_1 = self.create_llm_request(contents_count=1)
+      turn_1.model = "gemini-4-hydrogen"
+      turn_1_metadata = await manager.handle_context_caching(turn_1)
+      turn_2 = self.create_llm_request(
+          cache_metadata=turn_1_metadata, contents_count=3
+      )
+      turn_2.model = "gemini-4-hydrogen"
+      turn_2.cacheable_contents_token_count = 10_000
+      turn_2_metadata = await manager.handle_context_caching(turn_2)
+
+    vertex_client.aio.caches.create.assert_awaited_once()
+    assert turn_2_metadata.cache_name == "cachedContents/vertex-cache"

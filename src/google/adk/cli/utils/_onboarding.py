@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Optional
 
 import click
 from pydantic import BaseModel
@@ -94,8 +93,8 @@ def get_gcp_region_from_gcloud() -> str:
 def prompt_str(
     prompt_prefix: str,
     *,
-    prior_msg: Optional[str] = None,
-    default_value: Optional[str] = None,
+    prior_msg: str | None = None,
+    default_value: str | None = None,
 ) -> str:
   if prior_msg:
     click.secho(prior_msg, fg="green")
@@ -108,7 +107,7 @@ def prompt_str(
 
 
 def prompt_for_google_cloud(
-    google_cloud_project: Optional[str],
+    google_cloud_project: str | None,
 ) -> str:
   """Prompts user for Google Cloud project ID."""
   google_cloud_project = (
@@ -125,7 +124,7 @@ def prompt_for_google_cloud(
 
 
 def prompt_for_google_cloud_region(
-    google_cloud_region: Optional[str],
+    google_cloud_region: str | None,
 ) -> str:
   """Prompts user for Google Cloud region."""
   google_cloud_region = (
@@ -142,7 +141,7 @@ def prompt_for_google_cloud_region(
 
 
 def prompt_for_google_api_key(
-    google_api_key: Optional[str],
+    google_api_key: str | None,
 ) -> str:
   """Prompts user for Google API key."""
   google_api_key = google_api_key or os.environ.get("GOOGLE_API_KEY", None)
@@ -303,9 +302,9 @@ Choose region""",
 
 
 def prompt_to_choose_backend(
-    google_api_key: Optional[str],
-    google_cloud_project: Optional[str],
-    google_cloud_region: Optional[str],
+    google_api_key: str | None,
+    google_cloud_project: str | None,
+    google_cloud_region: str | None,
 ) -> GoogleAIAuth | VertexAIAuth | ExpressModeAuth:
   """Prompts user to choose backend.
 

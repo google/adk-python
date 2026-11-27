@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict
-from typing import List
 from typing import TypeGuard
 
 from a2a.types import AgentCapabilities
@@ -70,7 +68,7 @@ class AgentCardBuilder:
       doc_url: str | None = None,
       provider: AgentProvider | None = None,
       agent_version: str | None = None,
-      security_schemes: Dict[str, SecurityScheme] | None = None,
+      security_schemes: dict[str, SecurityScheme] | None = None,
       default_skill_security: list[dict[str, list[str]]] | None = None,
   ):
     if not agent:
@@ -136,7 +134,7 @@ class AgentCardBuilder:
 
 
 # Module-level helper functions
-def _iter_child_nodes(agent: BaseNode) -> List[BaseNode]:
+def _iter_child_nodes(agent: BaseNode) -> list[BaseNode]:
   """Returns the immediate child nodes of an agent or a workflow."""
   if isinstance(agent, BaseAgent):
     return list(agent.sub_agents)
@@ -148,7 +146,7 @@ def _iter_child_nodes(agent: BaseNode) -> List[BaseNode]:
 async def _build_primary_skills(
     agent: BaseNode,
     default_skill_security: _SkillSecurity | None = None,
-) -> List[AgentSkill]:
+) -> list[AgentSkill]:
   """Build skills for any node type."""
   if isinstance(agent, LlmAgent):
     return await _build_llm_agent_skills(agent, default_skill_security)
@@ -159,7 +157,7 @@ async def _build_primary_skills(
 async def _build_llm_agent_skills(
     agent: LlmAgent,
     default_skill_security: _SkillSecurity | None = None,
-) -> List[AgentSkill]:
+) -> list[AgentSkill]:
   """Build skills for LLM agent."""
   skills = []
 
@@ -201,7 +199,7 @@ async def _build_llm_agent_skills(
 async def _build_sub_agent_skills(
     agent: BaseNode,
     default_skill_security: _SkillSecurity | None = None,
-) -> List[AgentSkill]:
+) -> list[AgentSkill]:
   """Build skills for all child nodes (sub-agents or workflow nodes)."""
   sub_agent_skills = []
   for sub_agent in _iter_child_nodes(agent):
@@ -235,7 +233,7 @@ async def _build_sub_agent_skills(
 async def _build_tool_skills(
     agent: LlmAgent,
     default_skill_security: _SkillSecurity | None = None,
-) -> List[AgentSkill]:
+) -> list[AgentSkill]:
   """Build skills for agent tools."""
   tool_skills = []
   canonical_tools = await agent.canonical_tools()
@@ -308,7 +306,7 @@ def _build_code_executor_skill(
 async def _build_non_llm_agent_skills(
     agent: BaseNode,
     default_skill_security: _SkillSecurity | None = None,
-) -> List[AgentSkill]:
+) -> list[AgentSkill]:
   """Build skills for non-LLM agents and workflow nodes."""
   skills = []
 
@@ -688,7 +686,7 @@ def _convert_example_tool_examples(
   return examples
 
 
-def _get_input_modes(agent: BaseNode) -> List[str] | None:
+def _get_input_modes(agent: BaseNode) -> list[str] | None:
   """Get input modes based on agent model."""
   if not isinstance(agent, LlmAgent):
     return None
@@ -698,7 +696,7 @@ def _get_input_modes(agent: BaseNode) -> List[str] | None:
   return None
 
 
-def _get_output_modes(agent: BaseNode) -> List[str] | None:
+def _get_output_modes(agent: BaseNode) -> list[str] | None:
   """Get output modes from Agent.generate_content_config.response_modalities."""
   if not isinstance(agent, LlmAgent):
     return None

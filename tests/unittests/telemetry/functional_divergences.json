@@ -19,6 +19,18 @@
       {
         "path": [
           "attributes",
+          "gen_ai.response.model"
+        ],
+        "example_native_instrumentation_value": "gemini-2.5-flash",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor version this suite pins omits `gen_ai.response.model` on `generate_content` spans (fixed in newer releases); ADK falls back to the requested model when `model_version` is absent."
+      },
+      {
+        "path": [
+          "attributes",
           "gen_ai.usage.output_tokens"
         ],
         "example_native_instrumentation_value": 25,
@@ -422,6 +434,32 @@
         },
         "kind": "otel_bug",
         "reason": "On a call that failed the instrumentor records a zeroed usage point; ADK records no usage at all."
+      }
+    ]
+  },
+  {
+    "owner_type": "metric",
+    "owner_name": "gen_ai.client.inference.duration",
+    "affected_tests": "*",
+    "divergences": [
+      {
+        "path": [],
+        "example_native_instrumentation_value": [
+          {
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gcp.gemini",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gen_ai.response.model": "gemini-2.5-flash"
+            },
+            "value": "PRESENT"
+          }
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor this suite pins times the call only as `gen_ai.client.operation.duration`, the name semantic-conventions-genai#521 replaced. ADK does not time a call the instrumentor records: without its own span, its timing would include the tools the caller runs."
       }
     ]
   },

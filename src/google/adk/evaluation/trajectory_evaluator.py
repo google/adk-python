@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import ClassVar
-from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
@@ -68,8 +67,8 @@ class TrajectoryEvaluator(Evaluator):
 
   def __init__(
       self,
-      threshold: Optional[float] = None,
-      eval_metric: Optional[EvalMetric] = None,
+      threshold: float | None = None,
+      eval_metric: EvalMetric | None = None,
   ):
     if threshold is not None and eval_metric:
       raise ValueError(
@@ -106,8 +105,8 @@ class TrajectoryEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations."""
     if expected_invocations is None:

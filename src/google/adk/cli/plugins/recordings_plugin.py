@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -76,7 +75,7 @@ class RecordingsPlugin(BasePlugin):
   @override
   async def before_run_callback(
       self, *, invocation_context: InvocationContext
-  ) -> Optional[types.Content]:
+  ) -> types.Content | None:
     """Always create fresh per-invocation recording state when enabled."""
     ctx = CallbackContext(invocation_context)
     if self._is_record_mode_on(ctx):
@@ -87,7 +86,7 @@ class RecordingsPlugin(BasePlugin):
   @override
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     """Create pending LLM recording awaiting response.
 
     Uses per-invocation recording state. Assumes state was created in
@@ -129,7 +128,7 @@ class RecordingsPlugin(BasePlugin):
   @override
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
-  ) -> Optional[LlmResponse]:
+  ) -> LlmResponse | None:
     """Complete pending LLM recording for the invocation specified in session state."""
     if not self._is_record_mode_on(callback_context):
       return None
@@ -167,7 +166,7 @@ class RecordingsPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:  # type: ignore[type-arg]
+  ) -> dict | None:  # type: ignore[type-arg]
     """Create pending tool recording for the invocation specified in session state."""
     if not self._is_record_mode_on(tool_context):
       return None
@@ -217,7 +216,7 @@ class RecordingsPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       result: dict,  # type: ignore[type-arg]
-  ) -> Optional[dict]:  # type: ignore[type-arg]
+  ) -> dict | None:  # type: ignore[type-arg]
     """Complete pending tool recording for the invocation specified in session state."""
     if not self._is_record_mode_on(tool_context):
       return None
@@ -267,7 +266,7 @@ class RecordingsPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:  # type: ignore[type-arg]
+  ) -> dict | None:  # type: ignore[type-arg]
     """Handle tool error callback with state guard.
 
     Recording schema does not yet capture errors; we only validate state.
@@ -381,7 +380,7 @@ class RecordingsPlugin(BasePlugin):
 
   def _get_invocation_state(
       self, callback_context: CallbackContext
-  ) -> Optional[_InvocationRecordingState]:
+  ) -> _InvocationRecordingState | None:
     """Get existing recording state for this invocation."""
     invocation_id = callback_context.invocation_id
     return self._invocation_states.get(invocation_id)

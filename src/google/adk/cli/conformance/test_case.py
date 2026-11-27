@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from typing import Optional
 
 from google.genai import types
 from pydantic import BaseModel
@@ -28,14 +27,14 @@ from pydantic import Field
 class UserMessage(BaseModel):
 
   # oneof fields - start
-  text: Optional[str] = None
+  text: str | None = None
   """The user message in text."""
 
-  content: Optional[types.UserContent] = None
+  content: types.UserContent | None = None
   """The user message in types.Content."""
   # oneof fields - end
 
-  state_delta: Optional[dict[str, Any]] = None
+  state_delta: dict[str, Any] | None = None
   """The state changes when running this user message."""
 
 

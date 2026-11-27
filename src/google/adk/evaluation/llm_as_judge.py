@@ -21,7 +21,6 @@ from collections.abc import Sequence
 import logging
 from typing import cast
 from typing import Generic
-from typing import Optional
 from typing import TypeVar
 
 from google.genai import types as genai_types
@@ -54,8 +53,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 class AutoRaterScore(EvalBaseModel):
-  score: Optional[float] = None
-  rubric_scores: Optional[list[RubricScore]] = None
+  score: float | None = None
+  rubric_scores: list[RubricScore] | None = None
 
 
 # RubricsBasedCriterion is a sibling of LlmAsAJudgeCriterion, not a subclass,
@@ -114,7 +113,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
 
   @abstractmethod
   def format_auto_rater_prompt(
-      self, actual: Invocation, expected: Optional[Invocation]
+      self, actual: Invocation, expected: Invocation | None
   ) -> str:
     """Formats the auto-rater prompt to evaluate the given invocation."""
 
@@ -167,7 +166,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       self,
       llm_request: LlmRequest,
       actual: Invocation,
-      expected: Optional[Invocation],
+      expected: Invocation | None,
   ) -> PerInvocationResult:
     """Evaluates a single sample for an invocation.
 
@@ -207,8 +206,8 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
@@ -219,7 +218,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     # supplied, we provide a list of None.
     # Sequence rather than list: it is covariant, so the supplied
     # list[Invocation] is accepted without copying it.
-    resolved_expected: Sequence[Optional[Invocation]] = (
+    resolved_expected: Sequence[Invocation | None] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else expected_invocations
@@ -234,7 +233,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     async def _evaluate_single_sample_with_sem(
         llm_request: LlmRequest,
         actual: Invocation,
-        expected: Optional[Invocation],
+        expected: Invocation | None,
     ) -> PerInvocationResult:
       async with semaphore:
         return await self._evaluate_single_sample(llm_request, actual, expected)

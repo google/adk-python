@@ -603,8 +603,8 @@ def build_eval_turn_query_sql(
       leading ``WHERE``, that picks the turns to return, such as
       ``turn_end_timestamp >= @window_start AND turn_end_timestamp < @window_end
       AND eval_ready``.  It filters whole turns after they are rebuilt, so it
-      drops no event that a turn needs: a turn keeps its ``turn_index`` and the
-      system prompt that its session logged first.
+      drops no event that a turn needs: a turn keeps its ``turn_index`` and can
+      fall back to the system prompt that its session logged first.
     raw_where_clause: A trusted condition on the events table, with or without a
       leading ``WHERE``, that lets BigQuery prune ``timestamp`` partitions, such
       as the lookback ``timestamp >= @lookback_start``.  A session that loses an

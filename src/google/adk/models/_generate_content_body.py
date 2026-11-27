@@ -119,7 +119,16 @@ def to_generate_content_body(
       points at the line that set it rather than at the converter.
   """
   from google.genai import _common as _genai_common
-  from google.genai import models as _genai_models
+
+  if TYPE_CHECKING:
+    from google.genai import _converters as _genai_converters
+  else:
+    try:
+      from google.genai import _converters as _genai_converters
+    except ImportError:
+      # google-genai releases before the _converters module keep the
+      # converters in models.
+      from google.genai import models as _genai_converters
 
   client: Any
   if api_client is not None:
@@ -140,9 +149,9 @@ def to_generate_content_body(
   )
 
   convert = (
-      _genai_models._GenerateContentParameters_to_vertex
+      _genai_converters._GenerateContentParameters_to_vertex
       if is_vertex
-      else _genai_models._GenerateContentParameters_to_mldev
+      else _genai_converters._GenerateContentParameters_to_mldev
   )
 
   try:

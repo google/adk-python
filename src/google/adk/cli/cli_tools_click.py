@@ -32,7 +32,6 @@ from typing import Any
 from typing import AsyncIterator
 from typing import cast
 from typing import Literal
-from typing import Optional
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
@@ -409,7 +408,7 @@ class TelemetryGroup(click.Group):
 @click.group(cls=TelemetryGroup, context_settings={"max_content_width": 240})  # type: ignore[assignment]
 @click.version_option(version.__version__)
 @click.pass_context
-def main(ctx: Optional[click.Context] = None) -> None:
+def main(ctx: click.Context | None = None) -> None:
   """Agent Development Kit CLI tools."""
   if (
       ctx is not None
@@ -1115,22 +1114,22 @@ def adk_services_options(
 @click.argument("query", type=str, required=False)
 def cli_run(
     agent: str,
-    query: Optional[str],
+    query: str | None,
     save_session: bool,
-    session_id: Optional[str],
-    replay: Optional[str],
-    resume: Optional[str],
-    state: Optional[str] = None,
-    timeout: Optional[str] = None,
+    session_id: str | None,
+    replay: str | None,
+    resume: str | None,
+    state: str | None = None,
+    timeout: str | None = None,
     in_memory: bool = False,
     jsonl: bool = False,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    default_llm_model: Optional[str] = None,
+    default_llm_model: str | None = None,
     log_level: str = "INFO",
-    state_file: Optional[str] = None,
+    state_file: str | None = None,
     reload_agents: bool = False,
 ) -> None:
   """Runs an agent. If no query is provided, enters interactive mode.
@@ -1335,9 +1334,9 @@ def eval_options() -> Callable[[Callable[..., _R]], Callable[..., _R]]:
 
 
 def _resolve_eval_config_file_path(
-    config_file_path: Optional[str],
+    config_file_path: str | None,
     eval_set_file_or_id_to_evals: dict[str, list[str]],
-) -> Optional[str]:
+) -> str | None:
   """Returns config file path for eval command.
 
   If `config_file_path` is provided, it is used as-is. If omitted and evals are
@@ -1406,7 +1405,7 @@ def cli_eval(
     print_detailed_results: bool,
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
-    num_runs: Optional[int] = None,
+    num_runs: int | None = None,
     parallelism: int | None = None,
 ) -> None:
   """Evaluates an agent given the eval sets.
@@ -2400,8 +2399,8 @@ def _check_windows_reload(reload: bool) -> bool:
 )
 def cli_web(
     agents_dir: str,
-    default_llm_model: Optional[str] = None,
-    eval_storage_uri: Optional[str] = None,
+    default_llm_model: str | None = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
     allow_origins: list[str] | None = None,
     host: str = "127.0.0.1",
@@ -2738,8 +2737,9 @@ def cli_api_server(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
         " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
-        " .zip), or a project directory containing pyproject.toml or setup.py"
-        " (without a root __init__.py) is installed with pip. Any other entry"
+        " .zip), or a project directory (setup.py, or pyproject.toml declaring"
+        " [project] or [build-system], without a root __init__.py) is"
+        " installed with pip. Any other entry"
         " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
         " a top-level name that matches an installed dependency will shadow it"
         " at runtime; pick distinct names. Repeatable."
@@ -3014,6 +3014,17 @@ def cli_migrate_session(
     ),
 )
 @click.option(
+    "--update_if_exists",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. If no --agent_engine_id is given and exactly one Agent"
+        " Runtime with the same display name exists in the project/region,"
+        " update it in place instead of creating a new instance. Fails if"
+        " multiple instances share the display name."
+    ),
+)
+@click.option(
     "--trace_to_cloud/--no-trace_to_cloud",
     type=bool,
     is_flag=True,
@@ -3102,17 +3113,22 @@ def cli_migrate_session(
 )
 @click.option(
     "--validate-agent-import/--no-validate-agent-import",
-    default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    default=None,
+    help=(
+        "Optional. Validate that the agent can be loaded at container startup"
+        " before starting the server (enabled by default). Pass"
+        " `--no-validate-agent-import` to skip."
+    ),
 )
 @click.option(
     "--skip-agent-import-validation",
     "skip_agent_import_validation_alias",
     is_flag=True,
     default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    help=(
+        "Optional. Alias for `--no-validate-agent-import`; skips the"
+        " container startup agent import validation."
+    ),
 )
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
@@ -3174,8 +3190,9 @@ def cli_migrate_session(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
         " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
-        " .zip), or a project directory containing pyproject.toml or setup.py"
-        " (without a root __init__.py) is installed with pip. Any other entry"
+        " .zip), or a project directory (setup.py, or pyproject.toml declaring"
+        " [project] or [build-system], without a root __init__.py) is"
+        " installed with pip. Any other entry"
         " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
         " a top-level name that matches an installed dependency will shadow it"
         " at runtime; pick distinct names. Repeatable."
@@ -3231,7 +3248,10 @@ def cli_deploy_agent_engine(
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
-    validate_agent_import: bool = False,
+    # Defaults to `False` for backwards compatibility with direct Python
+    # callers; Click passes `None` from `@click.option(..., default=None)` on
+    # CLI invocations, which enables validation by default.
+    validate_agent_import: bool | None = False,
     skip_agent_import_validation_alias: bool = False,
     adk_version: str | None = None,
     trigger_sources: str | None = None,
@@ -3245,6 +3265,7 @@ def cli_deploy_agent_engine(
     trigger_oidc_service_accounts: str | None = None,
     service_account: str | None = None,
     python_version: str | None = None,
+    update_if_exists: bool = False,
 ) -> None:
   """Deploys an agent to Agent Engine.
 
@@ -3275,11 +3296,18 @@ def cli_deploy_agent_engine(
   # `agentplatform_genai.agentengines`; raise the parent so neither is lost.
   logging.getLogger("agentplatform_genai").setLevel(logging.INFO)
   try:
+    if agent_engine_id and update_if_exists:
+      raise click.UsageError(
+          "Do not pass both --agent_engine_id and --update_if_exists."
+      )
     if validate_agent_import and skip_agent_import_validation_alias:
       raise click.UsageError(
           "Do not pass both --validate-agent-import and"
           " --skip-agent-import-validation."
       )
+    should_skip_import_validation = skip_agent_import_validation_alias or (
+        validate_agent_import is not None and not validate_agent_import
+    )
     from . import cli_deploy
 
     cli_deploy.to_agent_engine(
@@ -3299,7 +3327,7 @@ def cli_deploy_agent_engine(
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
-        skip_agent_import_validation=not validate_agent_import,
+        skip_agent_import_validation=should_skip_import_validation,
         trigger_sources=trigger_sources,
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
@@ -3311,6 +3339,7 @@ def cli_deploy_agent_engine(
         worker_pool=worker_pool,
         service_account=service_account,
         python_version=python_version,
+        update_if_exists=update_if_exists,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3479,8 +3508,9 @@ def cli_deploy_agent_engine(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
         " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
-        " .zip), or a project directory containing pyproject.toml or setup.py"
-        " (without a root __init__.py) is installed with pip. Any other entry"
+        " .zip), or a project directory (setup.py, or pyproject.toml declaring"
+        " [project] or [build-system], without a root __init__.py) is"
+        " installed with pip. Any other entry"
         " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
         " a top-level name that matches an installed dependency will shadow it"
         " at runtime; pick distinct names. Repeatable."

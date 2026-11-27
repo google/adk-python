@@ -24,12 +24,12 @@ import shutil
 import stat
 import subprocess
 import sys
+import tomllib
 import traceback
 from typing import Any
 from typing import Callable
 from typing import Final
 from typing import Literal
-from typing import Optional
 import warnings
 
 import click
@@ -55,6 +55,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_AGENT_LOADER_MIN_VERSION: Final[str] = '2.0.0'
 _GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
 # The deployed image runs `adk api_server`, which imports `agentplatform`, so
 # the staged requirements must resolve to the v2 SDK and not to a v1 release
@@ -133,7 +134,7 @@ def _validate_worker_pool(worker_pool: str) -> str:
 
 def _apply_worker_pool_to_agent_config(
     agent_config: dict[str, Any],
-    worker_pool: Optional[str],
+    worker_pool: str | None,
 ) -> None:
   """Nests worker_pool into agent_config['build_config'].
 
@@ -223,7 +224,7 @@ def _validate_service_account(service_account: str) -> str:
 
 def _apply_service_account_to_agent_config(
     agent_config: dict[str, Any],
-    service_account: Optional[str],
+    service_account: str | None,
 ) -> None:
   """Sets top-level ``service_account`` on the Agent Engine update config.
 
@@ -260,7 +261,7 @@ def _apply_service_account_to_agent_config(
 
 def _resolve_python_version_from_agent_config(
     agent_config: dict[str, Any],
-    python_version: Optional[str],
+    python_version: str | None,
 ) -> str:
   """Resolves the container Python version for an Agent Engine deploy.
 
@@ -899,7 +900,7 @@ def _resolve_adk_version() -> str:
   return __version__
 
 
-def _resolve_project(project_in_option: Optional[str]) -> str:
+def _resolve_project(project_in_option: str | None) -> str:
   if project_in_option:
     return project_in_option
 
@@ -914,7 +915,7 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
-def _validate_dockerfile_env_value(name: str, value: Optional[str]) -> None:
+def _validate_dockerfile_env_value(name: str, value: str | None) -> None:
   """Validates a value before it is written into a Dockerfile ENV instruction.
 
   Args:
@@ -1052,10 +1053,10 @@ def _validate_agent_import(
 
 def _get_service_options_by_adk_version(
     adk_version: str,
-    session_uri: Optional[str],
-    artifact_uri: Optional[str],
-    memory_uri: Optional[str],
-    use_local_storage: Optional[bool] = None,
+    session_uri: str | None,
+    artifact_uri: str | None,
+    memory_uri: str | None,
+    use_local_storage: bool | None = None,
 ) -> list[str]:
   """Returns the service options based on adk_version, one per argv entry."""
   parsed_version = parse(adk_version)
@@ -1186,6 +1187,23 @@ _INSTALLABLE_ARCHIVE_SUFFIXES: Final[tuple[str, ...]] = (
 )
 
 
+def _is_installable_project(path: str) -> bool:
+  """Returns whether a directory is a Python project that pip can install.
+
+  A directory is a project when it has a `setup.py`, or a `pyproject.toml`
+  that declares `[build-system]` or `[project]`. A `pyproject.toml` that only
+  holds tool settings, or cannot be parsed, does not make it one.
+  """
+  if os.path.isfile(os.path.join(path, 'setup.py')):
+    return True
+  try:
+    with open(os.path.join(path, 'pyproject.toml'), 'rb') as f:
+      pyproject = tomllib.load(f)
+  except (OSError, ValueError):
+    return False
+  return 'build-system' in pyproject or 'project' in pyproject
+
+
 def _get_extra_packages_copy(
     staged_extra_packages: Sequence[str], build_context: str
 ) -> str:
@@ -1194,13 +1212,14 @@ def _get_extra_packages_copy(
   Each staged entry is handled one of two ways:
 
   * An installable distribution (a file ending in one of
-    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a directory containing
-    `pyproject.toml` or `setup.py` without a root `__init__.py`) is copied to
+    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a project directory without a root
+    `__init__.py`, see `_is_installable_project`) is copied to
     `/tmp/extra_packages/<base>` and installed with `pip install`, so its
     modules land in site-packages together with the dependencies it declares.
   * Anything else (a plain module, a folder of modules, or a package folder
-    with a root `__init__.py` that may also carry a `pyproject.toml` for tool
-    config) is copied to `/app/<base>` and `/app` is added to PYTHONPATH.
+    with a root `__init__.py`, either of which may carry a `pyproject.toml`
+    for tool config) is copied to `/app/<base>` and `/app` is added to
+    PYTHONPATH.
 
   Installable entries are deliberately kept out of `/app`: a flat-layout
   package such as `my_pkg/pyproject.toml` + `my_pkg/my_pkg/__init__.py` copied
@@ -1225,11 +1244,8 @@ def _get_extra_packages_copy(
     _validate_extra_package_name(base)
     staged_path = os.path.join(build_context, base)
     if os.path.isdir(staged_path):
-      has_build_file = os.path.isfile(
-          os.path.join(staged_path, 'pyproject.toml')
-      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
       has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
-      if has_build_file and not has_root_init:
+      if _is_installable_project(staged_path) and not has_root_init:
         copy_lines.append(
             f'COPY --chown=myuser:myuser "{base}/"'
             f' "/tmp/extra_packages/{base}/"'
@@ -1295,11 +1311,8 @@ def _get_extra_packages_reinstall(
     if os.path.isdir(staged_path):
       if not has_requirements:
         continue
-      has_build_file = os.path.isfile(
-          os.path.join(staged_path, 'pyproject.toml')
-      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
       has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
-      if has_build_file and not has_root_init:
+      if _is_installable_project(staged_path) and not has_root_init:
         reinstall_targets.append(f'/tmp/extra_packages/{base}')
     elif base.endswith('.whl') or (
         has_requirements and base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES)
@@ -1390,10 +1403,11 @@ def run(
       execution.
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A wheel, source archive, or
-      a project directory containing `pyproject.toml` or `setup.py` (without a
-      root `__init__.py`) is installed with pip; any other entry is copied to
-      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
-      resolved against the current working directory.
+      a project directory (`setup.py`, or `pyproject.toml` declaring
+      `[project]` or `[build-system]`, without a root `__init__.py`) is
+      installed with pip; any other entry is copied to `/app/<basename>` and
+      `/app` is added to PYTHONPATH. A relative path is resolved against the
+      current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
@@ -1435,9 +1449,6 @@ def run(
     # create Dockerfile
     click.echo('Creating Dockerfile...')
     host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
     a2a_option = '--a2a' if a2a else ''
     trigger_sources_option = (
         f'--trigger_sources={trigger_sources}' if trigger_sources else ''
@@ -1466,7 +1477,7 @@ def run(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
@@ -1612,37 +1623,89 @@ def _print_gemini_enterprise_hint() -> None:
   )
 
 
+def _find_runtimes_by_display_name(
+    client: Any,
+    display_name: str | None,
+    *,
+    raise_on_error: bool = False,
+) -> list[Any]:
+  """Looks up existing Agent Runtimes with this display name.
+
+  When ``raise_on_error`` is False, errors or an empty ``display_name`` degrade
+  to an empty list so default creates are not blocked. When True, they raise
+  ``click.ClickException`` so ``--update_if_exists`` never silently creates a
+  duplicate instead of updating.
+
+  Args:
+    client: Initialized Agent Platform client exposing ``runtimes.list``.
+    display_name: Target Agent Runtime display name to filter on.
+    raise_on_error: Whether missing ``display_name`` or ``list()`` failures
+      should raise ``click.ClickException`` instead of returning ``[]``.
+
+  Returns:
+    Matching Agent Runtime objects returned by ``client.runtimes.list``.
+  """
+  if not display_name:
+    if raise_on_error:
+      raise click.ClickException(
+          'Cannot resolve existing Agent Runtimes for --update_if_exists'
+          ' without a non-empty display name.'
+      )
+    return []
+  escaped = display_name.replace('\\', '\\\\').replace('"', '\\"')
+  try:
+    return list(
+        client.runtimes.list(config={'filter': f'display_name="{escaped}"'})
+    )
+  except Exception as e:  # pylint: disable=broad-except
+    if raise_on_error:
+      raise click.ClickException(
+          'Failed to look up existing Agent Runtimes with display name '
+          f'"{display_name}" for --update_if_exists: {e}'
+      ) from e
+    logger.debug('Skipping duplicate-display-name check: %s', e)
+    return []
+
+
+def _format_runtime(runtime: Any) -> str:
+  res = getattr(runtime, 'api_resource', runtime)
+  name = getattr(res, 'name', str(runtime))
+  update_time = getattr(res, 'update_time', None) or '?'
+  return f'  {name}  (updated {update_time})'
+
+
 def to_agent_engine(
     *,
     agent_folder: str,
-    temp_folder: Optional[str] = None,
-    adk_app: Optional[str] = None,
-    staging_bucket: Optional[str] = None,
-    trace_to_cloud: Optional[bool] = None,
-    otel_to_cloud: Optional[bool] = None,
-    api_key: Optional[str] = None,
-    adk_app_object: Optional[str] = None,
-    agent_engine_id: Optional[str] = None,
+    temp_folder: str | None = None,
+    adk_app: str | None = None,
+    staging_bucket: str | None = None,
+    trace_to_cloud: bool | None = None,
+    otel_to_cloud: bool | None = None,
+    api_key: str | None = None,
+    adk_app_object: str | None = None,
+    agent_engine_id: str | None = None,
     absolutize_imports: bool = True,
-    project: Optional[str] = None,
-    region: Optional[str] = None,
-    display_name: Optional[str] = None,
-    description: Optional[str] = None,
-    requirements_file: Optional[str] = None,
-    env_file: Optional[str] = None,
-    agent_engine_config_file: Optional[str] = None,
+    project: str | None = None,
+    region: str | None = None,
+    display_name: str | None = None,
+    description: str | None = None,
+    requirements_file: str | None = None,
+    env_file: str | None = None,
+    agent_engine_config_file: str | None = None,
     skip_agent_import_validation: bool = True,
-    trigger_sources: Optional[str] = None,
-    trigger_oidc_audience: Optional[str] = None,
-    trigger_oidc_service_accounts: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    adk_version: Optional[str] = None,
-    extra_packages: Optional[list[str]] = None,
-    worker_pool: Optional[str] = None,
-    service_account: Optional[str] = None,
-    python_version: Optional[str] = None,
+    trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
+    memory_service_uri: str | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    adk_version: str | None = None,
+    extra_packages: list[str] | None = None,
+    worker_pool: str | None = None,
+    service_account: str | None = None,
+    python_version: str | None = None,
+    update_if_exists: bool = False,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -1699,8 +1762,9 @@ def to_agent_engine(
     agent_engine_config_file (str): The filepath to the agent platform config
       file to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
-    skip_agent_import_validation (bool): Deprecated. This argument is no longer
-      required or used.
+    skip_agent_import_validation (bool): Optional. Whether to skip preloading
+      and validating `<app_name>` on the server's `AgentLoader` at container
+      startup before binding `PORT`.
     trigger_sources (str): Optional. Comma-separated list of trigger sources to
       enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for batch
       and event-driven agent invocations.
@@ -1716,10 +1780,10 @@ def to_agent_engine(
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
       paths to stage alongside the agent and make importable in the image. A
-      wheel, source archive, or a project directory containing `pyproject.toml`
-      or `setup.py` (without a root `__init__.py`) is installed with pip; any
-      other entry is copied to `/app/<basename>` and `/app` is added to
-      PYTHONPATH.
+      wheel, source archive, or a project directory (`setup.py`, or
+      `pyproject.toml` declaring `[project]` or `[build-system]`, without a
+      root `__init__.py`) is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH.
     worker_pool (str): Optional. Full Cloud Build private worker pool resource
       name
       (`projects/{project}/locations/{location}/workerPools/{pool}`).
@@ -1735,7 +1799,16 @@ def to_agent_engine(
     python_version (str): Optional. The Python version for the container base
       image. Overrides ``python_version`` in ``.agent_engine_config.json``
       when both are present. When neither is set, ``3.11`` is used.
+    update_if_exists (bool): Optional. When `agent_engine_id` is not specified
+      and exactly one Agent Runtime with the resolved `display_name` exists in
+      `project`/`region`, update that instance in place instead of creating a
+      new one. Raises `click.ClickException` if multiple instances match,
+      lookup fails, or `project`/`region` are unavailable (Express Mode).
   """
+  if agent_engine_id and update_if_exists:
+    raise click.UsageError(
+        'Do not pass both --agent_engine_id and --update_if_exists.'
+    )
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
   )
@@ -2025,14 +2098,6 @@ def to_agent_engine(
           ' distribution.'
       )
 
-    if skip_agent_import_validation:
-      warnings.warn(
-          'WARNING: `--skip-agent-import-validation` is deprecated and will be'
-          ' removed in the future. Please drop it from the list of arguments.',
-          DeprecationWarning,
-          stacklevel=2,
-      )
-
     # Validated before the instance is created, so a failure cannot leak one.
     enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
     _validate_dockerfile_env_value(
@@ -2046,6 +2111,18 @@ def to_agent_engine(
       install_agent_deps = _render_install_agent_deps(
           app_name, requirements_txt_path, '# No requirements.txt found.'
       )
+      validate_agent_import = not skip_agent_import_validation
+      supports_agent_loader = parse(adk_version) >= parse(
+          _AGENT_LOADER_MIN_VERSION
+      )
+      if validate_agent_import and not supports_agent_loader:
+        click.secho(
+            'Omitting startup agent import validation as it requires'
+            f' adk_version {_AGENT_LOADER_MIN_VERSION} or later, and'
+            f' {adk_version} was requested',
+            fg='yellow',
+        )
+        validate_agent_import = False
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
@@ -2092,7 +2169,7 @@ def to_agent_engine(
           ),
           trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
           otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-          allow_origins_option='',  # Not supported for now.
+          allow_origins=None,  # Not supported for now.
           adk_version=adk_version,
           host_option='--host=0.0.0.0',
           a2a_option='--a2a',
@@ -2117,6 +2194,7 @@ def to_agent_engine(
           ),
           extra_env_vars=extra_env_vars,
           python_version=python_version,
+          validate_agent_import=validate_agent_import,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -2139,10 +2217,52 @@ def to_agent_engine(
     agent_config['agent_framework'] = 'google-adk'
 
     resource_name = agent_engine_id
+    created_here = False
     if not resource_name:
-      runtime = client.runtimes.create()
-      resource_name = runtime.api_resource.name
-      click.secho(f'Created a new instance: {resource_name}', fg='green')
+      if update_if_exists and not (project and region):
+        raise click.ClickException(
+            '--update_if_exists requires a Google Cloud project and region (not'
+            ' supported in Express Mode); replace --update_if_exists with'
+            ' --agent_engine_id, or pass --project and --region.'
+        )
+      resolved_display_name = agent_config.get('display_name') or display_name
+      if project and region:
+        matches = _find_runtimes_by_display_name(
+            client, resolved_display_name, raise_on_error=update_if_exists
+        )
+      else:
+        matches = []
+      if update_if_exists and len(matches) == 1:
+        resource_name = matches[0].api_resource.name
+        click.secho(
+            'Updating existing instance with display name '
+            f'"{resolved_display_name}": {resource_name}',
+            fg='green',
+        )
+      elif update_if_exists and len(matches) > 1:
+        raise click.ClickException(
+            f'{len(matches)} Agent Runtimes have display name '
+            f'"{resolved_display_name}"; replace --update_if_exists with '
+            '--agent_engine_id to pick one:\n'
+            + '\n'.join(_format_runtime(m) for m in matches)
+        )
+      else:
+        if matches:
+          click.secho(
+              f'WARNING: {len(matches)} Agent Runtime(s) with display name '
+              f'"{resolved_display_name}" already exist in '
+              f'{project}/{region}; a NEW instance will be created:\n'
+              + '\n'.join(_format_runtime(m) for m in matches)
+              + '\nTo update in place, re-run with --agent_engine_id=<ID> '
+              '(--update_if_exists only works once extra duplicates are '
+              'deleted down to a single instance).',
+              fg='yellow',
+              err=True,
+          )
+        runtime = client.runtimes.create()
+        resource_name = runtime.api_resource.name
+        created_here = True
+        click.secho(f'Created a new instance: {resource_name}', fg='green')
     elif project and region and not resource_name.startswith('projects/'):
       resource_name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
     click.echo('Creating Dockerfile...')
@@ -2154,7 +2274,7 @@ def to_agent_engine(
     except Exception as e:
       click.secho(f'Failed to deploy to Agent Platform: {e}', fg='red')
       # Only delete the instance if it was newly created in this function.
-      if agent_engine_id is None:
+      if created_here:
         client.runtimes.delete(name=resource_name)
         click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
       raise e
@@ -2170,8 +2290,8 @@ def to_agent_engine(
 def to_gke(
     *,
     agent_folder: str,
-    project: Optional[str],
-    region: Optional[str],
+    project: str | None,
+    region: str | None,
     cluster_name: str,
     service_name: str,
     app_name: str,
@@ -2182,19 +2302,19 @@ def to_gke(
     with_ui: bool,
     log_level: str,
     adk_version: str,
-    allow_origins: Optional[list[str]] = None,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    allow_origins: list[str] | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = False,
     a2a: bool = False,
-    trigger_sources: Optional[str] = None,
-    trigger_oidc_audience: Optional[str] = None,
-    trigger_oidc_service_accounts: Optional[str] = None,
+    trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
-    extra_packages: Optional[list[str]] = None,
+    extra_packages: list[str] | None = None,
     python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
@@ -2226,10 +2346,11 @@ def to_gke(
     service_type: The Kubernetes Service type (default: ClusterIP).
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A wheel, source archive, or
-      a project directory containing `pyproject.toml` or `setup.py` (without a
-      root `__init__.py`) is installed with pip; any other entry is copied to
-      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
-      resolved against the current working directory.
+      a project directory (`setup.py`, or `pyproject.toml` declaring
+      `[project]` or `[build-system]`, without a root `__init__.py`) is
+      installed with pip; any other entry is copied to `/app/<basename>` and
+      `/app` is added to PYTHONPATH. A relative path is resolved against the
+      current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
@@ -2278,10 +2399,6 @@ def to_gke(
     )
     click.secho('✅ Environment prepared.', fg='green')
 
-    allow_origins_option = (
-        f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
-    )
-
     # create Dockerfile
     click.secho('\nSTEP 2: Generating deployment files...', bold=True)
     click.echo('  - Creating Dockerfile...')
@@ -2310,7 +2427,7 @@ def to_gke(
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
-        allow_origins_option=allow_origins_option,
+        allow_origins=allow_origins,
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',

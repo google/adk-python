@@ -19,7 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import difflib
 import json
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from ...events.event import Event
@@ -34,7 +33,7 @@ class ComparisonResult:
   """Result of comparing two objects during conformance testing."""
 
   success: bool
-  error_message: Optional[str] = None
+  error_message: str | None = None
 
 
 def _generate_mismatch_message(

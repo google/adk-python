@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -78,7 +77,7 @@ class ReplayPlugin(BasePlugin):
   @override
   async def before_run_callback(
       self, *, invocation_context: InvocationContext
-  ) -> Optional[types.Content]:
+  ) -> types.Content | None:
     """Load replay recordings when enabled."""
     ctx = CallbackContext(invocation_context)
     if self._is_replay_mode_on(ctx):
@@ -93,7 +92,7 @@ class ReplayPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:  # type: ignore[type-arg]
+  ) -> dict | None:  # type: ignore[type-arg]
     """Replay tool response from recordings instead of executing tool."""
     if not self._is_replay_mode_on(tool_context):
       return None
@@ -157,7 +156,7 @@ class ReplayPlugin(BasePlugin):
 
   def _get_invocation_state(
       self, callback_context: CallbackContext
-  ) -> Optional[_InvocationReplayState]:
+  ) -> _InvocationReplayState | None:
     """Get existing replay state for this invocation."""
     invocation_id = callback_context.invocation_id
     return self._invocation_states.get(invocation_id)

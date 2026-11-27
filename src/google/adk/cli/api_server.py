@@ -36,10 +36,8 @@ from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import cast
-from typing import List
 from typing import Literal
 from typing import Mapping
-from typing import Optional
 import urllib.parse
 
 import anyio
@@ -73,7 +71,6 @@ import yaml
 
 from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
-from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import RunConfig
 from ..apps.app import App
 from ..artifacts.base_artifact_service import ArtifactVersion
@@ -141,7 +138,7 @@ _DEFAULT_AVATAR_NAME = "Kai"
 
 def _parse_cors_origins(
     allow_origins: list[str],
-) -> tuple[list[str], Optional[str]]:
+) -> tuple[list[str], str | None]:
   """Parse allow_origins into literal origins and a combined regex pattern.
 
   Args:
@@ -170,7 +167,7 @@ def _parse_cors_origins(
 def _is_origin_allowed(
     origin: str,
     allowed_literal_origins: list[str],
-    allowed_origin_regex: Optional[re.Pattern[str]],
+    allowed_origin_regex: re.Pattern[str] | None,
 ) -> bool:
   """Check whether the given origin matches the allowed origins."""
   if "*" in allowed_literal_origins:
@@ -200,7 +197,7 @@ def _strip_optional_quotes(value: str) -> str:
 
 def _get_scope_header(
     scope: Mapping[str, Any], header_name: bytes
-) -> Optional[str]:
+) -> str | None:
   """Return the first matching header value from an ASGI scope."""
   for candidate_name, candidate_value in scope.get("headers", []):
     if candidate_name == header_name:
@@ -244,7 +241,7 @@ def _is_loopback_address(host: str) -> bool:
     return False
 
 
-def _get_server_host(scope: Mapping[str, Any]) -> Optional[str]:
+def _get_server_host(scope: Mapping[str, Any]) -> str | None:
   """Return the host the server is actually bound to (from ASGI server port)."""
   server = scope.get("server")
   if server and len(server) == 2:
@@ -278,7 +275,7 @@ def _is_local_client(scope: Mapping[str, Any]) -> bool:
   return _is_loopback_address(str(client[0]))
 
 
-def _get_request_origin(scope: Mapping[str, Any]) -> Optional[str]:
+def _get_request_origin(scope: Mapping[str, Any]) -> str | None:
   """Compute the effective origin for the current HTTP/WebSocket request."""
   forwarded = _get_scope_header(scope, b"forwarded")
   if forwarded is not None:
@@ -309,7 +306,7 @@ def _get_request_origin(scope: Mapping[str, Any]) -> Optional[str]:
 
 def _get_allowed_request_hosts(
     allowed_literal_origins: list[str],
-) -> Optional[frozenset[str]]:
+) -> frozenset[str] | None:
   """Returns hosts the rebinding guard accepts besides loopback, None for all."""
   # A loopback bind behind a same-machine proxy sees the proxy's hostname in
   # Host, so listing an origin in --allow_origins vouches for its host. A
@@ -330,8 +327,8 @@ def _get_allowed_request_hosts(
 
 def _is_dns_rebinding_request(
     scope: Mapping[str, Any],
-    bind_host: Optional[str],
-    allowed_request_hosts: Optional[frozenset[str]],
+    bind_host: str | None,
+    allowed_request_hosts: frozenset[str] | None,
 ) -> bool:
   """Returns True if the request must be rejected as possible DNS rebinding."""
   # A loopback bind is reachable only from this machine, so a request naming
@@ -371,9 +368,9 @@ def _is_request_origin_allowed(
     origin: str,
     scope: Mapping[str, Any],
     allowed_literal_origins: list[str],
-    allowed_origin_regex: Optional[re.Pattern[str]],
+    allowed_origin_regex: re.Pattern[str] | None,
     has_configured_allowed_origins: bool,
-    bind_host: Optional[str] = None,
+    bind_host: str | None = None,
 ) -> bool:
   """Validate an Origin header against explicit config or same-origin.
 
@@ -436,8 +433,7 @@ def _reject_foreign_origin() -> None:
   """Refuses a code-writing request a browser sent from a foreign origin.
 
   ``*`` and ``regex:`` entries in ``allow_origins`` open the API to other
-  sites, but not the mutating ``/dev`` endpoints or the internal agents, which
-  write agent files.
+  sites, but not the mutating ``/dev`` endpoints, which write files.
 
   Raises:
     HTTPException: 403, if the current request is from a foreign origin.
@@ -518,7 +514,7 @@ async def _monitor_client_disconnect(
     session_id: str,
     abort_signal: asyncio.Event,
     task_to_cancel: asyncio.Task[Any],
-    on_disconnect: Optional[Callable[[], None]] = None,
+    on_disconnect: Callable[[], None] | None = None,
 ) -> None:
   """Monitors the ASGI receive channel and aborts on client disconnect."""
   try:
@@ -540,7 +536,7 @@ async def _monitor_client_disconnect(
     logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
 
 
-_current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
+_current_session_options: contextvars.ContextVar[dict[str, Any] | None] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
 
@@ -568,8 +564,8 @@ class _OriginCheckMiddleware:
       app: Any,
       has_configured_allowed_origins: bool,
       allowed_origins: list[str],
-      allowed_origin_regex: Optional[re.Pattern[str]],
-      bind_host: Optional[str] = None,
+      allowed_origin_regex: re.Pattern[str] | None,
+      bind_host: str | None = None,
   ) -> None:
     self._app = app
     self._has_configured_allowed_origins = has_configured_allowed_origins
@@ -624,7 +620,7 @@ class _DefaultAppRewriteMiddleware:
       re.compile(r"^/trigger/"),
   ]
 
-  def __init__(self, app: Any, default_app_name: Optional[str] = None) -> None:
+  def __init__(self, app: Any, default_app_name: str | None = None) -> None:
     self._app = app
     self._default_app_name = default_app_name
 
@@ -727,38 +723,38 @@ class InMemoryExporter(export_lib.SpanExporter):
 class RunAgentRequest(common.BaseModel):
   """Request body for the /run and /run_sse endpoints."""
 
-  app_name: Optional[str] = None
+  app_name: str | None = None
   user_id: str
   session_id: str
-  new_message: Optional[types.Content] = None
+  new_message: types.Content | None = None
   streaming: bool = False
-  state_delta: Optional[dict[str, Any]] = None
+  state_delta: dict[str, Any] | None = None
   # for long-running function resume requests (e.g., OAuth callback)
-  function_call_event_id: Optional[str] = None
+  function_call_event_id: str | None = None
   # for resume long-running functions
-  invocation_id: Optional[str] = None
-  custom_metadata: Optional[dict[str, Any]] = None
+  invocation_id: str | None = None
+  custom_metadata: dict[str, Any] | None = None
   # Serving tier for this run's model calls, e.g. ServiceTier.DEFERRED. Only
   # models on the interactions API have a serving tier; others ignore it.
-  service_tier: Optional[ServiceTier | str] = None
+  service_tier: ServiceTier | str | None = None
 
 
 class CreateSessionRequest(common.BaseModel):
-  session_id: Optional[str] = Field(
+  session_id: str | None = Field(
       default=None,
       description=(
           "The ID of the session to create. If not provided, a random session"
           " ID will be generated."
       ),
   )
-  state: Optional[dict[str, Any]] = Field(
+  state: dict[str, Any] | None = Field(
       default=None, description="The initial state of the session."
   )
-  events: Optional[list[Event]] = Field(
+  events: list[Event] | None = Field(
       default=None,
       description="A list of events to initialize the session with.",
   )
-  options: Optional[dict[str, Any]] = Field(
+  options: dict[str, Any] | None = Field(
       default=None,
       description=(
           "Optional configuration options forwarded to the session service."
@@ -770,7 +766,7 @@ class CreateSessionRequest(common.BaseModel):
 _ADK_RESERVED_FUNCTION_NAMES = _CLIENT_FUNCTION_CALL_NAMES
 
 
-def _is_adk_reserved_function_name(name: Optional[str]) -> bool:
+def _is_adk_reserved_function_name(name: str | None) -> bool:
   """Returns whether a function name belongs to ADK rather than to a tool."""
   return name is not None and name in _ADK_RESERVED_FUNCTION_NAMES
 
@@ -823,7 +819,7 @@ def _validate_session_initialization_events(events: list[Event]) -> None:
       raise _invalid_event_error(event_index, "long-running tool IDs")
     if event.actions != EventActions():
       raise _invalid_event_error(event_index, "event actions")
-    function_names: list[Optional[str]] = []
+    function_names: list[str | None] = []
     function_names.extend(fc.name for fc in event.get_function_calls())
     function_names.extend(fr.name for fr in event.get_function_responses())
     if any(_is_adk_reserved_function_name(name) for name in function_names):
@@ -837,7 +833,7 @@ class SaveArtifactRequest(common.BaseModel):
   artifact: types.Part = Field(
       description="Artifact payload encoded as google.genai.types.Part."
   )
-  custom_metadata: Optional[dict[str, Any]] = Field(
+  custom_metadata: dict[str, Any] | None = Field(
       default=None,
       description="Optional metadata to associate with the artifact version.",
   )
@@ -870,7 +866,7 @@ class _LiveSessionRun:
 
   abort_signal: asyncio.Event
   finished: asyncio.Event
-  next_step_event: Optional[asyncio.Event] = None
+  next_step_event: asyncio.Event | None = None
 
 
 class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
@@ -892,7 +888,7 @@ class AppInfo(common.BaseModel):
   description: str
   language: Literal["yaml", "python"]
   is_computer_use: bool = False
-  agents: Optional[dict[str, AgentInfo]] = None
+  agents: dict[str, AgentInfo] | None = None
 
 
 class ListAppsResponse(common.BaseModel):
@@ -901,7 +897,7 @@ class ListAppsResponse(common.BaseModel):
 
 def _setup_telemetry(
     otel_to_cloud: bool = False,
-    internal_processors: Optional[OTelHooks] = None,
+    internal_processors: OTelHooks | None = None,
 ) -> None:
   internal_processors = internal_processors or OTelHooks()
   # TODO - remove the else branch here once maybe_set_otel_providers is no
@@ -978,9 +974,20 @@ def _setup_instrumentation_lib_if_installed() -> None:
   # Currently the instrumentation lib is in extras dependencies, make sure to
   # warn the user if it's not installed.
   try:
+    from opentelemetry.instrumentation.dependencies import get_dependency_conflicts  # pylint: disable=g-import-not-at-top
     from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 
-    GoogleGenAiSdkInstrumentor().instrument()
+    instrumentor = GoogleGenAiSdkInstrumentor()
+    if conflict := get_dependency_conflicts(
+        instrumentor.instrumentation_dependencies()
+    ):
+      logger.info(
+          "Skipping GoogleGenAiSdkInstrumentor (%s); ADK records telemetry"
+          " spans itself.",
+          conflict,
+      )
+    else:
+      instrumentor.instrument()
   except ImportError:
     logger.warning(
         "Unable to import GoogleGenAiSdkInstrumentor - some"
@@ -1059,8 +1066,6 @@ class ApiServer:
       runner_dict: A dict of instantiated runners for each app.
   """
 
-  _allow_special_agents: bool = False
-
   # Whether this server serves the debug endpoints that read the in-memory
   # span buffers. Nothing evicts from those buffers, so a server that has no
   # reader for them must not fill them.
@@ -1077,20 +1082,20 @@ class ApiServer:
       eval_sets_manager: EvalSetsManager | None,
       eval_set_results_manager: EvalSetResultsManager | None,
       agents_dir: str,
-      extra_plugins: Optional[list[str]] = None,
-      logo_text: Optional[str] = None,
-      logo_image_url: Optional[str] = None,
-      url_prefix: Optional[str] = None,
+      extra_plugins: list[str] | None = None,
+      logo_text: str | None = None,
+      logo_image_url: str | None = None,
+      url_prefix: str | None = None,
       auto_create_session: bool = False,
-      trigger_sources: Optional[Sequence[str]] = None,
-      trigger_oidc_audience: Optional[str] = None,
-      trigger_oidc_service_accounts: Optional[list[str]] = None,
-      trigger_auth_verifier: Optional[
-          Callable[[Request], None | Awaitable[None]]
-      ] = None,
-      default_llm_model: Optional[str] = None,
-      avatar_config: Optional[types.AvatarConfig] = None,
-      max_llm_calls: Optional[int] = None,
+      trigger_sources: Sequence[str] | None = None,
+      trigger_oidc_audience: str | None = None,
+      trigger_oidc_service_accounts: list[str] | None = None,
+      trigger_auth_verifier: (
+          Callable[[Request], None | Awaitable[None]] | None
+      ) = None,
+      default_llm_model: str | None = None,
+      avatar_config: types.AvatarConfig | None = None,
+      max_llm_calls: int | None = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -1220,17 +1225,6 @@ class ApiServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
-    if app_name.startswith("__") and not self._allow_special_agents:
-      raise HTTPException(
-          status_code=403,
-          detail=(
-              "Access to internal special agents is disabled in API server"
-              " mode and on a development server not known to be bound to a"
-              " loopback address."
-          ),
-      )
-    if app_name.startswith("__"):
-      _reject_foreign_origin()
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -1261,11 +1255,6 @@ class ApiServer:
         if plugins_config and isinstance(plugins_config, dict):
           bq_analytics_config = plugins_config.get("bigquery_agent_analytics")
 
-    # All YAML agents are treated as visual builder agents.
-    is_visual_builder_agent = os.path.exists(
-        os.path.join(self.agents_dir, app_name, "root_agent.yaml")
-    )
-
     def _maybe_add_bq_plugin(plugins: list[BasePlugin]) -> list[BasePlugin]:
       if bq_analytics_config and all([
           bq_analytics_config.get("project_id"),
@@ -1289,13 +1278,6 @@ class ApiServer:
         agent_or_app: Any,
         plugins: list[BasePlugin],
     ) -> App:
-      if app_name.startswith("__"):
-        # AgentLoader validates special agents before they reach this point.
-        return App.model_construct(
-            name=app_name,
-            root_agent=agent_or_app,
-            plugins=plugins,
-        )
       return App(
           name=_get_app_basename(app_name),
           root_agent=agent_or_app,
@@ -1317,10 +1299,6 @@ class ApiServer:
       agentic_app = _wrap_loaded_agent(
           app_name, agent_or_app, extra_plugins_instances
       )
-
-    # If the root agent was loaded from YAML, we treat it as being from Visual Builder
-    if is_visual_builder_agent:
-      object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
     runner = self._create_runner(agentic_app, app_name)
     self.runner_dict[app_name] = runner
@@ -1409,8 +1387,8 @@ class ApiServer:
       *,
       app_name: str,
       user_id: str,
-      session_id: Optional[str] = None,
-      state: Optional[dict[str, Any]] = None,
+      session_id: str | None = None,
+      state: dict[str, Any] | None = None,
   ) -> Session:
     session_options = _current_session_options.get() or {}
     conflicting_keys = session_options.keys() & {
@@ -1461,15 +1439,15 @@ class ApiServer:
 
   def get_fast_api_app(
       self,
-      lifespan: Optional[Lifespan[FastAPI]] = None,
-      allow_origins: Optional[list[str]] = None,
-      web_assets_dir: Optional[str] = None,
+      lifespan: Lifespan[FastAPI] | None = None,
+      allow_origins: list[str] | None = None,
+      web_assets_dir: str | None = None,
       setup_observer: Callable[[Observer, ApiServer], None] | None = None,
       tear_down_observer: Callable[[Observer, ApiServer], None] | None = None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
       with_ui: bool = False,
-      bind_host: Optional[str] = None,
+      bind_host: str | None = None,
   ) -> FastAPI:
     """Creates a FastAPI app for the ADK web server.
 
@@ -1674,7 +1652,7 @@ class ApiServer:
         return JSONResponse(config, headers={"Cache-Control": "no-store"})
 
       @app.get("/dev-ui/config", response_model=None)
-      async def get_ui_config() -> dict[str, Optional[str]]:
+      async def get_ui_config() -> dict[str, str | None]:
         return {
             "logo_text": self.logo_text,
             "logo_image_url": self.logo_image_url,
@@ -1723,10 +1701,10 @@ class ApiServer:
       trace_dict: dict[str, dict[str, AttributeValue]],
       memory_exporter: Any,
       literal_origins: list[str],
-      compiled_origin_regex: Optional[re.Pattern[str]],
+      compiled_origin_regex: re.Pattern[str] | None,
       has_configured_allowed_origins: bool,
-      bind_host: Optional[str],
-      allowed_request_hosts: Optional[frozenset[str]],
+      bind_host: str | None,
+      allowed_request_hosts: frozenset[str] | None,
   ) -> None:
     """Register all core production-safe endpoints."""
 
@@ -1844,31 +1822,15 @@ class ApiServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      if app_name.startswith("__") and not self._allow_special_agents:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Access to internal special agents is disabled in API server"
-                " mode and on a development server not known to be bound to a"
-                " loopback address."
-            ),
-        )
-      if app_name.startswith("__"):
-        _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
-      if isinstance(root_agent, LlmAgent):
-        return AppInfo(
-            name=app_name,
-            root_agent_name=root_agent.name,
-            description=root_agent.description,
-            language="python",
-            agents=await get_agents_dict(root_agent),
-        )
-      else:
-        raise HTTPException(
-            status_code=400, detail="Root agent is not an LlmAgent"
-        )
+      return AppInfo(
+          name=app_name,
+          root_agent_name=root_agent.name,
+          description=root_agent.description,
+          language="python",
+          agents=await get_agents_dict(root_agent),
+      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
@@ -1917,7 +1879,7 @@ class ApiServer:
         app_name: str,
         user_id: str,
         session_id: str,
-        state: Optional[dict[str, Any]] = None,
+        state: dict[str, Any] | None = None,
     ) -> Response:
       session = await self._create_session(
           app_name=app_name,
@@ -1935,7 +1897,7 @@ class ApiServer:
     async def create_session(
         app_name: str,
         user_id: str,
-        req: Optional[CreateSessionRequest] = None,
+        req: CreateSessionRequest | None = None,
     ) -> Response:
       if not req:
         session = await self._create_session(app_name=app_name, user_id=user_id)
@@ -2056,7 +2018,6 @@ class ApiServer:
         raise HTTPException(status_code=404, detail="Session not found")
 
       runner = await self.get_runner_async(app_name)
-      _set_telemetry_context_if_needed(runner)
       if self._live_session_runs.get(
           self._live_session_key(app_name, user_id, session_id)
       ):
@@ -2319,16 +2280,6 @@ class ApiServer:
         raise HTTPException(status_code=404, detail="Session not found")
       await self.memory_service.add_session_to_memory(session)
 
-    def _set_telemetry_context_if_needed(runner: Runner) -> None:
-      """Helper to set contextvars for the current request task."""
-      app = getattr(runner, "app", None)
-      from ..utils._telemetry_context import _is_visual_builder
-
-      if app and getattr(app, "_is_visual_builder_app", False):
-        _is_visual_builder.set(True)
-      else:
-        _is_visual_builder.set(False)
-
     @app.post(
         "/run", response_model=list[Event], response_model_exclude_none=True
     )
@@ -2342,7 +2293,6 @@ class ApiServer:
       req.app_name = app_name
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
-      _set_telemetry_context_if_needed(runner)
       run_config = None
       if (
           req.custom_metadata
@@ -2402,17 +2352,14 @@ class ApiServer:
       try:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
-        logger.debug("Events generated: %s", events)
-        return JSONResponse(
-            content=[
-                _redact_credential_secrets(
-                    event.model_dump(
-                        exclude_none=True, by_alias=True, mode="json"
-                    )
-                )
-                for event in events
-            ]
-        )
+        redacted_events = [
+            _redact_credential_secrets(
+                event.model_dump(exclude_none=True, by_alias=True, mode="json")
+            )
+            for event in events
+        ]
+        logger.debug("Events generated: %s", redacted_events)
+        return JSONResponse(content=redacted_events)
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)
@@ -2440,7 +2387,6 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
-      _set_telemetry_context_if_needed(runner)
 
       # Build the run config before the response starts. Constructing it
       # inside event_generator() would run its validation after the 200 and
@@ -2482,9 +2428,9 @@ class ApiServer:
       # Convert the events to properly formatted SSE
       async def event_generator() -> AsyncIterator[str]:
         is_closing = False
-        original_exc: Optional[BaseException] = None
+        original_exc: BaseException | None = None
         abort_signal = asyncio.Event()
-        event_queue: asyncio.Queue[Optional[Event]] = asyncio.Queue()
+        event_queue: asyncio.Queue[Event | None] = asyncio.Queue()
         next_step_event = asyncio.Event()
         live_run = _LiveSessionRun(
             abort_signal=abort_signal,
@@ -2654,8 +2600,8 @@ class ApiServer:
         websocket: WebSocket,
         user_id: str,
         session_id: str,
-        app_name: Optional[str] = Query(default=None),
-        modalities: List[Literal["TEXT", "AUDIO", "VIDEO"]] = Query(
+        app_name: str | None = Query(default=None),
+        modalities: list[Literal["TEXT", "AUDIO", "VIDEO"]] = Query(
             default=["AUDIO"]
         ),  # Only allows "TEXT", "AUDIO" or "VIDEO"
         proactive_audio: bool | None = Query(default=None),
@@ -2697,8 +2643,8 @@ class ApiServer:
 
       await websocket.accept()
       self.current_app_name_ref.value = app_name
-      runner_for_context = await self.get_runner_async(app_name)
-      _set_telemetry_context_if_needed(runner_for_context)
+      # Load the agent up front, before the live tasks start.
+      await self.get_runner_async(app_name)
 
       live_request_queue = LiveRequestQueue()
 
