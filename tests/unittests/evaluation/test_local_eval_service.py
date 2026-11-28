@@ -31,6 +31,7 @@ from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation import local_eval_service
 from google.adk.evaluation import metric_evaluator_registry
+from google.adk.evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
 from google.adk.evaluation.base_eval_service import InferenceConfig
@@ -44,7 +45,9 @@ from google.adk.evaluation.eval_config import MultiRunConfig
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import HallucinationsCriterion
 from google.adk.evaluation.eval_metrics import Interval
+from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import MetricInfo
 from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.eval_result import EvalCaseResult
@@ -58,6 +61,7 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import Evaluator
 from google.adk.evaluation.evaluator import PerInvocationResult
+from google.adk.evaluation.hallucinations_v1 import HallucinationsV1Evaluator
 from google.adk.evaluation.local_eval_service import _add_rubrics_to_invocation
 from google.adk.evaluation.local_eval_service import _copy_eval_case_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to_actual_invocations
@@ -2479,3 +2483,86 @@ async def test_evaluate_persists_multi_run_case_summaries_when_case_has_multiple
       summaries[0].pass_rate,
       summaries[0].final_eval_status,
   ) == ("case1", 2, 1, 1, 0.5, EvalStatus.PASSED)
+
+
+@pytest.mark.asyncio
+async def test_unscored_hallucinations_runs_stay_unscored_after_aggregation(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """Runs that hallucinations_v1 leaves unscored stay unscored across runs.
+
+  Setup: three runs of a two-turn case scored by the real hallucinations_v1
+  evaluator; the stubbed judge scores the first turn and cannot score the
+  second, so each run's metric is NOT_EVALUATED with no score.
+  Assert: aggregating the runs keeps the metric and the case NOT_EVALUATED,
+  instead of passing on the mean of the scored turns.
+  """
+  mocker.patch("google.adk.evaluation.hallucinations_v1.LLMRegistry")
+
+  async def stub_judge(self, nl_response, context):
+    del self, context
+    if nl_response == "Paris is the capital of France.":
+      return 1.0, "all sentences supported"
+    return None, "unparsable judge output"
+
+  mocker.patch.object(
+      HallucinationsV1Evaluator, "_evaluate_nl_response", stub_judge
+  )
+
+  def _invocation(response: str) -> Invocation:
+    return Invocation(
+        user_content=genai_types.Content(parts=[genai_types.Part(text="q")]),
+        final_response=genai_types.Content(
+            parts=[genai_types.Part(text=response)]
+        ),
+    )
+
+  conversation = [
+      _invocation("Paris is the capital of France."),
+      _invocation("The Eiffel Tower is 900 m tall."),
+  ]
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [i.model_copy(deep=True) for i in conversation]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  inference_results = [
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="set1",
+          eval_case_id="case1",
+          inferences=[i.model_copy(deep=True) for i in conversation],
+          session_id=f"s{index}",
+          status=InferenceStatus.SUCCESS,
+          repetition_index=index,
+      )
+      for index in range(3)
+  ]
+  eval_metric = EvalMetric(
+      metric_name="hallucinations_v1",
+      threshold=0.5,
+      criterion=HallucinationsCriterion(
+          threshold=0.5,
+          judge_model_options=JudgeModelOptions(judge_model="gemini-2.5-flash"),
+      ),
+  )
+  request = EvaluateRequest(
+      inference_results=inference_results,
+      evaluate_config=EvaluateConfig(eval_metrics=[eval_metric], parallelism=1),
+  )
+
+  runs = [result async for result in eval_service.evaluate(request)]
+
+  assert len(runs) == 3
+  for run in runs:
+    metric = run.overall_eval_metric_results[0]
+    assert (metric.score, metric.eval_status) == (
+        None,
+        EvalStatus.NOT_EVALUATED,
+    )
+  (aggregated,) = aggregate_eval_case_results(runs)
+  metric = aggregated.overall_eval_metric_results[0]
+  assert metric.score is None
+  assert metric.eval_status == EvalStatus.NOT_EVALUATED
+  assert aggregated.final_eval_status == EvalStatus.NOT_EVALUATED
