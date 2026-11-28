@@ -518,12 +518,23 @@ class AgentTool(BaseTool):
 
     if last_content is None or last_content.parts is None:
       return last_error_message or ''
-    parts_text = (_part_to_text(p) for p in last_content.parts if not p.thought)
-    merged_text = '\n'.join(t for t in parts_text if t)
-    if not merged_text and last_error_message:
-      return last_error_message
     output_schema = _get_output_schema(self.agent)
     if output_schema:
+      # Use only answer text and preserve JSON tokens split across parts.
+      merged_text = ''.join(
+          p.text for p in last_content.parts if p.text and not p.thought
+      )
+      if not merged_text.strip():
+        merged_text = ''
+    else:
+      parts_text = (
+          _part_to_text(p) for p in last_content.parts if not p.thought
+      )
+      merged_text = '\n'.join(t for t in parts_text if t)
+
+    if not merged_text and last_error_message:
+      return last_error_message
+    if output_schema and merged_text:
       tool_result = validate_schema(output_schema, merged_text)
     else:
       tool_result = merged_text
