@@ -5114,6 +5114,96 @@ def test_parse_deepseek_unwrapped_call_before_wrapped_block():
   assert remainder is None
 
 
+def _ds_v31_tool_call(name: str, args_json: str) -> str:
+  """Build a single DeepSeek-V3.1 tool call: no type word, no code fence."""
+  return f"{_DS_BEGIN_CALL}{name}{_DS_SEP}{args_json}{_DS_END_CALL}"
+
+
+def test_parse_deepseek_v31_single_tool_call():
+  """DeepSeek-V3.1 puts the name right after the begin token."""
+  text = _ds_wrapped(_ds_v31_tool_call("get_weather", '{"city": "Paris"}'))
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "get_weather"
+  assert json.loads(tool_calls[0].function.arguments) == {"city": "Paris"}
+  assert remainder is None
+
+
+def test_parse_deepseek_v31_multi_tool_call():
+  """DeepSeek-V3.1 chains calls without separators."""
+  text = _ds_wrapped(
+      _ds_v31_tool_call("get_weather", '{"city": "Paris"}')
+      + _ds_v31_tool_call("get_time", '{"tz": "CET"}')
+  )
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert [tc.function.name for tc in tool_calls] == ["get_weather", "get_time"]
+  assert [tc.index for tc in tool_calls] == [0, 1]
+  assert remainder is None
+
+
+def test_parse_deepseek_v31_nested_json_args():
+  """Braces inside nested arguments do not end the JSON early."""
+  args = '{"filter": {"tags": ["a", "b"], "range": {"min": 1}}, "n": 2}'
+  text = _ds_wrapped(_ds_v31_tool_call("search", f"\n  {args}\n"))
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "search"
+  assert json.loads(tool_calls[0].function.arguments) == json.loads(args)
+  assert remainder is None
+
+
+def test_parse_deepseek_v31_with_surrounding_text():
+  """Text before and after a V3.1 block is kept."""
+  text = (
+      "Let me check. "
+      + _ds_wrapped(_ds_v31_tool_call("get_weather", '{"city": "Paris"}'))
+      + " Done."
+  )
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "get_weather"
+  assert remainder == "Let me check.  Done."
+
+
+def test_parse_deepseek_v31_malformed_json_is_dropped():
+  """A V3.1 call with broken JSON is dropped, as in the V3 layout."""
+  text = _ds_wrapped(
+      _ds_v31_tool_call("broken", '{"a": ')
+      + _ds_v31_tool_call("get_time", '{"tz": "CET"}')
+  )
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert [tc.function.name for tc in tool_calls] == ["get_time"]
+  assert remainder is None
+
+
+def test_parse_deepseek_v3_call_missing_newline_is_not_a_v31_call():
+  """A V3 call without its newline is not read as a tool named `function`."""
+  text = _ds_wrapped(
+      f'{_DS_BEGIN_CALL}function{_DS_SEP}get_weather{{"city":"Paris"}}'
+      f"{_DS_END_CALL}"
+  )
+  tool_calls, _ = _parse_deepseek_tool_calls_from_text(text)
+  assert tool_calls == []
+
+
+def test_parse_deepseek_v31_unclosed_call_does_not_swallow_next_call():
+  """A stray unclosed call begin does not take the next real call's JSON."""
+  text = _ds_wrapped(
+      f"{_DS_BEGIN_CALL}trunc{_DS_SEP}"
+      + _ds_v31_tool_call("get_weather", '{"city": "Paris"}')
+  )
+  tool_calls, _ = _parse_deepseek_tool_calls_from_text(text)
+  assert [tc.function.name for tc in tool_calls] == ["get_weather"]
+
+
+def test_parse_tool_calls_from_text_handles_deepseek_v31_format():
+  """Integration: the generic parser reads the V3.1 layout too."""
+  text = _ds_wrapped(_ds_v31_tool_call("fetch_page", '{"url": "x"}'))
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+  assert [tc.function.name for tc in tool_calls] == ["fetch_page"]
+  assert remainder is None
+
+
 def test_extract_json_from_deepseek_args_invalid_fence_returns_none():
   """Invalid JSON inside a code fence is rejected rather than returned."""
   assert _extract_json_from_deepseek_args('```json\n{"a": 1,}\n```') is None

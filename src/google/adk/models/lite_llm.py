@@ -2416,12 +2416,23 @@ _DS_TCALL_BEGIN = "\u003c\uff5ctool\u2581call\u2581begin\uff5c\u003e"
 _DS_TCALL_END = "\u003c\uff5ctool\u2581call\u2581end\uff5c\u003e"
 _DS_TSEP = "\u003c\uff5ctool\u2581sep\uff5c\u003e"
 
-# Pattern: <｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME \n ARGS <｜tool▁call▁end｜>
+# Two layouts, one call each:
+#   V3:   <｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME \n ARGS <｜tool▁call▁end｜>
+#   V3.1: <｜tool▁call▁begin｜>NAME<｜tool▁sep｜>ARGS<｜tool▁call▁end｜>
+# Group 1 is the V3 name, group 2 the V3.1 name, group 3 the arguments text.
 _DS_TOOL_CALL_RE = re.compile(
     re.escape(_DS_TCALL_BEGIN)
-    + r"function"
+    + r"(?:function"
     + re.escape(_DS_TSEP)
-    + r"([^\n\r]+?)\s*?\n(.*?)"
+    + r"([^\n\r]+?)\s*?\n|(?!function"
+    + re.escape(_DS_TSEP)
+    + r")([^<\n\r]+)"
+    + re.escape(_DS_TSEP)
+    + r"(?=(?:(?!"
+    + re.escape(_DS_TCALL_BEGIN)
+    + r").)*?"
+    + re.escape(_DS_TCALL_END)
+    + r"))(.*?)"
     + re.escape(_DS_TCALL_END),
     re.DOTALL,
 )
@@ -2471,7 +2482,8 @@ def _parse_deepseek_tool_calls_from_text(
 
   Token reference
     ``<｜tool▁calls▁begin｜>`` … ``<｜tool▁calls▁end｜>``  → outer wrapper
-    ``<｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME``  → single call start
+    ``<｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME``  → V3 call start
+    ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>``          → V3.1 call start
     ``<｜tool▁call▁end｜>``                             → single call end
 
   Args:
@@ -2535,8 +2547,8 @@ def _parse_deepseek_tool_calls_from_text(
 
     # Parse individual tool calls inside the block.
     for match in _DS_TOOL_CALL_RE.finditer(block):
-      func_name = match.group(1).strip()
-      args_raw = match.group(2).strip()
+      func_name = (match.group(1) or match.group(2)).strip()
+      args_raw = match.group(3).strip()
       args_json = _extract_json_from_deepseek_args(args_raw)
       if not func_name or not args_json:
         continue
