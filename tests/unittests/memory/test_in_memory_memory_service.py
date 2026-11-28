@@ -18,6 +18,7 @@ import unicodedata
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.memory import SqliteMemoryService
 from google.adk.memory.base_memory_service import BaseMemoryService
 from google.adk.memory.base_memory_service import SearchMemoryResponse
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -1137,3 +1138,165 @@ async def test_add_session_to_memory_skips_rewound_events():
   )
   assert not rewound.memories
   assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']
+
+
+@pytest.fixture(params=['in_memory', 'sqlite'])
+async def windowed_memory_service(request, tmp_path):
+  """InMemory and Sqlite memory services, which store windowed adds alike."""
+  if request.param == 'in_memory':
+    yield InMemoryMemoryService()
+    return
+  service = SqliteMemoryService(tmp_path / 'memory.db')
+  yield service
+  await service.close()
+
+
+def _session_with(events: list[Event]) -> Session:
+  return Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-windowed',
+      events=list(events),
+  )
+
+
+async def _texts_for(memory_service: BaseMemoryService, query: str):
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query=query
+  )
+  return sorted(m.content.parts[0].text for m in result.memories)
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_keeps_turns_outside_a_truncated_session(
+    windowed_memory_service,
+):
+  """Turns missing from a session loaded with num_recent_events stay stored."""
+  turn_1_user = _text_event('t1-user', 'i am going to paris')
+  turn_1_agent = _text_event('t1-agent', 'paris is lovely in spring')
+  turn_2_user = _text_event('t2-user', 'book a flight to london')
+  await windowed_memory_service.add_session_to_memory(
+      _session_with([turn_1_user, turn_1_agent])
+  )
+
+  # The next turn's callback sees only the latest event.
+  await windowed_memory_service.add_session_to_memory(
+      _session_with([turn_2_user])
+  )
+
+  assert await _texts_for(windowed_memory_service, 'paris') == [
+      'i am going to paris',
+      'paris is lovely in spring',
+  ]
+  assert await _texts_for(windowed_memory_service, 'london') == [
+      'book a flight to london'
+  ]
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_with_no_recent_events_keeps_memories(
+    windowed_memory_service,
+):
+  """A session loaded with num_recent_events=0 removes nothing."""
+  await windowed_memory_service.add_session_to_memory(
+      _session_with([_text_event('t1', 'trip to paris')])
+  )
+
+  await windowed_memory_service.add_session_to_memory(_session_with([]))
+
+  assert await _texts_for(windowed_memory_service, 'paris') == ['trip to paris']
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_repeated_full_adds_store_events_once(
+    windowed_memory_service,
+):
+  """Adding the same full session again does not duplicate its events."""
+  session = _session_with([
+      _text_event('t1', 'trip to paris'),
+      _text_event('t2', 'paris hotel booked'),
+  ])
+  for _ in range(3):
+    await windowed_memory_service.add_session_to_memory(session)
+
+  assert await _texts_for(windowed_memory_service, 'paris') == [
+      'paris hotel booked',
+      'trip to paris',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_rewind_inside_the_window(
+    windowed_memory_service,
+):
+  """A rewind in a truncated session drops its turn and keeps older ones."""
+  older = _text_event('older', 'trip to paris')
+  rewound = _text_event('rewound', 'address is baker street')
+  await windowed_memory_service.add_session_to_memory(
+      _session_with([older, rewound])
+  )
+
+  await windowed_memory_service.add_session_to_memory(
+      _session_with([rewound, _rewind_event('inv-rewound')])
+  )
+
+  assert not await _texts_for(windowed_memory_service, 'baker')
+  assert await _texts_for(windowed_memory_service, 'paris') == ['trip to paris']
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_then_windowed_add_does_not_restore_it():
+  """A deleted memory stays deleted when a truncated session is re-added."""
+  memory_service = InMemoryMemoryService()
+  older = _text_event('older', 'trip to paris')
+  deleted = _text_event('deleted', 'paris address is baker street')
+  recent = _text_event('recent', 'flight to london')
+  await memory_service.add_session_to_memory(
+      _session_with([older, deleted, recent])
+  )
+
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id=deleted.id
+  )
+  # Re-added once with the deleted event in the window, once without it.
+  await memory_service.add_session_to_memory(_session_with([deleted, recent]))
+  await memory_service.add_session_to_memory(_session_with([recent]))
+
+  assert await _texts_for(memory_service, 'paris') == ['trip to paris']
+  assert await _texts_for(memory_service, 'london') == ['flight to london']
+
+
+@pytest.mark.asyncio
+async def test_add_events_and_windowed_session_adds_share_one_session(
+    windowed_memory_service,
+):
+  """Events added directly and windowed session adds on one session coexist."""
+  direct = _text_event('direct', 'note about paris museums')
+  turn_1 = _text_event('t1', 'trip to paris')
+  turn_2 = _text_event('t2', 'flight to london')
+  await windowed_memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[direct],
+      session_id='session-windowed',
+  )
+  await windowed_memory_service.add_session_to_memory(_session_with([turn_1]))
+
+  # A windowed add that holds only the next turn keeps both earlier entries,
+  # and adding the same events again stores each of them once.
+  await windowed_memory_service.add_session_to_memory(_session_with([turn_2]))
+  await windowed_memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[direct, turn_2],
+      session_id='session-windowed',
+  )
+  await windowed_memory_service.add_session_to_memory(_session_with([turn_2]))
+
+  assert await _texts_for(windowed_memory_service, 'paris') == [
+      'note about paris museums',
+      'trip to paris',
+  ]
+  assert await _texts_for(windowed_memory_service, 'london') == [
+      'flight to london'
+  ]

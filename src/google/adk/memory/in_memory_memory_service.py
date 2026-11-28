@@ -109,10 +109,20 @@ class InMemoryMemoryService(BaseMemoryService):
   async def add_session_to_memory(self, session: Session) -> None:
     user_key = _user_key(session.app_name, session.user_id)
 
+    # Stored events that are not in session.events at all, such as turns
+    # outside a session loaded with num_recent_events, are kept. Those that
+    # are in it are replaced, which drops the ones a rewind took back.
+    session_event_ids = {event.id for event in session.events}
+
     with self._lock:
       deleted_ids = self._deleted_memory_ids.get(user_key, set())
       self._session_events[user_key] = self._session_events.get(user_key, {})
-      self._session_events[user_key][session.id] = [
+      kept_events = [
+          event
+          for event in self._session_events[user_key].get(session.id, [])
+          if event.id not in session_event_ids
+      ]
+      self._session_events[user_key][session.id] = kept_events + [
           event.model_copy(deep=True)
           for event in _apply_rewinds(session.events)
           if event.content
