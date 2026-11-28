@@ -396,6 +396,57 @@ async def test_load_artifacts_converts_docx_with_custom_namespace_prefix_to_text
 
 
 @pytest.mark.asyncio
+async def test_load_artifacts_keeps_docx_paragraph_with_proofing_marks_on_one_line():
+  """Tags that only start with the paragraph tag name do not split a paragraph."""
+  artifact_name = 'document.docx'
+
+  # Word wraps each word it flags as misspelled in <w:proofErr> marks.
+  docx_bytes_io = io.BytesIO()
+  with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
+    zf.writestr(
+        'word/document.xml',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document'
+        ' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p'
+        ' w:rsidR="00A1"><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:t'
+        ' xml:space="preserve">The quick </w:t></w:r><w:proofErr'
+        ' w:type="spellStart"/><w:r><w:t>brwn</w:t></w:r><w:proofErr'
+        ' w:type="spellEnd"/><w:r><w:t xml:space="preserve"> fox'
+        ' jumps.</w:t></w:r></w:p><w:p/><w:p><w:r><w:t>Second'
+        ' paragraph.</w:t></w:r></w:p></w:body></w:document>',
+    )
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=docx_bytes_io.getvalue(), mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.text == 'The quick brwn fox jumps.\nSecond paragraph.'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('mime_type', 'expected_mime_type'),
     [
