@@ -683,3 +683,40 @@ async def test_relayed_tool_call_arguments_are_fenced():
   )
   assert relayed.count(_END_MARKER) == 1
   assert relayed.endswith(_END_MARKER)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finished", [False, True])
+async def test_output_transcriptions_keep_each_speakers_attribution(
+    finished: bool,
+) -> None:
+  """Adjacent live output records preserve each agent's quoted words."""
+  agent = Agent(model="gemini-2.5-flash", name="current_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          author=author,
+          invocation_id="inv1",
+          output_transcription=types.Transcription(
+              text=text, finished=finished
+          ),
+      )
+      for author, text in (("agent_a", "one"), ("agent_b", "two"))
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents == [
+      types.Content(
+          role="user",
+          parts=[
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(f"[{author}] said:", text),
+          ],
+      )
+      for author, text in (("agent_a", "one"), ("agent_b", "two"))
+  ]

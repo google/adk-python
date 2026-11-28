@@ -500,8 +500,7 @@ def _get_contents(
   Returns:
     A list of processed contents.
   """
-  accumulated_input_transcription = ''
-  accumulated_output_transcription = ''
+  accumulated_transcription = ''
 
   # Filter out events that are annulled by a rewind, so the rewound history is
   # never sent to the LLM. This is the same rewind logic the context compactor
@@ -514,6 +513,14 @@ def _get_contents(
       allow_ancestor_node_paths=True,
   )
   tool_call_ids = _collect_function_call_ids(rewind_filtered_events)
+
+  # Preserve adjacency before filtering removes content-less turn boundaries.
+  next_event_by_id = {
+      id(event): next_event
+      for event, next_event in zip(
+          rewind_filtered_events, rewind_filtered_events[1:]
+      )
+  }
 
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
@@ -567,39 +574,43 @@ def _get_contents(
   for i in range(len(events_to_process)):
     event = events_to_process[i]
     if not event.content:
-      # Convert transcription into normal event
-      if event.input_transcription and event.input_transcription.text:
-        accumulated_input_transcription += event.input_transcription.text
-        next_input_transcription = (
-            events_to_process[i + 1].input_transcription
-            if i != len(events_to_process) - 1
-            else None
+      field = (
+          'input_transcription'
+          if event.input_transcription and event.input_transcription.text
+          else 'output_transcription'
+      )
+      transcription: types.Transcription | None = getattr(event, field)
+      if transcription and transcription.text:
+        accumulated_transcription += transcription.text
+        next_event = (
+            events_to_process[i + 1] if i + 1 < len(events_to_process) else None
         )
-        if next_input_transcription and next_input_transcription.text:
+        next_transcription: types.Transcription | None = getattr(
+            next_event, field, None
+        )
+        if (
+            not transcription.finished
+            and not event.turn_complete
+            and not event.interrupted
+            and next_event is not None
+            and next_event_by_id.get(id(event)) is next_event
+            and not next_event.content
+            and next_transcription
+            and next_transcription.text
+            and not next_transcription.finished
+            and event.author == next_event.author
+            and event.invocation_id == next_event.invocation_id
+            and event.live_session_id == next_event.live_session_id
+            and event.branch == next_event.branch
+        ):
           continue
         event = event.model_copy(deep=True)
-        event.input_transcription = None
+        setattr(event, field, None)
         event.content = types.Content(
-            role='user',
-            parts=[types.Part(text=accumulated_input_transcription)],
+            role='user' if field == 'input_transcription' else 'model',
+            parts=[types.Part(text=accumulated_transcription)],
         )
-        accumulated_input_transcription = ''
-      elif event.output_transcription and event.output_transcription.text:
-        accumulated_output_transcription += event.output_transcription.text
-        next_output_transcription = (
-            events_to_process[i + 1].output_transcription
-            if i != len(events_to_process) - 1
-            else None
-        )
-        if next_output_transcription and next_output_transcription.text:
-          continue
-        event = event.model_copy(deep=True)
-        event.output_transcription = None
-        event.content = types.Content(
-            role='model',
-            parts=[types.Part(text=accumulated_output_transcription)],
-        )
-        accumulated_output_transcription = ''
+        accumulated_transcription = ''
 
     is_other_reply = _is_other_agent_reply(agent_name, event)
 
