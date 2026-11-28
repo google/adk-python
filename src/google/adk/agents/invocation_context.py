@@ -119,6 +119,10 @@ class _AbortState:
     self.loop = loop
     self.aborted = False
     self.event_synthesized = False
+    # Merged response events of tool calls that finished before an abort
+    # cancelled their batch. Abort sealing records them before sealing the
+    # calls that were still running.
+    self.kept_function_response_events: list[Event] = []
 
   def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
     # Preserve single-instance sharing across deepcopies and avoid traversing
