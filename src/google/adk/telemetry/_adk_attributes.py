@@ -55,6 +55,7 @@ ADK_TOOL_CONFIRMATION_ARGUMENTS_HASH = 'adk.tool_confirmation.arguments_hash'
 
 ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT = (
     'adk.experimental.grounding.query_count'
+)
 ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT = (
     'adk.experimental.grounding.chunk_count'
 )
