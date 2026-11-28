@@ -688,3 +688,24 @@ def test_defaultdict_factory_must_itself_be_allowlisted():
   """A `defaultdict` carries a callable, which the allowlist must cover too."""
   with pytest.raises(pickle.UnpicklingError):
     _restricted_pickle.loads(pickle.dumps(collections.defaultdict(os.system)))
+
+
+def test_build_opcode_cannot_mutate_allowlisted_class_attributes():
+  """A crafted BUILD opcode targeting an allowlisted class must be refused."""
+  # Protocol 4 payload: push pathlib.PurePosixPath onto the stack, then push
+  # (None, {"is_absolute": int}) and apply BUILD ('b') directly to the class.
+  payload = (
+      b"\x80\x04"
+      b"\x8c\x07pathlib\x8c\rPurePosixPath\x93"
+      b"N}"
+      b"\x8c\x0bis_absolute\x8c\x08builtins\x8c\x03int\x93s"
+      b"\x86b."
+  )
+  original_is_absolute = pathlib.PurePosixPath.is_absolute
+
+  with pytest.raises(pickle.UnpicklingError, match="Refusing to apply BUILD"):
+    _restricted_pickle.loads(payload)
+
+  assert pathlib.PurePosixPath.is_absolute is original_is_absolute
+  assert not pathlib.PurePosixPath("relative/path.txt").is_absolute()
+
