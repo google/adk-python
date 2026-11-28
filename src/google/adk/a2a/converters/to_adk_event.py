@@ -730,6 +730,12 @@ def convert_a2a_status_update_to_event(
       )
       output_parts.extend(parts)
       long_running_function_ids.update(ids)
+    else:
+      # Message-less status update (e.g. an action-only event from a peer):
+      # the actions and metadata travel on the update itself, not on a
+      # message. Message metadata keeps precedence when a message exists.
+      event_actions = _extract_event_actions(a2a_status_update.metadata)
+      metadata_fields = _extract_all_metadata_fields(a2a_status_update.metadata)
 
     output_parts, long_running_function_ids = (
         _create_mock_function_call_for_required_user_input(

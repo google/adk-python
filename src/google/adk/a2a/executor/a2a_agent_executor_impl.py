@@ -236,7 +236,10 @@ class _A2aAgentExecutor(AgentExecutor):
           context_id,
           self._config.gen_ai_part_converter,
       ):
-        _compat.set_event_metadata(
+        # Merge, don't replace: the converter may have put event metadata
+        # (e.g. adk_actions for an action-only event) on a message-less
+        # update, and stamping the invocation metadata must not wipe it.
+        _compat.merge_event_metadata(
             a2a_event, self._get_invocation_metadata(executor_context)
         )
         a2a_events = await execute_after_event_interceptors(

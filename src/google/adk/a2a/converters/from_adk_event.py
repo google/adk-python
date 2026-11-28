@@ -202,19 +202,25 @@ def convert_event_to_a2a_events(
               ),
           )
       )
-    elif _serialize_value(event.actions) is not None:
-      fa_wk_msg = Message(
-          message_id=str(uuid.uuid4()),
-          role=_compat.ROLE_AGENT,
-          parts=[],
-      )
+    elif _has_peer_honored_actions(event.actions) or _has_artifact_delta(
+        event.actions
+    ):
+      # Content-less event carrying an action a remote A2A peer honors on
+      # the round trip (escalate / skip_summarization), or an artifact
+      # delta the after-event interceptors turn into artifact updates.
+      # Emit a message-less WORKING update with the event metadata on the
+      # update itself: an agent message with an empty `parts` list violates
+      # the A2A spec (Message.parts is REQUIRED), and the legacy executor
+      # emits nothing for content-less events. The update is also the
+      # vehicle the after-event interceptors run on, so without it an
+      # artifact saved by a callback would never be exported. Events
+      # carrying only actions no peer uses (state delta, transfer, auth
+      # configs, usage metadata) or nothing at all emit no A2A event.
       a2a_events.append(
           _compat.make_task_status_update_event(
               task_id=task_id,
               context_id=context_id,
-              status=_compat.make_task_status(
-                  _compat.TS_WORKING, message=fa_wk_msg
-              ),
+              status=_compat.make_task_status(_compat.TS_WORKING),
               final=False,
           )
       )
@@ -266,9 +272,39 @@ def _serialize_value(value: Any) -> Any | None:
   return str(value)
 
 
+def _has_peer_honored_actions(actions: Any) -> bool:
+  """Returns True when the actions carry a field a remote A2A peer honors.
+
+  Only `escalate` and `skip_summarization` are rebuilt from peer metadata
+  on the way back (see `_PEER_SETTABLE_ACTION_FIELDS` in `to_adk_event`);
+  every other action is local to the caller, so an event carrying only
+  those is dropped instead of emitting an A2A event.
+  """
+  if actions is None:
+    return False
+  return bool(getattr(actions, "escalate", None)) or bool(
+      getattr(actions, "skip_summarization", None)
+  )
+
+
+def _has_artifact_delta(actions: Any) -> bool:
+  """Returns True when the actions carry a non-empty artifact delta.
+
+  An artifact delta is not rebuilt from peer metadata on the way back, but
+  the after-event interceptors (e.g.
+  `include_artifacts_in_a2a_event_interceptor`) turn it into
+  `TaskArtifactUpdateEvent`s — and they only run for ADK events the
+  converter turns into at least one A2A event. A message-less WORKING
+  update gives them that vehicle without an agent message with empty parts.
+  """
+  if actions is None:
+    return False
+  return bool(getattr(actions, "artifact_delta", None))
+
+
 # TODO: Clarify if this metadata needs to be translated back into the ADK event
-def _add_event_metadata(event: Event, a2a_events: Sequence[A2AEvent]) -> None:
-  """Gets the context metadata for the event and applies it to A2A events."""
+def _build_event_metadata(event: Event) -> dict[str, Any]:
+  """Builds the ADK metadata dict for an event to attach to A2A events."""
   if not event:
     raise ValueError("Event cannot be None")
 
@@ -290,6 +326,12 @@ def _add_event_metadata(event: Event, a2a_events: Sequence[A2AEvent]) -> None:
     value = _serialize_value(field_value)
     if value is not None:
       metadata[_get_adk_metadata_key(field_name)] = value
+  return metadata
+
+
+def _add_event_metadata(event: Event, a2a_events: Sequence[A2AEvent]) -> None:
+  """Gets the context metadata for the event and applies it to A2A events."""
+  metadata = _build_event_metadata(event)
 
   for a2a_event in a2a_events:
     status_message = (
@@ -301,3 +343,7 @@ def _add_event_metadata(event: Event, a2a_events: Sequence[A2AEvent]) -> None:
       _compat.set_struct_metadata(status_message, metadata)
     elif isinstance(a2a_event, TaskArtifactUpdateEvent):
       _compat.set_struct_metadata(a2a_event.artifact, metadata)
+    elif isinstance(a2a_event, TaskStatusUpdateEvent):
+      # Message-less status update (e.g. an action-only event): carry the
+      # metadata on the update itself so the peer can read it back.
+      _compat.set_event_metadata(a2a_event, metadata)

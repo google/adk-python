@@ -967,6 +967,53 @@ class TestToAdk:
     assert event.error_message == "Remote agent task failed"
     assert event.content is None
 
+  def test_convert_a2a_status_update_to_event_message_less_escalate(self):
+    """A message-less WORKING update carries escalate on the update's own
+    metadata; the reader rebuilds the event with the flag set."""
+    update = _compat.make_task_status_update_event(
+        task_id="task-1",
+        status=_compat.make_task_status(_compat.TS_WORKING),
+        context_id="context-1",
+        final=False,
+    )
+    _compat.set_event_metadata(
+        update,
+        {
+            _get_adk_metadata_key("actions"): {
+                "stateDelta": {},
+                "escalate": True,
+            }
+        },
+    )
+
+    event = convert_a2a_status_update_to_event(
+        update, "test-author", self.mock_context, Mock()
+    )
+
+    assert event is not None
+    assert event.actions.escalate is True
+    assert event.content is None
+
+  def test_convert_a2a_status_update_to_event_message_less_state_only(self):
+    """A message-less update carrying only a state delta produces no event:
+    state deltas are local to the caller and never honored back."""
+    update = _compat.make_task_status_update_event(
+        task_id="task-1",
+        status=_compat.make_task_status(_compat.TS_WORKING),
+        context_id="context-1",
+        final=False,
+    )
+    _compat.set_event_metadata(
+        update,
+        {_get_adk_metadata_key("actions"): {"stateDelta": {"k": "v"}}},
+    )
+
+    event = convert_a2a_status_update_to_event(
+        update, "test-author", self.mock_context, Mock()
+    )
+
+    assert event is None
+
   def test_convert_a2a_status_update_to_event_none(self):
     """Test convert_a2a_status_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A status update cannot be None"):
@@ -1338,6 +1385,8 @@ class TestExtractGenaiMetadata:
 
   def test_grounding_metadata_round_trip_message(self) -> None:
     """Tests that grounding metadata can be successfully extracted from a Message."""
+    from google.adk.a2a.converters.from_adk_event import _build_event_metadata
+
     event = Event(
         author="agent",
         actions=EventActions(escalate=True),
@@ -1347,13 +1396,14 @@ class TestExtractGenaiMetadata:
             )
         ),
     )
-    a2a_events = convert_event_to_a2a_events(
-        event, {}, task_id="t", context_id="c"
+    # An escalate-only event no longer produces a status message (see #8357),
+    # so build the message directly with the event's metadata on it.
+    message = Message(
+        message_id="m1",
+        role=_compat.ROLE_AGENT,
+        parts=[],
     )
-    status_update = next(
-        e for e in a2a_events if isinstance(e, TaskStatusUpdateEvent)
-    )
-    message = status_update.status.message
+    _compat.set_struct_metadata(message, _build_event_metadata(event))
     back = convert_a2a_message_to_event(message, "agent")
     assert back is not None
     assert back.grounding_metadata is not None

@@ -20,13 +20,74 @@ from unittest.mock import Mock
 
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatusUpdateEvent
+from google.adk.a2a import _compat
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.from_adk_event import create_error_status_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.genai import types as genai_types
+
+
+def test_round_trip_escalate_only_event():
+  """An escalate-only event survives the round trip with its flag intact,
+  and no agent message with empty parts appears anywhere."""
+  original_event = Event(
+      invocation_id="test_invocation",
+      author="test_agent",
+      branch="main",
+      actions=EventActions(escalate=True),
+  )
+  agents_artifacts: dict[str, str] = {}
+
+  a2a_events = convert_event_to_a2a_events(
+      event=original_event,
+      agents_artifacts=agents_artifacts,
+      task_id="task1",
+      context_id="context1",
+  )
+
+  assert len(a2a_events) == 1
+  a2a_event = a2a_events[0]
+  assert isinstance(a2a_event, TaskStatusUpdateEvent)
+  assert _compat.normalize_message(a2a_event.status.message) is None
+
+  mock_context = Mock(
+      spec=InvocationContext, invocation_id="test_invocation", branch="main"
+  )
+
+  restored_event = convert_a2a_status_update_to_event(
+      a2a_status_update=a2a_event,
+      author="test_agent",
+      invocation_context=mock_context,
+  )
+
+  assert restored_event is not None
+  assert restored_event.actions.escalate is True
+  assert restored_event.content is None
+
+
+def test_round_trip_state_only_event_emits_nothing():
+  """A state-only event emits nothing on the wire, so there is nothing to
+  restore on the way back."""
+  original_event = Event(
+      invocation_id="test_invocation",
+      author="test_agent",
+      branch="main",
+      actions=EventActions(state_delta={"k": "v"}),
+  )
+  agents_artifacts: dict[str, str] = {}
+
+  a2a_events = convert_event_to_a2a_events(
+      event=original_event,
+      agents_artifacts=agents_artifacts,
+      task_id="task1",
+      context_id="context1",
+  )
+
+  assert a2a_events == []
 
 
 def test_round_trip_text_event():
