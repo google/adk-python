@@ -30,6 +30,7 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
+import hashlib
 import logging
 import os
 import re
@@ -93,6 +94,10 @@ from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT
 from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS
 from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES
 from ._adk_attributes import ADK_SKILL_ADDITIONAL_TOOLS
+from ._adk_attributes import ADK_TOOL_CONFIRMATION_ARGUMENTS_HASH
+from ._adk_attributes import ADK_TOOL_CONFIRMATION_CONFIRMED
+from ._adk_attributes import ADK_TOOL_CONFIRMATION_CONFIRMED_BY
+from ._adk_attributes import TOOL_CONFIRMATION_DECISION_EVENT
 from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
@@ -190,6 +195,7 @@ if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
+  from ..tools.tool_confirmation import ToolConfirmation
   from ..workflow._base_node import BaseNode
   from ._instrumentation import SkillLoadTelemetry
   from ._instrumentation import SkillResourceLoadTelemetry
@@ -601,6 +607,52 @@ def _trace_mcp_http_exchange(
           attributes=attributes,
       )
   )
+
+
+def trace_tool_confirmation_decision(
+    tool: BaseTool,
+    args: dict[str, object],
+    tool_confirmation: ToolConfirmation,
+    function_call_id: str | None,
+    confirmed_by: str | None,
+) -> None:
+  """Records a tool confirmation decision as an event on the current span.
+
+  The request-confirmation flow consumes the user's `ToolConfirmation`
+  before the confirmed call runs, and until now nothing of that decision
+  reached telemetry: the decision survived only in session state. Emitting
+  it as an event on the execute_tool span of the call it decided ties the
+  decision to the exact action, and the event's own timestamp is the
+  decision time as observed by the framework.
+
+  The raw arguments are not recorded, only a SHA-256 hash of their
+  canonical serialization, so the event carries no tool input content.
+
+  Args:
+    tool: The tool the confirmation decided on.
+    args: The arguments of the function call the confirmation decided on.
+    tool_confirmation: The confirmation the user supplied.
+    function_call_id: The id of the function call being decided on.
+    confirmed_by: The identity of the confirming party as supplied with the
+      confirmation (the session's user id), or None if not available.
+  """
+  span = trace.get_current_span()
+  if not span.is_recording():
+    return
+
+  attributes: dict[str, Any] = {
+      GEN_AI_TOOL_NAME: tool.name,
+      ADK_TOOL_CONFIRMATION_CONFIRMED: tool_confirmation.confirmed,
+      ADK_TOOL_CONFIRMATION_ARGUMENTS_HASH: hashlib.sha256(
+          safe_json_serialize(args).encode('utf-8')
+      ).hexdigest(),
+  }
+  if function_call_id:
+    attributes[GEN_AI_TOOL_CALL_ID] = function_call_id
+  if confirmed_by:
+    attributes[ADK_TOOL_CONFIRMATION_CONFIRMED_BY] = confirmed_by
+
+  span.add_event(TOOL_CONFIRMATION_DECISION_EVENT, attributes=attributes)
 
 
 def trace_merged_tool_calls(
