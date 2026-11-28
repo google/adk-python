@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from dataclasses import dataclass
 import importlib
 import logging
 import time
@@ -68,6 +69,8 @@ from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
+from .conversation_termination import ConversationTerminationReason
+from .conversation_termination import conversation_termination_reason_from_status
 from .simulation.user_simulator import BaseUserSimulatorConfig
 from .simulation.user_simulator import Status as UserSimulatorStatus
 from .simulation.user_simulator import UserSimulator
@@ -77,6 +80,14 @@ if TYPE_CHECKING:
   from types import TracebackType
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+@dataclass(frozen=True)
+class InferencesGenerationResult:
+  """Invocations produced by scraping an agent with a user simulator."""
+
+  invocations: list[Invocation]
+  termination_reason: ConversationTerminationReason | None = None
 
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
@@ -593,7 +604,7 @@ class EvaluationGenerator:
             agent_name,
             eval_case.session_input,
         )
-        responses.append(response_invocations)
+        responses.append(response_invocations.invocations)
 
       results.append(
           EvalCaseResponses(eval_case=eval_case, responses=responses)
@@ -636,7 +647,7 @@ class EvaluationGenerator:
       user_simulator: UserSimulator,
       agent_name: str | None = None,
       initial_session: SessionInput | None = None,
-  ) -> list[Invocation]:
+  ) -> InferencesGenerationResult:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
@@ -774,7 +785,7 @@ class EvaluationGenerator:
       memory_service: BaseMemoryService | None = None,
       live_timeout_seconds: int = DEFAULT_LIVE_TIMEOUT_SECONDS,
       app: App | None = None,
-  ) -> list[Invocation]:
+  ) -> InferencesGenerationResult:
     """Scrapes the root agent in coordination with the user simulator in live mode.
 
     Mirrors `_generate_inferences_from_root_agent`: when `app` is provided the
@@ -827,6 +838,7 @@ class EvaluationGenerator:
         memory_service=memory_service,
     ) as runner:
       events: list[Event] = []
+      termination_reason: ConversationTerminationReason | None = None
 
       # `_LiveSession` is a runtime connection manager wrapping the `Session`
       # data model (which stores conversation history/state). It manages the
@@ -870,6 +882,9 @@ class EvaluationGenerator:
               logger.info("Live session finished signal detected.")
               break
           else:  # no message generated
+            termination_reason = conversation_termination_reason_from_status(
+                next_user_message.status
+            )
             break
       finally:
         await live_session.__aexit__(None, None, None)
@@ -879,9 +894,12 @@ class EvaluationGenerator:
               events, request_intercepter_plugin
           )
       )
-      return EvaluationGenerator.convert_events_to_eval_invocations(
-          EvaluationGenerator._normalize_live_transcriptions(events),
-          app_details_by_invocation_id,
+      return InferencesGenerationResult(
+          invocations=EvaluationGenerator.convert_events_to_eval_invocations(
+              EvaluationGenerator._normalize_live_transcriptions(events),
+              app_details_by_invocation_id,
+          ),
+          termination_reason=termination_reason,
       )
 
   @staticmethod
@@ -895,7 +913,7 @@ class EvaluationGenerator:
       artifact_service: BaseArtifactService | None = None,
       memory_service: BaseMemoryService | None = None,
       app: App | None = None,
-  ) -> list[Invocation]:
+  ) -> InferencesGenerationResult:
     """Scrapes the root agent in coordination with the user simulator.
 
     If `app` is provided, the eval Runner is built from a copy of the App
@@ -955,6 +973,7 @@ class EvaluationGenerator:
       durations_by_invocation_id: dict[str, float] = {}
       model_durations_by_invocation_id: dict[str, float] = {}
       tool_durations_by_invocation_id: dict[str, float] = {}
+      termination_reason: ConversationTerminationReason | None = None
       while True:
         next_user_message = await user_simulator.get_next_user_message(
             copy.deepcopy(events)
@@ -994,6 +1013,9 @@ class EvaluationGenerator:
                 busy.tool_seconds(), 3
             )
         else:  # no message generated
+          termination_reason = conversation_termination_reason_from_status(
+              next_user_message.status
+          )
           break
 
       app_details_by_invocation_id = (
@@ -1001,12 +1023,15 @@ class EvaluationGenerator:
               events, request_intercepter_plugin
           )
       )
-      return EvaluationGenerator.convert_events_to_eval_invocations(
-          events,
-          app_details_by_invocation_id,
-          durations_by_invocation_id,
-          model_durations_per_invocation=model_durations_by_invocation_id,
-          tool_durations_per_invocation=tool_durations_by_invocation_id,
+      return InferencesGenerationResult(
+          invocations=EvaluationGenerator.convert_events_to_eval_invocations(
+              events,
+              app_details_by_invocation_id,
+              durations_by_invocation_id,
+              model_durations_per_invocation=model_durations_by_invocation_id,
+              tool_durations_per_invocation=tool_durations_by_invocation_id,
+          ),
+          termination_reason=termination_reason,
       )
 
   @staticmethod

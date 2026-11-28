@@ -25,6 +25,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
+from .conversation_termination import ConversationTerminationReason
 from .eval_case import Invocation
 from .eval_config import MultiRunConfig
 from .eval_metrics import EvalMetric
@@ -192,6 +193,15 @@ class InferenceResult(BaseModel):
       description="""0-based index of the run that produced this result, among
 the `InferenceConfig.num_runs` runs of the same eval case. None if the producer
 did not record it.""",
+  )
+
+  termination_reason: ConversationTerminationReason | None = Field(
+      default=None,
+      description="""Why the user simulator stopped producing turns for this
+run. Populated for conversation_scenario (and other simulator-driven) cases
+from the last NextUserMessage.status. None when the conversation was not
+simulator-driven, or when the run never reached a terminating simulator
+status (e.g. live session closed after a successful turn).""",
   )
 
 

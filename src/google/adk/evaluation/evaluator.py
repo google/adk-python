@@ -19,6 +19,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
+from .conversation_termination import ConversationTerminationReason
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
@@ -88,6 +89,7 @@ class Evaluator(ABC):
       actual_invocations: list[Invocation],
       expected_invocations: list[Invocation] | None = None,
       conversation_scenario: ConversationScenario | None = None,
+      termination_reason: ConversationTerminationReason | None = None,
   ) -> EvaluationResult | Awaitable[EvaluationResult]:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 
@@ -108,5 +110,8 @@ class Evaluator(ABC):
         invocation is the same.
       conversation_scenario: An optional conversation scenario for multi-turn
         conversations.
+      termination_reason: Optional reason the user simulator stopped producing
+        turns. Implementations that do not declare this parameter are not
+        passed it by `LocalEvalService`.
     """
     raise NotImplementedError()

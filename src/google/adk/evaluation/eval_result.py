@@ -20,6 +20,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from ..sessions.session import Session
+from .conversation_termination import ConversationTerminationReason
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import EvalMetricResultPerInvocation
@@ -74,6 +75,14 @@ class EvalCaseResult(BaseModel):
   repetition_index: int | None = None
   """0-based index of the run this result is for, among the runs of the same
   eval case (see `InferenceConfig.num_runs`). None if it was not recorded.
+  """
+
+  termination_reason: ConversationTerminationReason | None = None
+  """Why the user simulator stopped producing turns for this run.
+
+  Copied from `InferenceResult.termination_reason`. None for static
+  conversations that were not simulator-driven, or when the reason was not
+  recorded.
   """
 
 

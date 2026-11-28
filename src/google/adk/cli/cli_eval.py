@@ -622,6 +622,10 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
   click.echo(f"Eval Set Id: {eval_result.eval_set_id}")
   click.echo(f"Eval Id: {eval_result.eval_id}")
   click.echo(f"Overall Eval Status: {eval_result.final_eval_status.name}")
+  if eval_result.termination_reason is not None:
+    click.echo(
+        f"Conversation Termination: {eval_result.termination_reason.value}"
+    )
 
   for metric_result in eval_result.overall_eval_metric_results:
     click.echo(
