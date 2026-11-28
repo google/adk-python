@@ -23,6 +23,10 @@ ADK_CONTEXT_ID_PREFIX = "ADK"
 ADK_CONTEXT_ID_SEPARATOR = "/"
 A2A_TASK_FAILED_ERROR_CODE = "A2A_TASK_FAILED"
 A2A_TASK_FAILED_ERROR_MESSAGE = "Remote agent task failed"
+# A failure of the A2A exchange itself, on the caller's side: the agent card or
+# the credential cannot be resolved, the request fails, the stream is cut. A task
+# the remote agent reports as failed carries A2A_TASK_FAILED_ERROR_CODE instead.
+A2A_CLIENT_ERROR_CODE = "A2A_CLIENT_ERROR"
 
 
 def _is_failed_status(status: Any) -> bool:
