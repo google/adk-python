@@ -3543,3 +3543,175 @@ async def test_agent_tool_sets_parent_invocation_id_only_when_sharing_plugins(
       'seq_child': expected,
       'leaf_child': expected,
   }
+
+
+@mark.parametrize('config_kind', ['token', 'none', 'window'])
+async def test_nested_agent_tools_keep_each_leaf_run_history_separate(
+    config_kind,
+):
+  """Nested repeated agent tools inherit token compaction, with fresh history.
+
+  Setup: root calls middle twice; middle calls leaf once per run. Each leaf
+    reads a large file three times. Parent uses token, window-only, or no config.
+  Act: run the root through real runners and agent tools.
+  Assert: both leaf runs compact only with token settings, the second starts
+    fresh, and the caller's config is unchanged.
+  """
+
+  def read_large_file() -> str:
+    """Returns a public large fixture."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  leaf_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'leaf answer one']
+      + [read_call, read_call, read_call, 'leaf answer two']
+  )
+  leaf = Agent(name='leaf', model=leaf_model, tools=[read_large_file])
+  leaf_call = Part.from_function_call(name='leaf', args={'request': 'read'})
+  middle = Agent(
+      name='middle',
+      model=testing_utils.MockModel.create(
+          responses=[leaf_call, 'middle one', leaf_call, 'middle two']
+      ),
+      tools=[AgentTool(agent=leaf)],
+  )
+  middle_call = Part.from_function_call(name='middle', args={'request': 'read'})
+  root = Agent(
+      name='root',
+      model=testing_utils.MockModel.create(
+          responses=[middle_call, middle_call, 'root answer']
+      ),
+      tools=[AgentTool(agent=middle)],
+  )
+  config = None
+  if config_kind != 'none':
+    config = EventsCompactionConfig(
+        compaction_interval=1 if config_kind == 'window' else 10_000,
+        overlap_size=0,
+        token_threshold=100 if config_kind == 'token' else None,
+        event_retention_size=0 if config_kind == 'token' else None,
+        summarizer=LlmEventSummarizer(
+            llm=testing_utils.MockModel.create(
+                responses=['NESTED SUMMARY'] * 40
+            )
+        ),
+    )
+  before = config.model_dump_json(exclude={'summarizer'}) if config else None
+  app = App(
+      name='nested_history', root_agent=root, events_compaction_config=config
+  )
+  runner = Runner(app=app, session_service=InMemorySessionService())
+  session = await runner.session_service.create_session(
+      app_name=app.name, user_id='user'
+  )
+
+  try:
+    async for _ in runner.run_async(
+        user_id='user',
+        session_id=session.id,
+        new_message=types.UserContent(parts=[Part.from_text(text='go')]),
+    ):
+      pass
+  finally:
+    await runner.close()
+
+  def prompt_text(request) -> str:
+    return ' '.join(
+        part.text
+        for content in request.contents
+        for part in content.parts or []
+        if part.text
+    )
+
+  assert len(leaf_model.requests) == 8
+  for index in (3, 7):
+    assert ('NESTED SUMMARY' in prompt_text(leaf_model.requests[index])) == (
+        config_kind == 'token'
+    )
+    if config_kind != 'token':
+      assert (
+          len([
+              part
+              for content in leaf_model.requests[index].contents
+              for part in content.parts or []
+              if part.function_response
+          ])
+          == 3
+      )
+  assert len(leaf_model.requests[4].contents) == 1
+  assert 'NESTED SUMMARY' not in prompt_text(leaf_model.requests[4])
+  assert app.events_compaction_config is config
+  assert (
+      config.model_dump_json(exclude={'summarizer'}) if config else None
+  ) == before
+
+
+@mark.asyncio
+@mark.parametrize('include_plugins', [True, False])
+async def test_repeated_nested_tools_leave_shared_plugin_open(include_plugins):
+  """The parent owns its plugin's close across repeated nested calls.
+
+  Setup: root invokes middle twice; middle invokes leaf. A recording plugin
+    raises if a model callback reaches it after close.
+  Act: finish the root run, then close its runner.
+  Assert: nested runner cleanup leaves the plugin live; the parent closes it
+    once, with nested model callbacks present only when propagation is enabled.
+  """
+
+  class RecordingPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name='shared_lifecycle')
+      self.close_calls = 0
+      self.model_calls = []
+
+    async def before_model_callback(self, *, callback_context, llm_request):
+      assert self.close_calls == 0
+      self.model_calls.append(callback_context.agent_name)
+
+    async def close(self):
+      self.close_calls += 1
+
+  plugin = RecordingPlugin()
+  leaf = Agent(
+      name='leaf',
+      model=testing_utils.MockModel.create(responses=['leaf one', 'leaf two']),
+  )
+  leaf_call = Part.from_function_call(name='leaf', args={'request': 'go'})
+  middle = Agent(
+      name='middle',
+      model=testing_utils.MockModel.create(
+          responses=[leaf_call, 'middle one', leaf_call, 'middle two']
+      ),
+      tools=[AgentTool(agent=leaf, include_plugins=include_plugins)],
+  )
+  middle_call = Part.from_function_call(name='middle', args={'request': 'go'})
+  root = Agent(
+      name='root',
+      model=testing_utils.MockModel.create(
+          responses=[middle_call, middle_call, 'root answer']
+      ),
+      tools=[AgentTool(agent=middle, include_plugins=include_plugins)],
+  )
+  app = App(name='nested_lifecycle', root_agent=root, plugins=[plugin])
+  runner = Runner(app=app, session_service=InMemorySessionService())
+  session = await runner.session_service.create_session(
+      app_name=app.name, user_id='user'
+  )
+
+  try:
+    async for _ in runner.run_async(
+        user_id='user',
+        session_id=session.id,
+        new_message=types.UserContent(parts=[Part.from_text(text='go')]),
+    ):
+      pass
+    assert plugin.close_calls == 0
+  finally:
+    await runner.close()
+
+  assert plugin.close_calls == 1
+  assert plugin.model_calls.count('root') == 3
+  assert plugin.model_calls.count('middle') == (4 if include_plugins else 0)
+  assert plugin.model_calls.count('leaf') == (2 if include_plugins else 0)
