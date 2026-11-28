@@ -902,6 +902,14 @@ _SENSITIVE_KEYS = frozenset({
     "x_goog_credential",
     "x_goog_security_token",
     "x_goog_signature",
+    # OAuth2 authorization-code flow fields. The code, the PKCE verifier and
+    # the redirect URI that carries the code are enough to complete a token
+    # exchange; private_key_id identifies a service account key. These keep
+    # the set in step with DebugLoggingPlugin's.
+    "auth_code",
+    "auth_response_uri",
+    "code_verifier",
+    "private_key_id",
 })
 
 # Credentials commonly carried in signed URLs and HTTP error text.  These are
