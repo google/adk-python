@@ -31,6 +31,7 @@ from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.code_execution_utils import File
 from google.adk.code_executors.code_executor_context import CodeExecutorContext
+from google.adk.code_executors.container_code_executor import ContainerCodeExecutor
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.flows.llm_flows.extensions._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows.extensions._code_execution import _extract_and_replace_inline_files
@@ -847,3 +848,38 @@ async def test_append_new_message_to_session_stamps_isolation_scope_and_honors_s
 
   assert len(target_session.events) == 2
   assert target_session.events[-1].isolation_scope == 'task_scope_1'
+
+
+@patch('google.adk.code_executors.container_code_executor.docker')
+async def test_silent_container_failure_counts_toward_retry_limit(mock_docker):
+  """A silent container failure retains prior errors and consumes a retry."""
+  container = mock_docker.from_env.return_value.containers.run.return_value
+  container.exec_run.return_value = MagicMock(exit_code=0, output=(b'', b''))
+  container.get_archive.return_value = ([b''], {})
+  with ContainerCodeExecutor(image='test-image') as executor:
+    agent = Agent(name='test_agent', code_executor=executor)
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='run some code'
+    )
+    context = CodeExecutorContext(invocation_context.session.state)
+    context.increment_error_count(invocation_context.invocation_id)
+    container.exec_run.side_effect = lambda cmd, **kwargs: MagicMock(
+        exit_code=7 if cmd[0] == 'python3' else 0, output=(b'', b'')
+    )
+    response = LlmResponse(
+        content=types.Content(
+            parts=[types.Part(text='```tool_code\nimport os; os._exit(7)\n```')]
+        )
+    )
+
+    events = [
+        event
+        async for event in response_processor.run_async(
+            invocation_context, response
+        )
+    ]
+
+  assert context.get_error_count(invocation_context.invocation_id) == 2
+  result = events[-1].content.parts[0].code_execution_result
+  assert result.outcome == types.Outcome.OUTCOME_FAILED
+  assert 'status 7' in result.output

@@ -32,9 +32,11 @@ import docker
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors import container_code_executor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
+from google.adk.code_executors.code_execution_utils import CodeExecutionUtils
 from google.adk.code_executors.code_execution_utils import File
 from google.adk.code_executors.container_code_executor import ContainerCodeExecutor
 from google.adk.platform.thread import create_thread
+from google.genai import types
 import pydantic
 import pytest
 
@@ -213,6 +215,63 @@ def test_execute_code_reports_the_exit_code(mock_docker, exit_code):
   )
 
   assert result.exit_code == exit_code
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+@pytest.mark.parametrize(
+    'exit_code, stderr, expected_error, expected_outcome',
+    [
+        (
+            7,
+            b'',
+            'Code execution exited with status 7.',
+            types.Outcome.OUTCOME_FAILED,
+        ),
+        (
+            -9,
+            b'',
+            'Code execution exited with status -9.',
+            types.Outcome.OUTCOME_FAILED,
+        ),
+        (0, b'', '', types.Outcome.OUTCOME_OK),
+        (0, b'warning', 'warning', types.Outcome.OUTCOME_FAILED),
+        (7, b'original error', 'original error', types.Outcome.OUTCOME_FAILED),
+        (
+            124,
+            b'',
+            'Code execution timed out after 7 seconds.',
+            types.Outcome.OUTCOME_FAILED,
+        ),
+        (
+            124,
+            b'original error',
+            'original error\nCode execution timed out after 7 seconds.',
+            types.Outcome.OUTCOME_FAILED,
+        ),
+    ],
+)
+def test_execute_code_preserves_output_and_reports_failure(
+    mock_docker, exit_code, stderr, expected_error, expected_outcome
+):
+  """Silent failures get a diagnostic; existing output and timeouts survive."""
+  client = _mock_docker_client()
+  mock_docker.from_env.return_value = client
+  with ContainerCodeExecutor(image='test-image', timeout_seconds=7) as executor:
+    _set_python3_result(
+        client.containers.run.return_value,
+        exit_code=exit_code,
+        output=(b'partial output', stderr),
+    )
+
+    result = executor.execute_code(
+        mock.MagicMock(), CodeExecutionInput(code='import os; os._exit(7)')
+    )
+
+  part = CodeExecutionUtils.build_code_execution_result_part(result)
+  assert result.exit_code == exit_code
+  assert result.stdout == 'partial output'
+  assert result.stderr == expected_error
+  assert part.code_execution_result.outcome == expected_outcome
 
 
 # The wrapper below is a string of Python that only ever runs inside the
