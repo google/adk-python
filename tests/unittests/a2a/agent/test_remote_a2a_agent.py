@@ -1614,6 +1614,58 @@ class TestRemoteA2aAgentResolution:
     assert agent_card.description in desc
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize("task_mode", [False, True])
+  async def test_tool_declaration_uses_the_card_description(self, task_mode):
+    """As a tool, the agent shows the model the (fenced) description of its card.
+
+    The agent has no description of its own, so the card is the only place it is
+    written. It must reach the model whether the agent is wrapped in AgentTool
+    or delegated to in task mode, as it does for a transfer target.
+    """
+    from google.adk.agents.llm_agent import Agent
+    from google.adk.models.llm_request import LlmRequest
+    from google.adk.tools.agent_tool import _TaskAgentTool
+    from google.adk.tools.agent_tool import AgentTool
+    from google.adk.tools.tool_context import ToolContext
+
+    from tests.unittests import testing_utils
+
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+    assert not agent.description
+    tool = _TaskAgentTool(agent) if task_mode else AgentTool(agent)
+    root = Agent(
+        name="root", model=testing_utils.MockModel.create(responses=[])
+    )
+    invocation_context = await testing_utils.create_invocation_context(root)
+    llm_request = LlmRequest()
+
+    with patch.object(
+        agent,
+        "_resolve_agent_card",
+        new_callable=AsyncMock,
+        return_value=agent_card,
+    ):
+      await tool.process_llm_request(
+          tool_context=ToolContext(invocation_context), llm_request=llm_request
+      )
+
+    (declaration,) = llm_request.config.tools[0].function_declarations
+    assert declaration.name == "test_agent"
+    assert declaration.description.startswith(QUOTED_CONTENT_BEGIN)
+    assert agent_card.description in declaration.description
+    assert QUOTED_CONTENT_END in declaration.description
+    assert declaration.description.endswith(
+        "Do NOT call this tool in parallel with any other tools."
+        if task_mode
+        else QUOTED_CONTENT_END
+    )
+    # The agent itself is untouched: the description is resolved per request.
+    assert not agent.description
+
+  @pytest.mark.asyncio
   async def test_ensure_resolved_already_resolved(self):
     """Test _ensure_resolved when already resolved."""
     agent_card = create_test_agent_card()
