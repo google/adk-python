@@ -111,6 +111,19 @@ GenAIPartToA2APartConverter = Callable[
 ]
 
 
+def _decode_thought_signature(meta: dict[str, Any] | None) -> bytes | None:
+  """Reads the shared text and data part signature metadata."""
+  sig_value = (meta or {}).get(_get_adk_metadata_key('thought_signature'))
+  if isinstance(sig_value, bytes):
+    return sig_value
+  if isinstance(sig_value, str):
+    try:
+      return base64.b64decode(sig_value)
+    except ValueError:
+      logger.warning('Failed to decode thought_signature: %s', sig_value)
+  return None
+
+
 def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
 ) -> genai_types.Part | None:
@@ -133,6 +146,7 @@ def convert_a2a_part_to_genai_part(
     return genai_types.Part(
         text=text,
         thought=thought,
+        thought_signature=_decode_thought_signature(meta),
         part_metadata=genai_metadata(meta),
     )
 
@@ -171,17 +185,7 @@ def convert_a2a_part_to_genai_part(
     meta_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
     part_type = meta.get(meta_key) if meta else None
 
-    thought_signature = None
-    thought_sig_key = _get_adk_metadata_key('thought_signature')
-    if meta and thought_sig_key in meta:
-      sig_value = meta[thought_sig_key]
-      if isinstance(sig_value, bytes):
-        thought_signature = sig_value
-      elif isinstance(sig_value, str):
-        try:
-          thought_signature = base64.b64decode(sig_value)
-        except Exception:
-          logger.warning('Failed to decode thought_signature: %s', sig_value)
+    thought_signature = _decode_thought_signature(meta)
 
     if part_type == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL:
       return genai_types.Part(
@@ -277,6 +281,10 @@ def convert_genai_part_to_a2a_part(
     meta: dict[str, Any] = {}
     if part.thought is not None:
       meta[_get_adk_metadata_key('thought')] = part.thought
+    if part.thought_signature is not None:
+      meta[_get_adk_metadata_key('thought_signature')] = base64.b64encode(
+          part.thought_signature
+      ).decode('utf-8')
     if part.part_metadata:
       meta.update(part.part_metadata)
     apply_meta(p, meta)
