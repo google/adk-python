@@ -613,7 +613,7 @@ def trace_tool_confirmation_decision(
     args: dict[str, object],
     tool_confirmation: ToolConfirmation,
     function_call_id: str | None,
-    ) -> None:
+) -> None:
   """Records a tool confirmation decision as an event on the current span.
 
   The request-confirmation flow consumes the user's `ToolConfirmation`
@@ -634,7 +634,7 @@ def trace_tool_confirmation_decision(
     args: The arguments of the function call the confirmation decided on.
     tool_confirmation: The confirmation the user supplied.
     function_call_id: The id of the function call being decided on.
-    """
+  """
   span = trace.get_current_span()
   if not span.is_recording():
     return
