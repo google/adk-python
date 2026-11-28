@@ -106,7 +106,7 @@ class ApplicationIntegrationToolset(BaseToolset):
       *,
       allow_private_network_access: bool = False,
   ):
-    """Args:
+    """Initializes the toolset.
 
     Args:
         project: The GCP project ID.
