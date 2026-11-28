@@ -256,6 +256,65 @@ async def test_construct_payload_with_tools(client, llm_request):
 
 
 @pytest.mark.asyncio
+async def test_construct_payload_tool_schema_parameters_as_json_schema(
+    client, llm_request
+):
+  tool = types.Tool(
+      function_declarations=[
+          types.FunctionDeclaration(
+              name='tag_items',
+              parameters=types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={
+                      'tags': types.Schema(
+                          type=types.Type.ARRAY,
+                          items=types.Schema(type=types.Type.STRING),
+                          min_items=1,
+                      ),
+                      'mode': types.Schema(
+                          any_of=[
+                              types.Schema(type=types.Type.STRING),
+                              types.Schema(type=types.Type.INTEGER),
+                          ]
+                      ),
+                  },
+                  required=['tags'],
+              ),
+          )
+      ]
+  )
+  llm_request.config = types.GenerateContentConfig(tools=[tool])
+
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': 'Hi'}}]
+  }
+  mock_response.status_code = 200
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'post', return_value=mock_response
+  ) as mock_post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  payload = mock_post.call_args[1]['json']
+  assert payload['tools'][0]['function']['parameters'] == {
+      'type': 'object',
+      'properties': {
+          'tags': {
+              'type': 'array',
+              'items': {'type': 'string'},
+              'minItems': 1,
+          },
+          'mode': {'anyOf': [{'type': 'string'}, {'type': 'integer'}]},
+      },
+      'required': ['tags'],
+  }
+
+
+@pytest.mark.asyncio
 async def test_construct_payload_system_instruction(client, llm_request):
   llm_request.config = types.GenerateContentConfig(
       system_instruction='You are a helpful assistant.'

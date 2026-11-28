@@ -1033,7 +1033,12 @@ class CompletionsHTTPClient:
     if func.parameters_json_schema:
       parameters = func.parameters_json_schema
     elif func.parameters:
-      parameters = func.parameters.model_dump(exclude_none=True)
+      # `types.Schema` dumps uppercase type names and snake_case field names;
+      # the endpoint expects JSON Schema, as for the response schema above.
+      parameters = func.parameters.model_dump(
+          by_alias=True, exclude_none=True, mode='json'
+      )
+      lowercase_schema_types(parameters)
 
     return {
         'type': 'function',
