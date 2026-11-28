@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import signal
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -397,8 +399,16 @@ def test_cli_telemetry_skips_when_already_recorded(
     assert source["command_run"]["exit_code"] == 0
 
 
+@pytest.mark.parametrize(
+    "exception, exit_code, exception_type",
+    [(RuntimeError, 1, "RuntimeError"), (KeyboardInterrupt, 130, "")],
+)
 def test_cli_telemetry_records_early_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception,
+    exit_code,
+    exception_type,
 ) -> None:
   """TelemetryGroup invoke should record an exception if telemetry_recorded is not set."""
 
@@ -419,7 +429,7 @@ def test_cli_telemetry_records_early_crash(
   @click.command("dummy_web_crash")
   @click.pass_context
   def dummy_web_crash_cmd(ctx):
-    raise KeyboardInterrupt()
+    raise exception()
 
   # Attach it to a new group that uses TelemetryGroup
   @click.group(cls=cli_tools_click.TelemetryGroup)
@@ -439,8 +449,8 @@ def test_cli_telemetry_records_early_crash(
     event = json.loads(lines[0])
     source = json.loads(event["source_extension_json"])
     assert source["command_run"]["command"] == "dummy_web_crash"
-    assert source["command_run"]["exit_code"] == 1
-    assert source["command_run"]["exception_type"] == "KeyboardInterrupt"
+    assert source["command_run"]["exit_code"] == exit_code
+    assert source["command_run"].get("exception_type", "") == exception_type
 
 
 def test_cli_telemetry_records_clean_shutdown_on_keyboard_interrupt_after_startup(
@@ -622,6 +632,30 @@ def test_cli_run_basic_with_query(
   called_kwargs = mock_run_once.call_args.kwargs
   assert called_kwargs.get("query") == "hello"
   assert called_kwargs.get("agent_folder_name") == "agent"
+
+
+@pytest.mark.parametrize("query, expected_exit", [("hello", 130), (None, 0)])
+def test_cli_run_sigint_exits_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query, expected_exit
+) -> None:
+  """Real SIGINT is handled at the asyncio.run boundary."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  async def interrupted_run(**kwargs):
+    asyncio.get_running_loop().call_soon(signal.raise_signal, signal.SIGINT)
+    await asyncio.sleep(60)
+
+  target = "run_once_cli" if query else "run_cli"
+  monkeypatch.setattr(f"google.adk.cli.cli.{target}", interrupted_run)
+  args = ["run", str(agent_dir)] + ([query] if query else [])
+
+  result = CliRunner().invoke(cli_tools_click.main, args)
+
+  assert result.exit_code == expected_exit
+  assert "Traceback" not in result.output
 
 
 def test_cli_run_interactive_with_state(
