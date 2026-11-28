@@ -1,0 +1,947 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for PlimsollEnvironment, with the Plimsoll client mocked."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+import pickle
+from pathlib import PureWindowsPath
+import threading
+from types import SimpleNamespace
+from unittest import mock
+
+from google.adk.integrations.plimsoll import PlimsollEnvironment
+from google.adk.tools.environment import EnvironmentToolset
+import plimsoll_client
+import pytest
+
+_ROOT = "/work"
+
+
+def _info(*, sessions: bool = True, max_timeout_ms: int = 300_000):
+  return SimpleNamespace(
+      provider="docker",
+      supports_sessions=sessions,
+      session_environment=SimpleNamespace(max_timeout_ms=max_timeout_ms),
+  )
+
+
+def _outcome(
+    *,
+    exit_code: int = 0,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+    timed_out: bool = False,
+    stdout_truncated: bool = False,
+    stderr_truncated: bool = False,
+):
+  return SimpleNamespace(
+      exit_code=exit_code,
+      stdout_text=stdout.decode(),
+      stderr_text=stderr.decode(),
+      timed_out=timed_out,
+      stdout_truncated=stdout_truncated,
+      stderr_truncated=stderr_truncated,
+      result=SimpleNamespace(
+          isolation="kernel", record=SimpleNamespace(sha256="ab" * 32)
+      ),
+  )
+
+
+@pytest.fixture(name="session")
+def _session() -> mock.MagicMock:
+  session = mock.MagicMock(name="Session")
+  session.isolation = "kernel"
+  # What plimsoll_client.Session states once a call ended without an answer
+  # it could check, and once an answer reported the session's end.
+  session.stopped = None
+  session.ended = None
+  return session
+
+
+@pytest.fixture(name="client")
+def _client(session: mock.MagicMock) -> mock.MagicMock:
+  client = mock.MagicMock(name="Client")
+  client.describe.return_value = _info()
+  client.open_session.return_value = session
+  return client
+
+
+@pytest.fixture(name="workspace")
+def _workspace() -> mock.MagicMock:
+  workspace = mock.MagicMock(name="Workspace")
+  workspace.root = _ROOT
+  workspace.run.return_value = _outcome(stdout=b"42\n")
+  workspace.read_whole.return_value = b"data"
+  return workspace
+
+
+@pytest.fixture(name="workspace_class")
+def _workspace_class(workspace: mock.MagicMock):
+  with mock.patch.object(
+      plimsoll_client, "Workspace", return_value=workspace
+  ) as workspace_class:
+    yield workspace_class
+
+
+@pytest.fixture(name="env")
+def _env(client: mock.MagicMock, workspace_class: mock.MagicMock):
+  del workspace_class
+  return PlimsollEnvironment(client=client)
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"minimum_isolation": "none"}, "minimum_isolation"),
+        ({"timeout": 0}, "timeout"),
+        ({"timeout": True}, "timeout"),
+        ({"timeout": float("nan")}, "timeout"),
+        ({"timeout": float("inf")}, "timeout"),
+        ({"env_vars": {"A\n": "1"}}, "shell variable name"),
+        ({"env_vars": {"A-B": "1"}}, "shell variable name"),
+        ({"env_vars": {"A": "x\x00y"}}, "must be text"),
+        ({"client": mock.MagicMock(), "url": "http://h"}, "client"),
+    ],
+)
+def test_constructor_rejects_invalid_configuration(kwargs, message):
+  with pytest.raises(ValueError, match=message):
+    PlimsollEnvironment(**kwargs)
+
+
+def test_constructor_contacts_nothing(client: mock.MagicMock):
+  env = PlimsollEnvironment(client=client)
+
+  client.describe.assert_not_called()
+  client.open_session.assert_not_called()
+  assert env.working_dir is None
+  assert env.isolation is None
+  assert env.is_initialized is False
+
+
+async def test_initialize_opens_session_at_the_floor(
+    env: PlimsollEnvironment,
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  await env.initialize()
+
+  client.open_session.assert_called_once_with(
+      minimum_isolation="kernel", lifetime=None, idle_timeout=None, owner=None
+  )
+  workspace_class.assert_called_once_with(
+      session, timeout=120.0, max_timeout=300.0, confined=False
+  )
+  assert env.working_dir == Path(_ROOT)
+  assert env.isolation == "kernel"
+  assert env.is_initialized is True
+
+
+async def test_initialize_is_idempotent(
+    env: PlimsollEnvironment, client: mock.MagicMock
+):
+  await env.initialize()
+  await env.initialize()
+
+  client.open_session.assert_called_once()
+
+
+async def test_initialize_passes_session_options(
+    client: mock.MagicMock, workspace_class: mock.MagicMock
+):
+  del workspace_class
+  env = PlimsollEnvironment(
+      client=client,
+      minimum_isolation="vm",
+      lifetime=600,
+      idle_timeout=60,
+      owner="user-1",
+  )
+  client.open_session.return_value.isolation = "vm"
+
+  await env.initialize()
+
+  client.open_session.assert_called_once_with(
+      minimum_isolation="vm", lifetime=600, idle_timeout=60, owner="user-1"
+  )
+
+
+async def test_initialize_refuses_a_daemon_without_sessions(
+    env: PlimsollEnvironment, client: mock.MagicMock
+):
+  client.describe.return_value = _info(sessions=False)
+
+  with pytest.raises(plimsoll_client.UnsupportedError) as raised:
+    await env.initialize()
+
+  assert raised.value.not_dispatched == "unsupported"
+  client.open_session.assert_not_called()
+  assert env.is_initialized is False
+
+
+async def test_initialize_refuses_and_closes_a_session_below_the_floor(
+    env: PlimsollEnvironment,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  session.isolation = "container"
+
+  with pytest.raises(plimsoll_client.InsufficientIsolationError) as raised:
+    await env.initialize()
+
+  assert raised.value.not_dispatched == "isolation"
+  session.close.assert_called_once()
+  workspace_class.assert_not_called()
+  assert env.working_dir is None
+
+
+async def test_initialize_closes_the_session_when_the_workspace_fails(
+    env: PlimsollEnvironment,
+    session: mock.MagicMock,
+    workspace: mock.MagicMock,
+):
+  type(workspace).root = mock.PropertyMock(side_effect=OSError("gone"))
+
+  with pytest.raises(OSError, match="gone"):
+    await env.initialize()
+
+  session.close.assert_called_once()
+  assert env.is_initialized is False
+
+
+async def test_initialize_builds_a_client_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    client: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  del workspace_class
+  monkeypatch.setenv("PLIMSOLL_URL", "http://127.0.0.1:9999")
+  monkeypatch.setenv("PLIMSOLL_TOKEN", "t" * 32)
+  with mock.patch.object(
+      plimsoll_client, "Client", return_value=client
+  ) as client_class:
+    await PlimsollEnvironment().initialize()
+
+  client_class.assert_called_once_with("http://127.0.0.1:9999", token="t" * 32)
+
+
+async def test_cancelled_initialize_closes_the_session_it_opened(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened = threading.Event()
+  release = threading.Event()
+  closed = threading.Event()
+  session.close.side_effect = lambda: closed.set()
+
+  def slow_open(**kwargs):
+    del kwargs
+    opened.set()
+    release.wait(5)
+    return session
+
+  client.open_session.side_effect = slow_open
+  task = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  release.set()
+
+  assert await asyncio.to_thread(closed.wait, 5)
+  assert env.is_initialized is False
+
+  # Nothing was open when the open was cancelled, so the next one may open.
+  client.open_session.side_effect = None
+  await env.initialize()
+  assert client.open_session.call_count == 2
+
+
+def test_an_open_cancelled_at_event_loop_shutdown_is_closed(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened = threading.Event()
+  release = threading.Event()
+  closed = threading.Event()
+  session.close.side_effect = lambda: closed.set()
+
+  def slow_open(**kwargs):
+    del kwargs
+    opened.set()
+    release.wait(5)
+    return session
+
+  client.open_session.side_effect = slow_open
+
+  async def main():
+    task = asyncio.create_task(env.initialize())
+    await asyncio.to_thread(opened.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+    # The open finishes while asyncio.run tears the loop down.
+    threading.Timer(0.2, release.set).start()
+
+  asyncio.run(main())
+
+  assert closed.wait(5)
+  assert env.is_initialized is False
+
+
+def _held_open(client: mock.MagicMock, session: mock.MagicMock):
+  """Makes the client's open wait for release; returns (opened, release)."""
+  opened = threading.Event()
+  release = threading.Event()
+
+  def slow_open(**kwargs):
+    del kwargs
+    opened.set()
+    release.wait(5)
+    return session
+
+  client.open_session.side_effect = slow_open
+  return opened, release
+
+
+async def test_concurrent_initialize_calls_open_one_session(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  first = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  second = asyncio.create_task(env.initialize())
+  await asyncio.sleep(0.05)
+  release.set()
+
+  await asyncio.gather(first, second)
+
+  client.open_session.assert_called_once()
+  session.close.assert_not_called()
+
+
+async def test_one_cancelled_waiter_does_not_abandon_a_shared_open(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  first = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  second = asyncio.create_task(env.initialize())
+  await asyncio.sleep(0.05)
+  first.cancel()
+  release.set()
+
+  await second
+
+  session.close.assert_not_called()
+  assert env.is_initialized is True
+
+
+async def test_close_during_an_open_closes_what_it_opens(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  task = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  closing = asyncio.create_task(env.close())
+  await asyncio.sleep(0.05)
+  release.set()
+
+  await closing
+  # close() returns once the sandbox the open made is closed.
+  session.close.assert_called_once()
+  with pytest.raises(RuntimeError, match="was closed"):
+    await task
+  assert env.is_initialized is False
+  assert env.working_dir is None
+  client.open_session.assert_called_once()
+
+
+async def test_an_abandoned_open_whose_close_fails_is_closed_later(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  opened, release = _held_open(client, session)
+  failed = threading.Event()
+
+  def close_once():
+    if not failed.is_set():
+      failed.set()
+      raise OSError("daemon gone")
+
+  session.close.side_effect = close_once
+  task = asyncio.create_task(env.initialize())
+  await asyncio.to_thread(opened.wait, 5)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  release.set()
+  assert await asyncio.to_thread(failed.wait, 5)
+
+  # Waits for the open's thread, then retries the close that failed there.
+  await env.close()
+
+  assert session.close.call_count == 2
+  assert env.is_initialized is False
+  # No caller was given that sandbox, so this close refuses no reopen.
+  session.close.side_effect = None
+  client.open_session.side_effect = None
+  await env.initialize()
+  assert client.open_session.call_count == 2
+
+
+async def test_methods_before_initialize_raise(env: PlimsollEnvironment):
+  with pytest.raises(RuntimeError, match="initialize"):
+    await env.execute("true")
+  with pytest.raises(RuntimeError, match="initialize"):
+    await env.read_file(Path("a.txt"))
+  with pytest.raises(RuntimeError, match="initialize"):
+    await env.write_file(Path("a.txt"), "x")
+
+
+async def test_execute_runs_the_command_in_a_shell(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  env = PlimsollEnvironment(
+      client=env._client, env_vars={"GREETING": "hi"}, timeout=30
+  )
+  await env.initialize()
+
+  result = await env.execute("echo 42", timeout=5)
+
+  args, kwargs = workspace.run.call_args
+  assert args == (["sh", "-c", "echo 42"],)
+  assert kwargs["env"] == {"GREETING": "hi"}
+  assert kwargs["timeout"] == 5.0
+  assert result.exit_code == 0
+  assert result.stdout == "42\n"
+  assert result.timed_out is False
+
+
+async def test_execute_without_timeout_uses_the_daemon_ceiling(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  await env.initialize()
+
+  await env.execute("true")
+
+  assert workspace.run.call_args.kwargs["timeout"] == 300.0
+
+
+async def test_execute_without_timeout_or_ceiling_uses_the_timeout(
+    client: mock.MagicMock,
+    workspace: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  del workspace_class
+  client.describe.return_value = _info(max_timeout_ms=0)
+  env = PlimsollEnvironment(client=client, timeout=45)
+  await env.initialize()
+
+  await env.execute("true")
+
+  assert workspace.run.call_args.kwargs["timeout"] == 45.0
+
+
+async def test_execute_maps_failure_and_timeout(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  workspace.run.return_value = _outcome(
+      exit_code=124, stderr=b"slow", timed_out=True
+  )
+  await env.initialize()
+
+  result = await env.execute("sleep 99", timeout=1)
+
+  assert result.exit_code == 124
+  assert result.stderr == "slow"
+  assert result.timed_out is True
+
+
+async def test_execute_with_a_zero_timeout_sends_the_shortest_budget(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  # As OpenSandboxEnvironment does: zero is a valid budget, sent as the
+  # shortest one the daemon takes (1 ms), not a result made up here.
+  await env.initialize()
+
+  result = await env.execute("true", timeout=0)
+
+  assert workspace.run.call_args.kwargs["timeout"] == 0.001
+  assert result.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "timeout", [-5, -0.5, float("nan"), float("inf"), float("-inf"), True, "5"]
+)
+async def test_execute_rejects_an_invalid_timeout(
+    env: PlimsollEnvironment, workspace: mock.MagicMock, timeout
+):
+  await env.initialize()
+
+  with pytest.raises(ValueError, match="timeout"):
+    await env.execute("true", timeout=timeout)
+
+  workspace.run.assert_not_called()
+
+
+async def test_execute_reports_truncated_streams(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  workspace.run.return_value = _outcome(
+      stderr=b"warn", stdout_truncated=True, stderr_truncated=True
+  )
+  await env.initialize()
+
+  result = await env.execute("yes")
+
+  assert result.stderr == (
+      "warn\n"
+      "plimsoll: the daemon cut stdout at its output limit\n"
+      "plimsoll: the daemon cut stderr at its output limit\n"
+  )
+
+
+async def test_unusable_answer_raises_without_sandbox_text(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  workspace.run.side_effect = plimsoll_client.WorkspaceCallError(
+      "guest text", SimpleNamespace(outcome="runner_failed")
+  )
+  await env.initialize()
+
+  with pytest.raises(RuntimeError) as raised:
+    await env.execute("true")
+
+  assert "runner_failed" in str(raised.value)
+  assert "may have run" in str(raised.value)
+  assert "guest text" not in str(raised.value)
+
+
+async def test_refusals_pass_through_with_their_mark(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  workspace.run.side_effect = plimsoll_client.SessionEndedError(
+      "ended", reason="expired", not_dispatched="request"
+  )
+  await env.initialize()
+
+  with pytest.raises(plimsoll_client.SessionEndedError) as raised:
+    await env.execute("true")
+
+  assert raised.value.not_dispatched == "request"
+
+
+async def test_cancelled_execute_cuts_the_call(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  started = threading.Event()
+  handles = []
+
+  def slow_run(argv, *, env, timeout, cancel):
+    del argv, env, timeout
+    handles.append(cancel)
+    started.set()
+    for _ in range(500):
+      if cancel.cancelled:
+        break
+      threading.Event().wait(0.01)
+    return _outcome()
+
+  workspace.run.side_effect = slow_run
+  await env.initialize()
+  task = asyncio.create_task(env.execute("sleep 9"))
+  await asyncio.to_thread(started.wait, 5)
+  task.cancel()
+
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  assert handles[0].cancelled is True
+
+
+def _cut_when_cancelled(session: mock.MagicMock, started: threading.Event):
+  """A run that the client cuts when its handle is cancelled, as 0.29 does."""
+
+  def run(argv, *, env, timeout, cancel):
+    del argv, env, timeout
+    if session.stopped is not None:
+      raise plimsoll_client.PlimsollError(
+          "an earlier call of this session ended without an answer",
+          code="failed_precondition",
+          not_dispatched="request",
+      )
+    started.set()
+    for _ in range(500):
+      if cancel.cancelled:
+        session.stopped = "the request was cut"
+        raise plimsoll_client.RequestCanceledError("cut")
+      threading.Event().wait(0.01)
+    return _outcome()
+
+  return run
+
+
+async def _cancel_a_call(
+    env: PlimsollEnvironment,
+    session: mock.MagicMock,
+    close_error: Exception | None = None,
+):
+  started = threading.Event()
+  closed = threading.Event()
+
+  def close():
+    closed.set()
+    if close_error is not None:
+      raise close_error
+
+  session.close.side_effect = close
+  env._workspace.run.side_effect = _cut_when_cancelled(session, started)
+  task = asyncio.create_task(env.execute("sleep 9"))
+  await asyncio.to_thread(started.wait, 5)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  # The call's thread lets the sandbox go once the client has cut it.
+  assert await asyncio.to_thread(closed.wait, 5)
+
+
+@pytest.mark.parametrize("reopen_after_close", [False, True])
+async def test_a_cut_call_lets_the_sandbox_go_and_says_so(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+    reopen_after_close: bool,
+):
+  del workspace_class
+  env = PlimsollEnvironment(
+      client=client, reopen_after_close=reopen_after_close
+  )
+  await env.initialize()
+
+  await _cancel_a_call(env, session)
+
+  # Every later call says the sandbox was lost, and none opens an empty one
+  # in its place, whatever reopen_after_close says.
+  for _ in range(2):
+    with pytest.raises(RuntimeError, match="lost its sandbox"):
+      await env.initialize()
+    with pytest.raises(RuntimeError, match="lost its sandbox"):
+      await env.execute("ls")
+  client.open_session.assert_called_once()
+  session.close.assert_called_once()
+  assert env.isolation is None
+  # Still initialized, so the Runner's close reaches close().
+  assert env.is_initialized is True
+
+
+async def test_close_after_a_lost_sandbox_applies_the_reopen_rule(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  del workspace_class
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  toolset = EnvironmentToolset(environment=env)
+  await env.initialize()
+  await _cancel_a_call(env, session)
+
+  await toolset.close()
+
+  assert env.is_initialized is False
+  session.close.assert_called_once()
+  session.stopped = None
+  await env.initialize()
+  assert client.open_session.call_count == 2
+
+
+async def test_a_lost_sandbox_closed_with_a_chain_error_is_not_kept(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  # The usual close of a cut session: the daemon counts the cut call, which
+  # the client never saw answered.
+  del workspace_class
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  await env.initialize()
+  await _cancel_a_call(
+      env, session, plimsoll_client.ChainError("the daemon counts 1 call")
+  )
+
+  await env.close()
+  session.stopped = None
+  session.close.side_effect = None
+  await env.initialize()
+
+  session.close.assert_called_once()
+  assert client.open_session.call_count == 2
+
+
+async def test_a_session_the_daemon_ended_lets_the_sandbox_go(
+    env: PlimsollEnvironment,
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace: mock.MagicMock,
+):
+  def ended(*args, **kwargs):
+    del args, kwargs
+    session.ended = SimpleNamespace(reason="expired", detail="")
+    raise plimsoll_client.SessionEndedError(
+        "ended", reason="expired", not_dispatched="request"
+    )
+
+  workspace.read_whole.side_effect = ended
+  await env.initialize()
+
+  with pytest.raises(plimsoll_client.SessionEndedError):
+    await env.read_file("a.txt")
+  with pytest.raises(RuntimeError, match=r"lost its sandbox.*expired"):
+    await env.initialize()
+
+  session.close.assert_called_once()
+  client.open_session.assert_called_once()
+
+
+async def test_a_call_cancelled_before_it_was_sent_keeps_the_sandbox(
+    env: PlimsollEnvironment, session: mock.MagicMock, workspace: mock.MagicMock
+):
+  # The client refuses a cancelled call that it has not sent yet, and the
+  # session goes on: nothing is let go.
+  started = threading.Event()
+
+  def refused(argv, *, env, timeout, cancel):
+    del argv, env, timeout
+    started.set()
+    for _ in range(500):
+      if cancel.cancelled:
+        raise plimsoll_client.RequestCanceledError(
+            "not sent", not_dispatched="request"
+        )
+      threading.Event().wait(0.01)
+    return _outcome()
+
+  workspace.run.side_effect = refused
+  await env.initialize()
+  task = asyncio.create_task(env.execute("sleep 9"))
+  await asyncio.to_thread(started.wait, 5)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  workspace.run.side_effect = None
+
+  result = await env.execute("echo 42")
+
+  assert result.stdout == "42\n"
+  session.close.assert_not_called()
+
+
+async def test_read_file_returns_bytes_for_a_posix_path(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  await env.initialize()
+
+  data = await env.read_file(PureWindowsPath("dir\\a.txt"))
+
+  assert data == b"data"
+  assert workspace.read_whole.call_args.args == ("dir/a.txt",)
+
+
+async def test_read_file_missing_raises_file_not_found(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  workspace.read_whole.side_effect = FileNotFoundError("a.txt")
+  await env.initialize()
+
+  with pytest.raises(FileNotFoundError):
+    await env.read_file(Path("a.txt"))
+
+
+@pytest.mark.parametrize(
+    "content, sent",
+    [("héllo\n", "héllo\n".encode()), (b"\x00\xff", b"\x00\xff")],
+)
+async def test_write_file_sends_bytes(
+    env: PlimsollEnvironment, workspace: mock.MagicMock, content, sent
+):
+  await env.initialize()
+
+  await env.write_file(Path("sub/dir/a.bin"), content)
+
+  assert workspace.write.call_args.args == ("sub/dir/a.bin", sent)
+
+
+async def test_write_file_rejects_other_content(env: PlimsollEnvironment):
+  await env.initialize()
+
+  with pytest.raises(TypeError, match="str or bytes"):
+    await env.write_file(Path("a"), 3)
+
+
+async def test_close_closes_the_session_and_is_idempotent(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  await env.initialize()
+
+  await env.close()
+  await env.close()
+
+  session.close.assert_called_once()
+  assert env.is_initialized is False
+  assert env.working_dir is None
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.execute("true")
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.initialize()
+  client.open_session.assert_called_once()
+
+
+async def test_reopen_after_close_opens_a_new_session(
+    client: mock.MagicMock, workspace_class: mock.MagicMock
+):
+  del workspace_class
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  await env.initialize()
+  await env.close()
+
+  await env.initialize()
+
+  assert client.open_session.call_count == 2
+  assert env.is_initialized is True
+
+
+async def test_close_before_any_open_is_harmless(
+    env: PlimsollEnvironment, client: mock.MagicMock
+):
+  await env.close()
+
+  await env.initialize()
+
+  client.open_session.assert_called_once()
+
+
+async def test_a_failed_close_still_refuses_a_reopen(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  session.close.side_effect = OSError("daemon gone")
+  await env.initialize()
+
+  with pytest.raises(OSError, match="daemon gone"):
+    await env.close()
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.initialize()
+
+  client.open_session.assert_called_once()
+
+
+async def test_a_failed_close_is_retried_by_the_next_close(
+    env: PlimsollEnvironment, client: mock.MagicMock, session: mock.MagicMock
+):
+  session.close.side_effect = [OSError("daemon gone"), None]
+  toolset = EnvironmentToolset(environment=env)
+  await env.initialize()
+
+  with pytest.raises(OSError, match="daemon gone"):
+    await toolset.close()
+  # Still initialized, so the toolset's next close comes back to retry; no
+  # call reaches the sandbox meanwhile.
+  assert env.is_initialized is True
+  assert env.working_dir is None
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.execute("true")
+  await toolset.close()
+
+  assert session.close.call_count == 2
+  assert env.is_initialized is False
+  await env.close()
+  assert session.close.call_count == 2
+  with pytest.raises(RuntimeError, match="was closed"):
+    await env.initialize()
+  client.open_session.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        plimsoll_client.ChainError("the daemon counts 1 call"),
+        plimsoll_client.StaleOwnerError(
+            "another worker", not_dispatched="request"
+        ),
+    ],
+)
+async def test_a_close_that_would_fail_again_is_not_retried(
+    env: PlimsollEnvironment, session: mock.MagicMock, error
+):
+  # The daemon answered the close (ChainError: the session is closed there),
+  # or another worker holds the session: the client would raise the same
+  # error again without sending anything, so the error is raised once.
+  session.close.side_effect = error
+  await env.initialize()
+
+  with pytest.raises(type(error)):
+    await env.close()
+  await env.close()
+
+  session.close.assert_called_once()
+  assert env.is_initialized is False
+
+
+async def test_a_reopen_retries_a_failed_close_before_opening(
+    client: mock.MagicMock,
+    session: mock.MagicMock,
+    workspace_class: mock.MagicMock,
+):
+  del workspace_class
+  session.close.side_effect = [OSError("gone"), OSError("still gone"), None]
+  env = PlimsollEnvironment(client=client, reopen_after_close=True)
+  await env.initialize()
+  with pytest.raises(OSError, match="gone"):
+    await env.close()
+
+  # The old sandbox holds one of the daemon's places until it is closed.
+  with pytest.raises(OSError, match="still gone"):
+    await env.initialize()
+  assert client.open_session.call_count == 1
+  await env.initialize()
+
+  assert session.close.call_count == 3
+  assert client.open_session.call_count == 2
+  assert env.is_initialized is True
+
+
+async def test_an_unopened_environment_pickles_with_its_toolset():
+  toolset = EnvironmentToolset(
+      environment=PlimsollEnvironment(url="http://127.0.0.1:1")
+  )
+
+  restored = pickle.loads(pickle.dumps(toolset))
+
+  await restored.close()
+  assert restored._environment.is_initialized is False
+
+
+async def test_toolset_drives_the_environment(
+    env: PlimsollEnvironment, workspace: mock.MagicMock
+):
+  toolset = EnvironmentToolset(environment=env)
+
+  tools = await toolset.get_tools()
+  await env.initialize()
+  await toolset.close()
+
+  assert {"Execute", "ReadFile", "WriteFile", "EditFile"} <= {
+      tool.name for tool in tools
+  }
+  assert env.is_initialized is False
+  del workspace

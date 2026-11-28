@@ -74,6 +74,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [CrewaiTool](integrations/crewai/crewai_tool/index.md) - Wrapping a CrewAI tool so an ADK agent can call it.
 * [DaytonaEnvironment](integrations/daytona/daytona_environment/index.md) - Running agent code in a Daytona hosted sandbox instead of on your machine.
 * [E2BEnvironment](integrations/e2b/e2b_environment/index.md) - Running agent code in an E2B hosted sandbox, and what happens when the sandbox expires.
+* [PlimsollEnvironment](integrations/plimsoll/plimsoll_environment/index.md) - Running agent code in a self-hosted Plimsoll sandbox that states its isolation tier and returns a checked run record for every call.
 * [FirestoreSessionService](integrations/firestore/firestore_session_service/index.md) - A durable multi-process session store built on Firestore documents and transactions.
 * [GCSToolset and GCSAdminToolset](integrations/gcs/gcs_toolset/index.md) - Giving an agent access to Cloud Storage objects and buckets, read-only until you say otherwise.
 * [GroundingPlugin](integrations/discovery_engine/grounding_plugin/index.md) - Verifying model responses against registered facts with the CheckGrounding API and attaching citations.
