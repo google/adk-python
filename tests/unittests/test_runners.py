@@ -57,7 +57,9 @@ from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.events.event import NodeInfo
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
+from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -5470,6 +5472,228 @@ async def test_callback_upgraded_partial_event_is_not_persisted(
   persisted = [event for event in stored.events if event.id == transformed.id]
   assert not persisted
   assert stored.state.get("transformed", False) is False
+
+
+class _PartialSourceAgent(BaseAgent):
+  """Yields one text event carrying the requested partial flag."""
+
+  partial: bool
+
+  async def _run_async_impl(self, ctx):
+    yield Event(
+        invocation_id=ctx.invocation_id,
+        author=self.name,
+        partial=self.partial,
+        content=types.Content(role="model", parts=[types.Part(text="source")]),
+    )
+
+  _run_live_impl = _run_async_impl
+
+
+class _UnsetPartialPlugin(BasePlugin):
+  """Replaces the event while leaving partial unset (None)."""
+
+  async def on_event_callback(self, *, invocation_context, event):
+    if not event.content or event.content.parts[0].text != "source":
+      return None
+    output = event.model_copy(deep=True)
+    output.partial = None
+    output.content = types.Content(
+        role="model", parts=[types.Part(text="transformed")]
+    )
+    output.actions = EventActions(state_delta={"transformed": True})
+    return output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["async", "sse", "live"])
+@pytest.mark.parametrize("source_partial", [False, True])
+async def test_callback_replacement_with_none_partial_inherits_source(
+    mode, source_partial
+):
+  """A replacement that sets partial=None keeps the source event's partial."""
+  from google.adk.agents.run_config import StreamingMode
+  from google.adk.live import LiveRequestQueue
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=_PartialSourceAgent(name="agent", partial=source_partial),
+      session_service=service,
+      plugins=[_UnsetPartialPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    if mode == "live":
+      events = [
+          event
+          async for event in runner.run_live(
+              user_id="user",
+              session_id=session.id,
+              live_request_queue=LiveRequestQueue(),
+          )
+      ]
+    else:
+      events = [
+          event
+          async for event in runner.run_async(
+              user_id="user",
+              session_id=session.id,
+              new_message=types.Content(
+                  role="user", parts=[types.Part(text="hello")]
+              ),
+              run_config=RunConfig(
+                  streaming_mode=(
+                      StreamingMode.SSE if mode == "sse" else StreamingMode.NONE
+                  )
+              ),
+          )
+      ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  transformed = next(
+      event
+      for event in events
+      if event.content and event.content.parts[0].text == "transformed"
+  )
+  assert transformed.partial is source_partial
+  persisted = [event for event in stored.events if event.id == transformed.id]
+  assert bool(persisted) is not source_partial
+  assert stored.state.get("transformed", False) is not source_partial
+  if persisted:
+    assert persisted[0].content == transformed.content
+
+
+def _streaming_tool_response(
+    *parts: types.Part, partial: bool | None = None
+) -> LlmResponse:
+  return LlmResponse(
+      content=types.Content(role="model", parts=list(parts)),
+      partial=partial,
+  )
+
+
+class _StreamingToolModel(BaseLlm):
+  """Streams one partial tool call, then a final aggregated call."""
+
+  model: str = "streaming-tool-mock"
+  call_count: int = 0
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ["streaming-tool-mock"]
+
+  async def generate_content_async(
+      self, llm_request: Any, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    del llm_request, stream
+    self.call_count += 1
+    if self.call_count > 1:
+      yield _streaming_tool_response(
+          types.Part(text="Task completed."), partial=False
+      )
+      return
+    yield _streaming_tool_response(types.Part(text="Checking."), partial=True)
+    yield _streaming_tool_response(
+        types.Part.from_function_call(name="recorded_tool", args={}),
+        partial=True,
+    )
+    yield _streaming_tool_response(
+        types.Part(text="Checking."),
+        types.Part.from_function_call(name="recorded_tool", args={}),
+        partial=None,
+    )
+
+
+class _UppercaseUnsetPartialPlugin(BasePlugin):
+  """Replaces every event, leaving partial unset and uppercasing text."""
+
+  async def on_event_callback(self, *, invocation_context, event):
+    output = event.model_copy(deep=True)
+    output.partial = None
+    if output.content and output.content.parts:
+      output.content = types.Content(
+          role=output.content.role,
+          parts=[
+              (
+                  types.Part(text=part.text.upper())
+                  if part.text is not None
+                  else part
+              )
+              for part in output.content.parts
+          ],
+      )
+    return output
+
+
+@pytest.mark.asyncio
+async def test_sse_callback_replacement_with_none_partial_keeps_tool_execution():
+  """SSE partials stay partial after a None-partial replacement."""
+  from google.adk.agents.run_config import StreamingMode
+
+  tool_calls = []
+
+  def recorded_tool() -> dict[str, bool]:
+    """Records one execution."""
+    tool_calls.append(True)
+    return {"ok": True}
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=LlmAgent(
+          name="agent",
+          model=_StreamingToolModel(),
+          tools=[recorded_tool],
+      ),
+      session_service=service,
+      plugins=[_UppercaseUnsetPartialPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    events = [
+        event
+        async for event in runner.run_async(
+            user_id="user",
+            session_id=session.id,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+            run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+        )
+    ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  agent_events = [event for event in events if event.author == "agent"]
+  assert [event.partial for event in agent_events] == [
+      True,
+      True,
+      None,
+      None,
+      False,
+  ]
+  # The replacement ran on every event without flipping streaming semantics.
+  assert agent_events[0].content.parts[0].text == "CHECKING."
+  assert agent_events[2].content.parts[0].text == "CHECKING."
+  assert agent_events[4].content.parts[0].text == "TASK COMPLETED."
+  # Exactly one tool call: the final aggregated event, not the partial one.
+  assert tool_calls == [True]
+  persisted_agent_events = [
+      event for event in stored.events if event.author == "agent"
+  ]
+  assert [event.partial for event in persisted_agent_events] == [
+      None,
+      None,
+      False,
+  ]
 
 
 @pytest.mark.asyncio
