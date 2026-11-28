@@ -41,6 +41,7 @@ from google.adk.events import _internal_metadata
 from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.genai import types as genai_types
 import pytest
 
@@ -420,6 +421,41 @@ class TestEventConverter:
     result = convert_event_to_a2a_events(
         self.mock_event, self.mock_invocation_context
     )
+
+    assert result == []
+
+  @pytest.mark.parametrize(
+      "actions",
+      [
+          EventActions(artifact_delta={"report.txt": 0}),
+          EventActions(state_delta={"step": "done"}),
+      ],
+      ids=["artifact_delta", "state_delta"],
+  )
+  def test_convert_event_to_a2a_events_session_delta_without_content(
+      self, actions
+  ):
+    """An event that only changes the session is reported as working."""
+    event = Event(author="test-author", invocation_id="inv-1", actions=actions)
+
+    result = convert_event_to_a2a_events(
+        event, self.mock_invocation_context, "task-1", "ctx-1"
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], TaskStatusUpdateEvent)
+    assert result[0].status.state == _compat.TS_WORKING
+    assert _compat.normalize_message(result[0].status.message) is None
+    metadata = _compat.meta_to_dict(result[0].metadata)
+    assert metadata[
+        _get_adk_metadata_key("actions")
+    ] == _serialize_metadata_value(actions)
+
+  def test_convert_event_to_a2a_events_no_content_no_delta(self):
+    """An event with no content that changes nothing produces no events."""
+    event = Event(author="test-author", invocation_id="inv-1")
+
+    result = convert_event_to_a2a_events(event, self.mock_invocation_context)
 
     assert result == []
 
