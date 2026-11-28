@@ -37,6 +37,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import base_llm_flow
 from google.adk.flows.llm_flows import functions
+from google.adk.flows.llm_flows.tools import _live_caller
 from google.adk.live import _flow_utils
 from google.adk.live import _live_llm_flow
 from google.adk.live import LiveRequestQueue
@@ -583,6 +584,7 @@ def _late_tool_agents(tool: Any, call_name: str) -> Agent:
 async def _handoff_with_background_tool(
     *,
     streaming: bool = False,
+    ignore_cancellation: bool = False,
 ) -> tuple[bool, bool, list[str]]:
   """Hands off while a background tool of the root agent is still in flight.
 
@@ -603,22 +605,33 @@ async def _handoff_with_background_tool(
 
   async def late_lookup() -> str:
     started.set()
-    try:
-      await complete_tool.wait()
-    except asyncio.CancelledError:
-      cancelled.set()
-      raise
+    while True:
+      try:
+        await complete_tool.wait()
+        break
+      except asyncio.CancelledError:
+        cancelled.set()
+        if not ignore_cancellation:
+          raise
     return 'late'
 
   async def late_stream() -> AsyncGenerator[Any, None]:
     started.set()
+    while True:
+      try:
+        await complete_tool.wait()
+        break
+      except asyncio.CancelledError:
+        cancelled.set()
+        if not ignore_cancellation:
+          raise
+    yield {'late': True}
     try:
-      await complete_tool.wait()
-      yield {'late': True}
       await asyncio.Event().wait()
     except asyncio.CancelledError:
       cancelled.set()
-      raise
+      if not ignore_cancellation:
+        raise
 
   if streaming:
     tool: Any = late_stream
@@ -727,6 +740,65 @@ async def test_handoff_stops_streaming_tools_before_the_transfer_delay():
   assert (
       'late_stream' not in forwarded
   ), "the handing-off agent's streaming tool yielded during the transfer delay"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('streaming', [False, True])
+async def test_handoff_fences_tool_that_outlives_cancellation(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool
+):
+  """A retired call cannot forward a result even if it ignored cancellation."""
+  monkeypatch.setattr(_flow_utils, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.05)
+  started, cancelled_before_delay, forwarded = (
+      await _handoff_with_background_tool(
+          streaming=streaming, ignore_cancellation=True
+      )
+  )
+
+  call_name = 'late_stream' if streaming else 'late_lookup'
+  assert started
+  assert cancelled_before_delay
+  assert call_name not in forwarded, (
+      'the retired tool forwarded a late result after its registry entry was'
+      ' cleared'
+  )
+
+
+@pytest.mark.asyncio
+async def test_retired_streaming_tool_cannot_enqueue_user_event(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The Event output path uses the same retirement fence as model responses."""
+
+  async def stream() -> AsyncGenerator[Any, None]:
+    yield Event(message='stale')
+
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=Agent(name='agent', model=testing_utils.MockModel.create([]))
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context._active_background_tools = {}
+  enqueue = mock.AsyncMock()
+  monkeypatch.setattr(invocation_context, '_enqueue_event', enqueue)
+  entry = ActiveBackgroundTool(
+      tool_name='stream',
+      function_call_id='call_1',
+      task=asyncio.current_task(),
+      is_generator=True,
+  )
+  tool = FunctionTool(func=stream)
+  tool_context = ToolContext(invocation_context, function_call_id='call_1')
+
+  await _live_caller._run_streaming_tool(
+      invocation_context, tool, {}, tool_context, active_tool=entry
+  )
+  enqueue.assert_not_awaited()
+
+  invocation_context._active_background_tools = {'call_1': entry}
+  await _live_caller._run_streaming_tool(
+      invocation_context, tool, {}, tool_context, active_tool=entry
+  )
+  enqueue.assert_awaited_once()
 
 
 @pytest.mark.asyncio

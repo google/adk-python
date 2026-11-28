@@ -28,6 +28,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.tools import _live_caller
 from google.adk.flows.llm_flows.tools._caller import _PreparedFunctionCall
+from google.adk.live._active_background_tool import ActiveBackgroundTool
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
@@ -66,6 +67,13 @@ async def test_emit_streaming_tool_event_enqueues_user_message() -> None:
   invocation_context.agent = mock.Mock()
   invocation_context.agent.name = 'stream_agent'
   invocation_context._enqueue_event = mock.AsyncMock()
+  active_tool = ActiveBackgroundTool(
+      tool_name=tool.name,
+      function_call_id='fc-99',
+      task=None,
+      is_generator=True,
+  )
+  invocation_context._active_background_tools = {'fc-99': active_tool}
 
   raw_event = Event(
       content=types.Content(
@@ -77,6 +85,7 @@ async def test_emit_streaming_tool_event_enqueues_user_message() -> None:
       tool=tool,
       tool_context=tool_context,
       invocation_context=invocation_context,
+      active_tool=active_tool,
   )
 
   invocation_context._enqueue_event.assert_awaited_once()
