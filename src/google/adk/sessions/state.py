@@ -114,6 +114,11 @@ class State:
     self._delta = delta
     self._schema = schema
     self._snapshots: dict[str, tuple[Any, Any]] = {}
+    # Every dict or list a read handed out, by key and id, so a batch of
+    # parallel calls can tell which write a call built on.
+    # The values, not only the ids, are kept so a collected object's id cannot
+    # be reused by a different object and match a write it never read.
+    self._read_values: dict[str, dict[int, Any]] = {}
     # TODO: recorded keys are per State, so a container another context over
     # the same event re-records or makes non-JSON is not withdrawn.
     self._recorded_nested_keys: set[str] = set()
@@ -124,8 +129,10 @@ class State:
       value = self._delta[key]
     else:
       value = self._value[key]
-    if isinstance(value, (dict, list)) and key not in self._snapshots:
-      self._take_snapshot(key, value)
+    if isinstance(value, (dict, list)):
+      self._read_values.setdefault(key, {})[id(value)] = value
+      if key not in self._snapshots:
+        self._take_snapshot(key, value)
     return value
 
   def __setitem__(self, key: str, value: Any) -> None:
