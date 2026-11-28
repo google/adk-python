@@ -2285,6 +2285,41 @@ class TestRestApiTool:
         request_params["url"] == "https://example.com/test/123"
     )  # Path param replaced
 
+  @pytest.mark.parametrize("name", ["file.name", "items[0]"])
+  def test_prepare_request_params_path_param_name_with_dot_or_bracket(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme, name
+  ):
+    """A path parameter name is substituted whole, not as attribute access."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=Operation(operationId="test_op"),
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name=name,
+            py_name="file_name",
+            param_location="path",
+            param_schema=OpenAPISchema(type="string"),
+        )
+    ]
+    tool.endpoint = OperationEndpoint(
+        base_url="https://example.com",
+        path=f"/files/{{{name}}}/content",
+        method="get",
+    )
+
+    request_params = tool._prepare_request_params(
+        params, {"file_name": "report.txt"}
+    )
+
+    assert request_params["url"] == (
+        "https://example.com/files/report.txt/content"
+    )
+
   def test_prepare_request_params_path_param_is_percent_encoded(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
