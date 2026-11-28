@@ -521,6 +521,113 @@ class TestRestApiTool:
         "Status Code: 404, Commande introuvable : échec"
     )
 
+  @pytest.mark.parametrize(
+      "content",
+      [b"", b"  \n\t "],
+      ids=["empty", "whitespace"],
+  )
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_empty_body_says_the_body_was_empty(
+      self,
+      mock_request,
+      content,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """An empty 2xx body is labelled so the model does not read it as data."""
+    mock_request.return_value = httpx.Response(
+        status_code=200,
+        request=httpx.Request("GET", "https://example.com/test"),
+        content=content,
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert result == {
+        "text": content.decode(),
+        "message": "The response body was empty. Status Code: 200",
+    }
+
+  @pytest.mark.parametrize(
+      "content, content_type",
+      [
+          (b"<html><body>Saved</body></html>", "text/html"),
+          (b"Saved", "text/plain"),
+      ],
+      ids=["html", "plain_text"],
+  )
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_non_json_body_says_the_body_was_not_json(
+      self,
+      mock_request,
+      content,
+      content_type,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """A non-JSON 2xx body keeps its text and is labelled as not JSON."""
+    mock_request.return_value = httpx.Response(
+        status_code=200,
+        request=httpx.Request("GET", "https://example.com/test"),
+        content=content,
+        headers={"content-type": content_type},
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert result == {
+        "text": content.decode(),
+        "message": "The response body was not valid JSON. Status Code: 200",
+    }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_json_body_is_returned_unchanged(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """A JSON 2xx body reaches the model as decoded, with nothing added."""
+    mock_request.return_value = httpx.Response(
+        status_code=200,
+        request=httpx.Request("GET", "https://example.com/test"),
+        json={"result": "ok"},
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert result == {"result": "ok"}
+
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
