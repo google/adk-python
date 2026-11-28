@@ -19,6 +19,8 @@ from typing import AsyncGenerator
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.agents.sequential_agent import _append_instruction
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps import ResumabilityConfig
@@ -249,3 +251,67 @@ async def test_run_live_dedupes_base_node_task_completed_tool(
 
   assert sub_agent.tools == [task_completed]
   assert sub_agent.instruction == 'initial'
+
+
+def test_append_instruction_separates_suffix_with_blank_line():
+  """The appended suffix starts a new paragraph, not a glued-on sentence."""
+  assert (
+      _append_instruction('You are helpful.', 'If you finished...')
+      == 'You are helpful.\n\nIf you finished...'
+  )
+  # An empty base instruction needs no separator.
+  assert _append_instruction('', 'If you finished...') == 'If you finished...'
+  # A base instruction that already ends with whitespace is left as is.
+  assert (
+      _append_instruction('You are helpful.\n', 'If you finished...')
+      == 'You are helpful.\nIf you finished...'
+  )
+
+
+@pytest.mark.asyncio
+async def test_append_instruction_provider_separates_suffix_with_blank_line():
+  """The provider path of _append_instruction separates the suffix too."""
+
+  def provider(_: ReadonlyContext) -> str:
+    return 'You are helpful.'
+
+  combined = _append_instruction(provider, 'If you finished...')
+  assert callable(combined)
+  assert await combined(None) == 'You are helpful.\n\nIf you finished...'
+
+
+@pytest.mark.asyncio
+async def test_run_live_separates_completion_instruction(
+    request: pytest.FixtureRequest,
+):
+  """Live mode appends the completion instruction as its own paragraph."""
+
+  class _LiveLlmSubAgent(LlmAgent):
+
+    @override
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='live')]),
+      )
+
+  sub_agent = _LiveLlmSubAgent(
+      name='live_sub_agent',
+      instruction='You are helpful.',
+  )
+  sequential_agent = SequentialAgent(
+      name='seq_agent',
+      sub_agents=[sub_agent],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, sequential_agent
+  )
+
+  _ = [e async for e in sequential_agent.run_live(parent_ctx)]
+
+  assert isinstance(sub_agent.instruction, str)
+  assert sub_agent.instruction.startswith('You are helpful.\n\nIf you finished')
+  assert 'helpful.If' not in sub_agent.instruction
