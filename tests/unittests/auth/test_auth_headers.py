@@ -14,7 +14,6 @@
 
 """Tests for building HTTP headers from a resolved credential."""
 
-import base64
 import logging
 
 from fastapi.openapi.models import APIKey as APIKeyScheme
@@ -25,6 +24,7 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
+import pytest
 
 
 def test_returns_none_without_credential():
@@ -66,17 +66,40 @@ def test_http_bearer_token():
   }
 
 
-def test_http_basic_auth():
+@pytest.mark.parametrize(
+    "username, password, encoded",
+    [
+        ("user", "pass", "dXNlcjpwYXNz"),
+        ("user", "", "dXNlcjo="),
+        ("", "pass", "OnBhc3M="),
+        ("", "", "Og=="),
+    ],
+)
+def test_http_basic_auth(username, password, encoded):
   credential = AuthCredential(
       auth_type=AuthCredentialTypes.HTTP,
       http=HttpAuth(
           scheme="basic",
-          credentials=HttpCredentials(username="user", password="pass"),
+          credentials=HttpCredentials(username=username, password=password),
       ),
   )
 
-  encoded = base64.b64encode(b"user:pass").decode()
   assert build_auth_headers(credential) == {"Authorization": f"Basic {encoded}"}
+
+
+@pytest.mark.parametrize(
+    "username, password", [(None, "pass"), ("user", None), (None, None)]
+)
+def test_http_basic_auth_missing_credentials(username, password):
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username=username, password=password),
+      ),
+  )
+
+  assert build_auth_headers(credential) is None
 
 
 def test_http_custom_scheme_uses_scheme_name():
