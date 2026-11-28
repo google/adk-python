@@ -8609,5 +8609,46 @@ def test_setup_instrumentation_lib_checks_dependency_conflicts(
     assert "Skipping GoogleGenAiSdkInstrumentor" in caplog.text
 
 
+async def _noop_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+  return None
+
+
+def _make_rewrite_scope(path: str, raw_path: bytes | None = None) -> dict:
+  """Build a scope the way uvicorn does: decoded path, raw bytes."""
+  if raw_path is None:
+    raw_path = quote(path, safe="/").encode("ascii")
+  return {"type": "http", "path": path, "raw_path": raw_path}
+
+
+async def test_default_app_rewrite_leaves_non_ascii_path_alone():
+  """A non-ASCII path must not raise UnicodeEncodeError."""
+  middleware = api_server_module._DefaultAppRewriteMiddleware(
+      _noop_app, "data_agent"
+  )
+  path = "/apps/data_agent/users/u/sessions/s/artifacts/分析报告.md"
+  scope = _make_rewrite_scope(path)
+  expected_raw_path = scope["raw_path"]
+
+  await middleware(scope, None, None)
+
+  assert scope["path"] == path
+  assert scope["raw_path"] == expected_raw_path
+
+
+async def test_default_app_rewrite_prefixes_raw_path_as_bytes():
+  """Rewriting prepends the prefix and keeps the client's encoding."""
+  middleware = api_server_module._DefaultAppRewriteMiddleware(
+      _noop_app, "data_agent"
+  )
+  scope = _make_rewrite_scope(
+      "/users/u/sessions/a~b", b"/users/u/sessions/a%7Eb"
+  )
+
+  await middleware(scope, None, None)
+
+  assert scope["path"] == "/apps/data_agent/users/u/sessions/a~b"
+  assert scope["raw_path"] == b"/apps/data_agent/users/u/sessions/a%7Eb"
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])
