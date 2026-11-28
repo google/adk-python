@@ -9687,10 +9687,6 @@ async def test_get_completion_inputs_thinking_budget_zero_unmapped_model(
             "minimax/MiniMax-M2.1",
             types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
         ),
-        (
-            "bedrock/us-gov-east-1/claude-sonnet-4-5-20250929-v1:0",
-            types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
-        ),
     ],
 )
 async def test_get_completion_inputs_ignores_unsupported_reasoning_params(
@@ -9706,6 +9702,35 @@ async def test_get_completion_inputs_ignores_unsupported_reasoning_params(
   )
 
   _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_minimal_level_without_anthropic_thinking(
+    mocker,
+) -> None:
+  """Omits thinking for a minimal level when the Claude route lacks it."""
+  # Pin provider capabilities; litellm releases disagree on Bedrock GovCloud's.
+  mocker.patch.object(litellm, "supports_reasoning", return_value=True)
+  mocker.patch.object(
+      litellm,
+      "get_supported_openai_params",
+      return_value=["max_completion_tokens", "temperature"],
+  )
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(
+              thinking_level=types.ThinkingLevel.MINIMAL
+          ),
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req, model="bedrock/us-gov-east-1/claude-sonnet-4-5-20250929-v1:0"
+  )
   assert generation_params is None
 
 
