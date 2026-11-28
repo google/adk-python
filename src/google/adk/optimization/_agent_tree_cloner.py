@@ -53,19 +53,25 @@ def _partition_agent_params(
   fields = set(type(agent).model_fields)
   constructed_ids = _mode_tool_ids(agent)
   raw_subs = flat_params.get("sub_agents", agent.sub_agents) or []
-  sub_children = {
-      child.name: child for child in raw_subs if isinstance(child, BaseAgent)
-  }
-  sub_ids = {id(child) for child in sub_children.values()}
+  sub_children: dict[str, BaseAgent] = {}
+  sub_name_ids: dict[str, set[int]] = {}
+  for child in raw_subs:
+    if isinstance(child, BaseAgent):
+      sub_children[child.name] = child
+      sub_name_ids.setdefault(child.name, set()).add(id(child))
+  sub_ids = {id(child) for child in raw_subs if isinstance(child, BaseAgent)}
   raw_tools = flat_params.get("tools", getattr(agent, "tools", None)) or []
-  tool_children = {
-      tool.agent.name: tool.agent
-      for tool in raw_tools
-      if isinstance(tool, AgentTool)
-      and id(tool) not in constructed_ids
-      and id(tool.agent) not in sub_ids
-      and isinstance(tool.agent, BaseAgent)
-  }
+  tool_children: dict[str, BaseAgent] = {}
+  tool_name_ids: dict[str, set[int]] = {}
+  for tool in raw_tools:
+    if (
+        isinstance(tool, AgentTool)
+        and id(tool) not in constructed_ids
+        and id(tool.agent) not in sub_ids
+        and isinstance(tool.agent, BaseAgent)
+    ):
+      tool_children[tool.agent.name] = tool.agent
+      tool_name_ids.setdefault(tool.agent.name, set()).add(id(tool.agent))
 
   direct: dict[str, Any] = {}
   sub_params: dict[str, dict[str, Any]] = {}
@@ -77,6 +83,11 @@ def _partition_agent_params(
         raise ValueError(
             f"Parameter {key!r}: agent {agent.name!r} has no sub-agent named"
             f" {child_name!r}. Sub-agents: {sorted(sub_children) or 'none'}."
+        )
+      if len(sub_name_ids.get(child_name, ())) > 1:
+        raise ValueError(
+            f"Parameter {key!r}: agent {agent.name!r} has multiple sub-agents"
+            f" named {child_name!r}."
         )
       if not rest:
         raise ValueError(
@@ -96,6 +107,11 @@ def _partition_agent_params(
             f"Parameter {key!r}: agent {agent.name!r} has no AgentTool agent"
             f" named {child_name!r}.{hint} AgentTools:"
             f" {sorted(tool_children) or 'none'}."
+        )
+      if len(tool_name_ids.get(child_name, ())) > 1:
+        raise ValueError(
+            f"Parameter {key!r}: agent {agent.name!r} has multiple AgentTool"
+            f" agents named {child_name!r}."
         )
       if not rest:
         raise ValueError(
@@ -352,9 +368,11 @@ def _apply_generate_content_config(
           f"Duplicate override for 'generate_content_config.{key}' via both"
           " field name and alias."
       )
-    current = getattr(base, key, None)
-    if key == "thinking_config" and current is None:
-      current = planner_tc
+    current = (
+        planner_tc
+        if key == "thinking_config" and planner_tc is not None
+        else getattr(base, key, None)
+    )
     merged[key] = _merge_nested_value(current, value, f"{key}.")
 
   seed = (
@@ -398,22 +416,46 @@ def _copy_agent_tool(tool: AgentTool, cloned_agent: BaseAgent) -> AgentTool:
   return cloned_tool
 
 
-def _clone_agent_tool(tool: AgentTool, params: Mapping[str, Any]) -> AgentTool:
-  """Copies an AgentTool around a clone of its wrapped agent."""
-  cloned_child = clone_agent_with_params(tool.agent, params)
-  # AgentTool runs its agent as a separate root, so it must have no parent.
-  cloned_child.parent_agent = None
-  return _copy_agent_tool(tool, cloned_child)
-
-
-def clone_agent_with_params(
+def _collect_agent_params(
     agent: BaseAgent,
     flat_params: Mapping[str, Any],
+    direct_by_id: dict[int, dict[str, Any]],
+) -> None:
+  """Validates paths and accumulates direct overrides per original agent ID."""
+  direct, sub_params, tool_params = _partition_agent_params(agent, flat_params)
+  target = direct_by_id.setdefault(id(agent), {})
+  target.update(direct)
+
+  sub_agents = direct.get("sub_agents", agent.sub_agents) or []
+  for child in sub_agents:
+    if isinstance(child, BaseAgent):
+      _collect_agent_params(child, sub_params.get(child.name, {}), direct_by_id)
+
+  tools = direct.get("tools", getattr(agent, "tools", None)) or []
+  constructed_ids = _mode_tool_ids(agent)
+  sub_ids = {id(child) for child in sub_agents if isinstance(child, BaseAgent)}
+  for tool in tools:
+    if (
+        isinstance(tool, AgentTool)
+        and id(tool) not in constructed_ids
+        and id(tool.agent) not in sub_ids
+        and isinstance(tool.agent, BaseAgent)
+    ):
+      _collect_agent_params(
+          tool.agent, tool_params.get(tool.agent.name, {}), direct_by_id
+      )
+
+
+def _clone_agent_with_memo(
+    agent: BaseAgent,
+    direct_by_id: Mapping[int, dict[str, Any]],
+    memo: dict[int, BaseAgent],
 ) -> BaseAgent:
-  """Clones `agent` and its descendants with `flat_params` applied."""
-  update_dict, sub_params, tool_params = _partition_agent_params(
-      agent, flat_params
-  )
+  """Clones `agent` and its descendants using pre-collected per-ID overrides."""
+  if id(agent) in memo:
+    return memo[id(agent)]
+
+  update_dict = dict(direct_by_id.get(id(agent), ()))
   raw_model = update_dict.get("model", getattr(agent, "model", None))
   if isinstance(raw_model, BaseModel):
     cloned_llm = raw_model.model_copy()
@@ -424,17 +466,11 @@ def clone_agent_with_params(
   # Clone children even when `sub_agents` itself is swept: cloning re-parents
   # them, which must never touch the caller's agents or another candidate's.
   sub_agents = update_dict.get("sub_agents", agent.sub_agents)
-  cloned_subs: dict[int, BaseAgent] = {}
   if sub_agents:
-    cloned_list = [
-        clone_agent_with_params(child, sub_params.get(child.name, {}))
+    update_dict["sub_agents"] = [
+        _clone_agent_with_memo(child, direct_by_id, memo)
         for child in sub_agents
     ]
-    update_dict["sub_agents"] = cloned_list
-    cloned_subs = {
-        id(orig): cloned
-        for orig, cloned in zip(sub_agents, cloned_list, strict=True)
-    }
 
   tools = update_dict.get("tools", getattr(agent, "tools", None)) or []
   constructed_ids = _mode_tool_ids(agent)
@@ -446,12 +482,13 @@ def clone_agent_with_params(
     for tool in tools:
       if not isinstance(tool, AgentTool) or id(tool) in constructed_ids:
         new_tools.append(tool)
-      elif id(tool.agent) in cloned_subs:
-        new_tools.append(_copy_agent_tool(tool, cloned_subs[id(tool.agent)]))
+      elif id(tool.agent) in memo:
+        new_tools.append(_copy_agent_tool(tool, memo[id(tool.agent)]))
       elif isinstance(tool.agent, BaseAgent):
-        new_tools.append(
-            _clone_agent_tool(tool, tool_params.get(tool.agent.name, {}))
-        )
+        cloned_child = _clone_agent_with_memo(tool.agent, direct_by_id, memo)
+        # AgentTool runs its agent as a separate root when not also in sub_agents.
+        cloned_child.parent_agent = None
+        new_tools.append(_copy_agent_tool(tool, cloned_child))
       else:
         new_tools.append(tool)
     update_dict["tools"] = new_tools
@@ -462,4 +499,16 @@ def clone_agent_with_params(
     update_dict["planner"] = BuiltInPlanner(
         thinking_config=planner.thinking_config.model_copy(deep=True)
     )
-  return agent.clone(update=update_dict)
+  cloned = agent.clone(update=update_dict)
+  memo[id(agent)] = cloned
+  return cloned
+
+
+def clone_agent_with_params(
+    agent: BaseAgent,
+    flat_params: Mapping[str, Any],
+) -> BaseAgent:
+  """Clones `agent` and its descendants with `flat_params` applied."""
+  direct_by_id: dict[int, dict[str, Any]] = {}
+  _collect_agent_params(agent, flat_params, direct_by_id)
+  return _clone_agent_with_memo(agent, direct_by_id, {})
