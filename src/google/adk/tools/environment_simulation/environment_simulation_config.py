@@ -77,10 +77,18 @@ class InjectionConfig(BaseModel):
   the interceptor is applied as after tool callback."""
 
   random_seed: Optional[int] = None
-  """Seeds this injection's own generator once when the plugin or callback is
-  created. A call draws the next value only when it matches this injection and
-  no injection tried before it answered it, and one plugin's sequence is shared
-  by every session it serves. None draws from a shared unseeded generator."""
+  """Seeds this injection's own generator. A call draws the next value only
+  when it matches this injection and no injection tried before it answered it.
+
+  In an eval run by LocalEvalService, each run of an eval case draws from its
+  own sequence, derived from the seed, the app name, the eval set and eval case
+  ids, the repetition index, the tool name and this injection's index. The same
+  ordered matching calls within a case then get the same results whichever
+  other cases run with it, in any order or parallelism; a run whose agent
+  trajectory changes can still consume different draws. Outside an eval, the
+  generator is seeded once when the plugin or callback is created, and one
+  plugin's sequence is shared by every session it serves. None draws from a
+  shared unseeded generator."""
 
   injected_error: Optional[InjectedError] = None
   """The injected error."""

@@ -33,6 +33,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
+from ..utils._eval_run_context import eval_run_context
 from ..utils._sync_runner import _is_async_callable
 from ..workflow._base_node import BaseNode
 from ._eval_case_result_multi_run_aggregator import summarize_eval_case_results
@@ -683,7 +684,15 @@ class LocalEvalService(BaseEvalService):
     )
 
     try:
-      with client_label_context(EVAL_CLIENT_LABEL):
+      with (
+          client_label_context(EVAL_CLIENT_LABEL),
+          eval_run_context(
+              app_name=app_name,
+              eval_set_id=eval_set_id,
+              eval_case_id=eval_case.eval_id,
+              repetition_index=repetition_index,
+          ),
+      ):
         if use_live:
           inferences = await EvaluationGenerator._generate_inferences_from_root_agent_live(
               root_agent=root_agent,
