@@ -221,18 +221,27 @@ def _build_anthropic_thinking_param(
       explicit (mirroring the Anthropic API).
     * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
     * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
-      (``thinking.type: "adaptive"``, ``thinking.display: "summarized"``). The
-      model picks the depth itself (controlled by the separate
-      ``output_config.effort`` parameter when set) and returns its reasoning
-      as summarized thoughts. REQUIRED for Claude Opus 4.7 and later models
-      that reject ``"enabled"`` with a 400 error; also recommended for Opus
-      4.6 and Sonnet 4.6 where ``"enabled"`` is deprecated.
+      (``thinking.type: "adaptive"``). The model picks the depth itself
+      (controlled by the separate ``output_config.effort`` parameter when
+      set). REQUIRED for Claude Opus 4.7 and later models that reject
+      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
+      Sonnet 4.6 where ``"enabled"`` is deprecated.
     * positive int: budget in tokens for legacy manual mode
       (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
       ``< max_tokens``; validation is delegated to the Anthropic API so the
       caller gets the canonical error message). Rejected by Claude Opus 4.7
       -- callers targeting 4.7+ must use a negative value (adaptive) or
       ``0`` (disabled).
+
+  ``include_thoughts`` sets ``thinking.display`` when thinking is on:
+    * ``None`` or ``True``: adaptive thinking asks for ``"summarized"``, so
+      the reasoning comes back as summarized thought parts. A manual budget
+      sends no ``display``; the models that accept one return summaries by
+      default.
+    * ``False``: ``"omitted"`` in both modes. Claude still thinks, and bills
+      the same, but its thinking blocks come back with empty text and a
+      signature. They become thought parts with empty text, which are sent
+      back unchanged on later turns.
 
   Args:
     config: Optional GenerateContentConfig object.
@@ -256,6 +265,10 @@ def _build_anthropic_thinking_param(
   if thinking_budget == 0:
     return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
 
+  # Only an explicit False hides the reasoning. None keeps the summaries ADK
+  # has always asked for, so existing configs send the same request.
+  omit_thoughts = config.thinking_config.include_thoughts is False
+
   if thinking_budget < 0:
     # genai AUTOMATIC (-1) and any other negative value map to Anthropic
     # adaptive thinking. Required for Claude Opus 4.7 (which returns a 400
@@ -263,16 +276,20 @@ def _build_anthropic_thinking_param(
     # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
     # depth is controlled by the model itself (or by the separate
     # ``output_config.effort`` parameter when set).
-    # Without ``display``, Claude redacts the reasoning it just billed for.
+    # Claude Opus 4.7 and later default to ``display: "omitted"``, so the
+    # summaries must be asked for explicitly.
     return anthropic_types.ThinkingConfigAdaptiveParam(
         type="adaptive",
-        display="summarized",
+        display="omitted" if omit_thoughts else "summarized",
     )
 
-  return anthropic_types.ThinkingConfigEnabledParam(
+  enabled = anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",
       budget_tokens=thinking_budget,
   )
+  if omit_thoughts:
+    enabled["display"] = "omitted"
+  return enabled
 
 
 def _thinking_is_enabled(
@@ -1439,6 +1456,11 @@ class AnthropicLlm(BaseLlm):
     To configure thinking effort, user must use `AnthropicGenerateContentConfig`
     and set its `effort` field directly (e.g., `effort="xhigh"`).
 
+    When `thinking_config` turns thinking on, ADK returns a summary of
+    Claude's reasoning as thought parts. Set
+    `thinking_config.include_thoughts=False` to get those parts with empty
+    text instead (Claude's `thinking.display: "omitted"`).
+
   Attributes:
     model: The name of the Claude model.
     max_tokens: The maximum number of tokens to generate.
@@ -2063,6 +2085,11 @@ class Claude(AnthropicLlm):
 
     To configure thinking effort, user must use `AnthropicGenerateContentConfig`
     and set its `effort` field directly (e.g., `effort="xhigh"`).
+
+    When `thinking_config` turns thinking on, ADK returns a summary of
+    Claude's reasoning as thought parts. Set
+    `thinking_config.include_thoughts=False` to get those parts with empty
+    text instead (Claude's `thinking.display: "omitted"`).
 
   Attributes:
     model: The name of the Claude model.
