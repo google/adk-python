@@ -43,6 +43,11 @@ _ATTR_RE = re.compile(r'(\w+)=("[^"]*"|[^\s\]]+)')
 # Graph-level defaults, not agent/tool nodes.
 _DOT_KEYWORDS = frozenset({'graph', 'node', 'edge'})
 
+_EMPTY_WORKFLOW_AGENTS = [
+    (SequentialAgent, 'cluster_shell (Sequential Agent)'),
+    (LoopAgent, 'cluster_shell (Loop Agent)'),
+]
+
 
 def _unquote(value: str) -> str:
   return value[1:-1] if value.startswith('"') and value.endswith('"') else value
@@ -171,6 +176,39 @@ async def test_build_graph_loop_agent_closes_the_cycle_to_the_first_sub_agent():
   # Last step loops back to the first one.
   assert set(edges) == {('first', 'second'), ('second', 'first')}
   assert 'subgraph "cluster_looper (Loop Agent)"' in graph.source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('agent_type', 'cluster_name'), _EMPTY_WORKFLOW_AGENTS)
+async def test_build_graph_empty_workflow_agent_as_root_draws_an_empty_cluster(
+    agent_type, cluster_name
+):
+  graph = await get_agent_graph(agent_type(name='shell'), [])
+
+  nodes, edges = _parse(graph.source)
+  # A workflow shell is a cluster, not a node, and has no children to connect.
+  assert nodes == {}
+  assert edges == {}
+  assert f'subgraph "{cluster_name}"' in graph.source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('agent_type', 'cluster_name'), _EMPTY_WORKFLOW_AGENTS)
+async def test_build_graph_empty_workflow_agent_as_child_draws_no_edges(
+    agent_type, cluster_name
+):
+  root = LlmAgent(
+      name='root', model='gemini-2.0-flash', sub_agents=[agent_type(name='shell')]
+  )
+
+  graph = await get_agent_graph(root, [])
+
+  nodes, edges = _parse(graph.source)
+  assert set(nodes) == {'root'}
+  # The parent has no first step to point at, so it draws no edge into the
+  # empty cluster.
+  assert edges == {}
+  assert f'subgraph "{cluster_name}"' in graph.source
 
 
 @pytest.mark.asyncio
