@@ -637,10 +637,15 @@ class _DefaultAppRewriteMiddleware:
         if any(
             pattern.match(path) for pattern in self._PRODUCTION_PATH_PATTERNS
         ):
-          scope["path"] = f"/apps/{self._default_app_name}{path}"
-
-        if "raw_path" in scope:
-          scope["raw_path"] = scope["path"].encode("latin-1")
+          prefix = f"/apps/{self._default_app_name}"
+          scope["path"] = f"{prefix}{path}"
+          if "raw_path" in scope:
+            # Prefix the client's bytes; re-encoding the decoded path both
+            # fails on non-ASCII characters and drops percent-encoding.
+            scope["raw_path"] = (
+                urllib.parse.quote(prefix, safe="/").encode("ascii")
+                + scope["raw_path"]
+            )
 
     await self._app(scope, receive, send)
 
