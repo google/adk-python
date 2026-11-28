@@ -342,10 +342,10 @@ def prepare_llm_agent_input(
 ) -> Event | None:
   """Prepares the input for running LlmAgent as a node.
 
-  For ``single_turn`` mode, append a user-role event with the input
-  directly to session.events (legacy behavior). When resuming with
-  ``resume_inputs``, skip appending to avoid injecting duplicate synthetic
-  user events that shadow user function responses.
+  For ``single_turn`` mode, insert the user-role input before any history
+  from the same node run. This keeps its tool calls and responses visible
+  when the run resumes. When ``resume_inputs`` are supplied, skip insertion
+  to avoid shadowing user function responses.
 
   For ``task`` mode, the input is the parent's task-delegation FC
   args.  Those are NOT appended here — the content-builder
@@ -384,7 +384,19 @@ def prepare_llm_agent_input(
   branch = ctx._invocation_context.branch
   if branch:
     user_event.branch = branch
-  ctx.session.events.append(user_event)
+  events = ctx.session.events
+  index = len(events)
+  if node_path:
+    for event_index, previous in enumerate(events):
+      if (
+          previous.invocation_id == ctx._invocation_context.invocation_id
+          and previous.node_info.path == node_path
+          and previous.branch == branch
+          and previous.isolation_scope == iso
+      ):
+        index = event_index
+        break
+  events.insert(index, user_event)
   return user_event
 
 
