@@ -129,7 +129,7 @@ optional-dependencies.all = [
   "microsoft-agents-hosting-aiohttp>=1.6,<2",
   "nltk!=3.10.1",
   "oci>=2.126",
-  "openai>=2.20,<3",
+  "openai>=2.20,<4",
   "openpyxl>=3.1.5,<4",
   "opensandbox>=0.1.15,<0.2",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
@@ -243,7 +243,7 @@ optional-dependencies.extensions = [
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "nltk!=3.10.1",                                                    # Transitive via llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
-  "openai>=2.20,<3",
+  "openai>=2.20,<4",
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
 ]
@@ -308,7 +308,7 @@ optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
 # OpenTelemetry export and instrumentation for ADK.
-optional-dependencies.openai = [ "openai>=2.20,<3" ]
+optional-dependencies.openai = [ "openai>=2.20,<4" ]
 optional-dependencies.opensandbox = [
   "opensandbox>=0.1.15,<0.2", # For OpenSandbox remote sandbox.
 ]
@@ -395,7 +395,7 @@ optional-dependencies.test = [
   "mcp>=1.24,<3",
   "microsoft-agents-hosting-aiohttp>=1.6,<2",
   "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
-  "openai>=2.20,<3",
+  "openai>=2.20,<4",
   "openpyxl>=3.1.5,<4",
   "opensandbox>=0.1.15,<0.2",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
