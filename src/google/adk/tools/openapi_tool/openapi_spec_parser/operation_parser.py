@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from textwrap import dedent
 from typing import Any
 from typing import cast
@@ -23,6 +24,7 @@ from typing import List
 from typing import Optional
 
 from fastapi.encoders import jsonable_encoder
+from fastapi.openapi.models import MediaType
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter
 from fastapi.openapi.models import ParameterInType
@@ -32,12 +34,66 @@ from fastapi.openapi.models import Response
 from fastapi.openapi.models import Schema
 
 from ..._gemini_schema_util import _to_snake_case
+from ..common.common import _is_json_media_type
 from ..common.common import _schema_from_openapi
 from ..common.common import ApiParameter
 from ..common.common import PydocHelper
 from ..common.common import rename_python_keywords
 
 _MAX_TOOL_NAME_LENGTH = 60
+
+
+def _normalize_response_schema(schema: dict[str, Any]) -> None:
+  """Translates OpenAPI schema keywords for use as a JSON response schema."""
+  schema_type = schema.get('type')
+  if (
+      schema.pop('nullable', False) is True
+      and isinstance(schema_type, str)
+      and schema_type != 'null'
+  ):
+    schema['type'] = [schema_type, 'null']
+
+  properties = schema.get('properties') or {}
+  if schema.get('required'):
+    schema['required'] = [
+        name
+        for name in schema['required']
+        if not (
+            isinstance(properties.get(name), dict)
+            and properties[name].get('writeOnly') is True
+        )
+    ]
+
+  for key in ('properties', 'patternProperties', 'dependentSchemas', '$defs'):
+    for child in (schema.get(key) or {}).values():
+      if isinstance(child, dict):
+        _normalize_response_schema(child)
+  for key in ('allOf', 'anyOf', 'oneOf', 'prefixItems'):
+    for child in schema.get(key) or ():
+      if isinstance(child, dict):
+        _normalize_response_schema(child)
+  for key in (
+      'items',
+      'additionalProperties',
+      'contains',
+      'propertyNames',
+      'not',
+      'if',
+      'then',
+      'else',
+      'unevaluatedItems',
+      'unevaluatedProperties',
+      'contentSchema',
+  ):
+    child = schema.get(key)
+    if isinstance(child, dict):
+      _normalize_response_schema(child)
+
+
+def _requested_media_types(content: dict[str, MediaType]) -> list[str]:
+  """Returns the media types a tool asks for: the JSON ones, if any."""
+  json_types = [t for t in content if _is_json_media_type(t)]
+  return json_types or list(content)
 
 
 def _required_scheme_name(
@@ -354,6 +410,69 @@ class OperationParser:
         'title': f"{self._operation.operationId or 'unnamed'}_Arguments",
         'type': 'object',
     }
+
+  def get_response_json_schema(self) -> Dict[str, Any] | None:
+    """Returns the tool's declared success shapes, or None if unknown."""
+    schemas: dict[str, dict[str, Any]] = {}
+    text_response = False
+    for status, response in (self._operation.responses or {}).items():
+      if not status.startswith('2'):
+        continue
+      if not isinstance(response, Response):
+        return None
+      if not response.content or status in ('204', '205'):
+        text_response = True
+        continue
+      for media_type in _requested_media_types(response.content):
+        media = response.content[media_type]
+        if '*' in media_type:
+          return None
+        if not _is_json_media_type(media_type):
+          text_response = True
+          continue
+        if not isinstance(media.schema_, Schema):
+          return None
+        schema = media.schema_.model_dump(
+            mode='json', by_alias=True, exclude_unset=True
+        )
+        _normalize_response_schema(schema)
+        if not schema:
+          return None
+        schemas[json.dumps(schema, sort_keys=True)] = schema
+
+    variants = list(schemas.values())
+    if text_response:
+      variants.append({
+          'type': 'object',
+          'properties': {'text': {'type': 'string'}},
+          'required': ['text'],
+      })
+    if len(variants) > 1:
+      return {'anyOf': variants}
+    return variants[0] if variants else None
+
+  def get_accept_header(self) -> str | None:
+    """Returns an Accept value for the declared success shapes.
+
+    A success response that lists JSON beside other media types is declared by
+    its JSON alone, so the tool must ask for it. Returns None when the response
+    schema is unknown or every listed media type is declared.
+    """
+    if self.get_response_json_schema() is None:
+      return None
+    listed: list[str] = []
+    requested: list[str] = []
+    for status, response in (self._operation.responses or {}).items():
+      if (
+          status.startswith('2')
+          and isinstance(response, Response)
+          and response.content
+      ):
+        listed.extend(response.content)
+        requested.extend(_requested_media_types(response.content))
+    if len(requested) == len(listed):
+      return None
+    return ', '.join(dict.fromkeys(requested))
 
   def get_signature_parameters(self) -> List[inspect.Parameter]:
     """Returns a list of inspect.Parameter objects for the function."""
