@@ -23,7 +23,9 @@ import logging
 from types import TracebackType
 from typing import Any
 from typing import Coroutine
+from typing import Mapping
 from typing import Optional
+from typing import Sequence
 from typing import TypeVar
 
 from ...dependencies._mcp import ClientSession
@@ -31,6 +33,8 @@ from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import negotiate_auto
+from ...dependencies._mcp import NotificationBinding
+from ...dependencies._mcp import ResultClaim
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import types
@@ -48,18 +52,27 @@ _T = TypeVar('_T')
 _CLIENT_INFO = types.Implementation(name='google-adk', version=__version__)
 
 
-async def _connect(session: ClientSession) -> None:
+async def _connect(
+    session: ClientSession, *, has_extensions: bool = False
+) -> None:
   """Connects ``session`` using the newest protocol both sides support.
 
   When enabled, tries the modern protocol (``server/discover``) first, which
   needs no ``Mcp-Session-Id`` and sends ``clientInfo`` on every request. Falls
   back to ``initialize`` for older servers.
 
+  A session that carries an MCP extension tries it even with the feature off.
+  The SDK leaves an extension with a result claim out of the capabilities it
+  advertises on the ``initialize`` wire, so on a legacy connection the claim
+  never fires.
+
   Args:
     session: The session to bring up.
+    has_extensions: Whether ``session`` was built with MCP extensions.
   """
-  # pylint: disable-next=protected-access
-  if not is_feature_enabled(FeatureName._MCP_MODERN_PROTOCOL):
+  if not has_extensions and not is_feature_enabled(
+      FeatureName._MCP_MODERN_PROTOCOL  # pylint: disable=protected-access
+  ):
     await session.initialize()
   elif negotiate_auto is None:
     _warn_probe_unavailable()
@@ -67,13 +80,21 @@ async def _connect(session: ClientSession) -> None:
   else:
     await negotiate_auto(session)
 
+  if has_extensions and session.discover_result is None:
+    logger.warning(
+        'MCP extensions were configured, but the server only speaks the'
+        ' legacy protocol, where no result claim is active. Extensions that'
+        ' rely on one, such as tasks, stay inactive on this session.'
+    )
+
 
 # Cached so it only logs once.
 @functools.cache
 def _warn_probe_unavailable() -> None:
   logger.warning(
-      'MCP_MODERN_PROTOCOL is enabled, but the installed MCP SDK has no era'
-      ' probe ADK can use; MCP connections will use the legacy handshake.'
+      'The modern MCP protocol was requested (MCP_MODERN_PROTOCOL or an MCP'
+      ' extension), but the installed MCP SDK has no era probe ADK can use;'
+      ' MCP connections will use the legacy handshake.'
   )
 
 
@@ -195,6 +216,9 @@ class SessionContext:
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
       message_handler: MessageHandlerFnT | None = None,
+      extensions: dict[str, dict[str, Any]] | None = None,
+      result_claims: Mapping[str, Sequence[ResultClaim[Any]]] | None = None,
+      notification_bindings: Sequence[NotificationBinding[Any]] | None = None,
   ):
     """Initializes SessionContext.
 
@@ -216,6 +240,13 @@ class SessionContext:
         including server notifications. On MCP SDK 1.x it runs inside the
         session's receive loop, so it must not await requests on this
         session; offload follow-up work with ``asyncio.create_task(...)``.
+      extensions: MCP extensions this client advertises, keyed by extension
+        identifier. Supplying any extension argument also makes the session
+        try the modern protocol first, as ``MCP_MODERN_PROTOCOL`` does,
+        because a result claim is only active on a modern connection.
+      result_claims: Non-core ``tools/call`` result shapes to accept, keyed by
+        the identifier of the extension that defines them.
+      notification_bindings: Handlers for extension notifications.
     """
     self._client = client
     self._timeout = timeout
@@ -230,6 +261,9 @@ class SessionContext:
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
     self._message_handler = message_handler
+    self._extensions = extensions
+    self._result_claims = result_claims
+    self._notification_bindings = notification_bindings
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -418,6 +452,31 @@ class SessionContext:
   ) -> None:
     await self.close()
 
+  @property
+  def _extension_kwargs(self) -> dict[str, Any]:
+    """The extension arguments to hand `ClientSession`, when there are any.
+
+    Spread rather than passed as three `None`s: MCP SDK 1.x declares none of
+    these parameters, and naming one there is a `TypeError`. Nothing
+    configures an extension on 1.x -- the opt-in is refused before a session
+    manager exists -- so this is empty and the construction below is the one
+    1.x has always made.
+    """
+    if not self._has_extensions:
+      return {}
+    return {
+        'extensions': self._extensions,
+        'result_claims': self._result_claims,
+        'notification_bindings': self._notification_bindings,
+    }
+
+  @property
+  def _has_extensions(self) -> bool:
+    """Whether any MCP extension was configured on this session."""
+    return bool(
+        self._extensions or self._result_claims or self._notification_bindings
+    )
+
   async def _run(self) -> None:
     """Run the complete session context within a single task."""
     try:
@@ -461,6 +520,7 @@ class SessionContext:
                   elicitation_callback=self._elicitation_callback,
                   message_handler=self._message_handler,
                   client_info=_CLIENT_INFO,
+                  **self._extension_kwargs,
               )
           )
         else:
@@ -477,6 +537,7 @@ class SessionContext:
                   elicitation_callback=self._elicitation_callback,
                   message_handler=self._message_handler,
                   client_info=_CLIENT_INFO,
+                  **self._extension_kwargs,
               )
           )
         # pylint: disable-next=protected-access
@@ -487,9 +548,12 @@ class SessionContext:
           import anyio
 
           with anyio.fail_after(self._timeout):
-            await _connect(session)
+            await _connect(session, has_extensions=self._has_extensions)
         else:
-          await asyncio.wait_for(_connect(session), timeout=self._timeout)
+          await asyncio.wait_for(
+              _connect(session, has_extensions=self._has_extensions),
+              timeout=self._timeout,
+          )
         logger.debug('Session has been successfully initialized')
 
         self._session = session

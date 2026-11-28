@@ -153,6 +153,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [ToolConfirmation](tools/tool_confirmation/index.md) - Pausing a tool call until a person approves it, and passing their answer back to the agent.
 * [AgentTool](tools/agent_tool/index.md) - Calling another agent as a tool in a separate session, and how that compares with a single-turn sub-agent.
 * [McpToolset](tools/mcp_tool/mcp_toolset/index.md) - Connecting an agent to a Model Context Protocol server and using the tools it publishes.
+* [MCP Tasks](tools/mcp_tool/tasks/index.md) - Accept task-augmented MCP tool calls, so an operation can outlive the request that started it.
 * [SkillToolset](tools/skill_toolset/index.md) - Giving an agent skills that it loads only when a request calls for them.
 * [ModelConsultTool and ModelConsultContextConfig](tools/model_consult/model_consult_tool/index.md) - Escalating hard decisions mid-generation to a stronger advisor model, with per-turn and session budgets.
 * [Node as tool](tools/node_tool/index.md) - Exposing workflows and deterministic nodes as agent tools with isolated runtime branching and resume support.
