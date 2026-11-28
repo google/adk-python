@@ -16,7 +16,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Sequence
 import itertools
-import re
 import threading
 from typing import TYPE_CHECKING
 import unicodedata
@@ -46,10 +45,35 @@ def _is_latin(c: str) -> bool:
   return unicodedata.name(c, '').startswith('LATIN')
 
 
+def _is_mark(c: str) -> bool:
+  return unicodedata.category(c).startswith('M')
+
+
+# Combining marks count as word characters: \w alone would split a word at
+# them, such as the Thai vowel and tone marks in ข้าว. This matches the
+# tokenizer of SqliteMemoryService.
+def _is_word_char(c: str) -> bool:
+  return c.isalnum() or c == '_' or _is_mark(c)
+
+
+def _find_words(text: str) -> list[str]:
+  """Returns the words of an NFC-normalized text, marks included."""
+  words = []
+  for is_word, group in itertools.groupby(text, _is_word_char):
+    if not is_word:
+      continue
+    # Marks with no letter before them are dropped: the emoji variation
+    # selector U+FE0F is a mark, and as a word it would match any emoji.
+    word = ''.join(itertools.dropwhile(_is_mark, group))
+    if word:
+      words.append(word)
+  return words
+
+
 def _extract_words_lower(text: str) -> set[str]:
   """Extracts Unicode-aware tokens from a string in lowercase."""
   text = unicodedata.normalize('NFC', text)
-  return set(word.lower() for word in re.findall(r'\w+', text))
+  return set(word.lower() for word in _find_words(text))
 
 
 def _extract_searchable_words(text: str) -> set[str]:
@@ -57,7 +81,7 @@ def _extract_searchable_words(text: str) -> set[str]:
 
   The tokens of _extract_words_lower, plus, for a token that mixes Latin and
   non-Latin scripts, each of its single-script runs. Japanese and Chinese are
-  written without spaces, so 私はPythonを使う is a single \w+ token and a query
+  written without spaces, so 私はPythonを使う is a single token and a query
   for Python matches nothing. Splitting on the boundary between Latin and
   non-Latin scripts makes the embedded Latin word a token of its own, while
   still keeping a partial word such as thon from matching. Queries and events
@@ -68,15 +92,17 @@ def _extract_searchable_words(text: str) -> set[str]:
     text: The text of a query or an event.
   """
   words: set[str] = set()
-  for word in re.findall(r'\w+', unicodedata.normalize('NFC', text)):
+  for word in _find_words(unicodedata.normalize('NFC', text)):
     words.add(word.lower())
     if not word.isascii():
       # Split before lowercasing: "İ".lower() is "i" plus U+0307, which is
       # not Latin, so splitting afterwards yields a stray "i" word.
-      words.update(
-          ''.join(group).lower()
-          for _, group in itertools.groupby(word, _is_latin)
-      )
+      for _, group in itertools.groupby(word, _is_latin):
+        # A combining mark on a Latin letter is not Latin itself, so it can
+        # form a run of its own; like a leading mark, it is not a word.
+        run = ''.join(itertools.dropwhile(_is_mark, group))
+        if run:
+          words.add(run.lower())
   return words
 
 
