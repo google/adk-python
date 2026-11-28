@@ -530,8 +530,7 @@ async def _execute_single_prepared_call(
           function_args,
           tool_context.tool_confirmation,
           tool_context.function_call_id,
-          invocation_context.user_id,
-      )
+          )
 
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
