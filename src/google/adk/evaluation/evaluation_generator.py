@@ -175,8 +175,6 @@ async def _get_or_create_eval_session(
 # Keyword-argument names accepted by `Runner`, used when building the eval
 # Runner kwargs so the strings are not duplicated at each call site.
 _APP_NAME_KEY = "app_name"
-_AGENT_KEY = "agent"
-_PLUGINS_KEY = "plugins"
 _APP_KEY = "app"
 
 
@@ -194,15 +192,19 @@ def _build_eval_runner_kwargs(
   application-wide configuration participate in the eval run. The copy leaves
   the caller's App instance untouched, and `root_agent` is overridden so the
   Runner targets the agent the caller asked to evaluate, which may be a
-  sub-agent. When `app` is None, the Runner is built from the bare
-  `root_agent` with only the internal eval plugins.
+  sub-agent. When `app` is None, `root_agent` is wrapped in a new App that
+  holds only the internal eval plugins, because passing `plugins=` to Runner
+  is deprecated. Like Runner's own wrapping of a bare agent, this uses
+  `model_construct` so that eval app names which are not valid App names
+  keep working.
   """
   if app is None:
-    return {
-        _APP_NAME_KEY: app_name,
-        _AGENT_KEY: root_agent,
-        _PLUGINS_KEY: internal_eval_plugins,
-    }
+    runner_app = App.model_construct(
+        name=app_name,
+        root_agent=root_agent,
+        plugins=list(internal_eval_plugins),
+    )
+    return {_APP_KEY: runner_app, _APP_NAME_KEY: app_name}
 
   runner_app = app.model_copy(
       update={
