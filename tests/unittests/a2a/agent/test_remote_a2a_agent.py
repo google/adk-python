@@ -28,6 +28,7 @@ from unittest.mock import patch
 from a2a.client import Client as A2AClient
 from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
+from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentInterface
@@ -9490,3 +9491,27 @@ async def test_task_mode_sub_agent_returns_remote_task_output(
   ]
   assert len(tool_responses) == 1
   assert tool_responses[0].response == {"result": "42"}
+
+
+class TestNewIntegrationExtensionInterceptor:
+  """The extension header must land where the active a2a-sdk reads it."""
+
+  @pytest.mark.asyncio
+  async def test_header_is_merged_with_existing_headers(self):
+    from google.adk.a2a.agent.interceptors import new_integration_extension as nie
+
+    parameters = ParametersConfig()
+    _add = remote_a2a_agent._add_request_headers
+    _add(parameters, {"Authorization": "Bearer t"})
+
+    await nie._before_request(
+        None,
+        _compat.make_message(message_id="m", role=_compat.ROLE_USER, parts=[]),
+        parameters,
+    )
+
+    headers = _request_headers(parameters.client_call_context)
+    assert headers["Authorization"] == "Bearer t"
+    assert (
+        headers[HTTP_EXTENSION_HEADER] == nie._NEW_A2A_ADK_INTEGRATION_EXTENSION
+    )
