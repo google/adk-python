@@ -652,6 +652,28 @@ class _ToolUseIdSanitizer:
     self._unpaired_calls_by_name: dict[str, list[str]] = {}
     self._unpaired_calls_list: list[str] = []
     self._next_fallback: int = 0
+    # Fallback ids a tool_result has already claimed through the id mapping.
+    # An id-less tool_result must not pair with a call whose own (invalid)
+    # id was already answered, so claimed fallbacks are skipped when pairing
+    # by name.
+    self._claimed_fallbacks: set[str] = set()
+
+  def _register_pending_call(
+      self, tool_name: str | None, assigned_id: str
+  ) -> None:
+    """Records a call's fallback as available for pairing by tool name."""
+    if tool_name:
+      self._unpaired_calls_by_name.setdefault(tool_name, []).append(assigned_id)
+    self._unpaired_calls_list.append(assigned_id)
+
+  def _remove_from_pending(self, assigned_id: str) -> None:
+    """Withdraws a claimed fallback from the pending-call registries."""
+    if assigned_id in self._unpaired_calls_list:
+      self._unpaired_calls_list.remove(assigned_id)
+    for ids in self._unpaired_calls_by_name.values():
+      if assigned_id in ids:
+        ids.remove(assigned_id)
+        break
 
   def sanitize(
       self,
@@ -662,38 +684,44 @@ class _ToolUseIdSanitizer:
     if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
       return tool_id
     if tool_id and tool_id in self._mapping:
-      return self._mapping[tool_id]
+      assigned_id = self._mapping[tool_id]
+      # This call is answered through its own id, so an id-less result of
+      # the same tool must not claim the fallback by name.
+      self._claimed_fallbacks.add(assigned_id)
+      self._remove_from_pending(assigned_id)
+      return assigned_id
 
     if is_call or (tool_id and tool_id not in self._mapping):
       assigned_id = f"toolu_fallback_{self._next_fallback}"
       self._next_fallback += 1
       if tool_id:
         self._mapping[tool_id] = assigned_id
-      else:
-        if tool_name:
-          self._unpaired_calls_by_name.setdefault(tool_name, []).append(
-              assigned_id
-          )
-        self._unpaired_calls_list.append(assigned_id)
+      # Register every fallbacked call for pairing by name, whether its id
+      # was absent or merely invalid: a tool_result that lost its id can
+      # only find the call through the tool name.
+      self._register_pending_call(tool_name, assigned_id)
       return assigned_id
     else:
-      # Response with empty/None tool_id: pair with oldest pending call
+      # Response with empty/None tool_id: pair with oldest unclaimed call
       if tool_name and self._unpaired_calls_by_name.get(tool_name):
-        assigned_id = self._unpaired_calls_by_name[tool_name].pop(0)
-        if assigned_id in self._unpaired_calls_list:
-          self._unpaired_calls_list.remove(assigned_id)
-        return assigned_id
-      elif self._unpaired_calls_list:
+        queue = self._unpaired_calls_by_name[tool_name]
+        while queue:
+          assigned_id = queue.pop(0)
+          if assigned_id in self._claimed_fallbacks:
+            continue
+          self._claimed_fallbacks.add(assigned_id)
+          self._remove_from_pending(assigned_id)
+          return assigned_id
+      while self._unpaired_calls_list:
         assigned_id = self._unpaired_calls_list.pop(0)
-        for ids in self._unpaired_calls_by_name.values():
-          if assigned_id in ids:
-            ids.remove(assigned_id)
-            break
+        if assigned_id in self._claimed_fallbacks:
+          continue
+        self._claimed_fallbacks.add(assigned_id)
+        self._remove_from_pending(assigned_id)
         return assigned_id
-      else:
-        assigned_id = f"toolu_fallback_{self._next_fallback}"
-        self._next_fallback += 1
-        return assigned_id
+      assigned_id = f"toolu_fallback_{self._next_fallback}"
+      self._next_fallback += 1
+      return assigned_id
 
 
 def _part_to_message_block(
