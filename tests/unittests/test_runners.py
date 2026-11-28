@@ -112,6 +112,156 @@ class MockAgent(BaseAgent):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "root_kind,failure,resume",
+    [
+        (root, failure, resume)
+        for root in ("sequential", "parallel", "loop", "llm", "node")
+        for failure, resume in (
+            ("message", False),
+            ("append", False),
+            ("execution", False),
+            ("message", True),
+            ("append", True),
+            ("execution", True),
+            ("state_append", True),
+        )
+        if root not in ("llm", "node")
+        or not resume
+        or failure == "state_append"
+    ],
+)
+async def test_run_async_notifies_setup_error_once(
+    root_kind: str, failure: str, resume: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Setup and execution errors preserve their identity and notify once."""
+  from google.adk.agents import LoopAgent
+  from google.adk.agents import SequentialAgent
+
+  class EchoNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          content=types.ModelContent(parts=[types.Part(text="reply")]),
+      )
+
+  child = LlmAgent(
+      name="child", model=testing_utils.MockModel.create(responses=["reply"])
+  )
+  root: BaseNode
+  if root_kind == "llm":
+    root = child
+  elif root_kind == "node":
+    root = EchoNode(name="echo")
+  else:
+    root_type = {
+        "sequential": SequentialAgent,
+        "parallel": ParallelAgent,
+        "loop": LoopAgent,
+    }[root_kind]
+    options = {"max_iterations": 1} if root_kind == "loop" else {}
+    root = root_type(name="root", sub_agents=[child], **options)
+  service = InMemorySessionService()
+  plugin = BasePlugin(name="probe")
+  runner = Runner(
+      app=App(
+          name=TEST_APP_ID,
+          root_agent=root,
+          plugins=[plugin],
+          resumability_config=ResumabilityConfig(is_resumable=resume),
+      ),
+      session_service=service,
+  )
+  session = await service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  error = ValueError("setup failed")
+  error_hook = AsyncMock(return_value=None)
+  after_hook = AsyncMock(return_value=None)
+  monkeypatch.setattr(plugin, "on_run_error_callback", error_hook)
+  monkeypatch.setattr(plugin, "after_run_callback", after_hook)
+  if failure == "message":
+    monkeypatch.setattr(
+        plugin, "on_user_message_callback", AsyncMock(side_effect=error)
+    )
+  elif failure == "execution":
+    monkeypatch.setattr(
+        plugin, "on_event_callback", AsyncMock(side_effect=error)
+    )
+  else:
+    monkeypatch.setattr(service, "append_event", AsyncMock(side_effect=error))
+  invocation_id = "inv_resume" if resume or failure == "state_append" else None
+  if invocation_id:
+    # Bypass the failing append mock while seeding the previous invocation.
+    await InMemorySessionService.append_event(
+        service,
+        session,
+        Event(
+            author="user",
+            invocation_id=invocation_id,
+            content=types.UserContent(parts=[types.Part(text="original")]),
+        ),
+    )
+  if invocation_id and failure != "state_append":
+    await InMemorySessionService.append_event(
+        service,
+        session,
+        Event(
+            author="child",
+            invocation_id=invocation_id,
+            content=types.ModelContent(
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            name="tool", id="call", args={}
+                        )
+                    )
+                ]
+            ),
+        ),
+    )
+  message: types.Content | None = types.UserContent(
+      parts=[types.Part(text="hello")]
+  )
+  if invocation_id:
+    message = types.UserContent(
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name="tool", id="call", response={"ok": True}
+                )
+            )
+        ]
+    )
+  if failure == "state_append":
+    message = None
+
+  with pytest.raises((ValueError, RuntimeError)) as caught:
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=session.id,
+        invocation_id=invocation_id,
+        new_message=message,
+        state_delta={"key": "value"},
+    ):
+      pass
+
+  if failure in ("message", "execution"):
+    assert caught.value.__cause__ is error
+  else:
+    assert caught.value is error
+  error_hook.assert_awaited_once_with(
+      invocation_context=mock.ANY, error=caught.value
+  )
+  after_hook.assert_not_awaited()
+  await runner.close()
+
+
 class MockLiveAgent(BaseAgent):
   """Mock live agent for unit testing."""
 
