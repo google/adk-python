@@ -1182,7 +1182,12 @@ class OpenAIResponsesLlm(BaseLlm):
     }
     instructions = _serialize_system_instruction(config.system_instruction)
     if instructions:
-      kwargs['instructions'] = instructions
+      kwargs['input'].insert(
+          0,
+          EasyInputMessageParam(
+              type='message', role='developer', content=instructions
+          ),
+      )
     if llm_request.previous_interaction_id:
       kwargs['previous_response_id'] = llm_request.previous_interaction_id
 
