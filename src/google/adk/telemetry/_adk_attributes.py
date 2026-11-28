@@ -52,11 +52,9 @@ ADK_EXPERIMENTAL_RESPONSE_SOURCE = 'adk.experimental.response.source'
 TOOL_CONFIRMATION_DECISION_EVENT = 'adk.tool_confirmation.decision'
 ADK_TOOL_CONFIRMATION_CONFIRMED = 'adk.tool_confirmation.confirmed'
 ADK_TOOL_CONFIRMATION_ARGUMENTS_HASH = 'adk.tool_confirmation.arguments_hash'
-ADK_TOOL_CONFIRMATION_CONFIRMED_BY = 'adk.tool_confirmation.confirmed_by'
 
 ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT = (
     'adk.experimental.grounding.query_count'
-)
 ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT = (
     'adk.experimental.grounding.chunk_count'
 )
