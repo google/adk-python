@@ -2727,7 +2727,7 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.content.role == "model"
     assert response.content.parts[0].text == "Test response"
     assert response.usage_metadata.prompt_token_count == 10
-    assert response.usage_metadata.candidates_token_count == 5
+    assert response.usage_metadata.candidates_token_count == 0
     assert response.usage_metadata.total_token_count == 15
     assert response.usage_metadata.cached_content_token_count == 8
     assert response.usage_metadata.thoughts_token_count == 5
@@ -7286,7 +7286,7 @@ async def test_generate_content_async_stream_with_reasoning_tokens(
   assert responses[5].finish_reason == types.FinishReason.STOP
 
   assert responses[5].usage_metadata.prompt_token_count == 10
-  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.candidates_token_count == 0
   assert responses[5].usage_metadata.total_token_count == 15
   assert responses[5].usage_metadata.thoughts_token_count == 5
 
@@ -7344,10 +7344,55 @@ async def test_generate_content_async_stream_with_usage_metadata(
   ]
   assert len(responses) == 6
   assert responses[5].usage_metadata.prompt_token_count == 10
-  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.candidates_token_count == 0
   assert responses[5].usage_metadata.total_token_count == 15
   assert responses[5].usage_metadata.cached_content_token_count == 8
   assert responses[5].usage_metadata.thoughts_token_count == 5
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_reasoning_tokens_are_not_counted_twice_in_output(
+    mock_acompletion, mock_completion, lite_llm_instance, stream
+):
+  """Candidate tokens exclude reasoning tokens already in completion_tokens.
+
+  LiteLLM follows OpenAI usage semantics, where completion_tokens includes
+  reasoning tokens, while candidates_token_count excludes thoughts.
+  """
+  usage = {
+      "prompt_tokens": 10,
+      "completion_tokens": 25,
+      "total_tokens": 35,
+      "completion_tokens_details": {"reasoning_tokens": 5},
+  }
+  mock_acompletion.return_value = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant", content="Test response"
+              )
+          )
+      ],
+      usage=usage,
+  )
+  mock_completion.return_value = iter([
+      *STREAMING_MODEL_RESPONSE,
+      ModelResponseStream(
+          usage=usage, choices=[StreamingChoices(finish_reason=None)]
+      ),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=stream
+      )
+  ]
+
+  usage_metadata = responses[-1].usage_metadata
+  assert usage_metadata.candidates_token_count == 20
+  assert usage_metadata.thoughts_token_count == 5
+  assert usage_metadata.total_token_count == 35
 
 
 @pytest.mark.asyncio
