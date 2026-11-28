@@ -719,6 +719,10 @@ class Runner:
     """Append a user message event to the session and return it."""
     if content.parts and any(p.function_call for p in content.parts):
       raise ValueError('User message cannot contain function calls.')
+    if ic.run_config and ic.run_config.save_input_blobs_as_artifacts:
+      await self._save_input_blobs_as_artifacts(
+          new_message=content, invocation_context=ic, session=ic.session
+      )
     return await self._build_and_append_user_event(
         ic, content=content, state_delta=state_delta
     )
@@ -1628,6 +1632,44 @@ class Runner:
           for abort_event in abort_events:
             yield abort_event
 
+  async def _save_input_blobs_as_artifacts(
+      self,
+      *,
+      new_message: types.Content,
+      invocation_context: InvocationContext,
+      session: Session,
+  ) -> None:
+    """Saves inline uploads using the legacy RunConfig artifact contract."""
+    if self.artifact_service:
+      # Issue deprecation warning
+      warnings.warn(
+          "The 'save_input_blobs_as_artifacts' parameter is deprecated. Use"
+          ' SaveFilesAsArtifactsPlugin instead for better control and'
+          ' flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin for'
+          ' migration guidance.',
+          DeprecationWarning,
+          stacklevel=3,
+      )
+      # The runner directly saves the artifacts (if applicable) in the
+      # user message and replaces the artifact data with a file name
+      # placeholder.
+      if not new_message.parts:
+        return
+      for i, part in enumerate(new_message.parts):
+        if part.inline_data is None:
+          continue
+        file_name = f'artifact_{invocation_context.invocation_id}_{i}'
+        await self.artifact_service.save_artifact(
+            app_name=self.app_name,
+            user_id=session.user_id,
+            session_id=session.id,
+            filename=file_name,
+            artifact=part,
+        )
+        new_message.parts[i] = types.Part(
+            text=f'Uploaded file: {file_name}. It is saved into artifacts'
+        )
+
   async def _append_new_message_to_session(
       self,
       *,
@@ -1654,33 +1696,12 @@ class Runner:
     if any(p.function_call for p in new_message.parts):
       raise ValueError('User message cannot contain function calls.')
 
-    if self.artifact_service and save_input_blobs_as_artifacts:
-      # Issue deprecation warning
-      warnings.warn(
-          "The 'save_input_blobs_as_artifacts' parameter is deprecated. Use"
-          ' SaveFilesAsArtifactsPlugin instead for better control and'
-          ' flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin for'
-          ' migration guidance.',
-          DeprecationWarning,
-          stacklevel=3,
+    if save_input_blobs_as_artifacts:
+      await self._save_input_blobs_as_artifacts(
+          new_message=new_message,
+          invocation_context=invocation_context,
+          session=target_session,
       )
-      # The runner directly saves the artifacts (if applicable) in the
-      # user message and replaces the artifact data with a file name
-      # placeholder.
-      for i, part in enumerate(new_message.parts):
-        if part.inline_data is None:
-          continue
-        file_name = f'artifact_{invocation_context.invocation_id}_{i}'
-        await self.artifact_service.save_artifact(
-            app_name=self.app_name,
-            user_id=target_session.user_id,
-            session_id=target_session.id,
-            filename=file_name,
-            artifact=part,
-        )
-        new_message.parts[i] = types.Part(
-            text=f'Uploaded file: {file_name}. It is saved into artifacts'
-        )
     # Appends only. We do not yield the event because it's not from the model.
     await self._build_and_append_user_event(
         invocation_context,
