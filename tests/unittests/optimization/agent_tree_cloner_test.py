@@ -1171,3 +1171,88 @@ def test_agent_tool_metadata_syncs_with_cloned_agent() -> None:
   assert tool_1.description == "New aliased"
   assert root.tools[0].name == "Helper"
   assert root.tools[0].description == "Old helper"
+
+
+def test_shared_agent_across_levels_preserves_identity_and_applies_override() -> (
+    None
+):
+  """An agent in sub_agents and an AgentTool on another sibling shares one clone."""
+  a = LlmAgent(name="A", model="old")
+  b = LlmAgent(name="B", model="m", tools=[AgentTool(agent=a)])
+  root = LlmAgent(name="root", model="m", sub_agents=[a, b])
+
+  cloned = clone_agent_with_params(root, {"sub_agents.A.model": "new"})
+  assert isinstance(cloned, LlmAgent)
+  cloned_a, cloned_b = cloned.sub_agents
+  assert isinstance(cloned_a, LlmAgent)
+  assert isinstance(cloned_b, LlmAgent)
+  assert cloned_a.model == "new"
+  assert cloned_b.tools[0].agent.model == "new"
+  assert cloned_a is cloned_b.tools[0].agent
+
+  # Reverse sibling order (AgentTool sibling before sub_agent A) also shares one clone.
+  a2 = LlmAgent(name="A", model="old")
+  b2 = LlmAgent(name="B", model="m", tools=[AgentTool(agent=a2)])
+  root_rev = LlmAgent(name="root_rev", model="m", sub_agents=[b2, a2])
+  cloned_rev = clone_agent_with_params(root_rev, {"sub_agents.A.model": "new"})
+  assert isinstance(cloned_rev, LlmAgent)
+  cloned_b_rev, cloned_a_rev = cloned_rev.sub_agents
+  assert isinstance(cloned_a_rev, LlmAgent)
+  assert isinstance(cloned_b_rev, LlmAgent)
+  assert cloned_a_rev.model == "new"
+  assert cloned_b_rev.tools[0].agent.model == "new"
+  assert cloned_a_rev is cloned_b_rev.tools[0].agent
+
+
+def test_dotted_thinking_override_preserves_planner_only_fields() -> None:
+  """Dotted thinking_config override starts from BuiltInPlanner when both are set."""
+  root = LlmAgent(
+      name="root",
+      model="gemini-2.5-flash",
+      generate_content_config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_budget=64)
+      ),
+      planner=BuiltInPlanner(
+          thinking_config=types.ThinkingConfig(
+              include_thoughts=True, thinking_budget=128
+          )
+      ),
+  )
+
+  cloned = clone_agent_with_params(
+      root, {"generate_content_config.thinking_config.thinking_budget": 1024}
+  )
+  assert isinstance(cloned, LlmAgent)
+  assert isinstance(cloned.planner, BuiltInPlanner)
+  assert cloned.planner.thinking_config.include_thoughts is True
+  assert cloned.planner.thinking_config.thinking_budget == 1024
+  assert cloned.generate_content_config is not None
+  assert cloned.generate_content_config.thinking_config is not None
+  assert cloned.generate_content_config.thinking_config.include_thoughts is True
+  assert cloned.generate_content_config.thinking_config.thinking_budget == 1024
+
+
+def test_ambiguous_duplicate_child_or_tool_name_raises() -> None:
+  """Targeting a duplicate sub-agent or AgentTool name fails fast with ValueError."""
+  dup_sub = SequentialAgent(
+      name="root",
+      sub_agents=[
+          LlmAgent(name="helper", model="m1"),
+          LlmAgent(name="helper", model="m2"),
+      ],
+  )
+  with pytest.raises(ValueError, match=r"multiple sub-agents named 'helper'"):
+    clone_agent_with_params(dup_sub, {"sub_agents.helper.model": "X"})
+
+  dup_tool = LlmAgent(
+      name="root",
+      model="m",
+      tools=[
+          AgentTool(agent=LlmAgent(name="helper", model="m1")),
+          AgentTool(agent=LlmAgent(name="helper", model="m2")),
+      ],
+  )
+  with pytest.raises(
+      ValueError, match=r"multiple AgentTool agents named 'helper'"
+  ):
+    clone_agent_with_params(dup_tool, {"tools.helper.model": "X"})
