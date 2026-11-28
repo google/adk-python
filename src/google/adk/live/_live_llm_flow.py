@@ -17,13 +17,16 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
+from typing import TypeVar
 
 from google.genai import types
+from pydantic import BaseModel
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
@@ -31,7 +34,7 @@ from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.core._utils import as_llm_agent as _as_llm_agent
-from ..flows.llm_flows.core._utils import copy_request_scoped_fields
+from ..flows.llm_flows.core._utils import copy_http_options
 from ..flows.llm_flows.core._utils import require_run_config as _require_run_config
 from ..flows.llm_flows.tools import _live_caller
 from ..models.base_llm_connection import BaseLlmConnection
@@ -61,6 +64,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+_ConfigT = TypeVar(
+    '_ConfigT', types.GenerateContentConfig, types.LiveConnectConfig
+)
+
+
+def _copy_config_for_callback(config: _ConfigT) -> _ConfigT:
+  """Copies a live request config so a callback cannot write through it.
+
+  The live request is reused when the session reconnects, so an in-place
+  edit to any nested value (a tool declaration, ``tool_config``, a
+  ``Content`` system instruction) would otherwise reach the model.
+
+  Everything is deep-copied except two kinds of value that cannot be:
+  ``http_options`` can hold a live HTTP client, so it gets the same partial
+  copy as request assembly uses (plus a deep copy of ``extra_body``), and a
+  tool that is not a model (a callable
+  or an MCP session) is shared.
+  """
+  copied = config.model_copy(update={'http_options': None, 'tools': None})
+  copied = copied.model_copy(deep=True)
+  if config.http_options is not None:
+    http_options = copy_http_options(config.http_options)
+    if http_options.extra_body is not None:
+      # Plain JSON request data, so nested values can be copied too.
+      http_options.extra_body = copy.deepcopy(http_options.extra_body)
+    copied.http_options = http_options
+  if config.tools is not None:
+    copied.tools = [
+        tool.model_copy(deep=True) if isinstance(tool, BaseModel) else tool
+        for tool in config.tools
+    ]
+  return copied
+
+
 async def screen_live_user_content(
     flow: BaseLlmFlow,
     invocation_context: InvocationContext,
@@ -68,21 +105,13 @@ async def screen_live_user_content(
     llm_request: LlmRequest,
 ) -> Optional[Event]:
   """Screens live user content with a before model callback."""
-  config = copy_request_scoped_fields(llm_request.config)
-  if config.tools:
-    # `LlmRequest.append_tools` extends a tool's declarations in place.
-    config.tools = [
-        tool.model_copy(
-            update={'function_declarations': list(tool.function_declarations)}
-        )
-        if isinstance(tool, types.Tool) and tool.function_declarations
-        else tool
-        for tool in config.tools
-    ]
   callback_llm_request = llm_request.model_copy(
       update={
           'contents': [content],
-          'config': config,
+          'config': _copy_config_for_callback(llm_request.config),
+          'live_connect_config': _copy_config_for_callback(
+              llm_request.live_connect_config
+          ),
           'tools_dict': dict(llm_request.tools_dict),
       }
   )
