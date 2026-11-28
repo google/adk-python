@@ -3527,6 +3527,26 @@ async def test_content_to_message_param_function_call():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("args", [None, {}])
+async def test_content_to_message_param_function_call_without_args(args):
+  content = types.Content(
+      role="assistant",
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  id="test_tool_call_id", name="get_time", args=args
+              )
+          ),
+      ],
+  )
+  message = await _content_to_message_param(content)
+
+  tool_call = message["tool_calls"][0]
+  assert tool_call["function"]["name"] == "get_time"
+  assert tool_call["function"]["arguments"] == "{}"
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_multipart_content():
   """Test handling of multipart content where final_content is a list with text objects."""
   content = types.Content(
