@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 from typing import Dict
 from typing import List
@@ -45,6 +46,28 @@ _VALID_SCHEMA_TYPES: Set[str] = frozenset({
 })
 
 _SCHEMA_CONTAINER_KEYS: Set[str] = frozenset({"schema", "schemas"})
+
+_SERVER_URL_VARIABLE_PATTERN = re.compile(r"\{([^{}]+)\}")
+
+
+def _substitute_server_url_variables(
+    url: str, variables: Optional[Dict[str, Any]]
+) -> str:
+  """Replaces declared ``{name}`` placeholders in ``url`` with their defaults.
+
+  Placeholders that are undeclared, or declared without a ``default`` value,
+  are left verbatim so partially specified server URLs stay usable.
+  """
+  if not variables:
+    return url
+
+  def replace(match: re.Match[str]) -> str:
+    variable = variables.get(match.group(1))
+    if not isinstance(variable, dict) or "default" not in variable:
+      return match.group(0)
+    return str(variable["default"])
+
+  return _SERVER_URL_VARIABLE_PATTERN.sub(replace, url)
 
 
 class OperationEndpoint(BaseModel):
@@ -180,7 +203,10 @@ class OpenApiSpecParser:
     # Taking first server url, or default to empty string if not present
     base_url = ""
     if openapi_spec.get("servers"):
-      base_url = openapi_spec["servers"][0].get("url", "")
+      server = openapi_spec["servers"][0]
+      base_url = _substitute_server_url_variables(
+          server.get("url", ""), server.get("variables")
+      )
 
     # Get global security scheme (if any).
     global_scheme_name = _required_scheme_name(openapi_spec.get("security"))

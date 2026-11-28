@@ -16,6 +16,8 @@ from typing import Any
 from typing import Dict
 
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OpenApiSpecParser
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+import httpx
 import pytest
 
 
@@ -304,6 +306,83 @@ def test_parse_spec_with_no_servers(openapi_spec_generator):
 
   assert len(parsed_operations) == 1
   assert parsed_operations[0].endpoint.base_url == ""
+
+
+def _spec_with_templated_server(
+    url: str, variables: Dict[str, Any] | None
+) -> Dict[str, Any]:
+  """Builds a minimal spec whose only server uses the given templated URL."""
+  server: Dict[str, Any] = {"url": url}
+  if variables is not None:
+    server["variables"] = variables
+  return {
+      "openapi": "3.0.0",
+      "info": {"title": "Templated API", "version": "1.0.0"},
+      "servers": [server],
+      "paths": {
+          "/pets": {
+              "get": {
+                  "operationId": "listPets",
+                  "responses": {"200": {"description": "OK"}},
+              }
+          }
+      },
+  }
+
+
+@pytest.mark.asyncio
+async def test_server_url_variables_are_substituted(openapi_spec_generator):
+  """Declared server URL variables are replaced with their defaults."""
+  openapi_spec = _spec_with_templated_server(
+      "https://{region}.api.example.com/{basePath}",
+      {"region": {"default": "us"}, "basePath": {"default": "v2"}},
+  )
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+  assert len(parsed_operations) == 1
+  assert (
+      parsed_operations[0].endpoint.base_url == "https://us.api.example.com/v2"
+  )
+
+  recorded_requests = []
+
+  def handler(request: httpx.Request) -> httpx.Response:
+    recorded_requests.append(request)
+    return httpx.Response(200, json={"result": "ok"})
+
+  tool = RestApiTool.from_parsed_operation(
+      parsed_operations[0],
+      httpx_client_factory=lambda: httpx.AsyncClient(
+          transport=httpx.MockTransport(handler)
+      ),
+      allow_private_network_access=True,
+  )
+  response = await tool.call(args={}, tool_context=None)
+
+  assert response == {"result": "ok"}
+  assert len(recorded_requests) == 1
+  assert str(recorded_requests[0].url) == "https://us.api.example.com/v2/pets"
+
+
+def test_server_url_placeholders_without_defaults_are_unchanged(
+    openapi_spec_generator,
+):
+  """Undeclared or default-less placeholders stay verbatim."""
+  openapi_spec = _spec_with_templated_server(
+      "https://{region}.api.example.com/{basePath}/{unknown}",
+      {
+          "region": {"default": "us"},
+          "basePath": {"description": "no default declared"},
+      },
+  )
+
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+  assert (
+      parsed_operations[0].endpoint.base_url
+      == "https://us.api.example.com/{basePath}/{unknown}"
+  )
 
 
 def test_parse_spec_with_description(openapi_spec_generator):
