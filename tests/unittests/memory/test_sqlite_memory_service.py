@@ -17,9 +17,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import closing
 from datetime import datetime
+import os
 from pathlib import Path
 import sqlite3
 from typing import Literal
+from urllib.parse import quote
 
 import aiosqlite
 from google.adk.events.event import Event
@@ -158,36 +160,77 @@ async def test_in_memory_uri_variants(uri):
     await service.close()
 
 
-@pytest.mark.asyncio
+@pytest.mark.parametrize("scheme", ["sqlite", "sqlite+aiosqlite"])
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("mode", [None, "ro", "rw"])
 @pytest.mark.parametrize(
-    "ro_uri_fn",
+    "filename",
     [
-        lambda p: f"sqlite:///{p / 'ro_abs.db'}?mode=ro",
-        lambda p: f"sqlite+aiosqlite:///{p / 'ro_abs.db'}?mode=ro",
+        "memory #1.db",
+        pytest.param(
+            "memory ?1.db",
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="Question marks are not valid Windows filenames",
+            ),
+        ),
+        "memory %23.db",
+        "memory +&= ü.db",
+        "memory.db",
     ],
 )
-async def test_readonly_uri_mode_restricts_writes(tmp_path, ro_uri_fn):
-  """Read-only URI query parameter enables searching existing rows and rejects new writes."""
-  db_path = tmp_path / "ro_abs.db"
+async def test_sqlite_uri_preserves_path_and_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scheme: str,
+    relative: bool,
+    mode: str | None,
+    filename: str,
+) -> None:
+  """Encoded filenames select the same memories and retain URI write permissions."""
+  monkeypatch.chdir(tmp_path)
+  db_path = tmp_path / filename
   rw_service = SqliteMemoryService(db_path=db_path, fts="off")
-  event = _make_event("user", "readonly test content", 1.0)
-  await rw_service.add_events_to_memory(
-      app_name="app", user_id="user", events=[event], session_id="s1"
-  )
-
-  ro_uri = ro_uri_fn(tmp_path)
-  ro_service = SqliteMemoryService(ro_uri, fts="off")
-  resp = await ro_service.search_memory(
-      app_name="app", user_id="user", query="readonly"
-  )
-  assert len(resp.memories) == 1
-  assert resp.memories[0].content.parts[0].text == "readonly test content"
-
-  with pytest.raises((sqlite3.OperationalError, aiosqlite.OperationalError)):
-    new_event = _make_event("user", "cannot write", 2.0)
-    await ro_service.add_events_to_memory(
-        app_name="app", user_id="user", events=[new_event], session_id="s1"
+  event = _make_event("user", "saved content", 1.0, event_id="saved")
+  try:
+    await rw_service.add_events_to_memory(
+        app_name="app", user_id="user", events=[event], session_id="s1"
     )
+  finally:
+    await rw_service.close()
+
+  uri_path = filename if relative else db_path.as_posix()
+  query = f"?mode={mode}&cache=shared" if mode else ""
+  service = SqliteMemoryService(
+      f"{scheme}:///{quote(uri_path)}{query}", fts="off"
+  )
+  try:
+    response = await service.search_memory(
+        app_name="app", user_id="user", query="saved"
+    )
+    assert len(response.memories) == 1
+    assert response.memories[0].content.parts[0].text == "saved content"
+    new_event = _make_event("user", "new content", 2.0, event_id="new")
+    if mode == "ro":
+      with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        await service.add_events_to_memory(
+            app_name="app", user_id="user", events=[new_event], session_id="s1"
+        )
+    else:
+      await service.add_events_to_memory(
+          app_name="app", user_id="user", events=[new_event], session_id="s1"
+      )
+  finally:
+    await service.close()
+
+  reopened_service = SqliteMemoryService(db_path=db_path, fts="off")
+  try:
+    response = await reopened_service.search_memory(
+        app_name="app", user_id="user", query="new"
+    )
+    assert len(response.memories) == (0 if mode == "ro" else 1)
+  finally:
+    await reopened_service.close()
 
 
 def test_sqlite_uri_does_not_create_sqlite_colon_directory(tmp_path):
