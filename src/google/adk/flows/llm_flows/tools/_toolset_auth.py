@@ -35,34 +35,41 @@ from ._functions import build_auth_request_event
 if TYPE_CHECKING:
   from ....agents.llm_agent import LlmAgent
   from ....auth.auth_tool import AuthConfig
+  from ....workflow._base_node import BaseNode
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-async def resolve_toolset_auth(
+async def resolve_toolset_credentials(
     invocation_context: InvocationContext,
-    agent: LlmAgent,
-) -> AsyncGenerator[Event, None]:
-  """Resolves authentication for toolsets before tool listing.
+    agent: BaseNode,
+) -> dict[str, AuthConfig]:
+  """Resolves this invocation's credential for every toolset that has auth.
 
-  For each toolset with auth configured via get_auth_config():
-  - If credential is available, populate auth_config.exchanged_auth_credential
-  - If credential is not available, yield auth request event and interrupt
+  A toolset reads its credential from `invocation_context.credential_by_key`
+  when it lists its tools, so this has to run before anything lists them.
+  `resolve_toolset_auth` runs it for the model request. The `auth` and
+  `request_confirmation` request processors run earlier than that and list
+  the agent's tools themselves, to resume a call that was waiting on the
+  user, so they run it as well.
 
   Args:
     invocation_context: The invocation context.
-    agent: The LLM agent.
+    agent: The agent whose toolsets to authenticate.
 
-  Yields:
-    Auth request events if any toolset needs authentication.
+  Returns:
+    The auth config of each toolset that has no credential yet, keyed by its
+    toolset auth credential ID. Nothing is requested from the user here.
   """
-  if not agent.tools:
-    return
-
   pending_auth_requests: dict[str, AuthConfig] = {}
+  # A node without tools has no toolset to authenticate.
+  tool_unions = getattr(agent, 'tools', None)
+  if not tool_unions:
+    return pending_auth_requests
+
   callback_context = CallbackContext(invocation_context)
 
-  for tool_union in agent.tools:
+  for tool_union in tool_unions:
     if not isinstance(tool_union, BaseToolset):
       continue
 
@@ -94,7 +101,7 @@ async def resolve_toolset_auth(
         raise RuntimeError('Resolved toolset auth is missing a credential key.')
       invocation_context.credential_by_key[credential_key] = credential
     else:
-      # Need auth - will interrupt
+      # Need auth; whether to ask the user for it is the caller's decision.
       from ....auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 
       toolset_id = (
@@ -102,6 +109,29 @@ async def resolve_toolset_auth(
       )
       pending_auth_requests[toolset_id] = auth_config_copy
 
+  return pending_auth_requests
+
+
+async def resolve_toolset_auth(
+    invocation_context: InvocationContext,
+    agent: LlmAgent,
+) -> AsyncGenerator[Event, None]:
+  """Resolves authentication for toolsets before tool listing.
+
+  For each toolset with auth configured via get_auth_config():
+  - If credential is available, store it in the invocation context
+  - If credential is not available, yield auth request event and interrupt
+
+  Args:
+    invocation_context: The invocation context.
+    agent: The LLM agent.
+
+  Yields:
+    Auth request events if any toolset needs authentication.
+  """
+  pending_auth_requests = await resolve_toolset_credentials(
+      invocation_context, agent
+  )
   if not pending_auth_requests:
     return
 
