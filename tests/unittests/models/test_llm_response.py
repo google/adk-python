@@ -16,6 +16,7 @@
 
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+import pytest
 
 
 def test_llm_response_create_with_logprobs():
@@ -292,6 +293,42 @@ def test_llm_response_create_with_citation_metadata():
 
   assert response.citation_metadata == citation_metadata
   assert response.content.parts[0].text == 'Response text'
+
+
+@pytest.mark.parametrize(
+    'content, finish_reason',
+    [
+        (
+            types.Content(parts=[types.Part(text='Response text')]),
+            types.FinishReason.STOP,
+        ),
+        (None, types.FinishReason.SAFETY),
+    ],
+    ids=['success', 'error'],
+)
+def test_llm_response_create_keeps_url_context_metadata(content, finish_reason):
+  """LlmResponse.create() keeps which URLs url_context retrieved, and how."""
+  url_context_metadata = types.UrlContextMetadata(
+      url_metadata=[
+          types.UrlMetadata(
+              retrieved_url='https://example.com/a',
+              url_retrieval_status=types.UrlRetrievalStatus.URL_RETRIEVAL_STATUS_ERROR,
+          )
+      ]
+  )
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=content,
+              finish_reason=finish_reason,
+              url_context_metadata=url_context_metadata,
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.url_context_metadata == url_context_metadata
 
 
 def test_llm_response_create_without_citation_metadata():
