@@ -33,6 +33,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.events.ui_widget import UiWidget
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -1972,3 +1973,43 @@ async def test_before_agent_callback_bypass_skips_after_callback(
   assert len(events) == 1
   assert events[0].content.parts[0].text == 'agent run is bypassed.'
   spy_after.assert_not_called()
+
+
+@pytest.mark.parametrize('phase', ['before', 'after'])
+@pytest.mark.parametrize('return_content', [False, True])
+async def test_agent_callback_preserves_widgets_without_skipping_execution(
+    phase: str, return_content: bool
+) -> None:
+  """Callback actions survive, and only before content bypasses the agent."""
+  widget = UiWidget(id='result', provider='mcp')
+
+  def callback(callback_context: CallbackContext) -> types.Content | None:
+    callback_context.actions.render_ui_widgets = [widget]
+    if return_content:
+      return types.Content(parts=[types.Part(text='callback')])
+    return None
+
+  agent = _TestingAgent(
+      name='worker',
+      before_agent_callback=callback if phase == 'before' else None,
+      after_agent_callback=callback if phase == 'after' else None,
+  )
+  ctx = await _create_parent_invocation_context('widgets', agent, branch='root')
+
+  events = [event async for event in agent.run_async(ctx)]
+
+  callback_events = [e for e in events if e.actions.render_ui_widgets]
+  assert len(callback_events) == 1
+  assert callback_events[0].actions.render_ui_widgets == [widget]
+  assert callback_events[0].branch == 'root'
+  assert callback_events[0].invocation_id == ctx.invocation_id
+  assert callback_events[0].author == agent.name
+  assert bool(callback_events[0].content) == return_content
+  replies = [
+      e
+      for e in events
+      if e.content
+      and e.content.parts
+      and e.content.parts[0].text == 'Hello, world!'
+  ]
+  assert len(replies) == (0 if phase == 'before' and return_content else 1)

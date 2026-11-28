@@ -18,12 +18,15 @@ from typing import AsyncGenerator
 from unittest.mock import patch
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.loop_agent import LoopAgentState
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 import pytest
@@ -364,3 +367,68 @@ async def test_non_resumable_loop_agent_stops_immediately_on_pause_event(
   assert testing_utils.simplify_resumable_app_events(events) == [
       (agent_1.name, f'Hello, async {agent_1.name}!'),
   ]
+
+
+@pytest.mark.parametrize('source', ['single', 'list', 'plugin', 'noop'])
+@pytest.mark.parametrize('return_content', [False, True])
+async def test_after_agent_callback_escalation_stops_loop(
+    source: str, return_content: bool
+) -> None:
+  """Action-only escalation stops the loop through callbacks and plugins."""
+  callback_calls = []
+
+  def stop(callback_context: CallbackContext) -> types.Content | None:
+    callback_calls.append('stop')
+    if source != 'noop':
+      callback_context.actions.escalate = True
+    if return_content:
+      return types.Content(parts=[types.Part(text='done')])
+    return None
+
+  def noop(callback_context: CallbackContext) -> None:
+    callback_calls.append('noop')
+
+  class StopPlugin(BasePlugin):
+
+    async def after_agent_callback(
+        self, *, agent: BaseAgent, callback_context: CallbackContext
+    ) -> types.Content | None:
+      if agent.name == 'worker':
+        return stop(callback_context)
+      return None
+
+  child = _TestingAgent(
+      name='worker',
+      after_agent_callback=(
+          [noop, stop]
+          if source == 'list'
+          else None
+          if source == 'plugin'
+          else stop
+      ),
+  )
+  loop = LoopAgent(name='loop', sub_agents=[child], max_iterations=3)
+  ctx = await _create_parent_invocation_context('callback_escalation', loop)
+  if source == 'plugin':
+    ctx.plugin_manager = PluginManager(plugins=[StopPlugin(name='stop')])
+
+  events = [event async for event in loop.run_async(ctx)]
+
+  expected_runs = 3 if source == 'noop' else 1
+  replies = [
+      e
+      for e in events
+      if e.content
+      and e.content.parts
+      and e.content.parts[0].text == 'Hello, async worker!'
+  ]
+  assert len(replies) == expected_runs
+  escalations = [e for e in events if e.actions.escalate]
+  assert len(escalations) == (0 if source == 'noop' else 1)
+  assert len(events) == expected_runs * (
+      2 if return_content or source != 'noop' else 1
+  )
+  assert callback_calls == (
+      ['noop', 'stop'] if source == 'list' else ['stop'] * expected_runs
+  )
+  assert not ctx.end_invocation
