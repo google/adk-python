@@ -14,11 +14,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 from typing import TYPE_CHECKING
 
 from ...agents.llm_agent import LlmAgent
+from ...flows.llm_flows.prompt._instructions_utils import _is_valid_state_name
+from ...flows.llm_flows.prompt._instructions_utils import _TEMPLATE_VAR_PATTERN
 
 if TYPE_CHECKING:
   from ...agents.base_agent import BaseAgent
@@ -46,8 +47,14 @@ def _create_empty_state(
       and agent.instruction
       and isinstance(agent.instruction, str)
   ):
-    for key in re.findall(r'{([\w]+)}', agent.instruction):
-      all_state[key] = ''
+    for match in _TEMPLATE_VAR_PATTERN.finditer(agent.instruction):
+      var_name = match.group().lstrip('{').rstrip('}').strip()
+      if var_name.endswith('?'):
+        continue
+      if not var_name.startswith('artifact.') and _is_valid_state_name(
+          var_name
+      ):
+        all_state[var_name] = ''
 
 
 # `agent` is typed `BaseAgent | BaseNode` rather than just `BaseNode` (which

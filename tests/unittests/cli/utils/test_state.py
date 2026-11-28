@@ -100,6 +100,23 @@ def test_create_empty_state_returns_empty_dict_when_nothing_to_seed():
   assert create_empty_state(LlmAgent(name='root', instruction='no slots')) == {}
 
 
+def test_create_empty_state_seeds_prefixed_and_whitespace_placeholders():
+  agent = LlmAgent(
+      name='root',
+      instruction=(
+          'User {user:name}, app {app:mode}, temp {temp:draft}, '
+          'padded { topic }, optional {opt?}, artifact {artifact.doc}.'
+      ),
+  )
+
+  assert create_empty_state(agent) == {
+      'user:name': '',
+      'app:mode': '',
+      'temp:draft': '',
+      'topic': '',
+  }
+
+
 def test_create_empty_state_reads_agent_tree():
   child = LlmAgent(name='child', instruction='Use {child_key}')
   root = LlmAgent(
