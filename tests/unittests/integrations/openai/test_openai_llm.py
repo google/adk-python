@@ -31,8 +31,59 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
+from jsonschema import Draft202012Validator
 from openai import AsyncOpenAI
 import pytest
+
+
+@pytest.mark.parametrize("use_json_schema", [False, True])
+def test_tool_parameters_preserve_nullable_values(use_json_schema):
+  """Null remains valid in the Chat Completions tool schema."""
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={"city": types.Schema(type=types.Type.STRING, nullable=True)},
+      required=["city"],
+  )
+  declaration = types.FunctionDeclaration(name="weather")
+  if use_json_schema:
+    declaration.parameters_json_schema = schema.model_dump(
+        by_alias=True, exclude_none=True, mode="json"
+    )
+  else:
+    declaration.parameters = schema
+
+  tool = _function_declaration_to_openai_tool(declaration)
+
+  validator = Draft202012Validator(tool["function"]["parameters"])
+  assert validator.is_valid({"city": None})
+  assert validator.is_valid({"city": "Paris"})
+  assert not validator.is_valid({"city": 7})
+  assert schema.properties["city"].nullable is True
+
+
+def test_nullable_objects_preserve_property_reference_targets():
+  """References into nullable objects remain valid in the emitted payload."""
+  declaration = types.FunctionDeclaration(
+      name="weather",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "details": {
+                  "type": "object",
+                  "nullable": True,
+                  "properties": {"name": {"type": "string"}},
+              },
+              "copy": {"$ref": "#/properties/details/properties/name"},
+          },
+      },
+  )
+
+  tool = _function_declaration_to_openai_tool(declaration)
+
+  validator = Draft202012Validator(tool["function"]["parameters"])
+  assert validator.is_valid({"details": {"name": "Paris"}, "copy": "Paris"})
+  assert validator.is_valid({"details": None, "copy": "Paris"})
+  assert not validator.is_valid({"details": {"name": 7}, "copy": "Paris"})
 
 
 def test_supported_models():

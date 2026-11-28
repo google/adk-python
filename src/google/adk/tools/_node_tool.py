@@ -37,7 +37,7 @@ def _to_json_schema(schema: SchemaType) -> dict[str, Any]:
     return schema
   if isinstance(schema, types.Schema):
     json_schema = schema.model_dump(by_alias=True, exclude_none=True)
-    lowercase_schema_types(json_schema)
+    lowercase_schema_types(json_schema, convert_nullable=False)
     return json_schema
   return schema_to_json_schema(schema)
 
