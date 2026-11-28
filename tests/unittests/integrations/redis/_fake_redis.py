@@ -85,21 +85,31 @@ class FakeRedisAsync:
     return 0
 
   async def transaction(
-      self, func: Callable[[Any], Awaitable[None]], key: str
-  ) -> list[bool | None]:
-    """Retries a queued write if the watched key changed or expired."""
+      self, func: Callable[[Any], Awaitable[None]], *keys: str
+  ) -> list[Any]:
+    """Retries queued writes if any watched key changed or expired."""
     while True:
-      self._is_expired(key)
-      version = self._versions.get(key, 0)
+      for key in keys:
+        self._is_expired(key)
+      versions = {key: self._versions.get(key, 0) for key in keys}
       pipe = Mock(get=self.get)
       await func(pipe)
-      self._is_expired(key)
-      if self._versions.get(key, 0) != version:
+      for key in keys:
+        self._is_expired(key)
+      if any(
+          self._versions.get(key, 0) != version
+          for key, version in versions.items()
+      ):
         continue
-      return [
+      results = [
+          await self.delete(*call.args, **call.kwargs)
+          for call in pipe.delete.call_args_list
+      ]
+      results.extend([
           await self.set(*call.args, **call.kwargs)
           for call in pipe.set.call_args_list
-      ]
+      ])
+      return results
 
   @staticmethod
   def _glob_match(pattern: str, key: str) -> bool:
