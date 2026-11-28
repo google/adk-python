@@ -406,6 +406,42 @@ def test_response_attributes_normalize_finish_reason(
   assert details[GEN_AI_OUTPUT_MESSAGES][0]['finish_reason'] == expected
 
 
+def _function_call_response() -> LlmResponse:
+  return LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name='get_weather', args={'city': 'Paris'}
+                  )
+              )
+          ],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+
+def test_response_attributes_report_tool_call_for_function_call_turn():
+  """A STOP turn that calls a function is a tool_call, not a stop."""
+  details, common = _response_attributes(_function_call_response())
+
+  assert common[GEN_AI_RESPONSE_FINISH_REASONS] == ['tool_call']
+  assert details[GEN_AI_OUTPUT_MESSAGES][0]['finish_reason'] == 'tool_call'
+
+
+def test_response_attributes_keep_stop_for_function_call_on_legacy_schema(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The legacy schema keeps reporting stop."""
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '1')
+
+  details, common = _response_attributes(_function_call_response())
+
+  assert common[GEN_AI_RESPONSE_FINISH_REASONS] == ['stop']
+  assert details[GEN_AI_OUTPUT_MESSAGES][0]['finish_reason'] == 'stop'
+
+
 def test_response_attributes_treat_unspecified_finish_reason_as_unreported():
   """The proto3 zero value means unreported, not failed."""
   llm_response = LlmResponse(

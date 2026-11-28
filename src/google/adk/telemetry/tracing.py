@@ -99,6 +99,7 @@ from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
 from ._finish_reason import is_reported_finish_reason
+from ._finish_reason import reports_tool_call
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from ._serialization import _mask_credential_values
@@ -1453,7 +1454,10 @@ def trace_inference_result(
   # arrives, so the response an aggregator assembles from the chunks it already
   # reported does not reach here.
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
-    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+    reported = finish_reason.lower()
+    if reports_tool_call(finish_reason, llm_response.content):
+      reported = "tool_call"
+    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [reported])
   if response_model := _response_model(
       invocation_context, llm_response, llm_request
   ):
