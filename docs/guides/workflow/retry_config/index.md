@@ -39,7 +39,7 @@ async def call_unstable_api(node_input: str):
 
 When a node with a `RetryConfig` raises an exception, five things happen in order.
 
-1. **Exception matching.** Every class in the raised exception's inheritance hierarchy, `type(exception).__mro__` excluding `object`, has its class name checked against `RetryConfig.exceptions`. When `exceptions` is left as `None`, which is the default, every exception matches.
+1. **Exception matching.** `WorkflowConfigurationError` and `WorkflowInvariantError` are never retried. For any other exception, every class in its inheritance hierarchy, `type(exception).__mro__` excluding `object`, has its class name checked against `RetryConfig.exceptions`. When `exceptions` is left as `None`, which is the default, every other exception matches.
 2. **Attempt count check.** The node is retried only while `attempt_count` is below `max_attempts`. That counter starts at 1 for the original run, so `max_attempts=3` buys you the original plus two retries.
 3. **Delay calculation.** The base delay grows exponentially with the number of attempts already made, as `initial_delay * backoff_factor ** (attempt - 1)`.
 4. **Capping, then jitter.** If `jitter` is greater than 0.0, the base delay is first capped at `max_delay / (1 + jitter)`, and a random offset is then drawn uniformly from `-jitter * delay` to `+jitter * delay`. The order matters and it is deliberate. Capping afterwards would still hold the ceiling, but it would collapse every overshooting draw onto exactly `max_delay`, firing at one instant the very retries that jitter exists to spread out. With the defaults of `jitter=1.0` and `max_delay=60.0`, the pre-jitter delay therefore never exceeds 30 seconds, and the widest positive draw lands on 60. The result is then clamped to be non-negative and capped at `max_delay` once more.
@@ -58,7 +58,7 @@ What the retry runs again depends on what failed. After the node's own exception
 | `max_delay`      | `float \| None`                            | `60.0`           | Maximum delay between retries, in seconds.                                                                    |
 | `backoff_factor` | `float \| None`                            | `2.0`            | Multiplier by which the delay increases after each attempt.                                                   |
 | `jitter`         | `float \| None`                            | `1.0`            | Randomness factor for the delay. Set to `0.0` to disable jitter (deterministic delays).                       |
-| `exceptions`     | `list[str \| type[BaseException]] \| None` | `None`           | Exceptions to retry on. Can be exception classes or their string names. `None` means retry on all exceptions. |
+| `exceptions`     | `list[str \| type[BaseException]] \| None` | `None`           | Exceptions to retry on. Can be exception classes or their string names. `None` means retry on all exceptions except `WorkflowConfigurationError` and `WorkflowInvariantError`. |
 
 Every field is stored as `None` when you leave it out, so `RetryConfig()` prints
 as all-`None` rather than showing the numbers above. The Default column is what
@@ -82,20 +82,20 @@ A class you pass is normalized to its `__name__` at validation time, and matchin
 
 ### Retrying a nested workflow
 
-A `Workflow` is itself a node, so it takes a `RetryConfig` like any other. A failure of any node inside the workflow is a failure of the workflow, so the whole sub-workflow is retried.
+A `Workflow` is itself a node, so it takes a `RetryConfig` like any other. Its static graph children that have no `retry_config` of their own inherit it: a child that fails is retried in place, with a budget of its own, while its siblings keep running. Once a child's retries are used up, its failure fails the workflow, and the workflow is not retried on top of that.
 
 ```python
 from google.adk.workflow import RetryConfig, START, Workflow, node
 
 @node()
-async def load(node_input: str):
-  ...
+async def load(node_input: str) -> str:
+  return f'loaded: {node_input}'
 
 @node()
-async def flaky(node_input: str):
-  ...
+async def flaky(node_input: str) -> str:
+  return f'processed: {node_input}'
 
-# A failure in load or flaky retries the sub-workflow, up to 3 attempts.
+# load and flaky inherit the policy: each is retried in place, up to 3 attempts.
 inner = Workflow(
     name='inner',
     edges=[(START, load, flaky)],
@@ -103,9 +103,11 @@ inner = Workflow(
 )
 ```
 
-A retried sub-workflow does not redo work it already finished. Children that produced an output or a state change are replayed from the session's events, so only the failed node and whatever follows it run again. A child that produced neither leaves nothing to replay and runs again on every attempt, so give a side-effecting node an output or a state change if repeating it would be harmful.
+A child's own `retry_config` replaces the workflow's for that child rather than falling back to it: when a failure is outside the child's `exceptions` or exhausts its `max_attempts`, the workflow fails without being retried under the workflow's policy. Give a node its own policy when it needs different limits or exceptions. On a parallel worker child, the inherited policy applies to each item, as described in the [parallel worker guide](../parallel_worker/index.md#configuration-options).
 
-Setting `RetryConfig` on the node that can fail is still the narrower option, and it retries just that node rather than the whole sub-workflow.
+The children take the policy when the workflow is built or copied. The workflow keeps copies of them that carry it (agents are cloned), and the nodes you passed in `edges` are left unchanged. Pass `retry_config` to the constructor or use `node(workflow, retry_config=...)`: `retry_config` is frozen on `Workflow`, so assigning it to an existing workflow raises `pydantic.ValidationError`. Dynamic children started with `ctx.run_node()` do not inherit the workflow's policy; await `ctx.run_node()` inside a retrying parent node or set `retry_config` on the dynamic child itself.
+
+The workflow's policy also covers failures of the workflow itself, such as its `timeout`, and those retry the whole sub-workflow. A retried sub-workflow does not redo work it already finished. Children that produced an output or a state change are replayed from the session's events, so only the children that had not finished, and whatever follows them, run again. A child that produced neither leaves nothing to replay and runs again on every attempt, so give a side-effecting node an output or a state change if repeating it would be harmful. Children that run again start with a fresh budget, and their in-place retries count against the workflow's `timeout`. With both `timeout` and `retry_config`, a child whose in-place retries are cut short by the workflow `timeout` can therefore run up to `max_attempts` squared times, and the run can end with `NodeTimeoutError` rather than the child's own error.
 
 ### Deterministic delays under test
 

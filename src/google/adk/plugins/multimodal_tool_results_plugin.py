@@ -22,6 +22,7 @@ from google.genai import types
 
 from ..agents.callback_context import CallbackContext
 from ..flows.llm_flows.tools._caller import _as_function_response_part
+from ..models.llm_request import _last_non_transient_content
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.base_tool import BaseTool
@@ -196,7 +197,9 @@ class MultimodalToolResultsPlugin(BasePlugin):
         callback_context.state.update({current_turn_key: []})
 
       if parts_to_attach:
-        last_content = llm_request.contents[-1]
+        last_content = (
+            _last_non_transient_content(llm_request) or llm_request.contents[-1]
+        )
         if last_content.parts is None:
           last_content.parts = []
         last_content.parts += parts_to_attach
@@ -205,7 +208,9 @@ class MultimodalToolResultsPlugin(BasePlugin):
       # Default mode
       temp_key = PARTS_RETURNED_BY_TOOLS_ID
       if temp_parts := callback_context.state.get(temp_key, None):
-        last_content = llm_request.contents[-1]
+        last_content = (
+            _last_non_transient_content(llm_request) or llm_request.contents[-1]
+        )
         if last_content.parts is None:
           last_content.parts = []
         last_content.parts += temp_parts

@@ -71,6 +71,8 @@ jobs:
     steps:
       - name: Checkout candidate
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -159,6 +161,8 @@ jobs:
     steps:
       - name: Checkout candidate
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -174,6 +178,24 @@ jobs:
       - name: Build distributions
         run: uv build
 
+      # A plain install, as the quickstart does. The eval extra lives in its own
+      # venv so a core path that leans on an eval-only package fails here, while
+      # both installs still run before GOOGLE_API_KEY is written to .env.
+      - name: Install the candidate wheel into a fresh environment
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/quickstart-venv"
+          uv pip install --python "$RUNNER_TEMP/quickstart-venv/bin/python" dist/*.whl
+          echo "$RUNNER_TEMP/quickstart-venv/bin" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/agents"
+
+      - name: Install the eval extra into a fresh environment
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          uv venv "$RUNNER_TEMP/eval-venv"
+          uv pip install --python "$RUNNER_TEMP/eval-venv/bin/python" "${wheel}[eval]"
+
       # A pull request from a fork gets no secrets. Fail with a reason instead
       # of letting adk create stop at a prompt nobody can answer.
       - name: Check for a model key
@@ -184,16 +206,6 @@ jobs:
             echo "::error::GOOGLE_API_KEY is not available to this run, so the quickstart cannot call a model."
             exit 1
           fi
-
-      # A plain install, as the quickstart does. The eval extra comes later, so
-      # a core path that leans on an eval-only package fails here.
-      - name: Install the candidate wheel into a fresh environment
-        run: |
-          set -euo pipefail
-          uv venv "$RUNNER_TEMP/quickstart-venv"
-          uv pip install --python "$RUNNER_TEMP/quickstart-venv/bin/python" dist/*.whl
-          echo "$RUNNER_TEMP/quickstart-venv/bin" >> "$GITHUB_PATH"
-          mkdir -p "$RUNNER_TEMP/agents"
 
       # Picks option 1 at the model prompt, the model adk create offers first,
       # so a default that stopped working fails here before a new user hits it.
@@ -271,12 +283,6 @@ jobs:
           print("root_agent replied:", reply)
           EOF
 
-      - name: Add the eval extra
-        run: |
-          set -euo pipefail
-          wheel=$(ls dist/*.whl)
-          uv pip install --python "$RUNNER_TEMP/quickstart-venv/bin/python" "${wheel}[eval]"
-
       # adk eval exits 0 even when a case fails, so the summary is the verdict.
       # The agent has no tools, so the trajectory check is exact; the response
       # check only has to compute, because the model's wording varies.
@@ -319,7 +325,7 @@ jobs:
           cat > "$RUNNER_TEMP/eval_config.json" <<'EOF'
           {"criteria": {"tool_trajectory_avg_score": 1.0, "response_match_score": 0.0}}
           EOF
-          adk eval smoke_agent "$RUNNER_TEMP/smoke.evalset.json" \
+          "$RUNNER_TEMP/eval-venv/bin/adk" eval smoke_agent "$RUNNER_TEMP/smoke.evalset.json" \
             --config_file_path "$RUNNER_TEMP/eval_config.json" | tee "$RUNNER_TEMP/eval.log"
           grep -q 'Tests passed: 1$' "$RUNNER_TEMP/eval.log"
           grep -q 'Tests failed: 0$' "$RUNNER_TEMP/eval.log"

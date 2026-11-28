@@ -20,12 +20,14 @@ from google.adk.utils.model_name_utils import _is_gemini_3_or_newer
 from google.adk.utils.model_name_utils import _is_gemini_3_x_live
 from google.adk.utils.model_name_utils import _is_managed_agent
 from google.adk.utils.model_name_utils import _supports_builtin_tools_with_function_calling
+from google.adk.utils.model_name_utils import _with_gemini_4_thinking_level
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_3_5_live_translate
 from google.adk.utils.model_name_utils import is_gemini_eap_or_2_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
 from google.adk.utils.model_name_utils import is_gemini_model_id_check_disabled
+from google.genai import types
 import pytest
 
 
@@ -558,6 +560,94 @@ class TestIsGemini3OrNewer:
     """Rejects pre-3.0, unversioned, and non-Gemini model strings."""
     assert _gemini_major_version(model_string) == expected_major
     assert not _is_gemini_3_or_newer(model_string)
+
+
+_DEFAULT_THINKING = types.ThinkingConfig(
+    include_thoughts=True, thinking_budget=10240
+)
+
+
+class TestWithGemini4ThinkingLevel:
+  """Tests for the _with_gemini_4_thinking_level helper."""
+
+  @pytest.mark.parametrize(
+      'model',
+      [
+          'gemini-4-hydrogen',
+          'gemini-5-pro',
+          'vertex_ai/gemini-4-hydrogen',
+          'projects/p/locations/global/publishers/google/models/gemini-4-hydrogen',
+      ],
+  )
+  def test_default_budget_becomes_level_on_gemini_4_and_later(self, model):
+    """A default thinking budget becomes the given level on Gemini 4+."""
+    config = types.GenerateContentConfig(
+        temperature=0.3, thinking_config=_DEFAULT_THINKING.model_copy()
+    )
+
+    result = _with_gemini_4_thinking_level(
+        config,
+        model=model,
+        default_thinking_config=_DEFAULT_THINKING,
+        thinking_level=types.ThinkingLevel.HIGH,
+    )
+
+    assert result == types.GenerateContentConfig(
+        temperature=0.3,
+        thinking_config=types.ThinkingConfig(
+            include_thoughts=True, thinking_level=types.ThinkingLevel.HIGH
+        ),
+    )
+    assert config.thinking_config == _DEFAULT_THINKING
+
+  @pytest.mark.parametrize(
+      'model',
+      [
+          'gemini-2.5-pro',
+          'gemini-3.5-flash',
+          'gemini-flash-latest',
+          'claude-sonnet-4-5',
+          'openai/gpt-4o',
+          None,
+      ],
+  )
+  def test_default_budget_is_kept_before_gemini_4_and_off_gemini(self, model):
+    """Pre-4 Gemini, unversioned and non-Gemini models keep the budget."""
+    config = types.GenerateContentConfig(
+        thinking_config=_DEFAULT_THINKING.model_copy()
+    )
+
+    result = _with_gemini_4_thinking_level(
+        config,
+        model=model,
+        default_thinking_config=_DEFAULT_THINKING,
+        thinking_level=types.ThinkingLevel.HIGH,
+    )
+
+    assert result is config
+
+  @pytest.mark.parametrize(
+      'thinking_config',
+      [
+          None,
+          types.ThinkingConfig(include_thoughts=True),
+          types.ThinkingConfig(include_thoughts=True, thinking_budget=2048),
+          types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+      ],
+  )
+  def test_caller_thinking_config_is_kept_on_gemini_4(self, thinking_config):
+    """A thinking config that differs from the default is sent as given."""
+    config = types.GenerateContentConfig(thinking_config=thinking_config)
+
+    result = _with_gemini_4_thinking_level(
+        config,
+        model='gemini-4-hydrogen',
+        default_thinking_config=_DEFAULT_THINKING,
+        thinking_level=types.ThinkingLevel.HIGH,
+    )
+
+    assert result is config
+    assert result.thinking_config == thinking_config
 
 
 class TestIsManagedAgent:

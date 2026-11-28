@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import textwrap
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from .user_simulator_personas import UserPersona
@@ -140,8 +139,8 @@ def is_valid_user_simulator_template(
 
 
 def _get_user_simulator_instructions_template(
-    custom_instructions: Optional[str] = None,
-    user_persona: Optional[UserPersona] = None,
+    custom_instructions: str | None = None,
+    user_persona: UserPersona | None = None,
 ) -> str:
   """Returns the appropriate instruction template for the user simulator."""
   if custom_instructions is None:
@@ -182,8 +181,8 @@ def get_llm_backed_user_simulator_prompt(
     conversation_plan: str,
     conversation_history: str,
     stop_signal: str,
-    custom_instructions: Optional[str] = None,
-    user_persona: Optional[UserPersona] = None,
+    custom_instructions: str | None = None,
+    user_persona: UserPersona | None = None,
 ) -> str:
   """Formats the prompt for the llm-backed user simulator"""
   from jinja2 import DictLoader

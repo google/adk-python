@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
-from typing import Optional
 from typing import TYPE_CHECKING
 from unittest import mock
 
@@ -299,7 +298,7 @@ def _make_nodes_sequential(
       _make_nodes_sequential(obj._node, visited)
 
 
-def _extract_user_content(event: Mapping[str, Any]) -> Optional[types.Content]:
+def _extract_user_content(event: Mapping[str, Any]) -> types.Content | None:
   """Extracts user content from an event dict and returns a types.Content object.
 
   Agent-emitted user-role events (e.g., task FRs synthesized by the Task

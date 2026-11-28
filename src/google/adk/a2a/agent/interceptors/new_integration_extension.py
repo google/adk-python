@@ -15,8 +15,6 @@
 
 from __future__ import annotations
 
-from typing import Union
-
 from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from a2a.types import Message as A2AMessage
 from google.adk.a2a.agent.config import ParametersConfig
@@ -35,7 +33,7 @@ async def _before_request(
     _: InvocationContext,
     a2a_request: A2AMessage,
     params: ParametersConfig,
-) -> tuple[Union[A2AMessage, Event], ParametersConfig]:
+) -> tuple[A2AMessage | Event, ParametersConfig]:
   """Adds A2A_new_agent_version to client_call_context."""
   if params.client_call_context is None:
     params.client_call_context = _compat.ClientCallContext()

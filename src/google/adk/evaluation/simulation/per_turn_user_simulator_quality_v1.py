@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import ClassVar
-from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
@@ -164,8 +163,8 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]] = None,
-      conversation_scenario: Optional[ConversationScenario] = None,
+      expected_invocations: list[Invocation] | None = None,
+      conversation_scenario: ConversationScenario | None = None,
   ) -> EvaluationResult:
     del expected_invocations  # not used by this metric.
     if conversation_scenario is None:
@@ -217,7 +216,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       self,
       invocation: Invocation,
       conversation_scenario: ConversationScenario,
-      previous_invocations: Optional[list[Invocation]],
+      previous_invocations: list[Invocation] | None,
   ) -> str:
     if previous_invocations is None:
       raise ValueError(

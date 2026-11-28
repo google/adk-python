@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import ClassVar
-from typing import Optional
 
 from typing_extensions import override
 
@@ -172,7 +171,7 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
   def format_auto_rater_prompt(
       self,
       actual_invocation: Invocation,
-      _: Optional[Invocation],
+      _: Invocation | None,
   ) -> str:
     """Returns the autorater prompt."""
     self.create_effective_rubrics_list(actual_invocation.rubrics)

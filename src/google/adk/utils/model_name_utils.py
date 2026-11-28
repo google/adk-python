@@ -26,6 +26,8 @@ from typing_extensions import deprecated
 from .env_utils import is_env_enabled
 
 if TYPE_CHECKING:
+  from google.genai import types
+
   from ..models.llm_request import LlmRequest
 
 _DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
@@ -200,6 +202,36 @@ def _is_gemini_3_or_newer(model_string: str | None) -> bool:
   """Whether `model_string` names a Gemini 3.0 or later model."""
   major = _gemini_major_version(model_string)
   return major is not None and major >= 3
+
+
+def _with_gemini_4_thinking_level(
+    config: types.GenerateContentConfig,
+    *,
+    model: str | None,
+    default_thinking_config: types.ThinkingConfig,
+    thinking_level: types.ThinkingLevel,
+) -> types.GenerateContentConfig:
+  """Replaces the default thinking budget with `thinking_level` on Gemini 4+.
+
+  Returns `config` itself unless `model` is Gemini 4 or later and
+  `config.thinking_config` still equals `default_thinking_config`, in which
+  case it returns a copy that sets `thinking_level` instead of the budget.
+  """
+  major = _gemini_major_version(model)
+  if (
+      major is None
+      or major < 4
+      or config.thinking_config != default_thinking_config
+  ):
+    return config
+  from google.genai import types
+
+  request_config = config.model_copy(deep=True)
+  request_config.thinking_config = types.ThinkingConfig(
+      include_thoughts=default_thinking_config.include_thoughts,
+      thinking_level=thinking_level,
+  )
+  return request_config
 
 
 def _supports_builtin_tools_with_function_calling(

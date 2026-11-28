@@ -3755,6 +3755,28 @@ async def test_generate_content_via_interactions_non_streaming_yields_single_res
   assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
 
 
+@pytest.mark.parametrize('exclude_runtime_tag', [False, True])
+async def test_generate_content_via_interactions_runtime_tag(
+    monkeypatch, exclude_runtime_tag
+):
+  """exclude_runtime_tag reaches the headers sent to interactions.create."""
+  monkeypatch.setenv('GOOGLE_CLOUD_AGENT_ENGINE_ID', 'engine-id')
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+  await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client,
+          _build_llm_request(),
+          stream=False,
+          exclude_runtime_tag=exclude_runtime_tag,
+      )
+  )
+
+  headers = api_client.create_calls[0]['extra_headers']
+  token = headers['user-agent'].split()[0]
+  assert token.endswith('+remote_reasoning_engine') is not exclude_runtime_tag
+
+
 class TestServiceTier:
   """Tests for forwarding a serving tier on the interactions create call.
 

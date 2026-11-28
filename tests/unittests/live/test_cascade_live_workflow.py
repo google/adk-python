@@ -127,6 +127,11 @@ class _NativeLiveConnection(BaseLlmConnection):
     if isinstance(blob, types.Blob):
       self._respond()
 
+  async def send_context_update(
+      self, *, system_instruction: Any = None, tools: Any = None
+  ) -> None:
+    pass
+
   def _respond(self) -> None:
     self._out.put_nowait(self._model.responses.pop(0))
     self._out.put_nowait(LlmResponse(turn_complete=True))

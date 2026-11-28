@@ -818,7 +818,11 @@ class ModelConsultTool(BaseTool):
         'status': 'ok',
         'guidance': result.text,
         'advisor_model': result.model_version or result.model,
-        'thinking_level': self.thinking_level,
+        'thinking_level': (
+            result.thinking_level.value.lower()
+            if result.thinking_level is not None
+            else None
+        ),
         'consults': self._consult_stats(turn_uses, session_uses),
         'usage': result.usage.to_dict(),
         'latency_ms': result.latency_ms,
