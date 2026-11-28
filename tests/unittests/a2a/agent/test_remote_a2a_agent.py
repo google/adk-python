@@ -81,6 +81,7 @@ from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CAL
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.adk.utils import _mtls_utils
+from google.adk.utils._agent_mode import AgentMode
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types as genai_types
 import httpx
@@ -1711,12 +1712,7 @@ class TestRemoteA2aAgentMessageHandling:
     mock_function_event.get_function_calls.return_value = []
 
     # Mock latest event with function response - set proper author
-    mock_latest_event = Mock()
-    mock_latest_event.author = "user"
-    # The response sanitizer always runs now; a bare Mock content is not
-    # iterable, and there is nothing to sanitize here (no function calls), so
-    # give it None to make the sanitizer a no-op.
-    mock_latest_event.content = None
+    mock_latest_event = Event(author="user", invocation_id="inv-1")
     self.mock_session.events = [mock_latest_event]
 
     with patch(
@@ -3868,12 +3864,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_function_event.get_function_calls.return_value = []
 
     # Mock latest event with function response - set proper author
-    mock_latest_event = Mock()
-    mock_latest_event.author = "user"
-    # The response sanitizer always runs now; a bare Mock content is not
-    # iterable, and there is nothing to sanitize here (no function calls), so
-    # give it None to make the sanitizer a no-op.
-    mock_latest_event.content = None
+    mock_latest_event = Event(author="user", invocation_id="inv-1")
     self.mock_session.events = [mock_latest_event]
 
     with patch(
@@ -7763,6 +7754,61 @@ class TestHitlResumeRewrite:
   both function responses and text`, because the human-input function_response
   was forwarded verbatim beside the user's text.
   """
+
+  @pytest.mark.parametrize("peer_first", [True, False])
+  def test_mixed_resume_only_forwards_current_peer_task_responses(
+      self, peer_first: bool
+  ) -> None:
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://example.com/agent.json",
+        mode=AgentMode.TASK,
+    )
+    local_call, local_answer = _resume_events(
+        calls=[("local_tool", "local-id")],
+        responses=[("local_tool", "local-id", {"result": "local result"})],
+    )
+    peer_call, peer_answer = _resume_events(
+        calls=[("peer_tool", "peer-id")],
+        responses=[("peer_tool", "peer-id", {"result": "peer result"})],
+        relayed_by="test_agent",
+    )
+    peer_call.isolation_scope = "active-scope"
+    old_call, old_answer = _resume_events(
+        calls=[("peer_tool", "old-id")],
+        responses=[("peer_tool", "old-id", {"result": "old result"})],
+        relayed_by="test_agent",
+        task_id="old-task",
+    )
+    old_call.isolation_scope = "old-scope"
+    other_call, other_answer = _resume_events(
+        calls=[("other_tool", "other-id")],
+        responses=[("other_tool", "other-id", {"result": "other result"})],
+        relayed_by="other_agent",
+    )
+    other_call.isolation_scope = "active-scope"
+    peer_parts = peer_answer.content.parts
+    foreign_parts = (
+        local_answer.content.parts
+        + old_answer.content.parts
+        + other_answer.content.parts
+    )
+    answer = peer_answer.model_copy(deep=True)
+    answer.content.parts = (
+        peer_parts + foreign_parts if peer_first else foreign_parts + peer_parts
+    )
+    original_answer = answer.model_dump()
+    ctx = _make_ctx([local_call, old_call, other_call, peer_call, answer])
+    ctx.isolation_scope = "active-scope"
+
+    message = agent._create_a2a_request_for_user_function_response(ctx)
+
+    assert message.task_id == "task-123"
+    assert message.context_id == "context-123"
+    assert _kinds(message.parts) == ["data"]
+    assert _data(message.parts[0])["id"] == "peer-id"
+    assert _data(message.parts[0])["response"] == {"result": "peer result"}
+    assert answer.model_dump() == original_answer
 
   def test_agentflow_request_input_is_flattened(self):
     """A workflow RequestInput pause is flattened to text, not sent as data."""
