@@ -38,6 +38,7 @@ from . import _error_handler as _tool_error_handler
 from ....agents._callback_metadata import CallbackType
 from ....events.event import Event
 from ....telemetry import _instrumentation
+from ....telemetry.tracing import trace_tool_confirmation_decision
 from ....tools._confirmation_utils import apply_confirmation_gate
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
@@ -518,6 +519,19 @@ async def _execute_single_prepared_call(
     5. Building the final FunctionResponse Event to be returned.
     """
     nonlocal function_response, detected_error_type, response_source
+
+    # A call resumed with a user's confirmation carries the decision on its
+    # tool context. Record it on this call's execute_tool span, which is the
+    # current span here, before any callback or the gate itself answers the
+    # call, so the decision is traced whether the tool runs or is refused.
+    if tool_context.tool_confirmation is not None:
+      trace_tool_confirmation_decision(
+          tool,
+          function_args,
+          tool_context.tool_confirmation,
+          tool_context.function_call_id,
+          invocation_context.user_id,
+      )
 
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
