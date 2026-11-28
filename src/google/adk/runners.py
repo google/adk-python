@@ -304,6 +304,13 @@ class Runner:
     self.resumability_config = app.resumability_config
     self.artifact_service = artifact_service
     self.session_service = session_service
+    if (
+        app.events_compaction_config
+        and app.events_compaction_config.defer_sliding_window is True
+    ):
+      from .apps._deferred_compaction import validate_backend
+
+      validate_backend(session_service)
     self.memory_service = memory_service
     self.credential_service = credential_service
     self.plugin_manager = PluginManager(
@@ -938,6 +945,15 @@ class Runner:
     raw_signal = getattr(invocation_context, '_abort_signal', None)
     abort_signal = raw_signal if isinstance(raw_signal, asyncio.Event) else None
     session = invocation_context.session
+    if config.defer_sliding_window is True:
+      from .apps._deferred_compaction import enqueue_window
+
+      if config != self.app.events_compaction_config:
+        raise ValueError(
+            'Deferred windows require the worker app configuration.'
+        )
+      await enqueue_window(self.session_service, session, config)
+      return
     logger.debug('Running event compactor.')
     try:
       async with aclosing(
@@ -963,6 +979,39 @@ class Runner:
           ' newer turn updated the session while summarization was running.',
           session.id,
       )
+
+  async def compact_next_session(self) -> bool:
+    """Process one queued window, or return False if no work is ready.
+
+    A worker uses the same App and shared session database as the serving
+    runners. Failed jobs become available again after the lease expires.
+    """
+    from .apps._deferred_compaction import process_next_window
+
+    config = self.app.events_compaction_config
+    if not config or not config.defer_sliding_window:
+      raise ValueError('Enable defer_sliding_window on the worker app.')
+    return await process_next_window(
+        self.session_service, self.app_name, self.agent, config
+    )
+
+  async def wait_for_pending_compaction(
+      self, *, user_id: str, session_id: str
+  ) -> None:
+    """Wait until this session's queue drains, raising on a failed attempt.
+
+    Requires an active worker. Callers can bound the wait with asyncio.timeout.
+    """
+    from .apps._deferred_compaction import wait_for_compaction
+
+    if (
+        not self.app.events_compaction_config
+        or not self.app.events_compaction_config.defer_sliding_window
+    ):
+      raise ValueError('Enable defer_sliding_window to wait for queued work.')
+    await wait_for_compaction(
+        self.session_service, (self.app_name, user_id, session_id)
+    )
 
   async def _get_or_create_session(
       self,
@@ -1144,7 +1193,8 @@ class Runner:
     If event compaction is enabled for the invocation, by the App or by a
     plugin's before_run_callback, it will be performed after all agent events
     for the current invocation have been yielded. The async generator will only
-    finish iterating after event compaction is complete. However, this does not
+    finish iterating after compaction completes, or after the window is durably
+    queued when defer_sliding_window is enabled. This does not
     block new `run_async` calls for subsequent user queries, which can be
     started concurrently.
 

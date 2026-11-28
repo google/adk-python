@@ -50,6 +50,9 @@ class EventsCompactionConfig(BaseModel):
       extra="forbid",
   )
 
+  defer_sliding_window: bool = False
+  """Queue completed windows for a separately running compaction worker."""
+
   summarizer: BaseEventsSummarizer | None = None
   """The event summarizer to use for compaction."""
 
@@ -83,6 +86,10 @@ class EventsCompactionConfig(BaseModel):
   def _validate_trigger_params(self) -> EventsCompactionConfig:
     token_threshold_set = self.token_threshold is not None
     retention_size_set = self.event_retention_size is not None
+    if self.defer_sliding_window and token_threshold_set:
+      raise ValueError(
+          "Deferred compaction requires a sliding-window trigger only."
+      )
     if token_threshold_set != retention_size_set:
       raise ValueError(
           "token_threshold and event_retention_size must be set together."

@@ -277,6 +277,50 @@ summarizer has to follow a few rules:
 Import the `EventCompaction` class from `google.adk.events.event_actions`,
 because the `google.adk.events` package does not export it.
 
+## Let the next turn start while the summary is being written
+
+For a sliding-window app, set `defer_sliding_window=True` alongside
+`compaction_interval` and `overlap_size`. Use a schema v1
+`DatabaseSessionService` backed by PostgreSQL, or a shared file-backed SQLite
+database. The default behavior still waits for the summarizer.
+
+With this option a successful end of the response stream means that the
+turn's events have been stored and any eligible window has been queued.
+An immediate follow-up can use the raw history. Once the summary commits,
+new requests can use it. A follow-up that already loaded the raw history
+can still finish and persist its answer.
+
+Run a worker with the same app configuration and database as the serving
+process. Give the worker CPU time independently of incoming HTTP requests.
+
+```python
+import asyncio
+import logging
+
+async def run_compaction_worker(runner):
+    while True:
+        try:
+            if await runner.compact_next_session():
+                continue
+        except Exception:
+            logging.exception("Failed to compact a session")
+        await asyncio.sleep(0.5)
+```
+
+Each session has at most one pending row. A healthy worker renews its
+two-minute lease while the summarizer runs. If it exits, another worker can
+claim the row after the lease expires. A retry can call the summarizer again.
+Publication checks the claim and the live history in the same transaction.
+The queue drains only as fast as workers can summarize. Until then requests
+can carry more input tokens, so size the worker pool and set a timeout on the
+summary model call.
+
+To wait explicitly, call `await runner.wait_for_pending_compaction(user_id=...,
+session_id=...)` after the response. It raises if the last attempt failed.
+The worker receives the original exception and a later successful retry clears
+the failure. Wrap the wait in `asyncio.timeout(...)` to bound it if workers are
+offline. Deploy configuration changes to workers and serving instances together.
+
 ## Limitations
 
 *   Storage keeps growing. Compaction adds a summary event and never removes an
