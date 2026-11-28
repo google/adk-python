@@ -1297,6 +1297,39 @@ async def test_retry_config_on_nested_workflow_replays_completed_children():
 
 
 @pytest.mark.asyncio
+async def test_retry_config_on_nested_workflow_replays_child_without_output():
+  """A sub-workflow retried after its timeout does not redo a child that finished with no output."""
+  side_effect_attempts = 0
+  slow_attempts = 0
+
+  @node()
+  def side_effect_node(ctx: Context):
+    nonlocal side_effect_attempts
+    side_effect_attempts += 1
+
+  @node()
+  async def slow_once_node(ctx: Context, node_input: Any):
+    nonlocal slow_attempts
+    slow_attempts += 1
+    if slow_attempts == 1:
+      await asyncio.sleep(1.0)
+    return 'done'
+
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, side_effect_node, slow_once_node)],
+      timeout=0.2,
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+  outer_wf = Workflow(name='outer_wf', edges=[(START, inner_wf)])
+
+  await _run_workflow(outer_wf)
+
+  assert slow_attempts == 2
+  assert side_effect_attempts == 1
+
+
+@pytest.mark.asyncio
 async def test_retry_config_on_outer_workflow_retries_nested_failure():
   """A failure inside a sub-workflow is a failure of the outer workflow too."""
   attempts = 0
