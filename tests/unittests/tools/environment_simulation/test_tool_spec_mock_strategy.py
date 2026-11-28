@@ -94,6 +94,39 @@ async def _mock(
 
 
 @pytest.mark.asyncio
+async def test_thought_parts_are_ignored_when_parsing_the_mock_response():
+  """Thought text returned with include_thoughts must not break parsing."""
+
+  async def fake_generate_content_async(request):
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text="Let me think about this.", thought=True),
+                types.Part(text='{"ok": true}'),
+            ],
+        )
+    )
+
+  mock_llm = MagicMock()
+  mock_llm.generate_content_async = fake_generate_content_async
+  with patch.object(
+      tool_spec_mock_strategy, "LLMRegistry", autospec=True
+  ) as mock_registry:
+    mock_registry.return_value.resolve.return_value = MagicMock(
+        return_value=mock_llm
+    )
+    strategy = ToolSpecMockStrategy(
+        llm_name="fake-model",
+        llm_config=types.GenerateContentConfig(),
+    )
+
+  result = await _mock(strategy, _make_tool("t"), {})
+
+  assert result == {"ok": True}
+
+
+@pytest.mark.asyncio
 async def test_tool_without_declaration_is_reported_as_an_error():
   """Without a schema there is nothing to mock against, so no LLM call."""
   strategy = _make_strategy(['{"ok": true}'])
