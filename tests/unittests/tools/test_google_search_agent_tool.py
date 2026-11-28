@@ -183,3 +183,59 @@ async def test_grounding_metadata_is_not_stored_in_state_after_invocation():
 
   # Verify grounding_metadata is not stored in the root_agent's state
   assert 'temp:_adk_grounding_metadata' not in runner.session.state
+
+
+@mark.asyncio
+async def test_grounding_metadata_keeps_its_type_with_parallel_tool_calls():
+  """Grounding metadata stays typed when another tool runs in the same step."""
+  search_grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['test query'],
+      search_entry_point=types.SearchEntryPoint(
+          rendered_content='<div>search suggestions</div>'
+      ),
+  )
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=types.Content(
+                  parts=[Part.from_text(text='response from tool')]
+              ),
+              grounding_metadata=search_grounding_metadata,
+          )
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+  )
+
+  def other_tool() -> str:
+    return 'other result'
+
+  # Both calls come in one model response, so they run in parallel and their
+  # response events are merged.
+  root_agent_model = testing_utils.MockModel.create(
+      responses=[
+          [
+              function_call_no_schema,
+              Part.from_function_call(name='other_tool', args={}),
+          ],
+          'Final response from root',
+      ]
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=root_agent_model,
+      tools=[GoogleSearchAgentTool(agent=tool_agent), other_tool],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  events = runner.run('test input')
+
+  assert any(len(event.get_function_responses()) == 2 for event in events)
+  final_event = events[-1]
+  assert final_event.content.parts[0].text == 'Final response from root'
+  assert isinstance(final_event.grounding_metadata, types.GroundingMetadata)
+  assert final_event.grounding_metadata == search_grounding_metadata

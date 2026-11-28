@@ -39,6 +39,7 @@ import pytest
 from .... import testing_utils
 
 google_search = GoogleSearchTool(bypass_multi_tools_limit=True)
+grounding_metadata = types.GroundingMetadata(web_search_queries=["test query"])
 
 
 def dummy_tool():
@@ -321,8 +322,8 @@ async def test_handle_before_model_callback_plugin_override():
     "tools, state_metadata, expect_metadata",
     [
         ([], None, False),
-        ([google_search, dummy_tool], {"foo": "bar"}, True),
-        ([dummy_tool], {"foo": "bar"}, False),
+        ([google_search, dummy_tool], grounding_metadata, True),
+        ([dummy_tool], grounding_metadata, False),
         ([google_search, dummy_tool], None, False),
     ],
     ids=[
@@ -370,8 +371,8 @@ async def test_handle_after_model_callback_grounding_with_no_callbacks(
     "tools, state_metadata, expect_metadata",
     [
         ([], None, False),
-        ([google_search, dummy_tool], {"foo": "bar"}, True),
-        ([dummy_tool], {"foo": "bar"}, False),
+        ([google_search, dummy_tool], grounding_metadata, True),
+        ([dummy_tool], grounding_metadata, False),
         ([google_search, dummy_tool], None, False),
     ],
     ids=[
@@ -429,8 +430,8 @@ async def test_handle_after_model_callback_grounding_with_callback_override(
     "tools, state_metadata, expect_metadata",
     [
         ([], None, False),
-        ([google_search, dummy_tool], {"foo": "bar"}, True),
-        ([dummy_tool], {"foo": "bar"}, False),
+        ([google_search, dummy_tool], grounding_metadata, True),
+        ([dummy_tool], grounding_metadata, False),
         ([google_search, dummy_tool], None, False),
     ],
     ids=[
@@ -521,9 +522,9 @@ async def test_handle_after_model_callback_caches_canonical_tools():
 
     assert invocation_context.canonical_tools_cache is None
 
-    invocation_context.session.state["temp:_adk_grounding_metadata"] = {
-        "foo": "bar"
-    }
+    invocation_context.session.state["temp:_adk_grounding_metadata"] = (
+        grounding_metadata
+    )
 
     llm_response = LlmResponse(
         content=types.Content(parts=[types.Part.from_text(text="response")])
@@ -553,9 +554,40 @@ async def test_handle_after_model_callback_caches_canonical_tools():
     assert len(invocation_context.canonical_tools_cache) == 1
     assert invocation_context.canonical_tools_cache[0].name == "research_agent"
 
-    assert result1.grounding_metadata == {"foo": "bar"}
-    assert result2.grounding_metadata == {"foo": "bar"}
-    assert result3.grounding_metadata == {"foo": "bar"}
+    assert result1.grounding_metadata == grounding_metadata
+    assert result2.grounding_metadata == grounding_metadata
+    assert result3.grounding_metadata == grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_handle_after_model_callback_ignores_invalid_grounding_metadata(
+    caplog: pytest.LogCaptureFixture,
+):
+  """Invalid grounding metadata in state is logged and not attached."""
+  agent = Agent(name="test_agent", tools=[google_search, dummy_tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.state["temp:_adk_grounding_metadata"] = {
+      "foo": "bar"
+  }
+
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text="response")])
+  )
+  event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  result = await _model_response_finalizer.handle_after_model_callback(
+      invocation_context, llm_response, event
+  )
+
+  assert result is None
+  assert llm_response.grounding_metadata is None
+  assert "Ignoring invalid temp:_adk_grounding_metadata" in caplog.text
 
 
 # --- Tests for run_and_handle_error ---
