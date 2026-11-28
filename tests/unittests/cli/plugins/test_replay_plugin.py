@@ -166,6 +166,52 @@ async def test_before_tool_returns_recorded_response_not_live_result(tmp_path):
   assert replayed == {'result': 4}
 
 
+async def test_before_tool__recorded_args_omitted__empty_runtime_args_accepted(
+    tmp_path,
+):
+  """A recording with no args and a no-arg tool call describe the same call."""
+  call_id = 'fc-no-args'
+  _write_recordings(
+      tmp_path,
+      [
+        Recording(
+            user_message_index=0,
+            agent_name='agent_a',
+            tool_recording=ToolRecording(
+                tool_call=types.FunctionCall(id=call_id, name='roll_die'),
+                tool_response=types.FunctionResponse(
+                    id=call_id, name='roll_die', response={'result': 4}
+                ),
+            ),
+        )
+      ],
+  )
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(case_dir=tmp_path)
+  tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  replayed = await plugin.before_tool_callback(
+      tool=tool, tool_args={}, tool_context=contexts['agent_a']
+  )
+
+  assert replayed == {'result': 4}
+  assert tool.live_calls == [{}]
+
+
+async def test_before_tool__different_recorded_args__still_rejected(tmp_path):
+  _write_recordings(tmp_path, [_recording(args={'sides': 6})])
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(case_dir=tmp_path)
+  tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  with pytest.raises(ReplayVerificationError, match='Tool args mismatch'):
+    await plugin.before_tool_callback(
+        tool=tool, tool_args={}, tool_context=contexts['agent_a']
+    )
+
+
 async def test_before_tool_still_executes_the_underlying_tool(tmp_path):
   """Replay verifies the tool runs; only its response is substituted."""
   _write_recordings(tmp_path, [_recording(args={'sides': 6})])
