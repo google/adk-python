@@ -20,6 +20,7 @@ import asyncio
 from collections.abc import Iterator
 import contextvars
 import enum
+import hashlib
 from typing import Any
 from typing import Callable
 from unittest import mock
@@ -34,6 +35,7 @@ from google.adk.plugins.multimodal_tool_results_plugin import MultimodalToolResu
 from google.adk.telemetry import tracing
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from opentelemetry.sdk.trace import TracerProvider
@@ -521,6 +523,60 @@ async def test_execute_tool_span_names_the_callback_that_answered(
   assert span.name == f'execute_tool {tool_name}'
   attributes = dict(span.attributes or {})
   assert attributes.get('adk.experimental.response.source') == expected_source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('confirmed', [True, False], ids=['approved', 'denied'])
+async def test_execute_tool_span_records_the_confirmation_decision(
+    span_exporter: InMemorySpanExporter,
+    confirmed: bool,
+) -> None:
+  def transfer(amount: int) -> dict[str, str]:
+    return {'status': 'transferred'}
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(agent)
+
+  await functions.handle_function_call_list_async(
+      invocation_context,
+      [types.FunctionCall(name='transfer', id='call-1', args={'amount': 50})],
+      {'transfer': FunctionTool(transfer, require_confirmation=True)},
+      None,
+      {'call-1': ToolConfirmation(confirmed=confirmed)},
+  )
+
+  (span,) = span_exporter.get_finished_spans()
+  assert span.name == 'execute_tool transfer'
+  (decision_event,) = span.events
+  assert decision_event.name == 'adk.tool_confirmation.decision'
+  attributes = dict(decision_event.attributes or {})
+  assert attributes['adk.tool_confirmation.confirmed'] is confirmed
+  assert attributes['gen_ai.tool.call.id'] == 'call-1'
+  assert attributes['gen_ai.tool.name'] == 'transfer'
+  assert attributes['adk.tool_confirmation.arguments_hash'] == (
+      hashlib.sha256(b'{"amount": 50}').hexdigest()
+  )
+  assert attributes['adk.tool_confirmation.confirmed_by'] == 'test_user'
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_span_has_no_confirmation_event_by_default(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+  def answer() -> dict[str, str]:
+    return {'answer': 'from the tool'}
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(agent)
+
+  await functions.handle_function_call_list_async(
+      invocation_context,
+      [types.FunctionCall(name='answer', id='call-1')],
+      {'answer': FunctionTool(answer)},
+  )
+
+  (span,) = span_exporter.get_finished_spans()
+  assert span.events == ()
 
 
 class _ReplaceAfterToolPlugin(BasePlugin):
