@@ -224,3 +224,47 @@ def test_resolve_direct_addresses_blocks_host_with_any_non_public_address(
 def test_resolve_direct_addresses_blocks_non_public_ip_literal():
   with pytest.raises(ValueError, match='Blocked host'):
     _resolve_direct_addresses(_LOOPBACK_IPV4)
+
+
+@pytest.mark.parametrize(
+    ('host', 'canonical'),
+    [
+        ('0177.0.0.1', '127.0.0.1'),
+        ('0x7f.1', '127.0.0.1'),
+        ('2130706433', '127.0.0.1'),
+        ('127.1', '127.0.0.1'),
+        ('0177.0.0.1.', '127.0.0.1'),
+        ('0xa9fea9fe', '169.254.169.254'),
+        ('010.010.010.010', '8.8.8.8'),
+        ('0x08080808', '8.8.8.8'),
+        ('134744072', '8.8.8.8'),
+    ],
+)
+def test_legacy_numeric_ipv4_uses_browser_address_without_dns(
+    host: str,
+    canonical: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Numeric hosts use inet_aton semantics without consulting a resolver."""
+  dns = mock.Mock(side_effect=AssertionError('numeric hosts must bypass DNS'))
+  monkeypatch.setattr(socket, 'getaddrinfo', dns)
+
+  result = _resolve_host_addresses(host)
+
+  assert result == (ipaddress.ip_address(canonical),)
+  dns.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'host', ['0177.0.0.1', '0x7f.1', '2130706433', '0xa9fea9fe']
+)
+def test_legacy_numeric_private_addresses_are_blocked(host: str) -> None:
+  """Numeric aliases of loopback and metadata fail the shared private check."""
+  with pytest.raises(ValueError, match='Blocked host'):
+    _resolve_direct_addresses(host)
+
+
+@pytest.mark.parametrize('host', ['010.010.010.010', '0x08080808', '134744072'])
+def test_legacy_numeric_public_addresses_remain_allowed(host: str) -> None:
+  """Public numeric aliases continue to work under the same shared check."""
+  assert _resolve_direct_addresses(host) == (ipaddress.ip_address('8.8.8.8'),)
