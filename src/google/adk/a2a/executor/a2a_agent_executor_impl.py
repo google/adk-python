@@ -44,6 +44,7 @@ from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .utils import _ActiveTaskRegistry
 from .utils import _consume_runner_with_abort
+from .utils import _enqueue_canceled_task_event
 from .utils import _ErrorRecoveryTracker
 from .utils import _is_abort_adk_event
 from .utils import _require_request_context
@@ -161,6 +162,18 @@ class _A2aAgentExecutor(AgentExecutor):
           runner,
           run_request,
       )
+    except asyncio.CancelledError:
+      if not active_run.terminal_cancel_emitted:
+        try:
+          await _enqueue_canceled_task_event(context, event_queue)
+          active_run.terminal_cancel_emitted = True
+        except Exception as enqueue_error:
+          logger.error(
+              'Failed to publish canceled event: %s',
+              enqueue_error,
+              exc_info=True,
+          )
+      raise
     except Exception as e:
       # The peer that sent this request is not trusted with the exception text:
       # it names absolute paths, installed modules and echoed payloads. The
