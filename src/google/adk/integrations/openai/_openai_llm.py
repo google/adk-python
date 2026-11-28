@@ -435,7 +435,12 @@ class OpenAILlm(BaseLlm):
       schema_name = "response"
       schema_dict = {}
 
-      if isinstance(schema, type) and issubclass(schema, BaseModel):
+      if isinstance(schema, types.Schema):
+        schema_dict = schema.model_dump(
+            by_alias=True, exclude_none=True, mode="json"
+        )
+        lowercase_schema_types(schema_dict)
+      elif isinstance(schema, type) and issubclass(schema, BaseModel):
         schema_dict = schema.model_json_schema()
         schema_name = schema.__name__
       elif isinstance(schema, BaseModel):
