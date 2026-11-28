@@ -86,6 +86,173 @@ TEST_USER_ID = "test_user"
 TEST_SESSION_ID = "test_session"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("yield_message", [None, False, True])
+@pytest.mark.parametrize(
+    "root_kind,scenario",
+    [
+        (root, scenario)
+        for root in ("sequential", "parallel", "loop", "llm", "node")
+        for scenario in (
+            "new",
+            "non_resumable",
+            "modified",
+            "short_circuit",
+            "resume",
+            "resume_delta",
+            "resume_message",
+            "duplicate",
+        )
+        if root not in ("llm", "node") or scenario != "resume_message"
+    ],
+)
+async def test_run_async_yields_persisted_user_event(
+    root_kind: str,
+    yield_message: bool | None,
+    scenario: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Only newly appended user events are yielded, with their persisted ID."""
+  from google.adk.agents import LoopAgent
+  from google.adk.agents import SequentialAgent
+
+  class EchoNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          content=types.ModelContent(parts=[types.Part(text="reply")]),
+      )
+
+  child = LlmAgent(
+      name="child", model=testing_utils.MockModel.create(responses=["reply"])
+  )
+  root: BaseNode
+  if root_kind == "llm":
+    root = child
+  elif root_kind == "node":
+    root = EchoNode(name="echo")
+  else:
+    root_type = {
+        "sequential": SequentialAgent,
+        "parallel": ParallelAgent,
+        "loop": LoopAgent,
+    }[root_kind]
+    options = {"max_iterations": 1} if root_kind == "loop" else {}
+    root = root_type(name="root", sub_agents=[child], **options)
+  service = InMemorySessionService()
+  plugin = BasePlugin(name="probe")
+  runner = Runner(
+      app=App(
+          name=TEST_APP_ID,
+          root_agent=root,
+          plugins=[plugin],
+          resumability_config=ResumabilityConfig(
+              is_resumable=scenario != "non_resumable"
+          ),
+      ),
+      session_service=service,
+  )
+  session = await service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  message: types.Content | None = types.UserContent(
+      parts=[types.Part(text="hello")]
+  )
+  if scenario == "modified":
+    monkeypatch.setattr(
+        plugin,
+        "on_user_message_callback",
+        AsyncMock(
+            return_value=types.UserContent(parts=[types.Part(text="modified")])
+        ),
+    )
+  if scenario == "short_circuit":
+    monkeypatch.setattr(
+        plugin,
+        "before_run_callback",
+        AsyncMock(
+            return_value=types.ModelContent(parts=[types.Part(text="early")])
+        ),
+    )
+  invocation_id = None
+  state_delta: dict[str, Any] | None = {"key": "value"}
+  if scenario in ("resume", "resume_delta", "resume_message", "duplicate"):
+    invocation_id = "inv_resume"
+    await service.append_event(
+        session,
+        Event(author="user", invocation_id=invocation_id, content=message),
+    )
+    if scenario == "resume_message":
+      await service.append_event(
+          session,
+          Event(
+              author="child",
+              invocation_id=invocation_id,
+              content=types.ModelContent(
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              name="tool", id="call", args={}
+                          )
+                      )
+                  ]
+              ),
+          ),
+      )
+      message = types.UserContent(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="tool", id="call", response={"ok": True}
+                  )
+              )
+          ]
+      )
+    elif scenario != "duplicate":
+      message = None
+    if scenario in ("resume", "duplicate"):
+      state_delta = None
+  before_count = len(session.events)
+  run_options: dict[str, Any] = (
+      {} if yield_message is None else {"yield_user_message": yield_message}
+  )
+
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          invocation_id=invocation_id,
+          new_message=message,
+          state_delta=state_delta,
+          **run_options,
+      )
+  ]
+
+  saved = await service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  assert saved is not None
+  appended = [e for e in saved.events[before_count:] if e.author == "user"]
+  user_events = [e for e in events if e.author == "user"]
+  assert len(appended) == (0 if scenario in ("resume", "duplicate") else 1)
+  assert user_events == (appended if yield_message else [])
+  if user_events:
+    assert events[0] == appended[0]
+    assert events[0].id == appended[0].id
+    assert events[0].invocation_id == appended[0].invocation_id
+    assert events[0].actions.state_delta == state_delta
+    if scenario == "modified":
+      assert events[0].content is not None
+      assert events[0].content.parts is not None
+      assert events[0].content.parts[0].text == "modified"
+  await runner.close()
+
+
 class MockAgent(BaseAgent):
   """Mock agent for unit testing."""
 

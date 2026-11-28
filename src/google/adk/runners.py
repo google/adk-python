@@ -1275,6 +1275,8 @@ class Runner:
             f'Session: {session_id}, User: {user_id}'
         )
 
+      event_count_before_setup = len(session.events)
+      invocation_ended = False
       is_resumable = (
           self.resumability_config and self.resumability_config.is_resumable
       )
@@ -1334,10 +1336,18 @@ class Runner:
             raise RuntimeError(
                 'Resumed agent execution has no active BaseAgent.'
             )
-          if invocation_context.end_of_agents.get(active_agent.name):
-            # Directly return if the current agent in invocation context is
-            # already final.
-            return
+          invocation_ended = bool(
+              invocation_context.end_of_agents.get(active_agent.name)
+          )
+      if yield_user_message:
+        for event in invocation_context.session.events[
+            event_count_before_setup:
+        ]:
+          if event.author == 'user':
+            yield event
+
+      if invocation_ended:
+        return
 
       invocation_context._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
 
