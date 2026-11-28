@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from collections.abc import Mapping
 import importlib
+import sys
 from typing import Any
 
 
@@ -68,3 +69,23 @@ def accessors(
     return sorted(set(module_globals) | set(module_globals.get('__all__', ())))
 
   return module_getattr, module_dir
+
+
+def exported_dir(module_globals: dict[str, Any]) -> list[str]:
+  """Builds a hand-written package ``__dir__``, hiding lazy exports from freezegun.
+
+  ``freezegun`` calls ``getattr()`` on every name in ``dir(module)`` while
+  ``datetime`` is patched. A lazy export listed there gets imported under
+  ``FakeDatetime``, and ``anthropic``'s pydantic models then fail to build,
+  so ``freeze_time()`` raises. ``google.adk.plugins`` keeps the same guard.
+
+  Call it directly from the package's ``__dir__``: it reads the frame that
+  called ``dir()``.
+
+  Args:
+    module_globals: The calling package's ``globals()``.
+  """
+  caller = sys._getframe(2).f_globals.get('__name__', '')
+  if caller == 'freezegun' or caller.startswith('freezegun.'):
+    return sorted(module_globals)
+  return sorted(set(module_globals) | set(module_globals.get('__all__', ())))

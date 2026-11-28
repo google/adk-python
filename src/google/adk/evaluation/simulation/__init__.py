@@ -47,3 +47,9 @@ def __getattr__(name: str) -> Any:
 
     return LlmAudioUserSimulatorConfig
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+  from ...utils._lazy import exported_dir
+
+  return exported_dir(globals())
