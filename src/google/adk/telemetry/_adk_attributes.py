@@ -44,6 +44,15 @@ ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED = (
 # Names the callback that produced the response the span records.
 ADK_EXPERIMENTAL_RESPONSE_SOURCE = 'adk.experimental.response.source'
 
+# Tool confirmation decision, recorded as a span event on the execute_tool
+# span (see telemetry.tracing.trace_tool_confirmation_decision). These names
+# are ADK-owned and provisional: how an authorization decision is represented
+# is still being discussed in the OpenTelemetry GenAI semantic conventions,
+# and these names will be aligned with that convention when it settles.
+TOOL_CONFIRMATION_DECISION_EVENT = 'adk.tool_confirmation.decision'
+ADK_TOOL_CONFIRMATION_CONFIRMED = 'adk.tool_confirmation.confirmed'
+ADK_TOOL_CONFIRMATION_ARGUMENTS_HASH = 'adk.tool_confirmation.arguments_hash'
+
 ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT = (
     'adk.experimental.grounding.query_count'
 )
